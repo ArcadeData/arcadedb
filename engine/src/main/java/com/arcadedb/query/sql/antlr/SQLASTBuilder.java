@@ -5729,14 +5729,24 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
 
   /**
    * Visit REBUILD TYPE statement.
-   * Grammar: REBUILD TYPE typeName [POLYMORPHIC]
+   * Grammar: REBUILD TYPE typeName [POLYMORPHIC] [WITH key = expression (, key = expression)*]
    */
   @Override
   public RebuildTypeStatement visitRebuildTypeStmt(final SQLParser.RebuildTypeStmtContext ctx) {
     final RebuildTypeStatement stmt = new RebuildTypeStatement(-1);
     final SQLParser.RebuildTypeBodyContext bodyCtx = ctx.rebuildTypeBody();
-    stmt.typeName = (Identifier) visit(bodyCtx.identifier());
+    // The type name is the first identifier; any further identifiers are WITH-setting keys.
+    final List<SQLParser.IdentifierContext> ids = bodyCtx.identifier();
+    stmt.typeName = (Identifier) visit(ids.get(0));
     stmt.polymorphic = bodyCtx.POLYMORPHIC() != null;
+    if (bodyCtx.WITH() != null) {
+      final List<SQLParser.ExpressionContext> values = bodyCtx.expression();
+      for (int i = 0; i < values.size(); i++) {
+        final Expression key = new Expression((Identifier) visit(ids.get(i + 1)));
+        final Expression value = (Expression) visit(values.get(i));
+        stmt.settings.put(key, value);
+      }
+    }
     return stmt;
   }
 

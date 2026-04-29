@@ -40,6 +40,8 @@ public abstract class AbstractProperty implements Property {
   protected              boolean             notNull         = false;
   protected              boolean             hidden          = false;
   protected              boolean             external        = false;
+  // Compression policy for EXTERNAL property values: "none" | "auto" | "lz4". Null means "none".
+  protected              String              compression     = null;
   protected              String              max             = null;
   protected              String              min             = null;
   protected              String              regexp          = null;
@@ -143,14 +145,14 @@ public abstract class AbstractProperty implements Property {
     return hidden;
   }
 
-  /**
-   * Returns true if the property value is stored in a separate paired bucket (the external bucket of the type) instead of inline
-   * in the record. Useful for large payloads (vector embeddings, big strings, embedded JSON) so the primary bucket stays dense and
-   * page-cache friendly for traversal-heavy workloads.
-   */
   @Override
   public boolean isExternal() {
     return external;
+  }
+
+  @Override
+  public String getCompression() {
+    return compression == null ? "none" : compression;
   }
 
   @Override
@@ -201,6 +203,8 @@ public abstract class AbstractProperty implements Property {
       json.put("hidden", hidden);
     if (external)
       json.put("external", external);
+    if (compression != null && !"none".equalsIgnoreCase(compression))
+      json.put("compression", compression);
     if (max != null)
       json.put("max", max);
     if (min != null)

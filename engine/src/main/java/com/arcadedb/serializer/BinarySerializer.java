@@ -274,10 +274,11 @@ public class BinarySerializer {
               embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
 
           final Object propertyValue;
-          if (type == BinaryTypes.TYPE_EXTERNAL) {
-            final int extBucketId = buffer.getInt();
-            final long extPosition = buffer.getLong();
-            propertyValue = readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier);
+          if (type == BinaryTypes.TYPE_EXTERNAL || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4) {
+            final int extBucketId = (int) buffer.getNumber();
+            final long extPosition = buffer.getNumber();
+            propertyValue = readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier,
+                type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4);
           } else {
             propertyValue = deserializeValue(database, buffer, type, propertyModifier);
           }
@@ -354,11 +355,11 @@ public class BinarySerializer {
         final EmbeddedModifierProperty propertyModifier =
             embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
 
-        if (type == BinaryTypes.TYPE_EXTERNAL) {
-          // VALUE LIVES IN A PAIRED EXTERNAL BUCKET. FOLLOW THE RID.
-          final int extBucketId = buffer.getInt();
-          final long extPosition = buffer.getLong();
-          return readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier);
+        if (type == BinaryTypes.TYPE_EXTERNAL || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4) {
+          final int extBucketId = (int) buffer.getNumber();
+          final long extPosition = buffer.getNumber();
+          return readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier,
+              type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4);
         }
 
         return deserializeValue(database, buffer, type, propertyModifier);
@@ -915,11 +916,14 @@ public class BinarySerializer {
         if (consumedExternalProperties != null && existingExtRid != null)
           consumedExternalProperties.add(propertyName);
 
-        final RID newExtRid = writeExternalValue((DatabaseInternal) database, extBucketId, existingExtRid, type, value);
+        final ExternalWriteResult written = writeExternalPropertyValue((DatabaseInternal) database, extBucketId,
+            existingExtRid, type, value, propertyDef.getCompression());
 
-        content.putByte(BinaryTypes.TYPE_EXTERNAL);
-        content.putInt(newExtRid.getBucketId());
-        content.putLong(newExtRid.getPosition());
+        // The persisted type byte tells the reader which decoder to use. Bucket id and position are varints,
+        // mirroring TYPE_COMPRESSED_RID, so each pointer averages 3-7 bytes vs 12 fixed.
+        content.putByte(written.typeByte);
+        content.putNumber(written.rid.getBucketId());
+        content.putNumber(written.rid.getPosition());
       } else {
         if (value instanceof String stringValue && type == BinaryTypes.TYPE_STRING) {
           final int id = dictionary.getIdByName(stringValue, false);
@@ -966,16 +970,112 @@ public class BinarySerializer {
     return header;
   }
 
+  /** Holder for {@link #writeExternalPropertyValue}: the bytes written and the type byte to put in the main record. */
+  public static final class ExternalWriteResult {
+    public final byte typeByte;
+    public final RID  rid;
+
+    public ExternalWriteResult(final byte typeByte, final RID rid) {
+      this.typeByte = typeByte;
+      this.rid = rid;
+    }
+  }
+
+  // Lazy-init: LZ4Factory.fastestInstance() does JNI/SIMD probing on first call, so we cache the wrapper.
+  private static volatile com.arcadedb.compression.LZ4Compression lz4Singleton;
+
+  private static com.arcadedb.compression.LZ4Compression lz4() {
+    com.arcadedb.compression.LZ4Compression local = lz4Singleton;
+    if (local == null) {
+      synchronized (BinarySerializer.class) {
+        local = lz4Singleton;
+        if (local == null)
+          lz4Singleton = local = new com.arcadedb.compression.LZ4Compression();
+      }
+    }
+    return local;
+  }
+
   /**
-   * Builds a value-only blob and writes it to the given external bucket. If existingExternalRid is null, appends a new
-   * record (insert). Otherwise updates the record at that RID in place (update). The blob format is:
-   * <pre>
-   * [ExternalValueRecord.RECORD_TYPE : 1B][value type byte : 1B][value bytes : ...]
-   * </pre>
-   * Returns the RID where the blob was written.
+   * Serialises an EXTERNAL property value, optionally compressing per the property's policy
+   * ("none"|"auto"|"lz4"), writes the resulting blob to the paired external bucket, and returns the type byte
+   * the caller should put in the main record (TYPE_EXTERNAL or TYPE_EXTERNAL_COMPRESSED_LZ4).
+   * In "auto" mode compression is kept only when it saves more than 10% of bytes; otherwise the record is written
+   * raw. The decision is per-record so a single property can mix compressed and uncompressed records freely.
    */
+  public ExternalWriteResult writeExternalPropertyValue(final DatabaseInternal database, final int externalBucketId,
+      final RID existingExternalRid, final byte valueType, final Object value, final String compressionPolicy) {
+    if (existingExternalRid != null && existingExternalRid.getBucketId() != externalBucketId)
+      throw new SerializationException(
+          "Existing external RID " + existingExternalRid + " does not match the paired external bucket id "
+              + externalBucketId + " for this record. The schema's external bucket mapping is inconsistent.");
+
+    // Step 1: serialise the raw value bytes. We do this even when compressing, because we need both the raw size
+    // (uncompressed-size header) and the option to fall back to raw on auto-mode no-win.
+    final Binary rawValueBytes = new Binary();
+    serializeValue(database, rawValueBytes, valueType, value);
+    rawValueBytes.flip();
+
+    final boolean tryLz4 = compressionPolicy != null
+        && ("auto".equalsIgnoreCase(compressionPolicy) || "lz4".equalsIgnoreCase(compressionPolicy));
+    final boolean autoMode = "auto".equalsIgnoreCase(compressionPolicy);
+
+    byte typeByte = BinaryTypes.TYPE_EXTERNAL;
+    byte[] compressedPayload = null;
+    int uncompressedSize = 0;
+
+    if (tryLz4 && rawValueBytes.size() > 0) {
+      final byte[] raw = rawValueBytes.toByteArray();
+      final byte[] compressed = lz4().compress(raw);
+      // In auto mode skip compression unless it saves >10%. Outside auto mode (explicit "lz4") always keep it.
+      if (!autoMode || compressed.length < raw.length * 0.9) {
+        typeByte = BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4;
+        compressedPayload = compressed;
+        uncompressedSize = raw.length;
+      }
+    }
+
+    // Step 2: build the blob the bucket will store.
+    final Binary blob = new Binary();
+    blob.putByte(ExternalValueRecord.RECORD_TYPE);
+    blob.putByte(valueType);
+    if (typeByte == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4) {
+      blob.putUnsignedNumber(uncompressedSize);
+      // putByteArray writes the raw bytes without a length prefix; the compressed payload runs to end-of-record.
+      blob.putByteArray(compressedPayload);
+    } else {
+      blob.append(rawValueBytes);
+    }
+    blob.flip();
+
+    // Step 3: insert or update in the paired bucket, with delta accounting consistent with cascade-delete.
+    final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
+    final RID rid;
+    if (existingExternalRid == null) {
+      final ExternalValueRecord rec = new ExternalValueRecord(database, null, blob);
+      rid = externalBucket.createRecord(rec, true);
+      database.getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), +1);
+    } else {
+      final ExternalValueRecord rec = new ExternalValueRecord(database, existingExternalRid, blob);
+      rec.setIdentity(existingExternalRid);
+      externalBucket.updateRecord(rec, true);
+      rid = existingExternalRid;
+    }
+
+    return new ExternalWriteResult(typeByte, rid);
+  }
+
+  /** Insert or in-place update of an EXTERNAL property's value blob. Format: [RECORD_TYPE][type][value bytes]. */
   public RID writeExternalValue(final DatabaseInternal database, final int externalBucketId, final RID existingExternalRid,
       final byte type, final Object value) {
+    // Refuse to update an existing external record at a different bucket than the type's currently-paired one.
+    // This would mean the schema's external bucket mapping has shifted under us (e.g. partial migration) and
+    // overwriting blindly could corrupt unrelated data.
+    if (existingExternalRid != null && existingExternalRid.getBucketId() != externalBucketId)
+      throw new SerializationException(
+          "Existing external RID " + existingExternalRid + " does not match the paired external bucket id "
+              + externalBucketId + " for this record. The schema's external bucket mapping is inconsistent.");
+
     final Binary blob = new Binary();
     blob.putByte(ExternalValueRecord.RECORD_TYPE);
     blob.putByte(type);
@@ -998,25 +1098,35 @@ public class BinarySerializer {
     return existingExternalRid;
   }
 
-  /**
-   * Reads the value blob at the given external RID and returns the deserialised value. The blob format must match
-   * {@link #writeExternalValue}.
-   */
   public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,
       final EmbeddedModifier embeddedModifier) {
+    return readExternalValue(database, externalBucketId, position, embeddedModifier, false);
+  }
+
+  /**
+   * Reads the value blob at the given external RID. When {@code compressed} is true, the blob's value-bytes are
+   * LZ4-compressed and prefixed by an uncompressed-size varint. The compression flag is supplied by the caller -
+   * usually derived from the main record's type byte (TYPE_EXTERNAL vs TYPE_EXTERNAL_COMPRESSED_LZ4).
+   */
+  public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,
+      final EmbeddedModifier embeddedModifier, final boolean compressed) {
     final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
     final RID rid = RID.create(database, externalBucketId, position);
     final Binary buffer = externalBucket.getRecord(rid).copyOfContent();
     buffer.position(Binary.BYTE_SERIALIZED_SIZE); // SKIP RECORD TYPE BYTE
     final byte valueType = buffer.getByte();
-    return deserializeValue(database, buffer, valueType, embeddedModifier);
+    if (!compressed)
+      return deserializeValue(database, buffer, valueType, embeddedModifier);
+
+    final int uncompressedSize = (int) buffer.getUnsignedNumber();
+    final int compressedLen = buffer.size() - buffer.position();
+    final byte[] compressedBytes = new byte[compressedLen];
+    System.arraycopy(buffer.getContent(), buffer.position(), compressedBytes, 0, compressedLen);
+    final byte[] decompressed = lz4().decompress(compressedBytes, uncompressedSize);
+    return deserializeValue(database, new Binary(decompressed), valueType, embeddedModifier);
   }
 
-  /**
-   * Walks the OLD buffer of a Document being updated and collects the existing external RID for each EXTERNAL property,
-   * keyed by property name. Returns an empty map for new records (no identity, no buffer).
-   * Public so the database delete path can reuse it to cascade-delete external records.
-   */
+  /** Reused by cascade-delete: scans the OLD buffer for TYPE_EXTERNAL pointers, keyed by property name. */
   public Map<String, RID> findExistingExternalRids(final Database database, final Document record) {
     final RID identity = record.getIdentity();
     if (identity == null)
@@ -1046,9 +1156,12 @@ public class BinarySerializer {
 
         buf.position(headerEndOffset + contentPosition);
         final byte type = buf.getByte();
-        if (type == BinaryTypes.TYPE_EXTERNAL) {
-          final int extBucketId = buf.getInt();
-          final long extPosition = buf.getLong();
+        // Both raw and LZ4-compressed external pointers carry the same [bucketIdVarint][positionVarint] RID;
+        // the type byte differs only in how the blob is decoded - it doesn't change cascade-delete or orphan
+        // cleanup, both of which only need the RID.
+        if (type == BinaryTypes.TYPE_EXTERNAL || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_LZ4) {
+          final int extBucketId = (int) buf.getNumber();
+          final long extPosition = buf.getNumber();
           if (result == null)
             result = new HashMap<>();
           result.put(dictionary.getNameById(nameId), RID.create(database, extBucketId, extPosition));
@@ -1059,7 +1172,9 @@ public class BinarySerializer {
       return result == null ? Collections.emptyMap() : result;
     } catch (Exception e) {
       LogManager.instance().log(this, Level.WARNING,
-          "Could not parse old buffer to recover external RIDs for record %s: %s", identity, e.getMessage());
+          "Could not parse old buffer to recover external RIDs for record %s: %s. External records linked to this "
+              + "record may be orphaned in the paired bucket.",
+          e, identity, e.getMessage());
       return Collections.emptyMap();
     }
   }

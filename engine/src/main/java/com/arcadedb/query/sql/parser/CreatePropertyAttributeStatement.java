@@ -73,6 +73,8 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
         internalProp.setHidden((boolean) attrValue);
       } else if (attrName.equalsIgnoreCase("external")) {
         internalProp.setExternal((boolean) attrValue);
+      } else if (attrName.equalsIgnoreCase("compression") || attrName.equalsIgnoreCase("external_compression")) {
+        internalProp.setCompression(String.valueOf(attrValue));
       } else if (attrName.equalsIgnoreCase("max")) {
         internalProp.setMax("" + attrValue);
       } else if (attrName.equalsIgnoreCase("min")) {

@@ -28,6 +28,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
 
@@ -91,7 +92,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
 
           // Expose the primary->external bucket mapping for types that have any EXTERNAL property. Lets tooling
           // (Studio etc.) tell the user where the externalised values for each primary bucket are stored.
-          if (type instanceof com.arcadedb.schema.LocalDocumentType ldt) {
+          if (type instanceof LocalDocumentType ldt) {
             final Map<String, String> extMap = new HashMap<>();
             for (final var b : type.getBuckets(false)) {
               final Integer extId = ldt.getExternalBucketIdFor(b.getFileId());

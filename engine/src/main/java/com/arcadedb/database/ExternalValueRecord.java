@@ -21,10 +21,7 @@ package com.arcadedb.database;
 import com.arcadedb.serializer.json.JSONObject;
 
 /**
- * Lightweight record used by the serializer to store the value of a property flagged EXTERNAL in a paired bucket.
- * Holds an opaque pre-serialized buffer of the form `[RECORD_TYPE_EXTERNAL][value type byte][value bytes]`. The
- * leading record-type byte follows the convention of edge segments: the buffer is written verbatim by the bucket and
- * we do the framing ourselves.
+ * Opaque payload record for EXTERNAL property values. Buffer = [RECORD_TYPE][value type][value bytes].
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -50,17 +47,13 @@ public class ExternalValueRecord extends BaseRecord implements RecordInternal {
     // NO-OP: BUFFER IS BUILT FRESH ON EACH SERIALIZE
   }
 
-  /**
-   * Returns the buffer with the RECORD_TYPE_EXTERNAL marker at byte 0 and the value blob ([type][value bytes]) following.
-   */
   public Binary getContent() {
     return buffer;
   }
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    // Internal infrastructure record - no user-visible JSON form. Returning empty keeps callers like generic record
-    // dumpers safe even though they should never reach an EXTERNAL value record directly.
+    // No user-visible JSON form - generic record dumpers should never reach an EXTERNAL value blob directly.
     return new JSONObject();
   }
 }

@@ -20,6 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.graph.GraphDatabaseChecker;
@@ -28,6 +29,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
@@ -70,6 +72,8 @@ public class DatabaseChecker {
     checkDocuments();
 
     checkBuckets(result);
+
+    checkExternalProperties();
 
     final Set<Integer> affectedBuckets = new HashSet<>();
     for (final RID rid : (Collection<RID>) result.get("corruptedRecords"))
@@ -252,6 +256,86 @@ public class DatabaseChecker {
   public DatabaseChecker setCompress(final boolean compress) {
     this.compress = compress;
     return this;
+  }
+
+  /** Detects (and on FIX deletes) external-property records that are no longer referenced by any primary record. */
+  private void checkExternalProperties() {
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Checking external-property buckets...");
+
+    final List<String> warnings = new ArrayList<>();
+    final Set<RID> orphanedExternalRecords = new LinkedHashSet<>();
+    long fixedCount = 0L;
+
+    // For every external bucket, build the set of positions actually referenced from primary records of its
+    // owning type. Orphan = an external record whose position is NOT in that set.
+    final Map<Integer, Set<Long>> referencedByExtBucketId = new HashMap<>();
+    final Map<Integer, LocalBucket> extBucketsToCheck = new HashMap<>();
+
+    for (final DocumentType type : database.getSchema().getTypes()) {
+      if (!(type instanceof LocalDocumentType ldt) || !ldt.hasExternalProperties())
+        continue;
+      if (types != null && !types.isEmpty() && !types.contains(type.getName()))
+        continue;
+
+      for (final Bucket primaryBucket : type.getBuckets(false)) {
+        final Integer extBucketId = ldt.getExternalBucketIdFor(primaryBucket.getFileId());
+        if (extBucketId == null)
+          continue;
+        final LocalBucket extBucket = (LocalBucket) database.getSchema().getBucketById(extBucketId);
+        extBucketsToCheck.put(extBucketId, extBucket);
+        final Set<Long> referenced = referencedByExtBucketId.computeIfAbsent(extBucketId, k -> new HashSet<>());
+
+        primaryBucket.scan((rid, view) -> {
+          try {
+            final Document record = (Document) database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
+            for (final RID extRid : database.getSerializer().findExistingExternalRids(database, record).values())
+              referenced.add(extRid.getPosition());
+          } catch (final Exception e) {
+            warnings.add("primary record " + rid + " could not be parsed for external pointer scan: " + e.getMessage());
+          }
+          return true;
+        }, null);
+      }
+    }
+
+    for (final Map.Entry<Integer, LocalBucket> entry : extBucketsToCheck.entrySet()) {
+      final LocalBucket extBucket = entry.getValue();
+      final Set<Long> referenced = referencedByExtBucketId.get(entry.getKey());
+
+      final List<RID> orphans = new ArrayList<>();
+      extBucket.scan((rid, view) -> {
+        if (!referenced.contains(rid.getPosition()))
+          orphans.add(rid);
+        return true;
+      }, null);
+
+      orphanedExternalRecords.addAll(orphans);
+
+      if (fix && !orphans.isEmpty()) {
+        final boolean startedNewTx = !database.isTransactionActive();
+        if (startedNewTx)
+          database.begin();
+        for (final RID orphan : orphans) {
+          try {
+            extBucket.deleteRecord(orphan);
+            // Mirror the accounting in LocalDatabase.cascadeDeleteExternalValues so count() stays consistent.
+            database.getTransaction().updateBucketRecordDelta(extBucket.getFileId(), -1);
+            fixedCount++;
+          } catch (final Exception e) {
+            warnings.add("could not delete orphan external record " + orphan + ": " + e.getMessage());
+          }
+        }
+        if (startedNewTx)
+          database.commit();
+      }
+    }
+
+    result.put("orphanedExternalRecords", (long) orphanedExternalRecords.size());
+    result.put("orphanedExternalRecordsFixed", fixedCount);
+    ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
+    if (fix)
+      ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).addAll(orphanedExternalRecords);
   }
 
   private void checkBuckets(final Map<String, Object> result) {

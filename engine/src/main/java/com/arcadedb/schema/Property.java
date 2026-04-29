@@ -80,6 +80,14 @@ public interface Property {
 
   boolean isExternal();
 
+  /**
+   * Compression policy for an EXTERNAL property's value: "none" (default), "auto" (try LZ4, keep compressed only
+   * if it saves >10%), or an explicit algorithm like "lz4". Ignored for non-EXTERNAL properties.
+   */
+  Property setCompression(String compression);
+
+  String getCompression();
+
   Property setMax(String max);
 
   String getMax();

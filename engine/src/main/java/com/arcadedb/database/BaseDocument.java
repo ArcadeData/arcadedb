@@ -157,12 +157,6 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
     return type;
   }
 
-  /**
-   * Returns the byte offset in the record buffer where the property header begins (i.e. immediately after the record-type
-   * byte and any record-kind prefix such as the 24 bytes of in/out edge pointers on a vertex). Used by the serializer to
-   * recover the previous serialized bytes when re-serializing an updated record (e.g. to reuse the existing RID of an
-   * EXTERNAL property's paired record).
-   */
   public int getPropertiesStartingPosition() {
     return propertiesStartingPosition;
   }

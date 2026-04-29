@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
@@ -71,6 +72,11 @@ import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
 public class LocalBucket extends PaginatedComponent implements Bucket {
   public static final    String                    BUCKET_EXT                       = "bucket";
   public static final    int                       CURRENT_VERSION                  = 0;
+  // Bucket file-format version 1 is reserved for paired external-property buckets. They hold heavier records,
+  // so the page-slot table is sized down to 256 (vs 2048 at v0): a 256KB page loses ~1034 bytes of header
+  // overhead versus ~8194 bytes at v0, sized to host typical 1-2KB records (esp. with compression enabled).
+  public static final    int                       EXTERNAL_BUCKET_VERSION          = 1;
+  private static final   int                       DEF_MAX_RECORDS_IN_PAGE_V1       = 256;
   public static final    long                      RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
   public static final    long                      FIRST_CHUNK                      = -2L;    // USE -2 TO MARK THE FIRST CHUNK OF A BIG RECORD. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK
   public static final    long                      NEXT_CHUNK                       = -3L;    // USE -3 TO MARK THE SECOND AND FURTHER CHUNK THAT IS PART OF A BIG RECORD THAT DOES NOT FIT A PAGE. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK OR 0 IF THE CURRENT CHUNK IS THE LAST (NO FURTHER CHUNKS)
@@ -87,7 +93,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   int                       GATHER_STATS_MIN_SPACE_PERC      = 10;
   private static final   int                       SPARE_SPACE_FOR_GROWTH           = 32;
   protected final        int                       contentHeaderSize;
-  private final          int                       maxRecordsInPage                 = DEF_MAX_RECORDS_IN_PAGE;
+  private final          int                       maxRecordsInPage;
   private final          AtomicLong                cachedRecordCount                = new AtomicLong(-1);
   // Buckets are PRIMARY by default (they hold the primary records of a type and are user-targetable via DML).
   // Internal kinds (e.g. EXTERNAL_PROPERTY) hold serializer infrastructure that user-facing DML must not target.
@@ -141,6 +147,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
                      final int pageSize, final int version) throws IOException {
     super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);
+    this.maxRecordsInPage = maxRecordsInPageForVersion(version);
     this.contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
     this.cachedRecordCount.set(0);
     this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
@@ -152,6 +159,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
                      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
+    this.maxRecordsInPage = maxRecordsInPageForVersion(version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
     this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
     if (this.reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal())
@@ -168,6 +176,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return maxRecordsInPage;
   }
 
+  /** Slot-table sizing for the bucket file format version. v0=2048 (legacy), v1=128 (paired external buckets). */
+  private static int maxRecordsInPageForVersion(final int version) {
+    return version >= EXTERNAL_BUCKET_VERSION ? DEF_MAX_RECORDS_IN_PAGE_V1 : DEF_MAX_RECORDS_IN_PAGE;
+  }
+
   public Purpose getPurpose() {
     return purpose;
   }
@@ -179,10 +192,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   @Override
   public RID createRecord(final Record record, final boolean discardRecordAfter) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
-    // Set a provisional identity so the serializer can resolve the target primary bucket id (used by EXTERNAL
-    // property handling to look up the paired external bucket). The actual position is filled in by
-    // createRecordInternal and overwrites this placeholder when the caller stores the returned RID.
-    if (record.getIdentity() == null && record instanceof RecordInternal ri)
+    // Provisional identity for Document records (and subtypes: vertex, edge) so the serializer can resolve the
+    // target primary bucket for EXTERNAL property handling. EdgeSegment, ExternalValueRecord, and other internal
+    // record types do not need this and must not be touched.
+    if (record.getIdentity() == null && record instanceof Document && record instanceof RecordInternal ri)
       ri.setIdentity(RID.create(database, fileId, -1L));
     return createRecordInternal(record, false, discardRecordAfter);
   }

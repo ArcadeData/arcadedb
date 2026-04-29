@@ -91,6 +91,9 @@ public class AlterPropertyStatement extends DDLStatement {
       } else if (setting.equalsIgnoreCase("external")) {
         oldValue = property.isExternal();
         property.setExternal((boolean) finalValue);
+      } else if (setting.equalsIgnoreCase("compression") || setting.equalsIgnoreCase("external_compression")) {
+        oldValue = property.getCompression();
+        property.setCompression(String.valueOf(finalValue));
       } else if (setting.equalsIgnoreCase("max")) {
         oldValue = property.getMax();
         property.setMax("" + finalValue);

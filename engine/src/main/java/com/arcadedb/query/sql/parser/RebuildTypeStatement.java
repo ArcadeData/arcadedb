@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -31,21 +32,16 @@ import com.arcadedb.schema.Schema;
 import java.util.*;
 
 /**
- * REBUILD TYPE typeName [POLYMORPHIC]
+ * REBUILD TYPE typeName [POLYMORPHIC] [WITH batchSize = N] - re-serialises records to apply schema layout changes.
  *
- * Re-serialises every record of the named type (and optionally its subtypes) so that storage-layout schema changes
- * are applied to records on disk. The primary use case is relocating values after toggling a property's EXTERNAL
- * flag: after `ALTER PROPERTY T.p EXTERNAL true`, existing records still carry the value inline; running
- * `REBUILD TYPE T` moves those values to the paired external bucket. The reverse case (EXTERNAL true -> false) is
- * also handled, with orphan external records cleaned up automatically by the serializer.
- *
- * Commits in batches to keep memory bounded on large types.
+ * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RebuildTypeStatement extends DDLStatement {
-  private static final int BATCH_SIZE = 10_000;
+  private static final int DEFAULT_BATCH_SIZE = 10_000;
 
-  public Identifier typeName;
-  public boolean    polymorphic = false;
+  public Identifier                  typeName;
+  public boolean                     polymorphic = false;
+  public final Map<Expression, Expression> settings = new HashMap<>();
 
   public RebuildTypeStatement(final int id) {
     super(id);
@@ -59,6 +55,17 @@ public class RebuildTypeStatement extends DDLStatement {
     if (type == null)
       throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
 
+    int batchSize = DEFAULT_BATCH_SIZE;
+    for (final Map.Entry<Expression, Expression> e : settings.entrySet()) {
+      final String key = e.getKey().toString();
+      if (key.equalsIgnoreCase("batchSize"))
+        batchSize = Integer.parseInt(e.getValue().value.toString());
+      else
+        throw new CommandSQLParsingException(
+            "Unrecognized setting '" + key + "' in REBUILD TYPE statement (supported: batchSize)");
+    }
+    final int finalBatchSize = batchSize;
+
     final long[] count = { 0L };
     final boolean implicitTx = !db.isTransactionActive();
     if (implicitTx)
@@ -66,14 +73,13 @@ public class RebuildTypeStatement extends DDLStatement {
 
     try {
       db.scanType(typeName.getStringValue(), polymorphic, rec -> {
-        // Re-save forces re-serialization which routes property values according to the current schema (e.g. moves
-        // values to/from the external bucket per the current EXTERNAL flag) and triggers orphan cleanup in the
-        // serializer for any external pointers that no longer apply.
         final MutableDocument m = (MutableDocument) rec.modify();
         m.markDirty();
         m.save();
         count[0]++;
-        if (count[0] % BATCH_SIZE == 0) {
+        // Batch only when we own the transaction. Committing inside a caller-supplied TX would leak the user's
+        // writes prematurely and leave the trailing batch uncommitted.
+        if (implicitTx && count[0] % finalBatchSize == 0) {
           db.commit();
           db.begin();
         }

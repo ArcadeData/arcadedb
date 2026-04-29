@@ -102,6 +102,8 @@ public interface DocumentType {
       p.setHidden(prop.getBoolean("hidden"));
     if (prop.has("external"))
       p.setExternal(prop.getBoolean("external"));
+    if (prop.has("compression"))
+      p.setCompression(prop.getString("compression"));
     if (prop.has("max"))
       p.setMax(prop.getString("max"));
     if (prop.has("min"))

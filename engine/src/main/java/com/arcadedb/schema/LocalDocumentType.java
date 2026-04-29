@@ -18,8 +18,10 @@
  */
 package com.arcadedb.schema;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RecordEvents;
 import com.arcadedb.database.RecordEventsRegistry;
@@ -971,10 +973,7 @@ public class LocalDocumentType implements DocumentType {
       ensureExternalBucketFor((LocalBucket) bucket);
   }
 
-  /**
-   * Returns true if this type or any of its supertypes has at least one property flagged EXTERNAL. Polymorphic properties
-   * count: if A has an EXTERNAL property and B extends A, B is considered to have external properties.
-   */
+  /** Polymorphic: counts inherited EXTERNAL properties too. */
   public boolean hasExternalProperties() {
     for (final Property p : getPolymorphicProperties())
       if (p.isExternal())
@@ -982,29 +981,16 @@ public class LocalDocumentType implements DocumentType {
     return false;
   }
 
-  /**
-   * Returns the external bucket id paired with the given primary bucket id, or null if no external bucket has been
-   * created for that primary bucket.
-   */
   public Integer getExternalBucketIdFor(final int primaryBucketId) {
     return externalBucketIdByPrimaryBucketId.get(primaryBucketId);
   }
 
-  /**
-   * Idempotently ensures that every primary bucket of this type has a paired external bucket. Called when the first
-   * property transitions to EXTERNAL=true and when a new primary bucket is added to a type that already has external
-   * properties.
-   */
   public void ensureExternalBuckets() {
     for (final Bucket b : buckets)
       ensureExternalBucketFor((LocalBucket) b);
   }
 
-  /**
-   * Like {@link #ensureExternalBuckets()} but also recurses into all subtypes. Used when an EXTERNAL property is set on
-   * a supertype: every concrete subtype must own paired external buckets for its own primary buckets, because records
-   * of that subtype live in the subtype's primary buckets, not the supertype's.
-   */
+  /** Recurses into subtypes: records of a subtype live in subtype primary buckets, so each needs its own paired ext. */
   public void ensureExternalBucketsRecursive() {
     ensureExternalBuckets();
     for (final LocalDocumentType sub : subTypes)
@@ -1016,36 +1002,50 @@ public class LocalDocumentType implements DocumentType {
       return;
     final String extName = primary.getName() + "_ext";
     final LocalBucket external;
-    if (schema.bucketMap.containsKey(extName))
+    if (schema.bucketMap.containsKey(extName)) {
       external = schema.bucketMap.get(extName);
-    else {
-      // External buckets carry heavy payloads (vectors, large strings, embedded JSON), so they default to a
-      // larger page size than primary buckets to reduce multi-page chunking. Tunable via
-      // EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE. The file may also be tiered to a different directory via
-      // EXTERNAL_PROPERTY_BUCKET_PATH for cheaper-storage placement; the FileManager scans that path at startup.
-      final var config = schema.getDatabase().getConfiguration();
-      final int pageSize = config.getValueAsInteger(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE);
-      final String overridePath = config.getValueAsString(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH);
-      external = schema.createBucket(extName, pageSize, overridePath);
+      // Refuse to adopt a bucket that is already registered as the primary bucket of some user type. A bucket
+      // freshly loaded from disk shows purpose=PRIMARY (transient field), so we cannot rely on purpose alone;
+      // bucketId2TypeMap is the authoritative source of "this bucket is a user type's primary bucket".
+      if (schema.getTypeByBucketId(external.getFileId()) != null
+          && external.getPurpose() != LocalBucket.Purpose.EXTERNAL_PROPERTY)
+        throw new SchemaException(
+            "Cannot adopt bucket '" + extName + "' as the external-property bucket for type '" + name
+                + "': it is already a primary bucket of another user type. Rename the conflicting bucket and retry.");
+    } else {
+      // External buckets get larger pages (256KB vs 64KB primary), a smaller slot table (128 vs 2048: file-format
+      // version EXTERNAL_BUCKET_VERSION), and optional placement on cheaper-storage tier via
+      // resolveExternalBucketPath() which returns <override>/<dbName>.
+      final int pageSize = schema.getDatabase().getConfiguration()
+          .getValueAsInteger(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE);
+      final String overridePath = ((LocalDatabase) schema.getDatabase()).resolveExternalBucketPath();
+      external = schema.createBucket(extName, pageSize, overridePath, LocalBucket.EXTERNAL_BUCKET_VERSION);
     }
     external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
     externalBucketIdByPrimaryBucketId.put(primary.getFileId(), external.getFileId());
   }
 
-  /**
-   * Internal hook called by LocalSchema after loading the type's external bucket map from JSON. Restores the
-   * primaryBucketId -> externalBucketId entries and stamps each external bucket with the EXTERNAL_PROPERTY purpose
-   * (which is transient on LocalBucket and must be re-applied on every load).
-   */
+  /** Re-applies EXTERNAL_PROPERTY purpose (transient on LocalBucket) and rebuilds the map from JSON at load time. */
   void restoreExternalBuckets(final Map<String, String> primaryNameToExternalName) {
     externalBucketIdByPrimaryBucketId.clear();
     for (final Map.Entry<String, String> entry : primaryNameToExternalName.entrySet()) {
       final LocalBucket primary = schema.bucketMap.get(entry.getKey());
       final LocalBucket external = schema.bucketMap.get(entry.getValue());
-      if (primary == null || external == null) {
+      if (primary == null) {
         LogManager.instance()
-            .log(this, Level.WARNING, "Cannot restore external bucket mapping '%s' -> '%s' for type '%s'", null,
-                entry.getKey(), entry.getValue(), name);
+            .log(this, Level.WARNING, "Cannot restore external bucket mapping for type '%s': primary bucket '%s' not found",
+                null, name, entry.getKey());
+        continue;
+      }
+      if (external == null) {
+        // Tiered bucket file not found: usually means arcadedb.externalPropertyBucketPath is unset on this restart
+        // but was set when the bucket was created. Reads of EXTERNAL properties for records in this primary
+        // bucket would silently fail - so we surface the configuration mismatch loudly and explicitly.
+        LogManager.instance().log(this, Level.SEVERE,
+            "Cannot find external bucket '%s' for type '%s' primary bucket '%s'. If the bucket was tiered to a "
+                + "secondary path, set 'arcadedb.externalPropertyBucketPath' to the same value used at creation "
+                + "time before reopening the database. EXTERNAL property reads on this type will fail until fixed.",
+            null, entry.getValue(), name, entry.getKey());
         continue;
       }
       external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);

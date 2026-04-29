@@ -109,11 +109,13 @@ public class FileManager {
     if (entries == null)
       return;
     for (final File f : entries) {
-      final String filePath = f.getAbsolutePath();
-      final int lastDot = filePath.lastIndexOf(".");
+      // Compute the extension from the file name (not the full path) so a database directory containing dots
+      // (e.g. /home/u/my.db/bucket1) doesn't accidentally find the dot in the directory name.
+      final String fileName = f.getName();
+      final int lastDot = fileName.lastIndexOf(".");
       if (lastDot < 0)
         continue;
-      final String fileExt = filePath.substring(lastDot + 1);
+      final String fileExt = fileName.substring(lastDot + 1);
       if (!supportedFileExt.contains(fileExt))
         continue;
       try {

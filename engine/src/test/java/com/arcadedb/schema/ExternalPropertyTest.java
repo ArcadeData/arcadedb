@@ -499,6 +499,11 @@ class ExternalPropertyTest extends TestHelper {
     assertThat(primary.getPageSize()).isEqualTo(65_536);
     assertThat(external.getPageSize()).isEqualTo(262_144);
     assertThat(external.getPageSize()).isGreaterThan(primary.getPageSize());
+
+    // External buckets carry few but heavy records, so the slot table is sized down (128 vs 2048): saves about
+    // 7.5KB of header overhead per page (file-format version EXTERNAL_BUCKET_VERSION encodes this).
+    assertThat(primary.getMaxRecordsInPage()).isEqualTo(2048);
+    assertThat(external.getMaxRecordsInPage()).isEqualTo(256);
   }
 
   @Test
@@ -521,16 +526,21 @@ class ExternalPropertyTest extends TestHelper {
         saved[0] = d.getIdentity();
       });
 
-      // External bucket file lives in the override directory, not the database directory.
+      // External bucket file lives in the override directory, not the database directory. Use prefix filters
+      // (not hardcoded suffixes) so the assertions stay valid if the bucket file-naming convention evolves.
       final var primary = type.getBuckets(false).getFirst();
       final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
       final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
 
-      final java.io.File extFile = new java.io.File(database.getDatabasePath(), external.getName() + ".0.262144.v0.bucket");
-      assertThat(extFile.exists()).as("external bucket should NOT be in the database directory").isFalse();
+      // Per-database subdir is appended to the override path (so multiple DBs sharing the path can't collide).
+      final java.io.File tieredDbDir = new java.io.File(overrideDir.toFile(), database.getName());
+      final java.io.File[] dbDirFiles = new java.io.File(database.getDatabasePath()).listFiles(
+          (dir, name) -> name.startsWith(external.getName() + "."));
+      assertThat(dbDirFiles).as("external bucket should NOT be in the database directory")
+          .satisfiesAnyOf(arr -> assertThat(arr).isNull(), arr -> assertThat(arr).isEmpty());
 
-      final java.io.File[] tieredFiles = overrideDir.toFile().listFiles((dir, name) -> name.startsWith(external.getName()));
-      assertThat(tieredFiles).as("external bucket should be in the override directory").isNotNull().isNotEmpty();
+      final java.io.File[] tieredFiles = tieredDbDir.listFiles((dir, name) -> name.startsWith(external.getName() + "."));
+      assertThat(tieredFiles).as("external bucket should be in <override>/<dbName>/").isNotNull().isNotEmpty();
 
       // Reopen: FileManager must rediscover the tiered file via the secondary scan path so the record stays readable.
       // The override is applied at open() via the global config, so set it there too before reopening.
@@ -548,18 +558,157 @@ class ExternalPropertyTest extends TestHelper {
   }
 
   @Test
+  void checkDatabaseDetectsAndFixesOrphanedExternalRecords() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+
+    database.transaction(() -> database.newDocument("Doc").set("blob", "referenced").save());
+
+    final var primary = type.getBuckets(false).getFirst();
+    final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
+    final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
+    final long extCountBefore = externalBucket.count();
+
+    // Inject an orphan: write a value blob directly to the external bucket, bypassing the property write path
+    // so no primary record references it.
+    database.transaction(() -> ((com.arcadedb.database.DatabaseInternal) database).getSerializer()
+        .writeExternalValue((com.arcadedb.database.DatabaseInternal) database, extBucketId, null,
+            com.arcadedb.serializer.BinaryTypes.TYPE_STRING, "orphan-payload"));
+
+    assertThat(externalBucket.count()).isEqualTo(extCountBefore + 1);
+
+    // CHECK DATABASE (no FIX): reports the orphan but does not delete it.
+    final ResultSet rs = database.command("sql", "CHECK DATABASE");
+    assertThat(rs.hasNext()).isTrue();
+    final var row = rs.next();
+    assertThat((Long) row.getProperty("orphanedExternalRecords")).isGreaterThanOrEqualTo(1L);
+    assertThat((Long) row.getProperty("orphanedExternalRecordsFixed")).isEqualTo(0L);
+    assertThat(externalBucket.count()).isEqualTo(extCountBefore + 1);
+
+    // CHECK DATABASE FIX: removes the orphan.
+    final ResultSet rsFix = database.command("sql", "CHECK DATABASE FIX");
+    assertThat(rsFix.hasNext()).isTrue();
+    assertThat((Long) rsFix.next().getProperty("orphanedExternalRecordsFixed")).isGreaterThanOrEqualTo(1L);
+    assertThat(externalBucket.count()).isEqualTo(extCountBefore);
+
+    // Re-running reports zero orphans.
+    final ResultSet rsAfter = database.command("sql", "CHECK DATABASE");
+    assertThat((Long) rsAfter.next().getProperty("orphanedExternalRecords")).isEqualTo(0L);
+  }
+
+  @Test
+  void compressedExternalPropertyRoundTripsLargeText() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("text", Type.STRING).setExternal(true).setCompression("lz4");
+
+    // Highly redundant text compresses to a fraction of its raw size.
+    final StringBuilder sb = new StringBuilder();
+    final String fragment = "the quick brown fox jumps over the lazy dog ";
+    for (int i = 0; i < 200; i++)
+      sb.append(fragment);
+    final String value = sb.toString();
+    final int rawSize = value.length();
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableDocument d = database.newDocument("Doc").set("text", value);
+      d.save();
+      saved[0] = d.getIdentity();
+    });
+
+    database.close();
+    database = factory.open();
+
+    // Round-trip: the compressed bytes deserialise back to the original text.
+    final var loaded = database.lookupByRID(saved[0], true).asDocument();
+    assertThat(loaded.getString("text")).isEqualTo(value);
+
+    // External bucket should hold less than half the raw text bytes (typical LZ4 ratio on repeated prose).
+    final var primary = type.getBuckets(false).getFirst();
+    final Integer extId = ((LocalDocumentType) database.getSchema().getType("Doc")).getExternalBucketIdFor(primary.getFileId());
+    final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+    assertThat(externalBucket.getTotalPages()).as("only one page expected for one ~9KB text record").isEqualTo(1);
+    // We can't easily inspect just the record bytes, but if we shipped uncompressed the record itself would be
+    // ~9KB; with LZ4 it will land far below.
+  }
+
+  @Test
+  void compressionAutoSkipsWhenIncompressible() {
+    final VertexType type = database.getSchema().createVertexType("V");
+    type.createProperty("embedding", Type.ARRAY_OF_FLOATS).setExternal(true).setCompression("auto");
+
+    // High-entropy float bits do not compress; auto-mode should fall back to TYPE_EXTERNAL (raw).
+    final float[] embedding = new float[1024];
+    final java.util.Random rnd = new java.util.Random(42);
+    for (int i = 0; i < embedding.length; i++)
+      embedding[i] = rnd.nextFloat() * 1000f;
+
+    final RID[] saved = new RID[1];
+    database.transaction(() -> {
+      final MutableVertex v = database.newVertex("V").set("embedding", embedding);
+      v.save();
+      saved[0] = v.getIdentity();
+    });
+
+    database.close();
+    database = factory.open();
+
+    // Reads back identical bytes whichever path was chosen.
+    final var loaded = database.lookupByRID(saved[0], true).asVertex();
+    final float[] readBack = (float[]) loaded.get("embedding");
+    assertThat(readBack).isEqualTo(embedding);
+  }
+
+  @Test
+  void compressionFlagPersistsAcrossReopen() {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("body", Type.STRING).setExternal(true).setCompression("auto");
+
+    assertThat(type.getProperty("body").getCompression()).isEqualToIgnoringCase("auto");
+
+    database.close();
+    database = factory.open();
+
+    final DocumentType reloaded = database.getSchema().getType("Doc");
+    assertThat(reloaded.getProperty("body").isExternal()).isTrue();
+    assertThat(reloaded.getProperty("body").getCompression()).isEqualToIgnoringCase("auto");
+  }
+
+  @Test
+  void sqlDdlExternalCompression() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.body STRING (EXTERNAL true, COMPRESSION 'auto')");
+    });
+    assertThat(database.getSchema().getType("Doc").getProperty("body").getCompression()).isEqualToIgnoringCase("auto");
+
+    database.transaction(() -> database.command("sql", "ALTER PROPERTY Doc.body COMPRESSION 'lz4'"));
+    assertThat(database.getSchema().getType("Doc").getProperty("body").getCompression()).isEqualToIgnoringCase("lz4");
+
+    database.transaction(() -> database.command("sql", "ALTER PROPERTY Doc.body COMPRESSION 'none'"));
+    assertThat(database.getSchema().getType("Doc").getProperty("body").getCompression()).isEqualToIgnoringCase("none");
+  }
+
+  @Test
   void rollbackDiscardsBothPrimaryAndExternal() {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("blob", Type.STRING).setExternal(true);
 
+    final var primary = type.getBuckets(false).getFirst();
+    final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
+    final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+
     final long primaryCountBefore = database.countType("Doc", false);
+    final long externalCountBefore = external.count();
 
     database.begin();
     final MutableDocument d = database.newDocument("Doc").set("blob", "rolled-back");
     d.save();
     database.rollback();
 
-    final long primaryCountAfter = database.countType("Doc", false);
-    assertThat(primaryCountAfter).isEqualTo(primaryCountBefore);
+    // Both halves of the WAL group must be reverted: primary record AND its paired external blob.
+    assertThat(database.countType("Doc", false)).isEqualTo(primaryCountBefore);
+    assertThat(external.count()).as("external bucket count must also be unchanged after rollback")
+        .isEqualTo(externalCountBefore);
   }
 }

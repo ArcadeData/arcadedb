@@ -77,6 +77,11 @@ public class RemoteProperty extends AbstractProperty {
   }
 
   @Override
+  public Property setCompression(String compression) {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public Property setMax(String max) {
     throw new UnsupportedOperationException();
   }
@@ -113,6 +118,8 @@ public class RemoteProperty extends AbstractProperty {
       hidden = (Boolean) entry.get("hidden");
     if (entry.containsKey("external"))
       external = (Boolean) entry.get("external");
+    if (entry.containsKey("compression"))
+      compression = (String) entry.get("compression");
     if (entry.containsKey("default"))
       defaultValue = entry.get("default");
     if (entry.containsKey("regexp"))

@@ -128,9 +128,24 @@ public class LocalProperty extends AbstractProperty {
     if (changed) {
       this.external = external;
       if (external)
-        // ENSURE PAIRED EXTERNAL BUCKETS EXIST FOR EVERY PRIMARY BUCKET OF THIS TYPE AND ALL SUBTYPES (records of a
-        // subtype live in subtype primary buckets, so each subtype needs its own paired external buckets too).
         ((LocalDocumentType) owner).ensureExternalBucketsRecursive();
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  @Override
+  public Property setCompression(final String compression) {
+    final String normalized;
+    if (compression == null || compression.isEmpty() || "none".equalsIgnoreCase(compression))
+      normalized = null;
+    else if ("auto".equalsIgnoreCase(compression) || "lz4".equalsIgnoreCase(compression))
+      normalized = compression.toLowerCase(Locale.ENGLISH);
+    else
+      throw new IllegalArgumentException(
+          "Unsupported compression '" + compression + "' (supported: none, auto, lz4)");
+    if (!Objects.equals(this.compression, normalized)) {
+      this.compression = normalized;
       owner.getSchema().getEmbedded().saveConfiguration();
     }
     return this;
