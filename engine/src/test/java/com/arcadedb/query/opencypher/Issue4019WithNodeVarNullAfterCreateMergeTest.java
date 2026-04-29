@@ -45,6 +45,7 @@ class Issue4019WithNodeVarNullAfterCreateMergeTest {
   void setUp() {
     database = new DatabaseFactory("./target/databases/testopencypher-4019").create();
     database.getSchema().createVertexType("Person4019");
+    database.getSchema().createVertexType("Temp4019");
     database.transaction(() -> database.command("opencypher",
         "CREATE (:Person4019 {name:'Alice'}), (:Person4019 {name:'Bob'})"));
   }
