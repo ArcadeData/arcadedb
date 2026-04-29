@@ -71,14 +71,19 @@ Create the name of the service account to use
 {{- end }}
 
 {{/*
-Create a list of pod names based the number of replica.
+Create a comma-separated list of StatefulSet pod FQDNs for the Raft HA server list.
+When HPA is enabled, the list is sized to autoscaling.maxReplicas so that
+KubernetesAutoJoin can resolve any pod ordinal up to the maximum scale.
 */}}
 {{- define "arcadedb.nodenames" -}}
 {{- $replicas := int .Values.replicaCount -}}
+{{- if and .Values.autoscaling.enabled (gt (int .Values.autoscaling.maxReplicas) $replicas) -}}
+  {{- $replicas = int .Values.autoscaling.maxReplicas -}}
+{{- end -}}
 {{- $names := list -}}
 {{- $fullname := (include "arcadedb.fullname" .) -}}
 {{- $k8sSuffix := (include "arcadedb.k8sSuffix" .) -}}
-{{- $rpcPort := int (default "2424" .Values.service.rpc.port) -}}
+{{- $rpcPort := int .Values.service.rpc.port -}}
 {{- range $i, $_ := until $replicas }}
 {{- $names = append $names (printf "%s-%d%s:%d" $fullname $i $k8sSuffix $rpcPort) }}
 {{- end }}
