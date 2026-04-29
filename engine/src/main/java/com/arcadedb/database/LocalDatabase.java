@@ -2068,11 +2068,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       DatabaseContext.INSTANCE.init(this);
       setLockingEnabled(configuration.getValueAsBoolean(GlobalConfiguration.BACKUP_ENABLED));
 
-      final String resolved = resolveExternalBucketPath();
-      System.out.println("[DEBUG-FM] open db=" + name + " externalBucketPath=" + resolved
-          + " configValue=" + configuration.getValueAsString(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH)
-          + " configHash=" + System.identityHashCode(configuration));
-      fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, resolved);
+      fileManager = new FileManager(databasePath, mode, SUPPORTED_FILE_EXT, resolveExternalBucketPath());
       transactionManager = new TransactionManager(wrappedDatabaseInstance);
 
       open = true;

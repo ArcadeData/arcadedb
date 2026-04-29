@@ -316,18 +316,36 @@ public class DatabaseChecker {
         final boolean startedNewTx = !database.isTransactionActive();
         if (startedNewTx)
           database.begin();
+        // All-or-nothing per bucket: any failure rolls back the whole batch (or, if a caller-supplied tx is
+        // already open, throws so the caller can decide). We never commit a partially-cleaned bucket.
+        boolean anyFailure = false;
+        long localFixed = 0L;
         for (final RID orphan : orphans) {
           try {
             extBucket.deleteRecord(orphan);
             // Mirror the accounting in LocalDatabase.cascadeDeleteExternalValues so count() stays consistent.
             database.getTransaction().updateBucketRecordDelta(extBucket.getFileId(), -1);
-            fixedCount++;
+            localFixed++;
           } catch (final Exception e) {
             warnings.add("could not delete orphan external record " + orphan + ": " + e.getMessage());
+            anyFailure = true;
+            break;
           }
         }
-        if (startedNewTx)
-          database.commit();
+        if (startedNewTx) {
+          if (anyFailure)
+            database.rollback();
+          else {
+            database.commit();
+            fixedCount += localFixed;
+          }
+        } else if (anyFailure) {
+          throw new com.arcadedb.exception.DatabaseOperationException(
+              "Failed to delete orphan external records in bucket '" + extBucket.getName()
+                  + "'; aborting CHECK DATABASE FIX so the caller's transaction is not silently committed in a partial state");
+        } else {
+          fixedCount += localFixed;
+        }
       }
     }
 

@@ -178,7 +178,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return maxRecordsInPage;
   }
 
-  /** Slot-table sizing for the bucket file format version. v0=2048 (legacy), v1=128 (paired external buckets). */
+  /** Slot-table sizing for the bucket file format version. v0=2048 (legacy), v1=256 (paired external buckets). */
   private static int maxRecordsInPageForVersion(final int version) {
     return version >= EXTERNAL_BUCKET_VERSION ? DEF_MAX_RECORDS_IN_PAGE_V1 : DEF_MAX_RECORDS_IN_PAGE;
   }

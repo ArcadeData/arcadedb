@@ -49,6 +49,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.function.sql.geo.GeoUtils;
 import com.arcadedb.database.BaseDocument;
+import com.arcadedb.database.DocumentInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Property;
@@ -1002,7 +1003,12 @@ public class BinarySerializer {
    * In "auto" mode compression is kept only when it saves more than 10% of bytes; otherwise the record is written
    * raw. The decision is per-record so a single property can mix compressed and uncompressed records freely.
    */
-  public ExternalWriteResult writeExternalPropertyValue(final DatabaseInternal database, final int externalBucketId,
+  /**
+   * Internal serializer plumbing. Made package-private; the test-only entry point
+   * {@code BinarySerializerTestHelper#injectOrphanExternalRecord} forwards into this method without exposing
+   * it to library consumers.
+   */
+  ExternalWriteResult writeExternalPropertyValue(final DatabaseInternal database, final int externalBucketId,
       final RID existingExternalRid, final byte valueType, final Object value, final String compressionPolicy) {
     if (existingExternalRid != null && existingExternalRid.getBucketId() != externalBucketId)
       throw new SerializationException(
@@ -1105,7 +1111,7 @@ public class BinarySerializer {
 
     try {
       final Binary buf = oldBuffer.copyOfContent();
-      buf.position(((BaseDocument) record).getPropertiesStartingPosition());
+      buf.position(((DocumentInternal) record).getPropertiesStartingPosition());
 
       final int headerEndOffset = buf.getInt();
       final int properties = (int) buf.getUnsignedNumber();

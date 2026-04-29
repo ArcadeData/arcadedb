@@ -5735,15 +5735,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   public RebuildTypeStatement visitRebuildTypeStmt(final SQLParser.RebuildTypeStmtContext ctx) {
     final RebuildTypeStatement stmt = new RebuildTypeStatement(-1);
     final SQLParser.RebuildTypeBodyContext bodyCtx = ctx.rebuildTypeBody();
-    // The type name is the first identifier; any further identifiers are WITH-setting keys.
-    final List<SQLParser.IdentifierContext> ids = bodyCtx.identifier();
-    stmt.typeName = (Identifier) visit(ids.get(0));
+    // Grammar uses explicit labels (typeName=, settingKey+=, settingValue+=) so a future grammar tweak that
+    // introduces another identifier slot won't silently shift index-based bindings here.
+    stmt.typeName = (Identifier) visit(bodyCtx.typeName);
     stmt.polymorphic = bodyCtx.POLYMORPHIC() != null;
     if (bodyCtx.WITH() != null) {
-      final List<SQLParser.ExpressionContext> values = bodyCtx.expression();
-      for (int i = 0; i < values.size(); i++) {
-        final Expression key = new Expression((Identifier) visit(ids.get(i + 1)));
-        final Expression value = (Expression) visit(values.get(i));
+      for (int i = 0; i < bodyCtx.settingValue.size(); i++) {
+        final Expression key = new Expression((Identifier) visit(bodyCtx.settingKey.get(i)));
+        final Expression value = (Expression) visit(bodyCtx.settingValue.get(i));
         stmt.settings.put(key, value);
       }
     }

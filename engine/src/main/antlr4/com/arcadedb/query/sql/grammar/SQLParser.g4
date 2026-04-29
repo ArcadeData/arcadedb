@@ -878,7 +878,7 @@ rebuildIndexStatement
  * Syntax: REBUILD TYPE typeName [POLYMORPHIC]
  */
 rebuildTypeBody
-    : identifier POLYMORPHIC? (WITH identifier EQ expression (COMMA identifier EQ expression)*)?
+    : typeName=identifier POLYMORPHIC? (WITH settingKey+=identifier EQ settingValue+=expression (COMMA settingKey+=identifier EQ settingValue+=expression)*)?
     ;
 
 // ============================================================================

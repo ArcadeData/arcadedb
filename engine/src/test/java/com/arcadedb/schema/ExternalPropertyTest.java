@@ -517,19 +517,13 @@ class ExternalPropertyTest extends TestHelper {
 
   @Test
   void externalBucketPathOverridePlacesFileOnSecondaryDirectory() throws java.io.IOException {
-    // Use a tier directory outside the database path to simulate cheaper-storage placement. We set the override
-    // on the FACTORY's ContextConfiguration (not the global one) so the reopened database inherits it without
-    // mutating JVM-wide state that could leak into concurrent tests.
+    // Persist the override on the database itself via ALTER DATABASE. This writes the value into the
+    // database's configuration.json so it survives close+reopen without polluting the JVM-wide
+    // GlobalConfiguration (which would leak into concurrent tests).
     final java.nio.file.Path overrideDir = java.nio.file.Files.createTempDirectory("arcadedb-ext-tier-");
     try {
-      System.out.println("[DEBUG-TEST] factory.cfg=" + System.identityHashCode(factory.getContextConfiguration())
-          + " db.cfg=" + System.identityHashCode(database.getConfiguration()));
-      factory.getContextConfiguration().setValue(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH,
-          overrideDir.toString());
-      database.getConfiguration().setValue(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH,
-          overrideDir.toString());
-      System.out.println("[DEBUG-TEST] after setValue, factory.cfg.val="
-          + factory.getContextConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH));
+      database.command("sql",
+          "alter database `arcadedb.externalPropertyBucketPath` '" + overrideDir.toString() + "'");
 
       final DocumentType type = database.getSchema().createDocumentType("Doc");
       type.createProperty("blob", Type.STRING).setExternal(true);
@@ -557,14 +551,9 @@ class ExternalPropertyTest extends TestHelper {
       final java.io.File[] tieredFiles = tieredDbDir.listFiles((dir, name) -> name.startsWith(external.getName() + "."));
       assertThat(tieredFiles).as("external bucket should be in <override>/<dbName>/").isNotNull().isNotEmpty();
 
-      // Reopen: the factory's per-instance ContextConfiguration carries the override into the new
-      // LocalDatabase, so FileManager rediscovers the tiered file via the secondary scan path. No global
-      // config mutation needed.
-      System.out.println("[DEBUG-TEST] before close, factory.cfg.val="
-          + factory.getContextConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH));
+      // Reopen: LocalDatabase.open() reloads configuration.json which contains our ALTER, so FileManager
+      // rediscovers the tiered file via the secondary scan path.
       database.close();
-      System.out.println("[DEBUG-TEST] after close, factory.cfg.val="
-          + factory.getContextConfiguration().getValueAsString(com.arcadedb.GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_PATH));
       database = factory.open();
 
       final var loaded = database.lookupByRID(saved[0], true).asDocument();
@@ -588,10 +577,12 @@ class ExternalPropertyTest extends TestHelper {
 
     // Inject an orphan: write a value blob directly to the external bucket, bypassing the property write path
     // so no primary record references it. compression="none" keeps the blob raw so cleanup just sees a normal
-    // unreferenced record.
-    database.transaction(() -> ((com.arcadedb.database.DatabaseInternal) database).getSerializer()
-        .writeExternalPropertyValue((com.arcadedb.database.DatabaseInternal) database, extBucketId, null,
-            com.arcadedb.serializer.BinaryTypes.TYPE_STRING, "orphan-payload", "none"));
+    // unreferenced record. The serializer write path is package-private; the test reaches it via the
+    // BinarySerializerTestHelper which lives in the same package under src/test/java.
+    database.transaction(() -> com.arcadedb.serializer.BinarySerializerTestHelper.injectOrphanExternalRecord(
+        ((com.arcadedb.database.DatabaseInternal) database).getSerializer(),
+        (com.arcadedb.database.DatabaseInternal) database, extBucketId,
+        com.arcadedb.serializer.BinaryTypes.TYPE_STRING, "orphan-payload", "none"));
 
     assertThat(externalBucket.count()).isEqualTo(extCountBefore + 1);
 

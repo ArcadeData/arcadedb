@@ -53,7 +53,12 @@ public class ExternalValueRecord extends BaseRecord implements RecordInternal {
 
   @Override
   public JSONObject toJSON(final boolean includeMetadata) {
-    // No user-visible JSON form - generic record dumpers should never reach an EXTERNAL value blob directly.
-    return new JSONObject();
+    // ExternalValueRecord is engine-internal infrastructure. It's only reachable through a primary record's
+    // TYPE_EXTERNAL pointer, and every public read path (Document.toJSON, REST handlers, Studio) walks through
+    // BinarySerializer.deserializeProperty which materialises the value inline. If a generic record dumper hits
+    // this method directly, it's a bug: failing loud surfaces it instead of returning silent empty data.
+    throw new UnsupportedOperationException(
+        "ExternalValueRecord is an internal payload of an EXTERNAL property and has no JSON representation; "
+            + "read the value through its owning Document instead of dereferencing the external RID directly");
   }
 }
