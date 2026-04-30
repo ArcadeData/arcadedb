@@ -1150,6 +1150,7 @@ class PostgresTypeTest {
     assertThat(PostgresType.INTEGER.isArrayType()).isFalse();
     assertThat(PostgresType.LONG.isArrayType()).isFalse();
     assertThat(PostgresType.VARCHAR.isArrayType()).isFalse();
+    assertThat(PostgresType.TEXT.isArrayType()).isFalse();
     assertThat(PostgresType.BOOLEAN.isArrayType()).isFalse();
     assertThat(PostgresType.DATE.isArrayType()).isFalse();
     assertThat(PostgresType.JSON.isArrayType()).isFalse();
@@ -1261,6 +1262,7 @@ class PostgresTypeTest {
     assertThat(PostgresType.BOOLEAN.size).isEqualTo(1);
     assertThat(PostgresType.DATE.size).isEqualTo(8);
     assertThat(PostgresType.VARCHAR.size).isEqualTo(-1); // variable
+    assertThat(PostgresType.TEXT.size).isEqualTo(-1); // variable
     assertThat(PostgresType.JSON.size).isEqualTo(-1); // variable
     // Arrays are variable length
     assertThat(PostgresType.ARRAY_INT.size).isEqualTo(-1);

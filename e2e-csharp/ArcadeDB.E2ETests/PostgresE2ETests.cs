@@ -110,10 +110,10 @@ public class PostgresE2ETests
         {
             await insert.ExecuteNonQueryAsync();
         }
-        catch (Exception)
+        catch (NpgsqlException)
         {
-            // INSERT may trigger a protocol edge case in ArcadeDB's PostgreSQL implementation;
-            // verify via a follow-up SELECT whether the row was actually written.
+            // ArcadeDB sends a RowDescription after INSERT which Npgsql rejects; the write
+            // still commits, so verify via SELECT rather than failing here.
         }
 
         await using var select = conn.CreateCommand();

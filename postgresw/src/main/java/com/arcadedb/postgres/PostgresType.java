@@ -248,6 +248,7 @@ public enum PostgresType {
    * @param typeBuffer The buffer to write to
    * @param value      The value to serialize
    */
+  @SuppressWarnings("unchecked")
   public void serializeAsText(final PostgresType pgType, final Binary typeBuffer, final Object value) {
     String serializedValue = null;
     if (value == null && pgType.code == BOOLEAN.code) {
@@ -269,7 +270,7 @@ public enum PostgresType {
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
     } else if (value instanceof Map<?, ?> map) {
-      serializedValue = new JSONObject(map).toString();
+      serializedValue = new JSONObject((Map<String, ?>) map).toString();
     } else if (value instanceof Record record) {
       serializedValue = record.toJSON(true).toString();
     } else if (value instanceof Result result) {
@@ -296,6 +297,7 @@ public enum PostgresType {
   /**
    * Serializes a Collection into a PostgreSQL array string format.
    */
+  @SuppressWarnings("unchecked")
   private String serializeArrayToString(Collection<?> collection, PostgresType pgType) {
     if (collection.isEmpty())
       return "{}";
@@ -333,7 +335,7 @@ public enum PostgresType {
       } else if (element instanceof JSONObject json) {
         sb.append("\"").append(json.toString().replace("\"", "\\\"")).append("\"");
       } else if (element instanceof Map<?, ?> map) {
-        sb.append("\"").append(new JSONObject(map).toString().replace("\"", "\\\"")).append("\"");
+        sb.append("\"").append(new JSONObject((Map<String, ?>) map).toString().replace("\"", "\\\"")).append("\"");
       } else if (element instanceof Record record) {
         sb.append("\"").append(record.toJSON(true).toString().replace("\"", "\\\"")).append("\"");
       } else if (element instanceof EmbeddedDocument embeddedDocument) {
