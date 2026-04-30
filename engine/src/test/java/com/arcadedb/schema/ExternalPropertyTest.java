@@ -918,20 +918,17 @@ class ExternalPropertyTest extends TestHelper {
   }
 
   /**
-   * Two write semantics on an EXTERNAL property:
-   * <ul>
-   *   <li>{@code set("field", null)} REUSES the paired external slot as a TYPE_NULL marker. The bucket count
-   *       stays the same; on read the property returns null. This mirrors how a null inline value still
-   *       occupies a property-header slot - the schema still tracks the property as present, just with a
-   *       null value.</li>
-   *   <li>{@code remove("field")} drops the property from the property header entirely; orphan-cleanup in
-   *       BinarySerializer.serializeProperties detects the previously-paired RID is no longer consumed and
-   *       deletes the external record, decrementing the bucket count.</li>
-   * </ul>
-   * Read-back must reflect the difference: null after set-null, "no such property" after remove.
+   * On an EXTERNAL property, BOTH {@code set("field", null)} and {@code remove("field")} release the paired
+   * external blob (the bucket count drops). Rationale: charging external-bucket space for a null marker is
+   * surprising; users expect null to mean "no payload". The serializer special-cases null on the EXTERNAL
+   * write path: it writes an inline TYPE_NULL byte in the main record's content (not a TYPE_EXTERNAL pointer)
+   * and lets the orphan-cleanup pass delete any pre-existing external blob.
+   * <p>
+   * Read-back semantics still differ: set-null leaves the property present (returns null), remove() makes the
+   * property absent (also reads as null on get(), but the property-header slot is gone).
    */
   @Test
-  void externalPropertyNullVsRemoveSemantics() {
+  void externalPropertyNullAndRemoveBothReleasePairedBlob() {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("blob", Type.STRING).setExternal(true);
 
@@ -951,13 +948,13 @@ class ExternalPropertyTest extends TestHelper {
     });
     assertThat(external.count()).as("two external records expected").isEqualTo(2L);
 
-    // set-null: slot is reused as TYPE_NULL, bucket count unchanged.
+    // set-null: orphan-cleanup releases the paired bucket entry.
     database.transaction(() -> {
       final MutableDocument m = database.lookupByRID(saved[0], true).asDocument().modify();
       m.set("blob", (Object) null);
       m.save();
     });
-    assertThat(external.count()).as("set-null reuses the paired slot, count unchanged").isEqualTo(2L);
+    assertThat(external.count()).as("set-null releases the paired slot, count decreases").isEqualTo(1L);
     assertThat(database.lookupByRID(saved[0], true).asDocument().get("blob"))
         .as("set-null reads back as null").isNull();
 
@@ -967,7 +964,7 @@ class ExternalPropertyTest extends TestHelper {
       m.remove("blob");
       m.save();
     });
-    assertThat(external.count()).as("remove() releases the paired slot, count decreases").isEqualTo(1L);
+    assertThat(external.count()).as("remove() releases the paired slot, count decreases to zero").isEqualTo(0L);
     assertThat(database.lookupByRID(saved[1], true).asDocument().get("blob"))
         .as("remove() makes the property absent (and absence reads as null)").isNull();
 
@@ -978,8 +975,11 @@ class ExternalPropertyTest extends TestHelper {
     final Integer extId2 = ((LocalDocumentType) database.getSchema().getType("Doc")).getExternalBucketIdFor(
         primary2.getFileId());
     final LocalBucket external2 = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId2);
-    assertThat(external2.count()).as("post-reopen: one slot retained for set-null, one dropped by remove")
-        .isEqualTo(1L);
+    assertThat(external2.count()).as("post-reopen: both slots dropped (one by set-null, one by remove)")
+        .isEqualTo(0L);
+    // set-null record still reads back as null after reopen; the inline TYPE_NULL byte is the canonical marker.
+    assertThat(database.lookupByRID(saved[0], true).asDocument().get("blob"))
+        .as("set-null record reads as null even after reopen").isNull();
   }
 
   /**
@@ -1012,5 +1012,49 @@ class ExternalPropertyTest extends TestHelper {
       database.close();
       database = factory.open();
     }
+  }
+
+  /**
+   * Defends the DML write guard against a corrupted/old schema.json where the {@code externalBuckets} key was
+   * lost. The on-disk '_ext' bucket file is still there, but the JSON map is empty. On reopen, the
+   * name-based heuristic in {@code restoreExternalBuckets} must re-tag the '_ext' bucket as
+   * {@code EXTERNAL_PROPERTY} so an INSERT INTO bucket:Doc_0_ext stays rejected.
+   */
+  @Test
+  void heuristicRecoveryAdoptsOrphanExtBucketOnSchemaJsonMissingEntry() throws java.io.IOException {
+    final DocumentType type = database.getSchema().createDocumentType("Doc");
+    type.createProperty("blob", Type.STRING).setExternal(true);
+    database.transaction(() -> database.newDocument("Doc").set("blob", "v").save());
+
+    final var primary = type.getBuckets(false).getFirst();
+    final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
+    final LocalBucket extBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
+    final String extBucketName = extBucket.getName();
+
+    database.close();
+
+    // Strip the externalBuckets key from schema.json to simulate an older snapshot or partial corruption.
+    final java.io.File schemaJson = new java.io.File(database.getDatabasePath(), "schema.json");
+    String content = java.nio.file.Files.readString(schemaJson.toPath());
+    final com.arcadedb.serializer.json.JSONObject schema = new com.arcadedb.serializer.json.JSONObject(content);
+    final com.arcadedb.serializer.json.JSONObject docType = schema.getJSONObject("types").getJSONObject("Doc");
+    docType.remove("externalBuckets");
+    java.nio.file.Files.writeString(schemaJson.toPath(), schema.toString());
+
+    database = factory.open();
+
+    // Heuristic recovery should have re-tagged the _ext bucket; the user-bucket DML guard now rejects writes.
+    // Use the Java path (more deterministic error: IllegalArgumentException with "internal" in the message).
+    final MutableDocument fresh = database.newDocument("Doc").set("blob", "x");
+    assertThatThrownBy(() -> database.transaction(() ->
+        ((com.arcadedb.database.DatabaseInternal) database).createRecord(fresh, extBucketName)))
+        .as("the heuristic must re-tag the bucket so user DML is still refused after schema.json loss")
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("internal");
+
+    // The mapping is back in memory; record reads on the type still resolve correctly.
+    final ResultSet rs = database.query("sql", "SELECT blob FROM Doc");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat((String) rs.next().getProperty("blob")).isEqualTo("v");
   }
 }

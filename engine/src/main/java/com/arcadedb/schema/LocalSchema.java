@@ -1498,14 +1498,18 @@ public class LocalSchema implements Schema {
         }
 
         // RESTORE THE primaryBucket -> externalBucket MAP BEFORE PROPERTIES ARE LOADED, SO THAT setExternal(true) ON A
-        // PROPERTY DOES NOT TRY TO LAZY-CREATE BUCKETS THAT ALREADY EXIST.
+        // PROPERTY DOES NOT TRY TO LAZY-CREATE BUCKETS THAT ALREADY EXIST. Always call restoreExternalBuckets
+        // - even when the JSON has no externalBuckets key - so the name-based heuristic inside it can adopt
+        // any orphan '<primary>_ext' files that exist on disk but were lost from the JSON (partial corruption,
+        // migration from an older snapshot, etc.). Without that pass the affected buckets would default to
+        // purpose=PRIMARY and our DML write guard would let users target them.
+        final Map<String, String> primaryToExternal = new HashMap<>();
         if (schemaType.has("externalBuckets")) {
           final JSONObject extBuckets = schemaType.getJSONObject("externalBuckets");
-          final Map<String, String> primaryToExternal = new HashMap<>();
           for (final String primaryName : extBuckets.keySet())
             primaryToExternal.put(primaryName, extBuckets.getString(primaryName));
-          type.restoreExternalBuckets(primaryToExternal);
         }
+        type.restoreExternalBuckets(primaryToExternal);
 
         type.custom.clear();
         if (schemaType.has("custom"))

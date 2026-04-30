@@ -91,11 +91,7 @@ public class AlterPropertyStatement extends DDLStatement {
       } else if (setting.equalsIgnoreCase("external")) {
         oldValue = property.isExternal();
         property.setExternal((boolean) finalValue);
-      } else if (setting.equalsIgnoreCase("compression") || setting.equalsIgnoreCase("external_compression")) {
-        // CANONICAL NAME: 'compression'. The 'external_compression' alias is accepted for symmetry with the
-        // 'external' attribute (so users can spell out "this knob applies only to EXTERNAL properties"); new
-        // SQL should prefer 'compression' since the setting is meaningless for non-EXTERNAL properties anyway.
-        // Studio and our own DDL examples emit 'compression'.
+      } else if (setting.equalsIgnoreCase("compression")) {
         oldValue = property.getCompression();
         property.setCompression(String.valueOf(finalValue));
       } else if (setting.equalsIgnoreCase("max")) {

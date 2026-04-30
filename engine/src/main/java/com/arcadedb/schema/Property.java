@@ -76,6 +76,18 @@ public interface Property {
 
   boolean isHidden();
 
+  /**
+   * When true, the property's value is stored in a paired external bucket instead of inline in the primary
+   * record. The main record carries only a small TYPE_EXTERNAL pointer, so traversal-only queries that don't
+   * project this property never load its bytes. Best for vector embeddings, large strings, embedded JSON, and
+   * full-text payloads.
+   * <p>
+   * <b>Null semantics.</b> {@code set("field", null)} on an EXTERNAL property does NOT consume external bucket
+   * space: the serializer writes an inline TYPE_NULL byte and releases any pre-existing paired blob via the
+   * orphan-cleanup pass. {@code set(field, null)} and {@code remove(field)} are therefore equivalent in terms
+   * of paired-bucket storage; they differ only in whether the property header slot is retained (set-null
+   * keeps it, remove drops it). Reads return null in both cases.
+   */
   Property setExternal(boolean external);
 
   boolean isExternal();

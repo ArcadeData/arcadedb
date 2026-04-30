@@ -73,9 +73,7 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
         internalProp.setHidden((boolean) attrValue);
       } else if (attrName.equalsIgnoreCase("external")) {
         internalProp.setExternal((boolean) attrValue);
-      } else if (attrName.equalsIgnoreCase("compression") || attrName.equalsIgnoreCase("external_compression")) {
-        // CANONICAL NAME: 'compression' (mirrors AlterPropertyStatement). 'external_compression' is a legacy
-        // alias kept so existing scripts keep parsing; new DDL should use 'compression'.
+      } else if (attrName.equalsIgnoreCase("compression")) {
         internalProp.setCompression(String.valueOf(attrValue));
       } else if (attrName.equalsIgnoreCase("max")) {
         internalProp.setMax("" + attrValue);

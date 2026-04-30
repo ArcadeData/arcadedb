@@ -1021,11 +1021,16 @@ public class LocalDocumentType implements DocumentType {
       final LocalBucket external;
       if (schema.bucketMap.containsKey(extName)) {
         external = schema.bucketMap.get(extName);
-        // Refuse to adopt a bucket that is already registered as the primary bucket of some user type. A bucket
-        // freshly loaded from disk shows purpose=PRIMARY (transient field), so we cannot rely on purpose alone;
-        // bucketId2TypeMap is the authoritative source of "this bucket is a user type's primary bucket".
-        if (schema.getTypeByBucketId(external.getFileId()) != null
-            && external.getPurpose() != LocalBucket.Purpose.EXTERNAL_PROPERTY)
+        // Refuse to adopt a bucket that is already registered as the primary bucket of some user type.
+        // {@code bucketId2TypeMap} is the authoritative source of "this bucket is a user type's primary
+        // bucket": it is rebuilt from each type's {@code getBuckets(false)} list (primary buckets only;
+        // adopted external buckets are NOT in this map, they live in per-type externalBucketIdByPrimaryBucketId).
+        // We therefore do NOT consult {@link LocalBucket#getPurpose}: purpose is transient and reset to PRIMARY
+        // on load, and depending on it would create a fragile ordering requirement against
+        // restoreExternalBuckets() running first. {@code computeIfAbsent} above already short-circuits when
+        // this type's own ext bucket is already adopted, so any hit here means the candidate name belongs to
+        // a different type's primary bucket, full stop.
+        if (schema.getTypeByBucketId(external.getFileId()) != null)
           throw new SchemaException(
               "Cannot adopt bucket '" + extName + "' as the external-property bucket for type '" + name
                   + "': it is already a primary bucket of another user type. The paired external bucket is named"
@@ -1080,8 +1085,15 @@ public class LocalDocumentType implements DocumentType {
     // The TOCTOU window between count() == 0 and dropBucket() is closed when the caller honours the second
     // precondition (no active transaction). With the EXTERNAL flag off, no new code path will write into
     // these buckets; with no in-flight tx, no queued update can have a record waiting to flush either.
-    assert !((LocalDatabase) schema.getDatabase()).isTransactionActive() :
-        "reclaimEmptyExternalBuckets() must run with no active transaction; see javadoc precondition #2";
+    // Use an explicit throw instead of `assert`: production JVMs run without -ea, and a violation here can
+    // lose data (we'd drop a bucket that has a queued tx record about to flush into it). Same pattern as
+    // the hasExternalProperties() guard two lines above.
+    if (((LocalDatabase) schema.getDatabase()).isTransactionActive())
+      throw new IllegalStateException(
+          "reclaimEmptyExternalBuckets() requires no active transaction but one is open on database '"
+              + schema.getDatabase().getName() + "'. Queued record updates have not flushed yet, so the"
+              + " count() check could miss records about to land in the bucket and we'd drop it under them."
+              + " Commit (or rollback) the active transaction before calling reclaimEmptyExternalBuckets().");
     final List<Integer> toDrop = new ArrayList<>();
     for (final Map.Entry<Integer, Integer> entry : externalBucketIdByPrimaryBucketId.entrySet()) {
       final LocalBucket extBucket = schema.getBucketById(entry.getValue(), false);
@@ -1099,7 +1111,16 @@ public class LocalDocumentType implements DocumentType {
     schema.saveConfiguration();
   }
 
-  /** Re-applies EXTERNAL_PROPERTY purpose (transient on LocalBucket) and rebuilds the map from JSON at load time. */
+  /**
+   * Re-applies EXTERNAL_PROPERTY purpose (transient on {@link LocalBucket}) and rebuilds the map from JSON at
+   * load time. After processing the JSON-driven entries, runs a name-based heuristic sweep over this type's
+   * primary buckets: for any primary bucket whose paired '<primary>_ext' sibling exists in the schema's
+   * bucketMap but was missing from the JSON (corruption, partial migration, JSON edited by hand), adopt the
+   * sibling as the external bucket and tag its purpose. Without this fallback the {@code purpose} field would
+   * default to {@code PRIMARY}, the DML write guard ({@code LocalDatabase.createRecordNoLock}) would let users
+   * target the bucket directly, and an INSERT could corrupt internal payload bytes. Adoption is refused for
+   * any '_ext' bucket that bucketId2TypeMap already claims as another type's primary bucket.
+   */
   void restoreExternalBuckets(final Map<String, String> primaryNameToExternalName) {
     externalBucketIdByPrimaryBucketId.clear();
     for (final Map.Entry<String, String> entry : primaryNameToExternalName.entrySet()) {
@@ -1124,6 +1145,35 @@ public class LocalDocumentType implements DocumentType {
       }
       external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
       externalBucketIdByPrimaryBucketId.put(primary.getFileId(), external.getFileId());
+    }
+
+    // Heuristic recovery: for every primary bucket of this type that does NOT yet have a paired entry in
+    // externalBucketIdByPrimaryBucketId, look for '<primaryName>_ext' in bucketMap and adopt it. Defends
+    // against schema.json missing the externalBuckets key (corruption, migration from an older snapshot, or
+    // a hand-edit). Refuses to adopt if the candidate is already registered as another type's primary
+    // bucket (bucketId2TypeMap is authoritative; the field-level Purpose is transient and unreliable here).
+    for (final Bucket primaryBucket : buckets) {
+      if (externalBucketIdByPrimaryBucketId.containsKey(primaryBucket.getFileId()))
+        continue;
+      final String candidateName = primaryBucket.getName() + "_ext";
+      final LocalBucket candidate = schema.bucketMap.get(candidateName);
+      if (candidate == null)
+        continue;
+      if (schema.getTypeByBucketId(candidate.getFileId()) != null) {
+        // candidate is some other type's primary bucket; refuse to repurpose, just log so the operator sees it.
+        LogManager.instance().log(this, Level.WARNING,
+            "Heuristic recovery for type '%s': bucket '%s' looks like a paired external bucket by name but is"
+                + " already a primary bucket of another user type. Skipping adoption.",
+            null, name, candidateName);
+        continue;
+      }
+      candidate.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
+      externalBucketIdByPrimaryBucketId.put(primaryBucket.getFileId(), candidate.getFileId());
+      LogManager.instance().log(this, Level.WARNING,
+          "Heuristic recovery for type '%s': adopted bucket '%s' as the external-property bucket for primary"
+              + " '%s'. The schema.json was missing the matching externalBuckets entry; it will be re-saved on"
+              + " the next schema mutation.",
+          null, name, candidateName, primaryBucket.getName());
     }
   }
 

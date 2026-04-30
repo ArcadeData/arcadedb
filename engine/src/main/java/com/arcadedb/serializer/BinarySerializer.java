@@ -121,6 +121,7 @@ public class BinarySerializer {
       header.position(Binary.BYTE_SERIALIZED_SIZE);
       serializeProperties = false;
     }
+
     if (serializeProperties)
       return serializeProperties(database, document, header, context.getTemporaryBuffer2());
 
@@ -893,39 +894,50 @@ public class BinarySerializer {
 
       final Property propertyDef = documentType.getPropertyIfExists(propertyName);
       if (propertyDef != null && propertyDef.isExternal()) {
-        // Externalised property: write the value to the paired external bucket and put a TYPE_EXTERNAL marker (with
-        // the external RID) in the main record's content. The main record stays small and traversal-only reads never
-        // hit the external bucket. See LocalDocumentType.getExternalBucketIdFor.
-        final RID identity = record.getIdentity();
-        if (identity == null)
-          throw new SerializationException(
-              "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
-                  + "': record has no target bucket. The bucket layer must set a provisional identity before serialize.");
-        final int primaryBucketId = identity.getBucketId();
-        // Look up the external bucket via the type that ACTUALLY owns the primary bucket. This may differ from
-        // record.getType(): polymorphic scans (scanType POLYMORPHIC, MATCH, etc.) tag every record with the queried
-        // parent type even when the record physically lives in a subtype's bucket. Trusting documentType in that
-        // case would miss the subtype's external bucket map.
-        final LocalDocumentType ownerType = (LocalDocumentType) database.getSchema().getEmbedded().getTypeByBucketId(primaryBucketId);
-        final Integer extBucketId = (ownerType != null ? ownerType : (LocalDocumentType) documentType)
-            .getExternalBucketIdFor(primaryBucketId);
-        if (extBucketId == null)
-          throw new SerializationException(
-              "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
-                  + "': no external bucket is paired with primary bucket " + primaryBucketId);
+        // NULL is not externalised. set("field", null) is treated semantically the same as remove("field")
+        // for storage purposes: we write a TYPE_NULL byte INLINE in the main record and let the orphan-
+        // cleanup pass at the end of this method delete any pre-existing external blob (the property is
+        // intentionally NOT added to consumedExternalProperties below, so orphan cleanup runs). This keeps
+        // user mental model intuitive (null means "no payload") and avoids charging external-bucket space
+        // for null markers, which on a paired-bucket layout would otherwise force one external record per
+        // null-valued record.
+        if (value == null) {
+          content.putByte(BinaryTypes.TYPE_NULL);
+        } else {
+          // Externalised property: write the value to the paired external bucket and put a TYPE_EXTERNAL marker (with
+          // the external RID) in the main record's content. The main record stays small and traversal-only reads never
+          // hit the external bucket. See LocalDocumentType.getExternalBucketIdFor.
+          final RID identity = record.getIdentity();
+          if (identity == null)
+            throw new SerializationException(
+                "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
+                    + "': record has no target bucket. The bucket layer must set a provisional identity before serialize.");
+          final int primaryBucketId = identity.getBucketId();
+          // Look up the external bucket via the type that ACTUALLY owns the primary bucket. This may differ from
+          // record.getType(): polymorphic scans (scanType POLYMORPHIC, MATCH, etc.) tag every record with the queried
+          // parent type even when the record physically lives in a subtype's bucket. Trusting documentType in that
+          // case would miss the subtype's external bucket map.
+          final LocalDocumentType ownerType = (LocalDocumentType) database.getSchema().getEmbedded().getTypeByBucketId(primaryBucketId);
+          final Integer extBucketId = (ownerType != null ? ownerType : (LocalDocumentType) documentType)
+              .getExternalBucketIdFor(primaryBucketId);
+          if (extBucketId == null)
+            throw new SerializationException(
+                "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
+                    + "': no external bucket is paired with primary bucket " + primaryBucketId);
 
-        final RID existingExtRid = existingExternalRids.get(propertyName);
-        if (consumedExternalProperties != null && existingExtRid != null)
-          consumedExternalProperties.add(propertyName);
+          final RID existingExtRid = existingExternalRids.get(propertyName);
+          if (consumedExternalProperties != null && existingExtRid != null)
+            consumedExternalProperties.add(propertyName);
 
-        final ExternalWriteResult written = writeExternalPropertyValue((DatabaseInternal) database, extBucketId,
-            existingExtRid, type, value, propertyDef.getCompression());
+          final ExternalWriteResult written = writeExternalPropertyValue((DatabaseInternal) database, extBucketId,
+              existingExtRid, type, value, propertyDef.getCompression());
 
-        // The persisted type byte tells the reader which decoder to use. Bucket id and position are varints,
-        // mirroring TYPE_COMPRESSED_RID, so each pointer averages 3-7 bytes vs 12 fixed.
-        content.putByte(written.typeByte);
-        content.putNumber(written.rid.getBucketId());
-        content.putNumber(written.rid.getPosition());
+          // The persisted type byte tells the reader which decoder to use. Bucket id and position are varints,
+          // mirroring TYPE_COMPRESSED_RID, so each pointer averages 3-7 bytes vs 12 fixed.
+          content.putByte(written.typeByte);
+          content.putNumber(written.rid.getBucketId());
+          content.putNumber(written.rid.getPosition());
+        }
       } else {
         if (value instanceof String stringValue && type == BinaryTypes.TYPE_STRING) {
           final int id = dictionary.getIdByName(stringValue, false);
@@ -973,16 +985,18 @@ public class BinarySerializer {
   }
 
   /**
-   * Holder for {@link #writeExternalPropertyValue}: the bytes written and the type byte to put in the main
-   * record. Package-private along with the writer; tests reach it via {@code BinarySerializerTestHelper}.
+   * Holder for {@link #writeExternalPropertyValue}: the RID where the value blob lives and the type byte the
+   * caller should embed in the main record. Field order matches the conceptual weight (the RID is the bulk of
+   * the pointer; the type byte is the 1-byte discriminator). Package-private along with the writer; tests
+   * reach it via {@code BinarySerializerTestHelper}.
    */
   static final class ExternalWriteResult {
-    final byte typeByte;
     final RID  rid;
+    final byte typeByte;
 
-    ExternalWriteResult(final byte typeByte, final RID rid) {
-      this.typeByte = typeByte;
+    ExternalWriteResult(final RID rid, final byte typeByte) {
       this.rid = rid;
+      this.typeByte = typeByte;
     }
   }
 
@@ -1110,7 +1124,7 @@ public class BinarySerializer {
       externalBucket.updateRecord(rec, true);
       rid = existingExternalRid;
     }
-    return new ExternalWriteResult(typeByte, rid);
+    return new ExternalWriteResult(rid, typeByte);
   }
 
   public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,
