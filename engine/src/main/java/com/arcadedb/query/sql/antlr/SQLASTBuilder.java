@@ -5326,10 +5326,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
           // Direct JSON literal like {'x':0}
           body.contentJson = contentExpr.json;
         } else if (contentExpr.mathExpression instanceof final BaseExpression baseExpr) {
-          // BaseExpression wrapping an array literal, map literal, or input parameter
+          // BaseExpression wrapping a map literal, array literal, or input parameter
 
+          // Check for map literal {...} (parsed via baseExpression -> mapLit, issue #4033)
+          if (baseExpr.expression != null && baseExpr.expression.json != null) {
+            body.contentJson = baseExpr.expression.json;
+          }
           // Check if it contains an array literal
-          if (baseExpr.expression != null && baseExpr.expression.mathExpression instanceof final ArrayLiteralExpression arrayLit) {
+          else if (baseExpr.expression != null && baseExpr.expression.mathExpression instanceof final ArrayLiteralExpression arrayLit) {
 
             // For CREATE EDGE, if array has single element, extract it as contentJson
             // If array has multiple elements, store as contentArray (executor will validate)

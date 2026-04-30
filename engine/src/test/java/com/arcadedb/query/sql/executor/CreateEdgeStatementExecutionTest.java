@@ -348,6 +348,38 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  @DisplayName("createEdgeContentJsonObject - test Issue #4033")
+  void createEdgeContentJsonObject() {
+    database.getSchema().createVertexType("V4033", 1);
+    database.getSchema().createEdgeType("E4033", 1);
+
+    database.transaction(() -> {
+      final MutableVertex v1 = database.newVertex("V4033").save();
+      final MutableVertex v2 = database.newVertex("V4033").save();
+
+      final ResultSet rs = database.command("sql",
+          "CREATE EDGE E4033 FROM " + v1.getIdentity() + " TO " + v2.getIdentity()
+              + " CONTENT {\"label\":\"test_connection\", \"weight\":42, \"color\":\"red\"}");
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.isEdge()).isTrue();
+
+      final Edge edge = result.getEdge().get();
+      assertThat((String) edge.get("label")).isEqualTo("test_connection");
+      assertThat(edge.getInteger("weight")).isEqualTo(42);
+      assertThat((String) edge.get("color")).isEqualTo("red");
+    });
+
+    final ResultSet check = database.query("sql", "SELECT label, weight, color FROM E4033");
+    assertThat(check.hasNext()).isTrue();
+    final Result row = check.next();
+    assertThat((String) row.getProperty("label")).isEqualTo("test_connection");
+    assertThat((Integer) row.getProperty("weight")).isEqualTo(42);
+    assertThat((String) row.getProperty("color")).isEqualTo("red");
+    check.close();
+  }
+
+  @Test
   @DisplayName("createEdgeWithBucketTarget - test BUCKET clause in CREATE EDGE")
   void createEdgeWithBucketTarget() {
     database.getSchema().createVertexType("BucketV", 1);
