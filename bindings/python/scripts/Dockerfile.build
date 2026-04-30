@@ -169,6 +169,7 @@ COPY bindings/python/setup.py .
 COPY bindings/python/scripts/setup_jars.py ./scripts/
 COPY bindings/python/scripts/extract_version.py ./scripts/
 COPY bindings/python/scripts/write_version.py ./scripts/
+COPY bindings/python/scripts/verify_wheel_platform_tag.py ./scripts/
 COPY bindings/python/scripts/jar_exclusions.txt .
 COPY bindings/python/pyproject.toml ./
 COPY bindings/python/README.md ./
@@ -195,7 +196,17 @@ RUN echo "📌 Package name: ${PACKAGE_NAME}" && \
     echo "📦 JAR files and JRE copied"
 
 # Build the wheel
-# Extract PEP 440 version from pom.xml or use BUILD_VERSION if provided
+# Extract PEP 440 version from pom.xml or use BUILD_VERSION if provided.
+#
+# Wheel platform tag must match the highest glibc symbol version required by the
+# bundled JRE. amazoncorretto:25 (Amazon Linux 2023, glibc 2.34) ships a JRE
+# whose binaries link against GLIBC_2.34 at most; older glibc symbol versions
+# cannot be back-ported. Issue #4037: tagging as manylinux_2_35 prevents
+# installation on systems with glibc 2.34 (RHEL 9, Rocky 9, AlmaLinux 9, Amazon
+# Linux 2023, ...) even though the bundled JRE runs there fine. Keep the tag
+# aligned with the JRE's actual requirement; bump only when the JRE base image
+# moves to a newer glibc. The verify_wheel_platform_tag.py step below enforces
+# this invariant at build time.
 ARG BUILD_VERSION=""
 RUN if [ -n "${BUILD_VERSION}" ]; then \
         export ARCADEDB_VERSION="${BUILD_VERSION}"; \
@@ -212,9 +223,9 @@ RUN if [ -n "${BUILD_VERSION}" ]; then \
     sed -i 's|^description = .*|description = "'"${PACKAGE_DESCRIPTION}"'"|' pyproject.toml && \
     if echo "${TARGET_PLATFORM}" | grep -q '^linux-'; then \
         if [ "${TARGET_PLATFORM}" = "linux-x64" ]; then \
-            WHEEL_PLAT="manylinux_2_35_x86_64"; \
+            WHEEL_PLAT="manylinux_2_34_x86_64"; \
         elif [ "${TARGET_PLATFORM}" = "linux-arm64" ]; then \
-            WHEEL_PLAT="manylinux_2_35_aarch64"; \
+            WHEEL_PLAT="manylinux_2_34_aarch64"; \
         else \
             WHEEL_PLAT=""; \
         fi; \
@@ -232,6 +243,10 @@ RUN if [ -n "${BUILD_VERSION}" ]; then \
             echo "❌ Expected manylinux wheel (${WHEEL_PLAT}) not found"; \
             ls -lh /build/dist; \
             exit 1; \
+        fi; \
+        WHEEL_FILE=$(ls /build/dist/*.whl | head -n1); \
+        if [ -n "${WHEEL_FILE}" ]; then \
+            python3 scripts/verify_wheel_platform_tag.py "${WHEEL_FILE}" /build/jre || exit 1; \
         fi; \
     fi && \
     echo "✅ Wheel built successfully!" && \
