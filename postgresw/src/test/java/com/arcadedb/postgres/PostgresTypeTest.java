@@ -472,6 +472,27 @@ class PostgresTypeTest {
   }
 
   @Test
+  void deserializeTextOid25AsString() {
+    // OID 25 is PostgreSQL TEXT type - must be treated the same as VARCHAR
+    byte[] data = "hello world".getBytes();
+    Object result = PostgresType.deserialize(PostgresType.TEXT.code, 0, data);
+    assertThat(result).isEqualTo("hello world");
+  }
+
+  @Test
+  void deserializeBinaryOid25AsString() {
+    // OID 25 in binary format - Npgsql 10 sends strings as text OID in binary format
+    byte[] data = "Alice".getBytes();
+    Object result = PostgresType.deserialize(PostgresType.TEXT.code, 1, data);
+    assertThat(result).isEqualTo("Alice");
+  }
+
+  @Test
+  void textTypeCodeIs25() {
+    assertThat(PostgresType.TEXT.code).isEqualTo(25);
+  }
+
+  @Test
   void deserializeTextText() {
     // Issue #4036: Npgsql sends string parameters with TEXT (OID 25) by default.
     // Make sure the server accepts text format text deserialization.

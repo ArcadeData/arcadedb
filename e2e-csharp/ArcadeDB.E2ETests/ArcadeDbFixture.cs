@@ -56,10 +56,12 @@ public class ArcadeDbFixture : IAsyncLifetime
         await _container.StartAsync();
 
         var httpPort = _container.GetMappedPublicPort(2480);
-        using var http = new HttpClient();
-        http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
+        var authHeader = new AuthenticationHeaderValue(
             "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{RootUser}:{RootPassword}")));
-        using var response = await http.PostAsync(
+
+        using var http = new HttpClient();
+        http.DefaultRequestHeaders.Authorization = authHeader;
+        var response = await http.PostAsync(
             $"http://{_container.Hostname}:{httpPort}/api/v1/server",
             new StringContent(
                 "{\"command\":\"create database NpgsqlE2ETest\"}",
@@ -67,15 +69,19 @@ public class ArcadeDbFixture : IAsyncLifetime
                 "application/json"));
         response.EnsureSuccessStatusCode();
 
+        var createTypeResponse = await http.PostAsync(
+            $"http://{_container.Hostname}:{httpPort}/api/v1/command/NpgsqlE2ETest",
+            new StringContent(
+                "{\"language\":\"sql\",\"command\":\"CREATE DOCUMENT TYPE NpgsqlTest\"}",
+                Encoding.UTF8,
+                "application/json"));
+        createTypeResponse.EnsureSuccessStatusCode();
+
         var pgPort = _container.GetMappedPublicPort(5432);
         DataSource = NpgsqlDataSource.Create(
             $"Host={_container.Hostname};Port={pgPort};Database=NpgsqlE2ETest;" +
-            $"Username={RootUser};Password={RootPassword};SSL Mode=Disable");
-
-        await using var conn = await DataSource.OpenConnectionAsync();
-        await using var cmd = conn.CreateCommand();
-        cmd.CommandText = "CREATE DOCUMENT TYPE IF NOT EXISTS NpgsqlTest";
-        await cmd.ExecuteNonQueryAsync();
+            $"Username={RootUser};Password={RootPassword};SSL Mode=Disable;" +
+            "Server Compatibility Mode=NoTypeLoading;No Reset On Close=true");
     }
 
     public async Task DisposeAsync()
