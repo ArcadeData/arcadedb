@@ -159,6 +159,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     this.contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
     this.cachedRecordCount.set(0);
     this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
+    this.purpose = purposeForVersion(version);
   }
 
   /**
@@ -170,8 +171,19 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     this.maxRecordsInPage = maxRecordsInPageForVersion(version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
     this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
+    // Derive purpose from the bucket file version - the version itself is persisted in the on-disk file name
+    // (e.g. Doc_0_ext.<id>.<pageSize>.v1.bucket), so this assignment is reliable as soon as the LocalBucket
+    // is constructed - long before LocalDocumentType.restoreExternalBuckets() runs. That closes the gap where
+    // a write path firing between FileManager scan and schema-load completion would have seen purpose=PRIMARY
+    // by default and bypassed the user-DML guard. Schema JSON still maps primary->external by name (which is
+    // an orthogonal concern), but the write guard now no longer depends on schema-load ordering.
+    this.purpose = purposeForVersion(version);
     if (this.reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal())
       gatherPageStatistics();
+  }
+
+  private static Purpose purposeForVersion(final int version) {
+    return version >= EXTERNAL_BUCKET_VERSION ? Purpose.EXTERNAL_PROPERTY : Purpose.PRIMARY;
   }
 
   @Override

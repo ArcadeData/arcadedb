@@ -39,7 +39,12 @@ public abstract class AbstractProperty implements Property {
   protected              boolean             mandatory       = false;
   protected              boolean             notNull         = false;
   protected              boolean             hidden          = false;
-  protected              boolean             external        = false;
+  // Volatile because BinarySerializer.serializeProperties reads isExternal() outside the schema write lock
+  // on the per-record write hot path. The schema lock serialises mutations, but a reader that came in just
+  // before setExternal() flipped the bit must observe the latest value to route the value through the
+  // correct write path (inline vs paired bucket). volatile is the cheapest correctness fix and matches the
+  // memory-model role of {@link LocalDocumentType#ownExternalPropertyCount}'s atomic.
+  protected volatile     boolean             external        = false;
   // Compression policy for EXTERNAL property values: "none" | "fast" | "max" | "auto" (legacy alias: "lz4" -> "fast").
   // STORAGE CONVENTION: null means "none" (the default), so toJSON omits the key. Read access MUST go through
   // getCompression(), which materialises null as the literal string "none". LocalProperty.setCompression

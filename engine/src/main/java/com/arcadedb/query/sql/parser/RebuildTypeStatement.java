@@ -95,6 +95,7 @@ public class RebuildTypeStatement extends DDLStatement {
     if (implicitTx)
       db.begin();
 
+    final long startNanos = System.nanoTime();
     try {
       db.scanType(typeName.getStringValue(), polymorphic, rec -> {
         final MutableDocument m = (MutableDocument) rec.modify();
@@ -106,6 +107,13 @@ public class RebuildTypeStatement extends DDLStatement {
         if (implicitTx && count[0] % finalBatchSize == 0) {
           db.commit();
           committedBefore[0] = count[0];
+          // Per-batch progress line so an operator running REBUILD on a 100M-record type can observe forward
+          // motion via the server log instead of staring at a frozen prompt for many minutes. Logged at INFO
+          // so it's on by default but easy to silence by raising the level for this class.
+          final long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+          LogManager.instance().log(this, java.util.logging.Level.INFO,
+              "REBUILD TYPE '%s': %,d records re-serialised so far (last batch=%,d, elapsed=%,d ms)",
+              null, typeName.getStringValue(), count[0], finalBatchSize, elapsedMs);
           db.begin();
         }
         return true;
@@ -113,6 +121,10 @@ public class RebuildTypeStatement extends DDLStatement {
 
       if (implicitTx)
         db.commit();
+      final long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+      LogManager.instance().log(this, java.util.logging.Level.INFO,
+          "REBUILD TYPE '%s' completed: %,d records re-serialised in %,d ms",
+          null, typeName.getStringValue(), count[0], elapsedMs);
     } catch (Exception e) {
       if (implicitTx && db.isTransactionActive())
         db.rollback();

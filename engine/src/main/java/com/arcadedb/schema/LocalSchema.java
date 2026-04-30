@@ -391,6 +391,20 @@ public class LocalSchema implements Schema {
     if (bucketMap.containsKey(bucketName))
       throw new SchemaException("Cannot create bucket '" + bucketName + "' because already exists");
 
+    // Discoverability warning for the EXTERNAL property naming convention. The engine creates paired buckets
+    // as '<primary>_ext' with file-format version EXTERNAL_BUCKET_VERSION, so version == CURRENT_VERSION (0)
+    // here means a user-driven CREATE BUCKET. A user bucket named '*_ext' will collide if a primary bucket
+    // with the matching prefix later gains an EXTERNAL property; ensureExternalBucketFor() rejects with a
+    // SchemaException at that point. Surfacing the constraint at create time is much cheaper than debugging
+    // the later failure.
+    if (version == LocalBucket.CURRENT_VERSION && bucketName.endsWith("_ext"))
+      LogManager.instance().log(this, Level.WARNING,
+          "Bucket name '%s' ends with '_ext'. The engine reserves the '<primaryName>_ext' suffix for paired"
+              + " EXTERNAL-property buckets. If a primary bucket whose name + '_ext' equals this name later"
+              + " gains an EXTERNAL property, that property change will fail with a SchemaException. Consider"
+              + " renaming this bucket to avoid the collision.",
+          null, bucketName);
+
     final String dir = (parentDirectory == null || parentDirectory.isEmpty()) ? databasePath : parentDirectory;
 
     return recordFileChanges(() -> {

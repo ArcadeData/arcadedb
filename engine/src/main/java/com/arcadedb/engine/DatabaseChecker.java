@@ -358,6 +358,12 @@ public class DatabaseChecker {
 
     result.put("orphanedExternalRecords", (long) orphanedExternalRecords.size());
     result.put("orphanedExternalRecordsFixed", fixedCount);
+    // BinarySerializer.findExistingExternalRids() catches parse failures and returns an empty map, which
+    // means the caller skips orphan-cleanup for that record. Surfacing the JVM-cumulative count here lets the
+    // operator notice corruption-driven leak rates climbing without having to grep WARN logs. The counter is
+    // process-static, so re-runs of CHECK report the running total since startup.
+    result.put("externalRidScanFailuresCumulative",
+        com.arcadedb.serializer.BinarySerializer.getExternalRidScanFailures());
     ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
     if (fix)
       ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).addAll(orphanedExternalRecords);

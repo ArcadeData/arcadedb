@@ -71,6 +71,7 @@ import java.math.*;
 import java.time.*;
 import java.time.temporal.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 /**
@@ -88,6 +89,20 @@ public class BinarySerializer {
 
   // Cached WKT writer for fast Point serialization (avoid recreating writer for each Point)
   private static volatile ShapeWriter cachedWktWriter;
+
+  /**
+   * Process-cumulative count of records whose OLD buffer could not be parsed by
+   * {@link #findExistingExternalRids}. Each parse failure means the record's external blobs (if any) were
+   * NOT discovered and could be left as orphans in the paired bucket. CHECK DATABASE surfaces this counter
+   * so an operator can see corruption-driven leaks accumulating without waiting for the next bucket scan.
+   * Static so the value survives instance churn and tracks the JVM lifetime.
+   */
+  private static final AtomicLong externalRidScanFailures = new AtomicLong(0);
+
+  /** Returns the JVM-cumulative count of {@link #findExistingExternalRids} parse failures since process start. */
+  public static long getExternalRidScanFailures() {
+    return externalRidScanFailures.get();
+  }
 
   public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
@@ -1096,8 +1111,12 @@ public class BinarySerializer {
     blob.putByte(valueType);
     if (isExternalCompressedType(typeByte)) {
       blob.putUnsignedNumber(uncompressedSize);
-      // putByteArray writes the raw bytes without a length prefix; the compressed payload runs to end-of-record.
-      blob.putByteArray(compressedPayload);
+      // Length-prefixed payload (Binary.putBytes writes a varint length followed by the bytes). The earlier
+      // version used putByteArray and reconstructed the length from buffer.size() - position(), which tied
+      // the format to "compressed bytes fill the rest of the record". Storing the length explicitly costs
+      // 1-4 bytes per record and lets future versions append fields (checksum, footer, etc.) without
+      // requiring a one-shot data migration on every external bucket.
+      blob.putBytes(compressedPayload);
     } else {
       blob.append(rawValueBytes);
     }
@@ -1158,9 +1177,9 @@ public class BinarySerializer {
       return deserializeValue(database, buffer, valueType, embeddedModifier);
 
     final int uncompressedSize = (int) buffer.getUnsignedNumber();
-    final int compressedLen = buffer.size() - buffer.position();
-    final byte[] compressedBytes = new byte[compressedLen];
-    System.arraycopy(buffer.getContent(), buffer.position(), compressedBytes, 0, compressedLen);
+    // Length-prefixed payload (Binary.getBytes reads varint length + the bytes). Trailing space (if any) is
+    // ignored, leaving the format extensible to a future footer/checksum without a migration.
+    final byte[] compressedBytes = buffer.getBytes();
     final byte[] decompressed = CompressionFactory.getLZ4().decompress(compressedBytes, uncompressedSize);
     return deserializeValue(database, new Binary(decompressed), valueType, embeddedModifier);
   }
@@ -1169,17 +1188,29 @@ public class BinarySerializer {
    * Reused by cascade-delete and the orphan-cleanup-on-update path inside {@link #serializeProperties}: scans
    * the OLD buffer for TYPE_EXTERNAL pointers, keyed by property name.
    * <p>
-   * <b>Do NOT add a {@code hasExternalProperties()} early-out here.</b> The
-   * {@link #serializeProperties} caller invokes this during the EXTERNAL→inline migration (REBUILD TYPE after
-   * {@code setExternal(false)}), when the type's current schema reports zero EXTERNAL properties but the OLD
-   * record buffer still carries TYPE_EXTERNAL pointers that must be discovered so the paired blobs can be
-   * deleted as orphans. The schema flag and the buffer contents are decoupled; the buffer is ground truth.
+   * <b>Gating check: {@code hasExternalBuckets()}, not {@code hasExternalProperties()}.</b>
+   * The two are different and the distinction is load-bearing:
+   * <ul>
+   *   <li>{@code hasExternalProperties()} reflects the CURRENT schema (count of properties currently flagged
+   *       EXTERNAL). It flips to false the instant {@code setExternal(false)} commits, before any record has
+   *       been re-serialised. Using it as the gate would skip orphan-cleanup during the EXTERNAL→inline
+   *       migration window and leak external blobs.</li>
+   *   <li>{@code hasExternalBuckets()} reflects the lifetime of the paired-bucket mapping
+   *       ({@code externalBucketIdByPrimaryBucketId} non-empty). It stays true through the entire migration
+   *       window: schema flag flipped → REBUILD TYPE re-serialises every record → orphan-cleanup empties the
+   *       paired buckets → {@code reclaimEmptyExternalBuckets()} drops them and clears the map. Only at that
+   *       point does it return false, and by then no record can carry a stale TYPE_EXTERNAL pointer.</li>
+   * </ul>
+   * Types that have never used the EXTERNAL feature have an empty map, so this fast-exit pays for itself on
+   * the (very common) update hot path of plain-vanilla types.
    */
   public Map<String, RID> findExistingExternalRids(final Database database, final Document record) {
     final RID identity = record.getIdentity();
     if (identity == null)
       return Collections.emptyMap();
     if (!(record instanceof BaseDocument))
+      return Collections.emptyMap();
+    if (!(record.getType() instanceof LocalDocumentType ldt) || !ldt.hasExternalBuckets())
       return Collections.emptyMap();
     final Binary buf = ((BaseRecord) record).getBuffer();
     if (buf == null)
@@ -1223,10 +1254,14 @@ public class BinarySerializer {
       }
       return result == null ? Collections.emptyMap() : result;
     } catch (Exception e) {
+      // Bump the JVM-cumulative counter so CHECK DATABASE surfaces the leak rate without waiting for the
+      // next paired-bucket scan. The orphan blob (if any) will eventually be caught by the orphan scan,
+      // but counting failures gives an early signal that something is corrupting record buffers.
+      externalRidScanFailures.incrementAndGet();
       LogManager.instance().log(this, Level.WARNING,
           "Could not parse old buffer to recover external RIDs for record %s: %s. External records linked to this "
-              + "record may be orphaned in the paired bucket.",
-          e, identity, e.getMessage());
+              + "record may be orphaned in the paired bucket. (cumulative scan failures since process start: %d)",
+          e, identity, e.getMessage(), externalRidScanFailures.get());
       return Collections.emptyMap();
     } finally {
       buf.position(savedPosition);
