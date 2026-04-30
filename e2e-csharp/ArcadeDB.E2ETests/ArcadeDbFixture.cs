@@ -61,7 +61,7 @@ public class ArcadeDbFixture : IAsyncLifetime
 
         using var http = new HttpClient();
         http.DefaultRequestHeaders.Authorization = authHeader;
-        var response = await http.PostAsync(
+        using var response = await http.PostAsync(
             $"http://{_container.Hostname}:{httpPort}/api/v1/server",
             new StringContent(
                 "{\"command\":\"create database NpgsqlE2ETest\"}",
@@ -69,7 +69,7 @@ public class ArcadeDbFixture : IAsyncLifetime
                 "application/json"));
         response.EnsureSuccessStatusCode();
 
-        var createTypeResponse = await http.PostAsync(
+        using var createTypeResponse = await http.PostAsync(
             $"http://{_container.Hostname}:{httpPort}/api/v1/command/NpgsqlE2ETest",
             new StringContent(
                 "{\"language\":\"sql\",\"command\":\"CREATE DOCUMENT TYPE NpgsqlTest\"}",

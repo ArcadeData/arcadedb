@@ -25,7 +25,6 @@ import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.DateUtils;
 
 import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
@@ -92,7 +91,6 @@ public enum PostgresType {
    * Parses an array string representation into an ArrayList.
    * Handles PostgreSQL array format like '{1,2,3}' or '{\"value1\",\"value2\"}'
    */
-  @SuppressWarnings("unchecked")
   private static <T> ArrayList<T> parseArrayFromString(String arrayStr, Function<String, T> elementParser) {
     if (arrayStr == null || arrayStr.isEmpty())
       return new ArrayList<>();
