@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.Schema;
 
@@ -60,6 +61,10 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
           r.setProperty("name", bucket.getName());
           r.setProperty("fileId", bucket.getFileId());
           r.setProperty("records", context.getDatabase().countBucket(bucketName));
+          // The bucket's purpose lets tooling (Studio etc.) hide or label internal buckets like paired
+          // external-property buckets. Filter via `WHERE purpose = 'PRIMARY'` to see only user-targetable ones.
+          if (bucket instanceof LocalBucket lb)
+            r.setProperty("purpose", lb.getPurpose().name());
 
           context.setVariable("current", r);
         }

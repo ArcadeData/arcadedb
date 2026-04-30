@@ -39,7 +39,7 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
-public abstract class BaseDocument extends BaseRecord implements Document, Serializable, Externalizable {
+public abstract class BaseDocument extends BaseRecord implements Document, DocumentInternal, Serializable, Externalizable {
   protected final DocumentType type;
   protected       int          propertiesStartingPosition = 1;
 
@@ -155,6 +155,11 @@ public abstract class BaseDocument extends BaseRecord implements Document, Seria
 
   public DocumentType getType() {
     return type;
+  }
+
+  @Override
+  public int getPropertiesStartingPosition() {
+    return propertiesStartingPosition;
   }
 
   public String getTypeName() {

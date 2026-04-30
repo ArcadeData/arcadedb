@@ -34,7 +34,9 @@ import org.antlr.v4.runtime.tree.TerminalNode;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -5728,6 +5730,37 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
+    return stmt;
+  }
+
+  /**
+   * Visit REBUILD TYPE statement.
+   * Grammar: REBUILD TYPE typeName [POLYMORPHIC] [WITH key = expression (, key = expression)*]
+   */
+  @Override
+  public RebuildTypeStatement visitRebuildTypeStmt(final SQLParser.RebuildTypeStmtContext ctx) {
+    final RebuildTypeStatement stmt = new RebuildTypeStatement(-1);
+    final SQLParser.RebuildTypeBodyContext bodyCtx = ctx.rebuildTypeBody();
+    // Grammar uses explicit labels (typeName=, settingKey+=, settingValue+=) so a future grammar tweak that
+    // introduces another identifier slot won't silently shift index-based bindings here.
+    stmt.typeName = (Identifier) visit(bodyCtx.typeName);
+    stmt.polymorphic = bodyCtx.POLYMORPHIC() != null;
+    if (bodyCtx.WITH() != null) {
+      // Track which settingKey strings we've already seen so a duplicate (e.g. WITH batchSize=1, batchSize=2)
+      // doesn't silently shadow the first via Map.put. Bare Expression equality on the key would only catch
+      // exact AST matches; using the lowercased identifier string also catches case variants.
+      final Set<String> seenKeys = new HashSet<>();
+      for (int i = 0; i < bodyCtx.settingValue.size(); i++) {
+        final Identifier keyId = (Identifier) visit(bodyCtx.settingKey.get(i));
+        final String keyName = keyId.getStringValue().toLowerCase(Locale.ENGLISH);
+        if (!seenKeys.add(keyName))
+          throw new CommandSQLParsingException(
+              "REBUILD TYPE WITH clause has duplicate setting '" + keyId.getStringValue()
+                  + "'. Each setting must appear at most once.");
+        final Expression value = (Expression) visit(bodyCtx.settingValue.get(i));
+        stmt.settings.put(new Expression(keyId), value);
+      }
+    }
     return stmt;
   }
 

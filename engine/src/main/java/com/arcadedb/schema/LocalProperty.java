@@ -123,6 +123,55 @@ public class LocalProperty extends AbstractProperty {
   }
 
   @Override
+  public Property setExternal(final boolean external) {
+    final boolean changed = !Objects.equals(this.external, external);
+    if (changed) {
+      final LocalDocumentType localOwner = (LocalDocumentType) owner;
+      if (external) {
+        // ORDERING IS LOAD-BEARING: paired buckets must exist BEFORE any reader can observe
+        // ownExternalPropertyCount > 0. hasExternalProperties() short-circuits on the counter, and the
+        // serializer's write path uses that to decide whether to route a value through the external bucket.
+        // If we incremented first and another thread saw count > 0 before ensureExternalBucketsRecursive()
+        // ran, it could try to write into a bucket that doesn't exist yet. Schema mutations are typically
+        // serialised by the schema lock, but this ordering keeps the property setter safe even without it.
+        localOwner.ensureExternalBucketsRecursive();
+        this.external = external;
+        localOwner.ownExternalPropertyCount.incrementAndGet();
+      } else {
+        // Flip the flag first so concurrent serialisations stop writing externally; the counter is the gate
+        // hasExternalProperties() consults, so decrement last to keep the "count > 0 implies bucket exists"
+        // invariant directional.
+        this.external = external;
+        localOwner.ownExternalPropertyCount.decrementAndGet();
+      }
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  @Override
+  public Property setCompression(final String compression) {
+    final String normalized;
+    if (compression == null || compression.isEmpty() || "none".equalsIgnoreCase(compression))
+      normalized = null;
+    else if ("fast".equalsIgnoreCase(compression) || "max".equalsIgnoreCase(compression)
+        || "auto".equalsIgnoreCase(compression))
+      normalized = compression.toLowerCase(Locale.ENGLISH);
+    else if ("lz4".equalsIgnoreCase(compression))
+      // Backwards alias: "lz4" was the original name for the fast tier; map it to "fast" so existing schema
+      // configs keep working without touching the schema.json on disk.
+      normalized = "fast";
+    else
+      throw new IllegalArgumentException(
+          "Unsupported compression '" + compression + "' (supported: none, fast, max, auto)");
+    if (!Objects.equals(this.compression, normalized)) {
+      this.compression = normalized;
+      owner.getSchema().getEmbedded().saveConfiguration();
+    }
+    return this;
+  }
+
+  @Override
   public Property setMax(final String max) {
     final boolean changed = !Objects.equals(this.max, max);
     if (changed) {

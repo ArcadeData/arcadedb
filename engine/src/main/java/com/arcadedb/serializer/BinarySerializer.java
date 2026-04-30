@@ -20,6 +20,8 @@ package com.arcadedb.serializer;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.compression.CompressionFactory;
+import com.arcadedb.compression.LZ4Compression;
 import com.arcadedb.database.BaseRecord;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DataEncryption;
@@ -30,11 +32,14 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.EmbeddedModifier;
 import com.arcadedb.database.EmbeddedModifierProperty;
+import com.arcadedb.database.ExternalValueRecord;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Dictionary;
+import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeSegment;
@@ -45,7 +50,10 @@ import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.function.sql.geo.GeoUtils;
+import com.arcadedb.database.BaseDocument;
+import com.arcadedb.database.DocumentInternal;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
@@ -63,6 +71,7 @@ import java.math.*;
 import java.time.*;
 import java.time.temporal.*;
 import java.util.*;
+import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 /**
@@ -81,6 +90,20 @@ public class BinarySerializer {
   // Cached WKT writer for fast Point serialization (avoid recreating writer for each Point)
   private static volatile ShapeWriter cachedWktWriter;
 
+  /**
+   * Process-cumulative count of records whose OLD buffer could not be parsed by
+   * {@link #findExistingExternalRids}. Each parse failure means the record's external blobs (if any) were
+   * NOT discovered and could be left as orphans in the paired bucket. CHECK DATABASE surfaces this counter
+   * so an operator can see corruption-driven leaks accumulating without waiting for the next bucket scan.
+   * Static so the value survives instance churn and tracks the JVM lifetime.
+   */
+  private static final AtomicLong externalRidScanFailures = new AtomicLong(0);
+
+  /** Returns the JVM-cumulative count of {@link #findExistingExternalRids} parse failures since process start. */
+  public static long getExternalRidScanFailures() {
+    return externalRidScanFailures.get();
+  }
+
   public BinarySerializer(final ContextConfiguration configuration) throws ClassNotFoundException {
     setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
     setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
@@ -92,6 +115,7 @@ public class BinarySerializer {
       case Vertex.RECORD_TYPE -> serializeVertex(database, (MutableVertex) record);
       case Edge.RECORD_TYPE -> serializeEdge(database, (MutableEdge) record);
       case EdgeSegment.RECORD_TYPE -> serializeEdgeContainer((EdgeSegment) record);
+      case ExternalValueRecord.RECORD_TYPE -> ((ExternalValueRecord) record).getContent();
       default -> throw new IllegalArgumentException("Cannot serialize a record of type=" + record.getRecordType());
     };
   }
@@ -267,7 +291,15 @@ public class BinarySerializer {
           final EmbeddedModifierProperty propertyModifier =
               embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), propertyName) : null;
 
-          final Object propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+          final Object propertyValue;
+          if (isExternalType(type)) {
+            final int extBucketId = (int) buffer.getNumber();
+            final long extPosition = buffer.getNumber();
+            propertyValue = readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier,
+                isExternalCompressedType(type));
+          } else {
+            propertyValue = deserializeValue(database, buffer, type, propertyModifier);
+          }
 
           values.put(propertyName, propertyValue);
         } catch (Exception e) {
@@ -340,6 +372,13 @@ public class BinarySerializer {
 
         final EmbeddedModifierProperty propertyModifier =
             embeddedModifier != null ? new EmbeddedModifierProperty(embeddedModifier.getOwner(), fieldName) : null;
+
+        if (isExternalType(type)) {
+          final int extBucketId = (int) buffer.getNumber();
+          final long extPosition = buffer.getNumber();
+          return readExternalValue((DatabaseInternal) database, extBucketId, extPosition, propertyModifier,
+              isExternalCompressedType(type));
+        }
 
         return deserializeValue(database, buffer, type, propertyModifier);
       }
@@ -822,6 +861,12 @@ public class BinarySerializer {
     final Map<String, Object> properties = record.propertiesAsMap();
     final Dictionary dictionary = database.getSchema().getDictionary();
     final DocumentType documentType = record.getType();
+    // For records being UPDATED, look up existing external RIDs from the old buffer so we can update the external bucket
+    // record in place rather than allocating a new one. New records (no identity yet) get an empty map.
+    final Map<String, RID> existingExternalRids = findExistingExternalRids(database, record);
+    // Track which existing external RIDs we re-used (kept) so we can delete the rest as orphans below. An entry is
+    // orphaned when the property is no longer EXTERNAL (toggled off via ALTER), was renamed, or was dropped entirely.
+    final Set<String> consumedExternalProperties = existingExternalRids.isEmpty() ? null : new HashSet<>();
 
     // Pre-resolve types so the property count matches what is actually written.
     // Skipping an invalid property after writing its nameId would desync the header on read.
@@ -862,17 +907,65 @@ public class BinarySerializer {
 
       final int startContentPosition = content.position();
 
-      if (value instanceof String stringValue && type == BinaryTypes.TYPE_STRING) {
-        final int id = dictionary.getIdByName(stringValue, false);
-        if (id > -1) {
-          // WRITE THE COMPRESSED STRING
-          type = BinaryTypes.TYPE_COMPRESSED_STRING;
-          value = id;
-        }
-      }
+      final Property propertyDef = documentType.getPropertyIfExists(propertyName);
+      if (propertyDef != null && propertyDef.isExternal()) {
+        // NULL is not externalised. set("field", null) is treated semantically the same as remove("field")
+        // for storage purposes: we write a TYPE_NULL byte INLINE in the main record and let the orphan-
+        // cleanup pass at the end of this method delete any pre-existing external blob (the property is
+        // intentionally NOT added to consumedExternalProperties below, so orphan cleanup runs). This keeps
+        // user mental model intuitive (null means "no payload") and avoids charging external-bucket space
+        // for null markers, which on a paired-bucket layout would otherwise force one external record per
+        // null-valued record.
+        if (value == null) {
+          content.putByte(BinaryTypes.TYPE_NULL);
+        } else {
+          // Externalised property: write the value to the paired external bucket and put a TYPE_EXTERNAL marker (with
+          // the external RID) in the main record's content. The main record stays small and traversal-only reads never
+          // hit the external bucket. See LocalDocumentType.getExternalBucketIdFor.
+          final RID identity = record.getIdentity();
+          if (identity == null)
+            throw new SerializationException(
+                "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
+                    + "': record has no target bucket. The bucket layer must set a provisional identity before serialize.");
+          final int primaryBucketId = identity.getBucketId();
+          // Look up the external bucket via the type that ACTUALLY owns the primary bucket. This may differ from
+          // record.getType(): polymorphic scans (scanType POLYMORPHIC, MATCH, etc.) tag every record with the queried
+          // parent type even when the record physically lives in a subtype's bucket. Trusting documentType in that
+          // case would miss the subtype's external bucket map.
+          final LocalDocumentType ownerType = (LocalDocumentType) database.getSchema().getEmbedded().getTypeByBucketId(primaryBucketId);
+          final Integer extBucketId = (ownerType != null ? ownerType : (LocalDocumentType) documentType)
+              .getExternalBucketIdFor(primaryBucketId);
+          if (extBucketId == null)
+            throw new SerializationException(
+                "Cannot serialize EXTERNAL property '" + propertyName + "' on type '" + documentType.getName()
+                    + "': no external bucket is paired with primary bucket " + primaryBucketId);
 
-      content.putByte(type);
-      serializeValue(database, content, type, value);
+          final RID existingExtRid = existingExternalRids.get(propertyName);
+          if (consumedExternalProperties != null && existingExtRid != null)
+            consumedExternalProperties.add(propertyName);
+
+          final ExternalWriteResult written = writeExternalPropertyValue((DatabaseInternal) database, extBucketId,
+              existingExtRid, type, value, propertyDef.getCompression());
+
+          // The persisted type byte tells the reader which decoder to use. Bucket id and position are varints,
+          // mirroring TYPE_COMPRESSED_RID, so each pointer averages 3-7 bytes vs 12 fixed.
+          content.putByte(written.typeByte);
+          content.putNumber(written.rid.getBucketId());
+          content.putNumber(written.rid.getPosition());
+        }
+      } else {
+        if (value instanceof String stringValue && type == BinaryTypes.TYPE_STRING) {
+          final int id = dictionary.getIdByName(stringValue, false);
+          if (id > -1) {
+            // WRITE THE COMPRESSED STRING
+            type = BinaryTypes.TYPE_COMPRESSED_STRING;
+            value = id;
+          }
+        }
+
+        content.putByte(type);
+        serializeValue(database, content, type, value);
+      }
 
       // WRITE PROPERTY CONTENT POSITION
       header.putUnsignedNumber(startContentPosition);
@@ -887,7 +980,292 @@ public class BinarySerializer {
 
     header.append(content);
     header.flip();
+
+    // Orphan cleanup: any existing external RID that was NOT re-used (property no longer EXTERNAL, was renamed, or was
+    // dropped) must be deleted from the external bucket so we don't leak storage. Same transaction as the primary write.
+    if (consumedExternalProperties != null) {
+      for (final Map.Entry<String, RID> entry : existingExternalRids.entrySet()) {
+        if (consumedExternalProperties.contains(entry.getKey()))
+          continue;
+        final RID orphanRid = entry.getValue();
+        final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(orphanRid.getBucketId(), false);
+        if (externalBucket != null) {
+          externalBucket.deleteRecord(orphanRid);
+          ((DatabaseInternal) database).getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), -1);
+        }
+      }
+    }
+
     return header;
+  }
+
+  /**
+   * Holder for {@link #writeExternalPropertyValue}: the RID where the value blob lives and the type byte the
+   * caller should embed in the main record. Field order matches the conceptual weight (the RID is the bulk of
+   * the pointer; the type byte is the 1-byte discriminator). Package-private along with the writer; tests
+   * reach it via {@code BinarySerializerTestHelper}.
+   */
+  static final class ExternalWriteResult {
+    final RID  rid;
+    final byte typeByte;
+
+    ExternalWriteResult(final RID rid, final byte typeByte) {
+      this.rid = rid;
+      this.typeByte = typeByte;
+    }
+  }
+
+  /** True for any of TYPE_EXTERNAL, TYPE_EXTERNAL_COMPRESSED_FAST, TYPE_EXTERNAL_COMPRESSED_MAX. */
+  private static boolean isExternalType(final byte type) {
+    return type == BinaryTypes.TYPE_EXTERNAL
+        || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_FAST
+        || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_MAX;
+  }
+
+  /**
+   * True only for the compressed external types. LZ4 fast and LZ4 HC share the same byte format, so the read
+   * path needs only the compressed/raw distinction; both compressed types decode through the same
+   * {@code LZ4Compression.decompress} call.
+   */
+  private static boolean isExternalCompressedType(final byte type) {
+    return type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_FAST
+        || type == BinaryTypes.TYPE_EXTERNAL_COMPRESSED_MAX;
+  }
+
+  /**
+   * Serialises an EXTERNAL property value per the property's compression policy, writes the resulting blob to
+   * the paired external bucket, and returns the type byte the caller should put in the main record.
+   * <p>
+   * Policy values:
+   * <ul>
+   *   <li>{@code none} (or null/empty) - store raw, type byte = TYPE_EXTERNAL.</li>
+   *   <li>{@code fast} - LZ4 fast encoder, type byte = TYPE_EXTERNAL_COMPRESSED_FAST.</li>
+   *   <li>{@code max}  - LZ4 HC encoder (slower compress, ~10pp smaller), type byte = TYPE_EXTERNAL_COMPRESSED_MAX.</li>
+   *   <li>{@code auto} - try LZ4 fast; keep only when it saves more than 10% of bytes, otherwise store raw.</li>
+   * </ul>
+   * The decision is per-record, so a single property may mix compressed and uncompressed records freely.
+   * Made package-private; tests reach it through {@code BinarySerializerTestHelper}.
+   */
+  ExternalWriteResult writeExternalPropertyValue(final DatabaseInternal database, final int externalBucketId,
+      final RID existingExternalRid, final byte valueType, final Object value, final String compressionPolicy) {
+    if (existingExternalRid != null && existingExternalRid.getBucketId() != externalBucketId)
+      throw new SerializationException(
+          "Existing external RID " + existingExternalRid + " does not match the paired external bucket id "
+              + externalBucketId + " for this record. The schema's external bucket mapping is inconsistent.");
+
+    // The "lz4" legacy alias is normalised to "fast" by LocalProperty.setCompression(), so by the time the
+    // policy reaches us it's already one of: null, "none", "fast", "max", "auto". No second alias check.
+    final boolean fastMode = "fast".equalsIgnoreCase(compressionPolicy);
+    final boolean maxMode = "max".equalsIgnoreCase(compressionPolicy);
+    final boolean autoMode = "auto".equalsIgnoreCase(compressionPolicy);
+    final boolean tryCompress = fastMode || maxMode || autoMode;
+
+    final Binary blob = new Binary();
+
+    if (!tryCompress) {
+      // Fast path (no compression policy): serialise straight into the blob. Avoids the extra Binary buffer +
+      // toByteArray() roundtrip the compressed path needs. This is the dense-vector default (compression is a
+      // loss for embeddings) and the throughput-critical case for write-heavy workloads.
+      blob.putByte(ExternalValueRecord.RECORD_TYPE);
+      blob.putByte(valueType);
+      serializeValue(database, blob, valueType, value);
+      blob.flip();
+      return finalizeExternalWrite(database, externalBucketId, existingExternalRid, blob, BinaryTypes.TYPE_EXTERNAL);
+    }
+
+    // Compressed path: we need the raw bytes both to compress and to fall back on auto-mode no-win, so this is
+    // the one case where the intermediate Binary is unavoidable.
+    //
+    // AUTO-MODE OVERHEAD (accepted, not optimised). When auto-mode picks the no-win branch the work done is:
+    //   1. serializeValue once into rawValueBytes      (always paid)
+    //   2. rawValueBytes.toByteArray() byte[] copy     (paid even when we end up not keeping the compressed form)
+    //   3. lz4.compress() call                          (CPU spent for nothing)
+    //   4. blob.append(rawValueBytes) byte copy         (effectively a third copy of the raw bytes)
+    // versus the non-compress fast path's single serialise-straight-into-blob. The serialise itself runs once,
+    // not twice; the cost is the extra byte[] copy + the discarded compress call. For workloads that actually
+    // tip into the no-win branch routinely (e.g. dense float32 embeddings), use {@code none} explicitly. Auto
+    // is correct for mixed workloads where most records benefit and the throughput hit on the minority is
+    // acceptable. We do not memoise the compressor output across calls because it is per-record state.
+    final Binary rawValueBytes = new Binary();
+    serializeValue(database, rawValueBytes, valueType, value);
+    rawValueBytes.flip();
+
+    byte typeByte = BinaryTypes.TYPE_EXTERNAL;
+    byte[] compressedPayload = null;
+    int uncompressedSize = 0;
+
+    if (rawValueBytes.size() > 0) {
+      final byte[] raw = rawValueBytes.toByteArray();
+      final LZ4Compression lz4 = CompressionFactory.getLZ4();
+      final byte[] compressed = maxMode ? lz4.compressMax(raw) : lz4.compress(raw);
+      // In auto mode skip compression unless it saves >10%. In fast/max mode always keep the compressed form
+      // (the user explicitly asked to compress, even if a particular record happens not to gain much).
+      if (!autoMode || compressed.length < raw.length * 0.9) {
+        typeByte = maxMode ? BinaryTypes.TYPE_EXTERNAL_COMPRESSED_MAX : BinaryTypes.TYPE_EXTERNAL_COMPRESSED_FAST;
+        compressedPayload = compressed;
+        uncompressedSize = raw.length;
+      }
+    }
+
+    blob.putByte(ExternalValueRecord.RECORD_TYPE);
+    blob.putByte(valueType);
+    if (isExternalCompressedType(typeByte)) {
+      blob.putUnsignedNumber(uncompressedSize);
+      // Length-prefixed payload (Binary.putBytes writes a varint length followed by the bytes). The earlier
+      // version used putByteArray and reconstructed the length from buffer.size() - position(), which tied
+      // the format to "compressed bytes fill the rest of the record". Storing the length explicitly costs
+      // 1-4 bytes per record and lets future versions append fields (checksum, footer, etc.) without
+      // requiring a one-shot data migration on every external bucket.
+      blob.putBytes(compressedPayload);
+    } else {
+      blob.append(rawValueBytes);
+    }
+    blob.flip();
+    return finalizeExternalWrite(database, externalBucketId, existingExternalRid, blob, typeByte);
+  }
+
+  /**
+   * Inserts or updates the given blob in the paired external bucket and returns the type byte + RID for the
+   * caller to embed in the main record. Extracted from {@link #writeExternalPropertyValue} to keep the two
+   * write paths (raw / compressed) short and to avoid duplicating the bucket-side accounting.
+   */
+  private ExternalWriteResult finalizeExternalWrite(final DatabaseInternal database, final int externalBucketId,
+      final RID existingExternalRid, final Binary blob, final byte typeByte) {
+    final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
+    final RID rid;
+    if (existingExternalRid == null) {
+      final ExternalValueRecord rec = new ExternalValueRecord(database, null, blob);
+      rid = externalBucket.createRecord(rec, true);
+      database.getTransaction().updateBucketRecordDelta(externalBucket.getFileId(), +1);
+    } else {
+      // Identity already passed to the constructor (BaseRecord stores it). No need to call setIdentity again.
+      final ExternalValueRecord rec = new ExternalValueRecord(database, existingExternalRid, blob);
+      externalBucket.updateRecord(rec, true);
+      rid = existingExternalRid;
+    }
+    return new ExternalWriteResult(rid, typeByte);
+  }
+
+  public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,
+      final EmbeddedModifier embeddedModifier) {
+    return readExternalValue(database, externalBucketId, position, embeddedModifier, false);
+  }
+
+  /**
+   * Reads the value blob at the given external RID. When {@code compressed} is true, the blob's value-bytes are
+   * LZ4-compressed and prefixed by an uncompressed-size varint. The compression flag is supplied by the caller -
+   * usually derived from the main record's type byte. LZ4 fast and LZ4 HC share the same byte format, so this
+   * method does not need to know which encoder produced the bytes.
+   */
+  public Object readExternalValue(final DatabaseInternal database, final int externalBucketId, final long position,
+      final EmbeddedModifier embeddedModifier, final boolean compressed) {
+    final LocalBucket externalBucket = database.getSchema().getEmbedded().getBucketById(externalBucketId);
+    if (externalBucket == null)
+      // Typical cause: the paired external bucket was created on a tiered path (configured via
+      // arcadedb.externalPropertyBucketPath) and the database was reopened with that config unset or
+      // pointing elsewhere, so FileManager's secondary scan never picked the file up. The schema still
+      // references the old bucket id, but the file isn't loaded -> we'd otherwise NPE on getRecord.
+      throw new SerializationException(
+          "Cannot read EXTERNAL property: external bucket id=" + externalBucketId + " is not loaded. "
+              + "If the bucket was tiered to a secondary path, set 'arcadedb.externalPropertyBucketPath' "
+              + "to the same value used at creation time and reopen the database.");
+    final RID rid = RID.create(database, externalBucketId, position);
+    final Binary buffer = externalBucket.getRecord(rid).copyOfContent();
+    buffer.position(Binary.BYTE_SERIALIZED_SIZE); // SKIP RECORD TYPE BYTE
+    final byte valueType = buffer.getByte();
+    if (!compressed)
+      return deserializeValue(database, buffer, valueType, embeddedModifier);
+
+    final int uncompressedSize = (int) buffer.getUnsignedNumber();
+    // Length-prefixed payload (Binary.getBytes reads varint length + the bytes). Trailing space (if any) is
+    // ignored, leaving the format extensible to a future footer/checksum without a migration.
+    final byte[] compressedBytes = buffer.getBytes();
+    final byte[] decompressed = CompressionFactory.getLZ4().decompress(compressedBytes, uncompressedSize);
+    return deserializeValue(database, new Binary(decompressed), valueType, embeddedModifier);
+  }
+
+  /**
+   * Reused by cascade-delete and the orphan-cleanup-on-update path inside {@link #serializeProperties}: scans
+   * the OLD buffer for TYPE_EXTERNAL pointers, keyed by property name.
+   * <p>
+   * <b>Gating check: {@code hasExternalBuckets()}, not {@code hasExternalProperties()}.</b>
+   * The two are different and the distinction is load-bearing:
+   * <ul>
+   *   <li>{@code hasExternalProperties()} reflects the CURRENT schema (count of properties currently flagged
+   *       EXTERNAL). It flips to false the instant {@code setExternal(false)} commits, before any record has
+   *       been re-serialised. Using it as the gate would skip orphan-cleanup during the EXTERNAL→inline
+   *       migration window and leak external blobs.</li>
+   *   <li>{@code hasExternalBuckets()} reflects the lifetime of the paired-bucket mapping
+   *       ({@code externalBucketIdByPrimaryBucketId} non-empty). It stays true through the entire migration
+   *       window: schema flag flipped → REBUILD TYPE re-serialises every record → orphan-cleanup empties the
+   *       paired buckets → {@code reclaimEmptyExternalBuckets()} drops them and clears the map. Only at that
+   *       point does it return false, and by then no record can carry a stale TYPE_EXTERNAL pointer.</li>
+   * </ul>
+   * Types that have never used the EXTERNAL feature have an empty map, so this fast-exit pays for itself on
+   * the (very common) update hot path of plain-vanilla types.
+   */
+  public Map<String, RID> findExistingExternalRids(final Database database, final Document record) {
+    final RID identity = record.getIdentity();
+    if (identity == null)
+      return Collections.emptyMap();
+    if (!(record instanceof BaseDocument))
+      return Collections.emptyMap();
+    if (!(record.getType() instanceof LocalDocumentType ldt) || !ldt.hasExternalBuckets())
+      return Collections.emptyMap();
+    final Binary buf = ((BaseRecord) record).getBuffer();
+    if (buf == null)
+      return Collections.emptyMap();
+
+    // Scan the record's own buffer in place (no copy). The buffer is the read-side of the record's content,
+    // which by the time serializeProperties reaches us has finished its own reads (it pulls the property map
+    // first via propertiesAsMap, which deserialises and caches into a Map, then calls us). Cascade-delete and
+    // CHECK DATABASE both call us outside any other buffer iteration. We still save/restore the position so
+    // a future caller mid-iteration would not be disturbed - cheap insurance for a hot update path.
+    final int savedPosition = buf.position();
+    try {
+      buf.position(((DocumentInternal) record).getPropertiesStartingPosition());
+
+      final int headerEndOffset = buf.getInt();
+      final int properties = (int) buf.getUnsignedNumber();
+      if (properties <= 0)
+        return Collections.emptyMap();
+
+      final Dictionary dictionary = database.getSchema().getDictionary();
+      Map<String, RID> result = null;
+
+      for (int i = 0; i < properties; i++) {
+        final int nameId = (int) buf.getUnsignedNumber();
+        final int contentPosition = (int) buf.getUnsignedNumber();
+        final int afterHeader = buf.position();
+
+        buf.position(headerEndOffset + contentPosition);
+        final byte type = buf.getByte();
+        // All three external type bytes carry the same [bucketIdVarint][positionVarint] RID; only the blob
+        // decoder differs (raw / LZ4 fast / LZ4 HC). Cascade-delete and orphan cleanup only need the RID.
+        if (isExternalType(type)) {
+          final int extBucketId = (int) buf.getNumber();
+          final long extPosition = buf.getNumber();
+          if (result == null)
+            result = new HashMap<>();
+          result.put(dictionary.getNameById(nameId), RID.create(database, extBucketId, extPosition));
+        }
+
+        buf.position(afterHeader);
+      }
+      return result == null ? Collections.emptyMap() : result;
+    } catch (Exception e) {
+      // Bump the JVM-cumulative counter so CHECK DATABASE surfaces the leak rate without waiting for the
+      // next paired-bucket scan. The orphan blob (if any) will eventually be caught by the orphan scan,
+      // but counting failures gives an early signal that something is corrupting record buffers.
+      externalRidScanFailures.incrementAndGet();
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not parse old buffer to recover external RIDs for record %s: %s. External records linked to this "
+              + "record may be orphaned in the paired bucket. (cumulative scan failures since process start: %d)",
+          e, identity, e.getMessage(), externalRidScanFailures.get());
+      return Collections.emptyMap();
+    } finally {
+      buf.position(savedPosition);
+    }
   }
 
   public Class<?> getDateImplementation() {

@@ -68,6 +68,17 @@ public class FileManager {
   }
 
   public FileManager(final String path, final ComponentFile.MODE mode, final Set<String> supportedFileExt) {
+    this(path, mode, supportedFileExt, null);
+  }
+
+  /**
+   * @param path             primary database directory; created if missing.
+   * @param extraScanPath    optional secondary directory to scan for additional component files (e.g. paired
+   *                         external-property buckets that have been tiered to a different disk via
+   *                         {@code arcadedb.externalPropertyBucketPath}). May be null/empty.
+   */
+  public FileManager(final String path, final ComponentFile.MODE mode, final Set<String> supportedFileExt,
+      final String extraScanPath) {
     this.mode = mode;
 
     final File dbDirectory = new File(path);
@@ -83,18 +94,35 @@ public class FileManager {
         throw new IllegalArgumentException(String.format("The directory '%s' doesn't have the proper permissions", dbDirectory));
       }
 
-      for (final File f : dbDirectory.listFiles()) {
-        final String filePath = f.getAbsolutePath();
-        final String fileExt = filePath.substring(filePath.lastIndexOf(".") + 1);
+      scanDirectoryForComponentFiles(dbDirectory, supportedFileExt);
+    }
 
-        if (supportedFileExt.contains(fileExt))
-          try {
-            final ComponentFile file = new PaginatedComponentFile(f.getAbsolutePath(), mode);
-            registerFile(file);
+    if (extraScanPath != null && !extraScanPath.isEmpty()) {
+      final File extraDir = new File(extraScanPath);
+      if (extraDir.exists() && extraDir.canRead() && !extraDir.equals(dbDirectory))
+        scanDirectoryForComponentFiles(extraDir, supportedFileExt);
+    }
+  }
 
-          } catch (final FileNotFoundException e) {
-            LogManager.instance().log(this, Level.WARNING, "Cannot load file '%s'", null, f);
-          }
+  private void scanDirectoryForComponentFiles(final File dir, final Set<String> supportedFileExt) {
+    final File[] entries = dir.listFiles();
+    if (entries == null)
+      return;
+    for (final File f : entries) {
+      // Compute the extension from the file name (not the full path) so a database directory containing dots
+      // (e.g. /home/u/my.db/bucket1) doesn't accidentally find the dot in the directory name.
+      final String fileName = f.getName();
+      final int lastDot = fileName.lastIndexOf(".");
+      if (lastDot < 0)
+        continue;
+      final String fileExt = fileName.substring(lastDot + 1);
+      if (!supportedFileExt.contains(fileExt))
+        continue;
+      try {
+        final ComponentFile file = new PaginatedComponentFile(f.getAbsolutePath(), mode);
+        registerFile(file);
+      } catch (final FileNotFoundException e) {
+        LogManager.instance().log(this, Level.WARNING, "Cannot load file '%s'", null, f);
       }
     }
   }

@@ -27,4 +27,13 @@ public class CompressionFactory {
   public static Compression getDefault() {
     return defaultImplementation;
   }
+
+  /**
+   * Returns the shared {@link LZ4Compression} instance. Exposes the concrete type for callers that need
+   * encoder variants beyond the {@link Compression} interface (e.g. {@link LZ4Compression#compressMax} for
+   * the LZ4 HC tier used by EXTERNAL property storage).
+   */
+  public static LZ4Compression getLZ4() {
+    return defaultImplementation;
+  }
 }

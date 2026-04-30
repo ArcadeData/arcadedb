@@ -70,6 +70,15 @@ public class MutableDocument extends BaseDocument implements RecordInternal {
     return dirty;
   }
 
+  /**
+   * Forces the next save to re-serialize this record even if no property has changed. Used by maintenance commands
+   * like `REBUILD TYPE` to apply schema layout changes (e.g. EXTERNAL flag toggles) to existing records on disk.
+   */
+  public MutableDocument markDirty() {
+    dirty = true;
+    return this;
+  }
+
   @Override
   public void setBuffer(final Binary buffer) {
     super.setBuffer(buffer);

@@ -372,15 +372,48 @@ public class LocalSchema implements Schema {
   }
 
   public LocalBucket createBucket(final String bucketName, final int pageSize) {
+    return createBucket(bucketName, pageSize, databasePath, LocalBucket.CURRENT_VERSION);
+  }
+
+  /** Creates the bucket file under {@code parentDirectory} instead of the database directory; null/empty falls back. */
+  public LocalBucket createBucket(final String bucketName, final int pageSize, final String parentDirectory) {
+    return createBucket(bucketName, pageSize, parentDirectory, LocalBucket.CURRENT_VERSION);
+  }
+
+  /**
+   * Full overload: creates a bucket with an explicit file-format version. Paired external-property buckets pass
+   * {@link LocalBucket#EXTERNAL_BUCKET_VERSION} so they get the smaller (256-slot) page-slot table appropriate for
+   * heavy payloads; everything else uses {@link LocalBucket#CURRENT_VERSION}.
+   */
+  public LocalBucket createBucket(final String bucketName, final int pageSize, final String parentDirectory, final int version) {
     database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
 
     if (bucketMap.containsKey(bucketName))
       throw new SchemaException("Cannot create bucket '" + bucketName + "' because already exists");
 
+    // Discoverability warning for the EXTERNAL property naming convention. The engine creates paired buckets
+    // as '<primary>_ext' with file-format version EXTERNAL_BUCKET_VERSION, so version == CURRENT_VERSION (0)
+    // here means a user-driven CREATE BUCKET. A user bucket named '*_ext' will collide if a primary bucket
+    // with the matching prefix later gains an EXTERNAL property; ensureExternalBucketFor() rejects with a
+    // SchemaException at that point. Surfacing the constraint at create time is much cheaper than debugging
+    // the later failure.
+    if (version == LocalBucket.CURRENT_VERSION && bucketName.endsWith("_ext"))
+      LogManager.instance().log(this, Level.WARNING,
+          "Bucket name '%s' ends with '_ext'. The engine reserves the '<primaryName>_ext' suffix for paired"
+              + " EXTERNAL-property buckets. If a primary bucket whose name + '_ext' equals this name later"
+              + " gains an EXTERNAL property, that property change will fail with a SchemaException. Consider"
+              + " renaming this bucket to avoid the collision.",
+          null, bucketName);
+
+    final String dir = (parentDirectory == null || parentDirectory.isEmpty()) ? databasePath : parentDirectory;
+
     return recordFileChanges(() -> {
       try {
-        final LocalBucket bucket = new LocalBucket(database, bucketName, databasePath + File.separator + bucketName,
-            ComponentFile.MODE.READ_WRITE, pageSize, LocalBucket.CURRENT_VERSION);
+        final File parent = new File(dir);
+        if (!parent.exists() && !parent.mkdirs())
+          throw new SchemaException("Cannot create directory '" + dir + "' for bucket '" + bucketName + "'");
+        final LocalBucket bucket = new LocalBucket(database, bucketName, dir + File.separator + bucketName,
+            ComponentFile.MODE.READ_WRITE, pageSize, version);
         registerFile((Component) bucket);
         bucketMap.put(bucketName, bucket);
 
@@ -1480,6 +1513,20 @@ public class LocalSchema implements Schema {
               type.addBucketInternal(bucket);
           }
         }
+
+        // RESTORE THE primaryBucket -> externalBucket MAP BEFORE PROPERTIES ARE LOADED, SO THAT setExternal(true) ON A
+        // PROPERTY DOES NOT TRY TO LAZY-CREATE BUCKETS THAT ALREADY EXIST. Always call restoreExternalBuckets
+        // - even when the JSON has no externalBuckets key - so the name-based heuristic inside it can adopt
+        // any orphan '<primary>_ext' files that exist on disk but were lost from the JSON (partial corruption,
+        // migration from an older snapshot, etc.). Without that pass the affected buckets would default to
+        // purpose=PRIMARY and our DML write guard would let users target them.
+        final Map<String, String> primaryToExternal = new HashMap<>();
+        if (schemaType.has("externalBuckets")) {
+          final JSONObject extBuckets = schemaType.getJSONObject("externalBuckets");
+          for (final String primaryName : extBuckets.keySet())
+            primaryToExternal.put(primaryName, extBuckets.getString(primaryName));
+        }
+        type.restoreExternalBuckets(primaryToExternal);
 
         type.custom.clear();
         if (schemaType.has("custom"))

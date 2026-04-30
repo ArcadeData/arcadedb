@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
 import com.arcadedb.engine.timeseries.TimeSeriesEngine;
@@ -28,6 +29,7 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
 
@@ -89,6 +91,22 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           r.setProperty("buckets", type.getBuckets(false).stream().map((b) -> b.getName()).collect(Collectors.toList()));
           r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
 
+          // Expose the primary->external bucket mapping for types that have any EXTERNAL property. Lets tooling
+          // (Studio etc.) tell the user where the externalised values for each primary bucket are stored.
+          if (type instanceof LocalDocumentType ldt) {
+            final Map<String, String> extMap = new HashMap<>();
+            for (final Bucket b : type.getBuckets(false)) {
+              final Integer extId = ldt.getExternalBucketIdFor(b.getFileId());
+              if (extId != null) {
+                final Bucket extBucket = context.getDatabase().getSchema().getBucketById(extId);
+                if (extBucket != null)
+                  extMap.put(b.getName(), extBucket.getName());
+              }
+            }
+            if (!extMap.isEmpty())
+              r.setProperty("externalBuckets", extMap);
+          }
+
           final List<String> parents = type.getSuperTypes().stream().map(pt -> pt.getName()).collect(Collectors.toList());
           r.setProperty("parentTypes", parents);
 
@@ -109,6 +127,13 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
                   propRes.setProperty("notNull", property.isNotNull());
                 if (property.isHidden())
                   propRes.setProperty("hidden", property.isHidden());
+                if (property.isExternal())
+                  propRes.setProperty("external", property.isExternal());
+                // Only emit the compression policy when explicitly set to a non-default value, mirroring the
+                // toJSON convention. Studio renders the badge tooltip and a small label off this field.
+                final String cmp = property.getCompression();
+                if (cmp != null && !"none".equalsIgnoreCase(cmp))
+                  propRes.setProperty("compression", cmp);
                 if (property.getMin() != null)
                   propRes.setProperty("min", property.getMin());
                 if (property.getMax() != null)

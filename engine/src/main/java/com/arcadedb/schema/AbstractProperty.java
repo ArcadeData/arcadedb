@@ -39,6 +39,18 @@ public abstract class AbstractProperty implements Property {
   protected              boolean             mandatory       = false;
   protected              boolean             notNull         = false;
   protected              boolean             hidden          = false;
+  // Volatile because BinarySerializer.serializeProperties reads isExternal() outside the schema write lock
+  // on the per-record write hot path. The schema lock serialises mutations, but a reader that came in just
+  // before setExternal() flipped the bit must observe the latest value to route the value through the
+  // correct write path (inline vs paired bucket). volatile is the cheapest correctness fix and matches the
+  // memory-model role of {@link LocalDocumentType#ownExternalPropertyCount}'s atomic.
+  protected volatile     boolean             external        = false;
+  // Compression policy for EXTERNAL property values: "none" | "fast" | "max" | "auto" (legacy alias: "lz4" -> "fast").
+  // STORAGE CONVENTION: null means "none" (the default), so toJSON omits the key. Read access MUST go through
+  // getCompression(), which materialises null as the literal string "none". LocalProperty.setCompression
+  // normalises "none" / null / "" all to null on write. Direct field reads from outside this class would see
+  // null when the user wrote "none"; always use the getter.
+  protected              String              compression     = null;
   protected              String              max             = null;
   protected              String              min             = null;
   protected              String              regexp          = null;
@@ -143,6 +155,16 @@ public abstract class AbstractProperty implements Property {
   }
 
   @Override
+  public boolean isExternal() {
+    return external;
+  }
+
+  @Override
+  public String getCompression() {
+    return compression == null ? "none" : compression;
+  }
+
+  @Override
   public String getMax() {
     return max;
   }
@@ -188,6 +210,10 @@ public abstract class AbstractProperty implements Property {
       json.put("notNull", notNull);
     if (hidden)
       json.put("hidden", hidden);
+    if (external)
+      json.put("external", external);
+    if (compression != null && !"none".equalsIgnoreCase(compression))
+      json.put("compression", compression);
     if (max != null)
       json.put("max", max);
     if (min != null)

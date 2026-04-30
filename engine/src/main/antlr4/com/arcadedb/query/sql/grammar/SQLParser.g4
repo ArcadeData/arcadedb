@@ -136,6 +136,9 @@ statement
     // Index Management
     | rebuildIndexStatement                          # rebuildIndexStmt
 
+    // Type Re-serialisation (e.g. relocate property values after toggling EXTERNAL flag)
+    | REBUILD TYPE rebuildTypeBody                   # rebuildTypeStmt
+
     // Transaction Statements
     | beginStatement                                 # beginStmt
     | commitStatement                                # commitStmt
@@ -866,6 +869,16 @@ truncateRecordBody
 
 rebuildIndexStatement
     : REBUILD INDEX (identifier | STAR) (WITH identifier EQ expression (COMMA identifier EQ expression)*)?
+    ;
+
+/**
+ * REBUILD TYPE statement
+ * Re-serialises every record of a type so that schema changes (e.g. toggling a property's EXTERNAL flag) are applied
+ * to existing records on disk. POLYMORPHIC additionally walks subtypes.
+ * Syntax: REBUILD TYPE typeName [POLYMORPHIC]
+ */
+rebuildTypeBody
+    : typeName=identifier POLYMORPHIC? (WITH settingKey+=identifier EQ settingValue+=expression (COMMA settingKey+=identifier EQ settingValue+=expression)*)?
     ;
 
 // ============================================================================

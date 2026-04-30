@@ -1039,8 +1039,20 @@ function createProperty(typeName) {
   html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropNotNull'><label class='form-check-label' for='inputCreatePropNotNull'>Not Null</label></div>";
   html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropHidden'><label class='form-check-label' for='inputCreatePropHidden'>Hidden</label></div>";
   html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropReadOnly'><label class='form-check-label' for='inputCreatePropReadOnly'>Read Only</label></div>";
+  html += "<div class='form-check' title='Store the value in a paired external bucket instead of inline. Useful for large payloads (vectors, big strings, embedded JSON) so the primary bucket stays cache-dense for traversal.'><input class='form-check-input' type='checkbox' id='inputCreatePropExternal'><label class='form-check-label' for='inputCreatePropExternal'>External</label></div>";
   html += "<div class='form-check'><input class='form-check-input' type='checkbox' id='inputCreatePropIfNotExists'><label class='form-check-label' for='inputCreatePropIfNotExists'>If not exists</label></div>";
   html += "</div>";
+  // Compression policy for EXTERNAL properties. Hidden by default; revealed when External is ticked.
+  html += "<div class='row mb-3 mt-2' id='createPropCompressionRow' style='display:none;'>";
+  html += "<div class='col-6'>";
+  html += "<label for='inputCreatePropCompression'>External compression</label>";
+  html += "<select class='form-select mt-1' id='inputCreatePropCompression' title='fast: LZ4 fast encoder (default win-rate). max: LZ4 HC (~10pp smaller, slower writes; same read speed). auto: try fast, skip if no win. none: store raw.'>";
+  html += "<option value='none' selected>none (default)</option>";
+  html += "<option value='auto'>auto (try fast, skip if no win)</option>";
+  html += "<option value='fast'>fast (LZ4)</option>";
+  html += "<option value='max'>max (LZ4 HC)</option>";
+  html += "</select>";
+  html += "</div></div>";
 
   globalPrompt("Add Property to " + escapeHtml(typeName), html, "Create", function () {
     let name = $("#inputCreatePropName").val().trim();
@@ -1059,6 +1071,8 @@ function createProperty(typeName) {
     let notNull = $("#inputCreatePropNotNull").prop("checked");
     let hidden = $("#inputCreatePropHidden").prop("checked");
     let readOnly = $("#inputCreatePropReadOnly").prop("checked");
+    let external = $("#inputCreatePropExternal").prop("checked");
+    let compression = $("#inputCreatePropCompression").val();
     let ifNotExists = $("#inputCreatePropIfNotExists").prop("checked");
 
     let command = "CREATE PROPERTY `" + typeName + "`.`" + name + "`";
@@ -1071,6 +1085,8 @@ function createProperty(typeName) {
     if (notNull) constraints.push("NOTNULL true");
     if (hidden) constraints.push("HIDDEN true");
     if (readOnly) constraints.push("READONLY true");
+    if (external) constraints.push("EXTERNAL true");
+    if (external && compression && compression !== "none") constraints.push("COMPRESSION '" + compression + "'");
     if (defaultVal != "") constraints.push("DEFAULT " + defaultVal);
     if (min != "") constraints.push("MIN " + min);
     if (max != "") constraints.push("MAX " + max);
@@ -1102,8 +1118,17 @@ function createProperty(typeName) {
       else
         $("#createPropRegexpRow").hide();
     }
+    function updateCompressionVisibility() {
+      // Compression policy is meaningful only for EXTERNAL properties.
+      if ($("#inputCreatePropExternal").prop("checked"))
+        $("#createPropCompressionRow").show();
+      else
+        $("#createPropCompressionRow").hide();
+    }
     $("#inputCreatePropType").on("change", updatePropVisibility);
+    $("#inputCreatePropExternal").on("change", updateCompressionVisibility);
     updatePropVisibility();
+    updateCompressionVisibility();
   }, 100);
 }
 
@@ -2643,47 +2668,19 @@ function browseType(typeName) {
   let limit = parseInt($("#inputLimit").val()) || 100;
   let query = "select from `" + typeName + "`";
 
-  // If a graph already exists, append results to it
-  if (globalCy != null && globalResultset != null) {
-    $("#inputLanguage").val("sql");
-    editor.setValue(query);
-    globalActivateTab("tab-query");
-    globalActivateTab("tab-graph");
-
-    $("#executeSpinner").show();
-
-    jQuery.ajax({
-      type: "POST",
-      url: "api/v1/command/" + database,
-      data: JSON.stringify({ language: "sql", command: escapeHtml(query), limit: limit, serializer: "studio" }),
-      beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
-    }).done(function(data) {
-      $("#executeSpinner").hide();
-      appendToGraph(data.result);
-      $("#result-num").html(globalResultset.vertices.length + " vertices, " + globalTotalEdges + " edges");
-      $("#resultJson").val(JSON.stringify({ result: globalResultset }, null, 2));
-    }).fail(function(jqXHR) {
-      $("#executeSpinner").hide();
-      globalNotifyError(jqXHR.responseText);
-    });
-    return;
-  }
-
-  // No existing graph - use normal executeCommand flow
-  executeCommand("sql", query);
-}
-
-function browseType(typeName) {
-  let database = getCurrentDatabase();
-  if (!database) return;
-
-  let limit = parseInt($("#inputLimit").val()) || 100;
-  let query = "select from `" + typeName + "`";
-
   $("#inputLanguage").val("sql");
   editor.setValue(query);
   globalActivateTab("tab-query");
-  globalActivateTab("tab-graph");
+
+  let activeTab = $("#tabs-command .active").attr("id");
+  let onGraph = (activeTab == "tab-graph-sel");
+
+  // Honor the user's currently active result tab. Only on the graph tab
+  // do we keep the append-to-existing-graph behavior.
+  if (!onGraph) {
+    executeCommand("sql", query);
+    return;
+  }
 
   $("#executeSpinner").show();
 
@@ -2697,11 +2694,9 @@ function browseType(typeName) {
     $("#resultJson").val(JSON.stringify(data, null, 2));
 
     if (globalCy != null && globalResultset != null && data.result.vertices.length > 0) {
-      // Append to existing graph
       appendToGraph(data.result);
       $("#result-num").html(globalResultset.vertices.length + " vertices, " + globalTotalEdges + " edges");
     } else {
-      // First click or no vertices - create fresh graph
       globalResultset = data.result;
       globalCy = null;
       $("#result-num").html(data.result.records.length);
@@ -3087,7 +3082,7 @@ function showTypeDetail(typeName) {
     } else {
       html += "<div class='table-responsive'>";
       html += "<table class='table table-sm db-detail-table'>";
-      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
+      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Storage</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
       html += "<tbody>" + propHtml + "</tbody></table></div>";
     }
     html += "</div>";
@@ -3294,6 +3289,28 @@ function renderProperties(row, results) {
     let property = row.properties[k];
     panelHtml += "<tr><td>" + property.name + "</td><td>" + row.name + "</td><td>" + property.type + "</td>";
 
+    // Storage cell: External properties show a purple badge with the paired bucket(s) in the tooltip so the user
+    // immediately sees that the value lives outside the primary record and where to find it on disk.
+    if (property.external) {
+      let pairs = [];
+      if (row.externalBuckets) {
+        for (let primary in row.externalBuckets)
+          pairs.push(escapeHtml(primary) + " \u2192 " + escapeHtml(row.externalBuckets[primary]));
+      }
+      let tooltip = pairs.length > 0
+        ? "Value stored in paired external bucket(s): " + pairs.join(", ")
+        : "Value stored in a paired external bucket";
+      // Compression policy lives on the property; only emitted by schema:types when not 'none'.
+      let cmpLabel = "";
+      if (property.compression) {
+        tooltip += ". Compression: " + property.compression;
+        cmpLabel = " <small class='text-muted'>(" + escapeHtml(property.compression) + ")</small>";
+      }
+      panelHtml += "<td><span class='badge bg-info' title='" + escapeHtml(tooltip) + "'><i class='fa fa-external-link-alt'></i> External</span>" + cmpLabel + "</td>";
+    } else {
+      panelHtml += "<td><span class='text-muted' style='font-size:0.85rem;' title='Value stored inline in the record'>Inline</span></td>";
+    }
+
     panelHtml += "<td>" + (property.mandatory ? true : false) + "</td>";
     panelHtml += "<td>" + (property.notNull ? true : false) + "</td>";
     panelHtml += "<td>" + (property.hidden ? true : false) + "</td>";
@@ -3320,7 +3337,7 @@ function renderProperties(row, results) {
 
     if (property.custom != null && Object.keys(property.custom).length > 0) {
       panelHtml += "<td></td>";
-      panelHtml += "<td colspan='10'><b>Custom Properties</b><br>";
+      panelHtml += "<td colspan='11'><b>Custom Properties</b><br>";
       panelHtml += "<div class='table-responsive'>";
       panelHtml += "<table style='width: 100%'>";
       for (c in property.custom) panelHtml += "<tr><td width='30%'>" + c + "</td><td width='70%'>" + property.custom[c] + "</td></tr>";
@@ -4540,7 +4557,7 @@ function showMaterializedViewDetail(viewName) {
     else {
       html += "<div class='table-responsive'>";
       html += "<table class='table table-sm db-detail-table'>";
-      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
+      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Type</th><th>Storage</th><th>Mandatory</th><th>Not Null</th><th>Hidden</th><th>Read Only</th><th>Default</th><th>Min</th><th>Max</th><th>Regexp</th><th>Indexes</th><th>Actions</th></tr></thead>";
       html += "<tbody>" + propHtml + "</tbody></table></div>";
     }
     html += "</div>";
@@ -5172,7 +5189,9 @@ function loadStorageBuckets() {
   jQuery.ajax({
     type: "POST",
     url: "api/v1/query/" + database,
-    data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:buckets" }),
+    // Hide non-PRIMARY buckets (e.g. paired EXTERNAL_PROPERTY buckets that hold externalised property values).
+    // Power users can still see them by running SELECT FROM schema:buckets directly in the Query tab.
+    data: JSON.stringify({ language: "sql", command: "SELECT FROM schema:buckets WHERE purpose = 'PRIMARY' OR purpose IS NULL" }),
     beforeSend: function (xhr) { xhr.setRequestHeader("Authorization", globalCredentials); },
   }).done(function (data) {
     if (!data.result || data.result.length === 0) {

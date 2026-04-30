@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.database.RecordEventsRegistry;
@@ -71,6 +72,13 @@ import static com.arcadedb.database.Binary.LONG_SERIALIZED_SIZE;
 public class LocalBucket extends PaginatedComponent implements Bucket {
   public static final    String                    BUCKET_EXT                       = "bucket";
   public static final    int                       CURRENT_VERSION                  = 0;
+  // Bucket file-format version 1 is reserved for paired external-property buckets. They hold heavier records,
+  // so the page-slot table is sized down to 256 (vs 2048 at v0). The bucket-page header (computed by
+  // contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + maxSlots*4) shrinks from 8194 bytes at v0 to 1026 bytes at
+  // v1 - reclaiming ~7KB of header per page that becomes available for value blobs. Sized to host typical
+  // 1-2KB records (especially with compression enabled).
+  public static final    int                       EXTERNAL_BUCKET_VERSION          = 1;
+  private static final   int                       DEF_MAX_RECORDS_IN_PAGE_V1       = 256;
   public static final    long                      RECORD_PLACEHOLDER_POINTER       = -1L;    // USE -1 AS SIZE TO STORE A PLACEHOLDER (THAT POINTS TO A RECORD ON ANOTHER PAGE)
   public static final    long                      FIRST_CHUNK                      = -2L;    // USE -2 TO MARK THE FIRST CHUNK OF A BIG RECORD. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK
   public static final    long                      NEXT_CHUNK                       = -3L;    // USE -3 TO MARK THE SECOND AND FURTHER CHUNK THAT IS PART OF A BIG RECORD THAT DOES NOT FIT A PAGE. FOLLOWS THE CHUNK SIZE AND THE POINTER TO THE NEXT CHUNK OR 0 IF THE CURRENT CHUNK IS THE LAST (NO FURTHER CHUNKS)
@@ -87,8 +95,25 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   private static final   int                       GATHER_STATS_MIN_SPACE_PERC      = 10;
   private static final   int                       SPARE_SPACE_FOR_GROWTH           = 32;
   protected final        int                       contentHeaderSize;
-  private final          int                       maxRecordsInPage                 = DEF_MAX_RECORDS_IN_PAGE;
+  private final          int                       maxRecordsInPage;
   private final          AtomicLong                cachedRecordCount                = new AtomicLong(-1);
+
+  /**
+   * Bucket purpose tag. Declared up here (next to the {@link #purpose} field that uses it) so the enum is the
+   * first thing a reader sees alongside the other bucket-level constants - the alternative was burying it
+   * mid-file between unrelated state, which made the EXTERNAL property contract hard to discover.
+   */
+  public enum Purpose {
+    /** Bucket holding the primary records of a type (vertex/edge/document). Targetable by user DML. */
+    PRIMARY,
+    /** Paired infrastructure bucket holding externalised property values. NOT targetable by user DML. */
+    EXTERNAL_PROPERTY
+  }
+
+  // Buckets are PRIMARY by default (they hold the primary records of a type and are user-targetable via DML).
+  // Internal kinds (e.g. EXTERNAL_PROPERTY) hold serializer infrastructure that user-facing DML must not target.
+  // The purpose is persisted in schema.json (per-type) and restored at load time, see LocalDocumentType.
+  private                Purpose                   purpose                          = Purpose.PRIMARY;
   // pageId → free-space-bytes. TreeMap ordering is unused (verified by grep), so a primitive
   // open-addressing map saves memory and avoids Integer boxing on every read/write/remove on
   // the page-allocation hot path. Bounded by MAX_PAGES_GATHER_STATS (100). Single-threaded
@@ -130,9 +155,11 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
                      final int pageSize, final int version) throws IOException {
     super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);
+    this.maxRecordsInPage = maxRecordsInPageForVersion(version);
     this.contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
     this.cachedRecordCount.set(0);
     this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
+    this.purpose = purposeForVersion(version);
   }
 
   /**
@@ -141,10 +168,22 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
                      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
     super(database, name, filePath, id, mode, pageSize, version);
+    this.maxRecordsInPage = maxRecordsInPageForVersion(version);
     contentHeaderSize = PAGE_RECORD_TABLE_OFFSET + (maxRecordsInPage * INT_SERIALIZED_SIZE);
     this.reuseSpaceMode = REUSE_SPACE_MODE.valueOf(GlobalConfiguration.BUCKET_REUSE_SPACE_MODE.getValueAsString().toUpperCase());
+    // Derive purpose from the bucket file version - the version itself is persisted in the on-disk file name
+    // (e.g. Doc_0_ext.<id>.<pageSize>.v1.bucket), so this assignment is reliable as soon as the LocalBucket
+    // is constructed - long before LocalDocumentType.restoreExternalBuckets() runs. That closes the gap where
+    // a write path firing between FileManager scan and schema-load completion would have seen purpose=PRIMARY
+    // by default and bypassed the user-DML guard. Schema JSON still maps primary->external by name (which is
+    // an orthogonal concern), but the write guard now no longer depends on schema-load ordering.
+    this.purpose = purposeForVersion(version);
     if (this.reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal())
       gatherPageStatistics();
+  }
+
+  private static Purpose purposeForVersion(final int version) {
+    return version >= EXTERNAL_BUCKET_VERSION ? Purpose.EXTERNAL_PROPERTY : Purpose.PRIMARY;
   }
 
   @Override
@@ -157,9 +196,27 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return maxRecordsInPage;
   }
 
+  /** Slot-table sizing for the bucket file format version. v0=2048 (legacy), v1=256 (paired external buckets). */
+  private static int maxRecordsInPageForVersion(final int version) {
+    return version >= EXTERNAL_BUCKET_VERSION ? DEF_MAX_RECORDS_IN_PAGE_V1 : DEF_MAX_RECORDS_IN_PAGE;
+  }
+
+  public Purpose getPurpose() {
+    return purpose;
+  }
+
+  public void setPurpose(final Purpose purpose) {
+    this.purpose = purpose;
+  }
+
   @Override
   public RID createRecord(final Record record, final boolean discardRecordAfter) {
     database.checkPermissionsOnFile(fileId, SecurityDatabaseUser.ACCESS.CREATE_RECORD);
+    // Provisional identity for Document records (and subtypes: vertex, edge) so the serializer can resolve the
+    // target primary bucket for EXTERNAL property handling. EdgeSegment, ExternalValueRecord, and other internal
+    // record types do not need this and must not be touched.
+    if (record.getIdentity() == null && record instanceof Document && record instanceof RecordInternal ri)
+      ri.setIdentity(RID.create(database, fileId, -1L));
     return createRecordInternal(record, false, discardRecordAfter);
   }
 
