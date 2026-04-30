@@ -1,4 +1,12 @@
 {{- if .Values.autoscaling.enabled }}
+{{- if or (gt (int .Values.replicaCount) 1) .Values.autoscaling.enabled }}
+{{- $maxReplicas := int .Values.autoscaling.maxReplicas }}
+{{- $minReplicas := int .Values.autoscaling.minReplicas }}
+{{- $quorum := add (div $maxReplicas 2) 1 }}
+{{- if lt $minReplicas (int $quorum) }}
+{{- fail (printf "autoscaling.minReplicas (%d) must be >= floor(maxReplicas/2)+1 (%d) to maintain Raft quorum with maxReplicas=%d. Increase minReplicas or decrease maxReplicas." $minReplicas (int $quorum) $maxReplicas) }}
+{{- end }}
+{{- end }}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

@@ -1,3 +1,4 @@
+{{- if .Values.extraManifests }}
 ---
 
 {{- range $_key, $value := .Values.extraManifests }}
@@ -7,4 +8,5 @@
 
 ---
 
+{{- end }}
 {{- end }}

@@ -35,10 +35,10 @@ The command removes all the Kubernetes components associated with the chart and 
 
 | Name                         | Description                                                        | Value                                    |
 |------------------------------|--------------------------------------------------------------------|------------------------------------------|
-| `arcadedb.databaseDirectory` | Enable persistence by updating this and volume/Mounts              | `/home/arcadedb/databases`               |
-| `arcadedb.defaultDatabases`  | Default databases                                                  | `Universe[foo:bar]`                      |
-| `arcadedb.extraCommands`     | Any extra commands to pass to ArcadeDB startup                     | `["-Darcadedb.server.mode=development"]` |
-| `arcadedb.extraEnvironment`  | Additional environment variables to pass to the ArcadeDB container | `[]` |
+| `arcadedb.databaseDirectory` | Database storage directory inside the container                    | `/home/arcadedb/databases`              |
+| `arcadedb.defaultDatabases`  | Databases to create at startup. Empty = none.                      | `""`                                    |
+| `arcadedb.extraCommands`     | Extra JVM -D arguments appended to the startup command             | `["-Darcadedb.server.mode=production"]` |
+| `arcadedb.extraEnvironment`  | Additional environment variables to pass to the ArcadeDB container | `[]`                                    |
 
 ### arcadedb.credentials
 
@@ -67,14 +67,14 @@ The command removes all the Kubernetes components associated with the chart and 
 
 | Name                         | Description                                             | Value  |
 |------------------------------|---------------------------------------------------------|--------|
-| `serviceAccount.create`      | Specifies whether a service account should be created   | `true` |
-| `serviceAccount.automount`   | Automatically mount a ServiceAccount's API credentials? | `true` |
-| `serviceAccount.annotations` | Annotations to add to the service account               | `{}`   |
-| `serviceAccount.name`        | The name of the service account to use.                 | `""`   |
-| `podAnnotations`             | This is for setting Kubernetes Annotations to a Pod.    | `{}`   |
-| `podLabels`                  | This is for setting Kubernetes Labels to a Pod.         | `{}`   |
-| `podSecurityContext`         |                                                         | `{}`   |
-| `securityContext`            |                                                         | `{}`   |
+| `serviceAccount.create`      | Specifies whether a service account should be created                                          | `true`  |
+| `serviceAccount.automount`   | Mount the ServiceAccount token into pods. ArcadeDB does not call the Kubernetes API - keep false. | `false` |
+| `serviceAccount.annotations` | Annotations to add to the service account                                                      | `{}`    |
+| `serviceAccount.name`        | The name of the service account to use.                                                        | `""`    |
+| `podAnnotations`             | Annotations added to every pod.                                                                | `{}`    |
+| `podLabels`                  | Labels added to every pod.                                                                     | `{}`    |
+| `podSecurityContext`         | Pod-level security context. UID/GID 1000 matches the arcadedb user in the Docker image.        | `{runAsNonRoot: true, fsGroup: 1000}` |
+| `securityContext`            | Container-level security context.                                                              | `{runAsUser: 1000, runAsGroup: 1000, allowPrivilegeEscalation: false, capabilities.drop: [ALL]}` |
 
 ### This is for setting up a service more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/
 
@@ -82,14 +82,14 @@ The command removes all the Kubernetes components associated with the chart and 
 
 | Name                | Description                                                                                                                                                       | Value          |
 |---------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------|----------------|
-| `service.http.type` | This sets the service type more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types | `LoadBalancer` |
+| `service.http.type` | Service type. Use LoadBalancer or configure ingress for external access.                                                                                         | `ClusterIP`    |
 | `service.http.port` | This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports                         | `2480`         |
 
 ### rpc
 
 | Name               | Description                                                                                                                               | Value  |
 |--------------------|-------------------------------------------------------------------------------------------------------------------------------------------|--------|
-| `service.rpc.port` | This sets the ports more information can be found here: https://kubernetes.io/docs/concepts/services-networking/service/#field-spec-ports | `2424` |
+| `service.rpc.port` | Raft gRPC port (ha-raft subsystem).                                                                                                       | `2434` |
 
 ### ingress This block is for setting up the ingress for more information can be found here: https://kubernetes.io/docs/concepts/services-networking/ingress/
 
@@ -136,13 +136,28 @@ The command removes all the Kubernetes components associated with the chart and 
 
 | Name                                         | Description                                                           | Value   |
 |----------------------------------------------|-----------------------------------------------------------------------|---------|
-| `autoscaling.enabled`                        |                                                                       | `false` |
-| `autoscaling.minReplicas`                    |                                                                       | `1`     |
-| `autoscaling.maxReplicas`                    |                                                                       | `100`   |
-| `autoscaling.targetCPUUtilizationPercentage` |                                                                       | `80`    |
+| `autoscaling.enabled`                        | Enable HorizontalPodAutoscaler. When enabled, server list is pre-sized to maxReplicas for KubernetesAutoJoin. | `false` |
+| `autoscaling.minReplicas`                    | Minimum replicas. Must satisfy Raft quorum when HA is active: >= floor(maxReplicas/2)+1.                      | `1`     |
+| `autoscaling.maxReplicas`                    | Maximum replicas. Chart enforces quorum guard at render time.                                                 | `5`     |
+| `autoscaling.targetCPUUtilizationPercentage` |                                                                                                               | `80`    |
 | `volumes`                                    | Additional volumes on the output StatefulSet definition.              | `[]`    |
 | `volumeMounts`                               | Additional volumeMounts on the output StatefulSet definition.         | `[]`    |
-| `volumeClaimTemplates`                       | Defines volumeClaimTemplates for the StatefulSet.                       | `[]`    |
+| `volumeClaimTemplates`                       | Extra StatefulSet volumeClaimTemplates (the database PVC is controlled by `persistence.enabled`). | `[]` |
+
+### persistence
+
+| Name                       | Description                                                                                         | Value           |
+|----------------------------|-----------------------------------------------------------------------------------------------------|-----------------|
+| `persistence.enabled`      | Persist the database directory with a PVC. Set false only for ephemeral/dev deployments.            | `true`          |
+| `persistence.size`         | PVC size.                                                                                           | `8Gi`           |
+| `persistence.accessMode`   | PVC access mode.                                                                                    | `ReadWriteOnce` |
+| `persistence.storageClass` | StorageClass name. Empty string uses the cluster default.                                           | `""`            |
+
+### networkPolicy
+
+| Name                     | Description                                                                                                                          | Value   |
+|--------------------------|--------------------------------------------------------------------------------------------------------------------------------------|---------|
+| `networkPolicy.enabled`  | Create NetworkPolicy resources. HTTP (2480) open to all cluster pods; Raft gRPC (2434) restricted to ArcadeDB pods only.             | `false` |
 | `nodeSelector`                               |                                                                       | `{}`    |
 | `tolerations`                                |                                                                       | `[]`    |
 
@@ -171,9 +186,9 @@ helm install my-arcadedb ./arcadedb -f values.yaml
 
 ## Persistence
 
-The ArcadeDB image stores data at the `/opt/arcadedb/databases` path of the container. By default, a PersistentVolumeClaim is
-created and mounted to this directory. If you want to disable persistence, set `persistence.enabled` to `false`. Data will then be
-stored in an emptyDir, which is erased when the Pod is terminated.
+The ArcadeDB image stores data at `/home/arcadedb/databases` inside the container. By default (`persistence.enabled: true`), a
+PersistentVolumeClaim named `arcadedb-data` is created and mounted at that path. Set `persistence.enabled` to `false` only for
+ephemeral or development deployments - data will be written to the container's writable layer and lost when the Pod is deleted.
 
 ## Ingress
 
@@ -190,16 +205,15 @@ ingress:
 
 ## Resources
 
-The resource requests and limits can be set by specifying the `resources` parameter. The default values are:
+Resource requests and limits are unset by default for dev/Minikube compatibility. For production, set them via:
 
 ```yaml
 resources:
   requests:
-    cpu: 100m
-    memory: 256Mi
-  limits:
     cpu: 500m
-    memory: 512Mi
+    memory: 2Gi    # matches -Xms2G set by ARCADEDB_OPTS_MEMORY in the Docker image
+  limits:
+    memory: 4Gi    # no CPU limit - avoids throttling JVM GC pauses
 ```
 
 ## Notes

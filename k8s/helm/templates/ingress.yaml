@@ -35,9 +35,9 @@ spec:
             {{- end }}
             backend:
               service:
-                name: {{ include "arcadedb.fullname" $ }}
+                name: {{ include "arcadedb.fullname" $ }}-http
                 port:
-                  number: {{ $.Values.service.port }}
+                  number: {{ $.Values.service.http.port }}
           {{- end }}
     {{- end }}
 {{- end }}

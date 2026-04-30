@@ -17,10 +17,9 @@ spec:
 ---
 
 {{/*
-This is a "headless" service for the arcadedb which exists to allow discovery of the set of
-member pods (masters). The CNAME of this service points to SRV records - one for each Pod that
-is Running and Ready). Read more in the Kubernetes docs:
-https://kubernetes.io/docs/tutorials/stateful-application/basic-stateful-set/
+Headless service for StatefulSet pod DNS discovery.
+publishNotReadyAddresses: true ensures DNS entries exist during bootstrap
+before readiness probes pass - required to avoid HA bootstrap deadlock.
 */}}
 apiVersion: v1
 kind: Service
@@ -30,6 +29,7 @@ metadata:
     {{- include "arcadedb.labels" . | nindent 4 }}
 spec:
   clusterIP: None
+  publishNotReadyAddresses: true
   ports:
     - port: {{ .Values.service.http.port }}
       targetPort: http
