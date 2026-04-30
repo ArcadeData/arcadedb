@@ -268,7 +268,7 @@ public enum PostgresType {
       serializedValue = ldt.format(POSTGRES_DATETIME_FORMATTER);
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
-    } else if (value instanceof Map map) {
+    } else if (value instanceof Map<?, ?> map) {
       serializedValue = new JSONObject(map).toString();
     } else if (value instanceof Record record) {
       serializedValue = record.toJSON(true).toString();
@@ -332,7 +332,7 @@ public enum PostgresType {
         sb.append("\"").append(result.toJSON().toString().replace("\"", "\\\"")).append("\"");
       } else if (element instanceof JSONObject json) {
         sb.append("\"").append(json.toString().replace("\"", "\\\"")).append("\"");
-      } else if (element instanceof Map map) {
+      } else if (element instanceof Map<?, ?> map) {
         sb.append("\"").append(new JSONObject(map).toString().replace("\"", "\\\"")).append("\"");
       } else if (element instanceof Record record) {
         sb.append("\"").append(record.toJSON(true).toString().replace("\"", "\\\"")).append("\"");
