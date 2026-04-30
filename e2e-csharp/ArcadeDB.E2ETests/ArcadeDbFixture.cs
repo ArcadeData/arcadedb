@@ -29,6 +29,9 @@ public class ArcadeDbCollection : ICollectionFixture<ArcadeDbFixture> { }
 
 public class ArcadeDbFixture : IAsyncLifetime
 {
+    private const string RootUser = "root";
+    private const string RootPassword = "playwithdata";
+
     private IContainer _container = null!;
     public NpgsqlDataSource DataSource { get; private set; } = null!;
 
@@ -41,7 +44,7 @@ public class ArcadeDbFixture : IAsyncLifetime
             .WithPortBinding(2480, true)
             .WithPortBinding(5432, true)
             .WithEnvironment("JAVA_OPTS",
-                "-Darcadedb.server.rootPassword=playwithdata " +
+                $"-Darcadedb.server.rootPassword={RootPassword} " +
                 "-Darcadedb.server.plugins=PostgresProtocolPlugin")
             .WithWaitStrategy(Wait.ForUnixContainer()
                 .UntilHttpRequestIsSucceeded(r => r
@@ -55,18 +58,19 @@ public class ArcadeDbFixture : IAsyncLifetime
         var httpPort = _container.GetMappedPublicPort(2480);
         using var http = new HttpClient();
         http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue(
-            "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes("root:playwithdata")));
-        await http.PostAsync(
+            "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{RootUser}:{RootPassword}")));
+        using var response = await http.PostAsync(
             $"http://{_container.Hostname}:{httpPort}/api/v1/server",
             new StringContent(
                 "{\"command\":\"create database NpgsqlE2ETest\"}",
                 Encoding.UTF8,
                 "application/json"));
+        response.EnsureSuccessStatusCode();
 
         var pgPort = _container.GetMappedPublicPort(5432);
         DataSource = NpgsqlDataSource.Create(
             $"Host={_container.Hostname};Port={pgPort};Database=NpgsqlE2ETest;" +
-            "Username=root;Password=playwithdata;SSL Mode=Disable");
+            $"Username={RootUser};Password={RootPassword};SSL Mode=Disable");
 
         await using var conn = await DataSource.OpenConnectionAsync();
         await using var cmd = conn.CreateCommand();
@@ -76,7 +80,8 @@ public class ArcadeDbFixture : IAsyncLifetime
 
     public async Task DisposeAsync()
     {
-        await DataSource.DisposeAsync();
+        if (DataSource is not null)
+            await DataSource.DisposeAsync();
         await _container.DisposeAsync();
     }
 }
