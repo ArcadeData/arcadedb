@@ -111,10 +111,9 @@ public class PostgresE2ETests
         {
             await insert.ExecuteNonQueryAsync();
         }
-        catch (NpgsqlException)
+        catch (NpgsqlException ex) when (string.IsNullOrEmpty(ex.SqlState))
         {
-            // ArcadeDB sends a RowDescription after INSERT which Npgsql rejects; the write
-            // still commits, so verify via SELECT rather than failing here.
+            // ArcadeDB sends a RowDescription after INSERT which Npgsql rejects (protocol deviation); SqlState is null for protocol errors so SQL errors propagate normally.
         }
 
         await using var select = conn.CreateCommand();
