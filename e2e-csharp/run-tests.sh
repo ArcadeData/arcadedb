@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/ArcadeDB.E2ETests"
 
 if ! command -v dotnet >/dev/null 2>&1; then
-  echo "error: dotnet not found. Install .NET 9 SDK from https://dot.net" >&2
+  echo "error: dotnet not found. Install .NET 10 SDK from https://dot.net" >&2
   exit 1
 fi
 
