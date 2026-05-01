@@ -440,7 +440,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final Object... args) {
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
-      if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL())
+      final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
+      // Forward write commands to the leader. Executing writes locally on a follower would
+      // bypass leader-coordinated mutations of shared state (e.g., the schema dictionary,
+      // see issue #4039), where the local page cache lags behind the asynchronous state
+      // machine apply and produces inconsistent IDs across the cluster.
+      if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
         return forwardCommandToLeaderViaRaft(language, query, null, args);
       return proxied.command(language, query, configuration, args);
     }
@@ -468,7 +473,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final Map<String, Object> args) {
     if (!isLeader()) {
       final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
-      if (queryEngine.isExecutedByTheLeader() || queryEngine.analyze(query).isDDL())
+      final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
+      if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
         return forwardCommandToLeaderViaRaft(language, query, args, null);
     }
 
