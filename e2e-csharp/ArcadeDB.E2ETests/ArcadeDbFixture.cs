@@ -37,8 +37,8 @@ public class ArcadeDbFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var image = Environment.GetEnvironmentVariable("ARCADEDB_DOCKER_IMAGE")
-                    ?? "arcadedata/arcadedb:latest";
+        var imageEnv = Environment.GetEnvironmentVariable("ARCADEDB_DOCKER_IMAGE");
+        var image = string.IsNullOrWhiteSpace(imageEnv) ? "arcadedata/arcadedb:latest" : imageEnv;
 
         _container = new ContainerBuilder(image)
             .WithPortBinding(2480, true)
@@ -88,6 +88,7 @@ public class ArcadeDbFixture : IAsyncLifetime
     {
         if (DataSource is not null)
             await DataSource.DisposeAsync();
-        await _container.DisposeAsync();
+        if (_container is not null)
+            await _container.DisposeAsync();
     }
 }
