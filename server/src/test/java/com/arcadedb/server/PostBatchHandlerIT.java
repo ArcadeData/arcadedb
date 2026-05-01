@@ -134,6 +134,90 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Regression for discussion #4040: posting a JSONL line that omits the {@code @type} meta key
+   * must return a clear HTTP 400 error, not bubble up a raw {@code JSONObject[@type] not found}
+   * JSONException as HTTP 500.
+   */
+  @Test
+  void missingTypeReturnsHttp400() throws Exception {
+    testEachServer((serverIndex) -> {
+      final String body = "{\"@class\":\"V1\",\"id\":700}\n";
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+
+      final String error = readError(conn);
+      assertThat(error).contains("@type");
+      assertThat(error).contains("line 1");
+      conn.disconnect();
+    });
+  }
+
+  /**
+   * Regression for discussion #4040: posting a JSONL line that omits the {@code @class} meta key
+   * must return a clear HTTP 400 error.
+   */
+  @Test
+  void missingClassReturnsHttp400() throws Exception {
+    testEachServer((serverIndex) -> {
+      final String body = "{\"@type\":\"vertex\",\"id\":701}\n";
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+
+      final String error = readError(conn);
+      assertThat(error).contains("@class");
+      conn.disconnect();
+    });
+  }
+
+  /**
+   * Regression for discussion #4040: posting a body that is not valid JSON must return a clear
+   * HTTP 400 error.
+   */
+  @Test
+  void malformedJsonReturnsHttp400() throws Exception {
+    testEachServer((serverIndex) -> {
+      final String body = "this is not json\n";
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+      conn.disconnect();
+    });
+  }
+
+  /**
+   * Regression for discussion #4040: a user mistakenly sending a JSON array (the format expected
+   * by INSERT INTO ... CONTENT [...]) instead of JSONL must get a clear HTTP 400 with guidance,
+   * not HTTP 500.
+   */
+  @Test
+  void jsonArrayBodyReturnsHttp400WithGuidance() throws Exception {
+    testEachServer((serverIndex) -> {
+      final String body = "[{\"@type\":\"vertex\",\"@class\":\"V1\",\"id\":702}]\n";
+
+      final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "");
+      writeBody(conn, body);
+      conn.connect();
+
+      assertThat(conn.getResponseCode()).isEqualTo(400);
+
+      final String error = readError(conn);
+      assertThat(error.toLowerCase()).contains("jsonl");
+      conn.disconnect();
+    });
+  }
+
   @Test
   void lightEdgesParameter() throws Exception {
     testEachServer((serverIndex) -> {
