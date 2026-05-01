@@ -80,10 +80,19 @@ def parse_wheel_tag(wheel_path: Path) -> tuple[tuple[int, int], str]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("wheel", nargs="?", type=Path, help="Path to the .whl file")
-    parser.add_argument("jre", nargs="?", type=Path, help="Path to the bundled JRE/JDK directory")
-    parser.add_argument("--jre", dest="jre_only", type=Path, help="Inspect a JRE only and print its required tag")
+    parser.add_argument(
+        "jre", nargs="?", type=Path, help="Path to the bundled JRE/JDK directory"
+    )
+    parser.add_argument(
+        "--jre",
+        dest="jre_only",
+        type=Path,
+        help="Inspect a JRE only and print its required tag",
+    )
     args = parser.parse_args()
 
     if args.jre_only is not None:
