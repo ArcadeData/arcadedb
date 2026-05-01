@@ -15,6 +15,7 @@
  */
 
 using Npgsql;
+using NpgsqlTypes;
 using Xunit;
 
 namespace ArcadeDB.E2ETests;
@@ -122,6 +123,23 @@ public class PostgresE2ETests
         await using var reader = await select.ExecuteReaderAsync();
         Assert.True(await reader.ReadAsync());
         Assert.Equal("Charlie", reader.GetString(reader.GetOrdinal("name")));
+    }
+
+    [Fact]
+    public async Task TextOidParameterBinding()
+    {
+        await using var conn = await _fixture.DataSource.OpenConnectionAsync();
+        await using var insert = conn.CreateCommand();
+        insert.CommandText = "INSERT INTO NpgsqlTest SET id = 'tob1', name = 'OidTextUser', value = '77'";
+        await insert.ExecuteNonQueryAsync();
+
+        await using var select = conn.CreateCommand();
+        select.CommandText = "SELECT FROM NpgsqlTest WHERE name = $1";
+        // NpgsqlDbType.Text forces OID 25 in the bind message; PG JDBC sends varchar (OID 1043) instead
+        select.Parameters.Add(new NpgsqlParameter { Value = "OidTextUser", NpgsqlDbType = NpgsqlDbType.Text });
+        await using var reader = await select.ExecuteReaderAsync();
+        Assert.True(await reader.ReadAsync());
+        Assert.Equal("OidTextUser", reader.GetString(reader.GetOrdinal("name")));
     }
 
     [Fact]
