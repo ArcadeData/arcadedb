@@ -19,12 +19,15 @@ from pathlib import Path
 
 import pytest
 
-
-SCRIPT_PATH = Path(__file__).resolve().parents[1] / "scripts" / "verify_wheel_platform_tag.py"
+SCRIPT_PATH = (
+    Path(__file__).resolve().parents[1] / "scripts" / "verify_wheel_platform_tag.py"
+)
 
 
 def _load_verifier():
-    spec = importlib.util.spec_from_file_location("verify_wheel_platform_tag", SCRIPT_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "verify_wheel_platform_tag", SCRIPT_PATH
+    )
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
@@ -62,7 +65,9 @@ def test_parse_wheel_tag_extracts_version_and_arch(tmp_path: Path) -> None:
     assert arch == "x86_64"
 
 
-def test_main_succeeds_when_tag_matches(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_succeeds_when_tag_matches(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     verifier = _load_verifier()
     jre_dir = tmp_path / "jre"
     jre_dir.mkdir()
@@ -76,7 +81,9 @@ def test_main_succeeds_when_tag_matches(tmp_path: Path, capsys: pytest.CaptureFi
     assert "OK" in capsys.readouterr().out
 
 
-def test_main_fails_when_tag_higher_than_jre(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_fails_when_tag_higher_than_jre(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """Reproduces issue #4037: wheel tagged manylinux_2_35 but JRE only needs GLIBC_2.34."""
     verifier = _load_verifier()
     jre_dir = tmp_path / "jre"
@@ -93,7 +100,9 @@ def test_main_fails_when_tag_higher_than_jre(tmp_path: Path, capsys: pytest.Capt
     assert "manylinux_2_35" in captured.err or "manylinux_2_34" in captured.err
 
 
-def test_main_fails_when_tag_lower_than_jre(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+def test_main_fails_when_tag_lower_than_jre(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     """A too-low tag would let the wheel install on systems where the JRE cannot run."""
     verifier = _load_verifier()
     jre_dir = tmp_path / "jre"
