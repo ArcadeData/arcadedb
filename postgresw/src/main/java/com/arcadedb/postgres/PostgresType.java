@@ -56,6 +56,8 @@ public enum PostgresType {
   BOOLEAN(16, Boolean.class, 1, value -> value.equalsIgnoreCase("true")),
   DATE(1082, Date.class, 8, value -> new Date(Long.parseLong(value))),
   VARCHAR(1043, String.class, -1, value -> value),
+  TEXT(25, String.class, -1, value -> value),
+  BPCHAR(1042, String.class, -1, value -> value),
   JSON(114, JSONObject.class, -1, JSONObject::new),
   // Adding array types with PostgreSQL array type codes
   ARRAY_INT(1007, Collection.class, -1, value -> parseArrayFromString(value, Integer::parseInt)),
@@ -488,8 +490,8 @@ public enum PostgresType {
     }
 
     return switch (type) {
-      case VARCHAR -> {
-        // In PostgreSQL binary format, VARCHAR/TEXT is just the raw bytes
+      case VARCHAR, TEXT, BPCHAR -> {
+        // In PostgreSQL binary format, VARCHAR/TEXT/BPCHAR is just the raw bytes
         // The length is already provided in the Bind message's parameter size
         yield new String(valueAsBytes, DatabaseFactory.getDefaultCharset());
       }

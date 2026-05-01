@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.test.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+import org.postgresql.util.PGobject;
 import org.postgresql.util.PSQLException;
 
 import java.sql.*;
@@ -530,6 +531,40 @@ class PostgresProtocolIT extends BaseGraphServerTest {
       assertThat(rs.next()).isTrue();
       assertThat(rs.getString("name")).isEqualTo("Alice");
       assertThat(rs.getInt("age")).isEqualTo(30);
+    }
+  }
+
+  @Test
+  void cypherWithStringParameter() throws Exception {
+    // Issue #4036: Cypher named/positional parameters not working when using C# Npgsql driver.
+    // Npgsql sends string parameters with OID 25 (TEXT), which previously was unsupported
+    // and caused: "Error on parsing bind message: Type with code 25 not supported for deserializing".
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE VERTEX TYPE CypherPersonParam IF NOT EXISTS");
+        st.execute("{opencypher} CREATE (p:CypherPersonParam {name: 'Keanu Reeves', born: 1964})");
+      }
+
+      try (var pst = conn.prepareStatement("{opencypher} MATCH (p:CypherPersonParam {name: ?}) RETURN p.name AS Name, p.born AS Born")) {
+        pst.setString(1, "Keanu Reeves");
+        ResultSet rs = pst.executeQuery();
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("Name")).isEqualTo("Keanu Reeves");
+        assertThat(rs.getInt("Born")).isEqualTo(1964);
+      }
+
+      // Send the parameter as PostgreSQL TEXT type (OID 25) explicitly.
+      // This reproduces what Npgsql does by default for C# strings.
+      try (var pst = conn.prepareStatement("{opencypher} MATCH (p:CypherPersonParam {name: ?}) RETURN p.name AS Name, p.born AS Born")) {
+        final PGobject param = new PGobject();
+        param.setType("text");
+        param.setValue("Keanu Reeves");
+        pst.setObject(1, param);
+        ResultSet rs = pst.executeQuery();
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getString("Name")).isEqualTo("Keanu Reeves");
+        assertThat(rs.getInt("Born")).isEqualTo(1964);
+      }
     }
   }
 

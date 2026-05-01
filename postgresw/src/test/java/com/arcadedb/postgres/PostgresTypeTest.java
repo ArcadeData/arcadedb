@@ -472,6 +472,23 @@ class PostgresTypeTest {
   }
 
   @Test
+  void deserializeTextText() {
+    // Issue #4036: Npgsql sends string parameters with TEXT (OID 25) by default.
+    // Make sure the server accepts text format text deserialization.
+    byte[] data = "Keanu Reeves".getBytes();
+    Object result = PostgresType.deserialize(PostgresType.TEXT.code, 0, data);
+    assertThat(result).isEqualTo("Keanu Reeves");
+  }
+
+  @Test
+  void deserializeTextBpchar() {
+    // BPCHAR (OID 1042) is the blank-padded char type. Treat the same as VARCHAR.
+    byte[] data = "value".getBytes();
+    Object result = PostgresType.deserialize(PostgresType.BPCHAR.code, 0, data);
+    assertThat(result).isEqualTo("value");
+  }
+
+  @Test
   void deserializeTextJson() {
     byte[] data = "{\"key\":\"value\"}".getBytes();
     Object result = PostgresType.deserialize(PostgresType.JSON.code, 0, data);
@@ -626,6 +643,21 @@ class PostgresTypeTest {
     byte[] data = "hello binary".getBytes();
     Object result = PostgresType.deserialize(PostgresType.VARCHAR.code, 1, data);
     assertThat(result).isEqualTo("hello binary");
+  }
+
+  @Test
+  void deserializeBinaryText() {
+    // Issue #4036: Npgsql may send TEXT (OID 25) parameters in binary format.
+    byte[] data = "Keanu Reeves".getBytes();
+    Object result = PostgresType.deserialize(PostgresType.TEXT.code, 1, data);
+    assertThat(result).isEqualTo("Keanu Reeves");
+  }
+
+  @Test
+  void deserializeBinaryBpchar() {
+    byte[] data = "value".getBytes();
+    Object result = PostgresType.deserialize(PostgresType.BPCHAR.code, 1, data);
+    assertThat(result).isEqualTo("value");
   }
 
   @Test
@@ -1188,6 +1220,8 @@ class PostgresTypeTest {
     assertThat(PostgresType.BOOLEAN.code).isEqualTo(16);
     assertThat(PostgresType.DATE.code).isEqualTo(1082);
     assertThat(PostgresType.VARCHAR.code).isEqualTo(1043);
+    assertThat(PostgresType.TEXT.code).isEqualTo(25);
+    assertThat(PostgresType.BPCHAR.code).isEqualTo(1042);
     assertThat(PostgresType.JSON.code).isEqualTo(114);
     assertThat(PostgresType.ARRAY_INT.code).isEqualTo(1007);
     assertThat(PostgresType.ARRAY_LONG.code).isEqualTo(1016);
