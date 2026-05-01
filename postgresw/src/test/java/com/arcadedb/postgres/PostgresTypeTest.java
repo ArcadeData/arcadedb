@@ -22,9 +22,6 @@ import com.arcadedb.database.Binary;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.Arguments;
-import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -40,7 +37,6 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -469,6 +465,27 @@ class PostgresTypeTest {
     byte[] data = "hello world".getBytes();
     Object result = PostgresType.deserialize(PostgresType.VARCHAR.code, 0, data);
     assertThat(result).isEqualTo("hello world");
+  }
+
+  @Test
+  void deserializeTextOid25AsString() {
+    // OID 25 is PostgreSQL TEXT type - must be treated the same as VARCHAR
+    byte[] data = "hello world".getBytes();
+    Object result = PostgresType.deserialize(PostgresType.TEXT.code, 0, data);
+    assertThat(result).isEqualTo("hello world");
+  }
+
+  @Test
+  void deserializeBinaryOid25AsString() {
+    // OID 25 in binary format - Npgsql 10 sends strings as text OID in binary format
+    byte[] data = "Alice".getBytes();
+    Object result = PostgresType.deserialize(PostgresType.TEXT.code, 1, data);
+    assertThat(result).isEqualTo("Alice");
+  }
+
+  @Test
+  void textTypeCodeIs25() {
+    assertThat(PostgresType.TEXT.code).isEqualTo(25);
   }
 
   @Test
@@ -1133,6 +1150,7 @@ class PostgresTypeTest {
     assertThat(PostgresType.INTEGER.isArrayType()).isFalse();
     assertThat(PostgresType.LONG.isArrayType()).isFalse();
     assertThat(PostgresType.VARCHAR.isArrayType()).isFalse();
+    assertThat(PostgresType.TEXT.isArrayType()).isFalse();
     assertThat(PostgresType.BOOLEAN.isArrayType()).isFalse();
     assertThat(PostgresType.DATE.isArrayType()).isFalse();
     assertThat(PostgresType.JSON.isArrayType()).isFalse();
@@ -1244,6 +1262,7 @@ class PostgresTypeTest {
     assertThat(PostgresType.BOOLEAN.size).isEqualTo(1);
     assertThat(PostgresType.DATE.size).isEqualTo(8);
     assertThat(PostgresType.VARCHAR.size).isEqualTo(-1); // variable
+    assertThat(PostgresType.TEXT.size).isEqualTo(-1); // variable
     assertThat(PostgresType.JSON.size).isEqualTo(-1); // variable
     // Arrays are variable length
     assertThat(PostgresType.ARRAY_INT.size).isEqualTo(-1);

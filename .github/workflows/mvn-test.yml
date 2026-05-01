@@ -409,6 +409,35 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
+  csharp-e2e-tests:
+    runs-on: ubuntu-latest
+    needs: build-and-package
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "10.0"
+          cache: true
+          cache-dependency-path: "e2e-csharp/ArcadeDB.E2ETests/ArcadeDB.E2ETests.csproj"
+
+      - name: Restore Docker image
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+
+      - name: E2E C# Tests
+        working-directory: e2e-csharp/ArcadeDB.E2ETests
+        run: dotnet test --logger "trx;LogFileName=test-results.trx"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
+
   coverage-report:
     runs-on: ubuntu-latest
     needs: [ unit-tests, integration-tests, slow-unit-tests ]
