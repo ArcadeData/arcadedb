@@ -128,12 +128,20 @@ public class PostgresE2ETests
     public async Task Transaction()
     {
         await using var conn = await _fixture.DataSource.OpenConnectionAsync();
-        await using var tx = await conn.BeginTransactionAsync();
+
+        // ArcadeDB only accepts bare BEGIN; Npgsql's BeginTransactionAsync sends
+        // BEGIN TRANSACTION ISOLATION LEVEL READ COMMITTED which ArcadeDB rejects.
+        await using var begin = conn.CreateCommand();
+        begin.CommandText = "BEGIN";
+        await begin.ExecuteNonQueryAsync();
+
         await using var insert = conn.CreateCommand();
         insert.CommandText = "INSERT INTO NpgsqlTest SET id = 'tx1', name = 'TxTest', value = '999'";
-        insert.Transaction = tx;
         await insert.ExecuteNonQueryAsync();
-        await tx.CommitAsync();
+
+        await using var commit = conn.CreateCommand();
+        commit.CommandText = "COMMIT";
+        await commit.ExecuteNonQueryAsync();
 
         await using var select = conn.CreateCommand();
         select.CommandText = "SELECT FROM NpgsqlTest WHERE id = $1";
