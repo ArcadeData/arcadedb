@@ -1385,6 +1385,33 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     });
   }
 
+  @Test
+  void issue4043_allReducePredicateOnIteratorVariable() {
+    // Issue #4043: predicate referencing the iterator variable returned false even
+    // when every element satisfied it. Neo4j returns true for all three queries below.
+    database.transaction(() -> {
+      ResultSet rs = database.query("opencypher",
+          "RETURN allReduce(acc = 0, x IN [1, 2, 3] | acc + x, x > 0) AS result");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat((boolean) rs.next().getProperty("result")).isTrue();
+
+      rs = database.query("opencypher",
+          "RETURN allReduce(acc = 0, x IN [1, 2, 3] | acc + x, x > 10) AS result");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat((boolean) rs.next().getProperty("result")).isFalse();
+
+      rs = database.query("opencypher",
+          "RETURN allReduce(acc = 0, x IN [] | acc + x, x > 0) AS result");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat((boolean) rs.next().getProperty("result")).isTrue();
+
+      rs = database.query("opencypher",
+          "RETURN allReduce(acc = 0, x IN [1, 2, 3] | acc + x, acc >= 0) AS result");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat((boolean) rs.next().getProperty("result")).isTrue();
+    });
+  }
+
   // Note: Integration tests for Cypher queries with built-in functions
   // should be placed in a test class that has access to the Cypher query engine.
   // The tests above verify the function implementations directly.

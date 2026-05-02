@@ -82,13 +82,9 @@ public class AllReduceExpression implements Expression {
     else
       throw new IllegalArgumentException("allReduce() requires a list, got: " + listValue.getClass().getSimpleName());
 
-    // Check initial accumulator against predicate
-    final ResultInternal initResult = createIterationResult(result, null, accumulator);
-    final Object initCheck = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(predicateExpression, initResult, context);
-    if (!Boolean.TRUE.equals(initCheck))
-      return false;
-
-    // Iterate over each element, updating the accumulator and checking the predicate
+    // Iterate over each element, updating the accumulator and checking the predicate.
+    // The predicate is only evaluated within each iteration where the iterator variable is bound;
+    // an empty list yields vacuous truth (true). Matches Neo4j/Cypher 25 semantics.
     for (final Object item : iterable) {
       final ResultInternal iterResult = createIterationResult(result, item, accumulator);
 
