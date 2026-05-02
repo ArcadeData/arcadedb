@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.procedures.algo;
 
+import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -26,6 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.function.sql.graph.SQLFunctionAstar;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
@@ -102,23 +104,43 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
     if (pathRids == null || pathRids.isEmpty())
       return Stream.empty();
 
-    // Calculate total weight
+    // The A* implementation returns vertices only. Traverse the edges between consecutive
+    // vertices to reconstruct the path's total weight and to expose the relationships.
+    final Database db = context.getDatabase();
+    final Vertex.DIRECTION dir = parseDirection(direction);
+    final String[] edgeTypeFilter = relType != null && !relType.isEmpty() ? new String[] { relType } : null;
+
+    final List<RID> pathWithEdges = new ArrayList<>(pathRids.size() * 2 - 1);
+    pathWithEdges.add(pathRids.get(0));
+
     double totalWeight = 0.0;
     for (int i = 0; i < pathRids.size() - 1; i++) {
-      final RID current = pathRids.get(i);
-      final var currentDoc = context.getDatabase().lookupByRID(current, true);
+      final Vertex from = pathRids.get(i).asVertex();
+      final RID toRid = pathRids.get(i + 1);
 
-      // If this is an edge, get its weight
-      if (currentDoc.getRecord() instanceof Edge edge) {
-        final Object weight = edge.get(weightProperty);
-        if (weight instanceof Number num) {
-          totalWeight += num.doubleValue();
+      Edge bestEdge = null;
+      double bestWeight = Double.POSITIVE_INFINITY;
+      for (final Edge edge : edgeTypeFilter != null ? from.getEdges(dir, edgeTypeFilter) : from.getEdges(dir)) {
+        final RID otherRid = edge.getOut().equals(from.getIdentity()) ? edge.getIn() : edge.getOut();
+        if (!toRid.equals(otherRid))
+          continue;
+        final Object w = edge.get(weightProperty);
+        final double edgeWeight = w instanceof Number num ? num.doubleValue() : 0.0;
+        if (edgeWeight < bestWeight) {
+          bestWeight = edgeWeight;
+          bestEdge = edge;
         }
       }
+
+      if (bestEdge != null) {
+        totalWeight += bestWeight;
+        pathWithEdges.add(bestEdge.getIdentity());
+      }
+      pathWithEdges.add(toRid);
     }
 
-    // Build path representation
-    final Map<String, Object> path = buildPath(pathRids, context.getDatabase());
+    // Build path representation including edges
+    final Map<String, Object> path = buildPath(pathWithEdges, db);
 
     final ResultInternal result = new ResultInternal();
     result.setProperty("path", path);
