@@ -56,7 +56,7 @@ import java.util.Set;
 public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.sparseNeighbors";
 
-  private static final Set<String> OPTIONS = Set.of("filter");
+  private static final Set<String> OPTIONS = Set.of("filter", "groupBy", "groupSize");
 
   public SQLFunctionVectorSparseNeighbors() {
     super(NAME);
@@ -81,10 +81,16 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     final int k = params[3] instanceof Number n ? n.intValue() : Integer.parseInt(params[3].toString());
 
     Set<RID> allowedRIDs = null;
+    String groupBy = null;
+    int groupSize = 1;
     if (params.length >= 5 && params[4] != null) {
       if (params[4] instanceof java.util.Map<?, ?> rawMap) {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
         allowedRIDs = parseFilter(opts.getList("filter"), context);
+        groupBy = opts.getString("groupBy", null);
+        groupSize = opts.getInt("groupSize", 1);
+        if (groupSize < 1)
+          throw new CommandSQLParsingException(NAME + " groupSize must be >= 1, got " + groupSize);
       } else {
         throw new CommandSQLParsingException(NAME + " 5th parameter must be an options map, got: " + params[4]);
       }
@@ -97,7 +103,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       throw new CommandSQLParsingException(
           "Index '" + indexSpec + "' is not a sparse vector index");
 
-    return executeWithIndexes(sparseIndexes, queryIndices, queryValues, k, allowedRIDs, context);
+    return executeWithIndexes(sparseIndexes, queryIndices, queryValues, k, allowedRIDs, groupBy, groupSize, context);
   }
 
   private TypeIndex resolveTypeIndex(final String indexSpec, final CommandContext context) {
@@ -156,25 +162,47 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
   }
 
   private Object executeWithIndexes(final List<LSMSparseVectorIndex> indexes, final int[] queryIndices,
-      final float[] queryValues, final int k, final Set<RID> allowedRIDs, final CommandContext context) {
+      final float[] queryValues, final int k, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
+      final CommandContext context) {
+
+    // Over-fetch when grouping so the post-traversal filter has enough material to fill k groups
+    // at groupSize each. Same 5x cushion as `vector.neighbors`, with the same best-effort caveat.
+    final int fetchK = groupBy == null ? k : Math.max(k * groupSize * 5, k);
 
     final ArrayList<LSMSparseVectorIndex.RidScore> merged = new ArrayList<>();
     for (final LSMSparseVectorIndex idx : indexes)
-      merged.addAll(idx.topK(queryIndices, queryValues, k, allowedRIDs));
+      merged.addAll(idx.topK(queryIndices, queryValues, fetchK, allowedRIDs));
 
     merged.sort((a, b) -> Float.compare(b.score, a.score));
 
-    final int resultCount = Math.min(k, merged.size());
-    final ArrayList<Object> result = new ArrayList<>(resultCount);
     final BasicDatabase db = context.getDatabase();
+    final ArrayList<Object> result = new ArrayList<>();
+    final java.util.HashMap<Object, Integer> perGroup = groupBy != null ? new java.util.HashMap<>() : null;
 
-    for (int i = 0; i < resultCount; i++) {
-      final LSMSparseVectorIndex.RidScore neighbor = merged.get(i);
+    for (final LSMSparseVectorIndex.RidScore neighbor : merged) {
+      if (groupBy == null) {
+        if (result.size() >= k)
+          break;
+      } else if (perGroup.size() >= k
+          && perGroup.values().stream().allMatch(c -> c >= groupSize)) {
+        break;
+      }
+
       final Document record;
       try {
         record = (Document) db.lookupByRID(neighbor.rid, true);
       } catch (final RecordNotFoundException e) {
         continue;
+      }
+
+      if (groupBy != null) {
+        final Object groupKey = record.get(groupBy);
+        final int existing = perGroup.getOrDefault(groupKey, 0);
+        if (existing == 0 && perGroup.size() >= k)
+          continue;
+        if (existing >= groupSize)
+          continue;
+        perGroup.put(groupKey, existing + 1);
       }
 
       final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
@@ -264,6 +292,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
 
   @Override
   public String getSyntax() {
-    return NAME + "(<index-name>, <indices>, <values>, <k>[, { filter: [<rid>, ...] }])";
+    return NAME + "(<index-name>, <indices>, <values>, <k>[, { filter: [<rid>, ...], "
+        + "groupBy: <field>, groupSize: <int> }])";
   }
 }

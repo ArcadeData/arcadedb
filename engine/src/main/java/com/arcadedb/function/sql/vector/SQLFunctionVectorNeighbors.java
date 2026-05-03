@@ -36,7 +36,14 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Returns the K neighbors from a vertex. This function requires a vector index has been created beforehand.
@@ -46,7 +53,7 @@ import java.util.*;
 public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.neighbors";
 
-  private static final Set<String> OPTIONS = Set.of("efSearch", "filter");
+  private static final Set<String> OPTIONS = Set.of("efSearch", "filter", "groupBy", "groupSize");
 
   public SQLFunctionVectorNeighbors() {
     super(NAME);
@@ -70,15 +77,21 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
     // Optional 4th parameter. Either:
     //   - a number: efSearch (backward-compatible positional form)
-    //   - a map: options {efSearch, filter}
+    //   - a map: options {efSearch, filter, groupBy, groupSize}
     int efSearch = -1;
     Set<RID> allowedRIDs = null;
+    String groupBy = null;
+    int groupSize = 1;
 
     if (params.length >= 4 && params[3] != null) {
       if (params[3] instanceof Map<?, ?> rawMap) {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
         efSearch = opts.getInt("efSearch", -1);
         allowedRIDs = parseFilter(opts.getList("filter"), context);
+        groupBy = opts.getString("groupBy", null);
+        groupSize = opts.getInt("groupSize", 1);
+        if (groupSize < 1)
+          throw new CommandSQLParsingException(NAME + " groupSize must be >= 1, got " + groupSize);
       } else if (params[3] instanceof Number n) {
         efSearch = n.intValue();
       } else {
@@ -97,7 +110,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       // Assume it's just an index name
       final Index directIndex = context.getDatabase().getSchema().getIndexByName(indexSpec);
       if (directIndex instanceof TypeIndex typeIndex) {
-        return executeWithTypeIndex(typeIndex, null, key, limit, efSearch, allowedRIDs, context);
+        return executeWithTypeIndex(typeIndex, null, key, limit, efSearch, allowedRIDs, groupBy, groupSize, context);
       }
       throw new CommandSQLParsingException(
           "Index '" + indexSpec + "' is not a vector index (found: " + (directIndex != null ? directIndex.getClass().getSimpleName() : "null") + ")");
@@ -122,7 +135,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       allowedBucketIds.add(bucket.getFileId());
     }
 
-    return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, allowedRIDs, context);
+    return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, allowedRIDs, groupBy, groupSize, context);
   }
 
   private static Set<RID> parseFilter(final List<?> items, final CommandContext context) {
@@ -148,7 +161,8 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   }
 
   private Object executeWithTypeIndex(final TypeIndex typeIndex, final IntHashSet allowedBucketIds, final Object key,
-      final int limit, final int efSearch, final Set<RID> allowedRIDs, final CommandContext context) {
+      final int limit, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
+      final CommandContext context) {
     final var bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0) {
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
@@ -174,46 +188,75 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     }
 
     // Search across all matching vector indexes and merge results
-    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, allowedRIDs, context);
+    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, allowedRIDs, groupBy, groupSize, context);
   }
 
   /**
    * Search across multiple vector indexes and merge the results.
    * This is used when searching within a specific type that may have multiple buckets.
+   * <p>
+   * When {@code groupBy} is set, the index is asked for an over-fetched candidate pool and the
+   * top-{@code limit} <em>groups</em> are returned, each capped at {@code groupSize} rows. Best-effort:
+   * fewer groups may be returned if the candidate pool runs out before {@code limit} groups are filled,
+   * in which case raising the index's {@code efSearch} option improves coverage.
    */
   private Object executeWithLSMVectorIndexes(final List<LSMVectorIndex> vectorIndexes, final Object key, final int limit,
-      final int efSearch, final Set<RID> allowedRIDs, final CommandContext context) {
+      final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize, final CommandContext context) {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
+
+    // When grouping, over-fetch candidates so the post-traversal filter has enough material to fill
+    // limit groups at groupSize each. The 5x cushion is empirical and may be undershoot for highly
+    // skewed group distributions; users can lift it via efSearch.
+    final int fetchPerIndex = groupBy == null ? limit : Math.max(limit * groupSize * 5, limit);
 
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
 
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
-      // Request more results from each index to ensure we have enough after merging
-      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, limit, efSearch, allowedRIDs);
+      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchPerIndex, efSearch, allowedRIDs);
       allNeighbors.addAll(neighbors);
     }
 
     // Sort by distance (ascending - closer is better for similarity search)
     allNeighbors.sort(Comparator.comparing(Pair::getSecond));
 
-    // Take top k results
-    final int resultCount = Math.min(limit, allNeighbors.size());
-    final ArrayList<Object> result = new ArrayList<>(resultCount);
+    final BasicDatabase db = context.getDatabase();
+    final ArrayList<Object> result = new ArrayList<>();
+    final HashMap<Object, Integer> perGroup = groupBy != null ? new HashMap<>() : null;
 
-    for (int i = 0; i < resultCount; i++) {
-      final Pair<RID, Float> neighbor = allNeighbors.get(i);
+    for (final Pair<RID, Float> neighbor : allNeighbors) {
+      // Stop conditions:
+      //   - groupBy unset: stop once we collected `limit` rows
+      //   - groupBy set: stop once we filled `limit` groups
+      if (groupBy == null) {
+        if (result.size() >= limit)
+          break;
+      } else if (perGroup.size() >= limit
+          && perGroup.values().stream().allMatch(c -> c >= groupSize)) {
+        break;
+      }
+
       final RID rid = neighbor.getFirst();
-
       final Document record;
       try {
-        record = (Document) context.getDatabase().lookupByRID(rid, true);
+        record = (Document) db.lookupByRID(rid, true);
       } catch (final RecordNotFoundException e) {
         // Skip records that no longer exist in the bucket (issue #3717).
         // This can happen when the vector index has stale entries pointing to deleted records,
         // e.g., after crash recovery, backup restore, or index/storage inconsistencies.
         continue;
+      }
+
+      if (groupBy != null) {
+        final Object groupKey = record.get(groupBy);
+        final int existing = perGroup.getOrDefault(groupKey, 0);
+        // Skip if the group already saw a new group beyond our limit.
+        if (existing == 0 && perGroup.size() >= limit)
+          continue;
+        if (existing >= groupSize)
+          continue;
+        perGroup.put(groupKey, existing + 1);
       }
 
       final float distance = neighbor.getSecond();
@@ -273,6 +316,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<index-name>, <key-or-vector>, <k>[, <efSearch> | { efSearch: <int>, filter: [<rid>, ...] }])";
+    return NAME + "(<index-name>, <key-or-vector>, <k>[, <efSearch> | "
+        + "{ efSearch: <int>, filter: [<rid>, ...], groupBy: <field>, groupSize: <int> }])";
   }
 }
