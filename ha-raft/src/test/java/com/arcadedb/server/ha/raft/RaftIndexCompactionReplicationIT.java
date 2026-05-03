@@ -21,8 +21,10 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.engine.FileManager;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
@@ -39,6 +41,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -343,6 +346,67 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
           .as("Server %d index entry count should match leader after concurrent compaction", serverIndex)
           .isEqualTo(totalExpected);
     });
+  }
+
+  /**
+   * Regression test for issue #4063: when another recordFileChanges session is active on the
+   * leader, {@link com.arcadedb.server.ha.raft.RaftReplicatedDatabase#runWithCompactionReplication}
+   * must not invoke the compaction callback. The pre-fix "local-only fallback" silently ran the
+   * compaction without replicating its files/WAL/schema, which renamed the leader's mutable
+   * index file but left followers with the old name (or no file at all) - eventually surfacing
+   * as a "Cannot find index ..." warning when the follower reloaded its schema.
+   * <p>
+   * The post-fix behaviour is to defer: return {@code false} immediately and let the async
+   * scheduler retry once the contending recording session has released the file manager. This
+   * test enforces the contract by holding a recording session and verifying the compaction
+   * callable is never invoked.
+   */
+  @Test
+  void compactionDefersWhenRecordingSessionActive() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final com.arcadedb.database.DatabaseInternal leaderDb =
+        (com.arcadedb.database.DatabaseInternal) getServerDatabase(leaderIndex, getDatabaseName());
+
+    leaderDb.getSchema().buildVertexType().withName("RaftDeferred").withTotalBuckets(1).create();
+
+    // Settle any in-flight async tasks, then poll for an unowned recording session.
+    leaderDb.async().waitCompletion();
+    final FileManager fm = leaderDb.getEmbedded().getFileManager();
+    final long acquireDeadline = System.currentTimeMillis() + 5_000;
+    boolean started = false;
+    while (System.currentTimeMillis() < acquireDeadline) {
+      if (fm.startRecordingChanges()) {
+        started = true;
+        break;
+      }
+      Thread.sleep(50);
+    }
+    assertThat(started).as("Test must own the recording session for the assertion to be meaningful").isTrue();
+
+    final java.util.concurrent.atomic.AtomicBoolean callbackInvoked = new java.util.concurrent.atomic.AtomicBoolean(false);
+    final boolean returnedValue;
+    try {
+      // The production call site is LSMTreeIndex.compact() which goes through
+      // getWrappedDatabaseInstance() to reach the RaftReplicatedDatabase override; using the
+      // ServerDatabase wrapper directly would land on the no-op default in DatabaseInternal.
+      returnedValue = leaderDb.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
+        callbackInvoked.set(true);
+        return true;
+      });
+    } finally {
+      fm.stopRecordingChanges();
+    }
+
+    assertThat(callbackInvoked.get())
+        .as("runWithCompactionReplication must NOT invoke the compaction callback when a recording session is in progress; "
+            + "running it locally would diverge the leader from followers and ultimately log 'Cannot find index ...' warnings")
+        .isFalse();
+    assertThat(returnedValue)
+        .as("runWithCompactionReplication must return false (deferred) so the index status resets to AVAILABLE and the next "
+            + "onAfterCommit reschedules compaction once the contending session has released the file manager")
+        .isFalse();
   }
 
   private void insertPersonRecords(final Database database) {

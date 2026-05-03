@@ -1139,8 +1139,21 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
 
     if (!proxied.getFileManager().startRecordingChanges()) {
-      // Already recording (nested schema change): run compaction locally only
-      return invokeCompaction(compaction);
+      // Another recordFileChanges/runWithCompactionReplication session is already active on this
+      // node. Running the compaction now would either share the active session's recordedChanges
+      // list (and lose its WAL pages, which are written outside the schema-commit-thread buffer)
+      // or skip replication entirely - both produce leader/follower divergence: the leader's
+      // mutable file gets renamed but followers either never see the new pages or never see the
+      // new file at all. That is what surfaces later as the "Cannot find index ..." warning on
+      // followers (issue #4063).
+      //
+      // Defer instead. Returning false bubbles up to LSMTreeIndex.compact(), which resets the
+      // index status to AVAILABLE in its finally block; the next onAfterCommit will reschedule
+      // the compaction once the contending recording session has released the file manager.
+      HALog.log(this, HALog.DETAILED,
+          "Skipping compaction for database '%s' because a recording session is in progress; will retry on next schedule",
+          getName());
+      return false;
     }
 
     try {
