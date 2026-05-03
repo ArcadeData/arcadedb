@@ -20,7 +20,14 @@
   <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml">
     <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/mvn-deploy.yml/badge.svg">
   </a>
-  &nbsp;
+
+ <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-resilience-tests.yml">
+      <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/ha-resilience-tests.yml/badge.svg">
+    </a>
+ <a href="https://github.com/ArcadeData/arcadedb/actions/workflows/load-tests.yml">
+      <img src="https://github.com/ArcadeData/arcadedb/actions/workflows/load-tests.yml/badge.svg">
+    </a>
+
   <a href="https://codecov.io/github/ArcadeData/arcadedb">
    <img src="https://codecov.io/github/ArcadeData/arcadedb/graph/badge.svg?token=0690JAJHIO"/>
   </a>
@@ -64,7 +71,10 @@
 	<a href="https://arcadedb.com/blog/"><img height="25" src="studio/src/main/resources/static/images/social/blog.svg" alt="Blog"></a>
 </p>
 
-ArcadeDB is a Multi-Model DBMS created by Luca Garulli, the same founder of [OrientDB](https://github.com/orientechnologies/orientdb),
+
+
+ArcadeDB is a Multi-Model DBMS created by Luca Garulli, the same founder
+of [OrientDB](https://github.com/orientechnologies/orientdb),
 after SAP's acquisition. Written from scratch with a brand-new engine made of Alien Technology, ArcadeDB is able to crunch millions
 of records per second on common hardware with minimal resource usage. ArcadeDB reuses OrientDB's SQL engine (heavily modified) and
 some utility classes. It's written in LLJ: Low Level Java - still Java21+ but only using low level APIs to leverage advanced
@@ -81,7 +91,8 @@ ArcadeDB supports the following models:
   SQL)
 - [Key/Value](https://docs.arcadedb.com#keyvalue-model) (compatible with the Redis driver)
 - [Search Engine](https://docs.arcadedb.com/#searchengine-model)
-- [Time Series](https://docs.arcadedb.com/#timeseries-model) (with InfluxDB Line Protocol, Prometheus remote_write/read, and PromQL support)
+- [Time Series](https://docs.arcadedb.com/#timeseries-model) (with InfluxDB Line Protocol, Prometheus remote_write/read, and PromQL
+  support)
 - [Vector Embedding](https://docs.arcadedb.com/#vector-model)
 - [Geospatial](https://docs.arcadedb.com/#geospatial-model)
 
@@ -95,13 +106,16 @@ ArcadeDB understands multiple languages:
 
 ArcadeDB key capabilities:
 
-- **70+ Built-in Graph Algorithms** — Pathfinding, centrality, community detection, link prediction, graph embeddings, and more — all available out of the box
+- **70+ Built-in Graph Algorithms** — Pathfinding, centrality, community detection, link prediction, graph embeddings, and more —
+  all available out of the box
 - **Parallel Query Execution** — SQL queries leverage multiple CPU cores for faster execution on large datasets
 - **Materialized Views** — Pre-computed query results stored and automatically maintained
-- **MCP Server** — Built-in [Model Context Protocol](https://docs.arcadedb.com/#mcp-server) server for AI assistant and LLM integration
+- **MCP Server** — Built-in [Model Context Protocol](https://docs.arcadedb.com/#mcp-server) server for AI assistant and LLM
+  integration
 - **AI Assistant** — Integrated AI assistant in Studio (Beta) for query help and database management
 - **Geospatial Indexing** — Native spatial queries and proximity searches with `geo.*` SQL functions
-- **TimeSeries** — Columnar storage with Gorilla/Delta-of-Delta compression, InfluxDB/Prometheus ingestion, PromQL queries, Grafana integration
+- **TimeSeries** — Columnar storage with Gorilla/Delta-of-Delta compression, InfluxDB/Prometheus ingestion, PromQL queries, Grafana
+  integration
 - **Hash Indexes** — Extendible hashing for faster exact-match lookups alongside LSM-Tree indexes
 
 ArcadeDB can be used as:
@@ -110,15 +124,18 @@ ArcadeDB can be used as:
 - Embedded from Python via bindings: [arcadedb-embedded-python](https://github.com/humemai/arcadedb-embedded-python)
 - Remotely by using [HTTP/JSON](https://docs.arcadedb.com#http-json-api)
 - Remotely by using a [Postgres driver](https://docs.arcadedb.com#postgres-driver) (ArcadeDB implements Postgres Wire protocol)
-- Remotely by using a [Redis driver](https://docs.arcadedb.com#redis-query-language) (only a subset of the operations are implemented)
-- Remotely by using a [MongoDB driver](https://docs.arcadedb.com#mongodb-query-language) (only a subset of the operations are implemented)
+- Remotely by using a [Redis driver](https://docs.arcadedb.com#redis-query-language) (only a subset of the operations are
+  implemented)
+- Remotely by using a [MongoDB driver](https://docs.arcadedb.com#mongodb-query-language) (only a subset of the operations are
+  implemented)
 - By AI assistants via the built-in [MCP Server](https://docs.arcadedb.com/#mcp-server) (Model Context Protocol)
 
 For more information, see the [documentation](https://docs.arcadedb.com).
 
 ### Use Cases
 
-Explore real-world examples in the [arcadedb-usecases](https://github.com/ArcadeData/arcadedb-usecases) repository — self-contained projects with Docker Compose, SQL schemas, and runnable demos covering:
+Explore real-world examples in the [arcadedb-usecases](https://github.com/ArcadeData/arcadedb-usecases) repository — self-contained
+projects with Docker Compose, SQL schemas, and runnable demos covering:
 
 - **Recommendation Engine** — graph traversal + vector similarity + time-series
 - **Knowledge Graphs** — co-authorship and citation networks with full-text search
@@ -143,9 +160,11 @@ imported `OpenBeer` database to find your favorite beer.
 
 ![ArcadeDB Studio](https://arcadedb.com/assets/images/openbeer-demo-graph.png)
 
-ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/#docker) and [Kubernetes](https://docs.arcadedb.com/#kubernetes) support.
+ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/#docker) and [Kubernetes](https://docs.arcadedb.com/#kubernetes)
+support.
 
-You can also [download the latest release](https://github.com/ArcadeData/arcadedb/releases), unpack it on your local hard drive and start the server with `bin/server.sh` or `bin/server.bat` for Windows.
+You can also [download the latest release](https://github.com/ArcadeData/arcadedb/releases), unpack it on your local hard drive and
+start the server with `bin/server.sh` or `bin/server.bat` for Windows.
 
 ### Releases
 
@@ -154,44 +173,50 @@ There are four variants of (about monthly) releases:
 - `full` - this is the complete package including all modules
 - `minimal` - this package excludes the `gremlin`, `redisw`, `mongodbw`, `graphql` modules
 - `headless` - this package excludes the `gremlin`, `redisw`, `mongodbw`, `graphql`, `studio` modules
-- `base` - core engine, server, and network only — excludes all optional modules (`console`, `gremlin`, `studio`, `redisw`, `mongodbw`, `postgresw`, `grpcw`, `graphql`, `metrics`)
+- `base` - core engine, server, and network only — excludes all optional modules (`console`, `gremlin`, `studio`, `redisw`,
+  `mongodbw`, `postgresw`, `grpcw`, `graphql`, `metrics`)
 
-The nightly builds of the repository head can be found [here](https://central.sonatype.com/service/rest/repository/browse/maven-snapshots/com/arcadedb/arcadedb-package/).
+The nightly builds of the repository head can be
+found [here](https://central.sonatype.com/service/rest/repository/browse/maven-snapshots/com/arcadedb/arcadedb-package/).
 
-You can also build a **custom distribution** with only the modules you need using the [Custom Package Builder](https://docs.arcadedb.com/#custom-package-builder):
+You can also build a **custom distribution** with only the modules you need using
+the [Custom Package Builder](https://docs.arcadedb.com/#custom-package-builder):
 
 ```bash
 curl -fsSL https://github.com/ArcadeData/arcadedb/releases/download/26.3.1/arcadedb-builder.sh | \
   bash -s -- --version=26.3.1 --modules=gremlin,studio
 ```
 
-Available optional modules: `console`, `gremlin`, `studio`, `redisw`, `mongodbw`, `postgresw`, `grpcw`, `graphql`, `metrics`. The builder supports interactive mode, Docker image generation, and offline builds from local Maven repositories.
+Available optional modules: `console`, `gremlin`, `studio`, `redisw`, `mongodbw`, `postgresw`, `grpcw`, `graphql`, `metrics`. The
+builder supports interactive mode, Docker image generation, and offline builds from local Maven repositories.
 
 ### Java Versions
 
 Starting from ArcadeDB 24.4.1 code is compatible with Java 21.
 
-Java 21 packages are available on [Maven central](https://repo.maven.apache.org/maven2/com/arcadedb/) and docker images on [Docker Hub](https://hub.docker.com/r/arcadedata/arcadedb).
+Java 21 packages are available on [Maven central](https://repo.maven.apache.org/maven2/com/arcadedb/) and docker images
+on [Docker Hub](https://hub.docker.com/r/arcadedata/arcadedb).
 
 We also support Java 17 on a separate branch `java17` for those who cannot upgrade to Java 21 yet through GitHub packages.
 
 To use Java 17 inside your project, add the repository to your `pom.xml` and reference dependencies as follows:
 
 ```xml
-    <repositories>
-        <repository>
-            <name>github</name>
-            <id>github</id>
-            <url>https://maven.pkg.github.com/ArcadeData/arcadedb</url>
-        </repository>
-    </repositories>
-    <dependencies>
-      <dependency>
-          <groupId>com.arcadedb</groupId>
-          <artifactId>arcadedb-engine</artifactId>
-          <version>26.3.1-java17</version>
-      </dependency>
-    </dependencies>
+
+<repositories>
+    <repository>
+        <name>github</name>
+        <id>github</id>
+        <url>https://maven.pkg.github.com/ArcadeData/arcadedb</url>
+    </repository>
+</repositories>
+<dependencies>
+<dependency>
+    <groupId>com.arcadedb</groupId>
+    <artifactId>arcadedb-engine</artifactId>
+    <version>26.3.1-java17</version>
+</dependency>
+</dependencies>
 ```
 
 Docker images are available on ghcr.io too:
@@ -249,9 +274,12 @@ For security issues kindly email us at support@arcadedb.com instead of posting a
 
 ### License and Attribution
 
-ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). We are committed to remaining **Open Source Forever** — see our [Governance](GOVERNANCE.md) for the structural guarantees that make this more than a promise. If you need commercial support, or you need to have an issue fixed ASAP, check our [pricing page](https://arcadedb.com/pricing.html).
+ArcadeDB is Free for any usage and licensed under the liberal [Open Source Apache 2 license](LICENSE). We are committed to remaining
+**Open Source Forever** — see our [Governance](GOVERNANCE.md) for the structural guarantees that make this more than a promise. If
+you need commercial support, or you need to have an issue fixed ASAP, check our [pricing page](https://arcadedb.com/pricing.html).
 
 For third-party attributions and copyright notices, see:
+
 - [NOTICE](NOTICE) - Required legal attributions
 - [ATTRIBUTIONS.md](ATTRIBUTIONS.md) - Detailed third-party acknowledgments
 - [LICENSE](LICENSE) - Full license text
@@ -259,7 +287,8 @@ For third-party attributions and copyright notices, see:
 
 ### Thanks To
 
-<a href="https://www.yourkit.com"><img src="https://www.yourkit.com/images/yklogo.png"></a> for providing YourKit Profiler to our committers.
+<a href="https://www.yourkit.com"><img src="https://www.yourkit.com/images/yklogo.png"></a> for providing YourKit Profiler to our
+committers.
 
 ### Contributing
 
@@ -271,4 +300,5 @@ Have fun with data!
 The ArcadeDB Team
 
 ## Stargazers over time
+
 [![Stargazers over time](https://starchart.cc/ArcadeData/arcadedb.svg?variant=adaptive)](https://starchart.cc/ArcadeData/arcadedb)
