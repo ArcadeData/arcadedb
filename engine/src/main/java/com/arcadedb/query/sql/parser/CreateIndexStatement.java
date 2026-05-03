@@ -34,6 +34,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeFullTextIndexBuilder;
 import com.arcadedb.schema.TypeIndexBuilder;
+import com.arcadedb.schema.TypeLSMSparseVectorIndexBuilder;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONObject;
 
@@ -71,6 +72,8 @@ public class CreateIndexStatement extends DDLStatement {
     case "NOTUNIQUE" -> {
     }
     case "LSM_VECTOR" -> {
+    }
+    case "LSM_SPARSE_VECTOR" -> {
     }
     case "GEOSPATIAL" -> {
     }
@@ -112,6 +115,9 @@ public class CreateIndexStatement extends DDLStatement {
       indexType = Schema.INDEX_TYPE.LSM_TREE;
     } else if (typeAsString.equalsIgnoreCase("LSM_VECTOR")) {
       indexType = Schema.INDEX_TYPE.LSM_VECTOR;
+      unique = false;
+    } else if (typeAsString.equalsIgnoreCase("LSM_SPARSE_VECTOR")) {
+      indexType = Schema.INDEX_TYPE.LSM_SPARSE_VECTOR;
       unique = false;
     } else if (typeAsString.equalsIgnoreCase("GEOSPATIAL")) {
       indexType = Schema.INDEX_TYPE.GEOSPATIAL;
@@ -202,6 +208,16 @@ public class CreateIndexStatement extends DDLStatement {
       final TypeFullTextIndexBuilder ftBuilder = builder.withFullTextType();
       ftBuilder.withMetadata(jsonMetadata);
       ftBuilder.create();
+
+    } else if (indexType == Schema.INDEX_TYPE.LSM_SPARSE_VECTOR) {
+      final TypeLSMSparseVectorIndexBuilder sparseBuilder = builder.withType(Schema.INDEX_TYPE.LSM_SPARSE_VECTOR)
+          .withSparseVectorType();
+      if (metadata != null) {
+        final Map<String, Object> metadataMap = metadata.toMap((Result) null, context);
+        final JSONObject jsonMetadata = new JSONObject(metadataMap);
+        sparseBuilder.withMetadata(jsonMetadata);
+      }
+      sparseBuilder.create();
 
     } else {
       builder.create();

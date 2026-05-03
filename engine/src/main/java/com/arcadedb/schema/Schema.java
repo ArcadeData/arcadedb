@@ -453,6 +453,6 @@ public interface Schema {
   void setExtension(String name, JSONObject value);
 
   enum INDEX_TYPE {
-    LSM_TREE, FULL_TEXT, LSM_VECTOR, GEOSPATIAL, HASH
+    LSM_TREE, FULL_TEXT, LSM_VECTOR, LSM_SPARSE_VECTOR, GEOSPATIAL, HASH
   }
 }

@@ -1168,7 +1168,14 @@ function createIndex(typeName) {
   let properties = collectTypeProperties(typeName);
 
   let vectorProps = properties.filter(function (p) {
-    return p.type == "ARRAY_OF_FLOATS" || p.type == "ARRAY_OF_DOUBLES";
+    return p.type == "ARRAY_OF_FLOATS" || p.type == "ARRAY_OF_DOUBLES" ||
+           p.type == "Float[]" || p.type == "Double[]";
+  });
+  let sparseIntProps = properties.filter(function (p) {
+    return p.type == "ARRAY_OF_INTEGERS" || p.type == "Integer[]";
+  });
+  let sparseFloatProps = properties.filter(function (p) {
+    return p.type == "ARRAY_OF_FLOATS" || p.type == "Float[]";
   });
 
   let html = "";
@@ -1187,7 +1194,7 @@ function createIndex(typeName) {
   }
   html += "</div>";
 
-  // Vector property (LSM_VECTOR only — single property of type ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES)
+  // Vector property (LSM_VECTOR only - single property of type ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES)
   html += "<div id='createIdxPropsVector' style='display:none;'>";
   html += "<label>Property <span style='color:#dc3545'>*</span></label>";
   html += "<small class='text-muted d-block mt-1'>LSM_VECTOR requires exactly one property of type ARRAY_OF_FLOATS or ARRAY_OF_DOUBLES.</small>";
@@ -1201,12 +1208,55 @@ function createIndex(typeName) {
   }
   html += "</div>";
 
+  // Sparse vector properties (LSM_SPARSE_VECTOR - parallel ARRAY_OF_INTEGERS + ARRAY_OF_FLOATS)
+  html += "<div id='createIdxPropsSparse' style='display:none;'>";
+  html += "<small class='text-muted d-block mb-2'>LSM_SPARSE_VECTOR requires two parallel array properties: dimension ids (ARRAY_OF_INTEGERS) and matching weights (ARRAY_OF_FLOATS).</small>";
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-6'>";
+  html += "<label>Indices property <span style='color:#dc3545'>*</span></label>";
+  if (sparseIntProps.length > 0) {
+    html += "<select class='form-select mt-1' id='inputCreateIdxPropsSparseIdx'>";
+    for (let i = 0; i < sparseIntProps.length; i++)
+      html += "<option value='" + escapeHtml(sparseIntProps[i].name) + "'>" + escapeHtml(sparseIntProps[i].name) + " (" + escapeHtml(sparseIntProps[i].type) + ")</option>";
+    html += "</select>";
+  } else {
+    html += "<input class='form-control mt-1' id='inputCreateIdxPropsSparseIdxText' placeholder='ARRAY_OF_INTEGERS property name'>";
+  }
+  html += "</div>";
+  html += "<div class='col-6'>";
+  html += "<label>Weights property <span style='color:#dc3545'>*</span></label>";
+  if (sparseFloatProps.length > 0) {
+    html += "<select class='form-select mt-1' id='inputCreateIdxPropsSparseWeights'>";
+    for (let i = 0; i < sparseFloatProps.length; i++)
+      html += "<option value='" + escapeHtml(sparseFloatProps[i].name) + "'>" + escapeHtml(sparseFloatProps[i].name) + " (" + escapeHtml(sparseFloatProps[i].type) + ")</option>";
+    html += "</select>";
+  } else {
+    html += "<input class='form-control mt-1' id='inputCreateIdxPropsSparseWeightsText' placeholder='ARRAY_OF_FLOATS property name'>";
+  }
+  html += "</div>";
+  html += "</div>";
+  html += "<div class='row mb-3'>";
+  html += "<div class='col-6'>";
+  html += "<label>Dimensions <small class='text-muted'>(optional)</small></label>";
+  html += "<input type='number' min='1' class='form-control mt-1' id='inputCreateIdxSparseDimensions' placeholder='e.g. 105000'>";
+  html += "</div>";
+  html += "<div class='col-6'>";
+  html += "<label>Modifier <small class='text-muted'>(optional)</small></label>";
+  html += "<select class='form-select mt-1' id='inputCreateIdxSparseModifier'>";
+  html += "<option value='' selected>NONE (default)</option>";
+  html += "<option value='IDF'>IDF - inverse document frequency</option>";
+  html += "</select>";
+  html += "</div>";
+  html += "</div>";
+  html += "</div>";
+
   html += "<label for='inputCreateIdxAlgorithm'>Index Algorithm <span style='color:#dc3545'>*</span></label>";
   html += "<select class='form-select mt-1 mb-3' id='inputCreateIdxAlgorithm'>";
-  html += "<option value='LSM_TREE' selected>LSM_TREE — default, supports range queries</option>";
-  html += "<option value='HASH'>HASH — O(1) equality lookups, no range queries</option>";
-  html += "<option value='FULL_TEXT'>FULL_TEXT — full-text search index</option>";
-  html += "<option value='LSM_VECTOR'>LSM_VECTOR — vector/embedding similarity index</option>";
+  html += "<option value='LSM_TREE' selected>LSM_TREE - default, supports range queries</option>";
+  html += "<option value='HASH'>HASH - O(1) equality lookups, no range queries</option>";
+  html += "<option value='FULL_TEXT'>FULL_TEXT - full-text search index</option>";
+  html += "<option value='LSM_VECTOR'>LSM_VECTOR - dense vector / embedding similarity index</option>";
+  html += "<option value='LSM_SPARSE_VECTOR'>LSM_SPARSE_VECTOR - sparse vector (SPLADE / BM25-style) inverted index</option>";
   html += "</select>";
 
   html += "<div id='createIdxLsmOptions'>";
@@ -1233,6 +1283,7 @@ function createIndex(typeName) {
   globalPrompt("Add Index to " + escapeHtml(typeName), html, "Create", function () {
     let algorithm = $("#inputCreateIdxAlgorithm").val();
     let selectedProps = [];
+    let metadataJson = null;
     if (algorithm == "LSM_VECTOR") {
       let vectorEl = document.getElementById("inputCreateIdxPropsVector");
       if (vectorEl) {
@@ -1242,6 +1293,25 @@ function createIndex(typeName) {
         let text = $("#inputCreateIdxPropsVectorText").val().trim();
         if (text != "") selectedProps = [text];
       }
+    } else if (algorithm == "LSM_SPARSE_VECTOR") {
+      let idxEl = document.getElementById("inputCreateIdxPropsSparseIdx");
+      let idxName = idxEl ? $("#inputCreateIdxPropsSparseIdx").val() : $("#inputCreateIdxPropsSparseIdxText").val().trim();
+      let wEl = document.getElementById("inputCreateIdxPropsSparseWeights");
+      let wName = wEl ? $("#inputCreateIdxPropsSparseWeights").val() : $("#inputCreateIdxPropsSparseWeightsText").val().trim();
+      if (idxName && wName) selectedProps = [idxName, wName];
+
+      let metaParts = [];
+      let dimsRaw = $("#inputCreateIdxSparseDimensions").val();
+      if (dimsRaw != null && dimsRaw !== "") {
+        let dims = parseInt(dimsRaw, 10);
+        if (!isNaN(dims) && dims > 0)
+          metaParts.push("\"dimensions\": " + dims);
+      }
+      let modifier = $("#inputCreateIdxSparseModifier").val();
+      if (modifier != null && modifier !== "")
+        metaParts.push("\"modifier\": \"" + modifier + "\"");
+      if (metaParts.length > 0)
+        metadataJson = "{ " + metaParts.join(", ") + " }";
     } else {
       let multiEl = document.getElementById("inputCreateIdxProps");
       if (multiEl) {
@@ -1254,6 +1324,10 @@ function createIndex(typeName) {
       }
     }
 
+    if (algorithm == "LSM_SPARSE_VECTOR" && selectedProps.length != 2) {
+      globalNotify("Error", "LSM_SPARSE_VECTOR requires both an indices property and a weights property", "danger");
+      return;
+    }
     if (selectedProps.length == 0) {
       globalNotify("Error", "At least one property is required", "danger");
       return;
@@ -1276,6 +1350,7 @@ function createIndex(typeName) {
     command += selectedProps.map(function (p) { return "`" + p + "`"; }).join(", ");
     command += ") " + indexTypeSql;
     if ((algorithm == "LSM_TREE" || algorithm == "HASH") && nullStrategy != "") command += " NULL_STRATEGY " + nullStrategy;
+    if (metadataJson != null) command += " METADATA " + metadataJson;
 
     jQuery.ajax({
       type: "POST",
@@ -1296,10 +1371,17 @@ function createIndex(typeName) {
       if (alg == "LSM_VECTOR") {
         $("#createIdxPropsNormal").hide();
         $("#createIdxPropsVector").show();
+        $("#createIdxPropsSparse").hide();
+        $("#createIdxLsmOptions").hide();
+      } else if (alg == "LSM_SPARSE_VECTOR") {
+        $("#createIdxPropsNormal").hide();
+        $("#createIdxPropsVector").hide();
+        $("#createIdxPropsSparse").show();
         $("#createIdxLsmOptions").hide();
       } else {
         $("#createIdxPropsNormal").show();
         $("#createIdxPropsVector").hide();
+        $("#createIdxPropsSparse").hide();
         $("#createIdxLsmOptions").toggle(alg == "LSM_TREE" || alg == "HASH");
       }
     }

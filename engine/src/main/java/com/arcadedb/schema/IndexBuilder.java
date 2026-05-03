@@ -63,6 +63,13 @@ public abstract class IndexBuilder<T extends Index> {
     return new TypeLSMVectorIndexBuilder((TypeIndexBuilder) this);
   }
 
+  public TypeLSMSparseVectorIndexBuilder withSparseVectorType() {
+    if (this instanceof TypeLSMSparseVectorIndexBuilder v)
+      return v;
+
+    return new TypeLSMSparseVectorIndexBuilder((TypeIndexBuilder) this);
+  }
+
   public IndexBuilder<T> withUnique(final boolean unique) {
     this.unique = unique;
     return this;

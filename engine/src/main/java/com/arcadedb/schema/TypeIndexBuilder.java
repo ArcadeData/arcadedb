@@ -58,6 +58,8 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   public TypeIndexBuilder withType(final Schema.INDEX_TYPE indexType) {
     if (indexType == Schema.INDEX_TYPE.LSM_VECTOR && !(this instanceof TypeLSMVectorIndexBuilder))
       return new TypeLSMVectorIndexBuilder(this);
+    if (indexType == Schema.INDEX_TYPE.LSM_SPARSE_VECTOR && !(this instanceof TypeLSMSparseVectorIndexBuilder))
+      return new TypeLSMSparseVectorIndexBuilder(this);
     if (indexType == Schema.INDEX_TYPE.FULL_TEXT && !(this instanceof TypeFullTextIndexBuilder))
       return new TypeFullTextIndexBuilder(this);
     super.withType(indexType);
