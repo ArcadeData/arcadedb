@@ -339,7 +339,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       } catch (final RecordNotFoundException e) {
         continue;
       }
-      final Object groupKey = record.get(groupBy);
+      final Object groupKey = readNestedField(record, groupBy);
       final int count = perGroup.getOrDefault(groupKey, 0);
       if (count >= groupSize)
         continue;

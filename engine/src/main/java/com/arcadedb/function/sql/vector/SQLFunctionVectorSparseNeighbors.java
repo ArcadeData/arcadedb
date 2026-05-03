@@ -196,7 +196,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       }
 
       if (groupBy != null) {
-        final Object groupKey = record.get(groupBy);
+        final Object groupKey = readNestedField(record, groupBy);
         final int existing = perGroup.getOrDefault(groupKey, 0);
         if (existing == 0 && perGroup.size() >= k)
           continue;

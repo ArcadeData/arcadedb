@@ -249,7 +249,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       }
 
       if (groupBy != null) {
-        final Object groupKey = record.get(groupBy);
+        final Object groupKey = readNestedField(record, groupBy);
         final int existing = perGroup.getOrDefault(groupKey, 0);
         // Skip if the group already saw a new group beyond our limit.
         if (existing == 0 && perGroup.size() >= limit)
