@@ -139,6 +139,11 @@ public class ServerDatabase implements DatabaseInternal {
   }
 
   @Override
+  public boolean isReplicated() {
+    return wrapped.isReplicated();
+  }
+
+  @Override
   public Map<String, Object> alignToReplicas() {
     throw new UnsupportedOperationException("Align Database not supported");
   }

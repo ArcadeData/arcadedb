@@ -203,7 +203,15 @@ public class GraphBatch implements AutoCloseable {
     this.lightEdges = lightEdges;
     this.bidirectional = bidirectional;
     this.commitEvery = commitEvery;
-    this.useWAL = useWAL;
+    // Replication layers (e.g. Raft) need WAL bytes captured during commit phase 1 to ship to
+    // followers; if we skipped the WAL the leader would write pages locally but replicas would
+    // silently miss the changes. Force WAL on for replicated databases (issue #4076).
+    if (!useWAL && database.isReplicated()) {
+      LogManager.instance().log(this, Level.INFO,
+          "GraphBatch: WAL was disabled but the database is replicated, forcing WAL on so changes can be replicated");
+      this.useWAL = true;
+    } else
+      this.useWAL = useWAL;
     this.walFlush = walFlush;
     this.preAllocateEdgeChunks = preAllocateEdgeChunks;
     this.parallelFlush = parallelFlush;
