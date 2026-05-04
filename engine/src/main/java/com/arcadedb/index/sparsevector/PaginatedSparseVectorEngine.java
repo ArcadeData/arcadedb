@@ -53,9 +53,17 @@ import java.util.concurrent.locks.ReentrantLock;
  */
 public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
+  /**
+   * Memtable posting count above which {@link #maybeFlush()} flushes to a sealed segment. Picked
+   * so a memtable-heavy phase consumes O(100 MiB) heap rather than scaling unbounded with insert
+   * volume; large enough that small individual commits don't each spawn their own segment file.
+   */
+  static final long DEFAULT_MEMTABLE_FLUSH_THRESHOLD = 1_000_000L;
+
   private final DatabaseInternal  database;
   private final String            indexName;
   private final SegmentParameters params;
+  private final long              memtableFlushThreshold;
 
   private final AtomicReference<Memtable>                  memtable     = new AtomicReference<>(new Memtable());
   private final AtomicReference<PaginatedSegmentReader[]>  segments     = new AtomicReference<>(new PaginatedSegmentReader[0]);
@@ -65,10 +73,26 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private volatile boolean closed;
 
   public PaginatedSparseVectorEngine(final DatabaseInternal database, final String indexName, final SegmentParameters params) {
+    this(database, indexName, params, DEFAULT_MEMTABLE_FLUSH_THRESHOLD);
+  }
+
+  PaginatedSparseVectorEngine(final DatabaseInternal database, final String indexName, final SegmentParameters params,
+      final long memtableFlushThreshold) {
     this.database = database;
     this.indexName = indexName;
     this.params = params;
+    this.memtableFlushThreshold = memtableFlushThreshold;
     loadExistingSegments();
+  }
+
+  /**
+   * Flush the memtable iff its posting count is at or above the configured threshold; cheap no-op
+   * otherwise. Called from the wrapper's post-commit callback so a long bulk-load amortizes
+   * memtable cost into a few sealed segments instead of growing unbounded toward OOM.
+   */
+  public void maybeFlush() {
+    if (memtable.get().totalPostings() >= memtableFlushThreshold)
+      flush();
   }
 
   // --- writes ---------------------------------------------------------------

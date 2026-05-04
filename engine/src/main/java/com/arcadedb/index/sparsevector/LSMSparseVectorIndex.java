@@ -386,10 +386,14 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * along with all other index changes that participate in lock ordering and recovery), or
    * applies it directly when no transaction is in flight.
    * <p>
-   * <b>Durability.</b> The engine flush at commit time runs inside the same {@code database
-   * .transaction(...)} that ArcadeDB orchestrates, so the page WAL records every byte of the new
-   * sparse segment alongside the regular transaction record. There is no separate flush-on-commit
-   * callback any more - durability comes from the page WAL itself.
+   * <b>Memtable bounding.</b> The post-commit callback registered via
+   * {@link TransactionContext#addAfterCommitCallbackIfAbsent} fires once per transaction (keyed
+   * by index name) and asks the engine to flush iff the memtable has accumulated at least
+   * {@link PaginatedSparseVectorEngine#DEFAULT_MEMTABLE_FLUSH_THRESHOLD} postings. Without this
+   * hook a long bulk-load grows the memtable unbounded toward OOM; the threshold lets small
+   * individual commits coalesce into a single segment instead of producing one segment per
+   * commit. A clean shutdown still flushes via {@link #flush()} (called from
+   * {@code LocalDatabase.closeInternal}) regardless of the memtable size.
    */
   private void queueOrApply(final boolean add, final int dim, final RID rid, final float weight) {
     final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();
@@ -398,6 +402,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
           add ? TransactionIndexContext.IndexKey.IndexKeyOperation.ADD
               : TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
           new Object[] { dim, rid, weight }, rid);
+      tx.addAfterCommitCallbackIfAbsent("sparse-flush:" + getName(), engine::maybeFlush);
       return;
     }
     if (add)
