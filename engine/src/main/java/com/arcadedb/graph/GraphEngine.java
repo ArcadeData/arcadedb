@@ -398,7 +398,6 @@ public class GraphEngine {
     if (direction == Vertex.DIRECTION.IN) {
       final RID oldIn = edge.getIn();
       final RID out = edge.getOut();
-      // Remove from old in-vertex's IN list
       if (oldIn != null) {
         try {
           final VertexInternal oldVIn = (VertexInternal) database.lookupByRID(oldIn, false);
@@ -408,7 +407,6 @@ public class GraphEngine {
         } catch (final RecordNotFoundException ignored) {
         }
       }
-      // Remove from out-vertex's OUT list (its stored destination is stale after the move)
       if (out != null) {
         try {
           final VertexInternal vOut = (VertexInternal) database.lookupByRID(out, false);
@@ -419,15 +417,14 @@ public class GraphEngine {
         }
       }
       edge.setIn(newVertexRID);
-      // Re-add to out-vertex's OUT list pointing to the new in-vertex
-      if (out != null)
-        connectOutgoingEdge((VertexInternal) database.lookupByRID(out, false), database.lookupByRID(newVertexRID, false), edge);
-      // Add to new in-vertex's IN list
-      connectIncomingEdge(database.lookupByRID(newVertexRID, false), out, edge.getIdentity());
-    } else {
+      final Identifiable newInVertex = database.lookupByRID(newVertexRID, false);
+      if (out != null) {
+        connectOutgoingEdge((VertexInternal) database.lookupByRID(out, false), newInVertex, edge);
+        connectIncomingEdge(newInVertex, out, edge.getIdentity());
+      }
+    } else if (direction == Vertex.DIRECTION.OUT) {
       final RID oldOut = edge.getOut();
       final RID in = edge.getIn();
-      // Remove from old out-vertex's OUT list
       if (oldOut != null) {
         try {
           final VertexInternal oldVOut = (VertexInternal) database.lookupByRID(oldOut, false);
@@ -437,7 +434,6 @@ public class GraphEngine {
         } catch (final RecordNotFoundException ignored) {
         }
       }
-      // Remove from in-vertex's IN list (its stored source is stale after the move)
       if (in != null) {
         try {
           final VertexInternal vIn = (VertexInternal) database.lookupByRID(in, false);
@@ -448,12 +444,13 @@ public class GraphEngine {
         }
       }
       edge.setOut(newVertexRID);
-      // Add to new out-vertex's OUT list
-      connectOutgoingEdge((VertexInternal) database.lookupByRID(newVertexRID, false), database.lookupByRID(in, false), edge);
-      // Re-add to in-vertex's IN list with the new source
-      if (in != null)
+      final VertexInternal newOutVertex = (VertexInternal) database.lookupByRID(newVertexRID, false);
+      if (in != null) {
+        connectOutgoingEdge(newOutVertex, database.lookupByRID(in, false), edge);
         connectIncomingEdge(database.lookupByRID(in, false), newVertexRID, edge.getIdentity());
-    }
+      }
+    } else
+      throw new IllegalArgumentException("Unsupported direction for moveEdge: " + direction);
   }
 
   public void deleteVertex(final VertexInternal vertex) {

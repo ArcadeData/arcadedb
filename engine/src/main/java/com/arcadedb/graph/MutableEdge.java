@@ -136,19 +136,17 @@ public class MutableEdge extends MutableDocument implements Edge {
       final RID newIn = toRID(value);
       if (rid != null && newIn != null && !newIn.equals(this.in) && database instanceof DatabaseInternal dbInt)
         dbInt.getGraphEngine().moveEdge(this, Vertex.DIRECTION.IN, newIn);
-      else {
+      else
         this.in = newIn;
-        dirty = true;
-      }
+      dirty = true;
       return this;
     } else if ("@out".equals(name)) {
       final RID newOut = toRID(value);
       if (rid != null && newOut != null && !newOut.equals(this.out) && database instanceof DatabaseInternal dbInt)
         dbInt.getGraphEngine().moveEdge(this, Vertex.DIRECTION.OUT, newOut);
-      else {
+      else
         this.out = newOut;
-        dirty = true;
-      }
+      dirty = true;
       return this;
     }
     return (MutableEdge) super.set(name, value);
@@ -210,12 +208,10 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   public void setOut(final RID out) {
     this.out = out;
-    dirty = true;
   }
 
   public void setIn(final RID in) {
     this.in = in;
-    dirty = true;
   }
 
   private static RID toRID(final Object value) {
