@@ -200,6 +200,33 @@ class SQLFunctionVectorGroupByTest extends TestHelper {
   }
 
   @Test
+  void overFetchCapRejectsPathologicalParams() {
+    buildSchema();
+    seed100Across10Files();
+
+    final float[] queryVec = new float[8];
+    queryVec[0] = 1.0f;
+
+    // limit=10000, groupSize=10000 would request 500M candidates without the cap. Expect a
+    // CommandSQLParsingException with a helpful message (caller should reduce limit or groupSize).
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> {
+      try (ResultSet rs = database.query("sql",
+          "SELECT expand(`vector.neighbors`(?, ?, ?, { groupBy: 'source_file', groupSize: 10000 }))",
+          DENSE_IDX, queryVec, 10000)) {
+        while (rs.hasNext()) rs.next();
+      }
+    }).hasMessageContaining("over-fetch budget exceeded");
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> {
+      try (ResultSet rs = database.query("sql",
+          "SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?, { groupBy: 'source_file', groupSize: 10000 }))",
+          SPARSE_IDX, new int[] { 1, 2, 3 }, new float[] { 1.0f, 1.0f, 1.0f }, 10000)) {
+        while (rs.hasNext()) rs.next();
+      }
+    }).hasMessageContaining("over-fetch budget exceeded");
+  }
+
+  @Test
   void groupByComposesWithFilter() {
     buildSchema();
     seed100Across10Files();

@@ -246,6 +246,38 @@ class LSMSparseVectorIndexTest extends TestHelper {
   }
 
   @Test
+  void removeWithUnequalLengthArraysThrows() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType(TYPE_NAME);
+      type.createProperty("tokens", Type.ARRAY_OF_INTEGERS);
+      type.createProperty("weights", Type.ARRAY_OF_FLOATS);
+
+      final TypeIndex idx = database.getSchema()
+          .buildTypeIndex(TYPE_NAME, new String[] { "tokens", "weights" })
+          .withSparseVectorType()
+          .withDimensions(100)
+          .create();
+      final var bucketIndex = idx.getIndexesOnBuckets()[0];
+      final MutableDocument doc = database.newDocument(TYPE_NAME);
+      doc.set("tokens", new int[] { 1, 2, 3 });
+      doc.set("weights", new float[] { 0.1f, 0.2f, 0.3f });
+      doc.save();
+
+      // Mismatched arrays must be rejected by remove just as they are by put. Silent truncation
+      // would orphan postings on the longer side. Calls the wrapper directly because the SQL path
+      // never produces mismatched arrays (DocumentIndexer reads property values that were already
+      // validated at insert time).
+      final RID rid = doc.getIdentity();
+      final org.assertj.core.api.AbstractThrowableAssert<?, ? extends Throwable> assertion =
+          org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+              bucketIndex.remove(
+                  new Object[] { new int[] { 1, 2, 3 }, new float[] { 0.1f, 0.2f } },
+                  rid));
+      assertion.hasMessageContaining("same length");
+    });
+  }
+
+  @Test
   void removeDocumentRemovesFromIndex() {
     final RID[] rids = new RID[2];
 

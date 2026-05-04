@@ -107,7 +107,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
 
     // Materialize each source as an ordered list of (rid, score). Score may be NaN when the source
     // does not provide one; that's fine for RRF but rejected later for DBSF/LINEAR.
-    final List<List<SourceRow>> sources = new ArrayList<>(sourceCount);
+    final List<List<RidScore>> sources = new ArrayList<>(sourceCount);
     for (int i = 0; i < sourceCount; i++)
       sources.add(materializeSource(NAME, params[i], i));
 
@@ -126,22 +126,33 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       ranked.add(new RidScore(e.getKey(), e.getValue()));
     ranked.sort((a, b) -> Float.compare(b.score, a.score));
 
-    final List<RidScore> finalRanked = groupBy == null ?
-        ranked :
-        applyGroupBy(ranked, groupBy, groupSize, context);
-
-    final int cap = limit > 0 ? Math.min(limit, finalRanked.size()) : finalRanked.size();
-    final ArrayList<Object> result = new ArrayList<>(cap);
+    // Single pass: lookupByRID once per RID, applying groupBy and limit on the fly. Doing this
+    // in two passes (one to filter by group, one to serialize) would double the record I/O for
+    // large result sets.
+    final HashMap<Object, Integer> perGroup = groupBy != null ? new HashMap<>() : null;
+    final int targetSize = limit > 0 ? limit : Integer.MAX_VALUE;
+    final ArrayList<Object> result = new ArrayList<>(Math.min(targetSize, ranked.size()));
     final BasicDatabase db = context.getDatabase();
 
-    for (int i = 0; i < cap; i++) {
-      final RidScore rs = finalRanked.get(i);
+    for (final RidScore rs : ranked) {
+      if (result.size() >= targetSize)
+        break;
+
       final Document record;
       try {
         record = (Document) db.lookupByRID(rs.rid, true);
       } catch (final RecordNotFoundException ex) {
         continue;
       }
+
+      if (groupBy != null) {
+        final Object groupKey = readNestedField(record, groupBy);
+        final int count = perGroup.getOrDefault(groupKey, 0);
+        if (count >= groupSize)
+          continue;
+        perGroup.put(groupKey, count + 1);
+      }
+
       final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
       entry.put("record", record);
       for (final String prop : record.getPropertyNames())
@@ -184,25 +195,26 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
   }
 
   /**
-   * Reads an arbitrary source representation into a flat ordered list of {@link SourceRow}.
+   * Reads an arbitrary source representation into a flat ordered list of {@link RidScore} rows
+   * (each carrying the row's RID and its score, NaN if the source has no numeric score field).
    * Handles both the {@link Map}-shaped output of native vector SQL functions and the {@link Result}
    * shaped output of plain sub-SELECT queries.
    */
   @SuppressWarnings("unchecked")
-  private static List<SourceRow> materializeSource(final String functionName, final Object src, final int sourceIdx) {
+  private static List<RidScore> materializeSource(final String functionName, final Object src, final int sourceIdx) {
     if (src == null)
       return java.util.Collections.emptyList();
     if (!(src instanceof Iterable<?> iter))
       throw new CommandSQLParsingException(
           functionName + " source[" + sourceIdx + "] must be a list of rows, got: " + src.getClass().getSimpleName());
 
-    final ArrayList<SourceRow> out = new ArrayList<>();
+    final ArrayList<RidScore> out = new ArrayList<>();
     for (final Object row : iter) {
       final RID rid = extractRid(row);
       if (rid == null)
         continue;
       final float score = extractScore(row);
-      out.add(new SourceRow(rid, score));
+      out.add(new RidScore(rid, score));
     }
     return out;
   }
@@ -256,10 +268,10 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     return Float.NaN;
   }
 
-  private static void applyRRF(final List<List<SourceRow>> sources, final float[] weights, final long k,
+  private static void applyRRF(final List<List<RidScore>> sources, final float[] weights, final long k,
       final HashMap<RID, Float> out) {
     for (int s = 0; s < sources.size(); s++) {
-      final List<SourceRow> rows = sources.get(s);
+      final List<RidScore> rows = sources.get(s);
       final float w = weights[s];
       for (int rank = 0; rank < rows.size(); rank++) {
         // Position 0 = rank 1 in the RRF formula.
@@ -269,39 +281,39 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     }
   }
 
-  private static void applyLinear(final List<List<SourceRow>> sources, final float[] weights,
+  private static void applyLinear(final List<List<RidScore>> sources, final float[] weights,
       final HashMap<RID, Float> out) {
     for (int s = 0; s < sources.size(); s++) {
-      final List<SourceRow> rows = sources.get(s);
+      final List<RidScore> rows = sources.get(s);
       requireScores(rows, "LINEAR", s);
       // Min-max normalize per source.
       float min = Float.POSITIVE_INFINITY;
       float max = Float.NEGATIVE_INFINITY;
-      for (final SourceRow r : rows) {
+      for (final RidScore r : rows) {
         if (r.score < min) min = r.score;
         if (r.score > max) max = r.score;
       }
       final float range = max - min;
       final float w = weights[s];
-      for (final SourceRow r : rows) {
+      for (final RidScore r : rows) {
         final float normalized = range == 0.0f ? 1.0f : (r.score - min) / range;
         out.merge(r.rid, w * normalized, Float::sum);
       }
     }
   }
 
-  private static void applyDBSF(final List<List<SourceRow>> sources, final float[] weights,
+  private static void applyDBSF(final List<List<RidScore>> sources, final float[] weights,
       final HashMap<RID, Float> out) {
     for (int s = 0; s < sources.size(); s++) {
-      final List<SourceRow> rows = sources.get(s);
+      final List<RidScore> rows = sources.get(s);
       requireScores(rows, "DBSF", s);
       // mean and population stddev
       final int n = rows.size();
       double sum = 0.0;
-      for (final SourceRow r : rows) sum += r.score;
+      for (final RidScore r : rows) sum += r.score;
       final double mean = n == 0 ? 0.0 : sum / n;
       double sqSum = 0.0;
-      for (final SourceRow r : rows) {
+      for (final RidScore r : rows) {
         final double d = r.score - mean;
         sqSum += d * d;
       }
@@ -311,7 +323,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       final double hi = mean + 3.0 * std;
       final double band = hi - lo;
       final float w = weights[s];
-      for (final SourceRow r : rows) {
+      for (final RidScore r : rows) {
         final double clipped = Math.max(lo, Math.min(hi, r.score));
         final float normalized = band == 0.0 ? 1.0f : (float) ((clipped - lo) / band);
         out.merge(r.rid, w * normalized, Float::sum);
@@ -319,34 +331,11 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     }
   }
 
-  private static void requireScores(final List<SourceRow> rows, final String strategy, final int sourceIdx) {
-    for (final SourceRow r : rows)
+  private static void requireScores(final List<RidScore> rows, final String strategy, final int sourceIdx) {
+    for (final RidScore r : rows)
       if (Float.isNaN(r.score))
         throw new CommandSQLParsingException(
             NAME + " strategy " + strategy + " requires a numeric score on every row of source[" + sourceIdx + "]");
-  }
-
-  private List<RidScore> applyGroupBy(final List<RidScore> ranked, final String groupBy, final int groupSize,
-      final CommandContext context) {
-    final HashMap<Object, Integer> perGroup = new HashMap<>();
-    final ArrayList<RidScore> kept = new ArrayList<>();
-    final BasicDatabase db = context.getDatabase();
-
-    for (final RidScore rs : ranked) {
-      final Document record;
-      try {
-        record = (Document) db.lookupByRID(rs.rid, true);
-      } catch (final RecordNotFoundException e) {
-        continue;
-      }
-      final Object groupKey = readNestedField(record, groupBy);
-      final int count = perGroup.getOrDefault(groupKey, 0);
-      if (count >= groupSize)
-        continue;
-      perGroup.put(groupKey, count + 1);
-      kept.add(rs);
-    }
-    return kept;
   }
 
   @Override
@@ -355,16 +344,11 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
         + "k: <long>, weights: [<float>, ...], groupBy: <field>, groupSize: <int>, limit: <int> }])";
   }
 
-  private static final class SourceRow {
-    final RID   rid;
-    final float score;
-
-    SourceRow(final RID rid, final float score) {
-      this.rid = rid;
-      this.score = score;
-    }
-  }
-
+  /**
+   * Carries one ranked record across the materialization, fusion, grouping, and result-building
+   * stages. Both per-source ranked rows (the input to the fusion strategies) and the fused output
+   * use the same shape, so a single record type avoids an unnecessary translation pass.
+   */
   private static final class RidScore {
     final RID   rid;
     final float score;

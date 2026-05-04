@@ -55,6 +55,12 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
 
   private static final Set<String> OPTIONS = Set.of("efSearch", "filter", "groupBy", "groupSize");
 
+  // Hard cap on the candidate pool the index is asked to materialize when grouping is enabled.
+  // Prevents memory exhaustion on pathological combinations of `k` and `groupSize` (e.g. k=1000,
+  // groupSize=1000 would otherwise request 5,000,000 candidates). Picked conservatively: ~100k
+  // RID-distance pairs is a few MB of heap, well under the budget for any realistic query.
+  private static final int MAX_FETCH_CANDIDATES = 100_000;
+
   public SQLFunctionVectorNeighbors() {
     super(NAME);
   }
@@ -87,7 +93,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (params[3] instanceof Map<?, ?> rawMap) {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
         efSearch = opts.getInt("efSearch", -1);
-        allowedRIDs = parseFilter(opts.getList("filter"), context);
+        allowedRIDs = parseRidFilter(opts.getList("filter"), NAME, context);
         groupBy = opts.getString("groupBy", null);
         groupSize = opts.getInt("groupSize", 1);
         if (groupSize < 1)
@@ -138,28 +144,6 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, allowedRIDs, groupBy, groupSize, context);
   }
 
-  private static Set<RID> parseFilter(final List<?> items, final CommandContext context) {
-    if (items == null || items.isEmpty())
-      return null;
-
-    final BasicDatabase db = context.getDatabase();
-    final Set<RID> out = new HashSet<>(items.size());
-    for (final Object item : items) {
-      if (item == null)
-        continue;
-      if (item instanceof RID rid)
-        out.add(rid);
-      else if (item instanceof Identifiable id)
-        out.add(id.getIdentity());
-      else if (item instanceof String s)
-        out.add(db.newRID(s));
-      else
-        throw new CommandSQLParsingException(
-            "Option 'filter' for function '" + NAME + "' must contain RIDs, got: " + item.getClass().getSimpleName());
-    }
-    return out;
-  }
-
   private Object executeWithTypeIndex(final TypeIndex typeIndex, final IntHashSet allowedBucketIds, final Object key,
       final int limit, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
       final CommandContext context) {
@@ -205,10 +189,24 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
 
-    // When grouping, over-fetch candidates so the post-traversal filter has enough material to fill
-    // limit groups at groupSize each. The 5x cushion is empirical and may be undershoot for highly
-    // skewed group distributions; users can lift it via efSearch.
-    final int fetchPerIndex = groupBy == null ? limit : Math.max(limit * groupSize * 5, limit);
+    // When grouping, over-fetch candidates so the post-traversal filter has enough material to
+    // fill limit groups at groupSize each. The 5x cushion is empirical; highly skewed group
+    // distributions may need more, in which case users can lift recall via efSearch.
+    //
+    // Hard-cap the fetch at MAX_FETCH_CANDIDATES so a pathological combination of `limit` and
+    // `groupSize` cannot blow up the candidate pool. The product is computed in long arithmetic
+    // first to detect overflow before truncating to int.
+    final int fetchPerIndex;
+    if (groupBy == null) {
+      fetchPerIndex = limit;
+    } else {
+      final long requested = Math.max((long) limit * groupSize * 5L, (long) limit);
+      if (requested > MAX_FETCH_CANDIDATES)
+        throw new CommandSQLParsingException(NAME + " over-fetch budget exceeded: limit=" + limit
+            + ", groupSize=" + groupSize + " would require " + requested
+            + " candidates (cap " + MAX_FETCH_CANDIDATES + "). Reduce limit or groupSize.");
+      fetchPerIndex = (int) requested;
+    }
 
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
@@ -224,16 +222,18 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     final BasicDatabase db = context.getDatabase();
     final ArrayList<Object> result = new ArrayList<>();
     final HashMap<Object, Integer> perGroup = groupBy != null ? new HashMap<>() : null;
+    // Number of groups that have already reached groupSize. Used as an O(1) early-exit predicate
+    // to avoid scanning the perGroup map values on every iteration.
+    int filledGroups = 0;
 
     for (final Pair<RID, Float> neighbor : allNeighbors) {
       // Stop conditions:
       //   - groupBy unset: stop once we collected `limit` rows
-      //   - groupBy set: stop once we filled `limit` groups
+      //   - groupBy set: stop once `limit` groups have been filled to groupSize
       if (groupBy == null) {
         if (result.size() >= limit)
           break;
-      } else if (perGroup.size() >= limit
-          && perGroup.values().stream().allMatch(c -> c >= groupSize)) {
+      } else if (filledGroups >= limit) {
         break;
       }
 
@@ -251,12 +251,14 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (groupBy != null) {
         final Object groupKey = readNestedField(record, groupBy);
         final int existing = perGroup.getOrDefault(groupKey, 0);
-        // Skip if the group already saw a new group beyond our limit.
+        // Skip a never-seen group once we've already opened `limit` distinct groups.
         if (existing == 0 && perGroup.size() >= limit)
           continue;
         if (existing >= groupSize)
           continue;
         perGroup.put(groupKey, existing + 1);
+        if (existing + 1 == groupSize)
+          filledGroups++;
       }
 
       final float distance = neighbor.getSecond();

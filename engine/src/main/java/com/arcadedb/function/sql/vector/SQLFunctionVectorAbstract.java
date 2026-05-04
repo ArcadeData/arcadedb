@@ -18,11 +18,18 @@
  */
 package com.arcadedb.function.sql.vector;
 
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Abstract base class for vector SQL functions providing common utility methods.
@@ -135,5 +142,44 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
         return null;
     }
     return current;
+  }
+
+  /**
+   * Parses a {@code filter} option (a list of RIDs / Identifiables / RID-string forms) into a
+   * {@link Set} of {@link RID} suitable for the post-filter step in vector neighbour searches.
+   * Returns {@code null} for null or empty inputs so callers can distinguish "no filter" from
+   * "empty filter" with a single null-check.
+   *
+   * @param items   the {@code filter} option contents, typically the value of
+   *                {@code FunctionOptions.getList("filter")}
+   * @param functionName the calling function's SQL name, used to build helpful error messages
+   * @param context the command context (used to coerce string-form RIDs through
+   *                {@link BasicDatabase#newRID})
+   *
+   * @return a set of allowed RIDs, or {@code null} when no whitelist should apply
+   *
+   * @throws CommandSQLParsingException if the list contains a value that cannot be coerced to a RID
+   */
+  protected static Set<RID> parseRidFilter(final List<?> items, final String functionName, final CommandContext context) {
+    if (items == null || items.isEmpty())
+      return null;
+
+    final BasicDatabase db = context.getDatabase();
+    final Set<RID> out = new HashSet<>(items.size());
+    for (final Object item : items) {
+      if (item == null)
+        continue;
+      if (item instanceof RID rid)
+        out.add(rid);
+      else if (item instanceof Identifiable id)
+        out.add(id.getIdentity());
+      else if (item instanceof String s)
+        out.add(db.newRID(s));
+      else
+        throw new CommandSQLParsingException(
+            "Option 'filter' for function '" + functionName + "' must contain RIDs, got: "
+                + item.getClass().getSimpleName());
+    }
+    return out;
   }
 }

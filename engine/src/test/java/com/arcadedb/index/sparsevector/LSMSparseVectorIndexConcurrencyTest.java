@@ -164,19 +164,35 @@ class LSMSparseVectorIndexConcurrencyTest extends TestHelper {
     final long docCount = database.countType(TYPE_NAME, false);
     assertThat(docCount).isEqualTo((long) WRITER_THREADS * DOCS_PER_WRITER);
 
-    // Final correctness probe: a query that hits a known-frequent dimension must return
-    // results, and every result must come back as a real RID with a non-negative score.
+    // Final correctness probe: a query that hits the densest part of the dim space must return
+    // results. We probe a small head of dims so a corrupted index, dropped postings, or scrambled
+    // dimMaxWeight cache would all show up as either zero results or non-monotonic scores.
     final int[]   probeIdx = new int[] { 0, 1, 2 };
     final float[] probeVal = new float[] { 1.0f, 1.0f, 1.0f };
     try (ResultSet rs = database.query("sql",
         "SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?))",
         IDX_NAME, probeIdx, probeVal, 10)) {
-      final Set<RID> seen = new HashSet<>();
+      final Set<RID>    seen   = new HashSet<>();
+      float             prev   = Float.POSITIVE_INFINITY;
+      int               returned = 0;
       while (rs.hasNext()) {
         final var row = rs.next();
         final RID rid = (RID) row.getProperty("@rid");
+        final float score = ((Number) row.getProperty("score")).floatValue();
+
         assertThat(seen.add(rid)).as("results must be distinct RIDs").isTrue();
+        assertThat(score).as("score for %s is non-negative under dot product", rid)
+            .isGreaterThanOrEqualTo(0.0f);
+        assertThat(score).as("results must arrive in non-increasing score order")
+            .isLessThanOrEqualTo(prev);
+        prev = score;
+        returned++;
       }
+      // Some of our writer-thread inserts must overlap dim 0/1/2 given the random distribution
+      // and the corpus size (200 docs each with 6 nnz over a 200-dim space). If we ever get zero
+      // hits, the writer/reader race corrupted something - flag it loudly.
+      assertThat(returned).as("steady-state probe must return at least one neighbour")
+          .isPositive();
     }
   }
 }

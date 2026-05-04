@@ -34,9 +34,11 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -57,6 +59,11 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
   public static final String NAME = "vector.sparseNeighbors";
 
   private static final Set<String> OPTIONS = Set.of("filter", "groupBy", "groupSize");
+
+  // Hard cap on the candidate pool when grouping is enabled. Same rationale as
+  // SQLFunctionVectorNeighbors.MAX_FETCH_CANDIDATES: bounds memory at a few MB on pathological
+  // (k, groupSize) combinations.
+  private static final int MAX_FETCH_CANDIDATES = 100_000;
 
   public SQLFunctionVectorSparseNeighbors() {
     super(NAME);
@@ -84,9 +91,9 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     String groupBy = null;
     int groupSize = 1;
     if (params.length >= 5 && params[4] != null) {
-      if (params[4] instanceof java.util.Map<?, ?> rawMap) {
+      if (params[4] instanceof Map<?, ?> rawMap) {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
-        allowedRIDs = parseFilter(opts.getList("filter"), context);
+        allowedRIDs = parseRidFilter(opts.getList("filter"), NAME, context);
         groupBy = opts.getString("groupBy", null);
         groupSize = opts.getInt("groupSize", 1);
         if (groupSize < 1)
@@ -166,8 +173,18 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       final CommandContext context) {
 
     // Over-fetch when grouping so the post-traversal filter has enough material to fill k groups
-    // at groupSize each. Same 5x cushion as `vector.neighbors`, with the same best-effort caveat.
-    final int fetchK = groupBy == null ? k : Math.max(k * groupSize * 5, k);
+    // at groupSize each. Same 5x cushion and MAX_FETCH_CANDIDATES cap as `vector.neighbors`.
+    final int fetchK;
+    if (groupBy == null) {
+      fetchK = k;
+    } else {
+      final long requested = Math.max((long) k * groupSize * 5L, (long) k);
+      if (requested > MAX_FETCH_CANDIDATES)
+        throw new CommandSQLParsingException(NAME + " over-fetch budget exceeded: k=" + k
+            + ", groupSize=" + groupSize + " would require " + requested
+            + " candidates (cap " + MAX_FETCH_CANDIDATES + "). Reduce k or groupSize.");
+      fetchK = (int) requested;
+    }
 
     final ArrayList<LSMSparseVectorIndex.RidScore> merged = new ArrayList<>();
     for (final LSMSparseVectorIndex idx : indexes)
@@ -177,14 +194,16 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
 
     final BasicDatabase db = context.getDatabase();
     final ArrayList<Object> result = new ArrayList<>();
-    final java.util.HashMap<Object, Integer> perGroup = groupBy != null ? new java.util.HashMap<>() : null;
+    final HashMap<Object, Integer> perGroup = groupBy != null ? new HashMap<>() : null;
+    // Number of groups that have already reached groupSize. Same O(1) early-exit pattern as
+    // SQLFunctionVectorNeighbors to avoid scanning the perGroup map values on every iteration.
+    int filledGroups = 0;
 
     for (final LSMSparseVectorIndex.RidScore neighbor : merged) {
       if (groupBy == null) {
         if (result.size() >= k)
           break;
-      } else if (perGroup.size() >= k
-          && perGroup.values().stream().allMatch(c -> c >= groupSize)) {
+      } else if (filledGroups >= k) {
         break;
       }
 
@@ -203,6 +222,8 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
         if (existing >= groupSize)
           continue;
         perGroup.put(groupKey, existing + 1);
+        if (existing + 1 == groupSize)
+          filledGroups++;
       }
 
       final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
@@ -216,28 +237,6 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     }
 
     return result;
-  }
-
-  private static Set<RID> parseFilter(final List<?> items, final CommandContext context) {
-    if (items == null || items.isEmpty())
-      return null;
-
-    final BasicDatabase db = context.getDatabase();
-    final Set<RID> out = new HashSet<>(items.size());
-    for (final Object item : items) {
-      if (item == null)
-        continue;
-      if (item instanceof RID rid)
-        out.add(rid);
-      else if (item instanceof Identifiable id)
-        out.add(id.getIdentity());
-      else if (item instanceof String s)
-        out.add(db.newRID(s));
-      else
-        throw new CommandSQLParsingException(
-            "Option 'filter' for function '" + NAME + "' must contain RIDs, got: " + item.getClass().getSimpleName());
-    }
-    return out;
   }
 
   private static int[] sparseToIntArray(final Object o) {
