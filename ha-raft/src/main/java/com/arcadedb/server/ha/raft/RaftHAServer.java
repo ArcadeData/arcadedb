@@ -959,6 +959,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     statusExporter.printClusterConfiguration();
   }
 
+  /**
+   * Returns the formatted ASCII cluster configuration table, or {@code null} if not available
+   * (e.g. no peers known). Useful for tests and diagnostics. Note: this builds the table
+   * unconditionally (even on followers, where lag/latency columns will be empty).
+   */
+  public String getClusterConfigurationTable() {
+    return statusExporter.buildClusterConfigurationTable();
+  }
+
   boolean hasExistingRaftStorage() {
     final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
     if (!storageDir.exists())

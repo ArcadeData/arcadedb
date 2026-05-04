@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.ratis.protocol.RaftPeer;
+import org.apache.ratis.protocol.RaftPeerId;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -69,6 +70,7 @@ class RaftClusterStatusExporter {
     // Peer list with replication state (follower indices available only on leader)
     final var followerStates = haServer.getFollowerStates();
     final var peers = new JSONArray();
+    final RaftPeerId leaderId = haServer.getLeaderId();
     for (final RaftPeer peer : haServer.getLivePeers()) {
       final var peerJSON = new JSONObject();
       final String peerId = peer.getId().toString();
@@ -76,8 +78,7 @@ class RaftClusterStatusExporter {
       peerJSON.put("address", peer.getAddress());
       peerJSON.put("httpAddress", haServer.getPeerHttpAddress(peer.getId()));
       peerJSON.put("isLocal", peer.getId().equals(haServer.getLocalPeerId()));
-      peerJSON.put("role", peer.getId().equals(haServer.getLocalPeerId()) && haServer.isLeader() ? "LEADER"
-          : peerId.equals(haServer.getLeaderName()) ? "LEADER" : "FOLLOWER");
+      peerJSON.put("role", leaderId != null && peer.getId().equals(leaderId) ? "LEADER" : "FOLLOWER");
 
       for (final var fs : followerStates)
         if (peerId.equals(fs.get("peerId"))) {
@@ -134,71 +135,9 @@ class RaftClusterStatusExporter {
       return;
 
     try {
-      final String leaderPeerId = haServer.getLeaderName();
-      final long term = haServer.getCurrentTerm();
-      final long commitIndex = haServer.getCommitIndex();
-      final Collection<RaftPeer> peers = haServer.getLivePeers();
-      if (peers.isEmpty())
+      final String output = buildClusterConfigurationTable();
+      if (output == null)
         return;
-
-      // Collect follower replication state (only available on leader)
-      final Map<String, long[]> followerState = new HashMap<>();
-      for (final Map<String, Object> f : haServer.getFollowerStates()) {
-        final String peerId = (String) f.get("peerId");
-        final long matchIndex = (Long) f.get("matchIndex");
-        final long lastRpcMs = (Long) f.get("lastRpcElapsedMs");
-        followerState.put(peerId, new long[] { matchIndex, lastRpcMs });
-      }
-
-      // Build table rows
-      final List<String[]> rows = new ArrayList<>();
-      for (final RaftPeer peer : peers) {
-        final String peerId = peer.getId().toString();
-        final boolean isPeerLeader = peerId.equals(leaderPeerId);
-        final String role = isPeerLeader ? "Leader" : "Follower";
-        final String address = peer.getAddress();
-
-        String lagStr = "";
-        String latencyStr = "";
-        if (!isPeerLeader) {
-          final long[] state = followerState.get(peerId);
-          if (state != null) {
-            final long lag = commitIndex - state[0];
-            lagStr = lag > 0 ? String.valueOf(lag) : "0";
-            // Only show latency when there's active replication traffic (recent RPC).
-            // During idle periods lastRpcElapsedMs just reflects time since last heartbeat.
-            final long elapsedMs = state[1];
-            final long heartbeatInterval =
-                haServer.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN) / 2;
-            if (elapsedMs <= heartbeatInterval)
-              latencyStr = elapsedMs + " ms";
-          }
-        }
-
-        rows.add(new String[] { peerId, address, role, lagStr, latencyStr });
-      }
-
-      // Calculate column widths
-      final String[] headers = { "SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY" };
-      final int[] widths = new int[headers.length];
-      for (int i = 0; i < headers.length; i++)
-        widths[i] = headers[i].length();
-      for (final String[] row : rows)
-        for (int i = 0; i < row.length; i++)
-          widths[i] = Math.max(widths[i], row[i].length());
-
-      // Format table
-      final StringBuilder sb = new StringBuilder();
-      sb.append(String.format("CLUSTER CONFIGURATION (term=%d, commitIndex=%d)%n", term, commitIndex));
-
-      appendSeparator(sb, widths);
-      appendRow(sb, widths, headers);
-      appendSeparator(sb, widths);
-      for (final String[] row : rows)
-        appendRow(sb, widths, row);
-      appendSeparator(sb, widths);
-
-      final String output = sb.toString();
 
       // Only print if the configuration actually changed (avoid duplicate logs when
       // multiple servers in the same JVM each receive the same leader change event)
@@ -214,6 +153,78 @@ class RaftClusterStatusExporter {
       // Best-effort: don't let formatting errors disrupt the cluster
       HALog.log(this, HALog.BASIC, "Error printing cluster configuration: %s", e.getMessage());
     }
+  }
+
+  /**
+   * Builds the ASCII cluster configuration table as a string. Returns {@code null} when there are
+   * no peers to render. Visible for tests.
+   */
+  String buildClusterConfigurationTable() {
+    final RaftPeerId leaderId = haServer.getLeaderId();
+    final long term = haServer.getCurrentTerm();
+    final long commitIndex = haServer.getCommitIndex();
+    final Collection<RaftPeer> peers = haServer.getLivePeers();
+    if (peers.isEmpty())
+      return null;
+
+    // Collect follower replication state (only available on leader)
+    final Map<String, long[]> followerState = new HashMap<>();
+    for (final Map<String, Object> f : haServer.getFollowerStates()) {
+      final String peerId = (String) f.get("peerId");
+      final long matchIndex = (Long) f.get("matchIndex");
+      final long lastRpcMs = (Long) f.get("lastRpcElapsedMs");
+      followerState.put(peerId, new long[] { matchIndex, lastRpcMs });
+    }
+
+    // Build table rows
+    final List<String[]> rows = new ArrayList<>();
+    for (final RaftPeer peer : peers) {
+      final String peerId = peer.getId().toString();
+      final boolean isPeerLeader = leaderId != null && peer.getId().equals(leaderId);
+      final String role = isPeerLeader ? "Leader" : "Follower";
+      final String address = peer.getAddress();
+
+      String lagStr = "";
+      String latencyStr = "";
+      if (!isPeerLeader) {
+        final long[] state = followerState.get(peerId);
+        if (state != null) {
+          final long lag = commitIndex - state[0];
+          lagStr = lag > 0 ? String.valueOf(lag) : "0";
+          // Only show latency when there's active replication traffic (recent RPC).
+          // During idle periods lastRpcElapsedMs just reflects time since last heartbeat.
+          final long elapsedMs = state[1];
+          final long heartbeatInterval =
+              haServer.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_ELECTION_TIMEOUT_MIN) / 2;
+          if (elapsedMs <= heartbeatInterval)
+            latencyStr = elapsedMs + " ms";
+        }
+      }
+
+      rows.add(new String[] { peerId, address, role, lagStr, latencyStr });
+    }
+
+    // Calculate column widths
+    final String[] headers = { "SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY" };
+    final int[] widths = new int[headers.length];
+    for (int i = 0; i < headers.length; i++)
+      widths[i] = headers[i].length();
+    for (final String[] row : rows)
+      for (int i = 0; i < row.length; i++)
+        widths[i] = Math.max(widths[i], row[i].length());
+
+    // Format table
+    final StringBuilder sb = new StringBuilder();
+    sb.append(String.format("CLUSTER CONFIGURATION (term=%d, commitIndex=%d)%n", term, commitIndex));
+
+    appendSeparator(sb, widths);
+    appendRow(sb, widths, headers);
+    appendSeparator(sb, widths);
+    for (final String[] row : rows)
+      appendRow(sb, widths, row);
+    appendSeparator(sb, widths);
+
+    return sb.toString();
   }
 
   private static void appendSeparator(final StringBuilder sb, final int[] widths) {

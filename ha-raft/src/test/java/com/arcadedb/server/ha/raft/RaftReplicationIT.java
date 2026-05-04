@@ -249,6 +249,50 @@ class RaftReplicationIT {
     assertThat(leaderCount).isEqualTo(1);
   }
 
+  /**
+   * Regression test for issue #4075: the cluster configuration table on the leader was rendering
+   * every peer as "Follower" because the role lookup compared the raw RaftPeerId to the leader's
+   * display name (which has the HTTP address suffix).
+   */
+  @Test
+  void clusterConfigurationTableShowsCorrectRoles() {
+    ArcadeDBServer leader = null;
+    for (final ArcadeDBServer server : servers)
+      if (server.getHA() != null && server.getHA().isLeader()) {
+        leader = server;
+        break;
+      }
+    assertThat(leader).as("expected a Raft leader to be elected").isNotNull();
+
+    final RaftHAServer raftHA = ((RaftHAPlugin) leader.getHA()).getRaftHAServer();
+    final String table = raftHA.getClusterConfigurationTable();
+    assertThat(table).as("cluster configuration table should be available on the leader").isNotNull();
+
+    LogManager.instance().log(this, Level.INFO, "Cluster configuration table:\n%s", table);
+
+    // Count how many data rows have role "Leader" vs "Follower". Data rows are formatted with
+    // padded columns ("| Leader   |" / "| Follower |"); the header is "ROLE" and is excluded.
+    long leaderRows = 0;
+    long followerRows = 0;
+    for (final String line : table.split("\n")) {
+      if (!line.startsWith("|") || line.contains("ROLE"))
+        continue;
+      // Extract the role column (3rd pipe-delimited field).
+      final String[] fields = line.split("\\|");
+      if (fields.length < 4)
+        continue;
+      final String role = fields[3].trim();
+      if ("Leader".equals(role))
+        leaderRows++;
+      else if ("Follower".equals(role))
+        followerRows++;
+    }
+
+    assertThat(leaderRows).as("exactly one peer should be reported as Leader").isEqualTo(1L);
+    assertThat(followerRows).as("the remaining peers should be reported as Followers")
+        .isEqualTo(SERVER_COUNT - 1L);
+  }
+
   @Test
   void peerReplicaAddresses() {
     // Verify replica addresses are populated
