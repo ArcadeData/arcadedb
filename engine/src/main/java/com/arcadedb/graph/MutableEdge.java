@@ -218,6 +218,13 @@ public class MutableEdge extends MutableDocument implements Edge {
     this.in = in;
   }
 
+  void updateIdentity(final RID newRid, final RID newOut, final RID newIn) {
+    this.rid = newRid;
+    this.out = newOut;
+    this.in = newIn;
+    this.buffer = null;
+  }
+
   private static RID toRID(final Object value) {
     if (value instanceof RID r) return r;
     if (value instanceof Identifiable i) return i.getIdentity();

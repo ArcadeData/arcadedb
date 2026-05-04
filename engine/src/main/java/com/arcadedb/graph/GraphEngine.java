@@ -395,64 +395,30 @@ public class GraphEngine {
   }
 
   public void moveEdge(final MutableEdge edge, final Vertex.DIRECTION direction, final RID newVertexRID) {
-    if (direction == Vertex.DIRECTION.IN) {
-      final RID oldIn = edge.getIn();
-      final RID out = edge.getOut();
-      if (oldIn != null) {
-        try {
-          final VertexInternal oldVIn = (VertexInternal) database.lookupByRID(oldIn, false);
-          final EdgeLinkedList inEdges = getEdgeHeadChunk(oldVIn, Vertex.DIRECTION.IN);
-          if (inEdges != null)
-            inEdges.removeEdge(edge);
-        } catch (final RecordNotFoundException ignored) {
-        }
-      }
-      VertexInternal vOut = null;
-      if (out != null) {
-        try {
-          vOut = (VertexInternal) database.lookupByRID(out, false);
-          final EdgeLinkedList outEdges = getEdgeHeadChunk(vOut, Vertex.DIRECTION.OUT);
-          if (outEdges != null)
-            outEdges.removeEdge(edge);
-        } catch (final RecordNotFoundException ignored) {
-        }
-      }
-      edge.setIn(newVertexRID);
-      final Identifiable newInVertex = database.lookupByRID(newVertexRID, false);
-      if (vOut != null) {
-        connectOutgoingEdge(vOut, newInVertex, edge);
-        connectIncomingEdge(newInVertex, out, edge.getIdentity());
-      }
-    } else if (direction == Vertex.DIRECTION.OUT) {
-      final RID oldOut = edge.getOut();
-      final RID in = edge.getIn();
-      if (oldOut != null) {
-        try {
-          final VertexInternal oldVOut = (VertexInternal) database.lookupByRID(oldOut, false);
-          final EdgeLinkedList outEdges = getEdgeHeadChunk(oldVOut, Vertex.DIRECTION.OUT);
-          if (outEdges != null)
-            outEdges.removeEdge(edge);
-        } catch (final RecordNotFoundException ignored) {
-        }
-      }
-      VertexInternal vIn = null;
-      if (in != null) {
-        try {
-          vIn = (VertexInternal) database.lookupByRID(in, false);
-          final EdgeLinkedList inEdges = getEdgeHeadChunk(vIn, Vertex.DIRECTION.IN);
-          if (inEdges != null)
-            inEdges.removeEdge(edge);
-        } catch (final RecordNotFoundException ignored) {
-        }
-      }
-      edge.setOut(newVertexRID);
-      final VertexInternal newOutVertex = (VertexInternal) database.lookupByRID(newVertexRID, false);
-      if (vIn != null) {
-        connectOutgoingEdge(newOutVertex, vIn, edge);
-        connectIncomingEdge(vIn, newVertexRID, edge.getIdentity());
-      }
-    } else
+    if (direction != Vertex.DIRECTION.IN && direction != Vertex.DIRECTION.OUT)
       throw new IllegalArgumentException("Unsupported direction for moveEdge: " + direction);
+
+    final String typeName = edge.getTypeName();
+    final Map<String, Object> properties = edge.propertiesAsMap();
+    final RID newOut = direction == Vertex.DIRECTION.OUT ? newVertexRID : edge.getOut();
+    final RID newIn = direction == Vertex.DIRECTION.IN ? newVertexRID : edge.getIn();
+
+    deleteEdge(edge);
+
+    final EdgeType edgeType = (EdgeType) database.getSchema().getType(typeName);
+    final VertexInternal fromVertex = (VertexInternal) database.lookupByRID(newOut, false);
+    final Identifiable toVertex = database.lookupByRID(newIn, false);
+
+    final MutableEdge newEdge = new MutableEdge(database, edgeType, newOut, newIn);
+    if (!properties.isEmpty())
+      newEdge.set(properties);
+    newEdge.save();
+
+    connectOutgoingEdge(fromVertex, toVertex, newEdge);
+    if (edgeType.isBidirectional())
+      connectIncomingEdge(toVertex, newOut, newEdge.getIdentity());
+
+    edge.updateIdentity(newEdge.getIdentity(), newOut, newIn);
   }
 
   public void deleteVertex(final VertexInternal vertex) {
