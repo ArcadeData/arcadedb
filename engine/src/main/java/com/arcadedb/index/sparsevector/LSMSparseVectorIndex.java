@@ -202,6 +202,16 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       final float w = values[i];
       if (w == 0.0f)
         continue;
+      // Negative weights are rejected: WAND's per-dim `max_weight` upper bound is built via
+      // `Math.max(...)` on inserted weights and assumes non-negative values. A mix of negative
+      // and positive entries would yield a max that is no longer an upper bound on any single
+      // posting's contribution, and pruning would silently drop candidates that should rank.
+      // All standard sparse-retrieval models (BM25, SPLADE, BGE-M3, Cohere sparse) emit
+      // non-negative weights, so this is not a real constraint in practice.
+      if (w < 0.0f || Float.isNaN(w))
+        throw new IndexException(
+            "Sparse vector weight must be a non-negative finite number, found: " + w
+                + " at dimension " + dim);
       for (final RID rid : rids)
         underlyingIndex.put(new Object[] { dim, rid, w }, new RID[] { rid });
       // ConcurrentHashMap.merge is atomic; no external synchronization needed.
@@ -484,14 +494,18 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   private void initializeMaxWeights() {
     final IndexCursor cursor = underlyingIndex.iterator(true);
-    while (cursor.hasNext()) {
-      cursor.next();
-      final Object[] keys = cursor.getKeys();
-      if (keys == null || keys.length < 3)
-        continue;
-      if (!(keys[0] instanceof Number nDim) || !(keys[2] instanceof Number nW))
-        continue;
-      dimMaxWeight.merge(nDim.intValue(), nW.floatValue(), Math::max);
+    try {
+      while (cursor.hasNext()) {
+        cursor.next();
+        final Object[] keys = cursor.getKeys();
+        if (keys == null || keys.length < 3)
+          continue;
+        if (!(keys[0] instanceof Number nDim) || !(keys[2] instanceof Number nW))
+          continue;
+        dimMaxWeight.merge(nDim.intValue(), nW.floatValue(), Math::max);
+      }
+    } finally {
+      cursor.close();
     }
   }
 
@@ -599,23 +613,37 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Counts the postings under a single dimension by iterating the underlying LSM-Tree range. O(df)
-   * per call. Replaced by an incrementally maintained map in #4068.
+   * Counts the postings under a single dimension by iterating the underlying LSM-Tree range.
+   * O(df) per call: scans every posting for {@code qDim} once. Bounded by the size of one posting
+   * list, but for high-frequency dims (corpus stopwords) this dominates the IDF preprocessing
+   * step. The {@link #topK} caller caches the result per (dim, query) so duplicate dims do not
+   * re-scan, and incremental df maintenance is tracked as part of the WAND scaling work in
+   * #4068, which removes this scan entirely.
    */
   private long countPostings(final int qDim) {
     long df = 0;
     final IndexCursor cursor = underlyingIndex.range(true,
         new Object[] { qDim }, true,
         new Object[] { qDim }, true);
-    while (cursor.hasNext()) {
-      cursor.next();
-      df++;
+    try {
+      while (cursor.hasNext()) {
+        cursor.next();
+        df++;
+      }
+    } finally {
+      cursor.close();
     }
     return df;
   }
 
   /**
    * Total number of documents in the indexed type, used as {@code N} in the IDF formula.
+   * <p>
+   * Called once per {@code topK} in IDF mode (not once per query dim), so the overhead is bounded.
+   * {@code countType} sums each non-polymorphic bucket's cached entry count under a read lock; in
+   * the typical few-buckets case this is on the order of a handful of long reads plus the lock
+   * round-trip. If profiling later shows this is hot, the count can be cached on the wrapper with
+   * invalidation on put / remove.
    */
   private long totalDocuments() {
     final String typeName = getTypeName();

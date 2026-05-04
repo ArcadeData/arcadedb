@@ -34,7 +34,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -194,16 +193,13 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
 
     final BasicDatabase db = context.getDatabase();
     final ArrayList<Object> result = new ArrayList<>();
-    final HashMap<Object, Integer> perGroup = groupBy != null ? new HashMap<>() : null;
-    // Number of groups that have already reached groupSize. Same O(1) early-exit pattern as
-    // SQLFunctionVectorNeighbors to avoid scanning the perGroup map values on every iteration.
-    int filledGroups = 0;
+    final GroupAdmissionState groups = groupBy != null ? new GroupAdmissionState(k, groupSize) : null;
 
     for (final LSMSparseVectorIndex.RidScore neighbor : merged) {
       if (groupBy == null) {
         if (result.size() >= k)
           break;
-      } else if (filledGroups >= k) {
+      } else if (groups.isFull()) {
         break;
       }
 
@@ -214,17 +210,8 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
         continue;
       }
 
-      if (groupBy != null) {
-        final Object groupKey = readNestedField(record, groupBy);
-        final int existing = perGroup.getOrDefault(groupKey, 0);
-        if (existing == 0 && perGroup.size() >= k)
-          continue;
-        if (existing >= groupSize)
-          continue;
-        perGroup.put(groupKey, existing + 1);
-        if (existing + 1 == groupSize)
-          filledGroups++;
-      }
+      if (groupBy != null && !groups.admit(readNestedField(record, groupBy)))
+        continue;
 
       final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
       entry.put("record", record);

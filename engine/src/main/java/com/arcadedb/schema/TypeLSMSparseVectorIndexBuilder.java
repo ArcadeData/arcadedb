@@ -85,9 +85,10 @@ public class TypeLSMSparseVectorIndexBuilder extends TypeIndexBuilder {
     return this;
   }
 
-  public void withMetadata(final JSONObject json) {
+  public TypeLSMSparseVectorIndexBuilder withMetadata(final JSONObject json) {
     final LSMSparseVectorIndexMetadata meta = (LSMSparseVectorIndexMetadata) metadata;
     meta.dimensions = json.getInt("dimensions", meta.dimensions);
     meta.modifier = json.getString("modifier", meta.modifier).toUpperCase();
+    return this;
   }
 }

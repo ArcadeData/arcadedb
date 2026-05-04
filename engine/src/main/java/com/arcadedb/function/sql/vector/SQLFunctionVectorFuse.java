@@ -129,7 +129,14 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     // Single pass: lookupByRID once per RID, applying groupBy and limit on the fly. Doing this
     // in two passes (one to filter by group, one to serialize) would double the record I/O for
     // large result sets.
-    final HashMap<Object, Integer> perGroup = groupBy != null ? new HashMap<>() : null;
+    //
+    // GroupAdmissionState is used with an unbounded group count (Integer.MAX_VALUE) because
+    // `vector.fuse`'s `limit` caps total rows, not distinct groups; only the per-group cap
+    // applies here. For `vector.neighbors` / `vector.sparseNeighbors`, the same helper takes a
+    // finite limit so it doubles as the "we have enough groups" early-exit predicate.
+    final GroupAdmissionState groups = groupBy != null
+        ? new GroupAdmissionState(Integer.MAX_VALUE, groupSize)
+        : null;
     final int targetSize = limit > 0 ? limit : Integer.MAX_VALUE;
     final ArrayList<Object> result = new ArrayList<>(Math.min(targetSize, ranked.size()));
     final BasicDatabase db = context.getDatabase();
@@ -145,13 +152,8 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
         continue;
       }
 
-      if (groupBy != null) {
-        final Object groupKey = readNestedField(record, groupBy);
-        final int count = perGroup.getOrDefault(groupKey, 0);
-        if (count >= groupSize)
-          continue;
-        perGroup.put(groupKey, count + 1);
-      }
+      if (groupBy != null && !groups.admit(readNestedField(record, groupBy)))
+        continue;
 
       final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
       entry.put("record", record);
