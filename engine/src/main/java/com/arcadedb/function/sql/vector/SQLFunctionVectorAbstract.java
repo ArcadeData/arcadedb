@@ -18,8 +18,18 @@
  */
 package com.arcadedb.function.sql.vector;
 
+import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
+import com.arcadedb.query.sql.executor.CommandContext;
+
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Abstract base class for vector SQL functions providing common utility methods.
@@ -92,5 +102,129 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     if (params == null || params.length != expectedCount) {
       throw new CommandSQLParsingException(getSyntax());
     }
+  }
+
+  /**
+   * Reads a (possibly dotted) property path from a record and returns the leaf value.
+   * <p>
+   * Supports flat property names ({@code "source"}) and dotted nested paths
+   * ({@code "metadata.author"}, {@code "provenance.source.id"}). Each segment after the first
+   * descends one level via {@link Map#get(Object)} for {@code Map}-typed values or
+   * {@link Document#get(String)} for embedded documents. A missing segment short-circuits to
+   * {@code null}; a segment that lands on a non-traversable value (e.g. a primitive in the middle
+   * of the path) also returns {@code null}.
+   * <p>
+   * Used by the {@code groupBy} option on {@code vector.neighbors}, {@code vector.sparseNeighbors},
+   * and {@code vector.fuse} (issue #4072).
+   *
+   * @param record the record to read from; {@code null} returns {@code null}
+   * @param path   the property name or dotted path; {@code null} returns {@code null}
+   *
+   * @return the leaf value, or {@code null} if any segment of the path resolves to {@code null}
+   *         or to a non-traversable intermediate value
+   */
+  protected static Object readNestedField(final Document record, final String path) {
+    if (record == null || path == null || path.isEmpty())
+      return null;
+
+    final int firstDot = path.indexOf('.');
+    if (firstDot < 0)
+      return record.get(path);
+
+    final String[] parts = path.split("\\.");
+    Object current = record.get(parts[0]);
+    for (int i = 1; i < parts.length && current != null; i++) {
+      if (current instanceof Document doc)
+        current = doc.get(parts[i]);
+      else if (current instanceof Map<?, ?> map)
+        current = map.get(parts[i]);
+      else
+        return null;
+    }
+    return current;
+  }
+
+  /**
+   * Parses a {@code filter} option (a list of RIDs / Identifiables / RID-string forms) into a
+   * {@link Set} of {@link RID} suitable for the post-filter step in vector neighbour searches.
+   * Returns {@code null} for null or empty inputs so callers can distinguish "no filter" from
+   * "empty filter" with a single null-check.
+   *
+   * @param items   the {@code filter} option contents, typically the value of
+   *                {@code FunctionOptions.getList("filter")}
+   * @param functionName the calling function's SQL name, used to build helpful error messages
+   * @param context the command context (used to coerce string-form RIDs through
+   *                {@link BasicDatabase#newRID})
+   *
+   * @return a set of allowed RIDs, or {@code null} when no whitelist should apply
+   *
+   * @throws CommandSQLParsingException if the list contains a value that cannot be coerced to a RID
+   */
+  /**
+   * Mutable accounting state shared by the three vector functions that apply a post-traversal
+   * {@code groupBy} / {@code groupSize} filter. Encapsulates the per-group counter map plus the
+   * {@code filledGroups} O(1) early-exit counter so the three call sites do not drift in lockstep.
+   * <p>
+   * Lifetime is one query: instantiate, call {@link #admit(Object)} per candidate row in rank order,
+   * call {@link #isFull(int)} to decide whether the loop can stop, discard.
+   */
+  protected static final class GroupAdmissionState {
+    private final java.util.HashMap<Object, Integer> perGroup = new java.util.HashMap<>();
+    private final int                                 limit;
+    private final int                                 groupSize;
+    private       int                                 filledGroups = 0;
+
+    public GroupAdmissionState(final int limit, final int groupSize) {
+      this.limit = limit;
+      this.groupSize = groupSize;
+    }
+
+    /**
+     * Decides whether a candidate row with the given group key should be kept. Side-effects the
+     * internal counters when admitting. Returns {@code true} if admitted, {@code false} if the row
+     * must be skipped (group already full, or this would open a {@code (limit + 1)}-th group).
+     */
+    public boolean admit(final Object groupKey) {
+      final int existing = perGroup.getOrDefault(groupKey, 0);
+      if (existing == 0 && perGroup.size() >= limit)
+        return false;
+      if (existing >= groupSize)
+        return false;
+      perGroup.put(groupKey, existing + 1);
+      if (existing + 1 == groupSize)
+        filledGroups++;
+      return true;
+    }
+
+    /**
+     * Returns {@code true} when {@code limit} groups have all reached {@code groupSize}, signalling
+     * the caller to break out of its scoring loop. O(1).
+     */
+    public boolean isFull() {
+      return filledGroups >= limit;
+    }
+  }
+
+  protected static Set<RID> parseRidFilter(final List<?> items, final String functionName, final CommandContext context) {
+    if (items == null || items.isEmpty())
+      return null;
+
+    final BasicDatabase db = context.getDatabase();
+    final Set<RID> out = new HashSet<>(items.size());
+    for (final Object item : items) {
+      if (item == null)
+        continue;
+      if (item instanceof RID rid)
+        out.add(rid);
+      else if (item instanceof Identifiable id)
+        out.add(id.getIdentity());
+      else if (item instanceof String s)
+        out.add(db.newRID(s));
+      else
+        throw new CommandSQLParsingException(
+            "Option 'filter' for function '" + functionName + "' must contain RIDs, got: "
+                + item.getClass().getSimpleName());
+    }
+    return out;
   }
 }

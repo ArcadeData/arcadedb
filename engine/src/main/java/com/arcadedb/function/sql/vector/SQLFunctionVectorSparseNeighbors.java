@@ -1,0 +1,284 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.function.sql.vector;
+
+import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.FunctionOptions;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.utility.IntHashSet;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+
+/**
+ * Returns the top-K nearest records by sparse-vector dot product against a {@code LSM_SPARSE_VECTOR}
+ * index.
+ * <p>
+ * Usage: {@code vector.sparseNeighbors(indexSpec, queryIndices, queryValues, k[, options])}
+ * <p>
+ * {@code indexSpec} is either a fully qualified index name or a {@code Type[property1,property2]}
+ * string. {@code queryIndices} is an {@code int[]} of non-negative dimension ids and
+ * {@code queryValues} is the matching {@code float[]}.
+ * <p>
+ * Optional 5th argument: a map with keys {@code filter} (List of allowed RIDs).
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract {
+  public static final String NAME = "vector.sparseNeighbors";
+
+  private static final Set<String> OPTIONS = Set.of("filter", "groupBy", "groupSize");
+
+  // Hard cap on the candidate pool when grouping is enabled. Same rationale as
+  // SQLFunctionVectorNeighbors.MAX_FETCH_CANDIDATES: bounds memory at a few MB on pathological
+  // (k, groupSize) combinations.
+  private static final int MAX_FETCH_CANDIDATES = 100_000;
+
+  public SQLFunctionVectorSparseNeighbors() {
+    super(NAME);
+  }
+
+  @Override
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params == null || params.length < 4 || params.length > 5)
+      throw new CommandSQLParsingException(getSyntax());
+
+    final String indexSpec = params[0].toString();
+
+    final int[]   queryIndices = sparseToIntArray(params[1]);
+    final float[] queryValues  = sparseToFloatArray(params[2]);
+    if (queryIndices == null || queryValues == null)
+      throw new CommandSQLParsingException("Query indices and values must not be null");
+    if (queryIndices.length != queryValues.length)
+      throw new CommandSQLParsingException(
+          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
+
+    final int k = params[3] instanceof Number n ? n.intValue() : Integer.parseInt(params[3].toString());
+
+    Set<RID> allowedRIDs = null;
+    String groupBy = null;
+    int groupSize = 1;
+    if (params.length >= 5 && params[4] != null) {
+      if (params[4] instanceof Map<?, ?> rawMap) {
+        final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
+        allowedRIDs = parseRidFilter(opts.getList("filter"), NAME, context);
+        groupBy = opts.getString("groupBy", null);
+        groupSize = opts.getInt("groupSize", 1);
+        if (groupSize < 1)
+          throw new CommandSQLParsingException(NAME + " groupSize must be >= 1, got " + groupSize);
+      } else {
+        throw new CommandSQLParsingException(NAME + " 5th parameter must be an options map, got: " + params[4]);
+      }
+    }
+
+    final TypeIndex typeIndex = resolveTypeIndex(indexSpec, context);
+    final List<LSMSparseVectorIndex> sparseIndexes = collectSparseIndexes(indexSpec, typeIndex, context);
+
+    if (sparseIndexes.isEmpty())
+      throw new CommandSQLParsingException(
+          "Index '" + indexSpec + "' is not a sparse vector index");
+
+    return executeWithIndexes(sparseIndexes, queryIndices, queryValues, k, allowedRIDs, groupBy, groupSize, context);
+  }
+
+  private TypeIndex resolveTypeIndex(final String indexSpec, final CommandContext context) {
+    final int bracketStart = indexSpec.indexOf('[');
+    if (bracketStart > 0 && indexSpec.endsWith("]")) {
+      final String specifiedTypeName = indexSpec.substring(0, bracketStart);
+      final String propertySpec = indexSpec.substring(bracketStart + 1, indexSpec.length() - 1);
+      final String[] properties = splitPropertyList(propertySpec);
+      final DocumentType specifiedType = context.getDatabase().getSchema().getType(specifiedTypeName);
+      final TypeIndex idx = specifiedType.getPolymorphicIndexByProperties(properties);
+      if (idx == null)
+        throw new CommandSQLParsingException(
+            "No sparse vector index found on properties '" + propertySpec + "' for type '" + specifiedTypeName + "'");
+      return idx;
+    }
+
+    final var direct = context.getDatabase().getSchema().getIndexByName(indexSpec);
+    if (direct instanceof TypeIndex typeIndex)
+      return typeIndex;
+
+    throw new CommandSQLParsingException(
+        "Index '" + indexSpec + "' is not a sparse vector index (found: " + (direct != null ? direct.getClass().getSimpleName() : "null") + ")");
+  }
+
+  private static String[] splitPropertyList(final String propertySpec) {
+    final String[] raw = propertySpec.split(",");
+    final String[] out = new String[raw.length];
+    for (int i = 0; i < raw.length; i++)
+      out[i] = raw[i].trim();
+    return out;
+  }
+
+  private List<LSMSparseVectorIndex> collectSparseIndexes(final String indexSpec, final TypeIndex typeIndex,
+      final CommandContext context) {
+    final IntHashSet allowedBucketIds = new IntHashSet();
+    final int bracketStart = indexSpec.indexOf('[');
+    if (bracketStart > 0 && indexSpec.endsWith("]")) {
+      final String specifiedTypeName = indexSpec.substring(0, bracketStart);
+      final DocumentType specifiedType = context.getDatabase().getSchema().getType(specifiedTypeName);
+      for (final Bucket bucket : specifiedType.getBuckets(false))
+        allowedBucketIds.add(bucket.getFileId());
+    }
+
+    final var bucketIndexes = typeIndex.getIndexesOnBuckets();
+    final List<LSMSparseVectorIndex> result = new ArrayList<>();
+    if (bucketIndexes == null)
+      return result;
+
+    for (final IndexInternal bucketIndex : bucketIndexes) {
+      if (bucketIndex instanceof LSMSparseVectorIndex sparseIndex) {
+        if (allowedBucketIds.isEmpty() || allowedBucketIds.contains(bucketIndex.getAssociatedBucketId()))
+          result.add(sparseIndex);
+      }
+    }
+    return result;
+  }
+
+  private Object executeWithIndexes(final List<LSMSparseVectorIndex> indexes, final int[] queryIndices,
+      final float[] queryValues, final int k, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
+      final CommandContext context) {
+
+    // Over-fetch when grouping so the post-traversal filter has enough material to fill k groups
+    // at groupSize each. Same 5x cushion and MAX_FETCH_CANDIDATES cap as `vector.neighbors`.
+    final int fetchK;
+    if (groupBy == null) {
+      fetchK = k;
+    } else {
+      final long requested = Math.max((long) k * groupSize * 5L, (long) k);
+      if (requested > MAX_FETCH_CANDIDATES)
+        throw new CommandSQLParsingException(NAME + " over-fetch budget exceeded: k=" + k
+            + ", groupSize=" + groupSize + " would require " + requested
+            + " candidates (cap " + MAX_FETCH_CANDIDATES + "). Reduce k or groupSize.");
+      fetchK = (int) requested;
+    }
+
+    final ArrayList<LSMSparseVectorIndex.RidScore> merged = new ArrayList<>();
+    for (final LSMSparseVectorIndex idx : indexes)
+      merged.addAll(idx.topK(queryIndices, queryValues, fetchK, allowedRIDs));
+
+    merged.sort((a, b) -> Float.compare(b.score, a.score));
+
+    final BasicDatabase db = context.getDatabase();
+    final ArrayList<Object> result = new ArrayList<>();
+    final GroupAdmissionState groups = groupBy != null ? new GroupAdmissionState(k, groupSize) : null;
+
+    for (final LSMSparseVectorIndex.RidScore neighbor : merged) {
+      if (groupBy == null) {
+        if (result.size() >= k)
+          break;
+      } else if (groups.isFull()) {
+        break;
+      }
+
+      final Document record;
+      try {
+        record = (Document) db.lookupByRID(neighbor.rid, true);
+      } catch (final RecordNotFoundException e) {
+        continue;
+      }
+
+      if (groupBy != null && !groups.admit(readNestedField(record, groupBy)))
+        continue;
+
+      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+      entry.put("record", record);
+      for (final String prop : record.getPropertyNames())
+        entry.put(prop, record.get(prop));
+      entry.put("@rid", record.getIdentity());
+      entry.put("@type", record.getTypeName());
+      entry.put("score", neighbor.score);
+      result.add(entry);
+    }
+
+    return result;
+  }
+
+  private static int[] sparseToIntArray(final Object o) {
+    if (o == null)
+      return null;
+    if (o instanceof int[] arr)
+      return arr;
+    if (o instanceof Integer[] arr) {
+      final int[] out = new int[arr.length];
+      for (int i = 0; i < arr.length; i++)
+        out[i] = arr[i];
+      return out;
+    }
+    if (o instanceof List<?> list) {
+      final int[] out = new int[list.size()];
+      for (int i = 0; i < out.length; i++) {
+        final Object e = list.get(i);
+        if (!(e instanceof Number n))
+          throw new CommandSQLParsingException("Sparse query indices must be numbers, got: " + e);
+        out[i] = n.intValue();
+      }
+      return out;
+    }
+    throw new CommandSQLParsingException(
+        "Sparse query indices must be int[], Integer[] or List<Number>, got: " + o.getClass().getName());
+  }
+
+  private static float[] sparseToFloatArray(final Object o) {
+    if (o == null)
+      return null;
+    if (o instanceof float[] arr)
+      return arr;
+    if (o instanceof Float[] arr) {
+      final float[] out = new float[arr.length];
+      for (int i = 0; i < arr.length; i++)
+        out[i] = arr[i];
+      return out;
+    }
+    if (o instanceof List<?> list) {
+      final float[] out = new float[list.size()];
+      for (int i = 0; i < out.length; i++) {
+        final Object e = list.get(i);
+        if (!(e instanceof Number n))
+          throw new CommandSQLParsingException("Sparse query values must be numbers, got: " + e);
+        out[i] = n.floatValue();
+      }
+      return out;
+    }
+    throw new CommandSQLParsingException(
+        "Sparse query values must be float[], Float[] or List<Number>, got: " + o.getClass().getName());
+  }
+
+  @Override
+  public String getSyntax() {
+    return NAME + "(<index-name>, <indices>, <values>, <k>[, { filter: [<rid>, ...], "
+        + "groupBy: <field>, groupSize: <int> }])";
+  }
+}

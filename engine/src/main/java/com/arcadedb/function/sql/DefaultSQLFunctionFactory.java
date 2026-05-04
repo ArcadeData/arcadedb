@@ -141,7 +141,9 @@ import com.arcadedb.function.sql.vector.SQLFunctionVectorMagnitude;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorMax;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorMin;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorMultiply;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorFuse;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorNeighbors;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorSparseNeighbors;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorNormalize;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorNormalizeScores;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorQuantizeBinary;
@@ -340,6 +342,8 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionVectorToString.NAME, new SQLFunctionVectorToString());
     // Existing
     register(SQLFunctionVectorNeighbors.NAME, new SQLFunctionVectorNeighbors());
+    register(SQLFunctionVectorSparseNeighbors.NAME, new SQLFunctionVectorSparseNeighbors());
+    register(SQLFunctionVectorFuse.NAME, new SQLFunctionVectorFuse());
 
     reflectionFactory = new SQLFunctionReflectionFactory(this);
   }
