@@ -22,6 +22,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -141,6 +143,47 @@ class JsonlBatchRecordStreamTest {
       final BatchRecord rec2 = stream.next();
       // Same object reused
       assertThat(rec1).isSameAs(rec2);
+    }
+  }
+
+  /**
+   * Regression for issue #4069: a JSON array property must be exposed as a {@link List},
+   * not as a {@code JSONArray} (which is not a {@link java.util.Collection} and so trips
+   * up downstream {@code Type.convert} for {@code LIST OF STRING} schema validation).
+   */
+  @Test
+  void parseVertexWithListProperty() throws Exception {
+    final String input = "{\"@type\":\"vertex\",\"@class\":\"EntityA\",\"@id\":\"a\",\"names\":[\"FOO\",\"BAR\"]}\n";
+
+    try (final JsonlBatchRecordStream stream = new JsonlBatchRecordStream(toStream(input))) {
+      assertThat(stream.hasNext()).isTrue();
+      final BatchRecord rec = stream.next();
+
+      assertThat(rec.propertyCount).isEqualTo(1);
+      assertThat(rec.properties[0]).isEqualTo("names");
+      assertThat(rec.properties[1]).isInstanceOf(List.class);
+      final List<Object> names = (List<Object>) rec.properties[1];
+      assertThat(names).containsExactly("FOO", "BAR");
+    }
+  }
+
+  /**
+   * Sibling regression: nested JSON objects must also be unwrapped to {@link Map} so
+   * {@code MutableDocument.set} can route them through the embedded-document path.
+   */
+  @Test
+  void parseVertexWithNestedObjectProperty() throws Exception {
+    final String input = "{\"@type\":\"vertex\",\"@class\":\"EntityB\",\"@id\":\"b\",\"meta\":{\"k\":\"v\"}}\n";
+
+    try (final JsonlBatchRecordStream stream = new JsonlBatchRecordStream(toStream(input))) {
+      assertThat(stream.hasNext()).isTrue();
+      final BatchRecord rec = stream.next();
+
+      assertThat(rec.propertyCount).isEqualTo(1);
+      assertThat(rec.properties[0]).isEqualTo("meta");
+      assertThat(rec.properties[1]).isInstanceOf(Map.class);
+      final Map<String, Object> meta = (Map<String, Object>) rec.properties[1];
+      assertThat(meta).containsEntry("k", "v");
     }
   }
 

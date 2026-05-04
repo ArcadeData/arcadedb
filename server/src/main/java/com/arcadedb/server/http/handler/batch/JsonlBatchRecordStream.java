@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.handler.batch;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -138,12 +139,23 @@ public class JsonlBatchRecordStream implements BatchRecordStream {
         throw new IllegalArgumentException("Edge missing @from or @to at line " + lineNumber);
     }
 
-    // Extract all non-meta keys as properties
+    // Extract all non-meta keys as properties.
+    // JSON arrays/objects are unwrapped to java.util.List / java.util.Map so downstream
+    // schema validation and Type.convert (which only recognise Collection/Map) accept
+    // them - issue #4069.
     for (final String key : json.keySet()) {
       if (META_KEYS.contains(key))
         continue;
-      record.addProperty(key, json.get(key));
+      record.addProperty(key, unwrap(json.get(key)));
     }
+  }
+
+  private static Object unwrap(final Object value) {
+    if (value instanceof JSONArray array)
+      return array.toList();
+    if (value instanceof JSONObject object)
+      return object.toMap();
+    return value;
   }
 
   private static int firstNonWhitespace(final String s) {

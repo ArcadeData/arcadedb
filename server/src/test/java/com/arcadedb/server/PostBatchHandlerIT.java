@@ -233,6 +233,35 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Regression for issue #4069: posting a JSONL vertex whose property is declared as
+   * {@code LIST OF STRING} in the schema must accept the JSON array (the JSONL parser
+   * returned a {@link com.arcadedb.serializer.json.JSONArray}, which is not a
+   * {@link java.util.Collection}, so {@code Type.convert} wrapped it in a singleton list,
+   * yielding a nested array and a "value of type 'null'" validation error).
+   */
+  @Test
+  void listOfStringPropertyFromJsonl() throws Exception {
+    testEachServer((serverIndex) -> {
+      executeCommand(serverIndex, "sql", "CREATE VERTEX TYPE EntityA IF NOT EXISTS");
+      executeCommand(serverIndex, "sql", "CREATE PROPERTY EntityA.names IF NOT EXISTS LIST OF STRING");
+
+      final String body = """
+          {"@type":"vertex","@class":"EntityA","@id":"a4069","names":["ANONYMOUS WARD V/FOO BAR","SECOND"]}
+          """;
+
+      final JSONObject result = postBatch(serverIndex, body, "application/x-ndjson", "");
+      assertThat(result.getInt("verticesCreated")).isEqualTo(1);
+
+      final JSONObject query = executeCommand(serverIndex, "sql",
+          "SELECT names FROM EntityA");
+      final JSONObject record = query.getJSONObject("result").getJSONArray("records").getJSONObject(0);
+      assertThat(record.getJSONArray("names").length()).isEqualTo(2);
+      assertThat(record.getJSONArray("names").getString(0)).isEqualTo("ANONYMOUS WARD V/FOO BAR");
+      assertThat(record.getJSONArray("names").getString(1)).isEqualTo("SECOND");
+    });
+  }
+
   @Test
   void edgeWithProperties() throws Exception {
     testEachServer((serverIndex) -> {
