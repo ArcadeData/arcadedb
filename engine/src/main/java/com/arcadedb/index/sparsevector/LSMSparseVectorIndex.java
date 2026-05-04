@@ -393,6 +393,16 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * Either queues the operation onto the active transaction (so it is applied at commit time
    * along with all other index changes that participate in lock ordering and recovery), or
    * applies it directly when no transaction is in flight.
+   * <p>
+   * <b>Durability hook.</b> When queued, this also registers a post-commit callback that flushes
+   * the engine memtable to a sealed segment on disk. Without this, the v2 backend would only
+   * serialize on clean shutdown and a crash mid-session would lose every memtable posting. The
+   * callback uses {@link TransactionContext#addAfterCommitCallbackIfAbsent} keyed by the index
+   * name so that a transaction touching N postings on the same index registers exactly one flush.
+   * The callback fires synchronously right after the transaction's commit-2nd-phase completes,
+   * leaving only a microsecond-scale window between "ArcadeDB considers the transaction durable"
+   * and "the segment file is fsynced", which matches the durability profile of ArcadeDB's normal
+   * page-level commits with {@code asyncFlush=true}.
    */
   private void queueOrApply(final boolean add, final int dim, final RID rid, final float weight) {
     final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();
@@ -401,12 +411,23 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
           add ? TransactionIndexContext.IndexKey.IndexKeyOperation.ADD
               : TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
           new Object[] { dim, rid, weight }, rid);
+      tx.addAfterCommitCallbackIfAbsent("sparse-flush:" + getName(), this::flushEngineQuietly);
       return;
     }
     if (add)
       engine.put(dim, rid, weight);
     else
       engine.remove(dim, rid);
+  }
+
+  /** Idempotent helper for the post-commit flush callback - swallows IO errors as warnings. */
+  private void flushEngineQuietly() {
+    try {
+      engine.flush();
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.SEVERE, "Post-commit flush of sparse vector engine '%s' failed: %s", e, getName(),
+          e.getMessage());
+    }
   }
 
   /** Apply a scalar posting (3-tuple {@code [dim, RID, weight]}) coming from commit replay. */

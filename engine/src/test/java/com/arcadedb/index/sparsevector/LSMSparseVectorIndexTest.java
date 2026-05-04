@@ -130,8 +130,10 @@ class LSMSparseVectorIndexTest extends TestHelper {
 
     for (int i = 0; i < K; i++) {
       assertThat(indexRids.get(i)).as("rank " + i).isEqualTo(sortedBF.get(i).getKey());
+      // Tolerance reflects int8 weight quantization in the sealed segment: per-weight error is
+      // bounded by (max-min)/(2*254) per posting and accumulates linearly with query NNZ.
       assertThat(indexScores.get(i)).as("score at rank " + i)
-          .isCloseTo(sortedBF.get(i).getValue(), Offset.offset(1e-4f));
+          .isCloseTo(sortedBF.get(i).getValue(), Offset.offset(5e-3f));
     }
   }
 
@@ -459,12 +461,13 @@ class LSMSparseVectorIndexTest extends TestHelper {
         final int expected = Math.min(kVal, sortedBF.size());
         assertThat(indexRids).as("query %d, k=%d size", q, kVal).hasSize(expected);
 
-        // Top-K identity must match brute force (allowing ties on equal scores).
+        // Top-K identity must match brute force (allowing ties on equal scores). Tolerance
+        // accommodates int8 weight quantization in sealed segments after flush-on-commit.
         for (int i = 0; i < expected; i++) {
           final float expectedScore = sortedBF.get(i).getValue();
           assertThat(indexScores.get(i))
               .as("query %d k=%d rank %d score", q, kVal, i)
-              .isCloseTo(expectedScore, Offset.offset(1e-3f));
+              .isCloseTo(expectedScore, Offset.offset(5e-3f));
         }
       }
     }
