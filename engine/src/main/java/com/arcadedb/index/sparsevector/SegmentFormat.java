@@ -19,40 +19,22 @@
 package com.arcadedb.index.sparsevector;
 
 /**
- * On-disk format constants for {@code .sparseseg} sealed segments.
- * <p>
- * See {@code docs/sparse-vector-storage-design.md} for the full layout. This class is the
- * single source of truth for byte-level offsets and sentinel values shared between the writer
- * and reader.
+ * Block-level format constants shared between {@link SparseSegmentBuilder} and
+ * {@link PaginatedSegmentReader}: magic, format version, default block / skip-list parameters,
+ * the per-block header layout, the per-skip-list-entry layout, and the quantization sentinels.
+ * Page-level layout (header / dim_index / manifest offsets) lives in {@link PaginatedSegmentFormat}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class SegmentFormat {
-  public static final long MAGIC                 = 0x4153505630303031L; // "ASPV0001"
-  public static final int  FORMAT_VERSION        = 1;
-  public static final int  DEFAULT_PAGE_SIZE     = 65536;               // 64 KiB
-  public static final int  DEFAULT_BLOCK_SIZE    = 128;                 // postings per block
-  public static final int  DEFAULT_SKIP_STRIDE   = 8;                   // blocks per skip entry
-  public static final int  MIN_BLOCK_SIZE        = 16;
-  public static final int  MAX_BLOCK_SIZE        = 4096;
-  public static final int  MIN_SKIP_STRIDE       = 1;
-  public static final int  MAX_SKIP_STRIDE       = 1024;
-
-  // File header layout (page 0).
-  public static final int  HEADER_OFFSET_MAGIC               = 0;
-  public static final int  HEADER_OFFSET_FORMAT_VERSION      = 8;
-  public static final int  HEADER_OFFSET_PAGE_SIZE           = 12;
-  public static final int  HEADER_OFFSET_BLOCK_SIZE          = 16;
-  public static final int  HEADER_OFFSET_SKIP_STRIDE         = 20;
-  public static final int  HEADER_OFFSET_WEIGHT_QUANTIZATION = 24;
-  public static final int  HEADER_OFFSET_RID_COMPRESSION     = 25;
-  public static final int  HEADER_OFFSET_RESERVED            = 26;     // 14 bytes reserved
-  public static final int  HEADER_OFFSET_MANIFEST_OFFSET     = 40;
-  public static final int  HEADER_OFFSET_TOTAL_POSTINGS      = 48;
-  public static final int  HEADER_OFFSET_TOTAL_DIMS          = 56;
-  public static final int  HEADER_OFFSET_CREATED_AT          = 60;
-  public static final int  HEADER_OFFSET_CRC32               = 68;
-  public static final int  HEADER_SIZE                       = 72;
+  public static final long MAGIC               = 0x4153505630303031L; // "ASPV0001"
+  public static final int  FORMAT_VERSION      = 1;
+  public static final int  DEFAULT_BLOCK_SIZE  = 128;                 // postings per block
+  public static final int  DEFAULT_SKIP_STRIDE = 8;                   // blocks per skip entry
+  public static final int  MIN_BLOCK_SIZE      = 16;
+  public static final int  MAX_BLOCK_SIZE      = 4096;
+  public static final int  MIN_SKIP_STRIDE     = 1;
+  public static final int  MAX_SKIP_STRIDE     = 1024;
 
   // RID is (int bucketId, long offset). 12 bytes raw.
   public static final int  RID_SIZE_BYTES = 12;

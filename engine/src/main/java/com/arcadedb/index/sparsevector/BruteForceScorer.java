@@ -45,7 +45,7 @@ public final class BruteForceScorer {
     // utility class
   }
 
-  public static List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final SparseSegmentReader[] segmentsOldestFirst,
+  public static List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final PaginatedSegmentReader[] segmentsOldestFirst,
       final int k) throws IOException {
     if (k <= 0)
       return List.of();
@@ -65,7 +65,7 @@ public final class BruteForceScorer {
 
       // Iterate segments newest -> oldest; the first entry seen for a given RID wins.
       for (int s = segmentsOldestFirst.length - 1; s >= 0; s--) {
-        try (final SegmentDimCursor c = segmentsOldestFirst[s].openCursor(dim)) {
+        try (final PaginatedSegmentDimCursor c = segmentsOldestFirst[s].openCursor(dim)) {
           if (c == null)
             continue;
           while (c.advance()) {

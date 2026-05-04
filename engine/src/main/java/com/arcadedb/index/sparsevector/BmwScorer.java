@@ -130,7 +130,7 @@ public final class BmwScorer {
         // Skip the prefix [0..pivot] forward to pivotRid. Cursors past `pivot` are already at >= pivotRid (sorted).
         for (int i = 0; i <= pivot; i++) {
           final DimEntry e = live.get(i);
-          if (SparseSegmentWriter.compareRid(e.cursor.currentRid(), pivotRid) < 0) {
+          if (SparseSegmentBuilder.compareRid(e.cursor.currentRid(), pivotRid) < 0) {
             if (!e.cursor.seekTo(pivotRid))
               e.exhausted = true;
           }
@@ -166,7 +166,7 @@ public final class BmwScorer {
       final DimEntry curr = live.get(i);
       final RID currRid = curr.cursor.currentRid();
       int j = i - 1;
-      while (j >= 0 && SparseSegmentWriter.compareRid(live.get(j).cursor.currentRid(), currRid) > 0) {
+      while (j >= 0 && SparseSegmentBuilder.compareRid(live.get(j).cursor.currentRid(), currRid) > 0) {
         live.set(j + 1, live.get(j));
         j--;
       }

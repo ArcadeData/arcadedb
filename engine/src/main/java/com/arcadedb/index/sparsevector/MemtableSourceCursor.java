@@ -105,7 +105,7 @@ public final class MemtableSourceCursor implements SourceCursor {
       return false;
     if (!started)
       start();
-    while (currentRid != null && SparseSegmentWriter.compareRid(currentRid, target) < 0) {
+    while (currentRid != null && SparseSegmentBuilder.compareRid(currentRid, target) < 0) {
       if (!advance())
         return false;
     }

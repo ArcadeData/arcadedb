@@ -146,7 +146,7 @@ public final class DimCursor implements AutoCloseable {
     if (!started) {
       start();
     }
-    if (currentRid != null && SparseSegmentWriter.compareRid(currentRid, target) >= 0)
+    if (currentRid != null && SparseSegmentBuilder.compareRid(currentRid, target) >= 0)
       return true;
 
     for (int i = 0; i < sources.length; i++) {
@@ -180,7 +180,7 @@ public final class DimCursor implements AutoCloseable {
         sourceLive[i] = false;
         continue;
       }
-      if (min == null || SparseSegmentWriter.compareRid(rid, min) < 0)
+      if (min == null || SparseSegmentBuilder.compareRid(rid, min) < 0)
         min = rid;
     }
     if (min == null) {
@@ -217,43 +217,4 @@ public final class DimCursor implements AutoCloseable {
     currentWeight = weight;
   }
 
-  // ---------- factory helpers ----------
-
-  /**
-   * Convenience factory: opens a merged cursor across one or more {@link SparseSegmentReader segments}
-   * for {@code dimId}. Segments are passed in oldest-to-newest order; absent dims are skipped.
-   * Returns {@code null} if no segment carries the dim.
-   */
-  public static DimCursor open(final int dimId, final SparseSegmentReader[] segmentsOldestFirst) throws IOException {
-    return open(dimId, null, segmentsOldestFirst);
-  }
-
-  /**
-   * Open a merged cursor across an optional memtable plus one or more sealed segments. The
-   * memtable, if provided, is the newest source (its writes shadow segment values on conflict).
-   * Returns {@code null} if no source carries the dim.
-   */
-  public static DimCursor open(final int dimId, final Memtable memtable, final SparseSegmentReader[] segmentsOldestFirst)
-      throws IOException {
-    final List<SourceCursor> cursors = new ArrayList<>((segmentsOldestFirst == null ? 0 : segmentsOldestFirst.length) + 1);
-    if (segmentsOldestFirst != null) {
-      for (final SparseSegmentReader r : segmentsOldestFirst) {
-        final SegmentDimCursor c = r.openCursor(dimId);
-        if (c != null)
-          cursors.add(c);
-      }
-    }
-    if (memtable != null) {
-      final MemtableSourceCursor mc = new MemtableSourceCursor(memtable, dimId);
-      // The memtable cursor must be the newest source; only add it if it has any postings.
-      mc.start();
-      if (!mc.isExhausted())
-        cursors.add(mc);
-      else
-        mc.close();
-    }
-    if (cursors.isEmpty())
-      return null;
-    return new DimCursor(dimId, cursors);
-  }
 }

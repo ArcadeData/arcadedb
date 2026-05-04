@@ -190,7 +190,7 @@ class MemtableTest {
       while (it.hasNext()) {
         final MemtablePosting p = it.next();
         if (prev != null)
-          assertThat(SparseSegmentWriter.compareRid(p.rid(), prev)).isPositive();
+          assertThat(SparseSegmentBuilder.compareRid(p.rid(), prev)).isPositive();
         prev = p.rid();
         seenPostings++;
       }

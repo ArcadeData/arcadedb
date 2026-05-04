@@ -81,7 +81,7 @@ public final class SegmentParameters {
   }
 
   public static final class Builder {
-    private int                pageSize           = SegmentFormat.DEFAULT_PAGE_SIZE;
+    private int                pageSize           = SparseSegmentComponent.DEFAULT_PAGE_SIZE;
     private int                blockSize          = SegmentFormat.DEFAULT_BLOCK_SIZE;
     private int                skipStride         = SegmentFormat.DEFAULT_SKIP_STRIDE;
     private WeightQuantization weightQuantization = WeightQuantization.INT8;
