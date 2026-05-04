@@ -138,6 +138,8 @@ public class LocalSchema implements Schema {
     componentFactory.registerComponent(LSMTreeIndexCompacted.NOTUNIQUE_INDEX_EXT,
         new LSMTreeIndex.PaginatedComponentFactoryHandlerNotUnique());
     componentFactory.registerComponent(LSMVectorIndex.FILE_EXT, new LSMVectorIndex.PaginatedComponentFactoryHandlerUnique());
+    componentFactory.registerComponent(com.arcadedb.index.sparsevector.SparseSegmentComponent.FILE_EXT,
+        new com.arcadedb.index.sparsevector.SparseSegmentComponent.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(TimeSeriesBucket.BUCKET_EXT, new TimeSeriesBucket.PaginatedComponentFactoryHandler());
     componentFactory.registerComponent(HashIndexBucket.UNIQUE_INDEX_EXT,
         new HashIndex.PaginatedComponentFactoryHandlerUnique());

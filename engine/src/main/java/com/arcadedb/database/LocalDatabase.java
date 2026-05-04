@@ -145,6 +145,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       LSMTreeIndexCompacted.UNIQUE_INDEX_EXT,
       LSMVectorIndex.FILE_EXT,
       LSMVectorIndexGraphFile.FILE_EXT,
+      com.arcadedb.index.sparsevector.SparseSegmentComponent.FILE_EXT,
       TimeSeriesBucket.BUCKET_EXT,
       HashIndexBucket.UNIQUE_INDEX_EXT,
       HashIndexBucket.NOTUNIQUE_INDEX_EXT);

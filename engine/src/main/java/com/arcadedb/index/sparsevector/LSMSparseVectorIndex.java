@@ -83,7 +83,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   private final LSMTreeIndex                 underlyingIndex;
   private       LSMSparseVectorIndexMetadata sparseMetadata;
   private       TypeIndex                    typeIndex;
-  private final SparseVectorEngine           engine;
+  private final PaginatedSparseVectorEngine  engine;
 
   /**
    * Factory handler used by the schema to instantiate sparse vector indexes.
@@ -371,22 +371,14 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     return sparseMetadata;
   }
 
-  public SparseVectorEngine getEngine() {
+  public PaginatedSparseVectorEngine getEngine() {
     return engine;
   }
 
   // --------------------------- internals ---------------------------
 
-  private static SparseVectorEngine openEngine(final LSMTreeIndex shell) {
-    try {
-      return new SparseVectorEngine(deriveEngineDir(shell.getComponent().getOSFile()), SegmentParameters.defaults());
-    } catch (final IOException e) {
-      throw new IndexException("Failed to open sparse vector engine for index '" + shell.getName() + "'", e);
-    }
-  }
-
-  static Path deriveEngineDir(final File shellFile) {
-    return shellFile.toPath().resolveSibling(shellFile.getName() + ENGINE_DIR_SUFFIX);
+  private static PaginatedSparseVectorEngine openEngine(final LSMTreeIndex shell) {
+    return new PaginatedSparseVectorEngine(shell.getMutableIndex().getDatabase(), shell.getName(), SegmentParameters.defaults());
   }
 
   /**
@@ -394,15 +386,10 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * along with all other index changes that participate in lock ordering and recovery), or
    * applies it directly when no transaction is in flight.
    * <p>
-   * <b>Durability hook.</b> When queued, this also registers a post-commit callback that flushes
-   * the engine memtable to a sealed segment on disk. Without this, the v2 backend would only
-   * serialize on clean shutdown and a crash mid-session would lose every memtable posting. The
-   * callback uses {@link TransactionContext#addAfterCommitCallbackIfAbsent} keyed by the index
-   * name so that a transaction touching N postings on the same index registers exactly one flush.
-   * The callback fires synchronously right after the transaction's commit-2nd-phase completes,
-   * leaving only a microsecond-scale window between "ArcadeDB considers the transaction durable"
-   * and "the segment file is fsynced", which matches the durability profile of ArcadeDB's normal
-   * page-level commits with {@code asyncFlush=true}.
+   * <b>Durability.</b> The engine flush at commit time runs inside the same {@code database
+   * .transaction(...)} that ArcadeDB orchestrates, so the page WAL records every byte of the new
+   * sparse segment alongside the regular transaction record. There is no separate flush-on-commit
+   * callback any more - durability comes from the page WAL itself.
    */
   private void queueOrApply(final boolean add, final int dim, final RID rid, final float weight) {
     final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();
@@ -411,23 +398,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
           add ? TransactionIndexContext.IndexKey.IndexKeyOperation.ADD
               : TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
           new Object[] { dim, rid, weight }, rid);
-      tx.addAfterCommitCallbackIfAbsent("sparse-flush:" + getName(), this::flushEngineQuietly);
       return;
     }
     if (add)
       engine.put(dim, rid, weight);
     else
       engine.remove(dim, rid);
-  }
-
-  /** Idempotent helper for the post-commit flush callback - swallows IO errors as warnings. */
-  private void flushEngineQuietly() {
-    try {
-      engine.flush();
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Post-commit flush of sparse vector engine '%s' failed: %s", e, getName(),
-          e.getMessage());
-    }
   }
 
   /** Apply a scalar posting (3-tuple {@code [dim, RID, weight]}) coming from commit replay. */
@@ -533,55 +509,23 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public void flush() {
-    // The database calls flush() on every IndexInternal during clean close (LocalDatabase.closeInternal)
-    // and may call it during checkpoints. Flush the memtable to a sealed segment so a clean restart
-    // observes everything written so far. Without this hook the engine would be closed via close()
-    // a moment later (which also flushes) - flush() makes the durability point explicit.
-    try {
-      engine.flush();
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Failed to flush sparse vector engine for '%s': %s", e, getName(),
-          e.getMessage());
-    }
+    // LocalDatabase.closeInternal calls flush() on every IndexInternal before close so any
+    // memtable-resident postings land in a sealed component while the database transaction
+    // pipeline is still wired up. Page WAL durability for in-flight transactions is already in
+    // place; this is the "graceful shutdown" entry point.
+    engine.flush();
   }
 
   @Override
   public void close() {
-    try {
-      engine.close();
-    } catch (final IOException e) {
-      LogManager.instance().log(this, Level.WARNING, "Error closing sparse vector engine for '%s': %s", null,
-          getName(), e.getMessage());
-    }
+    engine.close();
     underlyingIndex.close();
   }
 
   @Override
   public void drop() {
-    try {
-      engine.close();
-    } catch (final IOException ignored) {
-      // best-effort: about to drop the directory anyway
-    }
-    final Path engineDir = deriveEngineDir(underlyingIndex.getComponent().getOSFile());
+    engine.close();
     underlyingIndex.drop();
-    deleteEngineDirRecursively(engineDir);
-  }
-
-  private static void deleteEngineDirRecursively(final Path dir) {
-    if (!Files.exists(dir))
-      return;
-    try (final var stream = Files.walk(dir)) {
-      stream.sorted(java.util.Comparator.reverseOrder()).forEach(p -> {
-        try {
-          Files.delete(p);
-        } catch (final IOException ignored) {
-          // best-effort cleanup
-        }
-      });
-    } catch (final IOException ignored) {
-      // best-effort cleanup
-    }
   }
 
   @Override

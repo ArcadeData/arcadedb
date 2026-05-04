@@ -1,0 +1,479 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.index.sparsevector;
+
+import com.arcadedb.database.RID;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.index.IndexException;
+import com.arcadedb.index.sparsevector.SegmentFormat.RidCompression;
+
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.zip.CRC32;
+
+/**
+ * Builds a sealed sparse segment by allocating pages on a {@link SparseSegmentComponent}. Pages
+ * are written through ArcadeDB's transaction context, so the resulting segment is fully durable
+ * via the page WAL the moment its enclosing transaction commits - no separate fsync, no
+ * flush-on-commit, no sparse-vector-specific recovery code.
+ * <p>
+ * <b>On-page layout</b> (in order of pages produced):
+ * <pre>
+ * Page 0: segment header (see {@link PaginatedSegmentFormat#HEADER_SIZE}).
+ * Pages 1..N: block payloads (each block fits in one page; multiple blocks pack into one page).
+ * Pages N+1..M: per-dim trailers (dim header + block_locators + skip_list), packed contiguously
+ *               across pages (one trailer fits in one page; trailers do not span pages).
+ * Page M+1: dim_index page (count + sorted (dim_id, trailer_page_num, trailer_offset) entries).
+ * Page M+2: manifest page (segment_id, parent_segments, tombstone_floor, crc).
+ * </pre>
+ * The header, dim_index, and manifest each occupy their own dedicated page; the block stream and
+ * trailer stream pack densely.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public final class SparseSegmentBuilder implements AutoCloseable {
+
+  private final SparseSegmentComponent component;
+  private final SegmentParameters       params;
+  private final int                     pageContentSize;
+
+  // Manifest fields, fixed once before any dim is started.
+  private long   segmentId             = 0L;
+  private long[] parentSegments        = new long[0];
+  private long   tombstoneFloorSegment = 0L;
+
+  // Currently open dim state.
+  private int                     currentDimId = -1;
+  private long                    currentDimPostingCount;
+  private float                   currentDimMaxWeight;
+  private final List<long[]>      currentDimBlockLocators = new ArrayList<>();   // each: {pageNum, offsetInPage}
+  private final List<BlockHeader> currentDimBlockHeaders  = new ArrayList<>();
+
+  // Block buffering.
+  private final RID[]     blockRids;
+  private final float[]   blockWeights;
+  private final boolean[] blockTombstones;
+  private int             blockCursor;
+
+  // Allocated pages, in order. Held in memory until the enclosing transaction commits.
+  private final List<MutablePage> pages = new ArrayList<>();
+  private int                     currentWritePage      = -1;
+  private int                     currentWritePageFree;
+
+  // Index entries for the dim_index page: {dim_id, trailer_page_num, trailer_offset_in_page}.
+  private final List<int[]> dimIndex = new ArrayList<>();
+
+  private long    totalPostings;
+  private boolean finished;
+
+  public SparseSegmentBuilder(final SparseSegmentComponent component, final SegmentParameters params) {
+    if (component.getPageSize() != params.pageSize())
+      throw new IllegalArgumentException(
+          "component page size (" + component.getPageSize() + ") does not match params (" + params.pageSize() + ")");
+    this.component = component;
+    this.params = params;
+    this.pageContentSize = component.pageContentSize();
+    this.blockRids = new RID[params.blockSize()];
+    this.blockWeights = new float[params.blockSize()];
+    this.blockTombstones = new boolean[params.blockSize()];
+    // Allocate page 0 right away; back-patched at finish().
+    allocateNewPage();
+    // Reserve all of page 0 for the header so subsequent pages don't intrude on it.
+    currentWritePageFree = 0;
+  }
+
+  public void setSegmentId(final long segmentId) {
+    requireFresh();
+    this.segmentId = segmentId;
+  }
+
+  public void setParentSegments(final long[] parents) {
+    requireFresh();
+    this.parentSegments = parents.clone();
+  }
+
+  public void setTombstoneFloorSegment(final long floor) {
+    requireFresh();
+    this.tombstoneFloorSegment = floor;
+  }
+
+  public void startDim(final int dimId) {
+    if (finished)
+      throw new IllegalStateException("builder is finished");
+    if (currentDimId != -1)
+      throw new IllegalStateException("dim " + currentDimId + " is open; call endDim() first");
+    if (!dimIndex.isEmpty()) {
+      final int lastDim = dimIndex.getLast()[0];
+      if (dimId <= lastDim)
+        throw new IllegalArgumentException("dims must arrive in strictly ascending order: got " + dimId + " after " + lastDim);
+    }
+    this.currentDimId = dimId;
+    this.currentDimPostingCount = 0L;
+    this.currentDimMaxWeight = Float.NEGATIVE_INFINITY;
+    this.currentDimBlockLocators.clear();
+    this.currentDimBlockHeaders.clear();
+    this.blockCursor = 0;
+  }
+
+  public void appendPosting(final RID rid, final float weight) {
+    if (currentDimId == -1)
+      throw new IllegalStateException("call startDim before appendPosting");
+    if (Float.isNaN(weight) || Float.isInfinite(weight))
+      throw new IllegalArgumentException("weight must be a finite number: " + weight);
+    if (weight < 0.0f)
+      throw new IllegalArgumentException("weight must be non-negative: " + weight);
+    appendInternal(rid, weight, false);
+  }
+
+  public void appendTombstone(final RID rid) {
+    if (currentDimId == -1)
+      throw new IllegalStateException("call startDim before appendTombstone");
+    appendInternal(rid, Float.NaN, true);
+  }
+
+  private void appendInternal(final RID rid, final float weight, final boolean tombstone) {
+    if (rid == null)
+      throw new IllegalArgumentException("rid must not be null");
+    if (blockCursor > 0) {
+      final RID prev = blockRids[blockCursor - 1];
+      if (compareRid(rid, prev) <= 0)
+        throw new IllegalArgumentException(
+            "RIDs must arrive in strictly ascending order within a dim: got " + rid + " after " + prev);
+    } else if (!currentDimBlockHeaders.isEmpty()) {
+      final RID prev = currentDimBlockHeaders.getLast().lastRid();
+      if (compareRid(rid, prev) <= 0)
+        throw new IllegalArgumentException(
+            "RIDs must arrive in strictly ascending order within a dim: got " + rid + " after " + prev);
+    }
+    blockRids[blockCursor] = rid;
+    blockWeights[blockCursor] = weight;
+    blockTombstones[blockCursor] = tombstone;
+    blockCursor++;
+    if (blockCursor == params.blockSize())
+      flushBlock();
+  }
+
+  public void endDim() {
+    if (currentDimId == -1)
+      throw new IllegalStateException("no dim open");
+    if (blockCursor > 0)
+      flushBlock();
+    if (currentDimBlockHeaders.isEmpty()) {
+      // Empty dim - drop silently, matches the file-based writer's contract.
+      currentDimId = -1;
+      return;
+    }
+    final int trailerSize = computeDimTrailerSize();
+    if (currentWritePageFree < trailerSize)
+      allocateNewPage();
+    final int trailerPage = currentWritePage;
+    final int trailerOffset = pageContentSize - currentWritePageFree;
+    writeDimTrailer(trailerPage, trailerOffset);
+    dimIndex.add(new int[] { currentDimId, trailerPage, trailerOffset });
+    totalPostings += currentDimPostingCount;
+    currentDimId = -1;
+  }
+
+  /**
+   * Finalize the segment: write the dim_index, the manifest, then back-patch page 0's header.
+   * Caller is responsible for the surrounding transaction (commit makes the segment durable).
+   */
+  public void finish() {
+    if (finished)
+      return;
+    if (currentDimId != -1)
+      throw new IllegalStateException("call endDim before finish");
+
+    // Dim index always starts on a fresh page so its locator from the manifest can address it cleanly.
+    allocateNewPage();
+    final int dimIndexPage = currentWritePage;
+    writeDimIndex(dimIndexPage);
+
+    // Manifest gets its own (final) page.
+    allocateNewPage();
+    final int manifestPage = currentWritePage;
+    writeManifest(manifestPage);
+
+    // Back-patch page 0 header now that all pointers are known.
+    writeHeader(pages.getFirst(), manifestPage, dimIndexPage);
+    finished = true;
+  }
+
+  @Override
+  public void close() {
+    // Builder owns no I/O resources outside the transaction's MutablePage list.
+  }
+
+  // --- internals ------------------------------------------------------------
+
+  private void requireFresh() {
+    if (currentDimId != -1 || !dimIndex.isEmpty())
+      throw new IllegalStateException("must be called before any dim is written");
+  }
+
+  private void allocateNewPage() {
+    final int nextPageNum = pages.size();
+    final MutablePage page = component.allocatePage(nextPageNum);
+    pages.add(page);
+    currentWritePage = nextPageNum;
+    currentWritePageFree = pageContentSize;
+  }
+
+  /** Write {@code length} bytes into the active page starting at the current free offset; advance. */
+  private int writeBytesAtPageCursor(final byte[] source, final int length) {
+    final int offset = pageContentSize - currentWritePageFree;
+    pages.get(currentWritePage).writeByteArray(offset, source, 0, length);
+    currentWritePageFree -= length;
+    return offset;
+  }
+
+  private void flushBlock() {
+    if (blockCursor == 0)
+      return;
+
+    float weightMin = Float.POSITIVE_INFINITY;
+    float weightMax = Float.NEGATIVE_INFINITY;
+    boolean hasTombstones = false;
+    for (int i = 0; i < blockCursor; i++) {
+      if (blockTombstones[i]) {
+        hasTombstones = true;
+        continue;
+      }
+      final float w = blockWeights[i];
+      if (w < weightMin)
+        weightMin = w;
+      if (w > weightMax)
+        weightMax = w;
+    }
+    if (weightMin == Float.POSITIVE_INFINITY) {
+      weightMin = 0.0f;
+      weightMax = 0.0f;
+    }
+    final float blockMaxForBmw = (weightMax == Float.NEGATIVE_INFINITY) ? 0.0f : weightMax;
+
+    final ByteBuffer payload = ByteBuffer.allocate(estimateBlockPayloadSize()).order(ByteOrder.BIG_ENDIAN);
+
+    // Block header.
+    putRid(payload, blockRids[0]);
+    putRid(payload, blockRids[blockCursor - 1]);
+    payload.putShort((short) blockCursor);
+    payload.putFloat(blockMaxForBmw);
+    payload.putFloat(weightMin);
+    payload.putFloat(weightMax);
+    payload.put((byte) (hasTombstones ? 1 : 0));
+    payload.put((byte) 0);
+
+    // Compressed RIDs (skip first; it's already in the header).
+    if (params.ridCompression() == RidCompression.VARINT_DELTA) {
+      RID prev = blockRids[0];
+      for (int i = 1; i < blockCursor; i++) {
+        final RID curr = blockRids[i];
+        final int bucketDelta = curr.getBucketId() - prev.getBucketId();
+        VarInt.writeUnsignedVarLong(payload, bucketDelta);
+        if (bucketDelta == 0)
+          VarInt.writeUnsignedVarLong(payload, curr.getPosition() - prev.getPosition());
+        else
+          VarInt.writeUnsignedVarLong(payload, curr.getPosition());
+        prev = curr;
+      }
+    } else {
+      for (int i = 1; i < blockCursor; i++)
+        putRid(payload, blockRids[i]);
+    }
+
+    // Compressed weights.
+    switch (params.weightQuantization()) {
+      case INT8 -> {
+        for (int i = 0; i < blockCursor; i++) {
+          if (blockTombstones[i])
+            payload.put(SegmentFormat.INT8_TOMBSTONE_SENTINEL);
+          else
+            payload.put(WeightCodec.quantizeInt8(blockWeights[i], weightMin, weightMax));
+        }
+      }
+      case FP16 -> {
+        for (int i = 0; i < blockCursor; i++) {
+          if (blockTombstones[i])
+            payload.putShort(SegmentFormat.FP16_TOMBSTONE_SENTINEL);
+          else
+            payload.putShort(WeightCodec.toFp16(blockWeights[i]));
+        }
+      }
+      case FP32 -> {
+        for (int i = 0; i < blockCursor; i++) {
+          if (blockTombstones[i])
+            payload.putInt(WeightCodec.FP32_TOMBSTONE_BITS);
+          else
+            payload.putInt(WeightCodec.floatToTombstoneAwareBits(blockWeights[i]));
+        }
+      }
+    }
+
+    final int payloadLen = payload.position();
+    if (payloadLen > pageContentSize)
+      throw new IndexException("block payload " + payloadLen + " bytes exceeds page content size "
+          + pageContentSize + "; reduce blockSize or increase pageSize");
+
+    if (currentWritePageFree < payloadLen)
+      allocateNewPage();
+
+    final int offsetInPage = writeBytesAtPageCursor(payload.array(), payloadLen);
+    currentDimBlockLocators.add(new long[] { currentWritePage, offsetInPage });
+    currentDimBlockHeaders.add(new BlockHeader(blockRids[0], blockRids[blockCursor - 1], blockCursor, blockMaxForBmw,
+        weightMin, weightMax, hasTombstones));
+    currentDimPostingCount += blockCursor;
+    if (blockMaxForBmw > currentDimMaxWeight)
+      currentDimMaxWeight = blockMaxForBmw;
+    blockCursor = 0;
+  }
+
+  private int estimateBlockPayloadSize() {
+    final int base = SegmentFormat.BLOCK_HEADER_SIZE + params.blockSize() * VarInt.MAX_VARLONG_BYTES * 2;
+    final int weightBytes = switch (params.weightQuantization()) {
+      case INT8 -> params.blockSize();
+      case FP16 -> params.blockSize() * 2;
+      case FP32 -> params.blockSize() * 4;
+    };
+    return Math.max(4096, base + weightBytes);
+  }
+
+  private int computeDimTrailerSize() {
+    final int blockCount = currentDimBlockHeaders.size();
+    final int skipEntries = (blockCount + params.skipStride() - 1) / params.skipStride();
+    return PaginatedSegmentFormat.DIM_TRAILER_HEADER_SIZE
+        + blockCount * PaginatedSegmentFormat.BLOCK_LOCATOR_SIZE
+        + skipEntries * SegmentFormat.SKIP_ENTRY_SIZE;
+  }
+
+  private void writeDimTrailer(final int pageNum, final int offsetInPage) {
+    final int blockCount = currentDimBlockHeaders.size();
+    final int skipEntries = (blockCount + params.skipStride() - 1) / params.skipStride();
+
+    // Compute max_weight_to_end backwards from the tail.
+    final float[] maxWeightToEnd = new float[skipEntries];
+    float runningMax = Float.NEGATIVE_INFINITY;
+    for (int b = blockCount - 1; b >= 0; b--) {
+      final float bm = currentDimBlockHeaders.get(b).maxWeight();
+      if (bm > runningMax)
+        runningMax = bm;
+      if (b % params.skipStride() == 0)
+        maxWeightToEnd[b / params.skipStride()] = runningMax;
+    }
+
+    final int trailerSize = computeDimTrailerSize();
+    final ByteBuffer buf = ByteBuffer.allocate(trailerSize).order(ByteOrder.BIG_ENDIAN);
+    buf.putInt(currentDimId);
+    buf.putInt(blockCount);
+    buf.putInt((int) currentDimPostingCount);
+    buf.putInt((int) currentDimPostingCount); // df = posting count for segment-local df
+    buf.putFloat(currentDimMaxWeight == Float.NEGATIVE_INFINITY ? 0.0f : currentDimMaxWeight);
+
+    for (int b = 0; b < blockCount; b++) {
+      final long[] loc = currentDimBlockLocators.get(b);
+      buf.putInt((int) loc[0]);
+      buf.putShort((short) loc[1]);
+    }
+
+    for (int s = 0; s < skipEntries; s++) {
+      final int firstBlock = s * params.skipStride();
+      final BlockHeader bh = currentDimBlockHeaders.get(firstBlock);
+      putRid(buf, bh.firstRid());
+      buf.putFloat(maxWeightToEnd[s]);
+      buf.putInt(firstBlock);
+    }
+
+    pages.get(pageNum).writeByteArray(offsetInPage, buf.array(), 0, trailerSize);
+    currentWritePageFree -= trailerSize;
+  }
+
+  private void writeDimIndex(final int pageNum) {
+    final int size = 4 + dimIndex.size() * PaginatedSegmentFormat.DIM_INDEX_ENTRY_SIZE;
+    if (size > pageContentSize)
+      throw new IndexException("dim_index size " + size + " exceeds page content size " + pageContentSize
+          + "; multi-page dim_index not yet implemented");
+    final ByteBuffer buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN);
+    buf.putInt(dimIndex.size());
+    for (final int[] entry : dimIndex) {
+      buf.putInt(entry[0]);              // dim_id
+      buf.putInt(entry[1]);              // trailer page_num
+      buf.putShort((short) entry[2]);    // trailer offset_in_page
+    }
+    pages.get(pageNum).writeByteArray(0, buf.array(), 0, size);
+    currentWritePageFree = pageContentSize - size;
+  }
+
+  private void writeManifest(final int pageNum) {
+    final int parentCount = parentSegments.length;
+    final int size = 8 + 4 + parentCount * 8 + 8 + 8 + 4;
+    if (size > pageContentSize)
+      throw new IndexException("manifest size " + size + " exceeds page content size " + pageContentSize);
+    final ByteBuffer buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN);
+    buf.putLong(segmentId);
+    buf.putInt(parentCount);
+    for (final long p : parentSegments)
+      buf.putLong(p);
+    buf.putLong(tombstoneFloorSegment);
+    buf.putLong(0L);                     // reserved
+    final CRC32 crc = new CRC32();
+    crc.update(buf.array(), 0, size - 4);
+    buf.putInt((int) crc.getValue());
+    pages.get(pageNum).writeByteArray(0, buf.array(), 0, size);
+    currentWritePageFree = pageContentSize - size;
+  }
+
+  private void writeHeader(final MutablePage page0, final int manifestPage, final int dimIndexPage) {
+    final ByteBuffer buf = ByteBuffer.allocate(PaginatedSegmentFormat.HEADER_SIZE).order(ByteOrder.BIG_ENDIAN);
+    buf.putLong(SegmentFormat.MAGIC);
+    buf.putInt(SegmentFormat.FORMAT_VERSION);
+    buf.putInt(params.blockSize());
+    buf.putInt(params.skipStride());
+    buf.put(params.weightQuantization().code());
+    buf.put(params.ridCompression().code());
+    buf.putShort((short) 0);             // reserved
+    buf.putLong(segmentId);
+    buf.putLong(totalPostings);
+    buf.putInt(dimIndex.size());
+    buf.putLong(System.currentTimeMillis());
+    buf.putInt(manifestPage);
+    buf.putInt(dimIndexPage);
+    final CRC32 crc = new CRC32();
+    crc.update(buf.array(), 0, PaginatedSegmentFormat.HEADER_SIZE - 4);
+    buf.putInt((int) crc.getValue());
+    page0.writeByteArray(0, buf.array(), 0, PaginatedSegmentFormat.HEADER_SIZE);
+  }
+
+  static void putRid(final ByteBuffer buf, final RID rid) {
+    buf.putInt(rid.getBucketId());
+    buf.putLong(rid.getPosition());
+  }
+
+  /**
+   * Lexicographic compare of two RIDs by (bucketId, position). Public so cursor + scorer code can
+   * share one canonical ordering helper without each having to re-implement it.
+   */
+  public static int compareRid(final RID a, final RID b) {
+    final int b1 = a.getBucketId();
+    final int b2 = b.getBucketId();
+    if (b1 != b2)
+      return Integer.compare(b1, b2);
+    return Long.compare(a.getPosition(), b.getPosition());
+  }
+}
