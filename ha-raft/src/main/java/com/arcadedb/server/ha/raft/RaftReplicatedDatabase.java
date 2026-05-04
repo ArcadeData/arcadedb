@@ -185,6 +185,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     this.proxied.setWrappedDatabaseInstance(this);
   }
 
+  @Override
+  public boolean isReplicated() {
+    return true;
+  }
+
   private RaftHAServer requireRaftServer() {
     final RaftHAServer s = raftHAServer;
     if (s == null)

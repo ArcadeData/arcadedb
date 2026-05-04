@@ -1601,7 +1601,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public GraphBatch.Builder batch() {
-    return GraphBatch.builder(this);
+    // Use the outermost wrapper so that commits flow through any HA/replication layer.
+    // Without this, GraphBatch.commit() would short-circuit the Raft replication wrapper
+    // installed by the HA plugin and writes would never reach followers (issue #4076).
+    return GraphBatch.builder(wrappedDatabaseInstance);
   }
 
   @Override

@@ -166,6 +166,16 @@ public interface DatabaseInternal extends Database {
   }
 
   /**
+   * Returns true if writes against this database are forwarded to a replication layer
+   * (e.g. Raft). Components that capture WAL bytes for replication (like {@link com.arcadedb.graph.GraphBatch})
+   * must keep the WAL on for committed transactions when this is true, otherwise the
+   * replica nodes will silently miss the changes.
+   */
+  default boolean isReplicated() {
+    return false;
+  }
+
+  /**
    * Runs index compaction, wrapping it in HA replication if this is a Raft leader.
    * The default (standalone) implementation just calls the compaction directly.
    * The HA override captures new files and page content, then replicates them to followers.
