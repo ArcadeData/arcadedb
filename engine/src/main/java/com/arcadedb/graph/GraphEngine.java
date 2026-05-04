@@ -394,6 +394,68 @@ public class GraphEngine {
       }
   }
 
+  public void moveEdge(final MutableEdge edge, final Vertex.DIRECTION direction, final RID newVertexRID) {
+    if (direction == Vertex.DIRECTION.IN) {
+      final RID oldIn = edge.getIn();
+      final RID out = edge.getOut();
+      // Remove from old in-vertex's IN list
+      if (oldIn != null) {
+        try {
+          final VertexInternal oldVIn = (VertexInternal) database.lookupByRID(oldIn, false);
+          final EdgeLinkedList inEdges = getEdgeHeadChunk(oldVIn, Vertex.DIRECTION.IN);
+          if (inEdges != null)
+            inEdges.removeEdge(edge);
+        } catch (final RecordNotFoundException ignored) {
+        }
+      }
+      // Remove from out-vertex's OUT list (its stored destination is stale after the move)
+      if (out != null) {
+        try {
+          final VertexInternal vOut = (VertexInternal) database.lookupByRID(out, false);
+          final EdgeLinkedList outEdges = getEdgeHeadChunk(vOut, Vertex.DIRECTION.OUT);
+          if (outEdges != null)
+            outEdges.removeEdge(edge);
+        } catch (final RecordNotFoundException ignored) {
+        }
+      }
+      edge.setIn(newVertexRID);
+      // Re-add to out-vertex's OUT list pointing to the new in-vertex
+      if (out != null)
+        connectOutgoingEdge((VertexInternal) database.lookupByRID(out, false), database.lookupByRID(newVertexRID, false), edge);
+      // Add to new in-vertex's IN list
+      connectIncomingEdge(database.lookupByRID(newVertexRID, false), out, edge.getIdentity());
+    } else {
+      final RID oldOut = edge.getOut();
+      final RID in = edge.getIn();
+      // Remove from old out-vertex's OUT list
+      if (oldOut != null) {
+        try {
+          final VertexInternal oldVOut = (VertexInternal) database.lookupByRID(oldOut, false);
+          final EdgeLinkedList outEdges = getEdgeHeadChunk(oldVOut, Vertex.DIRECTION.OUT);
+          if (outEdges != null)
+            outEdges.removeEdge(edge);
+        } catch (final RecordNotFoundException ignored) {
+        }
+      }
+      // Remove from in-vertex's IN list (its stored source is stale after the move)
+      if (in != null) {
+        try {
+          final VertexInternal vIn = (VertexInternal) database.lookupByRID(in, false);
+          final EdgeLinkedList inEdges = getEdgeHeadChunk(vIn, Vertex.DIRECTION.IN);
+          if (inEdges != null)
+            inEdges.removeEdge(edge);
+        } catch (final RecordNotFoundException ignored) {
+        }
+      }
+      edge.setOut(newVertexRID);
+      // Add to new out-vertex's OUT list
+      connectOutgoingEdge((VertexInternal) database.lookupByRID(newVertexRID, false), database.lookupByRID(in, false), edge);
+      // Re-add to in-vertex's IN list with the new source
+      if (in != null)
+        connectIncomingEdge(database.lookupByRID(in, false), newVertexRID, edge.getIdentity());
+    }
+  }
+
   public void deleteVertex(final VertexInternal vertex) {
     // RETRIEVE ALL THE EDGES TO DELETE AT THE END
     final List<Identifiable> edgesToDelete = new ArrayList<>();
