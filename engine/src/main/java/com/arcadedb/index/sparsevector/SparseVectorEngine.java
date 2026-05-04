@@ -19,6 +19,7 @@
 package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.utility.LongHashSet;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -27,8 +28,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
-import java.util.Set;
-import java.util.TreeSet;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -323,7 +322,9 @@ public final class SparseVectorEngine implements AutoCloseable {
   }
 
   private void replaceSegments(final SparseSegmentReader[] toRemove, final SparseSegmentReader maybeNew) throws IOException {
-    final Set<Long> removeIds = new TreeSet<>();
+    // LongHashSet keeps the set primitive: no Long boxing on every contains() call inside the
+    // segment-filter loop, no Long.MIN_VALUE collision concerns since segment ids start at 1.
+    final LongHashSet removeIds = new LongHashSet(Math.max(8, toRemove.length * 2));
     for (final SparseSegmentReader r : toRemove)
       removeIds.add(r.segmentId());
 

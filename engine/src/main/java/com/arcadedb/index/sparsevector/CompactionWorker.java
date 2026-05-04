@@ -20,13 +20,15 @@ package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.database.RID;
 
+import com.arcadedb.utility.IntHashSet;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
-import java.util.TreeSet;
 
 /**
  * N-way merger for sealed sparse segments. Used by background compaction (size-tiered policy)
@@ -63,11 +65,15 @@ public final class CompactionWorker {
     if (inputsOldestFirst == null || inputsOldestFirst.length == 0)
       throw new IllegalArgumentException("at least one input segment is required");
 
-    // Collect union of dims across inputs.
-    final TreeSet<Integer> allDims = new TreeSet<>();
+    // Collect union of dims across inputs. IntHashSet avoids Integer boxing on every add(); the
+    // sorted int[] view is what the merge loop walks (each input's dim list is already sorted, but
+    // the union across inputs is not).
+    final IntHashSet allDimsSet = new IntHashSet();
     for (final SparseSegmentReader r : inputsOldestFirst)
       for (final int d : r.dims())
-        allDims.add(d);
+        allDimsSet.add(d);
+    final int[] allDims = allDimsSet.toArray();
+    Arrays.sort(allDims);
 
     final long[] parents = new long[inputsOldestFirst.length];
     for (int i = 0; i < inputsOldestFirst.length; i++)

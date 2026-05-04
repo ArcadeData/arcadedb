@@ -28,8 +28,7 @@ import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.Arrays;
 import java.util.zip.CRC32;
 
 /**
@@ -54,9 +53,13 @@ public final class SparseSegmentReader implements AutoCloseable {
   private final long[]            parentSegments;
   private final long              tombstoneFloorSegment;
   private final long              dimIndexOffset;
-  private final Map<Integer, Long> dimHeaderOffsets;
-  // Cached per-dim metadata. Keyed by dim_id. Loaded lazily, never evicted.
-  private final Map<Integer, DimMetadata> dimCache = new HashMap<>();
+  // Parallel arrays sorted by dimIds ascending. Replaces a Map<Integer, Long> and a Map<Integer, DimMetadata>:
+  // both keys and offsets stay primitive, and the on-disk dim_index is already sorted so we can
+  // binary-search lookups in O(log n) without rebuilding a hash table.
+  private final int[]             dimIds;
+  private final long[]            dimHeaderOffsets;
+  // Per-position metadata cache, parallel to dimIds. Slot is null until first dimMetadata() call for that dim.
+  private final DimMetadata[]     dimCacheByPos;
 
   private boolean closed;
 
@@ -146,7 +149,9 @@ public final class SparseSegmentReader implements AutoCloseable {
     if (channel.read(entries, dimIndexOffset + 4) != entries.capacity())
       throw new IOException("Truncated dim_index entries in " + file);
     entries.flip();
-    this.dimHeaderOffsets = new HashMap<>(Math.max(8, n * 2));
+    this.dimIds = new int[n];
+    this.dimHeaderOffsets = new long[n];
+    this.dimCacheByPos = new DimMetadata[n];
     int prevDim = Integer.MIN_VALUE;
     for (int i = 0; i < n; i++) {
       final int dimId = entries.getInt();
@@ -154,7 +159,8 @@ public final class SparseSegmentReader implements AutoCloseable {
       if (dimId <= prevDim)
         throw new IOException("dim_index not sorted in " + file + ": " + dimId + " after " + prevDim);
       prevDim = dimId;
-      this.dimHeaderOffsets.put(dimId, offset);
+      dimIds[i] = dimId;
+      dimHeaderOffsets[i] = offset;
     }
   }
 
@@ -187,29 +193,24 @@ public final class SparseSegmentReader implements AutoCloseable {
   }
 
   public boolean hasDim(final int dimId) {
-    return dimHeaderOffsets.containsKey(dimId);
+    return Arrays.binarySearch(dimIds, dimId) >= 0;
   }
 
   /** Returns dim_ids present in this segment, sorted ascending. */
   public int[] dims() {
-    final int[] out = new int[dimHeaderOffsets.size()];
-    int i = 0;
-    for (final int d : dimHeaderOffsets.keySet())
-      out[i++] = d;
-    java.util.Arrays.sort(out);
-    return out;
+    return dimIds.clone();
   }
 
   /** Returns the metadata for {@code dimId}, loading from disk if needed. {@code null} if absent. */
   public DimMetadata dimMetadata(final int dimId) throws IOException {
-    DimMetadata m = dimCache.get(dimId);
+    final int pos = Arrays.binarySearch(dimIds, dimId);
+    if (pos < 0)
+      return null;
+    DimMetadata m = dimCacheByPos[pos];
     if (m != null)
       return m;
-    final Long offset = dimHeaderOffsets.get(dimId);
-    if (offset == null)
-      return null;
-    m = loadDimMetadata(dimId, offset);
-    dimCache.put(dimId, m);
+    m = loadDimMetadata(dimId, dimHeaderOffsets[pos]);
+    dimCacheByPos[pos] = m;
     return m;
   }
 
