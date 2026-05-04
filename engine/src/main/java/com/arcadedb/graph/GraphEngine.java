@@ -407,9 +407,10 @@ public class GraphEngine {
         } catch (final RecordNotFoundException ignored) {
         }
       }
+      VertexInternal vOut = null;
       if (out != null) {
         try {
-          final VertexInternal vOut = (VertexInternal) database.lookupByRID(out, false);
+          vOut = (VertexInternal) database.lookupByRID(out, false);
           final EdgeLinkedList outEdges = getEdgeHeadChunk(vOut, Vertex.DIRECTION.OUT);
           if (outEdges != null)
             outEdges.removeEdge(edge);
@@ -418,8 +419,8 @@ public class GraphEngine {
       }
       edge.setIn(newVertexRID);
       final Identifiable newInVertex = database.lookupByRID(newVertexRID, false);
-      if (out != null) {
-        connectOutgoingEdge((VertexInternal) database.lookupByRID(out, false), newInVertex, edge);
+      if (vOut != null) {
+        connectOutgoingEdge(vOut, newInVertex, edge);
         connectIncomingEdge(newInVertex, out, edge.getIdentity());
       }
     } else if (direction == Vertex.DIRECTION.OUT) {
@@ -434,9 +435,10 @@ public class GraphEngine {
         } catch (final RecordNotFoundException ignored) {
         }
       }
+      VertexInternal vIn = null;
       if (in != null) {
         try {
-          final VertexInternal vIn = (VertexInternal) database.lookupByRID(in, false);
+          vIn = (VertexInternal) database.lookupByRID(in, false);
           final EdgeLinkedList inEdges = getEdgeHeadChunk(vIn, Vertex.DIRECTION.IN);
           if (inEdges != null)
             inEdges.removeEdge(edge);
@@ -445,9 +447,9 @@ public class GraphEngine {
       }
       edge.setOut(newVertexRID);
       final VertexInternal newOutVertex = (VertexInternal) database.lookupByRID(newVertexRID, false);
-      if (in != null) {
-        connectOutgoingEdge(newOutVertex, database.lookupByRID(in, false), edge);
-        connectIncomingEdge(database.lookupByRID(in, false), newVertexRID, edge.getIdentity());
+      if (vIn != null) {
+        connectOutgoingEdge(newOutVertex, vIn, edge);
+        connectIncomingEdge(vIn, newVertexRID, edge.getIdentity());
       }
     } else
       throw new IllegalArgumentException("Unsupported direction for moveEdge: " + direction);

@@ -134,7 +134,9 @@ public class MutableEdge extends MutableDocument implements Edge {
   public MutableEdge set(final String name, final Object value) {
     if ("@in".equals(name)) {
       final RID newIn = toRID(value);
-      if (rid != null && newIn != null && !newIn.equals(this.in) && database instanceof DatabaseInternal dbInt)
+      if (newIn == null)
+        throw new IllegalArgumentException("Cannot set @in to null: edges require both endpoints");
+      if (rid != null && !newIn.equals(this.in) && database instanceof DatabaseInternal dbInt)
         dbInt.getGraphEngine().moveEdge(this, Vertex.DIRECTION.IN, newIn);
       else
         this.in = newIn;
@@ -142,7 +144,9 @@ public class MutableEdge extends MutableDocument implements Edge {
       return this;
     } else if ("@out".equals(name)) {
       final RID newOut = toRID(value);
-      if (rid != null && newOut != null && !newOut.equals(this.out) && database instanceof DatabaseInternal dbInt)
+      if (newOut == null)
+        throw new IllegalArgumentException("Cannot set @out to null: edges require both endpoints");
+      if (rid != null && !newOut.equals(this.out) && database instanceof DatabaseInternal dbInt)
         dbInt.getGraphEngine().moveEdge(this, Vertex.DIRECTION.OUT, newOut);
       else
         this.out = newOut;
