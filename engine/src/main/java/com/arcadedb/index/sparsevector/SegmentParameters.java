@@ -18,6 +18,8 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.index.sparsevector.SegmentFormat.RidCompression;
+import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 
 /**
  * Per-segment encoding parameters. Frozen at segment creation time and persisted in the file

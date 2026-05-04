@@ -19,6 +19,8 @@
 package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.index.sparsevector.SegmentFormat.RidCompression;
+import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;

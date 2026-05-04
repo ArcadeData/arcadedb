@@ -21,13 +21,16 @@ package com.arcadedb.index.sparsevector;
 import com.arcadedb.database.RID;
 
 /**
- * Single (RID, score) pair returned from a top-K query.
+ * Single (RID, score) pair returned from a top-K sparse-vector query. Exposes both public final
+ * fields ({@code rid}, {@code score}) and accessor methods ({@code rid()}, {@code score()}); the
+ * fields are the long-standing surface used by SQL functions and external callers, the methods
+ * read more naturally inside the engine.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class RidScore {
-  private final RID   rid;
-  private final float score;
+  public final RID   rid;
+  public final float score;
 
   public RidScore(final RID rid, final float score) {
     this.rid = rid;

@@ -315,11 +315,14 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       throw new IndexException("Sparse vector top-K failed", e);
     }
 
+    if (allowedRIDs == null || allowedRIDs.isEmpty())
+      return raw.size() <= k ? raw : raw.subList(0, k);
+
     final List<RidScore> out = new ArrayList<>(Math.min(k, raw.size()));
     for (final RidScore r : raw) {
-      if (allowedRIDs != null && !allowedRIDs.contains(r.rid()))
+      if (!allowedRIDs.contains(r.rid))
         continue;
-      out.add(new RidScore(r.rid(), r.score()));
+      out.add(r);
       if (out.size() == k)
         break;
     }
@@ -736,19 +739,5 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       return out;
     }
     throw new IndexException("Sparse vector weights must be float[], Float[] or List<Number>, found: " + o.getClass().getName());
-  }
-
-  /**
-   * Pair of (RID, dot-product score) returned by {@link #topK}. Public surface preserved from the
-   * MVP so existing tests / consumers that read {@code .rid} and {@code .score} continue to work.
-   */
-  public static final class RidScore {
-    public final RID   rid;
-    public final float score;
-
-    public RidScore(final RID rid, final float score) {
-      this.rid = rid;
-      this.score = score;
-    }
   }
 }
