@@ -87,7 +87,9 @@ markers = [
 
 [tool.bandit]
 # Skip recursion into test data and build artifacts.
-exclude_dirs = ["tests/.cache", "build", "dist"]
+# Patterns are matched as substrings, so anchor with leading "/" to avoid
+# accidentally excluding files like examples/11_vector_index_build.py.
+exclude_dirs = ["/tests/.cache/", "/build/", "/dist/"]
 
 [tool.bandit.assert_used]
 # Asserts are the standard idiom in pytest; do not flag them in tests/conftest.

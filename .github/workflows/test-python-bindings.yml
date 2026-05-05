@@ -33,6 +33,25 @@ permissions:
   contents: read
 
 jobs:
+  bandit:
+    name: Bandit security scan (bindings/python)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Bandit
+        run: python -m pip install "bandit>=1.9.0"
+
+      - name: Run Bandit on src (must be clean)
+        working-directory: bindings/python
+        run: python -m bandit -c pyproject.toml -r src --severity-level low --confidence-level low
+
   # First job: Download ArcadeDB JARs (platform-agnostic)
   download-jars:
     name: Download ArcadeDB JARs
