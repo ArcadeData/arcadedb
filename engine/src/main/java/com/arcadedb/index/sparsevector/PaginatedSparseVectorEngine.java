@@ -116,6 +116,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     if (queryDims.length != queryWeights.length)
       throw new IllegalArgumentException("queryDims and queryWeights must have equal length");
 
+    refreshSegmentsFromFileManager();
+
     final Memtable mtSnapshot = memtable.get();
     final PaginatedSegmentReader[] segSnapshot = segments.get();
 
@@ -158,8 +160,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
   /**
    * Flush the current memtable to a new sealed segment. Returns the new segment id, or
-   * {@code -1L} if the memtable was empty. The flush runs inside a transaction so the page WAL
-   * records every page of the new segment as part of the regular commit record.
+   * {@code -1L} if the memtable was empty (or this server is a Raft follower - followers receive
+   * segments from the leader via the standard component-shipping path).
+   * <p>
+   * The build runs inside {@link DatabaseInternal#runWithCompactionReplication}: the file
+   * registration and page allocations are captured by the file-manager recording session so that
+   * a {@code SCHEMA_ENTRY} carrying the new component metadata + a synthetic WAL of its pages is
+   * shipped to followers atomically with the leader's local commit. On a standalone (non-HA)
+   * database the override is a no-op wrapper and the inner transaction is the durability point.
    */
   public long flush() {
     ensureOpen();
@@ -169,29 +177,58 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       if (old.isEmpty())
         return -1L;
       final long segmentId = nextSegmentId.getAndIncrement();
-      final SparseSegmentComponent component = createComponent(segmentId);
-      database.transaction(() -> {
-        try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, params)) {
-          b.setSegmentId(segmentId);
-          for (final int dim : old.sortedDims()) {
-            final Iterator<MemtablePosting> it = old.iterateDim(dim);
-            if (!it.hasNext())
-              continue;
-            b.startDim(dim);
-            while (it.hasNext()) {
-              final MemtablePosting p = it.next();
-              if (p.tombstone())
-                b.appendTombstone(p.rid());
-              else
-                b.appendPosting(p.rid(), p.weight());
-            }
-            b.endDim();
-          }
-          b.finish();
-        }
-      });
+      final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
+      final boolean ranOnLeader;
       try {
-        appendSegment(new PaginatedSegmentReader(component));
+        ranOnLeader = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
+          componentRef[0] = createComponent(segmentId);
+          try {
+            database.transaction(() -> {
+              try (final SparseSegmentBuilder b = new SparseSegmentBuilder(componentRef[0], params)) {
+                b.setSegmentId(segmentId);
+                for (final int dim : old.sortedDims()) {
+                  final Iterator<MemtablePosting> it = old.iterateDim(dim);
+                  if (!it.hasNext())
+                    continue;
+                  b.startDim(dim);
+                  while (it.hasNext()) {
+                    final MemtablePosting p = it.next();
+                    if (p.tombstone())
+                      b.appendTombstone(p.rid());
+                    else
+                      b.appendPosting(p.rid(), p.weight());
+                  }
+                  b.endDim();
+                }
+                b.finish();
+              }
+            });
+          } catch (final RuntimeException buildFailure) {
+            // The build aborted (e.g. dim_index page overflow when a single segment has more
+            // unique dims than fit in one page; tracked as a follow-up). createComponent already
+            // registered the segment file with the FileManager, so leaving it would expose an
+            // empty file to the next refreshSegmentsFromFileManager scan and crash queries.
+            // Drop it before propagating; the memtable's data is preserved by the caller's lock.
+            try {
+              dropComponent(componentRef[0]);
+            } catch (final RuntimeException dropFailure) {
+              buildFailure.addSuppressed(dropFailure);
+            }
+            throw buildFailure;
+          }
+          // The inner transaction's commit queues pages for async flush. HA's
+          // runWithCompactionReplication reads the new file straight off the channel after this
+          // callback returns (serializeFilePagesAsWal); without this drain it would see zeros.
+          database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+          return Boolean.TRUE;
+        });
+      } catch (final IOException | InterruptedException e) {
+        throw new IndexException("Failed to flush sparse vector engine '" + indexName + "'", e);
+      }
+      if (!ranOnLeader)
+        return -1L;
+      try {
+        appendSegment(new PaginatedSegmentReader(componentRef[0]));
       } catch (final IOException e) {
         throw new IndexException("Failed to open freshly-flushed sparse segment '" + indexName + "_seg" + segmentId + "'", e);
       }
@@ -203,94 +240,98 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
   /**
    * Force a full compaction of every active segment into one. Returns the new segment id, or
-   * {@code -1L} if there is nothing to compact (zero or one segment, or the merge produced an
-   * empty result).
+   * {@code -1L} if there is nothing to compact (zero or one segment, the merge produced an
+   * empty result, or this server is a Raft follower - followers receive the merged segment from
+   * the leader instead of compacting independently).
    */
   public long compactAll() {
-    ensureOpen();
-    mutatorLock.lock();
-    try {
-      final PaginatedSegmentReader[] active = segments.get();
-      if (active.length < 2)
-        return -1L;
-      final PaginatedSegmentReader[] inputs = Arrays.copyOf(active, active.length);
-      Arrays.sort(inputs, Comparator.comparingLong(PaginatedSegmentReader::segmentId));
-
-      final long newId = nextSegmentId.getAndIncrement();
-      final SparseSegmentComponent newComponent = createComponent(newId);
-      final boolean[] wroteAnything = { false };
-      database.transaction(() -> {
-        try (final SparseSegmentBuilder b = new SparseSegmentBuilder(newComponent, params)) {
-          b.setSegmentId(newId);
-          final long[] parentIds = new long[inputs.length];
-          for (int i = 0; i < inputs.length; i++)
-            parentIds[i] = inputs[i].segmentId();
-          b.setParentSegments(parentIds);
-          try {
-            wroteAnything[0] = mergeIntoBuilder(b, inputs, true);
-          } catch (final IOException e) {
-            throw new IndexException("Failed to merge sparse segments during compaction", e);
-          }
-          b.finish();
-        }
-      });
-      if (!wroteAnything[0]) {
-        // The merged segment had no live postings (everything was tombstoned). Drop the empty
-        // component we just allocated and retire the inputs in a follow-up swap.
-        dropComponent(newComponent);
-        replaceSegments(inputs, null);
-        return -1L;
-      }
-      try {
-        replaceSegments(inputs, new PaginatedSegmentReader(newComponent));
-      } catch (final IOException e) {
-        throw new IndexException("Failed to open freshly-compacted sparse segment '" + indexName + "_seg" + newId + "'", e);
-      }
-      return newId;
-    } finally {
-      mutatorLock.unlock();
-    }
+    return compactInputs(/* dropAllTombstones */ true, active -> active.length < 2 ? null
+        : sortedCopy(active));
   }
 
   /** Compact the {@code count} oldest segments into one. */
   public long compactOldest(final int count) {
-    ensureOpen();
     if (count < 2)
       return -1L;
+    return compactInputs(/* dropAllTombstones */ false, active -> {
+      if (active.length < count)
+        return null;
+      final PaginatedSegmentReader[] sortedAll = sortedCopy(active);
+      return Arrays.copyOf(sortedAll, count);
+    });
+  }
+
+  private static PaginatedSegmentReader[] sortedCopy(final PaginatedSegmentReader[] in) {
+    final PaginatedSegmentReader[] out = Arrays.copyOf(in, in.length);
+    Arrays.sort(out, Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+    return out;
+  }
+
+  private long compactInputs(final boolean dropAllTombstones,
+      final java.util.function.Function<PaginatedSegmentReader[], PaginatedSegmentReader[]> pickInputs) {
+    ensureOpen();
     mutatorLock.lock();
     try {
       final PaginatedSegmentReader[] active = segments.get();
-      if (active.length < count)
+      final PaginatedSegmentReader[] inputs = pickInputs.apply(active);
+      if (inputs == null || inputs.length < 2)
         return -1L;
-      final PaginatedSegmentReader[] sortedAll = Arrays.copyOf(active, active.length);
-      Arrays.sort(sortedAll, Comparator.comparingLong(PaginatedSegmentReader::segmentId));
-      final PaginatedSegmentReader[] inputs = Arrays.copyOf(sortedAll, count);
 
       final long newId = nextSegmentId.getAndIncrement();
-      final SparseSegmentComponent newComponent = createComponent(newId);
+      final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
       final boolean[] wroteAnything = { false };
-      database.transaction(() -> {
-        try (final SparseSegmentBuilder b = new SparseSegmentBuilder(newComponent, params)) {
-          b.setSegmentId(newId);
-          final long[] parentIds = new long[inputs.length];
-          for (int i = 0; i < inputs.length; i++)
-            parentIds[i] = inputs[i].segmentId();
-          b.setParentSegments(parentIds);
-          try {
-            wroteAnything[0] = mergeIntoBuilder(b, inputs, false);
-          } catch (final IOException e) {
-            throw new IndexException("Failed to merge sparse segments during compaction", e);
-          }
-          b.finish();
-        }
-      });
-      if (!wroteAnything[0]) {
-        dropComponent(newComponent);
-        replaceSegments(inputs, null);
-        return -1L;
-      }
+      final boolean ranOnLeader;
       try {
-        replaceSegments(inputs, new PaginatedSegmentReader(newComponent));
+        ranOnLeader = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
+          componentRef[0] = createComponent(newId);
+          try {
+            database.transaction(() -> {
+              try (final SparseSegmentBuilder b = new SparseSegmentBuilder(componentRef[0], params)) {
+                b.setSegmentId(newId);
+                final long[] parentIds = new long[inputs.length];
+                for (int i = 0; i < inputs.length; i++)
+                  parentIds[i] = inputs[i].segmentId();
+                b.setParentSegments(parentIds);
+                try {
+                  wroteAnything[0] = mergeIntoBuilder(b, inputs, dropAllTombstones);
+                } catch (final IOException e) {
+                  throw new IndexException("Failed to merge sparse segments during compaction", e);
+                }
+                b.finish();
+              }
+            });
+          } catch (final RuntimeException buildFailure) {
+            // Same orphan-protection as flush(): drop the partial component so the next
+            // refreshSegmentsFromFileManager scan doesn't try to open an empty file.
+            try {
+              dropComponent(componentRef[0]);
+            } catch (final RuntimeException dropFailure) {
+              buildFailure.addSuppressed(dropFailure);
+            }
+            throw buildFailure;
+          }
+          // Drain the page cache's async writer so the synthetic WAL HA ships in this same
+          // recording session sees the final on-disk pages instead of zeros.
+          database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+          // Whatever we do next runs inside the same recording session so the SCHEMA_ENTRY
+          // captures both the new component and any input retirements atomically.
+          if (!wroteAnything[0])
+            // Empty merge (everything was tombstoned): drop the empty new component and the
+            // inputs together. The recording session sees the create+delete pair on the new
+            // component as a wash, and the inputs go away cleanly on followers too.
+            dropComponent(componentRef[0]);
+          replaceSegments(inputs, /* maybeNew */ null);
+          return Boolean.TRUE;
+        });
+      } catch (final IOException | InterruptedException e) {
+        throw new IndexException("Failed to compact sparse vector engine '" + indexName + "'", e);
+      }
+      if (!ranOnLeader)
+        return -1L;
+      if (!wroteAnything[0])
+        return -1L;
+      try {
+        appendSegment(new PaginatedSegmentReader(componentRef[0]));
       } catch (final IOException e) {
         throw new IndexException("Failed to open freshly-compacted sparse segment '" + indexName + "_seg" + newId + "'", e);
       }
@@ -405,6 +446,82 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       database.getFileManager().dropFile(component.getFileId());
     } catch (final IOException e) {
       throw new IndexException("Failed to drop sparse segment component '" + component.getName() + "'", e);
+    }
+  }
+
+  /**
+   * Lightweight resync of the in-memory segments snapshot against the FileManager. On a Raft
+   * leader the engine's {@code segments} array is populated by {@link #appendSegment} after each
+   * flush; on a follower, {@code SparseSegmentComponent} files arrive via {@code SCHEMA_ENTRY}
+   * replication and are registered in the FileManager + {@link com.arcadedb.schema.LocalSchema}'s
+   * {@code files} list, but no code path updates this engine's snapshot. Calling this at the
+   * start of each query keeps follower visibility correct without requiring a separate
+   * notification path. Cost is O(F) where F is the database's total file count - microseconds in
+   * practice.
+   */
+  private void refreshSegmentsFromFileManager() {
+    final String prefix = indexName + "_seg";
+    final PaginatedSegmentReader[] current = segments.get();
+    final LongHashSet knownIds = new LongHashSet(Math.max(8, current.length * 2));
+    for (final PaginatedSegmentReader r : current)
+      knownIds.add(r.segmentId());
+
+    boolean changed = false;
+    final List<PaginatedSegmentReader> updated = new ArrayList<>(current.length);
+    for (final PaginatedSegmentReader r : current)
+      updated.add(r);
+
+    final LongHashSet seenIds = new LongHashSet(Math.max(8, current.length * 2));
+    for (final PaginatedSegmentReader r : current)
+      seenIds.add(r.segmentId());
+
+    for (final var componentFile : database.getFileManager().getFiles()) {
+      if (componentFile == null)
+        continue;
+      final var component = database.getSchema().getFileByIdIfExists(componentFile.getFileId());
+      if (!(component instanceof SparseSegmentComponent ssc) || !ssc.getName().startsWith(prefix))
+        continue;
+      // On followers the sparseseg file briefly exists between createNewFiles and the WAL apply
+      // that fills its pages, so a freshly-arrived component can fail header validation for a
+      // moment. Skip it; the next query will pick it up once pages are written.
+      final PaginatedSegmentReader reader;
+      try {
+        reader = new PaginatedSegmentReader(ssc);
+      } catch (final IOException e) {
+        continue;
+      }
+      if (knownIds.contains(reader.segmentId()))
+        continue;
+      updated.add(reader);
+      seenIds.add(reader.segmentId());
+      changed = true;
+    }
+
+    // Drop any segments that the FileManager no longer knows about (a follower may apply a
+    // SCHEMA_ENTRY that retires segments via removeFiles).
+    for (int i = updated.size() - 1; i >= 0; i--) {
+      if (!fileManagerHasComponent(updated.get(i).component())) {
+        updated.remove(i);
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      updated.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+      segments.set(updated.toArray(new PaginatedSegmentReader[0]));
+      if (!updated.isEmpty()) {
+        final long highest = updated.getLast().segmentId();
+        if (nextSegmentId.get() <= highest)
+          nextSegmentId.set(highest + 1L);
+      }
+    }
+  }
+
+  private boolean fileManagerHasComponent(final SparseSegmentComponent ssc) {
+    try {
+      return database.getFileManager().existsFile(ssc.getFileId());
+    } catch (final RuntimeException ignored) {
+      return false;
     }
   }
 
