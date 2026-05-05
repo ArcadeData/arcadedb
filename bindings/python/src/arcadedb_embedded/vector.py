@@ -234,10 +234,12 @@ class VectorIndex:
             result = None
 
         if result is None:
+            # Identifiers are quoted via _quote_identifier(); the user-supplied
+            # `key` is passed as a `?` parameter, so this is not SQL injection.
             result = self._database.query(
                 "sql",
                 (
-                    f"SELECT {quoted_vector_property} AS `query_vector` FROM {quoted_type_name} "
+                    f"SELECT {quoted_vector_property} AS `query_vector` FROM {quoted_type_name} "  # nosec B608
                     f"WHERE {quoted_id_property} = ? LIMIT 1"
                 ),
                 key,
