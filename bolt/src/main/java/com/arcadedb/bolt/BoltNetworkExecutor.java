@@ -1266,6 +1266,7 @@ public class BoltNetworkExecutor extends Thread {
       case HASH -> "HASH";
       case FULL_TEXT -> "FULLTEXT";
       case LSM_VECTOR -> "VECTOR";
+      case LSM_SPARSE_VECTOR -> "SPARSE_VECTOR";
       case GEOSPATIAL -> "POINT";
     };
   }
@@ -1278,6 +1279,7 @@ public class BoltNetworkExecutor extends Thread {
       case HASH -> "hash-1.0";
       case FULL_TEXT -> "fulltext-1.0";
       case LSM_VECTOR -> "vector-2.0";
+      case LSM_SPARSE_VECTOR -> "sparse-vector-1.0";
       case GEOSPATIAL -> "point-1.0";
     };
   }
