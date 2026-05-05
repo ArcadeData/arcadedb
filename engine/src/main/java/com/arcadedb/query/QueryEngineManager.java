@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.java.JavaQueryEngine;
@@ -27,18 +28,45 @@ import com.arcadedb.query.sql.SQLScriptQueryEngine;
 
 import java.util.*;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.*;
 
+/**
+ * JVM-wide registry of query-language engines plus the default executor any query-time
+ * parallelism should fork to.
+ * <p>
+ * <b>"No JDK common ForkJoinPool" rule.</b> Engine and server code MUST NOT submit work to the
+ * common pool (no {@code parallelStream()}, no {@code Arrays.parallelSort} on hot paths, no
+ * {@code CompletableFuture.supplyAsync} / {@code runAsync} without an explicit executor). The
+ * common pool is shared with user-supplied scripts (Gremlin, Polyglot, SQL functions) and has
+ * no back-pressure - long-running ArcadeDB work there can starve user code, the JDK reference
+ * handler, and parallel GC. Fork to this manager's {@link #getExecutorService()} (sized via
+ * {@link GlobalConfiguration#QUERY_PARALLELISM_POOL_THREADS}) for general query parallelism, or
+ * to a feature-specific dedicated pool for hot, fine-grained workloads (e.g. sparse-vector
+ * scoring). Two pre-existing common-pool callers are tracked for migration:
+ * <ul>
+ *   <li>{@code GraphBatch} bulk-load uses {@code Arrays.parallelSort} on the vertex-key array.</li>
+ *   <li>{@code ArcadeStateMachine.notifyInstallSnapshotFromLeader} forks the snapshot download via
+ *       {@code CompletableFuture.supplyAsync} (no explicit executor).</li>
+ * </ul>
+ * Both run during operational events (bulk import, HA snapshot install) rather than the per-query
+ * hot path; migrating them off the common pool is queued as follow-up work.
+ */
 public class QueryEngineManager {
   private static final QueryEngineManager                         INSTANCE        = new QueryEngineManager();
   private final        Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();
   private final        ExecutorService                             executorService;
 
   private QueryEngineManager() {
-    final int maxThreads = Math.max(2, Runtime.getRuntime().availableProcessors());
+    // Pool sizing: explicit knob first, then "as many threads as cores (min 2)". Configurable so
+    // operators can cap or expand without rebuild; the previous hardcoded {@code max(2, cpuCount)}
+    // is preserved as the default behaviour when the knob is left at its default of 0.
+    final int configured = GlobalConfiguration.QUERY_PARALLELISM_POOL_THREADS.getValueAsInteger();
+    final int maxThreads = configured > 0 ? configured : Math.max(2, Runtime.getRuntime().availableProcessors());
+    final AtomicInteger workerSeq = new AtomicInteger();
     final ThreadPoolExecutor pool = new ThreadPoolExecutor(maxThreads, maxThreads, 60L, TimeUnit.SECONDS,
         new LinkedBlockingQueue<>(), r -> {
-      final Thread t = new Thread(r, "ArcadeDB-QueryWorker");
+      final Thread t = new Thread(r, "ArcadeDB-QueryWorker-" + workerSeq.incrementAndGet());
       t.setDaemon(true);
       return t;
     });

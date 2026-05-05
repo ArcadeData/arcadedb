@@ -793,7 +793,13 @@ public class GraphBatch implements AutoCloseable {
     deferredOutHead.forEach((k, v) -> allKeys.add(k));
     deferredInHead.forEach((k, v) -> allKeys.add(k));
 
-    // Sort by vertex key for page locality
+    // Sort by vertex key for page locality.
+    // NOTE (concurrency): Arrays.parallelSort forks to the JDK common ForkJoinPool, which is
+    // discouraged elsewhere in the engine (see QueryEngineManager class javadoc, "No JDK common
+    // ForkJoinPool" rule). Tolerated here because GraphBatch runs during bulk import - a
+    // foreground operational task, not a hot per-query path - and the sort dominates its own
+    // critical section. Migrate to QueryEngineManager.getExecutorService() if profiling later
+    // shows common-pool contention with user code during overlapping bulk loads.
     final long[] sortedKeys = allKeys.toArray();
     Arrays.parallelSort(sortedKeys);
 

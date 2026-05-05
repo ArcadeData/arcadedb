@@ -230,6 +230,10 @@ public enum GlobalConfiguration {
       "Number of asynchronous worker threads. 0 (default) = available cores minus 1", Integer.class,
       Runtime.getRuntime().availableProcessors() > 1 ? Runtime.getRuntime().availableProcessors() - 1 : 1),
 
+  QUERY_PARALLELISM_POOL_THREADS("arcadedb.queryParallelismPoolThreads", SCOPE.JVM,
+      "Maximum number of threads in the JVM-wide pool that backs query-time parallelism (graph algorithms parallelForRange, parallel index scans, etc.). The same pool also serves any future feature that wants to fork query work; sizing it explicitly is the alternative to the JDK common ForkJoinPool, which is shared with user code and has no back-pressure. 0 = available cores (min 2)",
+      Integer.class, 0),
+
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
       "Queue implementation to use between 'standard' and 'fast'. 'standard' consumes less CPU than the 'fast' implementation, but it could be slower with high loads",
       String.class, "standard", Set.of("standard", "fast")),
