@@ -15,7 +15,10 @@ from typing import Any, List, Optional, Union
 
 import jpype
 
+from ._logging import get_logger, log_swallowed_exception
 from .exceptions import ArcadeDBError
+
+_LOGGER = get_logger(__name__)
 
 
 class IndexType(Enum):
@@ -692,7 +695,9 @@ class Schema:
                                     if len(props) == 1 and props[0] == vector_property:
                                         return VectorIndex(java_index, self._db)
                         except Exception:
-                            pass
+                            log_swallowed_exception(
+                                _LOGGER, "while inspecting TypeIndex sub-indexes"
+                            )
 
                     # Check if it's directly an LSM vector index (JVector)
                     elif "LSMVectorIndex" in index_class_name:
@@ -701,7 +706,7 @@ class Schema:
                         if len(props) == 1 and props[0] == vector_property:
                             return VectorIndex(java_index, self._db)
             except Exception:
-                pass
+                log_swallowed_exception(_LOGGER, "while iterating schema indexes")
 
             return None
 
@@ -734,7 +739,7 @@ class Schema:
                             if "LSMVectorIndex" in first_sub.getClass().getName():
                                 indexes.append(java_index.getName())
                     except Exception:
-                        pass
+                        log_swallowed_exception(_LOGGER, "while listing vector indexes")
 
             return indexes
         except Exception:
