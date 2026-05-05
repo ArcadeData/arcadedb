@@ -90,7 +90,7 @@ markers = [
 # Patterns are matched as substrings, so anchor with leading "/" to avoid
 # accidentally excluding files like examples/11_vector_index_build.py.
 exclude_dirs = ["/tests/.cache/", "/build/", "/dist/"]
-
-[tool.bandit.assert_used]
-# Asserts are the standard idiom in pytest; do not flag them in tests/conftest.
-skips = ["**/tests/test_*.py", "**/tests/conftest.py"]
+# B101 (assert_used) is the standard pytest idiom and the production source
+# (src/) intentionally contains no assert statements - so we skip it globally
+# rather than maintaining a per-file glob list.
+skips = ["B101"]

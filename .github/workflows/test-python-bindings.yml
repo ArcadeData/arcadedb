@@ -48,9 +48,9 @@ jobs:
       - name: Install Bandit
         run: python -m pip install "bandit>=1.9.0"
 
-      - name: Run Bandit on src (must be clean)
+      - name: Run Bandit on src and tests (must be clean)
         working-directory: bindings/python
-        run: python -m bandit -c pyproject.toml -r src --severity-level low --confidence-level low
+        run: python -m bandit -c pyproject.toml -r src tests --severity-level low --confidence-level low
 
   # First job: Download ArcadeDB JARs (platform-agnostic)
   download-jars:
