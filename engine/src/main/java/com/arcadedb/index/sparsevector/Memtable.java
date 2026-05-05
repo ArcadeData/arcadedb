@@ -49,9 +49,6 @@ import java.util.concurrent.atomic.AtomicLong;
  */
 public final class Memtable {
 
-  /** Approximate per-entry on-heap footprint: ConcurrentSkipListMap node header + RID + Float box + edges. */
-  static final int APPROX_BYTES_PER_ENTRY = 96;
-
   private final ConcurrentHashMap<Integer, ConcurrentSkipListMap<RID, Float>> postings    = new ConcurrentHashMap<>();
   // Per-dim running max live weight. Maintained incrementally on every {@link #put} so the BMW
   // upper bound a cursor reports does not require a fresh full scan of the dim's postings at
@@ -62,7 +59,6 @@ public final class Memtable {
   private final ConcurrentHashMap<Integer, Float>                              dimMaxWeight = new ConcurrentHashMap<>();
   private final AtomicLong totalPostings        = new AtomicLong();
   private final AtomicLong tombstoneCount       = new AtomicLong();
-  private final AtomicLong heapBytesEstimate    = new AtomicLong();
 
   /** Insert or overwrite the weight for {@code (dim, rid)}. Negative or non-finite weights are rejected. */
   public void put(final int dim, final RID rid, final float weight) {
@@ -107,11 +103,6 @@ public final class Memtable {
 
   public long tombstoneCount() {
     return tombstoneCount.get();
-  }
-
-  /** Approximate on-heap footprint in bytes. Computed incrementally on each mutation; not exact. */
-  public long heapBytesEstimate() {
-    return heapBytesEstimate.get();
   }
 
   public boolean isEmpty() {
@@ -195,7 +186,6 @@ public final class Memtable {
     dimMaxWeight.clear();
     totalPostings.set(0L);
     tombstoneCount.set(0L);
-    heapBytesEstimate.set(0L);
   }
 
   // ---------- internals ----------
@@ -204,7 +194,6 @@ public final class Memtable {
     final boolean isNewTombstone = Float.isNaN(newValue);
     if (previous == null) {
       totalPostings.incrementAndGet();
-      heapBytesEstimate.addAndGet(APPROX_BYTES_PER_ENTRY);
       if (isNewTombstone)
         tombstoneCount.incrementAndGet();
     } else {

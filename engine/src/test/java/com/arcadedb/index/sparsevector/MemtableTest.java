@@ -33,6 +33,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Phase 3 verification: {@link Memtable} satisfies put/remove/iterate semantics under both
@@ -126,25 +127,18 @@ class MemtableTest {
     assertThat(m.isEmpty()).isTrue();
     assertThat(m.totalPostings()).isZero();
     assertThat(m.tombstoneCount()).isZero();
-    assertThat(m.heapBytesEstimate()).isZero();
     assertThat(m.dimCount()).isZero();
   }
 
   @Test
   void rejectsInvalidWeights() {
     final Memtable m = new Memtable();
-    try {
-      m.put(0, new RID(0, 1), Float.NaN);
-      org.assertj.core.api.Assertions.fail("expected IllegalArgumentException for NaN");
-    } catch (final IllegalArgumentException expected) {
-      assertThat(expected.getMessage()).contains("finite");
-    }
-    try {
-      m.put(0, new RID(0, 1), -0.1f);
-      org.assertj.core.api.Assertions.fail("expected IllegalArgumentException for negative");
-    } catch (final IllegalArgumentException expected) {
-      assertThat(expected.getMessage()).contains("non-negative");
-    }
+    assertThatThrownBy(() -> m.put(0, new RID(0, 1), Float.NaN))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("finite");
+    assertThatThrownBy(() -> m.put(0, new RID(0, 1), -0.1f))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("non-negative");
   }
 
   @Test

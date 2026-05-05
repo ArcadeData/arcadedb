@@ -75,6 +75,17 @@ public final class SparseVectorScoringPool {
     final int configured = GlobalConfiguration.SPARSE_VECTOR_SCORING_POOL_THREADS.getValueAsInteger();
     final int threads = configured > 0 ? configured : Math.max(2, Runtime.getRuntime().availableProcessors());
     final int queueSize = Math.max(1, GlobalConfiguration.SPARSE_VECTOR_SCORING_QUEUE_SIZE.getValueAsInteger());
+    // Operators tuning these knobs today see no observable effect: the topK hot path is still
+    // serial (parallel-scoring dispatch is reserved for a follow-up). Surface a one-shot WARNING
+    // when they're non-default so a misconfiguration that "looks ignored" is loud, not silent.
+    if (configured != 0 || queueSize != 1024) {
+      LogManager.instance().log(this, Level.WARNING,
+          "arcadedb.sparseVectorScoringPoolThreads / arcadedb.sparseVectorScoringQueueSize are "
+              + "configured (threads=%d, queueSize=%d) but the LSM_SPARSE_VECTOR top-K path still "
+              + "runs serially. The pool is allocated and instrumented for telemetry, but "
+              + "queries will not fan out to it until the parallel-scoring follow-up lands.",
+          configured, queueSize);
+    }
     final AtomicInteger workerSeq = new AtomicInteger();
 
     final ThreadPoolExecutor pool = new ThreadPoolExecutor(

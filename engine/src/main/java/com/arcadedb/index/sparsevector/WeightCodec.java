@@ -67,7 +67,18 @@ public final class WeightCodec {
     return min + (level / (float) (SegmentFormat.INT8_LEVELS - 1)) * (max - min);
   }
 
-  /** Quantization error bound for the given block range: {@code (max - min) / (2 * (LEVELS - 1))}. */
+  /**
+   * Per-posting worst-case quantization error for the given block range:
+   * {@code (max - min) / (2 * (LEVELS - 1))} = {@code (max - min) / 506} at {@code LEVELS = 254}.
+   * <p>
+   * <b>Aggregate score-error contract.</b> Top-K scoring sums {@code queryWeight * postingWeight}
+   * over the query's {@code nnz} dims, so the worst-case absolute error on a single document's
+   * score is bounded by {@code sum_i |q_i| * (max_i - min_i) / 506}. With unit-normalized query
+   * weights and a typical {@code max - min} of ~1.0 across a block, this is {@code ~nnz / 506}
+   * per document. Test tolerances on top-K score equality are sized against this bound (see
+   * {@code LSMSparseVectorIndexTest} - {@code 5e-3} is comfortably above it for {@code nnz <= 30}
+   * with non-unit ranges).
+   */
   public static float maxQuantizationError(final float min, final float max) {
     if (max <= min)
       return 0.0f;

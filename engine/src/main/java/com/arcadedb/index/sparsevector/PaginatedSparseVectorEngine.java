@@ -125,6 +125,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   // Initialized to a sentinel that no real fingerprint can equal so the first call always runs
   // the full reconcile.
   private final AtomicLong lastObservedFileFingerprint = new AtomicLong(Long.MIN_VALUE);
+  // Snapshot of {@link FileManager#getModificationCount()} at the last successful refresh. The
+  // refresh hot path checks this O(1) counter <i>before</i> the per-file fingerprint walk: when
+  // the FileManager has not added or removed a file since this engine last observed it, the
+  // sparse-segment subset cannot have changed either, so we can return without paying the
+  // O(total registered files) walk. Without this guard, every {@code topK} on a database with N
+  // indexes pays an N-scaled cost just to confirm the segment set is stable.
+  private final AtomicLong lastObservedFileManagerMods = new AtomicLong(Long.MIN_VALUE);
 
   private volatile boolean closed;
 
@@ -712,7 +719,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * segment via replication, which is rare relative to query rate.
    */
   private void refreshSegmentsFromFileManager() {
-    // Fast path: compute a content fingerprint of the FileManager's view of THIS index's
+    // Fastest path: the FileManager has a global modification counter that bumps on every
+    // registerFile / dropFile. If it has not advanced since our last successful refresh, no file
+    // - of any kind, for any index - has been added or removed, so our sparse-segment subset is
+    // necessarily current and we can skip the per-file walk entirely. This is the common case on
+    // a steady-state querying database; it turns refresh into one volatile read.
+    final long observedMods = database.getFileManager().getModificationCount();
+    if (observedMods == lastObservedFileManagerMods.get())
+      return;
+    // Slower fallback: compute a content fingerprint of the FileManager's view of THIS index's
     // sparse-segment files (count + sum of file IDs). The walk is O(total files) but does only
     // cheap operations (string compare on file extension and component-name prefix, int add) -
     // no schema lookups, no reader allocations. When the fingerprint matches the last successful
@@ -722,8 +737,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     // count-only fast path would have stalled visibility of the new segment until the next
     // change-of-count event.
     final long observedFingerprint = computeFileFingerprint();
-    if (observedFingerprint == lastObservedFileFingerprint.get())
+    if (observedFingerprint == lastObservedFileFingerprint.get()) {
+      // FileManager moved but its files do not concern us - cache the mod count so we do not
+      // re-walk for unrelated FileManager activity until the next mutation.
+      lastObservedFileManagerMods.set(observedMods);
       return;
+    }
 
     mutatorLock.lock();
     try {
@@ -782,7 +801,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       }
       // Re-compute the fingerprint under the lock and commit it as the new high-water mark; if a
       // concurrent flush() racing this refresh added a file mid-reconcile we capture that here.
+      // The mod-count high-water mark is captured AFTER the fingerprint so a concurrent
+      // registerFile that bumps the counter but lands a file matching our prefix is still picked
+      // up by the next refresh (the fingerprint will differ).
       lastObservedFileFingerprint.set(computeFileFingerprint());
+      lastObservedFileManagerMods.set(database.getFileManager().getModificationCount());
     } finally {
       mutatorLock.unlock();
     }
@@ -1006,7 +1029,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
               b.appendPosting(minRid, newest.cursor.currentWeight());
           }
 
-          // Advance every cursor aligned at minRid; drop those that exhaust.
+          // Advance every cursor aligned at minRid; drop those that exhaust. {@code it.remove()}
+          // pulls the closed cursor out of {@code sources}, which is what makes the {@code finally}
+          // block double-close-safe: only cursors still in the list reach it. (Even without
+          // {@code it.remove()}, {@link PaginatedSegmentDimCursor#close} is idempotent - it only
+          // sets {@code exhausted = true} and {@code currentRid = null} - so a redundant call is
+          // harmless. The list mutation is for correctness during the next outer-loop iteration,
+          // not for close safety.)
           for (final Iterator<DimSource> it = sources.iterator(); it.hasNext(); ) {
             final DimSource s = it.next();
             if (minRid.equals(s.cursor.currentRid())) {

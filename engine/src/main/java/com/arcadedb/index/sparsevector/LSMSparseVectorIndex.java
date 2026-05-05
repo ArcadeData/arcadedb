@@ -225,6 +225,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     if (rid == null)
       return;
     if (!isOriginalCall(keys)) {
+      // Replay path. {@code keys[1]} already carries the per-posting RID (the same value Raft
+      // serialized into the WAL), so {@code applyScalarPostingFromReplay} re-extracts it from
+      // there to keep the original/replay paths shape-identical. The {@code rid} parameter is
+      // intentionally unused on this branch; the underlying LSM-Tree shell never sees these
+      // postings, so there is no inner remove() to forward it to.
       applyScalarPostingFromReplay(keys, false);
       return;
     }
@@ -436,10 +441,14 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
-    // Direct exact lookup is rarely meaningful for sparse vector retrieval. The shell never
-    // received any postings under the v2 backend, so this delegation always returns an empty
-    // result; callers must use top-K instead.
-    return underlyingIndex.get(keys, limit);
+    // Direct exact lookup is meaningless for sparse-vector retrieval: the shell LSMTreeIndex
+    // never receives any postings (the engine owns them in `.sparseseg` files), so a delegation
+    // would silently return an empty cursor and a caller mistaking that for "no matches" would
+    // get a wrong answer. Fail loudly instead - callers should use the `vector.sparseNeighbors`
+    // SQL function (or {@link PaginatedSparseVectorEngine#topK}) for retrieval.
+    throw new UnsupportedOperationException(
+        "Direct posting lookup is not supported on LSM_SPARSE_VECTOR indexes; "
+            + "use vector.sparseNeighbors(...) for top-K retrieval");
   }
 
   @Override
