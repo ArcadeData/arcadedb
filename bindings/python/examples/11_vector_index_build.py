@@ -870,7 +870,9 @@ def get_qdrant_version(client) -> str | None:
 
 
 def qdrant_project_name(db_path: Path) -> str:
-    digest = hashlib.sha1(str(db_path).encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(
+        str(db_path).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:10]
     return f"arcadb-qdrant-{digest}"
 
 
@@ -1024,7 +1026,9 @@ def ensure_milvus_compose_file(compose_file: Path, release_tag: str) -> None:
 
 
 def milvus_project_name(db_path: Path) -> str:
-    digest = hashlib.sha1(str(db_path).encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(
+        str(db_path).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:10]
     return f"arcadb-milvus-{digest}"
 
 

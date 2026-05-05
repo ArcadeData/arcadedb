@@ -914,7 +914,9 @@ def get_qdrant_version(client) -> str | None:
 
 
 def qdrant_project_name(db_path: Path) -> str:
-    digest = hashlib.sha1(str(db_path).encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(
+        str(db_path).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:10]
     return f"arcadb-qdrant-{digest}"
 
 
@@ -1120,7 +1122,8 @@ def run_repeated_search(
             **run_stats,
             "run": run_idx + 1,
             "query_order_hash": hashlib.sha1(
-                ",".join(str(v) for v in run_qids).encode("utf-8")
+                ",".join(str(v) for v in run_qids).encode("utf-8"),
+                usedforsecurity=False,
             ).hexdigest(),
         }
         per_run_stats.append(run_stats)
@@ -1255,7 +1258,9 @@ def ensure_milvus_compose_file(compose_file: Path, release_tag: str) -> None:
 
 
 def milvus_project_name(db_path: Path) -> str:
-    digest = hashlib.sha1(str(db_path).encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(
+        str(db_path).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:10]
     return f"arcadb-milvus-{digest}"
 
 
