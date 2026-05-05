@@ -116,3 +116,15 @@ def test_server_context_manager(temp_server_root):
 
     # Note: We can't easily test if stopped after context exit
     # because the server object is out of scope
+
+
+def test_default_host_is_localhost(temp_server_root):
+    """Default host should be localhost; binding to all interfaces must be opt-in."""
+    from arcadedb_embedded.server import ArcadeDBServer
+
+    server = ArcadeDBServer(
+        root_path=temp_server_root,
+        root_password="test_password",
+    )
+    assert server._config.get("host", "localhost") == "localhost"
+    assert server.get_studio_url().startswith("http://localhost:")

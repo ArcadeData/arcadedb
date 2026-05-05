@@ -7,9 +7,12 @@ ArcadeDB server for HTTP API and Studio web interface.
 import os
 from typing import Any, Dict, Optional
 
+from ._logging import get_logger, log_swallowed_exception
 from .core import Database
 from .exceptions import ArcadeDBError
 from .jvm import start_jvm
+
+_LOGGER = get_logger(__name__)
 
 
 class ArcadeDBServer:
@@ -61,7 +64,9 @@ class ArcadeDBServer:
         mode = self._config.get("mode", "development")
         context_config.setValue("arcadedb.server.mode", mode)
 
-        host = self._config.get("host", "0.0.0.0")
+        # Default to loopback; callers must opt in to "0.0.0.0" explicitly to
+        # expose the server on all interfaces.
+        host = self._config.get("host", "localhost")
         context_config.setValue("arcadedb.server.httpIncomingHost", host)
 
         http_port = self._config.get("http_port", 2480)
@@ -100,13 +105,16 @@ class ArcadeDBServer:
             raise ArcadeDBError(f"Failed to stop server: {e}") from e
 
     def __del__(self):
-        """Finalizer - ensure server is stopped."""
+        """Finalizer - ensure server is stopped.
+
+        See Database.__del__ for rationale on the narrowed except clause.
+        """
         try:
             if self._started and self._java_server is not None:
                 self._java_server.stop()
                 self._started = False
-        except Exception:
-            pass  # Ignore errors during garbage collection
+        except (AttributeError, RuntimeError):
+            return
 
     def get_database(self, name: str) -> Database:
         """
@@ -162,7 +170,7 @@ class ArcadeDBServer:
     def get_studio_url(self) -> str:
         """Get the URL for the Studio web interface."""
         host = self._config.get("host", "localhost")
-        if host == "0.0.0.0":
+        if host == "0.0.0.0":  # nosec B104 - equality comparison, not a bind
             host = "localhost"
         port = self.get_http_port()
         return f"http://{host}:{port}/"
