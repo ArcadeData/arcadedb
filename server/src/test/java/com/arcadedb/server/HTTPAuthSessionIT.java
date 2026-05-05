@@ -23,8 +23,10 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.logging.Level;
@@ -389,6 +391,89 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
 
       try {
         assertThat(connection.getResponseCode()).isEqualTo(204);
+      } finally {
+        connection.disconnect();
+      }
+    });
+  }
+
+  /**
+   * Regression test for <a href="https://github.com/ArcadeData/arcadedb/issues/4082">issue #4082</a>:
+   * after a server restart, all in-memory auth sessions are lost. A client that still holds the
+   * previous Bearer token must receive HTTP 401 with a JSON body that Studio can react to by
+   * resetting the session and showing the login page.
+   * <p>
+   * Here we simulate the restart by explicitly removing the session from the manager. Studio's
+   * global ajaxError handler relies on this 401 to detect the dropped session and prompt the user
+   * to log in again, instead of leaving the UI stuck on stale data.
+   */
+  @Test
+  void invalidTokenAfterServerRestartReturns401() throws Exception {
+    testEachServer((serverIndex) -> {
+      // 1. LOGIN
+      HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();
+      connection.setRequestMethod("POST");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      connection.connect();
+
+      final String authToken;
+      try {
+        final String response = readResponse(connection);
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        authToken = new JSONObject(response).getString("token");
+      } finally {
+        connection.disconnect();
+      }
+
+      // 2. SANITY CHECK: Token is valid right after login
+      connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/databases").openConnection();
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization", "Bearer " + authToken);
+      connection.connect();
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+      } finally {
+        connection.disconnect();
+      }
+
+      // 3. SIMULATE SERVER RESTART: drop the session from the in-memory session manager
+      // (a real restart would reinitialize the manager and lose all sessions the same way).
+      getServer(serverIndex).getHttpServer().getAuthSessionManager().removeSession(authToken);
+
+      // 4. CLIENT STILL USES THE OLD TOKEN -> server must return 401 with a parseable JSON body
+      connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/databases").openConnection();
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization", "Bearer " + authToken);
+      connection.connect();
+
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(401);
+        // Read from the error stream because the status is 4xx
+        final InputStream err = connection.getErrorStream();
+        assertThat(err).isNotNull();
+        final String body = new String(err.readAllBytes(), StandardCharsets.UTF_8);
+        assertThat(body).isNotBlank();
+        // Body must be JSON with an "error" key so Studio's globalNotifyError can parse it
+        final JSONObject json = new JSONObject(body);
+        assertThat(json.has("error")).isTrue();
+        assertThat(json.getString("error")).contains("Invalid or expired authentication token");
+      } finally {
+        connection.disconnect();
+      }
+
+      // 5. SAME TOKEN AGAINST OTHER ENDPOINTS: must consistently return 401 so the Studio's
+      // global handler kicks in regardless of which call was the one to hit the dead session.
+      connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME + "/sql/select%201").openConnection();
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization", "Bearer " + authToken);
+      connection.connect();
+      try {
+        assertThat(connection.getResponseCode()).isEqualTo(401);
       } finally {
         connection.disconnect();
       }
