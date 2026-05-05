@@ -239,6 +239,109 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
   }
 
   /**
+   * Multi-tier compaction cascade: a single flush that crosses the gate must collapse a tier
+   * AND - if the merged segment promotes its target tier into overflow - cascade upward in the
+   * same pass until no tier overflows. This pins the {@code while (compactSizeTiered() != -1L)}
+   * loop in {@link PaginatedSparseVectorEngine#flush}: with fanout 3, base 1, after 9
+   * one-posting flushes we expect exactly one segment containing all 9 postings.
+   * <ol>
+   *   <li>Flushes 1-3: 3 tier-0 segments, last flush merges them into 1 tier-1 segment.</li>
+   *   <li>Flushes 4-6: 3 more tier-0 segments arrive; flush 6 merges them into a 2nd tier-1.</li>
+   *   <li>Flushes 7-9: another 3 tier-0 segments; flush 9 merges them into a 3rd tier-1.
+   *       Tier 1 now has 3 segments and overflows in the same pass; the cascade merges them
+   *       into 1 tier-2 segment with 9 postings total.</li>
+   * </ol>
+   */
+  @Test
+  void compactSizeTieredCascadesAcrossTiers() {
+    createTypeAndIndex();
+    final DatabaseInternal db = (DatabaseInternal) database;
+    try (final PaginatedSparseVectorEngine cheap = new PaginatedSparseVectorEngine(
+        db, "TierCascadeTest", SegmentParameters.defaults(),
+        /* memtableFlushThreshold */ 1L,
+        /* tierFanout */ 3,
+        /* tierBasePostings */ 1L)) {
+      // 9 one-posting flushes. Each flush triggers compactSizeTiered cascade.
+      for (int i = 0; i < 9; i++) {
+        cheap.put(i, new RID(0, 100L + i), 0.1f * (i + 1));
+        cheap.flush();
+      }
+      // After the 9th flush, the cascade should have merged everything into one segment.
+      assertThat(cheap.segmentCount())
+          .as("9 one-posting flushes with fanout=3 must cascade tier-0 -> tier-1 -> tier-2 to a single segment")
+          .isEqualTo(1);
+      assertThat(cheap.totalPostings())
+          .as("all 9 postings must survive the cascade (loss-less merge)")
+          .isEqualTo(9L);
+    }
+  }
+
+  /**
+   * Manifest CRC mismatch path: {@link PaginatedSegmentReader} validates the manifest CRC and,
+   * on mismatch, logs SEVERE and proceeds anyway (parents/tombstoneFloor may be wrong but the
+   * segment can still serve queries). This test pins that contract: build a segment, corrupt
+   * the manifest CRC bytes on disk, reopen the engine, and verify the segment loads without
+   * throwing.
+   */
+  @Test
+  void manifestCrcMismatchLogsAndContinues() throws Exception {
+    createTypeAndIndex();
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final String segmentFilePath;
+    final int pageSize;
+    try (final PaginatedSparseVectorEngine engine = nonCompactingEngine(db, "ManifestCrcTest")) {
+      engine.put(0, new RID(0, 1L), 0.5f);
+      engine.flush();
+
+      // Locate the segment's underlying file via the FileManager. nonCompactingEngine uses
+      // index name "ManifestCrcTest", so segment names start with "ManifestCrcTest_seg".
+      final var componentFile = db.getFileManager().getFiles().stream()
+          .filter(cf -> cf != null
+              && SparseSegmentComponent.FILE_EXT.equals(cf.getFileExtension())
+              && cf.getComponentName().startsWith("ManifestCrcTest_seg"))
+          .findFirst()
+          .orElseThrow(() -> new AssertionError("Expected a sparse segment file after flush"));
+      segmentFilePath = componentFile.getFilePath();
+      pageSize = ((com.arcadedb.engine.PaginatedComponentFile) componentFile).getPageSize();
+    }
+
+    // The engine is closed; the file is still on disk. Read the segment header to find the
+    // manifest page, then overwrite the manifest's last 4 bytes (CRC) with garbage. Layout
+    // (defined by SparseSegmentBuilder.writeManifest): segmentId(8) + parentCount(4) +
+    // parents[parentCount * 8] + tombstoneFloor(8) + reserved(8) + crc(4). With no compaction
+    // history the segment has parentCount = 0, so manifest size = 28.
+    final java.nio.file.Path path = java.nio.file.Path.of(segmentFilePath);
+    final int manifestPageNum;
+    try (final java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(path,
+        java.nio.file.StandardOpenOption.READ)) {
+      // HEADER_OFFSET_MANIFEST_PAGE_NUM = 52 in logical-page space -> +PAGE_HEADER_SIZE (8) on disk.
+      final java.nio.ByteBuffer hdr = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN);
+      ch.read(hdr, 8L + PaginatedSegmentFormat.HEADER_OFFSET_MANIFEST_PAGE_NUM);
+      hdr.flip();
+      manifestPageNum = hdr.getInt();
+    }
+    final long manifestStart = manifestPageNum * (long) pageSize + 8L; // +PAGE_HEADER_SIZE
+    final long manifestCrcOffset = manifestStart + 28L - 4L; // manifest size - 4 (the CRC)
+    try (final java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(path,
+        java.nio.file.StandardOpenOption.WRITE)) {
+      final java.nio.ByteBuffer garbage = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN);
+      garbage.putInt(0xDEADBEEF);
+      garbage.flip();
+      ch.write(garbage, manifestCrcOffset);
+      ch.force(true);
+    }
+
+    // Reopen the engine. loadExistingSegments will open a PaginatedSegmentReader on the
+    // corrupted file; the contract is "log SEVERE on mismatch but proceed". We assert the
+    // segment is still loaded.
+    try (final PaginatedSparseVectorEngine reopened = nonCompactingEngine(db, "ManifestCrcTest")) {
+      assertThat(reopened.segmentCount())
+          .as("segment with corrupted manifest CRC must still load (graceful degradation)")
+          .isEqualTo(1);
+    }
+  }
+
+  /**
    * (d) Closing a database whose memtable still has live postings must seal them into a segment
    * before close completes, otherwise data is lost. {@link com.arcadedb.database.LocalDatabase}'s
    * {@code closeInternal} calls {@code IndexInternal.flush()} on every index for exactly this

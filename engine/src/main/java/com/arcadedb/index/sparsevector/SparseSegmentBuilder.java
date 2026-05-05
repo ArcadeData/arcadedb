@@ -471,13 +471,17 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     int pageNum = firstPageNum;
     int offsetInPage = 0;
 
+    // Reuse {@link #payloadScratch} (sized at construction to the worst-case block payload, so
+    // it always covers a full {@code pageContentSize} of dim_index entries) instead of
+    // allocating a fresh ByteBuffer per page. Single-page dim_index sees no measurable change;
+    // multi-page dim_index for high-vocab corpora (>6552 dims at the default 64 KiB page) drops
+    // one allocation per page from the flush path.
+    payloadBuf.clear();
+
     // Page 0: write the count header first.
-    {
-      final ByteBuffer hdr = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN);
-      hdr.putInt(total);
-      pages.get(pageNum).writeByteArray(0, hdr.array(), 0, 4);
-      offsetInPage = 4;
-    }
+    payloadBuf.putInt(total);
+    pages.get(pageNum).writeByteArray(0, payloadScratch, 0, 4);
+    offsetInPage = 4;
 
     while (writtenEntries < total) {
       // Roll to a new page if the next entry can't fit in the remaining space on this page.
@@ -490,14 +494,14 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       final int remainingEntries = total - writtenEntries;
       final int spaceLeft = pageContentSize - offsetInPage;
       final int entriesOnThisPage = Math.min(remainingEntries, spaceLeft / entrySize);
-      final ByteBuffer buf = ByteBuffer.allocate(entriesOnThisPage * entrySize).order(ByteOrder.BIG_ENDIAN);
+      payloadBuf.clear();
       for (int i = 0; i < entriesOnThisPage; i++) {
         final int[] entry = dimIndex.get(writtenEntries + i);
-        buf.putInt(entry[0]);              // dim_id
-        buf.putInt(entry[1]);              // trailer page_num
-        buf.putShort((short) entry[2]);    // trailer offset_in_page
+        payloadBuf.putInt(entry[0]);              // dim_id
+        payloadBuf.putInt(entry[1]);              // trailer page_num
+        payloadBuf.putShort((short) entry[2]);    // trailer offset_in_page
       }
-      pages.get(pageNum).writeByteArray(offsetInPage, buf.array(), 0, entriesOnThisPage * entrySize);
+      pages.get(pageNum).writeByteArray(offsetInPage, payloadScratch, 0, entriesOnThisPage * entrySize);
       offsetInPage += entriesOnThisPage * entrySize;
       writtenEntries += entriesOnThisPage;
     }

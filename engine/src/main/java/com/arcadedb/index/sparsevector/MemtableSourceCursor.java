@@ -137,6 +137,23 @@ public final class MemtableSourceCursor implements SourceCursor {
     return exhausted;
   }
 
+  /**
+   * Returns the dim's running max live weight from the memtable. Used by BMW DAAT as the upper
+   * bound on this source's contribution to the running prefix-sum.
+   * <p>
+   * <b>Looseness under tombstone load.</b> {@link Memtable#dimMaxWeight} is monotonically
+   * non-decreasing by design (it bumps on {@code put} and is never lowered on {@code remove})
+   * - that is the simplest way to keep BMW correct under concurrent writers without scanning
+   * the dim on every read. The flip side: when the dim's previous max-weight posting has been
+   * tombstoned but a smaller weight remains, the bound is permanently too high until the
+   * memtable is flushed and re-snapshotted, which means BMW will skip less aggressively (the
+   * pivot shift fires later than it would with an exact bound). For workloads with high
+   * tombstone density on heavy-weight postings, this can cost up to a constant factor of skip
+   * efficiency on queries that touch this dim. Correctness is unaffected; an over-estimate is
+   * always safe for an upper bound. If profiling shows this matters, the fix is either a
+   * background re-scan that lowers the bound when the max-bearing posting is tombstoned, or
+   * triggering an earlier flush so the sealed-segment per-block max takes over.
+   */
   @Override
   public float upperBoundRemaining() {
     return exhausted ? 0.0f : dimMaxWeight;

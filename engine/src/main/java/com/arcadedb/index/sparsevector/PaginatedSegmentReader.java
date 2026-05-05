@@ -120,7 +120,27 @@ public final class PaginatedSegmentReader implements AutoCloseable {
       cursor += 8;
     }
     this.tombstoneFloorSegment = manifestPage.readLong(cursor);
-    // reserved(8) + crc32(4) follow; not validated on read for now (CRC could be added if profiling shows it's worthwhile).
+    cursor += 8;
+    // reserved(8) + crc32(4) follow.
+    cursor += 8;
+    // Manifest CRC validation. Layout written by SparseSegmentBuilder.writeManifest covers
+    // segmentId + parentCount + parents[] + tombstoneFloorSegment + reserved, with the CRC of
+    // all of those in the last 4 bytes. A bit-flipped manifest could otherwise return wrong
+    // {@code parentSegments} or {@code tombstoneFloorSegment} silently and corrupt compaction
+    // bookkeeping; we surface that as a SEVERE log here so the issue is observable without
+    // failing the segment open (mismatched parents are unfortunate but not query-fatal: the
+    // tombstoneFloorSegment value still drives masking, just possibly against a wrong floor).
+    final int manifestSize = 8 + 4 + parentCount * 8 + 8 + 8 + 4; // segmentId + parentCount + parents + tombstoneFloor + reserved + crc
+    final byte[] manifestBytes = new byte[manifestSize];
+    manifestPage.readByteArray(0, manifestBytes);
+    final int storedManifestCrc = manifestPage.readInt(cursor);
+    final CRC32 manifestCrc = new CRC32();
+    manifestCrc.update(manifestBytes, 0, manifestSize - 4);
+    if ((int) manifestCrc.getValue() != storedManifestCrc) {
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+          "Manifest CRC mismatch in segment '%s' (expected %d, got %d). The segment is being opened anyway, but parentSegments / tombstoneFloorSegment may be corrupt.",
+          component.getName(), storedManifestCrc, (int) manifestCrc.getValue());
+    }
 
     // ---- Dim index pages ----
     // The dim_index can span multiple consecutive pages when the corpus has more unique dims

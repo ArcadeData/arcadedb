@@ -77,9 +77,6 @@ import java.util.logging.Level;
  */
 public class LSMSparseVectorIndex implements Index, IndexInternal {
 
-  /** Suffix appended to the shell file path to derive the engine's segment directory. */
-  static final String ENGINE_DIR_SUFFIX = ".sparse-engine";
-
   private final LSMTreeIndex                 underlyingIndex;
   private       LSMSparseVectorIndexMetadata sparseMetadata;
   private       TypeIndex                    typeIndex;

@@ -32,7 +32,6 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -109,12 +108,18 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private final AtomicReference<PaginatedSegmentReader[]>  segments     = new AtomicReference<>(new PaginatedSegmentReader[0]);
   private final AtomicLong                                 nextSegmentId = new AtomicLong(1L);
   private final ReentrantLock                              mutatorLock  = new ReentrantLock();
-  // {@link FileManager#getFiles()}'s {@code size()} captured at the end of the last successful
-  // {@link #refreshSegmentsFromFileManager}. Lets the next refresh short-circuit when the file
-  // count has not moved since the last call (the common case under steady-state querying), so
-  // {@code topK} does not pay the O(total-files) scan on every query. Initialized to {@code -1}
-  // so the very first call always runs the full reconcile.
-  private final AtomicInteger                              lastObservedFileCount = new AtomicInteger(-1);
+  // Content fingerprint of the FileManager's view of <i>this index's</i> sparse-segment files,
+  // captured at the end of the last successful {@link #refreshSegmentsFromFileManager}. Lets the
+  // next refresh short-circuit when nothing has changed (the common case under steady-state
+  // querying) without paying the full reconcile cost on every {@code topK}.
+  // <p>
+  // Stored as a {@code long} packed as {@code (count << 32) | sumOfFileIds}: count alone
+  // (the previous heuristic) missed the HA-compaction case where a SCHEMA_ENTRY adds a merged
+  // segment and retires its inputs in one step, leaving the file count unchanged. Adding the
+  // sum-of-ids catches that: any add or remove changes the sum even when the count is balanced.
+  // Initialized to a sentinel that no real fingerprint can equal so the first call always runs
+  // the full reconcile.
+  private final AtomicLong lastObservedFileFingerprint = new AtomicLong(Long.MIN_VALUE);
 
   private volatile boolean closed;
 
@@ -260,45 +265,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       final boolean ranOnLeader;
       try {
         ranOnLeader = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
-          componentRef[0] = createComponent(segmentId);
-          try {
-            database.transaction(() -> {
-              try (final SparseSegmentBuilder b = new SparseSegmentBuilder(componentRef[0], params)) {
-                b.setSegmentId(segmentId);
-                for (final int dim : old.sortedDims()) {
-                  final Iterator<MemtablePosting> it = old.iterateDim(dim);
-                  if (!it.hasNext())
-                    continue;
-                  b.startDim(dim);
-                  while (it.hasNext()) {
-                    final MemtablePosting p = it.next();
-                    if (p.tombstone())
-                      b.appendTombstone(p.rid());
-                    else
-                      b.appendPosting(p.rid(), p.weight());
-                  }
-                  b.endDim();
-                }
-                b.finish();
-              }
-            });
-          } catch (final RuntimeException buildFailure) {
-            // The build aborted (e.g. dim_index page overflow when a single segment has more
-            // unique dims than fit in one page; tracked as a follow-up). createComponent already
-            // registered the segment file with the FileManager, so leaving it would expose an
-            // empty file to the next refreshSegmentsFromFileManager scan and crash queries.
-            // Drop it before propagating; the memtable's data is preserved by the caller's lock.
-            try {
-              dropComponent(componentRef[0]);
-            } catch (final RuntimeException dropFailure) {
-              buildFailure.addSuppressed(dropFailure);
-            }
-            throw buildFailure;
-          }
-          // The inner transaction's commit queues pages for async flush. HA's
-          // runWithCompactionReplication reads the new file straight off the channel after this
-          // callback returns (serializeFilePagesAsWal); without this drain it would see zeros.
-          database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+          componentRef[0] = buildSegmentComponent(segmentId, old);
           // Open the reader and publish it under {@link #mutatorLock} (held by the caller) AND
           // inside the recording session, so:
           //   - the segments-array publication is a single set() with no observable gap where a
@@ -553,37 +520,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           final long segmentId = nextSegmentId.getAndIncrement();
           final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
           database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
-            componentRef[0] = createComponent(segmentId);
-            try {
-              database.transaction(() -> {
-                try (final SparseSegmentBuilder b = new SparseSegmentBuilder(componentRef[0], params)) {
-                  b.setSegmentId(segmentId);
-                  for (final int dim : old.sortedDims()) {
-                    final Iterator<MemtablePosting> it = old.iterateDim(dim);
-                    if (!it.hasNext())
-                      continue;
-                    b.startDim(dim);
-                    while (it.hasNext()) {
-                      final MemtablePosting p = it.next();
-                      if (p.tombstone())
-                        b.appendTombstone(p.rid());
-                      else
-                        b.appendPosting(p.rid(), p.weight());
-                    }
-                    b.endDim();
-                  }
-                  b.finish();
-                }
-              });
-            } catch (final RuntimeException buildFailure) {
-              try {
-                dropComponent(componentRef[0]);
-              } catch (final RuntimeException dropFailure) {
-                buildFailure.addSuppressed(dropFailure);
-              }
-              throw buildFailure;
-            }
-            database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+            buildSegmentComponent(segmentId, old);
             return Boolean.TRUE;
           });
         } catch (final IOException | InterruptedException | RuntimeException e) {
@@ -631,13 +568,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       }
       // Pick up any orphan components missed because they were registered but never made it into
       // {@code segments} (e.g. a partial flush that crashed before swap). Walk the FileManager
-      // for sparseseg files matching this index's prefix and drop those too.
-      final String prefix = indexName + "_seg";
+      // for sparseseg files matching this index's strict {@code <name>_seg<digits>} pattern
+      // and drop those too. The strict pattern matters here: we don't want to delete files
+      // belonging to a sibling index whose name happens to be a prefix of ours.
       for (final var componentFile : database.getFileManager().getFiles()) {
-        if (componentFile == null)
+        if (!isOurSegmentFile(componentFile))
           continue;
         final var component = database.getSchema().getFileByIdIfExists(componentFile.getFileId());
-        if (component instanceof SparseSegmentComponent ssc && ssc.getName().startsWith(prefix)) {
+        if (component instanceof SparseSegmentComponent ssc) {
           try {
             dropComponent(ssc);
           } catch (final RuntimeException ignored) {
@@ -691,6 +629,59 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
+   * Builds a sealed segment from {@code old} and persists it as a new {@link SparseSegmentComponent}.
+   * Shared by {@link #flush} and {@link #close}: both run the same recipe (allocate the component,
+   * write all dims through {@link SparseSegmentBuilder}, drain the page cache so the synthetic
+   * WAL HA serializes after this step sees on-disk pages instead of zeros from the async write
+   * cache, drop the component on builder failure to avoid orphan files). Caller is responsible
+   * for executing this inside {@code runWithCompactionReplication} and for any post-build
+   * publication step ({@code appendSegment} on flush, no-op on close).
+   * <p>
+   * Returns the registered component so the caller can open a {@link PaginatedSegmentReader}
+   * over it under the same recording session.
+   */
+  private SparseSegmentComponent buildSegmentComponent(final long segmentId, final Memtable old) {
+    final SparseSegmentComponent component = createComponent(segmentId);
+    try {
+      database.transaction(() -> {
+        try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, params)) {
+          b.setSegmentId(segmentId);
+          for (final int dim : old.sortedDims()) {
+            final Iterator<MemtablePosting> it = old.iterateDim(dim);
+            if (!it.hasNext())
+              continue;
+            b.startDim(dim);
+            while (it.hasNext()) {
+              final MemtablePosting p = it.next();
+              if (p.tombstone())
+                b.appendTombstone(p.rid());
+              else
+                b.appendPosting(p.rid(), p.weight());
+            }
+            b.endDim();
+          }
+          b.finish();
+        }
+      });
+    } catch (final RuntimeException buildFailure) {
+      // The build aborted (e.g. dim_index page overflow when a single segment has more unique
+      // dims than fit in one page). createComponent already registered the segment file with the
+      // FileManager, so leaving it would expose an empty file to the next
+      // refreshSegmentsFromFileManager scan and crash queries. Drop it before propagating.
+      try {
+        dropComponent(component);
+      } catch (final RuntimeException dropFailure) {
+        buildFailure.addSuppressed(dropFailure);
+      }
+      throw buildFailure;
+    }
+    // Drain the page cache so the synthetic WAL HA's runWithCompactionReplication ships in this
+    // recording session sees on-disk pages instead of zeros from the async writer.
+    database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+    return component;
+  }
+
+  /**
    * Lightweight resync of the in-memory segments snapshot against the FileManager. On a Raft
    * leader the engine's {@code segments} array is populated by {@link #appendSegment} after each
    * flush; on a follower, {@code SparseSegmentComponent} files arrive via {@code SCHEMA_ENTRY}
@@ -712,24 +703,25 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * segment via replication, which is rare relative to query rate.
    */
   private void refreshSegmentsFromFileManager() {
-    // Fast path: if the FileManager's total file count has not moved since the last successful
-    // refresh, no files have been added or removed - our snapshot is already current. Saves the
-    // O(total-files) walk in the steady-state-querying case. Edge case: a follower applying a
-    // SCHEMA_ENTRY that adds AND removes the same number of files in one step would leave the
-    // count unchanged, and we would miss it - the next change-of-count operation triggers a real
-    // refresh that picks it up, and in practice an HA stream that exactly balances adds and
-    // removes per entry is vanishingly rare.
-    final int observedCount = database.getFileManager().getFiles().size();
-    if (observedCount == lastObservedFileCount.get())
+    // Fast path: compute a content fingerprint of the FileManager's view of THIS index's
+    // sparse-segment files (count + sum of file IDs). The walk is O(total files) but does only
+    // cheap operations (string compare on file extension and component-name prefix, int add) -
+    // no schema lookups, no reader allocations. When the fingerprint matches the last successful
+    // refresh, our snapshot is current and we can return without taking the lock. The fingerprint
+    // catches the HA-compaction case where a SCHEMA_ENTRY adds a merged segment and retires its
+    // inputs in one step (file count unchanged, but the sum of file IDs changes) - the previous
+    // count-only fast path would have stalled visibility of the new segment until the next
+    // change-of-count event.
+    final long observedFingerprint = computeFileFingerprint();
+    if (observedFingerprint == lastObservedFileFingerprint.get())
       return;
 
     mutatorLock.lock();
     try {
       // Re-check under lock so we don't redo work a concurrent refresh just finished.
-      if (observedCount == lastObservedFileCount.get())
+      if (observedFingerprint == lastObservedFileFingerprint.get())
         return;
 
-      final String prefix = indexName + "_seg";
       final PaginatedSegmentReader[] current = segments.get();
       final LongHashSet knownIds = new LongHashSet(Math.max(8, current.length * 2));
       for (final PaginatedSegmentReader r : current)
@@ -741,10 +733,10 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         updated.add(r);
 
       for (final var componentFile : database.getFileManager().getFiles()) {
-        if (componentFile == null)
+        if (!isOurSegmentFile(componentFile))
           continue;
         final var component = database.getSchema().getFileByIdIfExists(componentFile.getFileId());
-        if (!(component instanceof SparseSegmentComponent ssc) || !ssc.getName().startsWith(prefix))
+        if (!(component instanceof SparseSegmentComponent ssc))
           continue;
         // On followers the sparseseg file briefly exists between createNewFiles and the WAL apply
         // that fills its pages, so a freshly-arrived component can fail header validation for a
@@ -779,9 +771,9 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
             nextSegmentId.set(highest + 1L);
         }
       }
-      // Re-read the file count under the lock and commit it as the new high-water mark; if a
+      // Re-compute the fingerprint under the lock and commit it as the new high-water mark; if a
       // concurrent flush() racing this refresh added a file mid-reconcile we capture that here.
-      lastObservedFileCount.set(database.getFileManager().getFiles().size());
+      lastObservedFileFingerprint.set(computeFileFingerprint());
     } finally {
       mutatorLock.unlock();
     }
@@ -796,20 +788,72 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
+   * Walk the FileManager and accumulate a content fingerprint over THIS index's segment files.
+   * Returns {@code (count << 32) ^ sumOfFileIds} - a count alone would miss balanced add+remove
+   * SCHEMA_ENTRYs from HA compaction, and the sum-of-file-ids closes that gap. Cheap per-file
+   * operations only: extension compare and component-name prefix-and-digits match, no schema
+   * lookups, no reader opens.
+   */
+  private long computeFileFingerprint() {
+    // Snapshot the FileManager's view before walking. {@link FileManager#getFiles} returns an
+    // unmodifiableList wrapper over a mutable backing list, so iterating it directly while a
+    // concurrent flush adds a file would throw ConcurrentModificationException - which we'd
+    // catch but pay an exception-cost for. {@code toArray()} on an ArrayList is a single
+    // {@code Arrays.copyOf} call so it's effectively atomic against single-element appends.
+    final var snapshot = database.getFileManager().getFiles().toArray(new com.arcadedb.engine.ComponentFile[0]);
+    long count = 0L;
+    long sumIds = 0L;
+    for (final var componentFile : snapshot) {
+      if (!isOurSegmentFile(componentFile))
+        continue;
+      count++;
+      sumIds += componentFile.getFileId();
+    }
+    return (count << 32) ^ sumIds;
+  }
+
+  /**
+   * True iff {@code componentFile} is one of THIS index's segment files. Anchors the match on the
+   * canonical name pattern {@code <indexName>_seg<digits>} so an unrelated index whose name is a
+   * prefix of ours (e.g. {@code "myIndex"} vs {@code "myIndexV2"}) cannot accidentally land in
+   * our segment set: simply checking {@code startsWith(indexName + "_seg")} would let
+   * {@code myIndexV2_seg42} match a {@code myIndex} engine because the suffix is non-empty.
+   */
+  private boolean isOurSegmentFile(final com.arcadedb.engine.ComponentFile componentFile) {
+    if (componentFile == null)
+      return false;
+    if (!SparseSegmentComponent.FILE_EXT.equals(componentFile.getFileExtension()))
+      return false;
+    final String name = componentFile.getComponentName();
+    if (name == null)
+      return false;
+    final String prefix = indexName + "_seg";
+    if (!name.startsWith(prefix))
+      return false;
+    if (name.length() == prefix.length())
+      return false;
+    for (int i = prefix.length(); i < name.length(); i++) {
+      final char c = name.charAt(i);
+      if (c < '0' || c > '9')
+        return false;
+    }
+    return true;
+  }
+
+  /**
    * Discover existing components belonging to this index by name pattern, sort them by segment
    * id, and prime {@link #nextSegmentId} above the highest known id.
    */
   private void loadExistingSegments() {
-    final String prefix = indexName + "_seg";
     final List<PaginatedSegmentReader> readers = new ArrayList<>();
 
-    // Walk every registered file by id; sparse segment components whose name starts with our
-    // prefix belong to this engine.
+    // Walk every registered file by id; sparse segment components whose name strictly matches
+    // {@code <indexName>_seg<digits>} belong to this engine.
     for (final var componentFile : database.getFileManager().getFiles()) {
-      if (componentFile == null)
+      if (!isOurSegmentFile(componentFile))
         continue;
       final var component = database.getSchema().getFileByIdIfExists(componentFile.getFileId());
-      if (component instanceof SparseSegmentComponent ssc && ssc.getName().startsWith(prefix)) {
+      if (component instanceof SparseSegmentComponent ssc) {
         try {
           readers.add(new PaginatedSegmentReader(ssc));
         } catch (final IOException e) {
