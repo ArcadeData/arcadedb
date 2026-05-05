@@ -41,13 +41,13 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -252,9 +252,9 @@ public class BoltNetworkExecutor extends Thread {
       if (magic[0] == 0x16 && magic[1] == 0x03)
         LogManager.instance().log(this, Level.WARNING,
             """
-            TLS/SSL connection attempted on BOLT port but TLS is disabled. \
-            Configure arcadedb.bolt.ssl=OPTIONAL or REQUIRED to enable TLS, \
-            or use bolt:// (unencrypted) on the client""");
+                TLS/SSL connection attempted on BOLT port but TLS is disabled. \
+                Configure arcadedb.bolt.ssl=OPTIONAL or REQUIRED to enable TLS, \
+                or use bolt:// (unencrypted) on the client""");
       else
         LogManager.instance().log(this, Level.WARNING,
             "Invalid BOLT magic bytes: [%d, %d, %d, %d]", magic[0], magic[1], magic[2], magic[3]);
@@ -1083,7 +1083,8 @@ public class BoltNetworkExecutor extends Thread {
         || normalized.startsWith("show point index")
         || normalized.startsWith("show lookup index")
         || normalized.startsWith("show fulltext index")
-        || normalized.startsWith("show vector index")) {
+        || normalized.startsWith("show vector index")
+        || normalized.startsWith("show sparse_vector index")) {
       // SHOW INDEXES / SHOW ... INDEXES - list indexes from ArcadeDB schema
       currentFields = List.of("id", "name", "state", "populationPercent", "type", "entityType",
           "labelsOrTypes", "properties", "indexProvider", "owningConstraint", "lastRead", "readCount");
@@ -1266,6 +1267,7 @@ public class BoltNetworkExecutor extends Thread {
       case HASH -> "HASH";
       case FULL_TEXT -> "FULLTEXT";
       case LSM_VECTOR -> "VECTOR";
+      case LSM_SPARSE_VECTOR -> "SPARSE_VECTOR";
       case GEOSPATIAL -> "POINT";
     };
   }
@@ -1278,6 +1280,7 @@ public class BoltNetworkExecutor extends Thread {
       case HASH -> "hash-1.0";
       case FULL_TEXT -> "fulltext-1.0";
       case LSM_VECTOR -> "vector-2.0";
+      case LSM_SPARSE_VECTOR -> "sparse-vector-2.0";
       case GEOSPATIAL -> "point-1.0";
     };
   }
@@ -1295,6 +1298,8 @@ public class BoltNetworkExecutor extends Thread {
       return "FULLTEXT".equals(neoType);
     if (filter.startsWith("show vector index"))
       return "VECTOR".equals(neoType);
+    if (filter.startsWith("show sparse_vector index"))
+      return "SPARSE_VECTOR".equals(neoType);
     return true;
   }
 
