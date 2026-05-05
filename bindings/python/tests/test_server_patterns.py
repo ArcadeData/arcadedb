@@ -157,7 +157,8 @@ def test_server_thread_safety(cleanup_test_dirs):
             start = thread_id * 4
             end = start + 4
             result = db.query(
-                "sql", f"SELECT FROM `Item` WHERE id >= {start} AND id < {end}"
+                "sql",
+                f"SELECT FROM `Item` WHERE id >= {start} AND id < {end}",  # nosec B608
             )
             count = len(list(result))
             results.append(f"   Thread {thread_id}: Found {count} items")
@@ -346,18 +347,22 @@ def test_embedded_performance_comparison(cleanup_test_dirs):
 
     # Insert complex data with various data types
     categories = ["Electronics", "Books", "Clothing", "Home", "Sports"]
-    import random
+    import random  # nosec B311 - benchmark uses random for synthetic test data, not security
     from datetime import datetime, timedelta
 
     with db_standalone.transaction():
 
         for i in range(num_records):
             category = categories[i % len(categories)]
-            price = round(random.uniform(10.0, 999.99), 2)
-            created_date = datetime.now() - timedelta(days=random.randint(0, 365))
-            is_active = random.choice([True, False])
+            price = round(random.uniform(10.0, 999.99), 2)  # nosec B311
+            created_date = datetime.now() - timedelta(
+                days=random.randint(0, 365)  # nosec B311
+            )
+            is_active = random.choice([True, False])  # nosec B311
             tags = ",".join(
-                random.choices(["new", "sale", "popular", "limited", "premium"], k=2)
+                random.choices(
+                    ["new", "sale", "popular", "limited", "premium"], k=2
+                )  # nosec B311
             )
 
             db_standalone.command(
@@ -416,11 +421,15 @@ def test_embedded_performance_comparison(cleanup_test_dirs):
     with db_server.transaction():
         for i in range(num_records):
             category = categories[i % len(categories)]
-            price = round(random.uniform(10.0, 999.99), 2)
-            created_date = datetime.now() - timedelta(days=random.randint(0, 365))
-            is_active = random.choice([True, False])
+            price = round(random.uniform(10.0, 999.99), 2)  # nosec B311
+            created_date = datetime.now() - timedelta(
+                days=random.randint(0, 365)  # nosec B311
+            )
+            is_active = random.choice([True, False])  # nosec B311
             tags = ",".join(
-                random.choices(["new", "sale", "popular", "limited", "premium"], k=2)
+                random.choices(
+                    ["new", "sale", "popular", "limited", "premium"], k=2
+                )  # nosec B311
             )
 
             db_server.command(
@@ -578,7 +587,7 @@ def test_http_api_access_pattern(cleanup_test_dirs):
 
     # Benchmark parameters
     num_operations = 100  # Reduced from 1000 for more realistic mixed operations
-    import random
+    import random  # nosec B311 - benchmark uses random for synthetic test data, not security
 
     # --- HTTP API Full CRUD Benchmark ---
     print("\n   6a. HTTP API - Full CRUD operations...")
@@ -603,7 +612,7 @@ def test_http_api_access_pattern(cleanup_test_dirs):
                     "language": "sql",
                     "command": (
                         f"INSERT INTO BenchItem SET id = {i}, "
-                        f"value = {random.randint(1, 1000)}, name = 'Item {i}'"
+                        f"value = {random.randint(1, 1000)}, name = 'Item {i}'"  # nosec B311 B608
                     ),
                 },
                 timeout=30,
@@ -614,8 +623,8 @@ def test_http_api_access_pattern(cleanup_test_dirs):
                 json={
                     "language": "sql",
                     "command": (
-                        f"SELECT FROM BenchItem WHERE "
-                        f"value > {random.randint(1, 500)} LIMIT 10"
+                        f"SELECT FROM BenchItem WHERE "  # nosec B608
+                        f"value > {random.randint(1, 500)} LIMIT 10"  # nosec B311
                     ),
                 },
                 timeout=30,
@@ -626,8 +635,8 @@ def test_http_api_access_pattern(cleanup_test_dirs):
                 json={
                     "language": "sql",
                     "command": (
-                        f"UPDATE BenchItem SET value = {random.randint(1, 1000)} "
-                        f"WHERE id = {random.randint(0, max(1, i-1))}"
+                        f"UPDATE BenchItem SET value = {random.randint(1, 1000)} "  # nosec B608 B311
+                        f"WHERE id = {random.randint(0, max(1, i-1))}"  # nosec B311
                     ),
                 },
                 timeout=30,
@@ -650,8 +659,8 @@ def test_http_api_access_pattern(cleanup_test_dirs):
                 json={
                     "language": "sql",
                     "command": (
-                        f"SELECT FROM BenchItem WHERE name LIKE "
-                        f"'%{random.randint(0, 9)}%' ORDER BY value DESC LIMIT 5"
+                        f"SELECT FROM BenchItem WHERE name LIKE "  # nosec B608
+                        f"'%{random.randint(0, 9)}%' ORDER BY value DESC LIMIT 5"  # nosec B311
                     ),
                 },
                 timeout=30,
@@ -687,21 +696,21 @@ def test_http_api_access_pattern(cleanup_test_dirs):
                 db.command(
                     "sql",
                     f"INSERT INTO BenchItem SET id = {i}, "
-                    f"value = {random.randint(1, 1000)}, name = 'Item {i}'",
+                    f"value = {random.randint(1, 1000)}, name = 'Item {i}'",  # nosec B311 B608
                 )
         elif op_type == 1:  # Query with filter
             result = db.query(
                 "sql",
-                f"SELECT FROM BenchItem WHERE "
-                f"value > {random.randint(1, 500)} LIMIT 10",
+                f"SELECT FROM BenchItem WHERE "  # nosec B608
+                f"value > {random.randint(1, 500)} LIMIT 10",  # nosec B311
             )
             list(result)  # Consume results
         elif op_type == 2:  # Update
             with db.transaction():
                 db.command(
                     "sql",
-                    f"UPDATE BenchItem SET value = {random.randint(1, 1000)} "
-                    f"WHERE id = {random.randint(0, max(1, i-1))}",
+                    f"UPDATE BenchItem SET value = {random.randint(1, 1000)} "  # nosec B608 B311
+                    f"WHERE id = {random.randint(0, max(1, i-1))}",  # nosec B311
                 )
         elif op_type == 3:  # Aggregation query
             result = db.query(
@@ -712,8 +721,8 @@ def test_http_api_access_pattern(cleanup_test_dirs):
         else:  # Complex query
             result = db.query(
                 "sql",
-                f"SELECT FROM BenchItem WHERE name LIKE "
-                f"'%{random.randint(0, 9)}%' ORDER BY value DESC LIMIT 5",
+                f"SELECT FROM BenchItem WHERE name LIKE "  # nosec B608
+                f"'%{random.randint(0, 9)}%' ORDER BY value DESC LIMIT 5",  # nosec B311
             )
             list(result)
 
