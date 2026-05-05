@@ -45,7 +45,7 @@ def cleanup_test_dirs():
             if server.is_started():
                 server.stop()
         except Exception:
-            pass
+            pass  # nosec B110 - best-effort teardown after JVM may be down
 
     # Give servers time to release locks
     time.sleep(0.5)
@@ -55,7 +55,7 @@ def cleanup_test_dirs():
             try:
                 shutil.rmtree(path, ignore_errors=True)
             except Exception:
-                pass
+                pass  # nosec B110 - best-effort temp cleanup
 
 
 def test_server_pattern_recommended(cleanup_test_dirs):
@@ -685,7 +685,7 @@ def test_http_api_access_pattern(cleanup_test_dirs):
     try:
         db.command("sql", "CREATE DOCUMENT TYPE BenchItem")
     except Exception:
-        pass  # Already exists
+        pass  # nosec B110 - type may already exist
 
     # Same mixed operations
     for i in range(num_operations):

@@ -39,7 +39,7 @@ def _path_query_or_skip(db, select_statement):
     LET $src = (SELECT FROM Node WHERE name = 'A' LIMIT 1);
     LET $dst = (SELECT FROM Node WHERE name = 'D' LIMIT 1);
     {select_statement}
-    """
+    """  # nosec B608
 
     try:
         result = db.command("sqlscript", script)

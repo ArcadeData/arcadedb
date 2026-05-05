@@ -517,8 +517,7 @@ class TestVectorSQL:
             # Should return list of RIDs or similar
             assert len(res) > 0
         except Exception:
-            # Maybe it expects type name?
-            pass
+            pass  # nosec B110 - best-effort probe; index API may expect type name instead
 
     def test_vector_neighbors_accepts_parameterized_index_and_vector(self, test_db):
         """SQL vectorNeighbors should accept bound index and vector parameters."""

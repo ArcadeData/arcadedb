@@ -79,7 +79,7 @@ class TestVectorParams:
                 # Try getter
                 val = metadata.isStoreVectorsInGraph()
             except Exception:
-                pass
+                pass  # nosec B110 - best-effort introspection of Java metadata object
 
         if val is None:
             # Try inspecting the string representation as a fallback for verification

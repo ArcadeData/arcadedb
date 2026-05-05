@@ -142,7 +142,7 @@ def sample_db(temp_db_path):
                     TO (SELECT FROM Movie WHERE movieId = {movie_id})
                     SET rating = {rating_val},
                         timestamp = {timestamp + i * 3600},
-                        review = '{review}'""",
+                        review = '{review}'""",  # nosec B608
             )
 
         # Create 30 ActedIn edges (actors in movies)
@@ -157,7 +157,7 @@ def sample_db(temp_db_path):
                 f"""CREATE EDGE ActedIn
                     FROM (SELECT FROM Actor WHERE actorId = {actor_id})
                     TO (SELECT FROM Movie WHERE movieId = {movie_id})
-                    SET role = '{role}', year = {year}""",
+                    SET role = '{role}', year = {year}""",  # nosec B608
             )
 
         # Create 15 Follows edges (users following each other)
@@ -169,7 +169,7 @@ def sample_db(temp_db_path):
                     "sql",
                     f"""CREATE EDGE Follows
                         FROM (SELECT FROM User WHERE userId = {from_user})
-                        TO (SELECT FROM User WHERE userId = {to_user})""",
+                        TO (SELECT FROM User WHERE userId = {to_user})""",  # nosec B608
                 )
 
         # Create 10 log entries with different levels
@@ -882,7 +882,7 @@ class TestAllDataTypes:
                 if db:
                     db.close()
             except Exception:
-                pass  # Database already closed or error during close
+                pass  # nosec B110 - best-effort teardown after JVM may be down
 
 
 if __name__ == "__main__":

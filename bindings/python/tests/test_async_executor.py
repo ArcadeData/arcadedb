@@ -105,7 +105,7 @@ def test_async_executor_pending_and_processing_flags(temp_db):
             if async_exec._java_async.waitCompletion(0):
                 break
         except Exception:
-            pass
+            pass  # nosec B110 - best-effort teardown after JVM may be down
 
         time.sleep(0.01)
 

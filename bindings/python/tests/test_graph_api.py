@@ -301,7 +301,9 @@ def test_wrapper_delete_method(temp_db_path):
         # Delete using wrapper
         with db.transaction():
             # Use SQL DELETE for reliable deletion of query results
-            db.command("sql", f"DELETE FROM TempNode WHERE @rid = {node_id}")
+            db.command(
+                "sql", f"DELETE FROM TempNode WHERE @rid = {node_id}"  # nosec B608
+            )
 
         # Verify it's gone
         results_after = list(db.query("sql", "SELECT FROM TempNode"))
@@ -479,7 +481,8 @@ def test_edge_delete_leaves_vertices(temp_db_path):
         # Verify specific vertices still exist
         nodes = list(
             db.query(
-                "sql", f"SELECT FROM Node WHERE @rid = {node1_id} OR @rid = {node2_id}"
+                "sql",
+                f"SELECT FROM Node WHERE @rid = {node1_id} OR @rid = {node2_id}",  # nosec B608
             )
         )
         assert len(nodes) == 2
@@ -503,7 +506,9 @@ def test_document_delete_sql(temp_db_path):
 
         # Delete using SQL
         with db.transaction():
-            db.command("sql", f"DELETE FROM `Record` WHERE @rid = {doc_id}")
+            db.command(
+                "sql", f"DELETE FROM `Record` WHERE @rid = {doc_id}"  # nosec B608
+            )
 
         # Verify deleted
         docs_after = list(db.query("sql", "SELECT FROM `Record`"))
