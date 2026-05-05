@@ -20,6 +20,8 @@ package com.arcadedb.graph;
 
 import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Transaction;
@@ -130,8 +132,28 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   @Override
   public MutableEdge set(final String name, final Object value) {
-    super.set(name, value);
-    return this;
+    if ("@in".equals(name)) {
+      final RID newIn = toRID(value);
+      if (newIn == null)
+        throw new IllegalArgumentException("Cannot set @in to null: edges require both endpoints");
+      if (rid != null && !newIn.equals(this.in) && database instanceof DatabaseInternal dbInt)
+        dbInt.getGraphEngine().moveEdge(this, Vertex.DIRECTION.IN, newIn);
+      else
+        this.in = newIn;
+      dirty = true;
+      return this;
+    } else if ("@out".equals(name)) {
+      final RID newOut = toRID(value);
+      if (newOut == null)
+        throw new IllegalArgumentException("Cannot set @out to null: edges require both endpoints");
+      if (rid != null && !newOut.equals(this.out) && database instanceof DatabaseInternal dbInt)
+        dbInt.getGraphEngine().moveEdge(this, Vertex.DIRECTION.OUT, newOut);
+      else
+        this.out = newOut;
+      dirty = true;
+      return this;
+    }
+    return (MutableEdge) super.set(name, value);
   }
 
   @Override
@@ -194,6 +216,19 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   public void setIn(final RID in) {
     this.in = in;
+  }
+
+  void updateIdentity(final RID newRid, final RID newOut, final RID newIn) {
+    this.rid = newRid;
+    this.out = newOut;
+    this.in = newIn;
+    this.buffer = null;
+  }
+
+  private static RID toRID(final Object value) {
+    if (value instanceof RID r) return r;
+    if (value instanceof Identifiable i) return i.getIdentity();
+    return null;
   }
 
   @Override
