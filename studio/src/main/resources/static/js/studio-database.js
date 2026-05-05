@@ -180,6 +180,57 @@ function initSessionFromStorage() {
   return false;
 }
 
+// Re-entry guard: when many AJAX calls are pending and the server has lost the
+// session (typically after a server restart), every one of them returns 401.
+// Without the flag we'd reset the UI multiple times and stack notifications.
+var sessionExpirationHandled = false;
+
+// Returns true if the URL points at the local API and uses our session token,
+// so a 401 from there means our token is no longer valid (server restarted, session
+// removed or token expired). External URLs (datasets repo, etc.) are ignored.
+function isLocalApiUrl(url) {
+  if (!url) return false;
+  if (url.indexOf("://") !== -1) return false;
+  return url.indexOf("api/v1/") === 0 || url.indexOf("/api/v1/") !== -1;
+}
+
+function handleSessionExpired() {
+  if (sessionExpirationHandled) return;
+  if (!globalCredentials) return;
+
+  sessionExpirationHandled = true;
+
+  clearSession();
+  globalCredentials = null;
+  globalUsername = null;
+
+  $("#studioPanel").hide();
+  $("#welcomePanel").hide();
+
+  if (typeof showLoginPopup === "function")
+    showLoginPopup();
+
+  if (typeof globalNotify === "function")
+    globalNotify("Session Expired", "Your session has expired. Please log in again.", "warning");
+
+  // Allow the next 401 (after the user logs back in) to be handled again.
+  setTimeout(function () { sessionExpirationHandled = false; }, 2000);
+}
+
+// Global jQuery handler: any 401 returned by an authenticated API call
+// (other than login/logout, which 401 for legitimate reasons) means the
+// session is no longer valid. Reset the UI back to the login screen.
+$(document).ajaxError(function (event, jqXHR, ajaxSettings) {
+  if (!jqXHR || jqXHR.status !== 401) return;
+
+  var url = (ajaxSettings && ajaxSettings.url) || "";
+  if (!isLocalApiUrl(url)) return;
+  if (url.indexOf("api/v1/login") !== -1) return;
+  if (url.indexOf("api/v1/logout") !== -1) return;
+
+  handleSessionExpired();
+});
+
 function login() {
   var userName = $("#inputUserName").val().trim();
   if (userName.length == 0) {
@@ -438,19 +489,10 @@ function updateDatabases(callback, preferSelected) {
         responseText: jqXHR.responseText
       });
 
-      // Handle session expiration (401 = invalid/expired token)
-      if (jqXHR.status === 401) {
-        console.log("Session expired or invalid, clearing session");
-        clearSession();
-        globalCredentials = null;
-        globalUsername = null;
-
-        // Silently redirect to login - no error popup needed
-        $("#studioPanel").hide();
-        $("#welcomePanel").show();
-        showLoginPopup();
+      // 401 is already handled by the global ajaxError hook (handleSessionExpired).
+      // Just stop here so no error toast is shown for the expired-session case.
+      if (jqXHR.status === 401)
         return;
-      }
 
       let errorMessage = "Failed to fetch databases";
       if (jqXHR.status === 403) {
@@ -622,6 +664,11 @@ function importWithSSE(command, onComplete, onError) {
     },
     body: JSON.stringify({ command: command })
   }).then(function(response) {
+    if (response.status === 401) {
+      handleSessionExpired();
+      onError("Session expired");
+      return;
+    }
     if (!response.ok) {
       response.text().then(function(t) { onError(t); });
       return;

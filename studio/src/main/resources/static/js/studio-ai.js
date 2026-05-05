@@ -396,6 +396,12 @@ function aiSendMessageStreaming(db, message) {
     signal: controller.signal
   })
   .then(function(response) {
+    if (response.status === 401) {
+      if (typeof handleSessionExpired === "function") handleSessionExpired();
+      var err = new Error("Session expired");
+      err.status = 401;
+      throw err;
+    }
     if (!response.ok) {
       return response.text().then(function(text) {
         var err = new Error("HTTP " + response.status);
