@@ -203,6 +203,9 @@ public class ArcadeDBServer {
       new JvmGcMetrics().bindTo(Metrics.globalRegistry);
       new ProcessorMetrics().bindTo(Metrics.globalRegistry);
       new JvmThreadMetrics().bindTo(Metrics.globalRegistry);
+      // Engine executor pools (query parallelism + sparse-vector scoring) - exposes
+      // arcadedb.executor.pool.{size,active,...} gauges tagged with pool=<name>.
+      new com.arcadedb.server.monitor.PoolMetrics().bindTo(Metrics.globalRegistry);
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_LOGGING)) {
         LogManager.instance().log(this, Level.INFO, "- Logging metrics enabled...");

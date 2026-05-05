@@ -376,10 +376,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
     LogManager.instance().log(this, Level.INFO,
         "Snapshot installation requested from leader (firstLogIndex=%s). Starting full resync...", firstTermIndexInLog);
 
-    // Runs on the common ForkJoinPool via supplyAsync(). Apache-ratis uses a dedicated pool
-    // to avoid blocking Ratis internal threads. The current approach is safe because
-    // supplyAsync() returns immediately and the snapshot download runs on a separate thread.
-    // However, if the common pool is exhausted, new snapshot downloads may be delayed.
+    // Runs on the JDK common ForkJoinPool via supplyAsync(). Apache-ratis uses a dedicated pool
+    // to avoid blocking Ratis internal threads, so this offload IS necessary - we must not run
+    // the snapshot download synchronously on the caller. The remaining concern is the common
+    // pool itself: it is shared with user-supplied scripts (Gremlin, Polyglot), and a long
+    // snapshot download could starve user code under exceptional conditions. Snapshot installs
+    // are rare (only on follower (re)joining) and serialised inside Ratis, so this is operationally
+    // tolerable today. See QueryEngineManager class javadoc - "No JDK common ForkJoinPool" rule -
+    // for the migration target; the cleanup item is to fork onto a dedicated executor (sized via
+    // a future {@code arcadedb.haSnapshotInstallThreads} knob) once we add one.
     return CompletableFuture.supplyAsync(() -> {
       try {
         final RaftPeerId leaderId = RaftPeerId.valueOf(

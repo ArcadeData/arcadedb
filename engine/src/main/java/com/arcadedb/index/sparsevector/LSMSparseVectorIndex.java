@@ -21,6 +21,8 @@ package com.arcadedb.index.sparsevector;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.TransactionContext;
+import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.Index;
@@ -39,33 +41,37 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.PriorityQueue;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
- * Sparse vector index implementation backed by an LSM-Tree as a posting-list inverted index.
+ * Sparse vector index backed by the v2 {@link SparseVectorEngine} storage backend.
  * <p>
- * Storage model: the underlying LSM-Tree uses a composite key {@code (int dim_id, RID rid, float weight)}
- * with the record RID as the value. For each non-zero dimension of an inserted sparse vector, one posting
- * is added to the underlying index. The composite key sorts postings within a given dim by RID ascending,
- * which is the order required by WAND-style dynamic pruning (#4068). Top-K dot-product retrieval is a
- * document-at-a-time merge across per-dim cursors driven by a fixed-size min-heap; when a global per-dim
- * upper bound is available the algorithm prunes candidates that cannot enter the top-K.
+ * Storage model: an in-memory memtable + sealed {@code .sparseseg} segment files. Writes hit
+ * the memtable first; once it crosses a flush threshold (or the database is closed), the
+ * memtable is serialized as a new sealed segment. Background compaction merges small segments
+ * into larger ones via N-way merge with newest-source-wins precedence. Top-K retrieval is
+ * BlockMax-WAND DAAT (see {@link BmwScorer}); per-segment block-max metadata + skip lists
+ * make selective queries skip whole posting-list regions without decompressing them.
  * <p>
  * The wrapper requires two parallel array properties on the indexed type:
  * <ul>
- *   <li>An {@link Type#ARRAY_OF_INTEGERS} property holding the non-zero dimension ids</li>
- *   <li>An {@link Type#ARRAY_OF_FLOATS} property holding the corresponding weights</li>
+ *   <li>An {@link Type#ARRAY_OF_INTEGERS} property holding the non-zero dimension ids.</li>
+ *   <li>An {@link Type#ARRAY_OF_FLOATS} property holding the corresponding weights.</li>
  * </ul>
  * Both arrays must have the same length and dimension ids must be non-negative.
+ * <p>
+ * <b>Persistence layout.</b> The wrapper retains a thin {@link LSMTreeIndex} shell purely for
+ * IndexInternal compliance (file id, schema integration, lifecycle hooks). The shell never
+ * receives postings; all data lives in the engine's {@code .sparse-engine/} sibling directory.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -74,20 +80,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   private final LSMTreeIndex                 underlyingIndex;
   private       LSMSparseVectorIndexMetadata sparseMetadata;
   private       TypeIndex                    typeIndex;
-
-  // Per-dim upper bound on the weight of any single posting under that dim. Maintained as a
-  // monotonically non-decreasing approximation: `put` raises it, `remove` is a no-op (acceptable
-  // because WAND only requires `maxWeight` to be a valid upper bound, not the exact maximum).
-  //
-  // Concurrency: ConcurrentHashMap.merge(...) is atomic and lock-free under contention, so writers
-  // can update the per-dim bound from any thread without serializing on a shared monitor. The
-  // lazy-init flag and its companion lock protect the one-shot index scan that populates the cache
-  // on the first WAND query against a freshly-opened index; subsequent put()s keep it accurate
-  // without further synchronization.
-  private final ConcurrentHashMap<Integer, Float> dimMaxWeight            = new ConcurrentHashMap<>();
-  private volatile boolean                        dimMaxWeightInitialized = false;
-  // Dedicated monitor so the init double-check does not block ConcurrentHashMap operations.
-  private final Object                            dimMaxWeightInitLock    = new Object();
+  private final PaginatedSparseVectorEngine  engine;
 
   /**
    * Factory handler used by the schema to instantiate sparse vector indexes.
@@ -131,26 +124,24 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   public LSMSparseVectorIndex(final LSMTreeIndex index, final LSMSparseVectorIndexMetadata metadata) {
     this.underlyingIndex = index;
     this.sparseMetadata = metadata;
+    this.engine = openEngine(index);
   }
 
   /**
-   * Creation time.
-   * <p>
-   * Storage layout (chosen to enable WAND-style document-at-a-time pruning, see #4068):
-   * <pre>
-   *   key:   (int dim_id, RID rid, float weight)
-   *   value: rid
-   * </pre>
-   * Postings under a given dim are returned by the cursor in {@code RID} ascending order, which
-   * is the order WAND requires to advance per-dim cursors in lockstep. The weight is carried in
-   * the third key column so each posting is self-describing during the scan.
+   * Creation time. Allocates the LSM-Tree shell that holds the index's IndexInternal scaffolding
+   * and opens (or creates) the v2 sparse-vector engine in a sibling {@code .sparse-engine/}
+   * directory.
    */
   public LSMSparseVectorIndex(final DatabaseInternal database, final String name, final String filePath,
       final ComponentFile.MODE mode, final int pageSize, final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy,
       final LSMSparseVectorIndexMetadata metadata) {
     this.sparseMetadata = metadata;
+    // The underlying LSM-Tree is kept solely as a registration shell. Postings never enter it; the
+    // composite key types match the legacy MVP layout so prior databases that still hold an empty
+    // shell from before the v2 swap remain readable.
     this.underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode,
         new Type[] { Type.INTEGER, Type.LINK, Type.FLOAT }, pageSize, nullStrategy);
+    this.engine = openEngine(this.underlyingIndex);
   }
 
   @Override
@@ -161,17 +152,21 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   /**
    * Inserts a sparse vector for a record.
    * <p>
-   * Original call (from {@code DocumentIndexer}): {@code keys[0]} is an {@code int[]} of dimension ids
-   * and {@code keys[1]} is a {@code float[]} of weights. Each non-zero dimension is expanded to a
-   * separate {@code (dim_id, rid, weight)} posting on the underlying LSM-Tree.
+   * Original call (from {@code DocumentIndexer}): {@code keys[0]} is an {@code int[]} of dimension
+   * ids and {@code keys[1]} is a {@code float[]} of weights. Each non-zero dim is queued for the
+   * transaction or applied directly to the engine memtable depending on transaction status.
    * <p>
-   * Replay call (from {@code TransactionIndexContext} at commit time): the keys are already a single
-   * scalar posting {@code [Integer dim_id, RID rid, Float weight]} and are forwarded unchanged.
+   * Replay call (from {@code TransactionIndexContext} at commit time): the keys are an already
+   * expanded scalar posting {@code [Integer dim_id, RID rid, Float weight]} and are applied
+   * directly to the engine.
    */
   @Override
   public void put(final Object[] keys, final RID[] rids) {
+    if (rids == null || rids.length == 0)
+      return;
+
     if (!isOriginalCall(keys)) {
-      underlyingIndex.put(keys, rids);
+      applyScalarPostingFromReplay(keys, true);
       return;
     }
 
@@ -182,13 +177,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     if (indices.length != values.length)
       throw new IndexException(
           "Sparse vector indices and weights must have the same length (got " + indices.length + " and " + values.length + ")");
-    if (rids == null || rids.length == 0)
-      return;
 
-    // When the index was created with an explicit `dimensions` cap (> 0), reject out-of-range
-    // dimension ids at write time so a misconfigured client doesn't silently store entries that
-    // can never be retrieved within the declared vocabulary. dimensions=0 leaves the index open
-    // ended (informational metadata only).
+    // dimensions=0 leaves the index open ended (informational metadata only).
     final int declaredDimensions = sparseMetadata != null ? sparseMetadata.dimensions : 0;
 
     for (int i = 0; i < indices.length; i++) {
@@ -202,35 +192,29 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       final float w = values[i];
       if (w == 0.0f)
         continue;
-      // Negative weights are rejected: WAND's per-dim `max_weight` upper bound is built via
-      // `Math.max(...)` on inserted weights and assumes non-negative values. A mix of negative
-      // and positive entries would yield a max that is no longer an upper bound on any single
-      // posting's contribution, and pruning would silently drop candidates that should rank.
-      // All standard sparse-retrieval models (BM25, SPLADE, BGE-M3, Cohere sparse) emit
-      // non-negative weights, so this is not a real constraint in practice.
-      if (w < 0.0f || Float.isNaN(w))
+      // BMW scoring assumes weights are non-negative finite numbers (the per-dim block-max upper
+      // bound is the maximum stored weight, used as a pruning ceiling). Reject anything else at
+      // write time so a misconfigured client cannot silently corrupt scoring.
+      if (w < 0.0f || Float.isNaN(w) || Float.isInfinite(w))
         throw new IndexException(
-            "Sparse vector weight must be a non-negative finite number, found: " + w
-                + " at dimension " + dim);
+            "Sparse vector weight must be a non-negative finite number, found: " + w + " at dimension " + dim);
+
       for (final RID rid : rids)
-        underlyingIndex.put(new Object[] { dim, rid, w }, new RID[] { rid });
-      // ConcurrentHashMap.merge is atomic; no external synchronization needed.
-      dimMaxWeight.merge(dim, w, Math::max);
+        queueOrApply(true, dim, rid, w);
     }
   }
 
   @Override
   public void remove(final Object[] keys) {
     if (!isOriginalCall(keys)) {
-      underlyingIndex.remove(keys);
+      applyScalarPostingFromReplay(keys, false);
       return;
     }
-    // The composite-key layout `(dim_id, rid, weight)` makes it impossible to delete the right
-    // postings without the owning RID, so the no-RID overload cannot do useful work. Document
-    // deletion in ArcadeDB always goes through DocumentIndexer.removeFromIndex(record), which
-    // invokes the (rid)-aware overload below; we don't expect this path to fire in practice.
-    // Logging at WARNING so an unexpected caller (e.g. a future type-drop refactor) does not
-    // silently lose entries.
+    // The wrapper's mandatory shape `(int[] indices, float[] values)` carries no RID, so we have
+    // no way to identify which postings to retract. Document deletion in ArcadeDB always goes
+    // through DocumentIndexer.removeFromIndex(record), which invokes the (rid)-aware overload
+    // below; this branch is logged at WARNING so an unexpected caller (a future refactor of the
+    // type-drop path, e.g.) does not silently leave stale entries behind.
     LogManager.instance().log(this, Level.WARNING,
         "%s.remove(keys) called without a RID; sparse vector index needs the per-RID variant. "
             + "No postings were removed. Caller should switch to remove(keys, rid).", null, getName());
@@ -238,17 +222,22 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
+    if (rid == null)
+      return;
     if (!isOriginalCall(keys)) {
-      underlyingIndex.remove(keys, rid);
+      // Replay path. {@code keys[1]} already carries the per-posting RID (the same value Raft
+      // serialized into the WAL), so {@code applyScalarPostingFromReplay} re-extracts it from
+      // there to keep the original/replay paths shape-identical. The {@code rid} parameter is
+      // intentionally unused on this branch; the underlying LSM-Tree shell never sees these
+      // postings, so there is no inner remove() to forward it to.
+      applyScalarPostingFromReplay(keys, false);
       return;
     }
 
     final int[]   indices = toIntArray(keys[0]);
     final float[] values  = toFloatArray(keys[1]);
-    if (indices == null || values == null || rid == null)
+    if (indices == null || values == null)
       return;
-    // Mirror put()'s length check: silently truncating on mismatch would leak postings on the
-    // longer side and is impossible to diagnose after the fact.
     if (indices.length != values.length)
       throw new IndexException(
           "Sparse vector indices and weights must have the same length on remove (got "
@@ -258,7 +247,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     for (int i = 0; i < indices.length; i++) {
       if (values[i] == 0.0f)
         continue;
-      underlyingIndex.remove(new Object[] { indices[i], actualRid, values[i] }, actualRid);
+      queueOrApply(false, indices[i], actualRid, values[i]);
     }
   }
 
@@ -272,9 +261,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * @param queryIndices non-negative dimension ids of the query
    * @param queryValues  weights matching {@code queryIndices}
    * @param k            number of neighbors to return; must be > 0
-   * @param allowedRIDs  optional whitelist; null means no restriction
+   * @param allowedRIDs  optional whitelist; null means no restriction. Applied as a post-filter,
+   *                     so over-fetching by a small factor mitigates fewer-than-K results when
+   *                     the whitelist is selective.
    *
-   * @return ordered list of (RID, score) pairs from highest to lowest score, capped at {@code k}
+   * @return ordered list of (RID, score) pairs from highest to lowest score, capped at {@code k}.
    */
   public List<RidScore> topK(final int[] queryIndices, final float[] queryValues, final int k, final Set<RID> allowedRIDs) {
     if (queryIndices == null || queryValues == null)
@@ -288,15 +279,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     final boolean useIDF = sparseMetadata != null
         && LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(sparseMetadata.modifier);
 
-    // Pre-compute effective query weights. Under IDF, this folds the per-dimension IDF into the
-    // query weight so the scoring inner loop stays a plain dot product. df is counted via a
-    // dedicated scan per query dim (acceptable for the MVP - the WAND follow-up #4068 maintains
-    // df incrementally to avoid the extra pass). Within a single topK call we cache df per dim so
-    // duplicate dims in the query don't re-scan, and so future code paths that re-derive idf
-    // mid-query don't multiply the cost.
     final float[] effectiveWeights = new float[queryValues.length];
     if (useIDF) {
       final long n = totalDocuments();
+      // df is computed against engine.totalPostings under each dim. Cached per dim within this
+      // call so duplicate query dims don't recompute, and so future code paths that re-derive idf
+      // mid-query don't multiply the cost.
       final HashMap<Integer, Long> dfCache = new HashMap<>();
       for (int i = 0; i < queryIndices.length; i++) {
         final int qDim = queryIndices[i];
@@ -317,287 +305,38 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       System.arraycopy(queryValues, 0, effectiveWeights, 0, queryValues.length);
     }
 
-    return wandTopK(queryIndices, effectiveWeights, k, allowedRIDs);
-  }
+    // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning
+    // fewer than K items because the top-scored RIDs were filtered out. The fixed cap keeps
+    // worst-case work bounded even when the filter is very selective.
+    final int fetchK = (allowedRIDs == null || allowedRIDs.isEmpty()) ? k : Math.min(k * 8, 100_000);
 
-  /**
-   * Document-at-a-time top-K with WAND pivot-based skipping.
-   * <p>
-   * Per query dim {@code d} an upper bound {@code u[d] = effW[d] * dimMaxWeight[d]} is precomputed.
-   * Each iteration sorts the live cursors by current RID ascending, finds the pivot (smallest cursor
-   * index whose prefix sum of {@code u[]} reaches the current top-K threshold), and either scores the
-   * pivot's RID (when cursors[0] is already aligned with the pivot) or skips cursors before the pivot
-   * forward to the pivot's RID. When no pivot exists, no remaining document can enter the top-K and
-   * the loop exits early.
-   */
-  private List<RidScore> wandTopK(final int[] queryIndices, final float[] effW, final int k, final Set<RID> allowedRIDs) {
-    final int n = queryIndices.length;
-
-    final DimCursor[] cursors = new DimCursor[n];
-    int liveCount = 0;
-
-    // Allocation phase: a DimCursor that exhausts immediately still gets closed before we drop
-    // the reference, so an empty-dim doesn't leak its initial range cursor.
+    final List<RidScore> raw;
     try {
-      for (int i = 0; i < n; i++) {
-        final int qDim = queryIndices[i];
-        if (qDim < 0)
-          throw new IndexException("Query dimension must be >= 0, found: " + qDim);
-        if (effW[i] == 0.0f)
-          continue;
-        final float dimMax = getMaxWeight(qDim);
-        if (dimMax == 0.0f)
-          continue;
-        final DimCursor c = new DimCursor(underlyingIndex, qDim, effW[i], dimMax);
-        if (c.exhausted)
-          c.close();
-        else
-          cursors[liveCount++] = c;
-      }
-
-      if (liveCount == 0)
-        return new ArrayList<>(0);
-
-      return runWandLoop(cursors, liveCount, k, allowedRIDs);
-    } finally {
-      // Close every DimCursor that was kept alive (active or exhausted but not yet compacted out)
-      // so the underlying LSM page cursors release their references regardless of how the loop
-      // terminates: normal exit, threshold reached, or exception thrown mid-scoring.
-      for (int i = 0; i < cursors.length; i++) {
-        final DimCursor c = cursors[i];
-        if (c != null) {
-          try {
-            c.close();
-          } catch (final RuntimeException ignored) {
-            // best-effort cleanup; never let a close exception mask the real error path
-          }
-          cursors[i] = null;
-        }
-      }
+      raw = engine.topK(queryIndices, effectiveWeights, fetchK);
+    } catch (final IOException e) {
+      throw new IndexException("Sparse vector top-K failed", e);
     }
-  }
 
-  /**
-   * The WAND scoring loop, factored out of {@link #wandTopK} so the surrounding
-   * {@code try / finally} can guarantee cursor cleanup.
-   */
-  private List<RidScore> runWandLoop(final DimCursor[] cursors, int liveCount, final int k, final Set<RID> allowedRIDs) {
-    // Min-heap of (rid, score) keyed by score ASC, capped at K. The minimum element is always at
-    // the head, so the K-th best score (= threshold) is heap.peek() once heap is full.
-    final PriorityQueue<RidScore> heap = new PriorityQueue<>(k, Comparator.comparingDouble(r -> r.score));
-    float threshold = Float.NEGATIVE_INFINITY;
+    if (allowedRIDs == null || allowedRIDs.isEmpty())
+      return raw.size() <= k ? raw : raw.subList(0, k);
 
-    while (liveCount > 0) {
-      // Cursors are mostly already sorted between iterations: at most a few cursors moved during
-      // the previous step, so insertion sort runs in roughly O(n) on near-sorted input. With
-      // typical query nnz around 10-30, this beats Arrays.sort's O(n log n) constant factor.
-      // BlockMax-WAND in #4068 will replace this loop with a heap-keyed-by-current-RID, removing
-      // the resort altogether.
-      sortCursorsByCurrentRid(cursors, liveCount);
-
-      // Find pivot index: smallest i where prefix sum of upperBounds[0..i] reaches threshold.
-      float prefix = 0;
-      int pivot = -1;
-      for (int i = 0; i < liveCount; i++) {
-        prefix += cursors[i].upperBound;
-        if (prefix > threshold) {
-          pivot = i;
-          break;
-        }
-      }
-      if (pivot == -1)
+    final List<RidScore> out = new ArrayList<>(Math.min(k, raw.size()));
+    for (final RidScore r : raw) {
+      if (!allowedRIDs.contains(r.rid()))
+        continue;
+      out.add(r);
+      if (out.size() == k)
         break;
-
-      final RID pivotRid = cursors[pivot].currentRid;
-
-      if (cursors[0].currentRid.compareTo(pivotRid) == 0) {
-        // Score: sum contributions from every cursor whose currentRid == pivotRid.
-        float score = 0.0f;
-        for (int i = 0; i < liveCount; i++) {
-          if (cursors[i].currentRid.compareTo(pivotRid) == 0)
-            score += cursors[i].queryWeight * cursors[i].currentWeight;
-          else
-            break; // sorted, so once we miss alignment we stop
-        }
-
-        if (allowedRIDs == null || allowedRIDs.contains(pivotRid)) {
-          if (heap.size() < k) {
-            heap.offer(new RidScore(pivotRid, score));
-            if (heap.size() == k)
-              threshold = heap.peek().score;
-          } else if (score > threshold) {
-            heap.poll();
-            heap.offer(new RidScore(pivotRid, score));
-            threshold = heap.peek().score;
-          }
-        }
-
-        // Advance every cursor that was on pivotRid.
-        for (int i = 0; i < liveCount; i++) {
-          if (cursors[i].currentRid.compareTo(pivotRid) == 0)
-            cursors[i].advance();
-          else
-            break;
-        }
-      } else {
-        // Skip cursors strictly below pivotRid forward to pivotRid; they can never reach threshold
-        // alone before then.
-        for (int i = 0; i < pivot; i++) {
-          if (cursors[i].currentRid.compareTo(pivotRid) < 0)
-            cursors[i].seekTo(pivotRid);
-        }
-      }
-
-      // Compact: drop exhausted cursors. Close them eagerly so their underlying page-cursor
-      // resources release immediately rather than waiting for the outer finally block.
-      int newLive = 0;
-      for (int i = 0; i < liveCount; i++) {
-        if (!cursors[i].exhausted)
-          cursors[newLive++] = cursors[i];
-        else
-          cursors[i].close();
-      }
-      // Null the trailing slots so the outer finally block does not double-close.
-      for (int i = newLive; i < liveCount; i++)
-        cursors[i] = null;
-      liveCount = newLive;
     }
-
-    final List<RidScore> result = new ArrayList<>(heap);
-    result.sort((a, b) -> Float.compare(b.score, a.score));
-    return result;
+    return out;
   }
 
-  /**
-   * Returns the per-dim upper bound used by WAND. Lazily initializes the cache on first call by
-   * scanning the underlying index once. Subsequent inserts keep it accurate via {@link #put};
-   * deletes leave the bound conservatively high (still a valid upper bound).
-   * <p>
-   * Uses double-checked locking on a dedicated monitor: the volatile {@code dimMaxWeightInitialized}
-   * flag is read on the fast path with no lock, and only the first thread reaching a fresh index
-   * pays the monitor cost. Writers concurrent with the init scan are still safe because
-   * {@link ConcurrentHashMap#merge} is monotone and atomic; the worst case is the init scan and a
-   * concurrent {@code put} both updating the same key, in which case {@link Math#max} ensures the
-   * later read sees the higher of the two values.
-   */
-  private float getMaxWeight(final int dim) {
-    if (!dimMaxWeightInitialized) {
-      synchronized (dimMaxWeightInitLock) {
-        if (!dimMaxWeightInitialized) {
-          initializeMaxWeights();
-          dimMaxWeightInitialized = true;
-        }
-      }
-    }
-    return dimMaxWeight.getOrDefault(dim, 0.0f);
-  }
-
-  private void initializeMaxWeights() {
-    final IndexCursor cursor = underlyingIndex.iterator(true);
+  /** Counts live postings under one dimension via the engine's merged cursor. O(df). */
+  private long countPostings(final int dim) {
     try {
-      while (cursor.hasNext()) {
-        cursor.next();
-        final Object[] keys = cursor.getKeys();
-        if (keys == null || keys.length < 3)
-          continue;
-        if (!(keys[0] instanceof Number nDim) || !(keys[2] instanceof Number nW))
-          continue;
-        dimMaxWeight.merge(nDim.intValue(), nW.floatValue(), Math::max);
-      }
-    } finally {
-      cursor.close();
-    }
-  }
-
-  /**
-   * Per-dim cursor used by the WAND scoring loop. Holds the latest {@code (rid, weight)} of an
-   * underlying range scan within a single dimension and exposes {@code advance()} and
-   * {@code seekTo(rid)} primitives.
-   * <p>
-   * Resource management: every cursor allocated via {@link LSMTreeIndex#range} may hold page
-   * references inside the LSM-Tree (see {@code LSMTreeIndexCursor.close()} which releases page
-   * cursor handles). {@link #close()} closes the active cursor; {@link #seekTo} closes the
-   * previous cursor before allocating a new one; the WAND loop closes every {@link DimCursor}
-   * before returning.
-   */
-  private static final class DimCursor implements AutoCloseable {
-    final LSMTreeIndex underlying;
-    final int          dim;
-    final float        queryWeight;
-    final float        upperBound;
-
-    IndexCursor cursor;
-    RID         currentRid;
-    float       currentWeight;
-    boolean     exhausted;
-
-    DimCursor(final LSMTreeIndex underlying, final int dim, final float queryWeight, final float dimMax) {
-      this.underlying = underlying;
-      this.dim = dim;
-      this.queryWeight = queryWeight;
-      this.upperBound = queryWeight * dimMax;
-      this.cursor = underlying.range(true, new Object[] { dim }, true, new Object[] { dim }, true);
-      advance();
-    }
-
-    void advance() {
-      while (cursor.hasNext()) {
-        final Identifiable next = cursor.next();
-        if (next == null)
-          continue;
-        final Object[] keys = cursor.getKeys();
-        if (keys == null || keys.length < 3)
-          continue;
-        if (!(keys[0] instanceof Number nDim) || nDim.intValue() != dim)
-          continue;
-        if (!(keys[2] instanceof Number nW))
-          continue;
-        currentRid = next.getIdentity();
-        currentWeight = nW.floatValue();
-        exhausted = false;
-        return;
-      }
-      exhausted = true;
-      currentRid = null;
-      currentWeight = 0.0f;
-    }
-
-    void seekTo(final RID target) {
-      // Release the previous cursor's resources (page handles in LSMTreeIndexCursor) before
-      // replacing it; otherwise every WAND skip leaks one page-cursor's worth of state.
-      if (cursor != null)
-        cursor.close();
-      // Upper bound { dim } is intentionally a prefix: LSMTreeIndexAbstract.compareKeys() compares
-      // only up to min(key1.length, key2.length) columns, so a posting whose key starts with
-      // `dim` compares equal to `[dim]` and is included by an inclusive upper bound. The effect
-      // is equivalent to "to the end of dim". A regression test in LSMSparseVectorIndexSeekTest
-      // pins this behaviour so a future comparator change cannot silently drop postings.
-      cursor = underlying.range(true, new Object[] { dim, target }, true, new Object[] { dim }, true);
-      advance();
-    }
-
-    @Override
-    public void close() {
-      if (cursor != null) {
-        cursor.close();
-        cursor = null;
-      }
-    }
-  }
-
-  /**
-   * In-place insertion sort of the live prefix of {@code cursors} by {@code currentRid} ascending.
-   * Cheaper than {@link Arrays#sort} for the small, mostly-sorted arrays the WAND loop produces.
-   */
-  private static void sortCursorsByCurrentRid(final DimCursor[] cursors, final int liveCount) {
-    for (int i = 1; i < liveCount; i++) {
-      final DimCursor key = cursors[i];
-      int j = i - 1;
-      while (j >= 0 && cursors[j].currentRid.compareTo(key.currentRid) > 0) {
-        cursors[j + 1] = cursors[j];
-        j--;
-      }
-      cursors[j + 1] = key;
+      return engine.countDim(dim);
+    } catch (final IOException e) {
+      throw new IndexException("Failed to count postings for dim " + dim, e);
     }
   }
 
@@ -613,37 +352,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Counts the postings under a single dimension by iterating the underlying LSM-Tree range.
-   * O(df) per call: scans every posting for {@code qDim} once. Bounded by the size of one posting
-   * list, but for high-frequency dims (corpus stopwords) this dominates the IDF preprocessing
-   * step. The {@link #topK} caller caches the result per (dim, query) so duplicate dims do not
-   * re-scan, and incremental df maintenance is tracked as part of the WAND scaling work in
-   * #4068, which removes this scan entirely.
-   */
-  private long countPostings(final int qDim) {
-    long df = 0;
-    final IndexCursor cursor = underlyingIndex.range(true,
-        new Object[] { qDim }, true,
-        new Object[] { qDim }, true);
-    try {
-      while (cursor.hasNext()) {
-        cursor.next();
-        df++;
-      }
-    } finally {
-      cursor.close();
-    }
-    return df;
-  }
-
-  /**
    * Total number of documents in the indexed type, used as {@code N} in the IDF formula.
-   * <p>
-   * Called once per {@code topK} in IDF mode (not once per query dim), so the overhead is bounded.
-   * {@code countType} sums each non-polymorphic bucket's cached entry count under a read lock; in
-   * the typical few-buckets case this is on the order of a handful of long reads plus the lock
-   * round-trip. If profiling later shows this is hot, the count can be cached on the wrapper with
-   * invalidation on put / remove.
    */
   private long totalDocuments() {
     final String typeName = getTypeName();
@@ -653,7 +362,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Read-only handle to the wrapped LSM-Tree, useful for low-level inspection and testing.
+   * Read-only handle to the wrapped LSM-Tree shell. The shell is a registration scaffolding only;
+   * it does not contain postings - those live in {@link SparseSegmentComponent} files owned by
+   * the engine.
    */
   public LSMTreeIndex getUnderlyingIndex() {
     return underlyingIndex;
@@ -661,6 +372,64 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   public LSMSparseVectorIndexMetadata getSparseMetadata() {
     return sparseMetadata;
+  }
+
+  public PaginatedSparseVectorEngine getEngine() {
+    return engine;
+  }
+
+  // --------------------------- internals ---------------------------
+
+  private static PaginatedSparseVectorEngine openEngine(final LSMTreeIndex shell) {
+    return new PaginatedSparseVectorEngine(shell.getMutableIndex().getDatabase(), shell.getName(), SegmentParameters.defaults());
+  }
+
+  /**
+   * Either queues the operation onto the active transaction (so it is applied at commit time
+   * along with all other index changes that participate in lock ordering and recovery), or
+   * applies it directly when no transaction is in flight.
+   * <p>
+   * <b>Memtable bounding.</b> The post-commit callback registered via
+   * {@link TransactionContext#addAfterCommitCallbackIfAbsent} fires once per transaction (keyed
+   * by index name) and asks the engine to flush iff the memtable has accumulated at least
+   * {@link PaginatedSparseVectorEngine#DEFAULT_MEMTABLE_FLUSH_THRESHOLD} postings. Without this
+   * hook a long bulk-load grows the memtable unbounded toward OOM; the threshold lets small
+   * individual commits coalesce into a single segment instead of producing one segment per
+   * commit. A clean shutdown still flushes via {@link #flush()} (called from
+   * {@code LocalDatabase.closeInternal}) regardless of the memtable size.
+   */
+  private void queueOrApply(final boolean add, final int dim, final RID rid, final float weight) {
+    final TransactionContext tx = underlyingIndex.getMutableIndex().getDatabase().getTransaction();
+    if (tx != null && tx.getStatus() == TransactionContext.STATUS.BEGUN) {
+      tx.addIndexOperation(this,
+          add ? TransactionIndexContext.IndexKey.IndexKeyOperation.ADD
+              : TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
+          new Object[] { dim, rid, weight }, rid);
+      tx.addAfterCommitCallbackIfAbsent("sparse-flush:" + getName(), engine::maybeFlush);
+      return;
+    }
+    if (add)
+      engine.put(dim, rid, weight);
+    else
+      engine.remove(dim, rid);
+  }
+
+  /** Apply a scalar posting (3-tuple {@code [dim, RID, weight]}) coming from commit replay. */
+  private void applyScalarPostingFromReplay(final Object[] keys, final boolean add) {
+    if (keys == null || keys.length < 2)
+      return;
+    if (!(keys[0] instanceof Number nDim))
+      return;
+    if (!(keys[1] instanceof RID rid))
+      return;
+    final int dim = nDim.intValue();
+    if (add) {
+      if (keys.length < 3 || !(keys[2] instanceof Number nW))
+        return;
+      engine.put(dim, rid, nW.floatValue());
+    } else {
+      engine.remove(dim, rid);
+    }
   }
 
   // --------------------------- pure delegation below ---------------------------
@@ -672,19 +441,24 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
-    // Direct exact lookup is rarely meaningful for sparse vector retrieval; surface only
-    // raw posting-list lookup for diagnostic purposes.
-    return underlyingIndex.get(keys, limit);
+    // Direct exact lookup is meaningless for sparse-vector retrieval: the shell LSMTreeIndex
+    // never receives any postings (the engine owns them in `.sparseseg` files), so a delegation
+    // would silently return an empty cursor and a caller mistaking that for "no matches" would
+    // get a wrong answer. Fail loudly instead - callers should use the `vector.sparseNeighbors`
+    // SQL function (or {@link PaginatedSparseVectorEngine#topK}) for retrieval.
+    throw new UnsupportedOperationException(
+        "Direct posting lookup is not supported on LSM_SPARSE_VECTOR indexes; "
+            + "use vector.sparseNeighbors(...) for top-K retrieval");
   }
 
   @Override
   public long countEntries() {
-    return underlyingIndex.countEntries();
+    return engine.totalPostings();
   }
 
   @Override
   public boolean compact() throws IOException, InterruptedException {
-    return underlyingIndex.compact();
+    return engine.compactAll() != -1L;
   }
 
   @Override
@@ -746,12 +520,27 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   }
 
   @Override
+  public void flush() {
+    // LocalDatabase.closeInternal calls flush() on every IndexInternal before close so any
+    // memtable-resident postings land in a sealed component while the database transaction
+    // pipeline is still wired up. Page WAL durability for in-flight transactions is already in
+    // place; this is the "graceful shutdown" entry point.
+    engine.flush();
+  }
+
+  @Override
   public void close() {
+    engine.close();
     underlyingIndex.close();
   }
 
   @Override
   public void drop() {
+    // Reclaim all .sparseseg component files this index owns. engine.close() alone would seal
+    // the memtable into a *new* segment and leave every existing one (plus the just-flushed one)
+    // registered with the FileManager - the files would survive after this drop() returns,
+    // leaking disk and confusing the next reopen.
+    engine.dropAll();
     underlyingIndex.drop();
   }
 
@@ -762,7 +551,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public Map<String, Long> getStats() {
-    return underlyingIndex.getStats();
+    final Map<String, Long> stats = new HashMap<>();
+    stats.put("memtablePostings", engine.memtablePostings());
+    stats.put("totalPostings", engine.totalPostings());
+    stats.put("segmentCount", (long) engine.segmentCount());
+    return stats;
   }
 
   @Override
@@ -869,10 +662,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   // --------------------------- helpers ---------------------------
 
   /**
-   * An "original" call is one made by {@code DocumentIndexer} with the raw property values: a pair
-   * of parallel arrays (indices, weights) per record. Anything else (already-expanded scalar postings
-   * coming from the transaction commit replay path, or null/empty arrays) is forwarded to the
-   * underlying LSM-Tree unchanged.
+   * An "original" call carries the user-supplied parallel arrays {@code (indices, weights)}.
+   * Anything else (already-expanded scalar postings coming from the transaction commit replay
+   * path, or null/empty arrays) falls through to the scalar handling.
    */
   private static boolean isOriginalCall(final Object[] keys) {
     if (keys == null || keys.length != 2)
@@ -928,18 +720,5 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       return out;
     }
     throw new IndexException("Sparse vector weights must be float[], Float[] or List<Number>, found: " + o.getClass().getName());
-  }
-
-  /**
-   * Pair of (RID, dot-product score) returned by {@link #topK}.
-   */
-  public static final class RidScore {
-    public final RID   rid;
-    public final float score;
-
-    public RidScore(final RID rid, final float score) {
-      this.rid = rid;
-      this.score = score;
-    }
   }
 }

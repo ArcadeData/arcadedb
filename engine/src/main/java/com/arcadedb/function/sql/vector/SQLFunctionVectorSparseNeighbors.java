@@ -29,6 +29,7 @@ import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
+import com.arcadedb.index.sparsevector.RidScore;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
@@ -185,17 +186,17 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       fetchK = (int) requested;
     }
 
-    final ArrayList<LSMSparseVectorIndex.RidScore> merged = new ArrayList<>();
+    final ArrayList<RidScore> merged = new ArrayList<>();
     for (final LSMSparseVectorIndex idx : indexes)
       merged.addAll(idx.topK(queryIndices, queryValues, fetchK, allowedRIDs));
 
-    merged.sort((a, b) -> Float.compare(b.score, a.score));
+    merged.sort((a, b) -> Float.compare(b.score(), a.score()));
 
     final BasicDatabase db = context.getDatabase();
     final ArrayList<Object> result = new ArrayList<>();
     final GroupAdmissionState groups = groupBy != null ? new GroupAdmissionState(k, groupSize) : null;
 
-    for (final LSMSparseVectorIndex.RidScore neighbor : merged) {
+    for (final RidScore neighbor : merged) {
       if (groupBy == null) {
         if (result.size() >= k)
           break;
@@ -205,7 +206,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
 
       final Document record;
       try {
-        record = (Document) db.lookupByRID(neighbor.rid, true);
+        record = (Document) db.lookupByRID(neighbor.rid(), true);
       } catch (final RecordNotFoundException e) {
         continue;
       }
@@ -219,7 +220,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
         entry.put(prop, record.get(prop));
       entry.put("@rid", record.getIdentity());
       entry.put("@type", record.getTypeName());
-      entry.put("score", neighbor.score);
+      entry.put("score", neighbor.score());
       result.add(entry);
     }
 

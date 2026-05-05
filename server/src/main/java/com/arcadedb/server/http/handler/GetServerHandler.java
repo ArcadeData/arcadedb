@@ -199,6 +199,13 @@ public class GetServerHandler extends AbstractServerHttpHandler {
           );
         });
 
+    // EXECUTOR POOL GAUGES (registered by PoolMetrics on the global Micrometer registry).
+    // Grouped under metrics.executors.<pool> -> {<gauge>: value, ...} so dashboards can show
+    // the QueryEngineManager pool and the SparseVectorScoringPool side by side. Each gauge is
+    // current-value (gauge semantics), not rate-tracked: caller-runs fallbacks is exposed as a
+    // cumulative count and downstream tools (Prometheus rate(), etc.) can derive a rate.
+    metricsJSON.put("executors", buildExecutorsJSON(registry));
+
     int serverEventsSummaryErrors = 0;
     int serverEventsSummaryWarnings = 0;
     int serverEventsSummaryInfo = 0;
@@ -306,5 +313,34 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       value = class1.getName();
 
     return value;
+  }
+
+  /**
+   * Walks the Micrometer registry collecting every gauge whose name starts with
+   * {@code arcadedb.executor.} and groups them by their {@code pool} tag into a JSON object of
+   * the shape Studio's {@code studio-server.js} expects:
+   * <pre>{
+   *   "query":         { "pool.size": 2, "pool.active": 0, "queue.depth": 0, ... },
+   *   "sparse_vector": { "pool.size": 2, "pool.active": 0, "queue.depth": 0, ... }
+   * }</pre>
+   * Extracted as a static helper so the JSON shape can be unit-tested without booting an HTTP
+   * server.
+   */
+  public static JSONObject buildExecutorsJSON(final MeterRegistry registry) {
+    final JSONObject executorsJSON = new JSONObject();
+    registry.getMeters().stream()
+        .filter(meter -> meter.getId().getName().startsWith("arcadedb.executor."))
+        .forEach(meter -> {
+          final String poolTag = meter.getId().getTag("pool");
+          if (poolTag == null)
+            return;
+          // Strip the "arcadedb.executor." prefix so the JSON key is the bare gauge name.
+          final String shortName = meter.getId().getName().substring("arcadedb.executor.".length());
+          final double value = meter.measure().iterator().next().getValue();
+          if (!executorsJSON.has(poolTag))
+            executorsJSON.put(poolTag, new JSONObject());
+          executorsJSON.getJSONObject(poolTag).put(shortName, value);
+        });
+    return executorsJSON;
   }
 }

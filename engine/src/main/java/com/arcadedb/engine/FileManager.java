@@ -32,6 +32,11 @@ public class FileManager {
   private final        ConcurrentHashMap<String, ComponentFile>  fileNameMap     = new ConcurrentHashMap<>();
   private final        ConcurrentHashMap<Integer, ComponentFile> fileIdMap       = new ConcurrentHashMap<>();
   private final        AtomicLong                                maxFilesOpened  = new AtomicLong();
+  // Bumps on every file registration / drop. Lets callers (e.g. PaginatedSparseVectorEngine's
+  // refreshSegmentsFromFileManager) skip the O(total files) walk on the hot query path when the
+  // FileManager is unchanged since their last observation - they cache the value here, compare on
+  // entry, and only re-walk when it has advanced.
+  private final        AtomicLong                                modificationCount = new AtomicLong();
   private              List<FileChange>                          recordedChanges = null;
   private final static PaginatedComponentFile                    RESERVED_SLOT   = new PaginatedComponentFile();
 
@@ -162,6 +167,7 @@ public class FileManager {
     if (file != null) {
       fileNameMap.remove(file.getComponentName());
       files.set(fileId, null);
+      modificationCount.incrementAndGet();
       file.drop();
 
       final FileChange entry = new FileChange(false, fileId, file.getFileName());
@@ -184,6 +190,16 @@ public class FileManager {
 
   public List<ComponentFile> getFiles() {
     return Collections.unmodifiableList(files);
+  }
+
+  /**
+   * Monotonically increasing counter that bumps on every file registration and drop. Callers can
+   * cache the value, compare on later entries, and skip the {@link #getFiles()} walk when it is
+   * unchanged since the last observation. This is a content-version proxy, not a wall-clock value
+   * - rollback is not possible, but a wraparound after 2^63 mutations is not a concern in practice.
+   */
+  public long getModificationCount() {
+    return modificationCount.get();
   }
 
   public boolean existsFile(final int fileId) {
@@ -260,6 +276,7 @@ public class FileManager {
     fileNameMap.put(file.getComponentName(), file);
     fileIdMap.put(pos, file);
     maxFilesOpened.incrementAndGet();
+    modificationCount.incrementAndGet();
   }
 
 }

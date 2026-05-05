@@ -112,7 +112,6 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
    * Tests that LSM Vector indexes are created and replicated to all replicas.
    * Vector index entry counts must match across all servers after replication completes.
    */
-  @Disabled("General schema replication works, but LSMVectorIndexBuilder causes AlreadyClosedException on the Raft client during vector index creation - likely an async operation lifecycle issue in the builder")
   @Test
   void lsmVectorReplication() throws Exception {
     final int leaderIndex = findLeaderIndex();
@@ -163,7 +162,6 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
    * Tests that LSM Vector index compaction does not crash.
    * Cross-server replication of compaction is not yet implemented in Raft HA.
    */
-  @Disabled("Index compaction is not replicated via Raft log entries - RaftLogEntryType has no COMPACT entry type")
   @Test
   void lsmVectorCompactionReplication() throws Exception {
     final int leaderIndex = findLeaderIndex();
@@ -208,6 +206,9 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
       assertThat(serverVectorIndex).as("Vector index should be replicated to server %d", serverIndex).isNotNull();
+      assertThat(serverVectorIndex.countEntries())
+          .as("Server %d vector index entry count must match leader after compaction", serverIndex)
+          .isEqualTo(entriesOnLeader);
     });
   }
 

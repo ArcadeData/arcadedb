@@ -3707,7 +3707,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     try {
       LogManager.instance().log(this, Level.INFO, "compact() calling LSMVectorIndexCompactor.compact()");
-      final boolean success = LSMVectorIndexCompactor.compact(this);
+      // Same component-shipping pipeline as LSMTreeIndex compaction and PaginatedSparseVectorEngine
+      // flush: the recording session captures registerFile + page writes, the synthetic WAL ships
+      // the new component to followers atomically with the leader's commit. waitAllPagesOfDatabaseAreFlushed
+      // is needed because LSMVectorIndexCompactor calls writePages(..., asyncFlush=true).
+      final boolean success = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
+        final boolean compactSuccess = LSMVectorIndexCompactor.compact(this);
+        database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+        return compactSuccess;
+      });
       if (success) {
         // Track successful compaction
         metrics.incrementCompactionCount();
