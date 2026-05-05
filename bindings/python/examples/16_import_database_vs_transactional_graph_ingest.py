@@ -131,7 +131,10 @@ def edge_endpoints(edge_id: int, vertex_count: int) -> Tuple[int, int]:
 
 
 def build_rid_lookup_for_vertex_type(db, vertex_type: str) -> Dict[int, str]:
-    rows = db.query("sql", f"SELECT Id, @rid as rid FROM {vertex_type}").to_list()
+    rows = db.query(
+        "sql",
+        f"SELECT Id, @rid as rid FROM {vertex_type}",  # nosec B608 - vertex_type is a script constant
+    ).to_list()
     rid_lookup: Dict[int, str] = {}
     for row in rows:
         row_id = row.get("Id")
@@ -165,7 +168,12 @@ def collect_vertex_sample(
     db, vertex_type: str, vertex_id: int, props: List[ColumnDef]
 ) -> dict:
     row = query_one_or_none(
-        db.query("sql", f"SELECT FROM {vertex_type} WHERE Id = {vertex_id}")
+        db.query(
+            "sql",
+            # vertex_type is a constant from this script; vertex_id is bound as parameter.
+            f"SELECT FROM {vertex_type} WHERE Id = ?",  # nosec B608
+            vertex_id,
+        )
     )
     if row is None:
         return {"Id": vertex_id, "missing": True}
@@ -246,7 +254,8 @@ def collect_graph_signature(
         vertex_aggregate = query_one_or_none(
             db.query(
                 "sql",
-                f"SELECT {', '.join(vertex_aggregate_fields)} FROM {vertex_type}",
+                # vertex_aggregate_fields and vertex_type are script-local constants.
+                f"SELECT {', '.join(vertex_aggregate_fields)} FROM {vertex_type}",  # nosec B608
             )
         )
         edge_aggregate = query_one_or_none(
