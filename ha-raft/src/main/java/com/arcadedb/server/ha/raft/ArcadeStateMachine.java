@@ -528,11 +528,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
 
     HALog.log(this, HALog.DETAILED,
-        "Applying schema entry to database '%s': filesToAdd=%d, filesToRemove=%d, hasSchemaJson=%s",
-        decoded.databaseName(),
+        "Applying schema entry to database '%s' (entryIndex=%d): filesToAdd=%d, filesToRemove=%d, hasSchemaJson=%s",
+        decoded.databaseName(), entryIndex,
         decoded.filesToAdd() != null ? decoded.filesToAdd().size() : 0,
         decoded.filesToRemove() != null ? decoded.filesToRemove().size() : 0,
         decoded.schemaJson() != null && !decoded.schemaJson().isEmpty());
+
+    if (HALog.isEnabled(HALog.DETAILED)) {
+      HALog.log(this, HALog.DETAILED, "Received SCHEMA_ENTRY filesToAdd=%s", decoded.filesToAdd());
+      HALog.log(this, HALog.DETAILED, "Received SCHEMA_ENTRY filesToRemove=%s", decoded.filesToRemove());
+      logFollowerSchemaPayloadDiagnostics(decoded.databaseName(), decoded.schemaJson(),
+          decoded.filesToAdd());
+    }
 
     try {
       if (decoded.filesToAdd() != null)
@@ -580,6 +587,52 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     HALog.log(this, HALog.DETAILED, "Applied schema change to database '%s'", decoded.databaseName());
+  }
+
+  /**
+   * Symmetric counterpart of {@code RaftReplicatedDatabase.logSchemaPayloadDiagnostics} on the
+   * follower side: enumerates the {@code indexes} keys present in the inbound schema JSON and
+   * flags those whose backing file is not in {@code filesToAdd}. Such names will fail to load
+   * when {@code LocalSchema.load()} runs and surface as "Cannot find indexes [...]" warnings
+   * (issue #4083).
+   */
+  private void logFollowerSchemaPayloadDiagnostics(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd) {
+    if (schemaJson == null || schemaJson.isEmpty())
+      return;
+
+    try {
+      final JSONObject root = new JSONObject(schemaJson);
+      if (!root.has("types"))
+        return;
+      final JSONObject types = root.getJSONObject("types");
+
+      final java.util.Set<String> shippedIndexNames = new java.util.HashSet<>();
+      if (filesToAdd != null) {
+        for (final String fullName : filesToAdd.values()) {
+          final int firstDot = fullName.indexOf('.');
+          shippedIndexNames.add(firstDot > 0 ? fullName.substring(0, firstDot) : fullName);
+        }
+      }
+
+      for (final String typeName : types.keySet()) {
+        if (!(types.get(typeName) instanceof JSONObject type))
+          continue;
+        if (!type.has("indexes"))
+          continue;
+        final JSONObject indexes = type.getJSONObject("indexes");
+        for (final String idxName : indexes.keySet()) {
+          final boolean shipped = shippedIndexNames.contains(idxName);
+          HALog.log(this, HALog.DETAILED,
+              "[%s.applySchema] schemaJson.types.%s.indexes['%s'] %s",
+              dbName, typeName, idxName,
+              shipped ? "= matched in filesToAdd" : "= NOT in filesToAdd (will likely 'Cannot find indexes')");
+        }
+      }
+    } catch (final RuntimeException e) {
+      HALog.log(this, HALog.DETAILED,
+          "[%s.applySchema] schema JSON parse failed for diagnostics: %s", dbName, e.getMessage());
+    }
   }
 
   /**

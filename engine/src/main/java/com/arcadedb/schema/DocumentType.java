@@ -221,6 +221,17 @@ public interface DocumentType {
 
   TypeIndex getPolymorphicIndexByProperties(List<String> properties);
 
+  /**
+   * Like {@link #getPolymorphicIndexByProperties(List)} but does NOT walk up the type hierarchy.
+   * Returns the TypeIndex defined directly on this type for the exact property list, or
+   * {@code null} if this type has no such index of its own. Use this when an operation must be
+   * scoped strictly to this type (e.g. CREATE INDEX on a sub-type must not match a parent's index
+   * and accidentally drop it).
+   */
+  TypeIndex getIndexByProperties(String... properties);
+
+  TypeIndex getIndexByProperties(List<String> properties);
+
   Schema getSchema();
 
   boolean isTheSameAs(Object o);

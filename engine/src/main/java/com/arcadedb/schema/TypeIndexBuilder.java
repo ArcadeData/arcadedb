@@ -93,13 +93,37 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     final LocalSchema schema = database.getSchema().getEmbedded();
 
     final LocalDocumentType type = schema.getType(metadata.typeName);
-    final TypeIndex existingTypeIndex = type.getPolymorphicIndexByProperties(metadata.propertyNames);
+    // First try the type's own index (no hierarchy walk). If found, we may legitimately drop and
+    // recreate it when the user requested a different uniqueness / null strategy via IF NOT EXISTS.
+    // If not found locally, fall back to the polymorphic walk to detect inherited indexes - those
+    // we never drop (that would silently delete the parent type's index and leave an orphan entry
+    // in the schema JSON, which is the user-reported follow-up to issue #4083 where Studio's
+    // refresh later complains "index Investigacion[cuij] could not be created").
+    TypeIndex existingTypeIndex = type.getIndexByProperties(metadata.propertyNames);
+    final boolean existingIsInherited;
+    if (existingTypeIndex != null) {
+      existingIsInherited = false;
+    } else {
+      existingTypeIndex = type.getPolymorphicIndexByProperties(metadata.propertyNames);
+      existingIsInherited = existingTypeIndex != null;
+    }
 
     if (existingTypeIndex != null) {
       if (ignoreIfExists) {
         if (existingTypeIndex.getNullStrategy() != null && existingTypeIndex.getNullStrategy() == null ||//
             existingTypeIndex.isUnique() != unique) {
-          // DIFFERENT, DROP AND RECREATE IT
+          if (existingIsInherited) {
+            // Different index type/uniqueness on an INHERITED index. Dropping it would wipe the
+            // parent type's index. Treat as a hard schema conflict instead of silently destroying
+            // the parent's index (issue #4083 follow-up).
+            throw new IllegalArgumentException(
+                "Cannot create index on type '" + metadata.typeName + "' for properties '"
+                    + Arrays.asList(metadata.propertyNames) + "' (unique=" + unique + ") because parent type '"
+                    + existingTypeIndex.getTypeName() + "' already declares an index '" + existingTypeIndex.getName()
+                    + "' with unique=" + existingTypeIndex.isUnique()
+                    + ". Drop the parent index first or align the unique flag");
+          }
+          // DIFFERENT BUT OWN: DROP AND RECREATE IT
           existingTypeIndex.drop();
         } else
           return existingTypeIndex;
@@ -209,7 +233,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
         return null;
       });
 
-      return type.getPolymorphicIndexByProperties(metadata.propertyNames);
+      return type.getIndexByProperties(metadata.propertyNames);
     } catch (final NeedRetryException e) {
       schema.dropIndex(metadata.typeName + metadata.propertyNames);
       throw e;

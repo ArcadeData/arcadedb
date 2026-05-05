@@ -627,6 +627,10 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
             LSMTreeIndexMutable.CURRENT_VERSION, compactedIndex);
         database.getSchema().getEmbedded().registerFile(newMutableIndex);
 
+        LogManager.instance().log(this, Level.FINE,
+            "splitIndex: replaced mutable for index '%s' (oldName='%s' oldFileId=%d) with newName='%s' newFileId=%d",
+            null, getName(), mutable.getName(), mutable.getFileId(), newName, newMutableIndex.getFileId());
+
         // LOCK NEW FILE
         database.getTransactionManager().tryLockFile(newMutableIndex.getFileId(), 0, Thread.currentThread());
         lockedNewFileId.set(newMutableIndex.getFileId());

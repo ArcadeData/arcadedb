@@ -764,6 +764,16 @@ public class LocalDocumentType implements DocumentType {
   }
 
   @Override
+  public TypeIndex getIndexByProperties(final String... properties) {
+    return getIndexByProperties(Arrays.asList(properties));
+  }
+
+  @Override
+  public TypeIndex getIndexByProperties(final List<String> properties) {
+    return indexesByProperties.get(properties);
+  }
+
+  @Override
   public Schema getSchema() {
     return schema;
   }

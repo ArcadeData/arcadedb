@@ -229,6 +229,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     final boolean leader = isLeader();
 
+    // Wait for any in-flight FileManager recording session before dispatching a TX_ENTRY.
+    // The leader's compaction path (runWithCompactionReplication) creates new index files
+    // and ships them via SCHEMA_ENTRY only after the compaction callback returns. If a user
+    // transaction commits during that window, its TX_ENTRY may reach Raft before the
+    // SCHEMA_ENTRY that creates the file on followers, where TransactionManager.applyChanges
+    // silently skips pages whose fileId does not exist - dropping the writes and surfacing
+    // later as missing index entries (issue #4083). The schema-commit thread itself uses the
+    // schemaWalBuffer below and must not wait on its own session.
+    if (leader && !Boolean.TRUE.equals(isSchemaCommitThread.get()))
+      waitForActiveRecordingSession();
+
     // When commit() is called from inside a recordFileChanges() DDL callback on the leader,
     // the files being created do not yet exist on replicas. Sending a TX_ENTRY now would
     // fail on replicas because the target files are missing. Instead, buffer the WAL data
@@ -1124,6 +1135,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         HALog.log(this, HALog.DETAILED,
             "Schema changes replicated via Raft: addFiles=%d, removeFiles=%d, schemaChanged=%s, embeddedWalEntries=%d",
             addFiles.size(), removeFiles.size(), schemaChanged, walEntries.size());
+
+        if (HALog.isEnabled(HALog.DETAILED))
+          logSchemaPayloadDiagnostics("recordFileChanges", serializedSchema, addFiles, removeFiles);
       }
 
       return result;
@@ -1200,6 +1214,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           "Compaction for database '%s' replicated via Raft: addFiles=%d, removeFiles=%d, walEntries=%d",
           getName(), addFiles.size(), removeFiles.size(), walEntries.size());
 
+      if (HALog.isEnabled(HALog.DETAILED))
+        logSchemaPayloadDiagnostics("compaction", serializedSchema, addFiles, removeFiles);
+
       return result;
     } finally {
       proxied.getFileManager().stopRecordingChanges();
@@ -1215,6 +1232,85 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       throw e;
     } catch (final Exception e) {
       throw new IOException("Compaction failed", e);
+    }
+  }
+
+  /**
+   * Polls until the leader's FileManager recording session ends. Bounded by
+   * {@link GlobalConfiguration#HA_QUORUM_TIMEOUT} so we never deadlock if a recorder thread
+   * crashed without releasing the session; on timeout we proceed with the original ordering
+   * race rather than locking up writes indefinitely.
+   */
+  private void waitForActiveRecordingSession() {
+    if (proxied.getFileManager().getRecordedChanges() == null)
+      return;
+    final long timeout = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
+    final long deadline = System.currentTimeMillis() + timeout;
+    while (proxied.getFileManager().getRecordedChanges() != null) {
+      if (System.currentTimeMillis() >= deadline) {
+        HALog.log(this, HALog.BASIC,
+            "commit waited %dms for FileManager recording session and gave up; proceeding with TX_ENTRY",
+            timeout);
+        return;
+      }
+      try {
+        Thread.sleep(2);
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return;
+      }
+    }
+  }
+
+  /**
+   * Cross-references a {@code SCHEMA_ENTRY} payload to highlight when the in-memory schema JSON
+   * being shipped names indexes whose backing file is NOT in {@code addFiles}. Such names are the
+   * symptom mdre observed as "Cannot find indexes [...]" warnings on followers (issue #4083) -
+   * with this trace the leader's outbound payload becomes inspectable so we can pin the
+   * divergence to (a) wrong file naming captured during the recording session, (b) schema
+   * mutations made outside the session, or (c) a missing addFiles entry from a prior compaction
+   * that lingered in the in-memory schema.
+   */
+  private void logSchemaPayloadDiagnostics(final String origin, final String schemaJson,
+      final Map<Integer, String> addFiles, final Map<Integer, String> removeFiles) {
+    HALog.log(this, HALog.DETAILED, "[%s] addFiles=%s", origin, addFiles);
+    HALog.log(this, HALog.DETAILED, "[%s] removeFiles=%s", origin, removeFiles);
+
+    if (schemaJson == null || schemaJson.isEmpty())
+      return;
+
+    try {
+      final JSONObject root = new JSONObject(schemaJson);
+      final JSONObject types = root.has("types") ? root.getJSONObject("types") : null;
+      if (types == null)
+        return;
+
+      // Build a set of index names (component name level) that are accounted for by the addFiles
+      // entries shipped in this SCHEMA_ENTRY. addFiles values are full file names like
+      // "BulkRace_0_<nanos>.13.65536.v0.umtidx"; the schema "indexes" key strips the trailing
+      // dot-separated tail so we compare on a stable prefix.
+      final java.util.Set<String> shippedIndexNames = new java.util.HashSet<>();
+      for (final String fullName : addFiles.values()) {
+        final int firstDot = fullName.indexOf('.');
+        shippedIndexNames.add(firstDot > 0 ? fullName.substring(0, firstDot) : fullName);
+      }
+
+      for (final String typeName : types.keySet()) {
+        if (!(types.get(typeName) instanceof JSONObject type))
+          continue;
+        if (!type.has("indexes"))
+          continue;
+        final JSONObject indexes = type.getJSONObject("indexes");
+        for (final String idxName : indexes.keySet()) {
+          final boolean shipped = shippedIndexNames.contains(idxName);
+          HALog.log(this, HALog.DETAILED,
+              "[%s] schemaJson.types.%s.indexes['%s'] %s",
+              origin, typeName, idxName, shipped ? "= matched in addFiles" : "= NOT in addFiles (orphan candidate)");
+        }
+      }
+    } catch (final RuntimeException e) {
+      HALog.log(this, HALog.DETAILED,
+          "[%s] schema JSON parse failed for diagnostics: %s", origin, e.getMessage());
     }
   }
 

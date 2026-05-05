@@ -21,6 +21,9 @@ package com.arcadedb.engine;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.log.LogManager;
+
+import java.util.logging.Level;
 
 import java.io.*;
 import java.util.concurrent.atomic.*;
@@ -139,9 +142,19 @@ public abstract class PaginatedComponent extends Component {
     if (fileName.substring(extPos + 1).startsWith(TEMP_EXT)) {
       final String newFileName = fileName.substring(0, extPos) + "." + fileName.substring(extPos + TEMP_EXT.length() + 1);
 
+      LogManager.instance().log(this, Level.FINE,
+          "removeTempSuffix: fileId=%d componentName='%s' renaming '%s' -> '%s'",
+          null, fileId, componentName, fileName, newFileName);
+
       try {
         file.rename(newFileName);
         database.getFileManager().renameFile(fileName, newFileName);
+        // Sync the active FileManager recording session with the new on-disk file name so any
+        // FileChange entry captured at file creation reflects the post-rename name (#4083).
+        database.getFileManager().refreshRecordedFileName(file);
+        LogManager.instance().log(this, Level.FINE,
+            "removeTempSuffix completed: fileId=%d componentName='%s' postRenameFileName='%s'",
+            null, fileId, componentName, file.getFileName());
       } catch (final IOException e) {
         throw new IndexException(
             "Cannot rename temporary index file '" + file.getFilePath() + "' to '" + newFileName + "' (exists=" + (new File(

@@ -138,10 +138,16 @@ public class FileManager {
    * @return true if the recorded started and false if it was already started.
    */
   public boolean startRecordingChanges() {
-    if (recordedChanges != null)
+    if (recordedChanges != null) {
+      LogManager.instance().log(this, Level.FINE,
+          "startRecordingChanges denied: a session is already active with %d entries",
+          null, recordedChanges.size());
       return false;
+    }
 
     recordedChanges = new ArrayList<>();
+    LogManager.instance().log(this, Level.FINE,
+        "startRecordingChanges: new session begun on thread '%s'", null, Thread.currentThread().getName());
     return true;
   }
 
@@ -150,6 +156,17 @@ public class FileManager {
   }
 
   public void stopRecordingChanges() {
+    if (recordedChanges != null && java.util.logging.Logger.getLogger(getClass().getName()).isLoggable(Level.FINE)) {
+      final StringBuilder dump = new StringBuilder();
+      for (final FileChange c : recordedChanges) {
+        if (!dump.isEmpty())
+          dump.append(", ");
+        dump.append(c.create ? "+" : "-").append(c.fileId).append(":'").append(c.fileName).append("'");
+      }
+      LogManager.instance().log(this, Level.FINE,
+          "stopRecordingChanges on thread '%s': %d entries [%s]",
+          null, Thread.currentThread().getName(), recordedChanges.size(), dump.toString());
+    }
     recordedChanges = null;
   }
 
@@ -172,11 +189,18 @@ public class FileManager {
 
       final FileChange entry = new FileChange(false, fileId, file.getFileName());
       if (recordedChanges != null) {
-        if (recordedChanges.remove(entry))
+        if (recordedChanges.remove(entry)) {
+          LogManager.instance().log(this, Level.FINE,
+              "dropFile fileId=%d cancels prior CREATE entry (componentName='%s', fileName='%s')",
+              null, fileId, file.getComponentName(), file.getFileName());
           // JUST ADDED: REMOVE THE ENTRY
           return;
+        }
 
         recordedChanges.add(entry);
+        LogManager.instance().log(this, Level.FINE,
+            "recorded DROP fileId=%d fileName='%s' componentName='%s'",
+            null, fileId, file.getFileName(), file.getComponentName());
       }
     }
   }
@@ -223,8 +247,12 @@ public class FileManager {
     file = new PaginatedComponentFile(filePath, mode);
     registerFile(file);
 
-    if (recordedChanges != null)
+    if (recordedChanges != null) {
       recordedChanges.add(new FileChange(true, file.getFileId(), file.getFileName()));
+      LogManager.instance().log(this, Level.FINE,
+          "recorded CREATE fileId=%d fileName='%s' componentName='%s'",
+          null, file.getFileId(), file.getFileName(), file.getComponentName());
+    }
 
     return file;
   }
@@ -235,8 +263,12 @@ public class FileManager {
       file = new PaginatedComponentFile(filePath, mode);
       registerFile(file);
 
-      if (recordedChanges != null)
+      if (recordedChanges != null) {
         recordedChanges.add(new FileChange(true, file.getFileId(), file.getFileName()));
+        LogManager.instance().log(this, Level.FINE,
+            "recorded CREATE fileId=%d fileName='%s' componentName='%s'",
+            null, file.getFileId(), file.getFileName(), file.getComponentName());
+      }
     }
 
     return file;
@@ -257,10 +289,50 @@ public class FileManager {
 
   public void renameFile(final String oldName, final String newName) {
     final ComponentFile file = fileNameMap.remove(oldName);
-    if (file == null)
+    if (file == null) {
+      // Lookup miss: callers may pass a full file path (e.g. PaginatedComponent.removeTempSuffix)
+      // even though fileNameMap is keyed by component name. The fileNameMap stays consistent in
+      // that case (component name unchanged) but recordedChanges entries that snapshotted the
+      // pre-rename file name are NOT updated.
+      LogManager.instance().log(this, Level.FINE,
+          "renameFile: lookup miss oldName='%s' newName='%s' (recordedChanges%s)",
+          null, oldName, newName, recordedChanges != null ? " ACTIVE" : " inactive");
       return;
+    }
 
     fileNameMap.put(newName, file);
+    LogManager.instance().log(this, Level.FINE,
+        "renameFile: oldName='%s' newName='%s' fileId=%d (recordedChanges%s, file.fileName='%s')",
+        null, oldName, newName, file.getFileId(),
+        recordedChanges != null ? " ACTIVE" : " inactive", file.getFileName());
+  }
+
+  /**
+   * Updates the {@link FileChange} entry for {@code file} in the active recording session so it
+   * carries the file's current OS file name. {@link com.arcadedb.engine.PaginatedComponent#removeTempSuffix}
+   * renames the underlying file from the {@code temp_*} extension to the final extension AFTER
+   * {@link #getOrCreateFile(int, String)} has snapshotted the pre-rename name into
+   * {@code recordedChanges}. Without re-syncing, the SCHEMA_ENTRY shipped by the Raft compaction
+   * path carries the temp-suffixed file name in {@code addFiles} while the schema JSON captured
+   * post-rename references the stripped name; the follower then creates the file under the wrong
+   * name and emits "Cannot find indexes ..." warnings on schema reload (issue #4083).
+   */
+  public void refreshRecordedFileName(final ComponentFile file) {
+    if (recordedChanges == null || file == null)
+      return;
+    final int fileId = file.getFileId();
+    final String currentFullName = file.getFileName();
+    if (currentFullName == null)
+      return;
+    for (int i = 0; i < recordedChanges.size(); i++) {
+      final FileChange c = recordedChanges.get(i);
+      if (c.fileId == fileId && !currentFullName.equals(c.fileName)) {
+        LogManager.instance().log(this, Level.FINE,
+            "refreshRecordedFileName: fileId=%d updating '%s' -> '%s'",
+            null, fileId, c.fileName, currentFullName);
+        recordedChanges.set(i, new FileChange(c.create, c.fileId, currentFullName));
+      }
+    }
   }
 
   private void registerFile(final ComponentFile file) {
