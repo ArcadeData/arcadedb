@@ -52,6 +52,10 @@ jobs:
         working-directory: bindings/python
         run: python -m bandit -c pyproject.toml -r src tests --severity-level low --confidence-level low
 
+      - name: Run Bandit on examples (must be clean at medium+/high-confidence)
+        working-directory: bindings/python
+        run: python -m bandit -c pyproject.toml -r examples --severity-level medium --confidence-level high
+
   # First job: Download ArcadeDB JARs (platform-agnostic)
   download-jars:
     name: Download ArcadeDB JARs
