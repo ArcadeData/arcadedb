@@ -581,11 +581,13 @@ class TestVectorSQL:
             for i in range(num_vectors):
                 vec = [random.random() for _ in range(dims)]  # nosec B311
                 vectors.append(vec)
+                # Embedded literals: the wrapper's _convert_args path supports
+                # only one positional ? per call (numpy/list rebinding); a
+                # multi-? signature would dispatch to JPype as
+                # command(str, str, int, list) which has no Java overload.
                 test_db.command(
                     "sql",
-                    "INSERT INTO DocSql SET id = ?, embedding = ?",
-                    i,
-                    vec,
+                    f"INSERT INTO DocSql SET id = {i}, embedding = {vec}",  # nosec B608
                 )
 
         # Delete every 10th vector
