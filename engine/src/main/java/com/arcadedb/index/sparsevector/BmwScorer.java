@@ -69,6 +69,14 @@ public final class BmwScorer {
    * with {@code null} for dims absent from every source.
    *
    * @return list of up to {@code k} (RID, score) pairs sorted by score descending.
+   * @throws IllegalArgumentException if the three input arrays have mismatched lengths, or any
+   *                                  query weight is NaN, infinite, or negative. BMW pruning
+   *                                  requires the per-dim contribution upper bound to be
+   *                                  monotonically non-decreasing in the prefix sum, which a
+   *                                  negative weight would break (pivot search would never
+   *                                  converge and the result set would silently be wrong).
+   * @throws IOException              if a {@link DimCursor#start} / {@link DimCursor#advance} /
+   *                                  {@link DimCursor#seekTo} fails to read its underlying source.
    */
   public static List<RidScore> topK(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors, final int k)
       throws IOException {

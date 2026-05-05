@@ -76,6 +76,10 @@ public final class PaginatedDimMetadata {
   }
 
   public int blockOffset(final int blockIndex) {
+    // {@code blockOffsets} is a {@code short[]} so each entry fits in 2 bytes (page content sizes
+    // up to 64 KiB). The {@code & 0xFFFF} mask converts the signed-short read to an unsigned
+    // 0..65535 int - without it, a block whose offset is &gt;= 32768 would sign-extend to a
+    // negative value and the page-read would land at the wrong byte.
     return blockOffsets[blockIndex] & 0xFFFF;
   }
 

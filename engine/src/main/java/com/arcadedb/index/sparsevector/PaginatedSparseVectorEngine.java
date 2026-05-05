@@ -286,6 +286,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * a {@code SCHEMA_ENTRY} carrying the new component metadata + a synthetic WAL of its pages is
    * shipped to followers atomically with the leader's local commit. On a standalone (non-HA)
    * database the override is a no-op wrapper and the inner transaction is the durability point.
+   * <p>
+   * <b>Lock acquisition.</b> {@code mutatorLock.lock()} blocks indefinitely. In normal operation
+   * the lock is held only for the duration of one flush or compaction (microseconds for
+   * {@code ensureOpen} checks, seconds at most for a 1M-posting flush write), so the wait is
+   * bounded. The pathological case is a stalled compaction thread or a deadlocked HA recording
+   * session; those would warrant an interruptible wait or a timeout, but the cost is path-specific
+   * (post-commit callback wants to retry, close-time flush wants to give up, explicit flush wants
+   * to throw) and no current caller has a workload where that pathology has been observed. If
+   * profiling or a real incident surfaces the case, switch to {@link ReentrantLock#tryLock(long,
+   * java.util.concurrent.TimeUnit)} with a path-specific fallback.
    */
   public long flush() {
     ensureOpen();
