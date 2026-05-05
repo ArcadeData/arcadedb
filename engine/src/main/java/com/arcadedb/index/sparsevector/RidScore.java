@@ -22,14 +22,22 @@ import com.arcadedb.database.RID;
 
 /**
  * Single (RID, score) pair returned from a top-K sparse-vector query. Exposes both public final
- * fields ({@code rid}, {@code score}) and accessor methods ({@code rid()}, {@code score()}); the
- * fields are the long-standing surface used by SQL functions and external callers, the methods
- * read more naturally inside the engine.
+ * fields ({@code rid}, {@code score}) and accessor methods ({@link #rid()}, {@link #score()}).
+ * <p>
+ * The fields are the legacy surface used by SQL functions and external callers; new code should
+ * prefer the methods so that we can switch to a record (or a class with read-only state) in a
+ * future release without breaking source-compatibility for callers. The fields are
+ * {@code @Deprecated} to advertise that migration path; they remain functional and there is no
+ * planned removal yet.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class RidScore {
+  /** @deprecated use {@link #rid()} instead; field will be made {@code private} in a future release. */
+  @Deprecated
   public final RID   rid;
+  /** @deprecated use {@link #score()} instead; field will be made {@code private} in a future release. */
+  @Deprecated
   public final float score;
 
   public RidScore(final RID rid, final float score) {

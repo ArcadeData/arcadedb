@@ -52,7 +52,14 @@ public final class Memtable {
   /** Approximate per-entry on-heap footprint: ConcurrentSkipListMap node header + RID + Float box + edges. */
   static final int APPROX_BYTES_PER_ENTRY = 96;
 
-  private final ConcurrentHashMap<Integer, ConcurrentSkipListMap<RID, Float>> postings = new ConcurrentHashMap<>();
+  private final ConcurrentHashMap<Integer, ConcurrentSkipListMap<RID, Float>> postings    = new ConcurrentHashMap<>();
+  // Per-dim running max live weight. Maintained incrementally on every {@link #put} so the BMW
+  // upper bound a cursor reports does not require a fresh full scan of the dim's postings at
+  // construction time. Monotonically non-decreasing - a tombstone or an overwrite to a smaller
+  // weight is a safe over-estimate (BMW pruning correctness only requires an upper bound; a
+  // looser bound just means slightly less skipping). This trades a per-put map.merge() for the
+  // dropped O(n) scan in {@link MemtableSourceCursor}.
+  private final ConcurrentHashMap<Integer, Float>                              dimMaxWeight = new ConcurrentHashMap<>();
   private final AtomicLong totalPostings        = new AtomicLong();
   private final AtomicLong tombstoneCount       = new AtomicLong();
   private final AtomicLong heapBytesEstimate    = new AtomicLong();
@@ -69,16 +76,26 @@ public final class Memtable {
     final ConcurrentSkipListMap<RID, Float> dimMap = postings.computeIfAbsent(dim, d -> new ConcurrentSkipListMap<>());
     final Float prev = dimMap.put(rid, weight);
     accountChange(prev, weight);
+    // Track the running per-dim max so {@link #dimMaxWeight(int)} can answer in O(1).
+    dimMaxWeight.merge(dim, weight, Math::max);
   }
 
   /**
    * Mark {@code (dim, rid)} as deleted. Stored as a tombstone in the memtable; physical removal
    * happens when a compaction merges past the tombstone in older segments.
+   * <p>
+   * Common case is a delete that targets a dim already populated by an earlier {@code put} -
+   * those calls go through the cheap {@link ConcurrentHashMap#get} path. Only the rare delete
+   * for a dim whose live posting was already flushed to a sealed segment falls through to
+   * {@code computeIfAbsent}: we must still record the tombstone in the memtable so the
+   * newest-wins merge in {@link DimCursor} masks the segment-side posting.
    */
   public void remove(final int dim, final RID rid) {
     if (rid == null)
       throw new IllegalArgumentException("rid must not be null");
-    final ConcurrentSkipListMap<RID, Float> dimMap = postings.computeIfAbsent(dim, d -> new ConcurrentSkipListMap<>());
+    ConcurrentSkipListMap<RID, Float> dimMap = postings.get(dim);
+    if (dimMap == null)
+      dimMap = postings.computeIfAbsent(dim, d -> new ConcurrentSkipListMap<>());
     final Float prev = dimMap.put(rid, Float.NaN);
     accountChange(prev, Float.NaN);
   }
@@ -105,6 +122,18 @@ public final class Memtable {
     return postings.size();
   }
 
+  /**
+   * Running per-dim max live weight, maintained incrementally on {@link #put}. A monotonic
+   * upper bound suitable for BMW pruning - it never drops when a posting is tombstoned or
+   * overwritten with a smaller weight, but BMW only needs an upper bound for correctness so
+   * over-estimation just costs a bit of skip aggressiveness, not correctness. Returns {@code 0}
+   * for a dim that was never written to (which is also the natural lower bound).
+   */
+  public float dimMaxWeight(final int dim) {
+    final Float f = dimMaxWeight.get(dim);
+    return f == null ? 0.0f : f;
+  }
+
   /** Returns the dim_ids present, sorted ascending. Snapshot at call time. */
   public int[] sortedDims() {
     final int[] out = new int[postings.size()];
@@ -128,12 +157,26 @@ public final class Memtable {
     final ConcurrentSkipListMap<RID, Float> dimMap = postings.get(dim);
     if (dimMap == null)
       return java.util.Collections.emptyIterator();
-    return new DimIterator(dimMap);
+    return new DimIterator(dimMap.entrySet().iterator());
+  }
+
+  /**
+   * Per-dim posting iterator starting at the first posting whose {@code RID} is &gt;= {@code from}.
+   * Lets callers (notably {@link MemtableSourceCursor#seekTo}) jump ahead in O(log n) instead of
+   * advancing the cursor one entry at a time, which is the bottleneck for BMW block-skip on a
+   * large memtable. Returns an empty iterator if the dim is absent.
+   */
+  public Iterator<MemtablePosting> iterateDimFrom(final int dim, final RID from) {
+    final ConcurrentSkipListMap<RID, Float> dimMap = postings.get(dim);
+    if (dimMap == null)
+      return java.util.Collections.emptyIterator();
+    return new DimIterator(dimMap.tailMap(from, /* inclusive */ true).entrySet().iterator());
   }
 
   /** Reset to empty (call only after the contents have been flushed). */
   public void clear() {
     postings.clear();
+    dimMaxWeight.clear();
     totalPostings.set(0L);
     tombstoneCount.set(0L);
     heapBytesEstimate.set(0L);
@@ -160,8 +203,8 @@ public final class Memtable {
   private static final class DimIterator implements Iterator<MemtablePosting> {
     private final Iterator<Map.Entry<RID, Float>> backing;
 
-    DimIterator(final ConcurrentSkipListMap<RID, Float> map) {
-      this.backing = map.entrySet().iterator();
+    DimIterator(final Iterator<Map.Entry<RID, Float>> backing) {
+      this.backing = backing;
     }
 
     @Override

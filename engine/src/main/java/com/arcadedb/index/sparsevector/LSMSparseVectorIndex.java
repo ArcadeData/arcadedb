@@ -529,7 +529,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public void drop() {
-    engine.close();
+    // Reclaim all .sparseseg component files this index owns. engine.close() alone would seal
+    // the memtable into a *new* segment and leave every existing one (plus the just-flushed one)
+    // registered with the FileManager - the files would survive after this drop() returns,
+    // leaking disk and confusing the next reopen.
+    engine.dropAll();
     underlyingIndex.drop();
   }
 

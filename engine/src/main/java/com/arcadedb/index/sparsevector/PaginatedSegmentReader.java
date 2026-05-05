@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicReferenceArray;
 import java.util.zip.CRC32;
 
 /**
@@ -51,10 +52,14 @@ public final class PaginatedSegmentReader implements AutoCloseable {
   private final long                   tombstoneFloorSegment;
 
   // Sorted parallel arrays: dimIds[i] -> trailer at (trailerPageNums[i], trailerOffsets[i] & 0xFFFF).
-  private final int[]                  dimIds;
-  private final int[]                  trailerPageNums;
-  private final short[]                trailerOffsets;
-  private final PaginatedDimMetadata[] dimCacheByPos;
+  private final int[]                                 dimIds;
+  private final int[]                                 trailerPageNums;
+  private final short[]                               trailerOffsets;
+  // Per-position lazy cache. AtomicReferenceArray gives us volatile-like read/write semantics on
+  // each slot so the dim_metadata produced under a concurrent {@link #dimMetadata} call is safely
+  // published to readers on other threads. Without this, BMW DAAT scoring on the query thread
+  // could see a torn metadata reference written by a parallel cursor opener.
+  private final AtomicReferenceArray<PaginatedDimMetadata> dimCacheByPos;
 
   public PaginatedSegmentReader(final SparseSegmentComponent component) throws IOException {
     this.component = component;
@@ -117,8 +122,15 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     this.tombstoneFloorSegment = manifestPage.readLong(cursor);
     // reserved(8) + crc32(4) follow; not validated on read for now (CRC could be added if profiling shows it's worthwhile).
 
-    // ---- Dim index page ----
-    final BasePage dimIndexPage = component.readPage(dimIndexPageNum);
+    // ---- Dim index pages ----
+    // The dim_index can span multiple consecutive pages when the corpus has more unique dims
+    // than fit in one page (~6552 entries per 64 KiB page). Page 0 of the dim_index begins with
+    // a 4-byte count header; entries pack densely across that page and any pages that follow,
+    // never spanning a page boundary. The reader walks page by page until it has read all
+    // {@code totalDims} entries.
+    final int entrySize = PaginatedSegmentFormat.DIM_INDEX_ENTRY_SIZE;
+    final int pageContentSize = component.pageContentSize();
+    BasePage dimIndexPage = component.readPage(dimIndexPageNum);
     final int n = dimIndexPage.readInt(0);
     if (n != totalDims)
       throw new IOException("Inconsistent dim count in '" + component.getName() + "': header says " + totalDims
@@ -126,10 +138,17 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     this.dimIds = new int[n];
     this.trailerPageNums = new int[n];
     this.trailerOffsets = new short[n];
-    this.dimCacheByPos = new PaginatedDimMetadata[n];
+    this.dimCacheByPos = new AtomicReferenceArray<>(n);
     int prevDim = Integer.MIN_VALUE;
-    int p = 4;
+    int p = 4;                  // skip the 4-byte count on page 0
+    int currentDimIndexPage = dimIndexPageNum;
     for (int i = 0; i < n; i++) {
+      // Roll to the next contiguous dim_index page if the next entry won't fit on the current one.
+      if (p + entrySize > pageContentSize) {
+        currentDimIndexPage++;
+        dimIndexPage = component.readPage(currentDimIndexPage);
+        p = 0;
+      }
       final int dimId = dimIndexPage.readInt(p);
       p += 4;
       final int trailerPage = dimIndexPage.readInt(p);
@@ -177,16 +196,25 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     return dimIds.clone();
   }
 
-  /** Returns the metadata for {@code dimId}, loading on demand. {@code null} if the dim is absent. */
+  /**
+   * Returns the metadata for {@code dimId}, loading on demand. {@code null} if the dim is absent.
+   * Thread-safe: the lazy cache is an {@link AtomicReferenceArray} so a metadata reference loaded
+   * by one thread is safely published to readers on other threads. Two threads racing on the
+   * same dim load the metadata twice (the loader is idempotent and cheap), but only one of the
+   * results is kept in the slot - which is fine because the metadata is value-equivalent.
+   */
   public PaginatedDimMetadata dimMetadata(final int dimId) throws IOException {
     final int p = Arrays.binarySearch(dimIds, dimId);
     if (p < 0)
       return null;
-    PaginatedDimMetadata m = dimCacheByPos[p];
+    PaginatedDimMetadata m = dimCacheByPos.get(p);
     if (m != null)
       return m;
     m = loadDimMetadata(dimId, trailerPageNums[p], trailerOffsets[p] & 0xFFFF);
-    dimCacheByPos[p] = m;
+    if (!dimCacheByPos.compareAndSet(p, null, m)) {
+      // Another thread populated the slot first; return its value to keep callers consistent.
+      return dimCacheByPos.get(p);
+    }
     return m;
   }
 
@@ -257,29 +285,42 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     final int lastBucket  = page.readInt(p);                   p += 4;
     final long lastPos    = page.readLong(p);                  p += 8;
     final int postingCount = page.readShort(p) & 0xFFFF;       p += 2;
-    final float maxWeight = page.readFloat(p);                 p += 4;
+    final float bmwUpperBound = page.readFloat(p);             p += 4;
     final float weightMin = page.readFloat(p);                 p += 4;
     final float weightMax = page.readFloat(p);                 p += 4;
     final boolean hasTombstones = page.readByte(p) != 0;
-    return new BlockHeader(new RID(firstBucket, firstPos), new RID(lastBucket, lastPos), postingCount, maxWeight,
+    return new BlockHeader(new RID(firstBucket, firstPos), new RID(lastBucket, lastPos), postingCount, bmwUpperBound,
         weightMin, weightMax, hasTombstones);
   }
 
   /**
-   * Fetch the block payload bytes that immediately follow a block header at
-   * {@code (pageNum, offsetInPage)}. Returns a defensively-copied {@link ByteBuffer} positioned
-   * at the first compressed RID byte. The caller knows the logical block length via the block
-   * header's posting count, so we read up to the page's content end and let the cursor stop
-   * decoding once it has the right number of postings.
+   * Fetch the block payload that immediately follows a block header at
+   * {@code (pageNum, offsetInPage)} into a caller-owned scratch buffer. Returns the same
+   * {@code reusableView} (which must wrap {@code dest}) positioned at the first compressed RID
+   * byte and limited to the bytes-read window, so the caller can decode without allocating.
+   * <p>
+   * The caller knows the logical block length via the block header's posting count, so we read
+   * up to the page's content end and let the cursor stop decoding once it has the right number
+   * of postings; the limit is set conservatively to the bytes that were actually read.
+   *
+   * @param dest         scratch byte array sized at {@code &gt;= component.pageContentSize()}; the
+   *                     reader fills it in place starting at offset 0
+   * @param reusableView a {@link ByteBuffer} that wraps {@code dest}; the reader rewinds it,
+   *                     applies the limit, and returns it
    */
-  ByteBuffer readBlockPayload(final int pageNum, final int offsetInPage) throws IOException {
+  ByteBuffer readBlockPayloadInto(final int pageNum, final int offsetInPage, final byte[] dest,
+      final ByteBuffer reusableView) throws IOException {
     final BasePage page = component.readPage(pageNum);
     final int payloadOffset = offsetInPage + SegmentFormat.BLOCK_HEADER_SIZE;
     final int len = page.getMaxContentSize() - payloadOffset;
-    if (len <= 0)
-      return ByteBuffer.allocate(0).order(ByteOrder.BIG_ENDIAN);
-    final byte[] copy = new byte[len];
-    page.readByteArray(payloadOffset, copy);
-    return ByteBuffer.wrap(copy).order(ByteOrder.BIG_ENDIAN);
+    reusableView.clear();
+    if (len <= 0) {
+      reusableView.limit(0);
+      return reusableView;
+    }
+    page.readByteArray(payloadOffset, dest, 0, len);
+    reusableView.limit(len);
+    return reusableView;
   }
+
 }

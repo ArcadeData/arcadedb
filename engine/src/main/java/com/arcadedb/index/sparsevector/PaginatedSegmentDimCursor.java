@@ -24,11 +24,12 @@ import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 
 /**
  * Forward cursor over the postings of a single dim within a page-backed sealed segment.
  * Mirrors {@link SegmentDimCursor}'s state machine (block_header / posting), but reads block
- * payloads via {@link PaginatedSegmentReader#readBlockPayload} (page-cache-backed) instead of a
+ * payloads via {@link PaginatedSegmentReader#readBlockPayloadInto} (page-cache-backed) instead of a
  * raw FileChannel. The skip path uses the per-segment skip list to avoid decompressing blocks
  * that cannot beat the current threshold.
  *
@@ -53,6 +54,13 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
   private boolean       blockDecoded;
   private boolean       exhausted;
 
+  // Reusable decode scratch space, sized once to a full page payload. Decoding a block consumes
+  // the buffer linearly (RIDs first, then weights), so we can reuse it across blocks and across
+  // queries on this cursor without allocating per-block byte[] / ByteBuffer pairs. Cuts out the
+  // dominant allocation in BMW-DAAT under high-fanout queries.
+  private final byte[]     decodeScratch;
+  private final ByteBuffer decodeView;
+
   PaginatedSegmentDimCursor(final PaginatedSegmentReader reader, final PaginatedDimMetadata meta) {
     this.reader = reader;
     this.meta = meta;
@@ -60,6 +68,9 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     this.blockRids = new RID[params.blockSize()];
     this.blockWeights = new float[params.blockSize()];
     this.blockTombstones = new boolean[params.blockSize()];
+    final int maxPayload = reader.component().pageContentSize();
+    this.decodeScratch = new byte[maxPayload];
+    this.decodeView = ByteBuffer.wrap(decodeScratch).order(ByteOrder.BIG_ENDIAN);
   }
 
   public int dimId() {
@@ -98,7 +109,7 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
       return meta.globalMaxWeight();
     final SkipEntry[] sl = meta.skipList();
     if (sl.length == 0)
-      return meta.blockHeader(currentBlock).maxWeight();
+      return meta.blockHeader(currentBlock).bmwUpperBound();
     int idx = currentBlock / params.skipStride();
     if (idx >= sl.length)
       idx = sl.length - 1;
@@ -208,7 +219,7 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     final int pageNum = meta.blockPageNum(currentBlock);
     final int offsetInPage = meta.blockOffset(currentBlock);
     final BlockHeader bh = meta.blockHeader(currentBlock);
-    final ByteBuffer buf = reader.readBlockPayload(pageNum, offsetInPage);
+    final ByteBuffer buf = reader.readBlockPayloadInto(pageNum, offsetInPage, decodeScratch, decodeView);
 
     final int n = bh.postingCount();
     blockSize = n;

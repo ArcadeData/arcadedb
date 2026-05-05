@@ -41,6 +41,15 @@ import java.util.PriorityQueue;
  *       cursor. Otherwise skip head cursors forward to the pivot RID (block-skip when possible).</li>
  *   <li>Repeat until no live cursor remains, or the prefix-sum can no longer beat the threshold.</li>
  * </ol>
+ * <p>
+ * <b>Tombstone semantics.</b> A tombstone observed on any one of the aligned cursors at the
+ * candidate RID skips the whole document - the loop drops the candidate from this query without
+ * scoring even the dims that have live postings under the same RID. This is the
+ * whole-document-delete contract documented on
+ * {@link PaginatedSparseVectorEngine#put(int, com.arcadedb.database.RID, float)} and
+ * {@link PaginatedSparseVectorEngine#remove(int, com.arcadedb.database.RID)}: the engine treats
+ * a tombstone as "this RID is gone", not "this one dim of this RID is gone". Partial-dim updates
+ * are not supported; rewrite the document's full posting set instead.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -65,6 +74,17 @@ public final class BmwScorer {
       throws IOException {
     if (queryDims.length != queryWeights.length || queryWeights.length != cursors.length)
       throw new IllegalArgumentException("queryDims, queryWeights, cursors must have the same length");
+    // BMW pruning relies on the prefix-sum of {@code queryWeight * upperBoundRemaining} being
+    // monotonically non-decreasing per added dim, so a negative query weight would let the
+    // running sum drop, the pivot search would never converge, and the result set would
+    // silently be wrong. Match the non-negativity contract enforced by
+    // {@link com.arcadedb.index.sparsevector.LSMSparseVectorIndex#put} on the document side.
+    for (final float w : queryWeights) {
+      if (Float.isNaN(w) || Float.isInfinite(w))
+        throw new IllegalArgumentException("query weights must be finite numbers; got " + w);
+      if (w < 0.0f)
+        throw new IllegalArgumentException("query weights must be non-negative; got " + w);
+    }
     if (k <= 0)
       return List.of();
 

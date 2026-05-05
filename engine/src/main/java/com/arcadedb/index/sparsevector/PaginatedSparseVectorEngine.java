@@ -48,6 +48,18 @@ import java.util.concurrent.locks.ReentrantLock;
  * snapshot is stable for the duration of the query even if a flush or compaction commits a new
  * publication mid-query. Flush, compaction, and engine close serialize on a single mutator lock
  * to keep the segment-set publication ordering well-defined.
+ * <p>
+ * <b>Tombstone semantics: whole-document deletes only.</b> Both the BMW DAAT scorer
+ * ({@link BmwScorer}) and the brute-force scorer ({@link BruteForceScorer}) treat any tombstone
+ * seen on an aligned dim cursor as a delete of the entire RID, not just of that one dim. A
+ * workload that wants to drop only one dim from a multi-dim document while keeping the others
+ * live must remove all of that document's postings and re-insert the survivors in the same
+ * write batch - otherwise the document disappears from any query that mentions the dim that was
+ * tombstoned. This is intentional for the document-as-sparse-vector use case (and what the
+ * {@code LSMSparseVectorIndex} put / remove path exposes today, where a vertex/document delete
+ * tombstones the document's whole posting set), but it is a constraint partial-dim writers must
+ * be aware of. See the per-method notes on {@link #put(int, com.arcadedb.database.RID, float)}
+ * and {@link #remove(int, com.arcadedb.database.RID)}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -97,11 +109,31 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
   // --- writes ---------------------------------------------------------------
 
+  /**
+   * Adds (or updates) a posting for {@code (dim, rid)} with {@code weight}.
+   * <p>
+   * <b>Tombstone semantics.</b> The engine's only delete primitive is the per-(dim, rid)
+   * tombstone produced by {@link #remove(int, RID)}. The BMW DAAT scorer
+   * ({@link BmwScorer}) and the brute-force scorer ({@link BruteForceScorer}) both treat any
+   * tombstone seen on an aligned dim cursor as a delete of the entire document - they skip the
+   * RID for the rest of the query, regardless of how many other dims still have live postings
+   * under that RID. <b>Partial-dim updates are not supported.</b> A workload that needs to
+   * "remove dim 2 from doc X while keeping dims 1 and 3 live" must remove all of doc X's
+   * postings and re-insert dim 1 and dim 3 within the same write batch, otherwise doc X will
+   * disappear from any query that mentions dim 2. The whole-document delete is the supported
+   * use case (and what the SQL/Studio surface produces today, since the index is built per
+   * document and reflects document-level deletes).
+   */
   public void put(final int dim, final RID rid, final float weight) {
     ensureOpen();
     memtable.get().put(dim, rid, weight);
   }
 
+  /**
+   * Tombstones the posting for {@code (dim, rid)}. See the tombstone-semantics note on
+   * {@link #put(int, RID, float)}: this is a whole-document delete signal in the scorer's view,
+   * not a partial-dim update.
+   */
   public void remove(final int dim, final RID rid) {
     ensureOpen();
     memtable.get().remove(dim, rid);
@@ -220,6 +252,20 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           // runWithCompactionReplication reads the new file straight off the channel after this
           // callback returns (serializeFilePagesAsWal); without this drain it would see zeros.
           database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+          // Open the reader and publish it under {@link #mutatorLock} (held by the caller) AND
+          // inside the recording session, so:
+          //   - the segments-array publication is a single set() with no observable gap where a
+          //     concurrent {@link #topK} could see a missing segment;
+          //   - {@link #refreshSegmentsFromFileManager} won't race the publication: at this point
+          //     the file is on disk + registered, and the publication below puts its id into
+          //     knownIds, so the refresh path's "skip if knownIds contains this id" guard prevents
+          //     the duplicate-reader bug that otherwise lands on the next query.
+          try {
+            appendSegment(new PaginatedSegmentReader(componentRef[0]));
+          } catch (final IOException e) {
+            throw new IndexException("Failed to open freshly-flushed sparse segment '" + indexName + "_seg" + segmentId + "'",
+                e);
+          }
           return Boolean.TRUE;
         });
       } catch (final IOException | InterruptedException e) {
@@ -227,11 +273,6 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       }
       if (!ranOnLeader)
         return -1L;
-      try {
-        appendSegment(new PaginatedSegmentReader(componentRef[0]));
-      } catch (final IOException e) {
-        throw new IndexException("Failed to open freshly-flushed sparse segment '" + indexName + "_seg" + segmentId + "'", e);
-      }
       return segmentId;
     } finally {
       mutatorLock.unlock();
@@ -313,14 +354,36 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           // Drain the page cache's async writer so the synthetic WAL HA ships in this same
           // recording session sees the final on-disk pages instead of zeros.
           database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
-          // Whatever we do next runs inside the same recording session so the SCHEMA_ENTRY
-          // captures both the new component and any input retirements atomically.
-          if (!wroteAnything[0])
+          // Open the reader and swap segments under {@link #mutatorLock} (held by the caller) AND
+          // inside the recording session, in a single CAS. Doing the retire-old + add-new step in
+          // one {@link #replaceSegments} call closes the ghost-window where a concurrent
+          // {@link #topK} could otherwise see neither the inputs nor the merged segment, and stops
+          // {@link #refreshSegmentsFromFileManager} from racing in to open the new component
+          // before this thread publishes it (which would land a duplicate reader for the same
+          // segment id and double-count scores).
+          if (!wroteAnything[0]) {
             // Empty merge (everything was tombstoned): drop the empty new component and the
             // inputs together. The recording session sees the create+delete pair on the new
             // component as a wash, and the inputs go away cleanly on followers too.
             dropComponent(componentRef[0]);
-          replaceSegments(inputs, /* maybeNew */ null);
+            replaceSegments(inputs, /* maybeNew */ null);
+          } else {
+            final PaginatedSegmentReader newReader;
+            try {
+              newReader = new PaginatedSegmentReader(componentRef[0]);
+            } catch (final IOException e) {
+              // Defensive: a successful build + drain should never produce a reader that fails
+              // header validation, but if it does, drop the orphan and surface the real cause.
+              try {
+                dropComponent(componentRef[0]);
+              } catch (final RuntimeException ignored) {
+                // best-effort cleanup
+              }
+              throw new IndexException(
+                  "Failed to open freshly-compacted sparse segment '" + indexName + "_seg" + newId + "'", e);
+            }
+            replaceSegments(inputs, newReader);
+          }
           return Boolean.TRUE;
         });
       } catch (final IOException | InterruptedException e) {
@@ -330,11 +393,6 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         return -1L;
       if (!wroteAnything[0])
         return -1L;
-      try {
-        appendSegment(new PaginatedSegmentReader(componentRef[0]));
-      } catch (final IOException e) {
-        throw new IndexException("Failed to open freshly-compacted sparse segment '" + indexName + "_seg" + newId + "'", e);
-      }
       return newId;
     } finally {
       mutatorLock.unlock();
@@ -378,32 +436,95 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       if (closed)
         return;
       // Final flush so writes since the last flush are durable; matches the legacy engine's behaviour.
+      // Same orphan-protection as flush() / compactInputs(): if the build transaction throws,
+      // drop the just-registered component so the schema doesn't carry a stub file that would
+      // fail header validation on the next refreshSegmentsFromFileManager scan.
       final Memtable old = memtable.getAndSet(new Memtable());
       if (!old.isEmpty()) {
         final long segmentId = nextSegmentId.getAndIncrement();
         final SparseSegmentComponent component = createComponent(segmentId);
-        database.transaction(() -> {
-          try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, params)) {
-            b.setSegmentId(segmentId);
-            for (final int dim : old.sortedDims()) {
-              final Iterator<MemtablePosting> it = old.iterateDim(dim);
-              if (!it.hasNext())
-                continue;
-              b.startDim(dim);
-              while (it.hasNext()) {
-                final MemtablePosting p = it.next();
-                if (p.tombstone())
-                  b.appendTombstone(p.rid());
-                else
-                  b.appendPosting(p.rid(), p.weight());
+        try {
+          database.transaction(() -> {
+            try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, params)) {
+              b.setSegmentId(segmentId);
+              for (final int dim : old.sortedDims()) {
+                final Iterator<MemtablePosting> it = old.iterateDim(dim);
+                if (!it.hasNext())
+                  continue;
+                b.startDim(dim);
+                while (it.hasNext()) {
+                  final MemtablePosting p = it.next();
+                  if (p.tombstone())
+                    b.appendTombstone(p.rid());
+                  else
+                    b.appendPosting(p.rid(), p.weight());
+                }
+                b.endDim();
               }
-              b.endDim();
+              b.finish();
             }
-            b.finish();
+          });
+        } catch (final RuntimeException buildFailure) {
+          try {
+            dropComponent(component);
+          } catch (final RuntimeException dropFailure) {
+            buildFailure.addSuppressed(dropFailure);
           }
-        });
+          throw buildFailure;
+        }
       }
       // Component lifetime is owned by FileManager; nothing else to release here.
+      segments.set(new PaginatedSegmentReader[0]);
+      closed = true;
+    } finally {
+      mutatorLock.unlock();
+    }
+  }
+
+  /**
+   * Drop every sealed segment component owned by this engine and clear the in-memory state.
+   * Called from {@link LSMSparseVectorIndex#drop()} so dropping the index also reclaims the
+   * {@code .sparseseg} files; without this the FileManager would keep the components and the
+   * files would leak on disk once the wrapping LSM-Tree shell is dropped.
+   * <p>
+   * Discards the memtable too: a drop is a permanent destruction, the postings have nowhere
+   * useful to land. After this call the engine is closed.
+   */
+  public void dropAll() {
+    if (closed)
+      return;
+    mutatorLock.lock();
+    try {
+      if (closed)
+        return;
+      // Throw away unsealed memtable state - a drop voids any pending writes.
+      memtable.set(new Memtable());
+      // Drop every active segment via the FileManager so the on-disk file is reclaimed and the
+      // schema's files list no longer references the component.
+      for (final PaginatedSegmentReader r : segments.get()) {
+        try {
+          dropComponent(r.component());
+        } catch (final RuntimeException ignored) {
+          // best-effort: swallow per-segment drop failures so a single bad file doesn't strand
+          // the rest of the cleanup; subsequent reopen will skip them via header validation.
+        }
+      }
+      // Pick up any orphan components missed because they were registered but never made it into
+      // {@code segments} (e.g. a partial flush that crashed before swap). Walk the FileManager
+      // for sparseseg files matching this index's prefix and drop those too.
+      final String prefix = indexName + "_seg";
+      for (final var componentFile : database.getFileManager().getFiles()) {
+        if (componentFile == null)
+          continue;
+        final var component = database.getSchema().getFileByIdIfExists(componentFile.getFileId());
+        if (component instanceof SparseSegmentComponent ssc && ssc.getName().startsWith(prefix)) {
+          try {
+            dropComponent(ssc);
+          } catch (final RuntimeException ignored) {
+            // best-effort: see comment above
+          }
+        }
+      }
       segments.set(new PaginatedSegmentReader[0]);
       closed = true;
     } finally {
@@ -554,14 +675,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     }
   }
 
+  // Both writers below run under {@link #mutatorLock}; the only concurrent reader is {@link #topK}
+  // which takes a lock-free snapshot via {@code segments.get()}. A plain {@code segments.set(...)}
+  // is therefore enough - the AtomicReference still provides the safe-publication barrier we need
+  // for readers without the misleading-CAS-loop suggestion of contention between writers.
   private void appendSegment(final PaginatedSegmentReader newSeg) {
-    while (true) {
-      final PaginatedSegmentReader[] curr = segments.get();
-      final PaginatedSegmentReader[] next = Arrays.copyOf(curr, curr.length + 1);
-      next[curr.length] = newSeg;
-      if (segments.compareAndSet(curr, next))
-        return;
-    }
+    final PaginatedSegmentReader[] curr = segments.get();
+    final PaginatedSegmentReader[] next = Arrays.copyOf(curr, curr.length + 1);
+    next[curr.length] = newSeg;
+    segments.set(next);
   }
 
   private void replaceSegments(final PaginatedSegmentReader[] toRemove, final PaginatedSegmentReader maybeNew) {
@@ -569,18 +691,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     for (final PaginatedSegmentReader r : toRemove)
       removeIds.add(r.segmentId());
 
-    while (true) {
-      final PaginatedSegmentReader[] curr = segments.get();
-      final List<PaginatedSegmentReader> next = new ArrayList<>(curr.length);
-      for (final PaginatedSegmentReader r : curr) {
-        if (!removeIds.contains(r.segmentId()))
-          next.add(r);
-      }
-      if (maybeNew != null)
-        next.add(maybeNew);
-      if (segments.compareAndSet(curr, next.toArray(new PaginatedSegmentReader[0])))
-        break;
+    final PaginatedSegmentReader[] curr = segments.get();
+    final List<PaginatedSegmentReader> next = new ArrayList<>(curr.length);
+    for (final PaginatedSegmentReader r : curr) {
+      if (!removeIds.contains(r.segmentId()))
+        next.add(r);
     }
+    if (maybeNew != null)
+      next.add(maybeNew);
+    segments.set(next.toArray(new PaginatedSegmentReader[0]));
 
     // Drop the underlying component files (and FileManager refs) for retired segments.
     for (final PaginatedSegmentReader r : toRemove)

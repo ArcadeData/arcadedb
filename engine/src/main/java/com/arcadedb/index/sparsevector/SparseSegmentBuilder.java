@@ -22,11 +22,13 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.sparsevector.SegmentFormat.RidCompression;
+import com.arcadedb.log.LogManager;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.logging.Level;
 import java.util.zip.CRC32;
 
 /**
@@ -62,7 +64,8 @@ public final class SparseSegmentBuilder implements AutoCloseable {
 
   // Currently open dim state.
   private int                     currentDimId = -1;
-  private long                    currentDimPostingCount;
+  private long                    currentDimPostingCount;     // includes tombstones
+  private long                    currentDimLivePostingCount; // df: live (non-tombstone) only
   private float                   currentDimMaxWeight;
   private final List<long[]>      currentDimBlockLocators = new ArrayList<>();   // each: {pageNum, offsetInPage}
   private final List<BlockHeader> currentDimBlockHeaders  = new ArrayList<>();
@@ -127,6 +130,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     }
     this.currentDimId = dimId;
     this.currentDimPostingCount = 0L;
+    this.currentDimLivePostingCount = 0L;
     this.currentDimMaxWeight = Float.NEGATIVE_INFINITY;
     this.currentDimBlockLocators.clear();
     this.currentDimBlockHeaders.clear();
@@ -219,7 +223,18 @@ public final class SparseSegmentBuilder implements AutoCloseable {
 
   @Override
   public void close() {
-    // Builder owns no I/O resources outside the transaction's MutablePage list.
+    // Builder owns no I/O resources outside the transaction's MutablePage list. The only thing
+    // close() can usefully do is loud-fail an obvious misuse: if a caller wrote one or more
+    // dims (so dimIndex is non-empty) but never called finish(), the segment file is registered
+    // with the schema yet missing its manifest, dim_index and back-patched header - reading it
+    // would throw a magic / CRC mismatch much later, far from the bug. The engine's flush() and
+    // compactInputs() drop the partial component on a build failure (see PaginatedSparseVectorEngine),
+    // so this path mostly catches direct callers of the builder in tests; a SEVERE log makes the
+    // mistake obvious without forcing a throw inside try-with-resources cleanup.
+    if (!finished && !dimIndex.isEmpty())
+      LogManager.instance().log(this, Level.SEVERE,
+          "SparseSegmentBuilder for component '%s' was closed with %d dim(s) written but no finish() call - the segment file is incomplete and the next read will fail header validation. Either call finish() or drop the component.",
+          component.getName(), dimIndex.size());
   }
 
   // --- internals ------------------------------------------------------------
@@ -252,11 +267,13 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     float weightMin = Float.POSITIVE_INFINITY;
     float weightMax = Float.NEGATIVE_INFINITY;
     boolean hasTombstones = false;
+    int liveInBlock = 0;
     for (int i = 0; i < blockCursor; i++) {
       if (blockTombstones[i]) {
         hasTombstones = true;
         continue;
       }
+      liveInBlock++;
       final float w = blockWeights[i];
       if (w < weightMin)
         weightMin = w;
@@ -340,6 +357,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     currentDimBlockHeaders.add(new BlockHeader(blockRids[0], blockRids[blockCursor - 1], blockCursor, blockMaxForBmw,
         weightMin, weightMax, hasTombstones));
     currentDimPostingCount += blockCursor;
+    currentDimLivePostingCount += liveInBlock;
     if (blockMaxForBmw > currentDimMaxWeight)
       currentDimMaxWeight = blockMaxForBmw;
     blockCursor = 0;
@@ -371,7 +389,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     final float[] maxWeightToEnd = new float[skipEntries];
     float runningMax = Float.NEGATIVE_INFINITY;
     for (int b = blockCount - 1; b >= 0; b--) {
-      final float bm = currentDimBlockHeaders.get(b).maxWeight();
+      final float bm = currentDimBlockHeaders.get(b).bmwUpperBound();
       if (bm > runningMax)
         runningMax = bm;
       if (b % params.skipStride() == 0)
@@ -383,7 +401,12 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     buf.putInt(currentDimId);
     buf.putInt(blockCount);
     buf.putInt((int) currentDimPostingCount);
-    buf.putInt((int) currentDimPostingCount); // df = posting count for segment-local df
+    // df is the segment-local document frequency: number of LIVE postings only. Tombstones do
+    // not contribute - keeping them in df would inflate IDF in proportion to the
+    // uncompacted-tombstone load, which is exactly the case where IDF should be most accurate.
+    // posting_count above stays as the total entry count (live + tombstones) so on-disk
+    // bookkeeping (dim trailer scans, debugging) sees what is actually written.
+    buf.putInt((int) currentDimLivePostingCount);
     buf.putFloat(currentDimMaxWeight == Float.NEGATIVE_INFINITY ? 0.0f : currentDimMaxWeight);
 
     for (int b = 0; b < blockCount; b++) {
@@ -404,20 +427,58 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     currentWritePageFree -= trailerSize;
   }
 
-  private void writeDimIndex(final int pageNum) {
-    final int size = 4 + dimIndex.size() * PaginatedSegmentFormat.DIM_INDEX_ENTRY_SIZE;
-    if (size > pageContentSize)
-      throw new IndexException("dim_index size " + size + " exceeds page content size " + pageContentSize
-          + "; multi-page dim_index not yet implemented");
-    final ByteBuffer buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN);
-    buf.putInt(dimIndex.size());
-    for (final int[] entry : dimIndex) {
-      buf.putInt(entry[0]);              // dim_id
-      buf.putInt(entry[1]);              // trailer page_num
-      buf.putShort((short) entry[2]);    // trailer offset_in_page
+  /**
+   * Writes the dim_index across one or more contiguous pages starting at {@code firstPageNum}.
+   * <p>
+   * Layout:
+   * <ul>
+   *   <li>Page 0 of the dim_index: int32 entry count, then entries packed densely.</li>
+   *   <li>Pages 1..k of the dim_index: entries packed densely (no per-page header).</li>
+   * </ul>
+   * Entries do not span page boundaries; if the next entry wouldn't fit on the current page, we
+   * roll to a freshly-allocated page. The entry count + entry size is enough for the reader to
+   * compute which page each entry lives on, so no per-page metadata is needed.
+   */
+  private void writeDimIndex(final int firstPageNum) {
+    final int entrySize = PaginatedSegmentFormat.DIM_INDEX_ENTRY_SIZE;
+    final int total = dimIndex.size();
+    int writtenEntries = 0;
+    int pageNum = firstPageNum;
+    int offsetInPage = 0;
+
+    // Page 0: write the count header first.
+    {
+      final ByteBuffer hdr = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN);
+      hdr.putInt(total);
+      pages.get(pageNum).writeByteArray(0, hdr.array(), 0, 4);
+      offsetInPage = 4;
     }
-    pages.get(pageNum).writeByteArray(0, buf.array(), 0, size);
-    currentWritePageFree = pageContentSize - size;
+
+    while (writtenEntries < total) {
+      // Roll to a new page if the next entry can't fit in the remaining space on this page.
+      if (offsetInPage + entrySize > pageContentSize) {
+        allocateNewPage();
+        pageNum = currentWritePage;
+        offsetInPage = 0;
+      }
+      // Pack as many entries as fit on the current page in one writeByteArray call.
+      final int remainingEntries = total - writtenEntries;
+      final int spaceLeft = pageContentSize - offsetInPage;
+      final int entriesOnThisPage = Math.min(remainingEntries, spaceLeft / entrySize);
+      final ByteBuffer buf = ByteBuffer.allocate(entriesOnThisPage * entrySize).order(ByteOrder.BIG_ENDIAN);
+      for (int i = 0; i < entriesOnThisPage; i++) {
+        final int[] entry = dimIndex.get(writtenEntries + i);
+        buf.putInt(entry[0]);              // dim_id
+        buf.putInt(entry[1]);              // trailer page_num
+        buf.putShort((short) entry[2]);    // trailer offset_in_page
+      }
+      pages.get(pageNum).writeByteArray(offsetInPage, buf.array(), 0, entriesOnThisPage * entrySize);
+      offsetInPage += entriesOnThisPage * entrySize;
+      writtenEntries += entriesOnThisPage;
+    }
+
+    currentWritePage = pageNum;
+    currentWritePageFree = pageContentSize - offsetInPage;
   }
 
   private void writeManifest(final int pageNum) {

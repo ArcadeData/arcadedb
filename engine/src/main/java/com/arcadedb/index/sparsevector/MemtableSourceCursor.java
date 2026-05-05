@@ -37,9 +37,12 @@ import java.util.NoSuchElementException;
  */
 public final class MemtableSourceCursor implements SourceCursor {
 
-  private final int                      dim;
-  private final Iterator<MemtablePosting> iterator;
-  private final float                    dimMaxWeight;
+  private final Memtable memtable;
+  private final int      dim;
+  // Mutable: replaced by a tail iterator on seekTo so block-skips are O(log n) over the
+  // ConcurrentSkipListMap rather than O(n) one-entry-at-a-time advances.
+  private Iterator<MemtablePosting> iterator;
+  private final float               dimMaxWeight;
 
   private RID     currentRid;
   private float   currentWeight;
@@ -50,21 +53,13 @@ public final class MemtableSourceCursor implements SourceCursor {
   private MemtablePosting buffered;
 
   public MemtableSourceCursor(final Memtable memtable, final int dim) {
+    this.memtable = memtable;
     this.dim = dim;
     this.iterator = memtable.iterateDim(dim);
-    this.dimMaxWeight = computeDimMax(memtable, dim);
-  }
-
-  /** Snapshot the maximum live weight for {@code dim} in {@code memtable}. */
-  private static float computeDimMax(final Memtable memtable, final int dim) {
-    final Iterator<MemtablePosting> it = memtable.iterateDim(dim);
-    float m = 0.0f;
-    while (it.hasNext()) {
-      final MemtablePosting p = it.next();
-      if (!p.tombstone() && p.weight() > m)
-        m = p.weight();
-    }
-    return m;
+    // Read the running per-dim max maintained by {@link Memtable#put} - O(1). The previous
+    // implementation walked the dim's postings a second time at construction; for a memtable
+    // with thousands of postings per dim that doubled the per-cursor cost.
+    this.dimMaxWeight = memtable.dimMaxWeight(dim);
   }
 
   @Override
@@ -103,12 +98,22 @@ public final class MemtableSourceCursor implements SourceCursor {
   public boolean seekTo(final RID target) throws IOException {
     if (exhausted)
       return false;
-    if (!started)
-      start();
-    while (currentRid != null && SparseSegmentBuilder.compareRid(currentRid, target) < 0) {
-      if (!advance())
-        return false;
+    started = true;
+    // If the current entry is already at/past the target, nothing to do.
+    if (currentRid != null && SparseSegmentBuilder.compareRid(currentRid, target) >= 0)
+      return true;
+    // Replace the iterator with an O(log n) tail iterator anchored at target. Avoids the
+    // one-entry-at-a-time advance the previous implementation did, which dominated query latency
+    // on large memtables (BMW block-skip can jump tens of thousands of postings at once).
+    iterator = memtable.iterateDimFrom(dim, target);
+    if (!iterator.hasNext()) {
+      exhausted = true;
+      currentRid = null;
+      buffered = null;
+      return false;
     }
+    buffered = iterator.next();
+    materializeBuffered();
     return !exhausted;
   }
 

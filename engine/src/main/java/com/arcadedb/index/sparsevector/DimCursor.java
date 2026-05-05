@@ -169,9 +169,18 @@ public final class DimCursor implements AutoCloseable {
 
   // ---------- internals ----------
 
-  /** Compute currentRid as min over live sources, then resolve currentWeight as the newest source's value. */
+  /**
+   * Compute {@code currentRid} as the min over live sources and resolve {@code currentWeight} /
+   * {@code currentTombstone} as the newest source's value at that RID, in a single pass.
+   * <p>
+   * Sources are passed oldest-first, so a higher index means newer. We track the min RID and,
+   * for any source that ties the running min, prefer the newest. Two pieces of state suffice:
+   * {@code minRid} and {@code newestAtMinIdx}. When a strictly smaller RID is seen, both are
+   * reset; when an equal RID is seen on a newer source, only the newest-index is updated.
+   */
   private void materializeMin() {
-    RID min = null;
+    RID minRid = null;
+    int newestAtMinIdx = -1;
     for (int i = 0; i < sources.length; i++) {
       if (!sourceLive[i])
         continue;
@@ -180,41 +189,32 @@ public final class DimCursor implements AutoCloseable {
         sourceLive[i] = false;
         continue;
       }
-      if (min == null || SparseSegmentBuilder.compareRid(rid, min) < 0)
-        min = rid;
+      if (minRid == null) {
+        minRid = rid;
+        newestAtMinIdx = i;
+        continue;
+      }
+      final int cmp = SparseSegmentBuilder.compareRid(rid, minRid);
+      if (cmp < 0) {
+        minRid = rid;
+        newestAtMinIdx = i;
+      } else if (cmp == 0) {
+        // i > newestAtMinIdx since we scan oldest-first and only revisit the same RID on a newer
+        // source; just bumping the index keeps newest-wins semantics without a second sweep.
+        newestAtMinIdx = i;
+      }
     }
-    if (min == null) {
+    if (minRid == null) {
       exhausted = true;
       currentRid = null;
       currentTombstone = false;
       currentWeight = 0.0f;
       return;
     }
-    // Newest-wins: scan sources newest -> oldest, pick the first whose currentRid == min.
-    boolean tombstone = false;
-    float weight = 0.0f;
-    boolean found = false;
-    for (int i = sources.length - 1; i >= 0; i--) {
-      if (!sourceLive[i])
-        continue;
-      if (min.equals(sources[i].currentRid())) {
-        if (sources[i].isTombstone()) {
-          tombstone = true;
-        } else {
-          weight = sources[i].currentWeight();
-        }
-        found = true;
-        break;
-      }
-    }
-    if (!found) {
-      exhausted = true;
-      currentRid = null;
-      return;
-    }
-    currentRid = min;
-    currentTombstone = tombstone;
-    currentWeight = weight;
+    final SourceCursor newest = sources[newestAtMinIdx];
+    currentRid = minRid;
+    currentTombstone = newest.isTombstone();
+    currentWeight = currentTombstone ? 0.0f : newest.currentWeight();
   }
 
 }

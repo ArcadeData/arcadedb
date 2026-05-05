@@ -36,6 +36,14 @@ import java.util.Set;
  * Walks every posting in every source for every query dim, accumulates the partial dot product
  * per RID, and returns the top-K. Sources are passed oldest-to-newest; tombstones in any source
  * mask the RID across older sources.
+ * <p>
+ * <b>Tombstone semantics.</b> A tombstone in any one of the query-dim cursors masks the RID
+ * across <i>all</i> query dims, matching the BMW pivot rule. This is the whole-document-delete
+ * contract documented on
+ * {@link PaginatedSparseVectorEngine#put(int, com.arcadedb.database.RID, float)} /
+ * {@link PaginatedSparseVectorEngine#remove(int, com.arcadedb.database.RID)}: the engine treats a
+ * tombstone as "this RID is gone", not "this one dim of this RID is gone". Partial-dim updates
+ * are not supported; rewrite the document's full posting set in the same write batch instead.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

@@ -21,12 +21,15 @@ package com.arcadedb.index.sparsevector;
 import java.nio.ByteBuffer;
 
 /**
- * Little-endian VarInt + ZigZag codec for the sparse-vector segment format.
+ * VarInt + ZigZag codec for the sparse-vector segment format.
  * <p>
- * The encoding matches Protocol Buffers / Snappy: 7 data bits per byte, top bit set means
- * "more bytes follow". ZigZag maps signed longs into unsigned space so that small magnitudes
- * (positive or negative) stay short. Used for RID-delta and (eventually) other relative
- * offsets in the on-disk format.
+ * VarInt is a byte-by-byte encoding and has no endianness of its own; the surrounding
+ * {@link ByteBuffer} carries an endianness for fixed-width fields (the block payload context
+ * uses {@code BIG_ENDIAN}), but the VarInt bytes themselves are written and read in stream
+ * order regardless. The encoding matches Protocol Buffers / Snappy: 7 data bits per byte, top
+ * bit set means "more bytes follow". ZigZag maps signed longs into unsigned space so that small
+ * magnitudes (positive or negative) stay short. Used for RID-delta and (eventually) other
+ * relative offsets in the on-disk format.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
