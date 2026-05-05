@@ -55,7 +55,7 @@ import java.util.logging.Level;
  * to keep the segment-set publication ordering well-defined.
  * <p>
  * <b>Tombstone semantics: whole-document deletes only.</b> Both the BMW DAAT scorer
- * ({@link BmwScorer}) and the brute-force scorer ({@link BruteForceScorer}) treat any tombstone
+ * ({@link BmwScorer}) and the test-only brute-force reference scorer treat any tombstone
  * seen on an aligned dim cursor as a delete of the entire RID, not just of that one dim. A
  * workload that wants to drop only one dim from a multi-dim document while keeping the others
  * live must remove all of that document's postings and re-insert the survivors in the same
@@ -178,7 +178,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * <p>
    * <b>Tombstone semantics.</b> The engine's only delete primitive is the per-(dim, rid)
    * tombstone produced by {@link #remove(int, RID)}. The BMW DAAT scorer
-   * ({@link BmwScorer}) and the brute-force scorer ({@link BruteForceScorer}) both treat any
+   * ({@link BmwScorer}) and the test-only brute-force reference scorer both treat any
    * tombstone seen on an aligned dim cursor as a delete of the entire document - they skip the
    * RID for the rest of the query, regardless of how many other dims still have live postings
    * under that RID. <b>Partial-dim updates are not supported.</b> A workload that needs to
@@ -197,6 +197,17 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * Tombstones the posting for {@code (dim, rid)}. See the tombstone-semantics note on
    * {@link #put(int, RID, float)}: this is a whole-document delete signal in the scorer's view,
    * not a partial-dim update.
+   * <p>
+   * <b>Caller contract.</b> The supported call site is the wrapper's
+   * {@link LSMSparseVectorIndex#remove(Object[], com.arcadedb.database.Identifiable)} expansion,
+   * which always tombstones <i>all</i> dims of a document together (one scalar
+   * {@code (dim, rid)} per non-zero dim of the original sparse vector). A caller that
+   * tombstones <i>some</i> dims of a multi-dim document and not others will silently make that
+   * document disappear from any query mentioning a tombstoned dim - the scorer treats any
+   * tombstone-aligned cursor as a whole-doc delete, regardless of whether other dims still hold
+   * live postings. There is no runtime guard against this misuse (we don't have cross-transaction
+   * doc-level state at this level); if you are calling this directly, document why the
+   * partial-dim semantic is acceptable for your call site.
    */
   public void remove(final int dim, final RID rid) {
     ensureOpen();
@@ -259,6 +270,17 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * {@code -1L} if the memtable was empty (or this server is a Raft follower - followers receive
    * segments from the leader via the standard component-shipping path).
    * <p>
+   * <b>Tombstone-only memtables are persisted, not dropped.</b> Unlike
+   * {@link #compactInputs} - which drops a fully-tombstoned merged segment because the inputs
+   * still hold the masking tombstones - flush is the only place a memtable's tombstones land on
+   * disk. Skipping a tombstone-only flush would silently lose the masks, and the older segments'
+   * live postings under those RIDs would resurface on the next query. So a positive return here
+   * does not imply "live data was added"; it means "a segment was sealed and registered" and the
+   * segment is allowed to contain only tombstones. {@code wroteAnything}-shape suppression is
+   * intentionally <i>not</i> applied. Callers that need to distinguish "real new data" from
+   * "tombstones-only" should consult {@link Memtable#tombstoneCount} on the snapshot before the
+   * flush, not the return value.
+   * <p>
    * The build runs inside {@link DatabaseInternal#runWithCompactionReplication}: the file
    * registration and page allocations are captured by the file-manager recording session so that
    * a {@code SCHEMA_ENTRY} carrying the new component metadata + a synthetic WAL of its pages is
@@ -289,6 +311,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           try {
             appendSegment(new PaginatedSegmentReader(componentRef[0]));
           } catch (final IOException e) {
+            // Build succeeded (component is registered with the FileManager) but reader open
+            // failed - drop the orphan so it does not leak into the next refresh scan and
+            // surface as a phantom segment whose header fails validation. Best-effort drop;
+            // if it also fails, attach to the suppressed chain rather than masking the real
+            // cause.
+            try {
+              dropComponent(componentRef[0]);
+            } catch (final RuntimeException dropFailure) {
+              e.addSuppressed(dropFailure);
+            }
             throw new IndexException("Failed to open freshly-flushed sparse segment '" + indexName + "_seg" + segmentId + "'",
                 e);
           }
@@ -428,38 +460,56 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
             }
             throw buildFailure;
           }
-          // Drain the page cache's async writer so the synthetic WAL HA ships in this same
-          // recording session sees the final on-disk pages instead of zeros.
-          database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
-          // Open the reader and swap segments under {@link #mutatorLock} (held by the caller) AND
-          // inside the recording session, in a single CAS. Doing the retire-old + add-new step in
-          // one {@link #replaceSegments} call closes the ghost-window where a concurrent
-          // {@link #topK} could otherwise see neither the inputs nor the merged segment, and stops
-          // {@link #refreshSegmentsFromFileManager} from racing in to open the new component
-          // before this thread publishes it (which would land a duplicate reader for the same
-          // segment id and double-count scores).
-          if (!wroteAnything[0]) {
-            // Empty merge (everything was tombstoned): drop the empty new component and the
-            // inputs together. The recording session sees the create+delete pair on the new
-            // component as a wash, and the inputs go away cleanly on followers too.
-            dropComponent(componentRef[0]);
-            replaceSegments(inputs, /* maybeNew */ null);
-          } else {
-            final PaginatedSegmentReader newReader;
-            try {
-              newReader = new PaginatedSegmentReader(componentRef[0]);
-            } catch (final IOException e) {
-              // Defensive: a successful build + drain should never produce a reader that fails
-              // header validation, but if it does, drop the orphan and surface the real cause.
+          // Build succeeded; from here on any throw needs to drop {@code componentRef[0]} so the
+          // partial-but-registered component does not leak into the FileManager. Track ownership
+          // with a {@code componentHandled} flag: it flips to {@code true} when the component is
+          // either explicitly disposed (empty-merge path drops it; reader-open failure drops it)
+          // or successfully transferred to the segments array via {@link #replaceSegments}. The
+          // outer {@code finally} block reads the flag and drops {@code componentRef[0]} only if
+          // nothing else has - covering the previously-unguarded gap of "drain throws" or
+          // "replaceSegments throws".
+          final boolean[] componentHandled = { false };
+          try {
+            // Drain the page cache's async writer so the synthetic WAL HA ships in this same
+            // recording session sees the final on-disk pages instead of zeros.
+            database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+            // Open the reader and swap segments under {@link #mutatorLock} (held by the caller) AND
+            // inside the recording session, in a single CAS. Doing the retire-old + add-new step in
+            // one {@link #replaceSegments} call closes the ghost-window where a concurrent
+            // {@link #topK} could otherwise see neither the inputs nor the merged segment, and stops
+            // {@link #refreshSegmentsFromFileManager} from racing in to open the new component
+            // before this thread publishes it (which would land a duplicate reader for the same
+            // segment id and double-count scores).
+            if (!wroteAnything[0]) {
+              // Empty merge (everything was tombstoned): drop the empty new component and the
+              // inputs together. The recording session sees the create+delete pair on the new
+              // component as a wash, and the inputs go away cleanly on followers too.
+              dropComponent(componentRef[0]);
+              componentHandled[0] = true;
+              replaceSegments(inputs, /* maybeNew */ null);
+            } else {
+              final PaginatedSegmentReader newReader;
+              try {
+                newReader = new PaginatedSegmentReader(componentRef[0]);
+              } catch (final IOException e) {
+                // Defensive: a successful build + drain should never produce a reader that fails
+                // header validation, but if it does, drop the orphan and surface the real cause.
+                dropComponent(componentRef[0]);
+                componentHandled[0] = true;
+                throw new IndexException(
+                    "Failed to open freshly-compacted sparse segment '" + indexName + "_seg" + newId + "'", e);
+              }
+              replaceSegments(inputs, newReader);
+              componentHandled[0] = true;
+            }
+          } finally {
+            if (!componentHandled[0]) {
               try {
                 dropComponent(componentRef[0]);
               } catch (final RuntimeException ignored) {
-                // best-effort cleanup
+                // best-effort: an in-flight throwable will already be carrying the primary cause
               }
-              throw new IndexException(
-                  "Failed to open freshly-compacted sparse segment '" + indexName + "_seg" + newId + "'", e);
             }
-            replaceSegments(inputs, newReader);
           }
           return Boolean.TRUE;
         });
@@ -482,11 +532,33 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     return memtable.get().totalPostings();
   }
 
+  /**
+   * <b>Total entries across the memtable and all sealed segments, including tombstones.</b>
+   * This is the on-disk + in-memory entry count, not the live-document count - a value
+   * suitable for sizing/operational metrics ("how big is this index"), not for telling a user
+   * how many documents would match a query that hits this index. Live count would require
+   * either summing per-dim {@code df} across every dim of every segment (an O(total dims) walk)
+   * or persisting a per-segment live aggregate in the segment header (a format change). Neither
+   * has been needed yet; if a caller wants to distinguish, expose {@link #memtableTombstones()}
+   * for the in-memory portion and treat segment {@code totalPostings} as an upper bound until a
+   * persisted live aggregate lands.
+   */
   public long totalPostings() {
     long total = memtable.get().totalPostings();
     for (final PaginatedSegmentReader r : segments.get())
       total += r.totalPostings();
     return total;
+  }
+
+  /**
+   * Number of tombstones currently held in the memtable. Tracked exactly (not estimated) by
+   * {@link Memtable} on every {@link Memtable#put} / {@link Memtable#remove}, so this is cheap
+   * and accurate at the memtable level. Sealed segments do not surface their tombstone count
+   * directly - it is stored per-dim in the trailer (as {@code postingCount - df}) but not
+   * aggregated in the segment header.
+   */
+  public long memtableTombstones() {
+    return memtable.get().tombstoneCount();
   }
 
   public int segmentCount() {
@@ -637,6 +709,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   private void dropComponent(final SparseSegmentComponent component) {
+    // Null-safe: callers in error-cleanup paths (flush() / compactInputs()) capture the freshly
+    // created component into a one-element {@code componentRef[0]} array and then drop in
+    // catch/finally blocks. If {@link #createComponent} itself threw before the assignment ran,
+    // {@code componentRef[0]} stays {@code null} - skipping silently here is what the cleanup
+    // path expects, and it lets the cleanup site avoid a defensive null check at every site.
+    if (component == null)
+      return;
     try {
       database.getFileManager().dropFile(component.getFileId());
     } catch (final IOException e) {
@@ -746,7 +825,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
     mutatorLock.lock();
     try {
-      // Re-check under lock so we don't redo work a concurrent refresh just finished.
+      // Re-check under lock to skip the reconcile when a concurrent refresh on another thread
+      // computed the SAME fingerprint and finished writing it back before we acquired the lock.
+      // This catches the common "two queries race to refresh after the same flush" pattern.
+      // <p>
+      // It does <i>not</i> catch the case where a concurrent flush() committed a NEW fingerprint
+      // while we were waiting for the lock - {@code observedFingerprint} would be the old (stale)
+      // value, not the new high-water mark, so this comparison is false and we fall through to a
+      // (technically redundant) reconcile. The {@code knownIds} guard in the reconcile loop makes
+      // that wasted-work path safe (no duplicate readers), so the worst case is a re-walk, not a
+      // correctness bug.
       if (observedFingerprint == lastObservedFileFingerprint.get())
         return;
 
@@ -768,11 +856,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           continue;
         // On followers the sparseseg file briefly exists between createNewFiles and the WAL apply
         // that fills its pages, so a freshly-arrived component can fail header validation for a
-        // moment. Skip it; the next query will pick it up once pages are written.
+        // moment. Skip it; the next query will pick it up once pages are written. Log at FINE so
+        // an operator troubleshooting "follower is missing data" can see the skip when they raise
+        // log levels - the steady-state path silently produces no log lines.
         final PaginatedSegmentReader reader;
         try {
           reader = new PaginatedSegmentReader(ssc);
         } catch (final IOException e) {
+          LogManager.instance().log(this, Level.FINE,
+              "Skipping unreadable sparse segment '%s' (file id %d) during refresh; will retry on the next query: %s",
+              ssc.getName(), componentFile.getFileId(), e.getMessage());
           continue;
         }
         if (knownIds.contains(reader.segmentId()))
@@ -820,14 +913,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
-   * Walk the FileManager and accumulate a content fingerprint over THIS index's segment files.
-   * Returns {@code (count << 32) + sumOfFileIds} - a count alone would miss balanced add+remove
-   * SCHEMA_ENTRYs from HA compaction, and the sum-of-file-ids closes that gap. Plain integer
-   * addition is used instead of XOR so a swap that adds {@code A+C} and removes {@code A} while
-   * also adding {@code B} and removing {@code B+C} (i.e. shifts a constant {@code C} between
-   * two file ids) shows up in the sum: XOR can mask that pattern when the affected bit lanes
-   * align, addition cannot. Cheap per-file operations only: extension compare and
-   * component-name prefix-and-digits match, no schema lookups, no reader opens.
+   * Walk the FileManager and accumulate a 64-bit content fingerprint over THIS index's segment
+   * files. Each file id is run through a splitmix64 mixer and the mixed values are summed, then
+   * the count is mixed in. This is order-invariant (multiset semantics on the file id set), is
+   * not subject to XOR cancellation under balanced add/remove (which is why we replaced an
+   * earlier XOR-of-ids), and does not silently overflow the way a plain {@code sum} could in a
+   * pathological scenario where the running sum brushes {@code Long.MAX_VALUE}. Cheap per-file
+   * operations only: extension compare and component-name prefix-and-digits match, no schema
+   * lookups, no reader opens.
    */
   private long computeFileFingerprint() {
     // Snapshot the FileManager's view before walking. {@link FileManager#getFiles} returns an
@@ -837,14 +930,21 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     // {@code Arrays.copyOf} call so it's effectively atomic against single-element appends.
     final var snapshot = database.getFileManager().getFiles().toArray(new com.arcadedb.engine.ComponentFile[0]);
     long count = 0L;
-    long sumIds = 0L;
+    long mixedSum = 0L;
     for (final var componentFile : snapshot) {
       if (!isOurSegmentFile(componentFile))
         continue;
       count++;
-      sumIds += componentFile.getFileId();
+      mixedSum += splitmix64(componentFile.getFileId());
     }
-    return (count << 32) + sumIds;
+    return splitmix64(count) ^ mixedSum;
+  }
+
+  /** splitmix64 finalizer; see Steele/Lea/Flood (2014). Used as a 64-bit avalanche mixer. */
+  private static long splitmix64(long x) {
+    x = (x ^ (x >>> 30)) * 0xbf58476d1ce4e5b9L;
+    x = (x ^ (x >>> 27)) * 0x94d049bb133111ebL;
+    return x ^ (x >>> 31);
   }
 
   /**
@@ -997,6 +1097,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           continue;
 
         boolean dimOpened = false;
+        // O(n * k) merge: each step scans the live source list twice (min-RID then newest-aligned).
+        // For STCS-bounded {@code tierFanout} (default 4) the constant is negligible. A
+        // {@code compactAll()} on a heavily fragmented index, or any future raise of
+        // {@code tierFanout} past ~16, would be better served by a min-heap keyed by current RID
+        // (O(log n) per step) - tracked as a future optimization, not done here because the STCS
+        // ceiling caps the practical input width and the linear loop is cache-friendly enough at
+        // those sizes that the heap's pointer-chasing tends to lose on small {@code n}.
         while (!sources.isEmpty()) {
           // Find the smallest currentRid across live sources.
           RID minRid = sources.get(0).cursor.currentRid();

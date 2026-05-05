@@ -252,15 +252,18 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     // Builder owns no I/O resources outside the transaction's MutablePage list. The only thing
     // close() can usefully do is loud-fail an obvious misuse: if a caller wrote one or more
     // dims (so dimIndex is non-empty) but never called finish(), the segment file is registered
-    // with the schema yet missing its manifest, dim_index and back-patched header - reading it
-    // would throw a magic / CRC mismatch much later, far from the bug. The engine's flush() and
-    // compactInputs() drop the partial component on a build failure (see PaginatedSparseVectorEngine),
-    // so this path mostly catches direct callers of the builder in tests; a SEVERE log makes the
-    // mistake obvious without forcing a throw inside try-with-resources cleanup.
+    // with the schema yet missing its manifest, dim_index and back-patched header - a future
+    // reader would throw a magic / CRC mismatch much later, far from the bug. Throwing here
+    // is safe under try-with-resources: when the body has already thrown, Java's resource
+    // cleanup attaches this exception via {@link Throwable#addSuppressed} rather than masking
+    // the body's primary throwable. The engine's flush() and compactInputs() catch the throw
+    // and drop the partial component (see PaginatedSparseVectorEngine), so the orphan file
+    // never escapes a single transaction.
     if (!finished && !dimIndex.isEmpty())
-      LogManager.instance().log(this, Level.SEVERE,
-          "SparseSegmentBuilder for component '%s' was closed with %d dim(s) written but no finish() call - the segment file is incomplete and the next read will fail header validation. Either call finish() or drop the component.",
-          component.getName(), dimIndex.size());
+      throw new IllegalStateException(
+          "SparseSegmentBuilder for component '" + component.getName() + "' was closed with " + dimIndex.size()
+              + " dim(s) written but no finish() call; the segment file is incomplete. Either call finish() or"
+              + " drop the component before closing the builder.");
   }
 
   // --- internals ------------------------------------------------------------

@@ -271,6 +271,11 @@ public final class PaginatedSegmentReader implements AutoCloseable {
 
     if (blockCount <= 0 || blockCount > 1_000_000_000)
       throw new IOException("Implausible block_count for dim " + dimId + ": " + blockCount);
+    if (postingCount < 0 || postingCount > 1_000_000_000)
+      throw new IOException("Implausible posting_count for dim " + dimId + ": " + postingCount);
+    if (df < 0 || df > postingCount)
+      throw new IOException(
+          "Implausible df for dim " + dimId + ": df=" + df + " posting_count=" + postingCount + " (df must be in [0, posting_count])");
 
     final int[]   blockPageNums = new int[blockCount];
     final short[] blockOffsets  = new short[blockCount];

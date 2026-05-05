@@ -18,7 +18,6 @@
  */
 package com.arcadedb.index.sparsevector;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
 import java.util.concurrent.ExecutorService;
@@ -48,17 +47,29 @@ import java.util.logging.Level;
  * scoring belongs here, not on {@code ForkJoinPool.commonPool()}. See
  * {@link com.arcadedb.query.QueryEngineManager} class javadoc for the full rule.
  * <p>
- * <b>Graceful degradation.</b> The queue is bounded
- * ({@link GlobalConfiguration#SPARSE_VECTOR_SCORING_QUEUE_SIZE}). When it saturates, the
- * rejection handler runs the task inline on the submitter's thread instead of throwing - so a
- * scoring fan-out facing a saturated pool degrades to single-threaded execution per chunk,
- * loses parallelism, but always returns a correct top-K. The fallback count is exposed via
- * {@link #getPoolStats()} so dashboards can surface saturation.
+ * <b>Graceful degradation.</b> The queue is bounded; on saturation the rejection handler runs
+ * the task inline on the submitter's thread instead of throwing, so a scoring fan-out facing a
+ * saturated pool degrades to single-threaded execution per chunk - loses parallelism, but always
+ * returns a correct top-K. The fallback count is exposed via {@link #getPoolStats()} so
+ * dashboards can surface saturation.
+ * <p>
+ * <b>Currently unused.</b> The {@code topK} hot path in {@link PaginatedSparseVectorEngine}
+ * still runs serially - parallel dispatch is the deliverable of follow-up issue #4085. Until
+ * that lands, this pool is allocated for telemetry symmetry with {@link com.arcadedb.query.QueryEngineManager}'s
+ * pool (so dashboards have a "reserved scoring pool" row even before any work flows through it)
+ * and the operator-facing config knobs are intentionally absent from {@code GlobalConfiguration} -
+ * they will return alongside the dispatch wiring. The hardcoded defaults below are sized for the
+ * common 4-8 core box; revisit when #4085 lands.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class SparseVectorScoringPool {
   private static final SparseVectorScoringPool INSTANCE = new SparseVectorScoringPool();
+
+  /** Default thread count: {@code max(2, available cores)}. */
+  private static final int DEFAULT_THREADS_FLOOR = 2;
+  /** Default queue size: same shape as {@link com.arcadedb.query.QueryEngineManager}'s pool. */
+  private static final int DEFAULT_QUEUE_SIZE    = 1024;
 
   private final ThreadPoolExecutor executor;
   private final AtomicLong         callerRunCount       = new AtomicLong();
@@ -72,20 +83,8 @@ public final class SparseVectorScoringPool {
   private final AtomicLong         lastSaturationWarnMs = new AtomicLong(0L);
 
   private SparseVectorScoringPool() {
-    final int configured = GlobalConfiguration.SPARSE_VECTOR_SCORING_POOL_THREADS.getValueAsInteger();
-    final int threads = configured > 0 ? configured : Math.max(2, Runtime.getRuntime().availableProcessors());
-    final int queueSize = Math.max(1, GlobalConfiguration.SPARSE_VECTOR_SCORING_QUEUE_SIZE.getValueAsInteger());
-    // Operators tuning these knobs today see no observable effect: the topK hot path is still
-    // serial (parallel-scoring dispatch is reserved for a follow-up). Surface a one-shot WARNING
-    // when they're non-default so a misconfiguration that "looks ignored" is loud, not silent.
-    if (configured != 0 || queueSize != 1024) {
-      LogManager.instance().log(this, Level.WARNING,
-          "arcadedb.sparseVectorScoringPoolThreads / arcadedb.sparseVectorScoringQueueSize are "
-              + "configured (threads=%d, queueSize=%d) but the LSM_SPARSE_VECTOR top-K path still "
-              + "runs serially. The pool is allocated and instrumented for telemetry, but "
-              + "queries will not fan out to it until the parallel-scoring follow-up lands.",
-          configured, queueSize);
-    }
+    final int threads = Math.max(DEFAULT_THREADS_FLOOR, Runtime.getRuntime().availableProcessors());
+    final int queueSize = DEFAULT_QUEUE_SIZE;
     final AtomicInteger workerSeq = new AtomicInteger();
 
     final ThreadPoolExecutor pool = new ThreadPoolExecutor(
@@ -100,16 +99,15 @@ public final class SparseVectorScoringPool {
         // CallerRunsPolicy with a fallback counter and throttled WARNING. When the queue is full
         // we run the task on the submitter; the alternative (throwing RejectedExecutionException)
         // would force every caller to also implement a fallback path, which is more error-prone
-        // than just doing it once here. The log line is the operator-noticing nudge that
-        // arcadedb.sparseVectorScoringPoolThreads / queueSize may need raising.
+        // than just doing it once here. The log line nudges operators that the pool needs to
+        // grow; sizing knobs return alongside the dispatch wiring (see follow-up #4085).
         (task, exec) -> {
           final long fallbacks = callerRunCount.incrementAndGet();
           final long now = System.currentTimeMillis();
           final long last = lastSaturationWarnMs.get();
           if (now - last > SATURATION_WARN_INTERVAL_MS && lastSaturationWarnMs.compareAndSet(last, now)) {
             LogManager.instance().log(this, Level.WARNING,
-                "Sparse-vector scoring pool saturated: queue full (capacity=%d, threads=%d), running task on caller thread (cumulative caller-runs fallbacks=%d). "
-                    + "Consider raising arcadedb.sparseVectorScoringPoolThreads or arcadedb.sparseVectorScoringQueueSize if this persists.",
+                "Sparse-vector scoring pool saturated: queue full (capacity=%d, threads=%d), running task on caller thread (cumulative caller-runs fallbacks=%d).",
                 exec.getQueue().remainingCapacity() + exec.getQueue().size(), exec.getMaximumPoolSize(), fallbacks);
           }
           if (!exec.isShutdown())
@@ -156,9 +154,8 @@ public final class SparseVectorScoringPool {
    * Snapshot of the scoring pool's load at one instant. Same shape as
    * {@link com.arcadedb.query.QueryEngineManager.PoolStats} so a single dashboard can render
    * both. Sustained growth in {@link #callerRunFallbacks} signals that scoring is queueing
-   * faster than the pool can drain it - either raise
-   * {@link GlobalConfiguration#SPARSE_VECTOR_SCORING_POOL_THREADS} or accept the
-   * single-threaded fallback's slightly higher per-query latency.
+   * faster than the pool can drain it - operator-facing sizing knobs return alongside the
+   * dispatch wiring in follow-up #4085.
    */
   public record PoolStats(int poolSize, int activeThreads, int queueDepth, int queueCapacityRemaining,
                           long completedTasks, long callerRunFallbacks) {
