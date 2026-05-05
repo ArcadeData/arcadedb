@@ -901,14 +901,21 @@ class Database:
         return first_error
 
     def __del__(self):
-        """Finalizer - ensure database is closed when object is garbage collected."""
+        """Finalizer - ensure database is closed when object is garbage collected.
+
+        Errors during garbage collection are intentionally suppressed: the
+        interpreter is shutting down and logging may already be unavailable,
+        so we narrow the catch to AttributeError/RuntimeError that JPype can
+        raise when the JVM has been torn down before this finalizer runs.
+        """
         try:
             if not self._closed and self._java_db is not None:
                 self._close_async_executors()
                 self._java_db.close()
                 self._closed = True
-        except Exception:
-            pass  # Ignore errors during garbage collection
+        except (AttributeError, RuntimeError):
+            # JVM or referenced attributes already gone; nothing to do.
+            return
 
 
 class DatabaseFactory:
