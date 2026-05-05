@@ -57,6 +57,15 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
   // the buffer linearly (RIDs first, then weights), so we can reuse it across blocks and across
   // queries on this cursor without allocating per-block byte[] / ByteBuffer pairs. Cuts out the
   // dominant allocation in BMW-DAAT under high-fanout queries.
+  // <p>
+  // FUTURE: at the default 64 KiB page this is a 64 KiB allocation per cursor instance. A query
+  // over D query dims fanning out across S segments allocates D * S of these (D=30, S=15 -&gt; ~28
+  // MiB per query, reclaimed when the query finishes). Under concurrent load this is real heap
+  // pressure. The natural fix is a thread-local or {@link java.util.concurrent.ConcurrentLinkedDeque}-backed
+  // pool of {@code byte[pageContentSize]} buffers handed to cursors at {@link #start} and
+  // returned at {@link #close}. Deferred until #4085 (parallel scoring) lands - parallel
+  // dispatch multiplies the allocation rate by the parallelism factor, so the right time to
+  // tackle this is alongside the dispatch wiring.
   private final byte[]     decodeScratch;
   private final ByteBuffer decodeView;
 

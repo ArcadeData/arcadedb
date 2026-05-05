@@ -141,19 +141,15 @@ public final class BmwScorer {
         }
         // Advance every aligned cursor.
         for (final DimEntry e : live) {
-          if (pivotRid.equals(e.cursor.currentRid())) {
-            if (!e.cursor.advance())
-              e.exhausted = true;
-          }
+          if (pivotRid.equals(e.cursor.currentRid()))
+            e.cursor.advance();
         }
       } else {
         // Skip the prefix [0..pivot] forward to pivotRid. Cursors past `pivot` are already at >= pivotRid (sorted).
         for (int i = 0; i <= pivot; i++) {
           final DimEntry e = live.get(i);
-          if (SparseSegmentBuilder.compareRid(e.cursor.currentRid(), pivotRid) < 0) {
-            if (!e.cursor.seekTo(pivotRid))
-              e.exhausted = true;
-          }
+          if (SparseSegmentBuilder.compareRid(e.cursor.currentRid(), pivotRid) < 0)
+            e.cursor.seekTo(pivotRid);
         }
       }
 
@@ -198,7 +194,7 @@ public final class BmwScorer {
     int w = 0;
     for (int r = 0; r < live.size(); r++) {
       final DimEntry e = live.get(r);
-      if (e.exhausted || e.cursor.isExhausted())
+      if (e.cursor.isExhausted())
         continue;
       if (r != w)
         live.set(w, e);
@@ -208,10 +204,16 @@ public final class BmwScorer {
       live.remove(live.size() - 1);
   }
 
+  /**
+   * Per-cursor entry. The cursor's own {@link DimCursor#isExhausted} is the source of truth on
+   * exhaustion; we do not duplicate that flag here. {@link DimCursor#advance} and
+   * {@link DimCursor#seekTo} return {@code false} only after they have already set the cursor's
+   * internal {@code exhausted} flag, so {@link #removeExhausted} consults
+   * {@code cursor.isExhausted()} alone.
+   */
   private static final class DimEntry {
     final DimCursor cursor;
     final float     queryWeight;
-    boolean         exhausted;
 
     DimEntry(final DimCursor cursor, final float queryWeight) {
       this.cursor = cursor;

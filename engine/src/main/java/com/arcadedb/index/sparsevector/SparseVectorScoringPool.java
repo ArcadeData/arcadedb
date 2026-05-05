@@ -64,7 +64,17 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class SparseVectorScoringPool {
-  private static final SparseVectorScoringPool INSTANCE = new SparseVectorScoringPool();
+
+  // Lazy-init via the initialization-on-demand holder idiom. The pool only allocates its
+  // ThreadPoolExecutor when something actually calls {@link #getInstance()} - which today is
+  // either the server-side {@link com.arcadedb.server.monitor.PoolMetrics} binder (when a
+  // server starts), or a future caller in PaginatedSparseVectorEngine.topK once #4085 wires
+  // the dispatch. Embedded JVMs that never touch sparse vectors pay zero allocations for this
+  // class. The holder class is not loaded until the {@code getInstance} call inside
+  // {@link Holder} runs, which the JLS guarantees is thread-safe and at-most-once.
+  private static final class Holder {
+    static final SparseVectorScoringPool INSTANCE = new SparseVectorScoringPool();
+  }
 
   /** Default thread count: {@code max(2, available cores)}. */
   private static final int DEFAULT_THREADS_FLOOR = 2;
@@ -118,7 +128,7 @@ public final class SparseVectorScoringPool {
   }
 
   public static SparseVectorScoringPool getInstance() {
-    return INSTANCE;
+    return Holder.INSTANCE;
   }
 
   /**

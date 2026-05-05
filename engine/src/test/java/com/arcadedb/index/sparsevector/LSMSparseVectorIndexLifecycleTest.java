@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.BasePage;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
@@ -277,9 +278,9 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
 
   /**
    * Manifest CRC mismatch path: {@link PaginatedSegmentReader} validates the manifest CRC and,
-   * on mismatch, logs SEVERE and proceeds anyway (parents/tombstoneFloor may be wrong but the
-   * segment can still serve queries). This test pins that contract: build a segment, corrupt
-   * the manifest CRC bytes on disk, reopen the engine, and verify the segment loads without
+   * on mismatch, logs SEVERE and proceeds anyway (parentSegments may be wrong but the segment
+   * can still serve queries). This test pins that contract: build a segment, corrupt the
+   * manifest CRC bytes on disk, reopen the engine, and verify the segment loads without
    * throwing.
    */
   @Test
@@ -307,19 +308,20 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
     // The engine is closed; the file is still on disk. Read the segment header to find the
     // manifest page, then overwrite the manifest's last 4 bytes (CRC) with garbage. Layout
     // (defined by SparseSegmentBuilder.writeManifest): segmentId(8) + parentCount(4) +
-    // parents[parentCount * 8] + tombstoneFloor(8) + reserved(8) + crc(4). With no compaction
+    // parents[parentCount * 8] + reserved(8) + reserved(8) + crc(4). With no compaction
     // history the segment has parentCount = 0, so manifest size = 28.
     final java.nio.file.Path path = java.nio.file.Path.of(segmentFilePath);
     final int manifestPageNum;
     try (final java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(path,
         java.nio.file.StandardOpenOption.READ)) {
-      // HEADER_OFFSET_MANIFEST_PAGE_NUM = 52 in logical-page space -> +PAGE_HEADER_SIZE (8) on disk.
+      // HEADER_OFFSET_MANIFEST_PAGE_NUM is in logical-page space; on disk it sits past the
+      // page-header prefix that {@link com.arcadedb.engine.BasePage} writes.
       final java.nio.ByteBuffer hdr = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN);
-      ch.read(hdr, 8L + PaginatedSegmentFormat.HEADER_OFFSET_MANIFEST_PAGE_NUM);
+      ch.read(hdr, (long) BasePage.PAGE_HEADER_SIZE + PaginatedSegmentFormat.HEADER_OFFSET_MANIFEST_PAGE_NUM);
       hdr.flip();
       manifestPageNum = hdr.getInt();
     }
-    final long manifestStart = manifestPageNum * (long) pageSize + 8L; // +PAGE_HEADER_SIZE
+    final long manifestStart = manifestPageNum * (long) pageSize + BasePage.PAGE_HEADER_SIZE;
     final long manifestCrcOffset = manifestStart + 28L - 4L; // manifest size - 4 (the CRC)
     try (final java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(path,
         java.nio.file.StandardOpenOption.WRITE)) {
@@ -445,7 +447,12 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
     assertThat(engine.segmentCount()).isEqualTo(3);
 
     final java.io.File dbDir = new java.io.File(database.getDatabasePath());
-    final String prefix = IDX_NAME.replace('[', '_').replace("]", "").replace(",", "_") + "_seg";
+    // Match any sparseseg file. The component-name pattern (`<sanitized-index-name>_seg<digits>`)
+    // is owned by {@link PaginatedSparseVectorEngine#segmentComponentName}; the test only needs
+    // to count files in the database directory and does not need to mirror that pattern. If a
+    // future change adds a second sparse-vector index in the same database, scope the filter via
+    // {@link FileManager#getFiles} + the engine's own {@code isOurSegmentFile} helper instead of
+    // a string-mirrored prefix.
     final java.io.FilenameFilter sparseFilter = (d, name) -> name.contains("_seg") && name.endsWith(".sparseseg");
     final String[] beforeDrop = dbDir.list(sparseFilter);
     assertThat(beforeDrop).as("3 sealed segments must have a .sparseseg file each").isNotNull();

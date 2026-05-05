@@ -141,7 +141,19 @@ public final class Memtable {
     return f == null ? 0.0f : f;
   }
 
-  /** Returns the dim_ids present, sorted ascending. Snapshot at call time. */
+  /**
+   * Returns the dim_ids present, sorted ascending. Weakly-consistent snapshot.
+   * <p>
+   * <b>Concurrent dims may be silently truncated.</b> The returned array is sized at call time
+   * from {@code postings.size()}; iteration walks the underlying {@link ConcurrentHashMap} key
+   * set. Dims added <i>after</i> the size sample but visible during iteration are dropped to
+   * avoid an array-overflow throw, and dims added after iteration completes are missed
+   * altogether. Both are safe by design for the only caller, the flush worker: a flush takes a
+   * snapshot of the current memtable instance and then races a fresh empty instance for new
+   * writes, so any dim missed here is captured by the next flush. Direct callers outside the
+   * flush worker must accept that the returned set is not a strict point-in-time view of the
+   * memtable's current state.
+   */
   public int[] sortedDims() {
     final int[] out = new int[postings.size()];
     int i = 0;

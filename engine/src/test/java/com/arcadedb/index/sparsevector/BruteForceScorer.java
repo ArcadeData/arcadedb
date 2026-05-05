@@ -76,15 +76,21 @@ public final class BruteForceScorer {
         try (final PaginatedSegmentDimCursor c = segmentsOldestFirst[s].openCursor(dim)) {
           if (c == null)
             continue;
-          while (c.advance()) {
+          // Use the documented {@link SourceCursor} lifecycle: start() positions on the first
+          // posting (or marks exhausted), then advance() walks the rest. The cursor impl tolerates
+          // a missing start() by self-healing inside advance(), but relying on that is brittle
+          // and sets a bad precedent for future SourceCursor implementors.
+          c.start();
+          while (!c.isExhausted()) {
             final RID r = c.currentRid();
-            if (!dimNewestSeen.add(r))
-              continue;  // already resolved by a newer segment
-            if (c.isTombstone()) {
-              masked.add(r);
-            } else {
-              dimNewestWeight.put(r, c.currentWeight());
+            if (dimNewestSeen.add(r)) {
+              if (c.isTombstone())
+                masked.add(r);
+              else
+                dimNewestWeight.put(r, c.currentWeight());
             }
+            if (!c.advance())
+              break;
           }
         }
       }

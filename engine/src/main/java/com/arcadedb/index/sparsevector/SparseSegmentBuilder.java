@@ -27,6 +27,7 @@ import com.arcadedb.log.LogManager;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
@@ -60,14 +61,21 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   // Manifest fields, fixed once before any dim is started.
   private long   segmentId             = 0L;
   private long[] parentSegments        = new long[0];
-  private long   tombstoneFloorSegment = 0L;
 
   // Currently open dim state.
   private int                     currentDimId = -1;
   private long                    currentDimPostingCount;     // includes tombstones
   private long                    currentDimLivePostingCount; // df: live (non-tombstone) only
   private float                   currentDimMaxWeight;
-  private final List<long[]>      currentDimBlockLocators = new ArrayList<>();   // each: {pageNum, offsetInPage}
+  // Per-block locator storage: parallel primitive arrays grown via {@code Arrays.copyOf} instead
+  // of {@code List<long[]>}. At the default {@code blockSize=128} a 1M-posting dim has ~7,800
+  // blocks, which would otherwise be ~7,800 separate {@code long[2]} heap allocations per dim
+  // during flush - directly visible as GC pressure on bulk-load profiles. The two arrays
+  // together cost 6 bytes per block (int + short) plus negligible header overhead, vs ~64 bytes
+  // per {@code long[2]} heap object.
+  private int[]                   currentDimBlockPageNums = new int[16];
+  private short[]                 currentDimBlockOffsets  = new short[16];
+  private int                     currentDimBlockLocatorCount;
   private final List<BlockHeader> currentDimBlockHeaders  = new ArrayList<>();
 
   // Block buffering.
@@ -139,11 +147,6 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     this.parentSegments = parents.clone();
   }
 
-  public void setTombstoneFloorSegment(final long floor) {
-    requireFresh();
-    this.tombstoneFloorSegment = floor;
-  }
-
   public void startDim(final int dimId) {
     if (finished)
       throw new IllegalStateException("builder is finished");
@@ -158,7 +161,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     this.currentDimPostingCount = 0L;
     this.currentDimLivePostingCount = 0L;
     this.currentDimMaxWeight = Float.NEGATIVE_INFINITY;
-    this.currentDimBlockLocators.clear();
+    this.currentDimBlockLocatorCount = 0;  // arrays kept allocated; reused for the next dim
     this.currentDimBlockHeaders.clear();
     this.blockCursor = 0;
   }
@@ -396,7 +399,14 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       allocateNewPage();
 
     final int offsetInPage = writeBytesAtPageCursor(payloadScratch, payloadLen);
-    currentDimBlockLocators.add(new long[] { currentWritePage, offsetInPage });
+    if (currentDimBlockLocatorCount == currentDimBlockPageNums.length) {
+      final int newCap = currentDimBlockPageNums.length * 2;
+      currentDimBlockPageNums = Arrays.copyOf(currentDimBlockPageNums, newCap);
+      currentDimBlockOffsets  = Arrays.copyOf(currentDimBlockOffsets, newCap);
+    }
+    currentDimBlockPageNums[currentDimBlockLocatorCount] = currentWritePage;
+    currentDimBlockOffsets[currentDimBlockLocatorCount] = (short) offsetInPage;
+    currentDimBlockLocatorCount++;
     currentDimBlockHeaders.add(new BlockHeader(blockRids[0], blockRids[blockCursor - 1], blockCursor, blockMaxForBmw,
         weightMin, weightMax, hasTombstones));
     currentDimPostingCount += blockCursor;
@@ -444,9 +454,8 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     payloadBuf.putFloat(currentDimMaxWeight == Float.NEGATIVE_INFINITY ? 0.0f : currentDimMaxWeight);
 
     for (int b = 0; b < blockCount; b++) {
-      final long[] loc = currentDimBlockLocators.get(b);
-      payloadBuf.putInt((int) loc[0]);
-      payloadBuf.putShort((short) loc[1]);
+      payloadBuf.putInt(currentDimBlockPageNums[b]);
+      payloadBuf.putShort(currentDimBlockOffsets[b]);
     }
 
     for (int s = 0; s < skipEntries; s++) {
@@ -523,17 +532,27 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     final int size = 8 + 4 + parentCount * 8 + 8 + 8 + 4;
     if (size > pageContentSize)
       throw new IndexException("manifest size " + size + " exceeds page content size " + pageContentSize);
-    final ByteBuffer buf = ByteBuffer.allocate(size).order(ByteOrder.BIG_ENDIAN);
-    buf.putLong(segmentId);
-    buf.putInt(parentCount);
+    // Reuse {@link #payloadBuf} (sized at construction to {@code >= pageContentSize}, so the
+    // manifest always fits) for consistency with the rest of the builder's buffer-reuse strategy.
+    // Not a hot path - one call per segment - but allocating a fresh ByteBuffer here was the only
+    // remaining one-off allocation in the build pipeline.
+    payloadBuf.clear();
+    payloadBuf.putLong(segmentId);
+    payloadBuf.putInt(parentCount);
     for (final long p : parentSegments)
-      buf.putLong(p);
-    buf.putLong(tombstoneFloorSegment);
-    buf.putLong(0L);                     // reserved
+      payloadBuf.putLong(p);
+    // Two reserved 8-byte slots. The first slot was originally reserved for a
+    // {@code tombstoneFloorSegment} - the oldest segment id whose tombstones can be physically
+    // dropped during compaction - but the current compaction path uses a binary
+    // {@code dropAllTombstones} flag set by {@link #compactAll}, so the floor is dead weight.
+    // Kept as reserved bytes so manifest layout stays at the same size; revisit if a tiered
+    // tombstone-eviction policy lands.
+    payloadBuf.putLong(0L);                     // reserved (formerly tombstoneFloorSegment)
+    payloadBuf.putLong(0L);                     // reserved
     final CRC32 crc = new CRC32();
-    crc.update(buf.array(), 0, size - 4);
-    buf.putInt((int) crc.getValue());
-    pages.get(pageNum).writeByteArray(0, buf.array(), 0, size);
+    crc.update(payloadScratch, 0, size - 4);
+    payloadBuf.putInt((int) crc.getValue());
+    pages.get(pageNum).writeByteArray(0, payloadScratch, 0, size);
     currentWritePageFree = pageContentSize - size;
   }
 

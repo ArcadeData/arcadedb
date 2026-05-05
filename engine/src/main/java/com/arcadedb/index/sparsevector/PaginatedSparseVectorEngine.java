@@ -326,7 +326,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           }
           return Boolean.TRUE;
         });
-      } catch (final IOException | InterruptedException e) {
+      } catch (final InterruptedException e) {
+        // Restore the interrupt flag so callers higher up the stack can detect cancellation.
+        Thread.currentThread().interrupt();
+        throw new IndexException("Failed to flush sparse vector engine '" + indexName + "'", e);
+      } catch (final IOException e) {
         throw new IndexException("Failed to flush sparse vector engine '" + indexName + "'", e);
       }
       if (!ranOnLeader)
@@ -374,6 +378,18 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * oldest {@code tierFanout} into one. Returns the new merged segment id, or {@code -1L} if
    * no tier overflowed (so the caller's cascading loop can stop).
    * <p>
+   * <b>Sentinel conflation, intentional.</b> Three "stop the cascade" cases all return
+   * {@code -1L}: (a) no tier overflowed, (b) this server is a Raft follower (followers receive
+   * segments via Raft replication instead of compacting locally), and (c) the merged segment
+   * was empty. The {@code while (compactSizeTiered() != -1L)} loop in {@link #flush}
+   * intentionally collapses them - in all three cases there is no productive work this engine
+   * can do on this pass. Case (c) is virtually unreachable from this entry point because
+   * {@code compactSizeTiered} passes {@code dropAllTombstones=false}, so any input dim with at
+   * least one posting (live or tombstone) emits at least one entry into the merged segment;
+   * if a future variant of the policy drops tombstones, the cascade may want a richer return
+   * type so an empty merge in tier {@code N} doesn't stop the cascade from inspecting tiers
+   * {@code N+1, N+2, ...}.
+   * <p>
    * Tier assignment is purely a function of {@code totalPostings()}, so no on-disk metadata
    * change is needed; the merged segment naturally promotes itself into the next tier up by
    * virtue of having more postings than its inputs.
@@ -385,6 +401,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       // Bucket by tier. Within each tier, sort by segment id (oldest first) so the merge picks
       // a contiguous run of older segments and leaves any tier-mate that arrived more recently
       // for the next pass.
+      // <p>
+      // FUTURE: this is called inside the {@code while (compactSizeTiered() != -1L)} cascade in
+      // {@link #flush}, so on a bulk-load it allocates a fresh {@code HashMap} + per-tier
+      // {@code ArrayList}s on every cascade tick. Tier count is bounded by
+      // {@code log_fanout(maxPostings)} (~20 worst case), so a pre-allocated fixed-size arrays
+      // approach (e.g. {@code IntObjectMap}-style with the max plausible tier count) would
+      // eliminate these allocations on the hot flush path. Not done yet because the current
+      // numbers are dominated by the merge itself, not the bookkeeping; revisit if a profile
+      // shows otherwise.
       final Map<Integer, List<PaginatedSegmentReader>> byTier = new HashMap<>();
       for (final PaginatedSegmentReader r : active) {
         final int t = tierOf(r.totalPostings());
@@ -513,7 +538,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           }
           return Boolean.TRUE;
         });
-      } catch (final IOException | InterruptedException e) {
+      } catch (final InterruptedException e) {
+        // Restore the interrupt flag so callers higher up the stack can detect cancellation.
+        Thread.currentThread().interrupt();
+        throw new IndexException("Failed to compact sparse vector engine '" + indexName + "'", e);
+      } catch (final IOException e) {
         throw new IndexException("Failed to compact sparse vector engine '" + indexName + "'", e);
       }
       if (!ranOnLeader)
@@ -611,7 +640,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
             buildSegmentComponent(segmentId, old);
             return Boolean.TRUE;
           });
-        } catch (final IOException | InterruptedException | RuntimeException e) {
+        } catch (final InterruptedException e) {
+          // Restore the interrupt flag for the close-time path too. We still swallow the throw
+          // into a SEVERE because close() must keep going for the rest of the shutdown sequence;
+          // the interrupt status is what lets the caller's later blocking calls notice.
+          Thread.currentThread().interrupt();
+          LogManager.instance().log(this, Level.SEVERE,
+              "Close-time flush of sparse vector engine '%s' interrupted; %d memtable postings discarded: %s",
+              null, indexName, old.totalPostings(), e);
+        } catch (final IOException | RuntimeException e) {
           // Database may be mid-teardown; tolerate it but make the loss loud.
           LogManager.instance().log(this, Level.SEVERE,
               "Close-time flush of sparse vector engine '%s' failed; %d memtable postings discarded: %s",
@@ -923,15 +960,20 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * lookups, no reader opens.
    */
   private long computeFileFingerprint() {
-    // Snapshot the FileManager's view before walking. {@link FileManager#getFiles} returns an
-    // unmodifiableList wrapper over a mutable backing list, so iterating it directly while a
-    // concurrent flush adds a file would throw ConcurrentModificationException - which we'd
-    // catch but pay an exception-cost for. {@code toArray()} on an ArrayList is a single
-    // {@code Arrays.copyOf} call so it's effectively atomic against single-element appends.
-    final var snapshot = database.getFileManager().getFiles().toArray(new com.arcadedb.engine.ComponentFile[0]);
+    // Index-based walk over the FileManager's view, with a {@code size()} snapshot up front.
+    // Avoids both the {@code toArray()} allocation (one full-list copy per fingerprint compute,
+    // O(total files) bytes) and the {@code ConcurrentModificationException} risk that direct
+    // iterator-based traversal would carry: {@link FileManager} only ever appends slots or
+    // nulls them in place, never truncates, so {@code get(i)} for {@code i < snapshotSize}
+    // returns a stable value even under concurrent registerFile/dropFile. Files appended after
+    // we snapshot {@code size} are missed by this pass; the next bump of
+    // {@link FileManager#getModificationCount} will trigger a re-walk that picks them up.
+    final var files = database.getFileManager().getFiles();
+    final int size = files.size();
     long count = 0L;
     long mixedSum = 0L;
-    for (final var componentFile : snapshot) {
+    for (int i = 0; i < size; i++) {
+      final var componentFile = files.get(i);
       if (!isOurSegmentFile(componentFile))
         continue;
       count++;
@@ -954,7 +996,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * our segment set: simply checking {@code startsWith(indexName + "_seg")} would let
    * {@code myIndexV2_seg42} match a {@code myIndex} engine because the suffix is non-empty.
    */
-  private boolean isOurSegmentFile(final com.arcadedb.engine.ComponentFile componentFile) {
+  private boolean isOurSegmentFile(final ComponentFile componentFile) {
     if (componentFile == null)
       return false;
     if (!SparseSegmentComponent.FILE_EXT.equals(componentFile.getFileExtension()))

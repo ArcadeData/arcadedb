@@ -49,7 +49,6 @@ public final class PaginatedSegmentReader implements AutoCloseable {
   private final long                   totalPostings;
   private final int                    totalDims;
   private final long[]                 parentSegments;
-  private final long                   tombstoneFloorSegment;
 
   // Sorted parallel arrays: dimIds[i] -> trailer at (trailerPageNums[i], trailerOffsets[i] & 0xFFFF).
   private final int[]                                 dimIds;
@@ -119,18 +118,15 @@ public final class PaginatedSegmentReader implements AutoCloseable {
       this.parentSegments[i] = manifestPage.readLong(cursor);
       cursor += 8;
     }
-    this.tombstoneFloorSegment = manifestPage.readLong(cursor);
-    cursor += 8;
-    // reserved(8) + crc32(4) follow.
-    cursor += 8;
+    // Skip the two reserved 8-byte slots (the first was originally
+    // {@code tombstoneFloorSegment}; see SparseSegmentBuilder.writeManifest).
+    cursor += 8 + 8;
     // Manifest CRC validation. Layout written by SparseSegmentBuilder.writeManifest covers
-    // segmentId + parentCount + parents[] + tombstoneFloorSegment + reserved, with the CRC of
-    // all of those in the last 4 bytes. A bit-flipped manifest could otherwise return wrong
-    // {@code parentSegments} or {@code tombstoneFloorSegment} silently and corrupt compaction
-    // bookkeeping; we surface that as a SEVERE log here so the issue is observable without
-    // failing the segment open (mismatched parents are unfortunate but not query-fatal: the
-    // tombstoneFloorSegment value still drives masking, just possibly against a wrong floor).
-    final int manifestSize = 8 + 4 + parentCount * 8 + 8 + 8 + 4; // segmentId + parentCount + parents + tombstoneFloor + reserved + crc
+    // segmentId + parentCount + parents[] + reserved(16), with the CRC of all of those in the
+    // last 4 bytes. A bit-flipped manifest could otherwise return wrong {@code parentSegments}
+    // silently; we surface that as a SEVERE log here so the issue is observable without
+    // failing the segment open.
+    final int manifestSize = 8 + 4 + parentCount * 8 + 8 + 8 + 4; // segmentId + parentCount + parents + 2 reserved + crc
     final byte[] manifestBytes = new byte[manifestSize];
     manifestPage.readByteArray(0, manifestBytes);
     final int storedManifestCrc = manifestPage.readInt(cursor);
@@ -138,7 +134,7 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     manifestCrc.update(manifestBytes, 0, manifestSize - 4);
     if ((int) manifestCrc.getValue() != storedManifestCrc) {
       com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
-          "Manifest CRC mismatch in segment '%s' (expected %d, got %d). The segment is being opened anyway, but parentSegments / tombstoneFloorSegment may be corrupt.",
+          "Manifest CRC mismatch in segment '%s' (expected %d, got %d). The segment is being opened anyway, but parentSegments may be corrupt.",
           component.getName(), storedManifestCrc, (int) manifestCrc.getValue());
     }
 
@@ -204,10 +200,6 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     return parentSegments.clone();
   }
 
-  public long tombstoneFloorSegment() {
-    return tombstoneFloorSegment;
-  }
-
   public boolean hasDim(final int dimId) {
     return Arrays.binarySearch(dimIds, dimId) >= 0;
   }
@@ -259,6 +251,21 @@ public final class PaginatedSegmentReader implements AutoCloseable {
 
   private PaginatedDimMetadata loadDimMetadata(final int dimId, final int pageNum, final int offsetInPage) throws IOException {
     final BasePage trailerPage = component.readPage(pageNum);
+    final int pageContentSize = component.pageContentSize();
+    // Defensive page-boundary check. {@link SparseSegmentBuilder#endDim} guarantees a trailer
+    // never straddles a page (it allocates a fresh page when {@code currentWritePageFree <
+    // trailerSize}), so a well-formed segment will always have the full trailer reachable from
+    // {@code offsetInPage}. A corrupt or hand-crafted segment whose dim_index pointed at a
+    // straddling offset would otherwise cause silent reads of zero-padded tail bytes followed by
+    // garbage from the next page; surface that as an {@link IOException} here. Use the minimum
+    // trailer size (24 bytes: 5 ints + 1 float for the fixed-shape header) as the guard since
+    // the variable parts (block locators + skip entries) need {@code blockCount} which we have
+    // not read yet.
+    final int minTrailerHeaderSize = 4 + 4 + 4 + 4 + 4;
+    if (offsetInPage < 0 || offsetInPage + minTrailerHeaderSize > pageContentSize)
+      throw new IOException(
+          "dim trailer for dim " + dimId + " on page " + pageNum + " offset " + offsetInPage
+              + " would straddle the page boundary (page content size " + pageContentSize + "); segment is corrupt");
     int p = offsetInPage;
 
     final int storedDimId = trailerPage.readInt(p);            p += 4;
@@ -276,6 +283,14 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     if (df < 0 || df > postingCount)
       throw new IOException(
           "Implausible df for dim " + dimId + ": df=" + df + " posting_count=" + postingCount + " (df must be in [0, posting_count])");
+    // Now that {@code blockCount} is known, validate the full trailer fits on this page.
+    final int skipStride = params.skipStride();
+    final int skipEntries = (blockCount + skipStride - 1) / skipStride;
+    final int fullTrailerSize = minTrailerHeaderSize + blockCount * (4 + 2) + skipEntries * (12 + 4 + 4);
+    if (offsetInPage + fullTrailerSize > pageContentSize)
+      throw new IOException(
+          "dim trailer for dim " + dimId + " (full size " + fullTrailerSize + " B) would straddle the page boundary at offset "
+              + offsetInPage + " on page " + pageNum + " (page content size " + pageContentSize + "); segment is corrupt");
 
     final int[]   blockPageNums = new int[blockCount];
     final short[] blockOffsets  = new short[blockCount];
@@ -284,7 +299,6 @@ public final class PaginatedSegmentReader implements AutoCloseable {
       blockOffsets[b]  = trailerPage.readShort(p);             p += 2;
     }
 
-    final int skipEntries = (blockCount + params.skipStride() - 1) / params.skipStride();
     final SkipEntry[] skipList = new SkipEntry[skipEntries];
     for (int s = 0; s < skipEntries; s++) {
       final int bucketId = trailerPage.readInt(p);             p += 4;
