@@ -47,6 +47,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov",
     "numpy>=1.20.0",
+    "bandit>=1.9.0",
 ]
 vector = [
     "numpy>=1.20.0",
@@ -83,3 +84,11 @@ markers = [
     "server: tests that require server/studio support",
     "integration: tests that require external components",
 ]
+
+[tool.bandit]
+# Skip recursion into test data and build artifacts.
+exclude_dirs = ["tests/.cache", "build", "dist"]
+
+[tool.bandit.assert_used]
+# Asserts are the standard idiom in pytest; do not flag them in tests/conftest.
+skips = ["**/tests/test_*.py", "**/tests/conftest.py"]
