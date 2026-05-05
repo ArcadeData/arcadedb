@@ -256,6 +256,31 @@
             </div>
           </div>
         </div>
+
+        <!-- Executor Pools -->
+        <div class="card mb-3">
+          <div class="card-header">
+            Executor Pools
+            <span class="text-muted small ms-2">live thread / queue / saturation gauges per engine pool</span>
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-sm table-striped mb-0">
+                <thead>
+                  <tr>
+                    <th>Pool</th>
+                    <th class="text-end">Threads (Active / Allocated)</th>
+                    <th class="text-end">Queue Depth</th>
+                    <th class="text-end">Queue Free</th>
+                    <th class="text-end">Tasks Completed</th>
+                    <th class="text-end">Caller-Run Fallbacks</th>
+                  </tr>
+                </thead>
+                <tbody id="srvMetricExecutorsTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 

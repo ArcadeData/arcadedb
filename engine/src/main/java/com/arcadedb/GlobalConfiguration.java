@@ -234,6 +234,18 @@ public enum GlobalConfiguration {
       "Maximum number of threads in the JVM-wide pool that backs query-time parallelism (graph algorithms parallelForRange, parallel index scans, etc.). The same pool also serves any future feature that wants to fork query work; sizing it explicitly is the alternative to the JDK common ForkJoinPool, which is shared with user code and has no back-pressure. 0 = available cores (min 2)",
       Integer.class, 0),
 
+  QUERY_PARALLELISM_QUEUE_SIZE("arcadedb.queryParallelismQueueSize", SCOPE.JVM,
+      "Maximum number of tasks that can wait in the QueryEngineManager pool's queue before the rejection policy fires. The default of 1024 lets bursts (e.g. dozens of concurrent graph algorithms forking thousands of chunks) absorb gracefully, while still bounding heap usage if a runaway producer overwhelms the workers. Once the queue is full, the rejection policy is CallerRuns: the submitter executes the task inline, which degrades parallelism but never fails the query.",
+      Integer.class, 1024),
+
+  SPARSE_VECTOR_SCORING_POOL_THREADS("arcadedb.sparseVectorScoringPoolThreads", SCOPE.JVM,
+      "Maximum number of threads in the dedicated pool that backs per-segment parallel scoring for `LSM_SPARSE_VECTOR` top-K queries. Isolated from the QueryEngineManager pool on purpose: scoring tasks are fine-grained (tens of milliseconds each), and mixing them with long-running graph algorithms in the same fixed pool produces bad-neighbour latency on both sides. 0 = available cores (min 2). Set to 1 to disable parallel scoring without code changes (every fork falls through the queue rejection policy to single-threaded execution).",
+      Integer.class, 0),
+
+  SPARSE_VECTOR_SCORING_QUEUE_SIZE("arcadedb.sparseVectorScoringQueueSize", SCOPE.JVM,
+      "Maximum number of tasks that can wait in the SparseVectorScoringPool queue before the rejection policy fires. Set comfortably above the expected per-query fork-out (default fan-out ≤ 8) multiplied by the expected concurrent query count, so a healthy peak does not bounce off the queue's rejection policy. Once the queue is full, the rejection policy is CallerRuns: the calling thread runs the task inline, degrading the query to single-threaded scoring without failing it.",
+      Integer.class, 1024),
+
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
       "Queue implementation to use between 'standard' and 'fast'. 'standard' consumes less CPU than the 'fast' implementation, but it could be slower with high loads",
       String.class, "standard", Set.of("standard", "fast")),
