@@ -27,11 +27,10 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Forward cursor over the postings of a single dim within a page-backed sealed segment.
- * Mirrors {@link SegmentDimCursor}'s state machine (block_header / posting), but reads block
- * payloads via {@link PaginatedSegmentReader#readBlockPayloadInto} (page-cache-backed) instead of a
- * raw FileChannel. The skip path uses the per-segment skip list to avoid decompressing blocks
- * that cannot beat the current threshold.
+ * Forward cursor over the postings of a single dim within a page-backed sealed segment. Implements
+ * a {@code block_header} / {@code posting} state machine and reads block payloads via
+ * {@link PaginatedSegmentReader#readBlockPayloadInto} (page-cache-backed). The skip path uses the
+ * per-segment skip list to avoid decompressing blocks that cannot beat the current threshold.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -162,6 +161,30 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     final int oldInBlock = currentInBlock;
     int targetBlock = currentBlock < 0 ? 0 : currentBlock;
     final int total = meta.blockCount();
+    // Use the per-dim skip list to jump close to {@code target} before the linear refinement,
+    // dropping the cost from O(blocks) to O(log skip_entries + skipStride). At default settings
+    // (blockSize=128, skipStride=8) this turns a 1M-posting cursor's seek from a ~7,800-block
+    // walk into a ~10-comparison binary search plus an &lt;= 8-block linear scan.
+    final SkipEntry[] sl = meta.skipList();
+    if (sl.length > 0) {
+      // Binary search for the largest skip entry whose firstRid &lt;= target. Its blockIndex is
+      // the start of the stride that contains (or immediately precedes) target; the linear loop
+      // below then refines within that stride.
+      int lo = 0;
+      int hi = sl.length - 1;
+      int found = -1;
+      while (lo <= hi) {
+        final int mid = (lo + hi) >>> 1;
+        if (SparseSegmentBuilder.compareRid(sl[mid].firstRid(), target) <= 0) {
+          found = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      if (found >= 0 && sl[found].blockIndex() > targetBlock)
+        targetBlock = sl[found].blockIndex();
+    }
     while (targetBlock < total
         && SparseSegmentBuilder.compareRid(meta.blockHeader(targetBlock).lastRid(), target) < 0)
       targetBlock++;

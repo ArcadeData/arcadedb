@@ -123,6 +123,22 @@ public final class Memtable {
   }
 
   /**
+   * Returns {@code true} if this memtable has at least one entry (live or tombstone) under
+   * {@code dim}. Used by {@link PaginatedSparseVectorEngine#openMergedCursor} to avoid handing
+   * a {@link DimCursor} a memtable source that's guaranteed to be empty - a cursor with zero
+   * matching postings is correctness-safe (it just exhausts immediately) but it still costs a
+   * scan in {@link DimCursor#materializeMin} on every advance, so dropping it is pure win.
+   * <p>
+   * The check has to include tombstones, not just live postings: a tombstone in the memtable
+   * for {@code (dim, rid)} masks an older segment's live posting under the newest-wins merge
+   * rule, so suppressing the source when only tombstones exist would silently surface deleted
+   * documents.
+   */
+  public boolean containsDim(final int dim) {
+    return postings.containsKey(dim);
+  }
+
+  /**
    * Running per-dim max live weight, maintained incrementally on {@link #put}. A monotonic
    * upper bound suitable for BMW pruning - it never drops when a posting is tombstoned or
    * overwritten with a smaller weight, but BMW only needs an upper bound for correctness so

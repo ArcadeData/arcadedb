@@ -25,7 +25,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * Per-dim cursor that merges postings across multiple {@link SegmentDimCursor sources}, exposing
+ * Per-dim cursor that merges postings across multiple {@link SourceCursor sources}, exposing
  * a unified forward-only iteration in ascending RID order.
  * <p>
  * <b>Ordering of sources matters.</b> Sources are passed in <i>oldest to newest</i> order; on
@@ -33,7 +33,7 @@ import java.util.List;
  * tombstone in any source masks the RID across all older sources for the duration of this
  * cursor's lifetime.
  * <p>
- * Iteration discipline mirrors {@link SegmentDimCursor}: call {@link #start()} once, then
+ * Iteration discipline mirrors {@link SourceCursor}: call {@link #start()} once, then
  * {@link #advance()} until it returns false, with optional {@link #seekTo(RID)} for BMW
  * block-skip.
  *

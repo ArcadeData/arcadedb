@@ -87,11 +87,17 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   private long    totalPostings;
   private boolean finished;
 
-  // Reusable payload scratch space, sized once at construction. {@link #flushBlock} writes a
-  // block header + RID/weight payload here, then copies the populated prefix into the active
-  // page via {@code writeBytesAtPageCursor}. Sharing the scratch across blocks instead of
-  // allocating a fresh ByteBuffer per block cuts ~one allocation per block from the flush path
-  // - on a default-shaped 1M-posting flush that is ~7.8k allocations dropped (blockSize=128).
+  // Reusable payload scratch space, sized once at construction. Used by:
+  // - {@link #flushBlock} to assemble a block header + RID/weight payload, then copy the
+  //   populated prefix into the active page;
+  // - {@link #writeDimIndex} to pack a full page of dim_index entries in one writeByteArray call;
+  // - {@link #writeDimTrailer} to assemble a per-dim trailer (block locators + skip list) for
+  //   one writeByteArray call, instead of {@code ByteBuffer.allocate} per dim.
+  // Sized to {@code max(estimateBlockPayloadSize, pageContentSize)}: the per-block worst case
+  // is normally smaller than a full page, but the dim_index packer fills up to a full page in
+  // one go and the trailer can grow up to a full page for very wide dims, so the scratch must
+  // cover both. On a default 64 KiB page that is one ~64 KiB allocation per builder instead of
+  // a fresh ByteBuffer per block + per dim_index page + per dim trailer.
   private final byte[]     payloadScratch;
   private final ByteBuffer payloadBuf;
 
@@ -105,7 +111,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     this.blockRids = new RID[params.blockSize()];
     this.blockWeights = new float[params.blockSize()];
     this.blockTombstones = new boolean[params.blockSize()];
-    this.payloadScratch = new byte[estimateBlockPayloadSize(params)];
+    this.payloadScratch = new byte[Math.max(estimateBlockPayloadSize(params), pageContentSize)];
     this.payloadBuf = ByteBuffer.wrap(payloadScratch).order(ByteOrder.BIG_ENDIAN);
     // Allocate page 0 right away; back-patched at finish().
     allocateNewPage();
@@ -422,33 +428,33 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     }
 
     final int trailerSize = computeDimTrailerSize();
-    final ByteBuffer buf = ByteBuffer.allocate(trailerSize).order(ByteOrder.BIG_ENDIAN);
-    buf.putInt(currentDimId);
-    buf.putInt(blockCount);
-    buf.putInt((int) currentDimPostingCount);
+    payloadBuf.clear();
+    payloadBuf.putInt(currentDimId);
+    payloadBuf.putInt(blockCount);
+    payloadBuf.putInt((int) currentDimPostingCount);
     // df is the segment-local document frequency: number of LIVE postings only. Tombstones do
     // not contribute - keeping them in df would inflate IDF in proportion to the
     // uncompacted-tombstone load, which is exactly the case where IDF should be most accurate.
     // posting_count above stays as the total entry count (live + tombstones) so on-disk
     // bookkeeping (dim trailer scans, debugging) sees what is actually written.
-    buf.putInt((int) currentDimLivePostingCount);
-    buf.putFloat(currentDimMaxWeight == Float.NEGATIVE_INFINITY ? 0.0f : currentDimMaxWeight);
+    payloadBuf.putInt((int) currentDimLivePostingCount);
+    payloadBuf.putFloat(currentDimMaxWeight == Float.NEGATIVE_INFINITY ? 0.0f : currentDimMaxWeight);
 
     for (int b = 0; b < blockCount; b++) {
       final long[] loc = currentDimBlockLocators.get(b);
-      buf.putInt((int) loc[0]);
-      buf.putShort((short) loc[1]);
+      payloadBuf.putInt((int) loc[0]);
+      payloadBuf.putShort((short) loc[1]);
     }
 
     for (int s = 0; s < skipEntries; s++) {
       final int firstBlock = s * params.skipStride();
       final BlockHeader bh = currentDimBlockHeaders.get(firstBlock);
-      putRid(buf, bh.firstRid());
-      buf.putFloat(maxWeightToEnd[s]);
-      buf.putInt(firstBlock);
+      putRid(payloadBuf, bh.firstRid());
+      payloadBuf.putFloat(maxWeightToEnd[s]);
+      payloadBuf.putInt(firstBlock);
     }
 
-    pages.get(pageNum).writeByteArray(offsetInPage, buf.array(), 0, trailerSize);
+    pages.get(pageNum).writeByteArray(offsetInPage, payloadScratch, 0, trailerSize);
     currentWritePageFree -= trailerSize;
   }
 
@@ -471,11 +477,10 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     int pageNum = firstPageNum;
     int offsetInPage = 0;
 
-    // Reuse {@link #payloadScratch} (sized at construction to the worst-case block payload, so
-    // it always covers a full {@code pageContentSize} of dim_index entries) instead of
-    // allocating a fresh ByteBuffer per page. Single-page dim_index sees no measurable change;
-    // multi-page dim_index for high-vocab corpora (>6552 dims at the default 64 KiB page) drops
-    // one allocation per page from the flush path.
+    // Reuse {@link #payloadScratch} (sized at construction to {@code >= pageContentSize}, so a
+    // full page of dim_index entries always fits) instead of allocating a fresh ByteBuffer per
+    // page. Multi-page dim_index for high-vocab corpora (>6552 dims at the default 64 KiB page)
+    // drops one allocation per page from the flush path.
     payloadBuf.clear();
 
     // Page 0: write the count header first.

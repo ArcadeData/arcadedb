@@ -27,26 +27,5 @@ import com.arcadedb.database.RID;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public final class MemtablePosting {
-  private final RID     rid;
-  private final float   weight;
-  private final boolean tombstone;
-
-  public MemtablePosting(final RID rid, final float weight, final boolean tombstone) {
-    this.rid = rid;
-    this.weight = weight;
-    this.tombstone = tombstone;
-  }
-
-  public RID rid() {
-    return rid;
-  }
-
-  public float weight() {
-    return weight;
-  }
-
-  public boolean tombstone() {
-    return tombstone;
-  }
+public record MemtablePosting(RID rid, float weight, boolean tombstone) {
 }

@@ -31,7 +31,6 @@ import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.util.HashSet;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -519,16 +518,10 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
         /* tierBasePostings */ 1L);
   }
 
-  /** Peek at the wrapper's private {@code engine} field for white-box assertions. */
+  /** Resolve the underlying engine for white-box assertions. */
   private PaginatedSparseVectorEngine engineFor(final String idxName) {
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(idxName);
     final LSMSparseVectorIndex wrapper = (LSMSparseVectorIndex) typeIndex.getIndexesOnBuckets()[0];
-    try {
-      final Field f = LSMSparseVectorIndex.class.getDeclaredField("engine");
-      f.setAccessible(true);
-      return (PaginatedSparseVectorEngine) f.get(wrapper);
-    } catch (final ReflectiveOperationException e) {
-      throw new AssertionError("Cannot reflect into LSMSparseVectorIndex.engine", e);
-    }
+    return wrapper.getEngine();
   }
 }

@@ -28,26 +28,5 @@ import com.arcadedb.database.RID;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public final class SkipEntry {
-  private final RID   firstRid;
-  private final float maxWeightToEnd;
-  private final int   blockIndex;
-
-  public SkipEntry(final RID firstRid, final float maxWeightToEnd, final int blockIndex) {
-    this.firstRid = firstRid;
-    this.maxWeightToEnd = maxWeightToEnd;
-    this.blockIndex = blockIndex;
-  }
-
-  public RID firstRid() {
-    return firstRid;
-  }
-
-  public float maxWeightToEnd() {
-    return maxWeightToEnd;
-  }
-
-  public int blockIndex() {
-    return blockIndex;
-  }
+public record SkipEntry(RID firstRid, float maxWeightToEnd, int blockIndex) {
 }

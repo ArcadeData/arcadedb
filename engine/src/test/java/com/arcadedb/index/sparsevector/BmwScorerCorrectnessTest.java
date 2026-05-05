@@ -26,6 +26,7 @@ import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 import com.arcadedb.schema.LocalSchema;
 
 import org.assertj.core.data.Offset;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
@@ -124,6 +125,7 @@ class BmwScorerCorrectnessTest extends TestHelper {
     });
   }
 
+  @Tag("slow")
   @Test
   void largeRandomCorpusMatchesBruteForce() throws Exception {
     final Map<RID, Map<Integer, Float>> docs = randomCorpus(0xF00DL, 2_000, 200, 20);

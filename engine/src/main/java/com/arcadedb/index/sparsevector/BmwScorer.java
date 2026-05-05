@@ -61,8 +61,8 @@ public final class BmwScorer {
 
   /**
    * Top-K BMW DAAT over the merged sources for each query dim. Sources for each dim are passed
-   * implicitly via {@link DimCursor}: the caller assembles those (typically once per query) using
-   * {@link DimCursor#open(int, SparseSegmentReader[])}.
+   * implicitly via {@link DimCursor}: the caller assembles those (typically once per query) by
+   * constructing a {@link DimCursor} with the per-dim {@link SourceCursor} list.
    * <p>
    * The caller passes parallel arrays {@code queryDims}, {@code queryWeights} of identical length;
    * each dim must be unique. The {@code cursors} array is parallel to those (one cursor per dim),

@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LongHashSet;
@@ -30,14 +31,18 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
+import java.util.logging.Level;
 
 /**
- * Page-component-backed orchestrator for the v1 sparse-vector storage backend. Each sealed
+ * Page-component-backed orchestrator for the {@code LSM_SPARSE_VECTOR} storage backend. Each sealed
  * segment lives as a {@link SparseSegmentComponent} owned by ArcadeDB's {@code FileManager};
  * flushes and compactions run inside {@code database.transaction(...)} so the page WAL captures
  * every byte of the new segment alongside the regular transaction record - no separate fsync,
@@ -341,7 +346,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       // Bucket by tier. Within each tier, sort by segment id (oldest first) so the merge picks
       // a contiguous run of older segments and leaves any tier-mate that arrived more recently
       // for the next pass.
-      final java.util.Map<Integer, java.util.List<PaginatedSegmentReader>> byTier = new java.util.HashMap<>();
+      final Map<Integer, List<PaginatedSegmentReader>> byTier = new HashMap<>();
       for (final PaginatedSegmentReader r : active) {
         final int t = tierOf(r.totalPostings());
         byTier.computeIfAbsent(t, k -> new ArrayList<>()).add(r);
@@ -350,7 +355,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       // means cheap merge.
       final int[] sortedTiers = byTier.keySet().stream().mapToInt(Integer::intValue).sorted().toArray();
       for (final int t : sortedTiers) {
-        final java.util.List<PaginatedSegmentReader> sameTier = byTier.get(t);
+        final List<PaginatedSegmentReader> sameTier = byTier.get(t);
         if (sameTier.size() < tierFanout)
           continue;
         sameTier.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
@@ -374,7 +379,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   private long compactInputs(final boolean dropAllTombstones,
-      final java.util.function.Function<PaginatedSegmentReader[], PaginatedSegmentReader[]> pickInputs) {
+      final Function<PaginatedSegmentReader[], PaginatedSegmentReader[]> pickInputs) {
     ensureOpen();
     mutatorLock.lock();
     try {
@@ -518,14 +523,18 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       if (!old.isEmpty()) {
         try {
           final long segmentId = nextSegmentId.getAndIncrement();
-          final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
+          // close() does not need to publish a reader (the engine is being torn down) - we just
+          // want the memtable to be sealed durably. {@link #buildSegmentComponent} registers the
+          // component with the FileManager and drains the page cache; on a subsequent reopen,
+          // {@link #loadExistingSegments} will pick the file up from disk. The return value
+          // (the registered component) is intentionally unused here for that reason.
           database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
             buildSegmentComponent(segmentId, old);
             return Boolean.TRUE;
           });
         } catch (final IOException | InterruptedException | RuntimeException e) {
           // Database may be mid-teardown; tolerate it but make the loss loud.
-          com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+          LogManager.instance().log(this, Level.SEVERE,
               "Close-time flush of sparse vector engine '%s' failed; %d memtable postings discarded: %s",
               null, indexName, old.totalPostings(), e);
         }
@@ -789,10 +798,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
   /**
    * Walk the FileManager and accumulate a content fingerprint over THIS index's segment files.
-   * Returns {@code (count << 32) ^ sumOfFileIds} - a count alone would miss balanced add+remove
-   * SCHEMA_ENTRYs from HA compaction, and the sum-of-file-ids closes that gap. Cheap per-file
-   * operations only: extension compare and component-name prefix-and-digits match, no schema
-   * lookups, no reader opens.
+   * Returns {@code (count << 32) + sumOfFileIds} - a count alone would miss balanced add+remove
+   * SCHEMA_ENTRYs from HA compaction, and the sum-of-file-ids closes that gap. Plain integer
+   * addition is used instead of XOR so a swap that adds {@code A+C} and removes {@code A} while
+   * also adding {@code B} and removing {@code B+C} (i.e. shifts a constant {@code C} between
+   * two file ids) shows up in the sum: XOR can mask that pattern when the affected bit lanes
+   * align, addition cannot. Cheap per-file operations only: extension compare and
+   * component-name prefix-and-digits match, no schema lookups, no reader opens.
    */
   private long computeFileFingerprint() {
     // Snapshot the FileManager's view before walking. {@link FileManager#getFiles} returns an
@@ -809,7 +821,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       count++;
       sumIds += componentFile.getFileId();
     }
-    return (count << 32) ^ sumIds;
+    return (count << 32) + sumIds;
   }
 
   /**
@@ -917,7 +929,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       if (c != null)
         sources.add(c);
     }
-    if (mt != null)
+    // Skip the memtable source entirely when the memtable has no entry (live or tombstone)
+    // for this dim. {@link MemtableSourceCursor#start} would handle the empty case by marking
+    // itself exhausted, so correctness is fine either way - but a non-contributing source still
+    // costs one slot in {@link DimCursor#materializeMin}'s per-advance scan, and dims that are
+    // not in the memtable are the common case (queries typically touch ~10 dims while the
+    // memtable holds postings for thousands).
+    if (mt != null && mt.containsDim(dim))
       sources.add(new MemtableSourceCursor(mt, dim));
     if (sources.isEmpty())
       return null;

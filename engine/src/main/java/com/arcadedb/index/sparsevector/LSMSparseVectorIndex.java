@@ -358,7 +358,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   /**
    * Read-only handle to the wrapped LSM-Tree shell. The shell is a registration scaffolding only;
-   * it does not contain postings under the v2 storage backend.
+   * it does not contain postings - those live in {@link SparseSegmentComponent} files owned by
+   * the engine.
    */
   public LSMTreeIndex getUnderlyingIndex() {
     return underlyingIndex;
