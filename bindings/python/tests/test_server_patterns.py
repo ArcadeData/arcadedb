@@ -17,6 +17,7 @@ import time
 
 import arcadedb_embedded as arcadedb
 import pytest
+from tests.conftest import TEST_PASSWORD
 
 
 @pytest.fixture
@@ -76,9 +77,7 @@ def test_server_pattern_recommended(cleanup_test_dirs):
 
     # Step 1: Start server first
     print("\n1. Starting ArcadeDB server...")
-    server = arcadedb.create_server(
-        root_path=root_path, root_password="test12345"  # Min 8 chars required
-    )
+    server = arcadedb.create_server(root_path=root_path, root_password=TEST_PASSWORD)
     register_server(server)
     server.start()
     print(f"   ✅ Server started on port {server.get_http_port()}")
@@ -132,7 +131,7 @@ def test_server_thread_safety(cleanup_test_dirs):
 
     # Start server and create database
     print("\n1. Setting up server and database...")
-    server = arcadedb.create_server(root_path=root_path, root_password="test12345")
+    server = arcadedb.create_server(root_path=root_path, root_password=TEST_PASSWORD)
     register_server(server)
     server.start()
 
@@ -203,7 +202,7 @@ def test_server_context_manager(cleanup_test_dirs):
 
     # Server automatically starts and stops
     with arcadedb.create_server(
-        root_path=root_path, root_password="test12345"
+        root_path=root_path, root_password=TEST_PASSWORD
     ) as server:
         print("   ✅ Server started (automatic)")
 
@@ -277,7 +276,7 @@ def test_pattern1_embedded_first_requires_close(cleanup_test_dirs):
 
     # Step 4: Start server
     print("\n4. Starting ArcadeDB server...")
-    server = arcadedb.create_server(root_path=root_path, root_password="test12345")
+    server = arcadedb.create_server(root_path=root_path, root_password=TEST_PASSWORD)
     register_server(server)
     server.start()
     print(f"   ✅ Server started on port {server.get_http_port()}")
@@ -405,7 +404,7 @@ def test_embedded_performance_comparison(cleanup_test_dirs):
     print("\n2. Server-Managed Embedded Mode (same process)...")
     server_path = create_temp_dir("server_perf_")
 
-    server = arcadedb.create_server(root_path=server_path, root_password="test12345")
+    server = arcadedb.create_server(root_path=server_path, root_password=TEST_PASSWORD)
     register_server(server)
     server.start()
 
@@ -500,7 +499,7 @@ def test_http_api_access_pattern(cleanup_test_dirs):
 
     # Step 1: Start server (required for HTTP API)
     print("\n1. Starting ArcadeDB server...")
-    server = arcadedb.create_server(root_path=root_path, root_password="test12345")
+    server = arcadedb.create_server(root_path=root_path, root_password=TEST_PASSWORD)
     register_server(server)
     server.start()
     time.sleep(1)  # Give server time to fully start

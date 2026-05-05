@@ -8,6 +8,10 @@ import tempfile
 
 import pytest
 
+# Shared test password used by server-mode tests. ArcadeDB requires >= 8 chars.
+# Hardcoded test fixture, not a real credential.
+TEST_PASSWORD = "test12345"  # nosec B105 - test fixture
+
 
 @pytest.fixture
 def temp_db_path():

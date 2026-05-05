@@ -16,7 +16,7 @@ import time
 
 import pytest
 from arcadedb_embedded import ArcadeDBServer
-from tests.conftest import has_server_support
+from tests.conftest import TEST_PASSWORD, has_server_support
 
 
 @pytest.mark.server
@@ -25,7 +25,7 @@ def test_server_creation(temp_server_root):
     """Test creating and starting a server."""
     server = ArcadeDBServer(
         root_path=temp_server_root,
-        root_password="test_password",
+        root_password=TEST_PASSWORD,
         config={"http_port": 2480},
     )
 
@@ -57,7 +57,7 @@ def test_server_database_operations(temp_server_root):
     - Operations within same Python process (embedded access)
     """
     with ArcadeDBServer(
-        root_path=temp_server_root, root_password="test_password"
+        root_path=temp_server_root, root_password=TEST_PASSWORD
     ) as server:
         # Server auto-starts in context manager
         time.sleep(1)
@@ -90,7 +90,7 @@ def test_server_custom_config(temp_server_root):
     config = {"http_port": 8080, "host": "127.0.0.1", "mode": "production"}
 
     server = ArcadeDBServer(
-        root_path=temp_server_root, root_password="test_password", config=config
+        root_path=temp_server_root, root_password=TEST_PASSWORD, config=config
     )
     server.start()
     time.sleep(1)
@@ -105,7 +105,7 @@ def test_server_custom_config(temp_server_root):
 def test_server_context_manager(temp_server_root):
     """Test server context manager."""
     with ArcadeDBServer(
-        root_path=temp_server_root, root_password="test_password"
+        root_path=temp_server_root, root_password=TEST_PASSWORD
     ) as server:
         # Server auto-starts in context manager
         time.sleep(1)
@@ -124,7 +124,7 @@ def test_default_host_is_localhost(temp_server_root):
 
     server = ArcadeDBServer(
         root_path=temp_server_root,
-        root_password="test_password",
+        root_password=TEST_PASSWORD,
     )
     assert server._config.get("host", "localhost") == "localhost"
     assert server.get_studio_url().startswith("http://localhost:")
