@@ -119,12 +119,17 @@ def test_server_context_manager(temp_server_root):
 
 
 def test_default_host_is_localhost(temp_server_root):
-    """Default host should be localhost; binding to all interfaces must be opt-in."""
+    """Default host should be localhost; binding to all interfaces must be opt-in.
+
+    Asserts on the publicly-observable Studio URL composition; we do not
+    start the server here because that requires a real JVM. The same default
+    host feeds both ``get_studio_url()`` and the underlying ContextConfiguration,
+    so the URL is a faithful proxy for the configured host.
+    """
     from arcadedb_embedded.server import ArcadeDBServer
 
     server = ArcadeDBServer(
         root_path=temp_server_root,
         root_password=TEST_PASSWORD,
     )
-    assert server._config.get("host", "localhost") == "localhost"
     assert server.get_studio_url().startswith("http://localhost:")

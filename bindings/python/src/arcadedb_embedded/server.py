@@ -7,12 +7,9 @@ ArcadeDB server for HTTP API and Studio web interface.
 import os
 from typing import Any, Dict, Optional
 
-from ._logging import get_logger, log_swallowed_exception
 from .core import Database
 from .exceptions import ArcadeDBError
 from .jvm import start_jvm
-
-_LOGGER = get_logger(__name__)
 
 
 class ArcadeDBServer:
@@ -35,7 +32,11 @@ class ArcadeDBServer:
             config: Optional configuration dictionary with keys like:
                 - http_port: HTTP API port (default: 2480)
                 - binary_port: Binary protocol port (default: 2424)
-                - host: Host to bind to (default: 0.0.0.0)
+                - host: Host to bind to (default: "localhost"). Pass "0.0.0.0"
+                    explicitly to expose the server on all IPv4 interfaces, or
+                    "::" for all IPv6 interfaces. Earlier versions defaulted to
+                    "0.0.0.0"; the default was tightened to loopback in the
+                    Python bindings v0.x security cleanup.
                 - mode: Server mode (default: development)
             jvm_kwargs: Optional JVM args passed to start_jvm()
                 Example: {"heap_size": "8g"}
@@ -170,7 +171,7 @@ class ArcadeDBServer:
     def get_studio_url(self) -> str:
         """Get the URL for the Studio web interface."""
         host = self._config.get("host", "localhost")
-        if host == "0.0.0.0":  # nosec B104 - equality comparison, not a bind
+        if host in ("0.0.0.0", "::"):  # nosec B104 - equality comparison, not a bind
             host = "localhost"
         port = self.get_http_port()
         return f"http://{host}:{port}/"
