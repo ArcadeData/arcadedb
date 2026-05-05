@@ -394,6 +394,33 @@ public class GraphEngine {
       }
   }
 
+  public void moveEdge(final MutableEdge edge, final Vertex.DIRECTION direction, final RID newVertexRID) {
+    if (direction != Vertex.DIRECTION.IN && direction != Vertex.DIRECTION.OUT)
+      throw new IllegalArgumentException("Unsupported direction for moveEdge: " + direction);
+
+    final String typeName = edge.getTypeName();
+    final Map<String, Object> properties = edge.propertiesAsMap();
+    final RID newOut = direction == Vertex.DIRECTION.OUT ? newVertexRID : edge.getOut();
+    final RID newIn = direction == Vertex.DIRECTION.IN ? newVertexRID : edge.getIn();
+
+    deleteEdge(edge);
+
+    final EdgeType edgeType = (EdgeType) database.getSchema().getType(typeName);
+    final VertexInternal fromVertex = (VertexInternal) database.lookupByRID(newOut, false);
+    final Identifiable toVertex = database.lookupByRID(newIn, false);
+
+    final MutableEdge newEdge = new MutableEdge(database, edgeType, newOut, newIn);
+    if (!properties.isEmpty())
+      newEdge.set(properties);
+    newEdge.save();
+
+    connectOutgoingEdge(fromVertex, toVertex, newEdge);
+    if (edgeType.isBidirectional())
+      connectIncomingEdge(toVertex, newOut, newEdge.getIdentity());
+
+    edge.updateIdentity(newEdge.getIdentity(), newOut, newIn);
+  }
+
   public void deleteVertex(final VertexInternal vertex) {
     // RETRIEVE ALL THE EDGES TO DELETE AT THE END
     final List<Identifiable> edgesToDelete = new ArrayList<>();
