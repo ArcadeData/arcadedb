@@ -38,6 +38,11 @@ public final class VarInt {
   public static final int MAX_VARLONG_BYTES = 10;
 
   public static int writeUnsignedVarLong(final ByteBuffer out, long value) {
+    // No sign check here: this method also backs writeSignedVarLong via zigZagEncode, and
+    // zigZag-encoding values like Long.MIN_VALUE + 1 produces longs whose Java sign bit is set
+    // but represent legitimate unsigned 64-bit numbers. Callers that need to enforce a non-
+    // negative invariant (e.g. RID-delta encoding) check at the call site - see
+    // SparseSegmentBuilder.flushBlock.
     int bytes = 0;
     while ((value & ~0x7FL) != 0L) {
       out.put((byte) ((value & 0x7F) | 0x80));

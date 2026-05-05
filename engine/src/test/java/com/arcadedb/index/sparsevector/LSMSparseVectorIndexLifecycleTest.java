@@ -110,27 +110,28 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
   /**
    * (c) {@code compactOldest(2)} on a 4-segment engine merges segments 1+2 into a new segment
    * and leaves segments 3+4 intact - net count drops by 1 (2 inputs retired, 1 output appended).
+   * Uses a high-fanout engine to suppress the auto-compaction gate so the test can directly
+   * exercise the manual {@code compactOldest} API.
    */
   @Test
   void compactOldestRetiresOnlyTheRequestedInputs() {
     createTypeAndIndex();
-    final PaginatedSparseVectorEngine engine = engineFor(IDX_NAME);
-    // Build 4 distinct segments by interleaving direct put + flush. Direct put bypasses the
-    // doc-level wrapper so the test isolates engine-level behavior and keeps the segment count
-    // deterministic.
-    for (int s = 0; s < 4; s++) {
-      for (int i = 0; i < 5; i++) {
-        final RID rid = new RID(0, 1000L * s + i);
-        engine.put(s, rid, 0.1f * (i + 1));
+    final DatabaseInternal db = (DatabaseInternal) database;
+    try (final PaginatedSparseVectorEngine engine = nonCompactingEngine(db, "ManualCompactTest")) {
+      for (int s = 0; s < 4; s++) {
+        for (int i = 0; i < 5; i++) {
+          final RID rid = new RID(0, 1000L * s + i);
+          engine.put(s, rid, 0.1f * (i + 1));
+        }
+        engine.flush();
       }
-      engine.flush();
+      assertThat(engine.segmentCount()).isEqualTo(4);
+
+      final long mergedId = engine.compactOldest(2);
+
+      assertThat(mergedId).as("compactOldest(2) returns the new segment id").isGreaterThan(0L);
+      assertThat(engine.segmentCount()).as("4 segments - 2 retired + 1 merged = 3").isEqualTo(3);
     }
-    assertThat(engine.segmentCount()).isEqualTo(4);
-
-    final long mergedId = engine.compactOldest(2);
-
-    assertThat(mergedId).as("compactOldest(2) returns the new segment id").isGreaterThan(0L);
-    assertThat(engine.segmentCount()).as("4 segments - 2 retired + 1 merged = 3").isEqualTo(3);
   }
 
   /**
@@ -146,32 +147,95 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
   @Test
   void compactionPublishesNewSegmentAtomically() {
     createTypeAndIndex();
-    final PaginatedSparseVectorEngine engine = engineFor(IDX_NAME);
-    for (int s = 0; s < 4; s++) {
-      for (int i = 0; i < 5; i++)
-        engine.put(s, new RID(0, 1000L * s + i), 0.1f * (i + 1));
-      engine.flush();
+    final DatabaseInternal db = (DatabaseInternal) database;
+    try (final PaginatedSparseVectorEngine engine = nonCompactingEngine(db, "AtomicSwapTest")) {
+      for (int s = 0; s < 4; s++) {
+        for (int i = 0; i < 5; i++)
+          engine.put(s, new RID(0, 1000L * s + i), 0.1f * (i + 1));
+        engine.flush();
+      }
+      final long before = engine.totalPostings();
+
+      final long mergedId = engine.compactOldest(2);
+
+      assertThat(mergedId).isGreaterThan(0L);
+      // Distinct segment count: one entry per id, no duplicates.
+      final java.util.Set<Long> ids = new java.util.HashSet<>();
+      final java.util.List<Long> seen = new java.util.ArrayList<>();
+      // segmentCount() walks the AtomicReference directly; correlate with totalPostings to make
+      // sure the published array is what queries actually read.
+      final int published = engine.segmentCount();
+      assertThat(published).isEqualTo(3);
+      // No double-count: total live postings across active segments must equal the pre-compaction
+      // total (the inputs had distinct dims, so the merge is loss-less).
+      assertThat(engine.totalPostings()).as("compaction must not duplicate or drop live postings").isEqualTo(before);
+      // The merged segment id must be present exactly once. Use a query to confirm the engine
+      // observably sees a segment with that id (proxies the lack-of-duplicate-reader invariant).
+      seen.add(mergedId);
+      ids.addAll(seen);
+      assertThat(ids).hasSize(seen.size());
     }
-    final long before = engine.totalPostings();
+  }
 
-    final long mergedId = engine.compactOldest(2);
+  /**
+   * Concurrent flush + topK race: a previous version of
+   * {@link PaginatedSparseVectorEngine#refreshSegmentsFromFileManager} took an unsynchronized
+   * snapshot of {@code segments}, walked the FileManager, then unconditionally
+   * {@code segments.set(...)}'d its result, so a flush that committed in the middle of that
+   * window had its newly-appended segment silently overwritten. This test pins the contract:
+   * a writer thread flushing back-to-back and a reader thread firing topK queries in parallel
+   * must never lose a segment, and the final segment-id set must equal the union of every id
+   * the writer ever returned from {@code flush()}.
+   */
+  @Test
+  void concurrentFlushAndTopKDoNotLoseSegments() throws Exception {
+    createTypeAndIndex();
+    final DatabaseInternal db = (DatabaseInternal) database;
+    try (final PaginatedSparseVectorEngine engine = nonCompactingEngine(db, "ConcurrentFlushTest")) {
+      // Seed one segment so the reader has data on its first topK.
+      engine.put(0, new RID(0, 1L), 0.5f);
+      engine.flush();
 
-    assertThat(mergedId).isGreaterThan(0L);
-    // Distinct segment count: one entry per id, no duplicates.
-    final java.util.Set<Long> ids = new java.util.HashSet<>();
-    final java.util.List<Long> seen = new java.util.ArrayList<>();
-    // segmentCount() walks the AtomicReference directly; correlate with totalPostings to make
-    // sure the published array is what queries actually read.
-    final int published = engine.segmentCount();
-    assertThat(published).isEqualTo(3);
-    // No double-count: total live postings across active segments must equal the pre-compaction
-    // total (the inputs had distinct dims, so the merge is loss-less).
-    assertThat(engine.totalPostings()).as("compaction must not duplicate or drop live postings").isEqualTo(before);
-    // The merged segment id must be present exactly once. Use a query to confirm the engine
-    // observably sees a segment with that id (proxies the lack-of-duplicate-reader invariant).
-    seen.add(mergedId);
-    ids.addAll(seen);
-    assertThat(ids).hasSize(seen.size());
+      final int flushes = 30;
+      final java.util.concurrent.atomic.AtomicReference<Throwable> readerErr = new java.util.concurrent.atomic.AtomicReference<>();
+      final java.util.concurrent.atomic.AtomicBoolean stopReader = new java.util.concurrent.atomic.AtomicBoolean(false);
+      final java.util.Set<Long> writerIds = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+
+      final Thread reader = new Thread(() -> {
+        try {
+          while (!stopReader.get()) {
+            // Hammer topK; the refresh path runs at the start of every call. Any swallowed
+            // segment loss would manifest as a topK that returns zero rows after we've already
+            // flushed at least one segment - the "did the write get through" check below.
+            engine.topK(new int[] { 0 }, new float[] { 1.0f }, 1);
+          }
+        } catch (final Throwable t) {
+          readerErr.set(t);
+        }
+      }, "topK-reader");
+      reader.start();
+
+      // Writer: 30 back-to-back flushes, each producing one new segment. Every successful flush
+      // appends a known id; the test asserts the engine still sees all of them at the end.
+      for (int i = 0; i < flushes; i++) {
+        engine.put(i + 1, new RID(0, 100L + i), 0.1f * (i + 1));
+        final long id = engine.flush();
+        if (id > 0L)
+          writerIds.add(id);
+      }
+      stopReader.set(true);
+      reader.join(5_000);
+
+      if (readerErr.get() != null)
+        throw new AssertionError("topK reader threw concurrently with flush", readerErr.get());
+
+      final java.util.Set<Long> engineIds = new java.util.HashSet<>();
+      for (final long id : engine.segmentIds())
+        engineIds.add(id);
+      assertThat(engineIds)
+          .as("every id the writer returned from flush() must still be in the engine's segment set after concurrent topKs")
+          .containsAll(writerIds);
+    }
   }
 
   /**
@@ -222,6 +286,41 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
       cheap.maybeFlush();
       assertThat(cheap.segmentCount()).as("over threshold maybeFlush must materialize a segment").isEqualTo(1);
       assertThat(cheap.memtablePostings()).as("memtable is reset after a successful flush").isEqualTo(0L);
+    }
+  }
+
+  /**
+   * Size-tiered auto-compaction kicks in once a tier overflows. A low-base / low-fanout engine
+   * flushed enough times to fill tier 0 must observe a tier-0 collapse in the same {@code flush()}
+   * call: without this gate a long bulk-load leaves the engine with one segment per flush and BMW
+   * DAAT pays a per-segment merge cost on every query (the cliff that drove 10M-corpus latency
+   * from single-digit-ms memtable-only into ~800 ms with real segments).
+   */
+  @Test
+  void flushTriggersSizeTieredCompaction() {
+    createTypeAndIndex();
+    final DatabaseInternal db = (DatabaseInternal) database;
+    try (final PaginatedSparseVectorEngine cheap = new PaginatedSparseVectorEngine(
+        db, "SizeTieredTest", SegmentParameters.defaults(),
+        /* memtableFlushThreshold */ 1L,
+        /* tierFanout */ 3,
+        /* tierBasePostings */ 1L)) {
+      // Each flush emits a 1-posting tier-0 segment.
+      for (int s = 0; s < 2; s++) {
+        cheap.put(s, new RID(0, 100L + s), 0.1f * (s + 1));
+        cheap.flush();
+      }
+      assertThat(cheap.segmentCount()).as("under tier-0 fanout (2 < 3) the gate must not fire").isEqualTo(2);
+
+      // The third flush completes a tier-0 fill; the gate runs compactSizeTiered which merges
+      // the 3 tier-0 segments into one tier-1 segment.
+      cheap.put(2, new RID(0, 102L), 0.5f);
+      cheap.flush();
+
+      // 3 tier-0 sealed segments collapse into 1 tier-1 segment after the gate fires.
+      assertThat(cheap.segmentCount())
+          .as("size-tiered compaction must collapse a full tier (3 -> 1)")
+          .isEqualTo(1);
     }
   }
 
@@ -302,6 +401,19 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
     final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName(IDX_NAME);
     for (final IndexInternal sub : typeIndex.getIndexesOnBuckets())
       sub.flush();
+  }
+
+  /**
+   * Build a standalone engine whose size-tiered auto-compaction gate cannot fire under any
+   * unit-test workload (very high tier fanout). Used by tests that explicitly drive
+   * {@link PaginatedSparseVectorEngine#compactOldest} or {@link PaginatedSparseVectorEngine#flush}
+   * sequences and need a deterministic segment count between assertions.
+   */
+  private static PaginatedSparseVectorEngine nonCompactingEngine(final DatabaseInternal db, final String name) {
+    return new PaginatedSparseVectorEngine(db, name, SegmentParameters.defaults(),
+        /* memtableFlushThreshold */ 1L,
+        /* tierFanout */ 1_000_000,
+        /* tierBasePostings */ 1L);
   }
 
   /** Peek at the wrapper's private {@code engine} field for white-box assertions. */

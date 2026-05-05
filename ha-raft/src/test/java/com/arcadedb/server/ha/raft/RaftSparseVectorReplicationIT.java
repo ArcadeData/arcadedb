@@ -150,24 +150,47 @@ class RaftSparseVectorReplicationIT extends BaseRaftHATest {
     });
 
     // Top-K query: every server (leader and every follower) must return the same non-empty
-    // result set. Replication ships sealed SparseSegmentComponent files via the standard
-    // component-shipping pipeline (SCHEMA_ENTRY with addFiles + synthetic page WAL), so once
-    // waitForReplicationIsCompleted returns, every server is expected to be at parity.
+    // result set with byte-exact scores. Replication ships sealed SparseSegmentComponent files
+    // via the standard component-shipping pipeline (SCHEMA_ENTRY with addFiles + synthetic page
+    // WAL), so once waitForReplicationIsCompleted returns, every server is expected to be at
+    // parity. A weaker "non-empty result set" check would mask a class of bugs where the WAL
+    // replay corrupts a few weights silently - we capture the leader's full (rid, score) list
+    // first, then assert each follower returns exactly the same sequence.
+    final java.util.List<java.util.List<Object[]>> perServer = new java.util.ArrayList<>(getServerCount());
     for (int i = 0; i < getServerCount(); i++) {
       final Database serverDb = getServerDatabase(i, getDatabaseName());
       final ResultSet rs = serverDb.query("sql",
           "SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?))",
           IDX_NAME, queryTokens, queryWeights, 5);
-      int seen = 0;
+      final java.util.List<Object[]> rows = new java.util.ArrayList<>();
       while (rs.hasNext()) {
         final Result row = rs.next();
         final Object rid = row.getProperty("@rid");
         assertThat(rid).as("server %d result must carry @rid", i).isNotNull();
-        seen++;
+        rows.add(new Object[] { rid, row.getProperty("score") });
       }
-      assertThat(seen)
+      assertThat(rows.size())
           .as("server %d must serve top-K (leader=%s)", i, i == leaderIndex)
           .isGreaterThan(0);
+      perServer.add(rows);
+    }
+
+    final java.util.List<Object[]> leaderRows = perServer.get(leaderIndex);
+    for (int i = 0; i < getServerCount(); i++) {
+      if (i == leaderIndex)
+        continue;
+      final java.util.List<Object[]> rows = perServer.get(i);
+      assertThat(rows.size())
+          .as("server %d row count must match leader (%d)", i, leaderRows.size())
+          .isEqualTo(leaderRows.size());
+      for (int r = 0; r < rows.size(); r++) {
+        assertThat(rows.get(r)[0])
+            .as("server %d row %d @rid must match leader", i, r)
+            .isEqualTo(leaderRows.get(r)[0]);
+        assertThat(rows.get(r)[1])
+            .as("server %d row %d score must match leader (a divergent score implies WAL-replay weight corruption)", i, r)
+            .isEqualTo(leaderRows.get(r)[1]);
+      }
     }
   }
 }

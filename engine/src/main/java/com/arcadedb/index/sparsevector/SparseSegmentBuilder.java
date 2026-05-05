@@ -87,6 +87,14 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   private long    totalPostings;
   private boolean finished;
 
+  // Reusable payload scratch space, sized once at construction. {@link #flushBlock} writes a
+  // block header + RID/weight payload here, then copies the populated prefix into the active
+  // page via {@code writeBytesAtPageCursor}. Sharing the scratch across blocks instead of
+  // allocating a fresh ByteBuffer per block cuts ~one allocation per block from the flush path
+  // - on a default-shaped 1M-posting flush that is ~7.8k allocations dropped (blockSize=128).
+  private final byte[]     payloadScratch;
+  private final ByteBuffer payloadBuf;
+
   public SparseSegmentBuilder(final SparseSegmentComponent component, final SegmentParameters params) {
     if (component.getPageSize() != params.pageSize())
       throw new IllegalArgumentException(
@@ -97,10 +105,22 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     this.blockRids = new RID[params.blockSize()];
     this.blockWeights = new float[params.blockSize()];
     this.blockTombstones = new boolean[params.blockSize()];
+    this.payloadScratch = new byte[estimateBlockPayloadSize(params)];
+    this.payloadBuf = ByteBuffer.wrap(payloadScratch).order(ByteOrder.BIG_ENDIAN);
     // Allocate page 0 right away; back-patched at finish().
     allocateNewPage();
     // Reserve all of page 0 for the header so subsequent pages don't intrude on it.
     currentWritePageFree = 0;
+  }
+
+  private static int estimateBlockPayloadSize(final SegmentParameters params) {
+    final int base = SegmentFormat.BLOCK_HEADER_SIZE + params.blockSize() * VarInt.MAX_VARLONG_BYTES * 2;
+    final int weightBytes = switch (params.weightQuantization()) {
+      case INT8 -> params.blockSize();
+      case FP16 -> params.blockSize() * 2;
+      case FP32 -> params.blockSize() * 4;
+    };
+    return Math.max(4096, base + weightBytes);
   }
 
   public void setSegmentId(final long segmentId) {
@@ -286,17 +306,20 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     }
     final float blockMaxForBmw = (weightMax == Float.NEGATIVE_INFINITY) ? 0.0f : weightMax;
 
-    final ByteBuffer payload = ByteBuffer.allocate(estimateBlockPayloadSize()).order(ByteOrder.BIG_ENDIAN);
+    // Reuse the per-builder scratch buffer (sized at construction to the worst-case block
+    // payload size). Saves an allocation per block - on a default-shaped 1M-posting flush that
+    // is ~7.8k ByteBuffer allocations dropped from the flush path.
+    payloadBuf.clear();
 
     // Block header.
-    putRid(payload, blockRids[0]);
-    putRid(payload, blockRids[blockCursor - 1]);
-    payload.putShort((short) blockCursor);
-    payload.putFloat(blockMaxForBmw);
-    payload.putFloat(weightMin);
-    payload.putFloat(weightMax);
-    payload.put((byte) (hasTombstones ? 1 : 0));
-    payload.put((byte) 0);
+    putRid(payloadBuf, blockRids[0]);
+    putRid(payloadBuf, blockRids[blockCursor - 1]);
+    payloadBuf.putShort((short) blockCursor);
+    payloadBuf.putFloat(blockMaxForBmw);
+    payloadBuf.putFloat(weightMin);
+    payloadBuf.putFloat(weightMax);
+    payloadBuf.put((byte) (hasTombstones ? 1 : 0));
+    payloadBuf.put((byte) 0);
 
     // Compressed RIDs (skip first; it's already in the header).
     if (params.ridCompression() == RidCompression.VARINT_DELTA) {
@@ -304,16 +327,27 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       for (int i = 1; i < blockCursor; i++) {
         final RID curr = blockRids[i];
         final int bucketDelta = curr.getBucketId() - prev.getBucketId();
-        VarInt.writeUnsignedVarLong(payload, bucketDelta);
-        if (bucketDelta == 0)
-          VarInt.writeUnsignedVarLong(payload, curr.getPosition() - prev.getPosition());
-        else
-          VarInt.writeUnsignedVarLong(payload, curr.getPosition());
+        // {@link #appendInternal} already enforces ascending RID order, so by construction
+        // {@code bucketDelta >= 0} and (when {@code bucketDelta == 0}) the position delta is
+        // also non-negative. A negative delta would silently encode as a huge unsigned VarInt
+        // and decode to a different RID on read - a corruption far from the cause - so we fail
+        // loud here in case some future writer path bypasses the order check.
+        if (bucketDelta < 0)
+          throw new IndexException("Non-monotonic RID bucket on segment write: prev=" + prev + " curr=" + curr);
+        VarInt.writeUnsignedVarLong(payloadBuf, bucketDelta);
+        if (bucketDelta == 0) {
+          final long positionDelta = curr.getPosition() - prev.getPosition();
+          if (positionDelta < 0)
+            throw new IndexException("Non-monotonic RID position on segment write: prev=" + prev + " curr=" + curr);
+          VarInt.writeUnsignedVarLong(payloadBuf, positionDelta);
+        } else {
+          VarInt.writeUnsignedVarLong(payloadBuf, curr.getPosition());
+        }
         prev = curr;
       }
     } else {
       for (int i = 1; i < blockCursor; i++)
-        putRid(payload, blockRids[i]);
+        putRid(payloadBuf, blockRids[i]);
     }
 
     // Compressed weights.
@@ -321,30 +355,30 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       case INT8 -> {
         for (int i = 0; i < blockCursor; i++) {
           if (blockTombstones[i])
-            payload.put(SegmentFormat.INT8_TOMBSTONE_SENTINEL);
+            payloadBuf.put(SegmentFormat.INT8_TOMBSTONE_SENTINEL);
           else
-            payload.put(WeightCodec.quantizeInt8(blockWeights[i], weightMin, weightMax));
+            payloadBuf.put(WeightCodec.quantizeInt8(blockWeights[i], weightMin, weightMax));
         }
       }
       case FP16 -> {
         for (int i = 0; i < blockCursor; i++) {
           if (blockTombstones[i])
-            payload.putShort(SegmentFormat.FP16_TOMBSTONE_SENTINEL);
+            payloadBuf.putShort(SegmentFormat.FP16_TOMBSTONE_SENTINEL);
           else
-            payload.putShort(WeightCodec.toFp16(blockWeights[i]));
+            payloadBuf.putShort(WeightCodec.toFp16(blockWeights[i]));
         }
       }
       case FP32 -> {
         for (int i = 0; i < blockCursor; i++) {
           if (blockTombstones[i])
-            payload.putInt(WeightCodec.FP32_TOMBSTONE_BITS);
+            payloadBuf.putInt(WeightCodec.FP32_TOMBSTONE_BITS);
           else
-            payload.putInt(WeightCodec.floatToTombstoneAwareBits(blockWeights[i]));
+            payloadBuf.putInt(WeightCodec.floatToTombstoneAwareBits(blockWeights[i]));
         }
       }
     }
 
-    final int payloadLen = payload.position();
+    final int payloadLen = payloadBuf.position();
     if (payloadLen > pageContentSize)
       throw new IndexException("block payload " + payloadLen + " bytes exceeds page content size "
           + pageContentSize + "; reduce blockSize or increase pageSize");
@@ -352,7 +386,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     if (currentWritePageFree < payloadLen)
       allocateNewPage();
 
-    final int offsetInPage = writeBytesAtPageCursor(payload.array(), payloadLen);
+    final int offsetInPage = writeBytesAtPageCursor(payloadScratch, payloadLen);
     currentDimBlockLocators.add(new long[] { currentWritePage, offsetInPage });
     currentDimBlockHeaders.add(new BlockHeader(blockRids[0], blockRids[blockCursor - 1], blockCursor, blockMaxForBmw,
         weightMin, weightMax, hasTombstones));
@@ -363,15 +397,6 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     blockCursor = 0;
   }
 
-  private int estimateBlockPayloadSize() {
-    final int base = SegmentFormat.BLOCK_HEADER_SIZE + params.blockSize() * VarInt.MAX_VARLONG_BYTES * 2;
-    final int weightBytes = switch (params.weightQuantization()) {
-      case INT8 -> params.blockSize();
-      case FP16 -> params.blockSize() * 2;
-      case FP32 -> params.blockSize() * 4;
-    };
-    return Math.max(4096, base + weightBytes);
-  }
 
   private int computeDimTrailerSize() {
     final int blockCount = currentDimBlockHeaders.size();

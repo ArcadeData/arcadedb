@@ -124,7 +124,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
     final ArrayList<RidScore> ranked = new ArrayList<>(fused.size());
     for (final Map.Entry<RID, Float> e : fused.entrySet())
       ranked.add(new RidScore(e.getKey(), e.getValue()));
-    ranked.sort((a, b) -> Float.compare(b.score, a.score));
+    ranked.sort((a, b) -> Float.compare(b.score(), a.score()));
 
     // Single pass: lookupByRID once per RID, applying groupBy and limit on the fly. Doing this
     // in two passes (one to filter by group, one to serialize) would double the record I/O for
@@ -147,7 +147,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
 
       final Document record;
       try {
-        record = (Document) db.lookupByRID(rs.rid, true);
+        record = (Document) db.lookupByRID(rs.rid(), true);
       } catch (final RecordNotFoundException ex) {
         continue;
       }
@@ -292,14 +292,14 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       float min = Float.POSITIVE_INFINITY;
       float max = Float.NEGATIVE_INFINITY;
       for (final RidScore r : rows) {
-        if (r.score < min) min = r.score;
-        if (r.score > max) max = r.score;
+        if (r.score() < min) min = r.score();
+        if (r.score() > max) max = r.score();
       }
       final float range = max - min;
       final float w = weights[s];
       for (final RidScore r : rows) {
-        final float normalized = range == 0.0f ? 1.0f : (r.score - min) / range;
-        out.merge(r.rid, w * normalized, Float::sum);
+        final float normalized = range == 0.0f ? 1.0f : (r.score() - min) / range;
+        out.merge(r.rid(), w * normalized, Float::sum);
       }
     }
   }
@@ -312,11 +312,11 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       // mean and population stddev
       final int n = rows.size();
       double sum = 0.0;
-      for (final RidScore r : rows) sum += r.score;
+      for (final RidScore r : rows) sum += r.score();
       final double mean = n == 0 ? 0.0 : sum / n;
       double sqSum = 0.0;
       for (final RidScore r : rows) {
-        final double d = r.score - mean;
+        final double d = r.score() - mean;
         sqSum += d * d;
       }
       final double std = n == 0 ? 0.0 : Math.sqrt(sqSum / n);
@@ -326,16 +326,16 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
       final double band = hi - lo;
       final float w = weights[s];
       for (final RidScore r : rows) {
-        final double clipped = Math.max(lo, Math.min(hi, r.score));
+        final double clipped = Math.max(lo, Math.min(hi, r.score()));
         final float normalized = band == 0.0 ? 1.0f : (float) ((clipped - lo) / band);
-        out.merge(r.rid, w * normalized, Float::sum);
+        out.merge(r.rid(), w * normalized, Float::sum);
       }
     }
   }
 
   private static void requireScores(final List<RidScore> rows, final String strategy, final int sourceIdx) {
     for (final RidScore r : rows)
-      if (Float.isNaN(r.score))
+      if (Float.isNaN(r.score()))
         throw new CommandSQLParsingException(
             NAME + " strategy " + strategy + " requires a numeric score on every row of source[" + sourceIdx + "]");
   }
@@ -351,13 +351,12 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
    * stages. Both per-source ranked rows (the input to the fusion strategies) and the fused output
    * use the same shape, so a single record type avoids an unnecessary translation pass.
    */
-  private static final class RidScore {
-    final RID   rid;
-    final float score;
-
-    RidScore(final RID rid, final float score) {
-      this.rid = rid;
-      this.score = score;
-    }
+  /**
+   * Per-fuse-source row carrier. A separate record from
+   * {@link com.arcadedb.index.sparsevector.RidScore} on purpose: this one is internal to the
+   * fusion pipeline and handles {@code Float.NaN} scores (sources with no numeric score), while
+   * the engine's {@code RidScore} promises a finite score.
+   */
+  private record RidScore(RID rid, float score) {
   }
 }

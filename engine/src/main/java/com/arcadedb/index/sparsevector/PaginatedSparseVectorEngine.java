@@ -32,6 +32,7 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -72,28 +73,74 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   static final long DEFAULT_MEMTABLE_FLUSH_THRESHOLD = 1_000_000L;
 
+  /**
+   * Size-tiered compaction parameters. After a successful {@link #flush()} the engine groups
+   * active segments into geometric tiers by posting count and, if any tier has at least
+   * {@link #DEFAULT_TIER_FANOUT} segments, merges that tier's oldest {@code fanout} segments
+   * into one. The merged segment lives in the next tier up by virtue of its larger posting
+   * count, so subsequent flushes at tier 0 don't keep re-merging it - this is the classic
+   * size-tiered compaction strategy (STCS) ArcadeDB-flavoured for sparse vectors.
+   * <p>
+   * <b>Why size-tiered.</b> The earlier count-tiered policy ("after every flush, if total
+   * segments &gt; T, merge the oldest M") capped the segment count but kept rewriting the
+   * already-large compacted segment over and over - write amplification scaled with corpus
+   * size. Size-tiered amortizes write amplification at {@code O(log_fanout(N/base))} per
+   * posting and keeps query merge fan-in bounded: at steady state each tier holds at most
+   * {@code fanout - 1} segments, so total active segments is roughly
+   * {@code (fanout - 1) * log_fanout(N / base)}. For 10M postings, base = 1M, fanout = 4
+   * that is ≈5 segments; for 1B postings ≈15.
+   */
+  static final int  DEFAULT_TIER_FANOUT        = 4;
+  /**
+   * Tier 0 boundary: any segment with this many or fewer postings lives in tier 0. Subsequent
+   * tiers boundary geometrically by {@link #DEFAULT_TIER_FANOUT}. Aligned with
+   * {@link #DEFAULT_MEMTABLE_FLUSH_THRESHOLD} so a default-shaped flush always lands in tier 0.
+   */
+  static final long DEFAULT_TIER_BASE_POSTINGS = DEFAULT_MEMTABLE_FLUSH_THRESHOLD;
+
   private final DatabaseInternal  database;
   private final String            indexName;
   private final SegmentParameters params;
   private final long              memtableFlushThreshold;
+  private final int               tierFanout;
+  private final long              tierBasePostings;
 
   private final AtomicReference<Memtable>                  memtable     = new AtomicReference<>(new Memtable());
   private final AtomicReference<PaginatedSegmentReader[]>  segments     = new AtomicReference<>(new PaginatedSegmentReader[0]);
   private final AtomicLong                                 nextSegmentId = new AtomicLong(1L);
   private final ReentrantLock                              mutatorLock  = new ReentrantLock();
+  // {@link FileManager#getFiles()}'s {@code size()} captured at the end of the last successful
+  // {@link #refreshSegmentsFromFileManager}. Lets the next refresh short-circuit when the file
+  // count has not moved since the last call (the common case under steady-state querying), so
+  // {@code topK} does not pay the O(total-files) scan on every query. Initialized to {@code -1}
+  // so the very first call always runs the full reconcile.
+  private final AtomicInteger                              lastObservedFileCount = new AtomicInteger(-1);
 
   private volatile boolean closed;
 
   public PaginatedSparseVectorEngine(final DatabaseInternal database, final String indexName, final SegmentParameters params) {
-    this(database, indexName, params, DEFAULT_MEMTABLE_FLUSH_THRESHOLD);
+    this(database, indexName, params, DEFAULT_MEMTABLE_FLUSH_THRESHOLD,
+        DEFAULT_TIER_FANOUT, DEFAULT_TIER_BASE_POSTINGS);
   }
 
   PaginatedSparseVectorEngine(final DatabaseInternal database, final String indexName, final SegmentParameters params,
       final long memtableFlushThreshold) {
+    this(database, indexName, params, memtableFlushThreshold,
+        DEFAULT_TIER_FANOUT, DEFAULT_TIER_BASE_POSTINGS);
+  }
+
+  PaginatedSparseVectorEngine(final DatabaseInternal database, final String indexName, final SegmentParameters params,
+      final long memtableFlushThreshold, final int tierFanout, final long tierBasePostings) {
+    if (tierFanout < 2)
+      throw new IllegalArgumentException("tierFanout must be >= 2 (compaction merges at least two segments)");
+    if (tierBasePostings < 1L)
+      throw new IllegalArgumentException("tierBasePostings must be >= 1");
     this.database = database;
     this.indexName = indexName;
     this.params = params;
     this.memtableFlushThreshold = memtableFlushThreshold;
+    this.tierFanout = tierFanout;
+    this.tierBasePostings = tierBasePostings;
     loadExistingSegments();
   }
 
@@ -273,6 +320,14 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       }
       if (!ranOnLeader)
         return -1L;
+      // Size-tiered auto-compaction gate. Run synchronously under {@code mutatorLock} (which
+      // {@link #compactInputs} reacquires reentrantly): a long bulk-load that fires back-to-back
+      // flushes would otherwise leave the engine with one segment per flush, and BMW DAAT would
+      // pay a per-segment merge cost on every query. Cascade in case the merged segment promotes
+      // its tier to also-overflowing - the loop terminates because each pass moves at least one
+      // segment up a tier and tiers are bounded by the corpus size.
+      while (compactSizeTiered() != -1L)
+        ;
       return segmentId;
     } finally {
       mutatorLock.unlock();
@@ -300,6 +355,49 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       final PaginatedSegmentReader[] sortedAll = sortedCopy(active);
       return Arrays.copyOf(sortedAll, count);
     });
+  }
+
+  /**
+   * One pass of size-tiered compaction. Groups active segments by geometric tier on posting
+   * count and, if any tier holds at least {@link #tierFanout} segments, merges that tier's
+   * oldest {@code tierFanout} into one. Returns the new merged segment id, or {@code -1L} if
+   * no tier overflowed (so the caller's cascading loop can stop).
+   * <p>
+   * Tier assignment is purely a function of {@code totalPostings()}, so no on-disk metadata
+   * change is needed; the merged segment naturally promotes itself into the next tier up by
+   * virtue of having more postings than its inputs.
+   */
+  public long compactSizeTiered() {
+    return compactInputs(/* dropAllTombstones */ false, active -> {
+      if (active.length < tierFanout)
+        return null;
+      // Bucket by tier. Within each tier, sort by segment id (oldest first) so the merge picks
+      // a contiguous run of older segments and leaves any tier-mate that arrived more recently
+      // for the next pass.
+      final java.util.Map<Integer, java.util.List<PaginatedSegmentReader>> byTier = new java.util.HashMap<>();
+      for (final PaginatedSegmentReader r : active) {
+        final int t = tierOf(r.totalPostings());
+        byTier.computeIfAbsent(t, k -> new ArrayList<>()).add(r);
+      }
+      // Pick the lowest-tier overflow first so write amplification stays minimal: small inputs
+      // means cheap merge.
+      final int[] sortedTiers = byTier.keySet().stream().mapToInt(Integer::intValue).sorted().toArray();
+      for (final int t : sortedTiers) {
+        final java.util.List<PaginatedSegmentReader> sameTier = byTier.get(t);
+        if (sameTier.size() < tierFanout)
+          continue;
+        sameTier.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+        return sameTier.subList(0, tierFanout).toArray(new PaginatedSegmentReader[0]);
+      }
+      return null;
+    });
+  }
+
+  private int tierOf(final long postings) {
+    if (postings <= tierBasePostings)
+      return 0;
+    // log_fanout(postings / base). Floor by integer division on the log values.
+    return (int) (Math.log((double) postings / (double) tierBasePostings) / Math.log(tierFanout));
   }
 
   private static PaginatedSegmentReader[] sortedCopy(final PaginatedSegmentReader[] in) {
@@ -435,42 +533,64 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     try {
       if (closed)
         return;
-      // Final flush so writes since the last flush are durable; matches the legacy engine's behaviour.
-      // Same orphan-protection as flush() / compactInputs(): if the build transaction throws,
-      // drop the just-registered component so the schema doesn't carry a stub file that would
-      // fail header validation on the next refreshSegmentsFromFileManager scan.
+      // Final flush so writes since the last flush are durable. Routes through the same
+      // {@code runWithCompactionReplication} hook the regular {@link #flush} uses, so a
+      // close-time memtable on the leader gets replicated to followers via the standard
+      // SCHEMA_ENTRY pipeline (HA replication smoke test would otherwise show the leader
+      // permanently ahead of followers if a database was closed without an explicit prior
+      // flush). On standalone the override is a no-op wrapper, so the inner transaction is
+      // the durability point as before.
+      // <p>
+      // Wrapped in a top-level try/catch: by the time {@code close()} runs, the database may
+      // already have torn down enough of the transaction pipeline that a fresh
+      // {@code database.transaction(...)} would throw. We swallow that into a {@code SEVERE}
+      // log instead of letting it abort the close - the data in the unflushed memtable is
+      // already lost from the engine's perspective, and an exception here would leave other
+      // components' close() unrun.
       final Memtable old = memtable.getAndSet(new Memtable());
       if (!old.isEmpty()) {
-        final long segmentId = nextSegmentId.getAndIncrement();
-        final SparseSegmentComponent component = createComponent(segmentId);
         try {
-          database.transaction(() -> {
-            try (final SparseSegmentBuilder b = new SparseSegmentBuilder(component, params)) {
-              b.setSegmentId(segmentId);
-              for (final int dim : old.sortedDims()) {
-                final Iterator<MemtablePosting> it = old.iterateDim(dim);
-                if (!it.hasNext())
-                  continue;
-                b.startDim(dim);
-                while (it.hasNext()) {
-                  final MemtablePosting p = it.next();
-                  if (p.tombstone())
-                    b.appendTombstone(p.rid());
-                  else
-                    b.appendPosting(p.rid(), p.weight());
+          final long segmentId = nextSegmentId.getAndIncrement();
+          final SparseSegmentComponent[] componentRef = new SparseSegmentComponent[1];
+          database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
+            componentRef[0] = createComponent(segmentId);
+            try {
+              database.transaction(() -> {
+                try (final SparseSegmentBuilder b = new SparseSegmentBuilder(componentRef[0], params)) {
+                  b.setSegmentId(segmentId);
+                  for (final int dim : old.sortedDims()) {
+                    final Iterator<MemtablePosting> it = old.iterateDim(dim);
+                    if (!it.hasNext())
+                      continue;
+                    b.startDim(dim);
+                    while (it.hasNext()) {
+                      final MemtablePosting p = it.next();
+                      if (p.tombstone())
+                        b.appendTombstone(p.rid());
+                      else
+                        b.appendPosting(p.rid(), p.weight());
+                    }
+                    b.endDim();
+                  }
+                  b.finish();
                 }
-                b.endDim();
+              });
+            } catch (final RuntimeException buildFailure) {
+              try {
+                dropComponent(componentRef[0]);
+              } catch (final RuntimeException dropFailure) {
+                buildFailure.addSuppressed(dropFailure);
               }
-              b.finish();
+              throw buildFailure;
             }
+            database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+            return Boolean.TRUE;
           });
-        } catch (final RuntimeException buildFailure) {
-          try {
-            dropComponent(component);
-          } catch (final RuntimeException dropFailure) {
-            buildFailure.addSuppressed(dropFailure);
-          }
-          throw buildFailure;
+        } catch (final IOException | InterruptedException | RuntimeException e) {
+          // Database may be mid-teardown; tolerate it but make the loss loud.
+          com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+              "Close-time flush of sparse vector engine '%s' failed; %d memtable postings discarded: %s",
+              null, indexName, old.totalPostings(), e);
         }
       }
       // Component lifetime is owned by FileManager; nothing else to release here.
@@ -577,64 +697,93 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * replication and are registered in the FileManager + {@link com.arcadedb.schema.LocalSchema}'s
    * {@code files} list, but no code path updates this engine's snapshot. Calling this at the
    * start of each query keeps follower visibility correct without requiring a separate
-   * notification path. Cost is O(F) where F is the database's total file count - microseconds in
-   * practice.
+   * notification path.
+   * <p>
+   * <b>Concurrency.</b> The whole reconcile-and-publish runs under {@link #mutatorLock} (the
+   * same lock {@link #flush} and {@link #compactInputs} take to swap segment arrays). Without
+   * the lock, a TOCTOU window opened between the initial {@code segments.get()} snapshot and
+   * the final {@code segments.set(...)}: a concurrent flush or compaction that committed in
+   * that window would be silently overwritten by this method's stale view, dropping the
+   * just-published segment from the in-memory array until the next refresh re-discovered it
+   * from disk. Holding the lock serializes refreshes against mutating operations and is cheap
+   * in practice - the steady-state common case has no new files to open and the lock is held
+   * for microseconds. The expensive {@link PaginatedSegmentReader} construction (page-0 read
+   * for newly-discovered components) only happens when a follower actually receives a new
+   * segment via replication, which is rare relative to query rate.
    */
   private void refreshSegmentsFromFileManager() {
-    final String prefix = indexName + "_seg";
-    final PaginatedSegmentReader[] current = segments.get();
-    final LongHashSet knownIds = new LongHashSet(Math.max(8, current.length * 2));
-    for (final PaginatedSegmentReader r : current)
-      knownIds.add(r.segmentId());
+    // Fast path: if the FileManager's total file count has not moved since the last successful
+    // refresh, no files have been added or removed - our snapshot is already current. Saves the
+    // O(total-files) walk in the steady-state-querying case. Edge case: a follower applying a
+    // SCHEMA_ENTRY that adds AND removes the same number of files in one step would leave the
+    // count unchanged, and we would miss it - the next change-of-count operation triggers a real
+    // refresh that picks it up, and in practice an HA stream that exactly balances adds and
+    // removes per entry is vanishingly rare.
+    final int observedCount = database.getFileManager().getFiles().size();
+    if (observedCount == lastObservedFileCount.get())
+      return;
 
-    boolean changed = false;
-    final List<PaginatedSegmentReader> updated = new ArrayList<>(current.length);
-    for (final PaginatedSegmentReader r : current)
-      updated.add(r);
+    mutatorLock.lock();
+    try {
+      // Re-check under lock so we don't redo work a concurrent refresh just finished.
+      if (observedCount == lastObservedFileCount.get())
+        return;
 
-    final LongHashSet seenIds = new LongHashSet(Math.max(8, current.length * 2));
-    for (final PaginatedSegmentReader r : current)
-      seenIds.add(r.segmentId());
+      final String prefix = indexName + "_seg";
+      final PaginatedSegmentReader[] current = segments.get();
+      final LongHashSet knownIds = new LongHashSet(Math.max(8, current.length * 2));
+      for (final PaginatedSegmentReader r : current)
+        knownIds.add(r.segmentId());
 
-    for (final var componentFile : database.getFileManager().getFiles()) {
-      if (componentFile == null)
-        continue;
-      final var component = database.getSchema().getFileByIdIfExists(componentFile.getFileId());
-      if (!(component instanceof SparseSegmentComponent ssc) || !ssc.getName().startsWith(prefix))
-        continue;
-      // On followers the sparseseg file briefly exists between createNewFiles and the WAL apply
-      // that fills its pages, so a freshly-arrived component can fail header validation for a
-      // moment. Skip it; the next query will pick it up once pages are written.
-      final PaginatedSegmentReader reader;
-      try {
-        reader = new PaginatedSegmentReader(ssc);
-      } catch (final IOException e) {
-        continue;
-      }
-      if (knownIds.contains(reader.segmentId()))
-        continue;
-      updated.add(reader);
-      seenIds.add(reader.segmentId());
-      changed = true;
-    }
+      boolean changed = false;
+      final List<PaginatedSegmentReader> updated = new ArrayList<>(current.length);
+      for (final PaginatedSegmentReader r : current)
+        updated.add(r);
 
-    // Drop any segments that the FileManager no longer knows about (a follower may apply a
-    // SCHEMA_ENTRY that retires segments via removeFiles).
-    for (int i = updated.size() - 1; i >= 0; i--) {
-      if (!fileManagerHasComponent(updated.get(i).component())) {
-        updated.remove(i);
+      for (final var componentFile : database.getFileManager().getFiles()) {
+        if (componentFile == null)
+          continue;
+        final var component = database.getSchema().getFileByIdIfExists(componentFile.getFileId());
+        if (!(component instanceof SparseSegmentComponent ssc) || !ssc.getName().startsWith(prefix))
+          continue;
+        // On followers the sparseseg file briefly exists between createNewFiles and the WAL apply
+        // that fills its pages, so a freshly-arrived component can fail header validation for a
+        // moment. Skip it; the next query will pick it up once pages are written.
+        final PaginatedSegmentReader reader;
+        try {
+          reader = new PaginatedSegmentReader(ssc);
+        } catch (final IOException e) {
+          continue;
+        }
+        if (knownIds.contains(reader.segmentId()))
+          continue;
+        updated.add(reader);
         changed = true;
       }
-    }
 
-    if (changed) {
-      updated.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
-      segments.set(updated.toArray(new PaginatedSegmentReader[0]));
-      if (!updated.isEmpty()) {
-        final long highest = updated.getLast().segmentId();
-        if (nextSegmentId.get() <= highest)
-          nextSegmentId.set(highest + 1L);
+      // Drop any segments that the FileManager no longer knows about (a follower may apply a
+      // SCHEMA_ENTRY that retires segments via removeFiles).
+      for (int i = updated.size() - 1; i >= 0; i--) {
+        if (!fileManagerHasComponent(updated.get(i).component())) {
+          updated.remove(i);
+          changed = true;
+        }
       }
+
+      if (changed) {
+        updated.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+        segments.set(updated.toArray(new PaginatedSegmentReader[0]));
+        if (!updated.isEmpty()) {
+          final long highest = updated.getLast().segmentId();
+          if (nextSegmentId.get() <= highest)
+            nextSegmentId.set(highest + 1L);
+        }
+      }
+      // Re-read the file count under the lock and commit it as the new high-water mark; if a
+      // concurrent flush() racing this refresh added a file mid-reconcile we capture that here.
+      lastObservedFileCount.set(database.getFileManager().getFiles().size());
+    } finally {
+      mutatorLock.unlock();
     }
   }
 
@@ -706,7 +855,16 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       dropComponent(r.component());
   }
 
-  /** Build a merged {@link DimCursor} from the memtable and segment snapshot for one dim. */
+  /**
+   * Build a merged {@link DimCursor} from the memtable and segment snapshot for one dim.
+   * <p>
+   * Sources are added unstarted; {@link DimCursor#start} is responsible for starting every
+   * source and marking exhausted ones as not-live. This keeps the lifecycle contract uniform
+   * across source types - a previous version eagerly started the memtable cursor here so it
+   * could check {@code isExhausted} before adding to the list, while segment cursors were left
+   * for DimCursor to start, which had the same observable behaviour but was easy to misread as
+   * a hidden ordering requirement.
+   */
   private DimCursor openMergedCursor(final int dim, final Memtable mt, final PaginatedSegmentReader[] segSnapshot)
       throws IOException {
     final List<SourceCursor> sources = new ArrayList<>(segSnapshot.length + 1);
@@ -715,14 +873,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       if (c != null)
         sources.add(c);
     }
-    if (mt != null) {
-      final MemtableSourceCursor mc = new MemtableSourceCursor(mt, dim);
-      mc.start();
-      if (!mc.isExhausted())
-        sources.add(mc);
-      else
-        mc.close();
-    }
+    if (mt != null)
+      sources.add(new MemtableSourceCursor(mt, dim));
     if (sources.isEmpty())
       return null;
     return new DimCursor(dim, sources);

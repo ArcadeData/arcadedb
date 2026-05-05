@@ -190,7 +190,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     for (final LSMSparseVectorIndex idx : indexes)
       merged.addAll(idx.topK(queryIndices, queryValues, fetchK, allowedRIDs));
 
-    merged.sort((a, b) -> Float.compare(b.score, a.score));
+    merged.sort((a, b) -> Float.compare(b.score(), a.score()));
 
     final BasicDatabase db = context.getDatabase();
     final ArrayList<Object> result = new ArrayList<>();
@@ -206,7 +206,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
 
       final Document record;
       try {
-        record = (Document) db.lookupByRID(neighbor.rid, true);
+        record = (Document) db.lookupByRID(neighbor.rid(), true);
       } catch (final RecordNotFoundException e) {
         continue;
       }
@@ -220,7 +220,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
         entry.put(prop, record.get(prop));
       entry.put("@rid", record.getIdentity());
       entry.put("@type", record.getTypeName());
-      entry.put("score", neighbor.score);
+      entry.put("score", neighbor.score());
       result.add(entry);
     }
 

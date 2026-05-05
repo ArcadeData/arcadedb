@@ -320,7 +320,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
     final List<RidScore> out = new ArrayList<>(Math.min(k, raw.size()));
     for (final RidScore r : raw) {
-      if (!allowedRIDs.contains(r.rid))
+      if (!allowedRIDs.contains(r.rid()))
         continue;
       out.add(r);
       if (out.size() == k)
