@@ -23,14 +23,21 @@ import com.arcadedb.database.Database;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.test.BaseGraphServerTest;
-
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-import org.neo4j.driver.*;
+import org.neo4j.driver.AuthTokens;
+import org.neo4j.driver.Config;
+import org.neo4j.driver.Driver;
+import org.neo4j.driver.GraphDatabase;
+import org.neo4j.driver.Record;
+import org.neo4j.driver.Result;
+import org.neo4j.driver.Session;
+import org.neo4j.driver.SessionConfig;
+import org.neo4j.driver.Transaction;
+import org.neo4j.driver.Values;
 import org.neo4j.driver.exceptions.ClientException;
 import org.neo4j.driver.summary.ResultSummary;
-import org.neo4j.driver.Values;
 
 import java.io.BufferedReader;
 import java.io.DataInputStream;
@@ -44,19 +51,17 @@ import java.net.http.WebSocket;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
-import java.util.Base64;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionStage;
-import java.util.concurrent.TimeUnit;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionStage;
+import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import org.neo4j.driver.Record;
 
 /**
  * Integration tests for BOLT protocol using Neo4j Java driver.
@@ -161,7 +166,8 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         session.run("CREATE (a:EdgePerson {name: 'EdgeAlice'}), (b:EdgePerson {name: 'EdgeBob'})");
 
         // Create edge
-        session.run("MATCH (a:EdgePerson {name: 'EdgeAlice'}), (b:EdgePerson {name: 'EdgeBob'}) CREATE (a)-[:KNOWS {since: 2020}]->(b)");
+        session.run(
+            "MATCH (a:EdgePerson {name: 'EdgeAlice'}), (b:EdgePerson {name: 'EdgeBob'}) CREATE (a)-[:KNOWS {since: 2020}]->(b)");
 
         // Query edge
         final Result result = session.run(
@@ -877,7 +883,8 @@ public class BoltProtocolIT extends BaseGraphServerTest {
 
     // Check for errors
     if (!errors.isEmpty()) {
-      throw new AssertionError("Concurrent test failed with " + errors.size() + " errors: " + errors.get(0).getMessage(), errors.get(0));
+      throw new AssertionError("Concurrent test failed with " + errors.size() + " errors: " + errors.get(0).getMessage(),
+          errors.get(0));
     }
   }
 
@@ -957,7 +964,8 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         // Build a query that uses all parameters
         StringBuilder query = new StringBuilder("RETURN ");
         for (int i = 0; i < 50; i++) {
-          if (i > 0) query.append(" + ");
+          if (i > 0)
+            query.append(" + ");
           query.append("$param").append(i);
         }
         query.append(" AS sum");
@@ -1103,7 +1111,8 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   @Test
   void systemDatabaseDbmsComponents() {
     // Neo4j Desktop queries the "system" database for version info
-    try (final Driver driver = GraphDatabase.driver("bolt://localhost:7687", AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS))) {
+    try (final Driver driver = GraphDatabase.driver("bolt://localhost:7687",
+        AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS))) {
       try (final Session session = driver.session(SessionConfig.forDatabase("system"))) {
         final var result = session.run("CALL dbms.components()");
         assertThat(result.hasNext()).isTrue();
@@ -1612,6 +1621,20 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         final List<Record> rows = result.list();
         for (final Record r : rows)
           assertThat(r.get("type").asString()).isEqualTo("VECTOR");
+      }
+    }
+  }
+
+  @Test
+  void showSparseVectorIndexesReturnsEmptyWithoutSparseVectorIndexes() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        final Result result = session.run("SHOW SPARSE_VECTOR INDEXES");
+        assertThat(result.keys()).containsExactly("id", "name", "state", "populationPercent", "type",
+            "entityType", "labelsOrTypes", "properties", "indexProvider", "owningConstraint", "lastRead", "readCount");
+        final List<Record> rows = result.list();
+        for (final Record r : rows)
+          assertThat(r.get("type").asString()).isEqualTo("SPARSE_VECTOR");
       }
     }
   }
