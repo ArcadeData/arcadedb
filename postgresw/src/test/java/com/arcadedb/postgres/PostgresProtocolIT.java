@@ -989,4 +989,71 @@ class PostgresProtocolIT extends BaseGraphServerTest {
       assertThat(rs.next()).isTrue();
     }
   }
+
+  // ==================== Empty Result Schema Tests (issue #3971) ====================
+
+  private static java.util.Set<String> columnNames(ResultSetMetaData meta) throws SQLException {
+    final java.util.Set<String> names = new java.util.HashSet<>();
+    for (int i = 1; i <= meta.getColumnCount(); i++)
+      names.add(meta.getColumnName(i).toLowerCase(java.util.Locale.ENGLISH));
+    return names;
+  }
+
+  // WHERE 1=0 must return RowDescription with type columns even when 0 rows are returned.
+  // Spark/PySpark sends this to discover schema before loading data.
+  @Test
+  void selectWhere1Eq0ReturnsSchemaColumns() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      st.execute("CREATE DOCUMENT TYPE SparkSchemaTest IF NOT EXISTS");
+      st.execute("INSERT INTO SparkSchemaTest SET name = 'alice', age = 30");
+
+      ResultSet rs = st.executeQuery("SELECT name, age FROM SparkSchemaTest WHERE 1=0");
+      assertThat(rs.next()).isFalse();
+      assertThat(columnNames(rs.getMetaData())).contains("name", "age");
+    }
+  }
+
+  // SELECT * FROM type WHERE 1=0 - the exact probe pattern used by Apache Spark JDBC.
+  @Test
+  void selectStarWhere1Eq0ReturnsSchemaColumns() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      st.execute("CREATE DOCUMENT TYPE SparkStarSchemaTest IF NOT EXISTS");
+      st.execute("INSERT INTO SparkStarSchemaTest SET city = 'Rome', population = 2800000");
+
+      ResultSet rs = st.executeQuery("SELECT * FROM SparkStarSchemaTest WHERE 1=0");
+      assertThat(rs.next()).isFalse();
+      assertThat(columnNames(rs.getMetaData())).contains("city", "population");
+    }
+  }
+
+  // Prepared statement uses the extended query protocol (Parse/Describe/Bind/Execute).
+  @Test
+  void preparedSelectWhere1Eq0ReturnsSchemaColumns() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      st.execute("CREATE DOCUMENT TYPE SparkPreparedSchemaTest IF NOT EXISTS");
+      st.execute("INSERT INTO SparkPreparedSchemaTest SET label = 'x', value = 42");
+    }
+    try (var conn = getConnection();
+        var pst = conn.prepareStatement("SELECT label, value FROM SparkPreparedSchemaTest WHERE 1=0")) {
+      ResultSet rs = pst.executeQuery();
+      assertThat(rs.next()).isFalse();
+      assertThat(columnNames(rs.getMetaData())).contains("label", "value");
+    }
+  }
+
+  // Truly empty type with schema-defined properties must still return RowDescription with schema
+  // columns. Exercises the schema-property fallback in getColumnsFromQuerySchema (no sample row).
+  @Test
+  void selectWhere1Eq0OnEmptyTypeReturnsSchemaColumns() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      st.execute("CREATE DOCUMENT TYPE EmptySparkTest IF NOT EXISTS");
+      st.execute("CREATE PROPERTY EmptySparkTest.title STRING");
+      st.execute("CREATE PROPERTY EmptySparkTest.score INTEGER");
+
+      ResultSet rs = st.executeQuery("SELECT title, score FROM EmptySparkTest WHERE 1=0");
+      assertThat(rs.next()).isFalse();
+      assertThat(columnNames(rs.getMetaData())).contains("title", "score");
+    }
+  }
+
 }
