@@ -50,6 +50,7 @@ public class LogicalPlan {
   private final List<LogicalRelationship> relationships;
   private final List<WhereClause> whereFilters;
   private final ReturnClause returnClause;
+  private int anonNodeCounter = 0;
 
   private LogicalPlan(final CypherStatement statement) {
     this.statement = statement;
@@ -119,34 +120,42 @@ public class LogicalPlan {
 
   /**
    * Extracts nodes and relationships from a single path pattern.
+   * Anonymous nodes (no variable) receive a synthetic internal name so that
+   * consecutive hops can refer to the same intermediate vertex, but they are
+   * NOT added to the nodes map. Only named nodes go into the map so that the
+   * AnchorSelector keeps its existing behavior (anonymous-only patterns fall
+   * back via an empty nodes map, which is relied on by count push-down).
+   * The synthetic prefix "  __anon" (two leading spaces) mirrors the convention
+   * in CypherExecutionPlan and cannot collide with user-defined variable names.
    */
   private void extractPathPattern(final PathPattern pathPattern) {
     final List<NodePattern> nodePatterns = pathPattern.getNodes();
     final List<RelationshipPattern> relPatterns = pathPattern.getRelationships();
 
-    // Extract nodes
-    for (final NodePattern nodePattern : nodePatterns) {
-      final String variable = nodePattern.getVariable();
-      if (variable != null && !nodes.containsKey(variable)) {
-        final LogicalNode logicalNode = new LogicalNode(
-            variable,
-            nodePattern.getLabels(),
-            nodePattern.getProperties()
-        );
-        nodes.put(variable, logicalNode);
+    // Assign a variable name to every node.
+    // Named nodes are registered in the nodes map for AnchorSelector.
+    // Anonymous nodes receive a synthetic name for relationship tracking only.
+    final String[] nodeVars = new String[nodePatterns.size()];
+    for (int i = 0; i < nodePatterns.size(); i++) {
+      final NodePattern np = nodePatterns.get(i);
+      final String variable = np.getVariable();
+      if (variable != null) {
+        nodeVars[i] = variable;
+        if (!nodes.containsKey(variable)) {
+          nodes.put(variable, new LogicalNode(variable, np.getLabels(), np.getProperties()));
+        }
+      } else {
+        nodeVars[i] = "  __anon" + anonNodeCounter++;
       }
     }
 
-    // Extract relationships (linking nodes)
+    // Extract relationships using the resolved (never-null) variable names.
     for (int i = 0; i < relPatterns.size(); i++) {
       final RelationshipPattern relPattern = relPatterns.get(i);
-      final NodePattern sourceNode = nodePatterns.get(i);
-      final NodePattern targetNode = nodePatterns.get(i + 1);
-
       final LogicalRelationship logicalRel = new LogicalRelationship(
           relPattern.getVariable(),
-          sourceNode.getVariable(),
-          targetNode.getVariable(),
+          nodeVars[i],
+          nodeVars[i + 1],
           relPattern.getTypes(),
           relPattern.getDirection(),
           relPattern.getProperties(),
