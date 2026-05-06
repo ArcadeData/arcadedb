@@ -3265,7 +3265,7 @@ function showTypeDetail(typeName) {
     html += "    A bucket was added/dropped or the strategy changed; partition-aware query pruning is suppressed for this type. ";
     html += "    Queries remain correct but lose the optimisation until a repartition rebuild runs.";
     html += "  </div>";
-    html += "  <button id='" + btnId + "' class='btn btn-sm btn-warning js-repartition-btn' data-type-name='" + escapeHtml(row.name) + "'>";
+    html += "  <button id='" + escapeHtml(btnId) + "' class='btn btn-sm btn-warning js-repartition-btn' data-type-name='" + escapeHtml(row.name) + "'>";
     html += "    <i class='fa fa-rotate'></i> Run Repartition";
     html += "  </button>";
     html += "</div>";

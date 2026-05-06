@@ -333,16 +333,16 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if (!labels.isEmpty()) {
       if (labels.size() == 1) {
         // Single label - polymorphic iteration (existing behavior). Resolve the type once and
-        // reuse the reference: every {@code getSchema().getType(label)} (or {@code existsType})
-        // walks the type map, and this block runs per MATCH iteration, so the redundant
-        // lookups landed on a hot path.
+        // reuse the reference: every {@code getSchema().getType(label)} walks the type map, and
+        // this block runs per MATCH iteration, so the redundant lookups landed on a hot path.
         final String label = labels.get(0);
-        final DocumentType type = context.getDatabase().getSchema().getType(label);
 
         // If the label does not exist in the schema, the match yields no rows
-        // (matches Neo4j semantics — issue #4090). Skip all index/iteration logic.
+        // (matches Neo4j semantics, issue #4090). Skip all index/iteration logic.
         if (!context.getDatabase().getSchema().existsType(label))
           return Collections.emptyIterator();
+
+        final DocumentType type = context.getDatabase().getSchema().getType(label);
 
         // OPTIMIZATION: Check if we can use an index for property lookup
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {

@@ -258,6 +258,10 @@ public class RebuildTypeStatement extends DDLStatement {
         // the operator how many rows are durably in the new layout when the rebuild aborts;
         // adding {@code count[0]} here (which includes misplaced-but-not-yet-moved records)
         // would over-report and confuse the recovery story.
+        // Transaction state on entry: under {@code implicitTx} the scan lambda always exits with
+        // an open TX (the trailing partial-batch never commits inside the scan, and the last
+        // full-batch commit re-opens via {@code db.begin()}). The first move iteration therefore
+        // executes inside the still-open scan TX; commit cadence below mirrors the scan phase.
         for (int i = 0; i < pendingMoveRids.size(); i++) {
           final RID oldRid = pendingMoveRids.get(i);
           final var oldRecord = db.lookupByRID(oldRid, true);

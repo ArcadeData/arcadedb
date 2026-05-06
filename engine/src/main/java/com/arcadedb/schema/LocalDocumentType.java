@@ -697,6 +697,16 @@ public class LocalDocumentType implements DocumentType {
         null, name, name, buckets.size());
   }
 
+  // Package-private accessors for the throttle timestamp used by the schema tests to pin the
+  // throttle-window contract without sleeping or scraping log output.
+  long lastRepartitionWarnMsForTesting() {
+    return lastRepartitionWarnMs.get();
+  }
+
+  void setLastRepartitionWarnMsForTesting(final long value) {
+    lastRepartitionWarnMs.set(value);
+  }
+
   @Override
   public DocumentType setBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy) {
     final BucketSelectionStrategy previous = this.bucketSelectionStrategy;

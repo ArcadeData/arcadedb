@@ -101,14 +101,13 @@ import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.LinkedHashMap;
-import java.util.logging.Level;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -1973,9 +1972,7 @@ public class SelectExecutionPlanner {
     // O(1) property -> position lookup. With composite partition keys (e.g.
     // {@code partitioned(orgId, region)}), a {@code List.indexOf} inside the inner predicate
     // loop would be O(n) per condition. Building a small map once amortises the cost.
-    // {@code LinkedHashMap} preserves the declared property order, which the strategy uses to
-    // assemble {@code keyValues} for the hash.
-    final Map<String, Integer> partitionPropPositions = new LinkedHashMap<>(partitionProps.size());
+    final Map<String, Integer> partitionPropPositions = new HashMap<>(partitionProps.size());
     for (int i = 0; i < partitionProps.size(); i++)
       partitionPropPositions.put(partitionProps.get(i), i);
 

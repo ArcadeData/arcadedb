@@ -279,18 +279,43 @@ class PartitioningRepartitionFlagTest extends TestHelper {
     createPartitionedType();
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
 
-    // No-op when the flag is false: no log line, no error.
+    // No-op when the flag is false: timestamp must NOT advance. Reading the throttle field is the
+    // only proxy we have for "did the warn fire" without intercepting the global LogManager.
     type.setNeedsRepartition(false);
+    type.setLastRepartitionWarnMsForTesting(0L);
     type.warnIfNeedsRepartition();
+    assertThat(type.lastRepartitionWarnMsForTesting())
+        .as("warnIfNeedsRepartition with flag=false must not advance the throttle timestamp")
+        .isZero();
 
-    // First call after setting the flag emits exactly one log line; subsequent calls inside the
-    // 60-second window are throttled. We don't intercept the log output here (LogManager is
-    // global); the contract being pinned is "throttle does not throw and does not block on
-    // repeated calls" - the throttle interval itself is timer-bounded and tested by the
-    // QueryEngineManager and SparseVectorScoringPool throttle tests upstream.
+    // First call after setting the flag advances the timestamp; subsequent calls inside the
+    // 60-second window must NOT advance it again. If the throttle were removed, every iteration
+    // would CAS a fresh System.currentTimeMillis() and the timestamp would change at least once
+    // across 100 rapid calls.
     type.setNeedsRepartition(true);
+    type.setLastRepartitionWarnMsForTesting(0L);
+
+    type.warnIfNeedsRepartition();
+    final long firstStamp = type.lastRepartitionWarnMsForTesting();
+    assertThat(firstStamp)
+        .as("first warn after flag=true must advance the throttle timestamp from 0")
+        .isPositive();
+
     for (int i = 0; i < 100; i++)
       type.warnIfNeedsRepartition();
+    assertThat(type.lastRepartitionWarnMsForTesting())
+        .as("100 rapid warns inside the throttle window must not advance the timestamp - "
+            + "removing the throttle would make at least one CAS succeed and change this value")
+        .isEqualTo(firstStamp);
+
+    // Simulate the window expiring by rewinding the throttle past the 60-second boundary. The
+    // next call must advance the timestamp again, proving the throttle releases on schedule
+    // without blocking the test on a real 60-second sleep.
+    type.setLastRepartitionWarnMsForTesting(System.currentTimeMillis() - 120_000L);
+    type.warnIfNeedsRepartition();
+    assertThat(type.lastRepartitionWarnMsForTesting())
+        .as("warn after the throttle window has elapsed must advance the timestamp")
+        .isGreaterThan(firstStamp);
   }
 
   // ---- shared scaffolding -------------------------------------------------
