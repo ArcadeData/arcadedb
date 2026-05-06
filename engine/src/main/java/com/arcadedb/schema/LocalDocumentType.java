@@ -80,7 +80,10 @@ public class LocalDocumentType implements DocumentType {
   // queries fall back to scanning every bucket and stay correct, just lose the optimization.
   // Cleared by a successful {@code REBUILD TYPE <name> WITH repartition = true}. Persisted in
   // {@code schema.json} only when {@code true} so the default case writes nothing extra.
-  protected volatile boolean                        needsRepartition                  = false;
+  // Private so subclasses (LocalVertexType, LocalEdgeType, LocalTimeSeriesType) cannot bypass
+  // {@link #setNeedsRepartition(boolean)} and skip the schema.saveConfiguration() that the
+  // setter triggers on every transition. Read via {@link #isNeedsRepartition()}.
+  private volatile boolean                          needsRepartition                  = false;
   // Throttle for the per-type query-time WARNING emitted when a query plan touches a type whose
   // {@code needsRepartition} is {@code true}. Same shape as the saturation throttles on
   // {@link com.arcadedb.query.QueryEngineManager} and
@@ -714,7 +717,7 @@ public class LocalDocumentType implements DocumentType {
     // LocalSchema right after this call, and {@code hasAnyRecord()} would walk every bucket
     // and call {@code count()} (per-bucket I/O) producing a value that's about to be
     // overwritten anyway.
-    if (!schema.readingFromFile
+    if (!schema.isReadingFromFile()
         && selectionStrategy instanceof PartitionedBucketSelectionStrategy newPartitioned
         && partitionShapeChanged(previous, newPartitioned)
         && hasAnyRecord())

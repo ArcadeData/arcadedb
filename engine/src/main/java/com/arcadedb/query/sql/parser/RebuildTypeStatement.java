@@ -196,10 +196,15 @@ public class RebuildTypeStatement extends DDLStatement {
           // Per-batch progress line so an operator running REBUILD on a 100M-record type can observe forward
           // motion via the server log instead of staring at a frozen prompt for many minutes. Logged at INFO
           // so it's on by default but easy to silence by raising the level for this class.
+          // Reports the saved-and-committed count separately from the visited count: under
+          // {@code repartition = true}, {@code count[0]} includes records buffered in
+          // {@code pendingMoveRids} that have NOT yet been written to the new layout, so logging
+          // it alone would overstate progress until the move phase runs.
           final long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
+          final long pendingMoves = finalRepartition ? count[0] - scanCommittedSaves[0] : 0L;
           LogManager.instance().log(this, java.util.logging.Level.INFO,
-              "REBUILD TYPE '%s': %,d records re-serialised so far (last batch=%,d, elapsed=%,d ms)",
-              null, typeName.getStringValue(), count[0], finalBatchSize, elapsedMs);
+              "REBUILD TYPE '%s': %,d records visited, %,d saved-and-committed, %,d buffered for move (last batch=%,d, elapsed=%,d ms)",
+              null, typeName.getStringValue(), count[0], scanCommittedSaves[0], pendingMoves, finalBatchSize, elapsedMs);
           db.begin();
         }
         return true;

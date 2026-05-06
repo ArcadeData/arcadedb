@@ -332,31 +332,29 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
     if (!labels.isEmpty()) {
       if (labels.size() == 1) {
-        // Single label - polymorphic iteration (existing behavior)
+        // Single label - polymorphic iteration (existing behavior). Resolve the type once and
+        // reuse the reference: every {@code getSchema().getType(label)} (or {@code existsType})
+        // walks the type map, and this block runs per MATCH iteration, so the redundant
+        // lookups landed on a hot path.
         final String label = labels.get(0);
+        final DocumentType type = context.getDatabase().getSchema().getType(label);
 
         // OPTIMIZATION: Check if we can use an index for property lookup
-        if (pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
-          final DocumentType type = context.getDatabase().getSchema().getType(label);
-          if (type != null) {
-            // Try to find an index that matches the property constraints
-            // Support composite indexes with partial keys (leftmost prefix matching)
-            final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, currentInputResult);
-            if (indexedIter != null)
-              return indexedIter;
-          }
+        if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
+          // Try to find an index that matches the property constraints
+          // Support composite indexes with partial keys (leftmost prefix matching)
+          final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, currentInputResult);
+          if (indexedIter != null)
+            return indexedIter;
         }
 
         // OPTIMIZATION: Check if WHERE clause has equality predicates that can use an index
         // This is critical for UNWIND...MATCH...WHERE patterns where the predicate references
         // an UNWIND variable (e.g., WHERE a.id = e.src_id)
-        if (whereFilter != null && currentInputResult != null) {
-          final DocumentType type = context.getDatabase().getSchema().getType(label);
-          if (type != null) {
-            final Iterator<Identifiable> indexedIter = tryFindAndUseIndexFromWhere(type, label, currentInputResult);
-            if (indexedIter != null)
-              return indexedIter;
-          }
+        if (type != null && whereFilter != null && currentInputResult != null) {
+          final Iterator<Identifiable> indexedIter = tryFindAndUseIndexFromWhere(type, label, currentInputResult);
+          if (indexedIter != null)
+            return indexedIter;
         }
 
         // OPTIMIZATION: Partition-aware bucket pruning. When the type uses a partitioned bucket
@@ -369,16 +367,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // Use {@code !getProperties().isEmpty()} directly: {@link NodePattern#hasProperties}
         // is true when there are inline properties OR a parameter-form ({$props}); the latter
         // can't be evaluated at plan time and pruning would have to bail anyway.
-        if (!pattern.getProperties().isEmpty()
-            && context.getDatabase().getSchema().existsType(label)) {
-          final DocumentType type = context.getDatabase().getSchema().getType(label);
+        if (type != null && !pattern.getProperties().isEmpty()) {
           final Iterator<Identifiable> partitionedIter = tryPartitionPrunedIterator(type, label);
           if (partitionedIter != null)
             return partitionedIter;
         }
 
         // No index available - fall back to full type scan
-        if (context.getDatabase().getSchema().existsType(label)) {
+        if (type != null) {
           @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
               (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
           return iter;

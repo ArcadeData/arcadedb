@@ -111,11 +111,7 @@ public class LocalSchema implements Schema {
   private             String                                 dateTimeFormat                = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
   private             TimeZone                               timeZone                      = TimeZone.getDefault();
   private             ZoneId                                 zoneId                        = ZoneId.systemDefault();
-  // Package-private so {@link LocalDocumentType} can short-circuit work that the schema-load
-  // path performs redundantly (e.g. {@code hasAnyRecord()} bucket counting in
-  // {@code setBucketSelectionStrategy}: the persisted {@code needsRepartition} value is
-  // re-applied right after, so the flag-flip during load is wasted work).
-  boolean                                readingFromFile               = false;
+  private             boolean                                readingFromFile               = false;
   private final       AtomicLong                             dirtyGeneration               = new AtomicLong(0);
   private volatile    long                                   savedGeneration               = 0;
   private             boolean                                loadInRamCompleted            = false;
@@ -2093,6 +2089,16 @@ public class LocalSchema implements Schema {
 
   protected boolean isSchemaLoaded() {
     return loadInRamCompleted;
+  }
+
+  /**
+   * True while the schema is hydrating types from {@code schema.json}. Same-package callers
+   * (notably {@link LocalDocumentType#setBucketSelectionStrategy}) consult this to skip work
+   * the load path will redo immediately - e.g. the partition-shape-change flag-flip, where the
+   * persisted {@code needsRepartition} value is reapplied right after the strategy assignment.
+   */
+  boolean isReadingFromFile() {
+    return readingFromFile;
   }
 
   protected void updateSecurity() {

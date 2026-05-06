@@ -126,6 +126,26 @@ class PartitionPruningPlannerTest extends TestHelper {
   }
 
   @Test
+  void parenthesisedParameterDoesNotNarrowIndexFilterBuckets() {
+    // Defence-in-depth: a parameter wrapped in parentheses on the literal side ({@code = (?)})
+    // must still be detected as parameter-bound. Without the ParenthesisExpression override of
+    // containsInputParameter, the inherited walker would only see the empty {@code
+    // childExpressions} list and silently report no parameter, baking the first execution's
+    // bucket id into the cached plan and misrouting later parameter values.
+    createPartitionedType();
+    populate();
+
+    final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = (?)", "acme");
+    final ExecutionPlan plan = rs.getExecutionPlan().orElseThrow();
+    final GetValueFromIndexEntryStep extract = findIndexExtract(plan);
+    assertThat(extract).isNotNull();
+    assertThat(extract.getFilterBucketIds())
+        .as("parameter wrapped in parentheses must NOT prune; the parenthesis walker must see it")
+        .hasSize(BUCKETS);
+    rs.close();
+  }
+
+  @Test
   void flagSuppressesIndexFilterBucketNarrowing() {
     // With the flag set even literal queries must skip pruning; every bucket id remains visible
     // to the index extract step.
@@ -192,12 +212,12 @@ class PartitionPruningPlannerTest extends TestHelper {
     final ExecutionPlan plan = rs.getExecutionPlan().orElseThrow();
     final FilterByClustersStep filter = findClusterFilter(plan);
     assertThat(filter).as("OR of partition literals must produce a cluster filter").isNotNull();
-    // Two literals may collide on a single bucket under hash; either way the count must be
-    // strictly less than the full bucket count to prove pruning fired.
+    // Two literals may collide on a single bucket under hash; either way the count is at most
+    // 2. With BUCKETS=4 this also implies "less than full fan-out", so the bound below is the
+    // single tight invariant.
     assertThat(filter.getClusters())
         .as("OR over partition literals must prune to at most 2 buckets, never full fan-out")
-        .hasSizeLessThanOrEqualTo(2)
-        .hasSizeLessThan(BUCKETS);
+        .hasSizeLessThanOrEqualTo(2);
 
     final Set<String> tenants = new HashSet<>();
     while (rs.hasNext())

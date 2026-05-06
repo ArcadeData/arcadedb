@@ -2053,11 +2053,33 @@ public class SelectExecutionPlanner {
     return intersected;
   }
 
+  /**
+   * Returns the property name when {@code expr} is a plain unqualified base identifier
+   * (e.g. {@code tenant_id}), {@code null} otherwise. Walks the AST directly rather than
+   * delegating to {@link Expression#getDefaultAlias()} - {@code getDefaultAlias} is a
+   * projection-aliasing helper that synthesises an Identifier from {@code toString()} for
+   * non-base shapes, which would mask future semantic drift behind a name string.
+   * <p>
+   * Qualified references like {@code doc.tenant_id} carry a {@code modifier} chain on the
+   * BaseExpression and are rejected outright; the partition-pruning rule treats them as
+   * unprunable rather than guessing whether the modifier resolves to the partition property.
+   */
   private static String extractBaseIdentifierName(final Expression expr) {
-    if (expr == null || !expr.isBaseIdentifier())
+    if (expr == null)
       return null;
-    final Identifier alias = expr.getDefaultAlias();
-    return alias == null ? null : alias.getStringValue();
+    if (!(expr.getMathExpression() instanceof BaseExpression base))
+      return null;
+    // Modifier chain present (e.g. {@code doc.tenant_id}, {@code values[0]}): not a plain
+    // property reference, refuse to prune rather than guess.
+    if (base.modifier != null)
+      return null;
+    final BaseIdentifier baseIdentifier = base.identifier;
+    if (baseIdentifier == null)
+      return null;
+    final SuffixIdentifier suffix = baseIdentifier.getSuffix();
+    if (suffix == null || suffix.identifier == null)
+      return null;
+    return suffix.identifier.getStringValue();
   }
 
   /**
