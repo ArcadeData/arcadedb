@@ -46,15 +46,17 @@ class Issue4092AnonMiddleNodeTest {
     database.getSchema().createVertexType("Person");
     database.getSchema().createVertexType("City");
     database.getSchema().createVertexType("Country");
+    database.getSchema().createVertexType("Region");
     database.getSchema().createEdgeType("KNOWS");
     database.getSchema().createEdgeType("LOCATED_IN");
+    database.getSchema().createEdgeType("BELONGS_TO");
 
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (:Person {name:'Alice'}), (:City {name:'New York'}), (:Country {name:'USA'})");
+          "CREATE (:Person {name:'Alice'}), (:City {name:'New York'}), (:Country {name:'USA'}), (:Region {name:'North America'})");
       database.command("opencypher",
-          "MATCH (a:Person {name:'Alice'}), (c:City {name:'New York'}), (u:Country {name:'USA'}) " +
-              "CREATE (a)-[:KNOWS]->(c), (c)-[:LOCATED_IN]->(u)");
+          "MATCH (a:Person {name:'Alice'}), (c:City {name:'New York'}), (u:Country {name:'USA'}), (r:Region {name:'North America'}) " +
+              "CREATE (a)-[:KNOWS]->(c), (c)-[:LOCATED_IN]->(u), (u)-[:BELONGS_TO]->(r)");
     });
   }
 
@@ -127,6 +129,61 @@ class Issue4092AnonMiddleNodeTest {
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
       assertThat((String) rows.get(0).getProperty("person_name")).isEqualTo("Alice");
+    }
+  }
+
+  /**
+   * Three-hop chain with two consecutive anonymous middle nodes: synthetic
+   * names assigned to each anonymous position must be distinct, otherwise
+   * the second middle would overwrite the first in the row.
+   */
+  @Test
+  void threeHopChainWithTwoConsecutiveAnonMiddleNodes() {
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Person)-[:KNOWS]->(:City)-[:LOCATED_IN]->(:Country)-[:BELONGS_TO]->(r:Region) " +
+            "RETURN a.name AS person_name, r.name AS region_name")) {
+      final List<Result> rows = new ArrayList<>();
+      rs.forEachRemaining(rows::add);
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("person_name")).isEqualTo("Alice");
+      assertThat((String) rows.get(0).getProperty("region_name")).isEqualTo("North America");
+    }
+  }
+
+  /**
+   * OPTIONAL MATCH with anonymous middle node must match the row when the data
+   * exists, exercising the OPTIONAL MATCH path through the optimizer.
+   */
+  @Test
+  void optionalMatchWithAnonMiddleNode() {
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Person) " +
+            "OPTIONAL MATCH (a)-[:KNOWS]->(:City)-[:LOCATED_IN]->(b:Country) " +
+            "RETURN a.name AS person_name, b.name AS country_name")) {
+      final List<Result> rows = new ArrayList<>();
+      rs.forEachRemaining(rows::add);
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("person_name")).isEqualTo("Alice");
+      assertThat((String) rows.get(0).getProperty("country_name")).isEqualTo("USA");
+    }
+  }
+
+  /**
+   * Two separate MATCH clauses each with their own anonymous nodes: the
+   * synthetic counter must advance across clauses so distinct anonymous
+   * positions receive distinct internal names.
+   */
+  @Test
+  void multipleMatchClausesEachWithAnonNodes() {
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Person)-[:KNOWS]->(:City) " +
+            "MATCH (:City)-[:LOCATED_IN]->(b:Country) " +
+            "RETURN a.name AS person_name, b.name AS country_name")) {
+      final List<Result> rows = new ArrayList<>();
+      rs.forEachRemaining(rows::add);
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("person_name")).isEqualTo("Alice");
+      assertThat((String) rows.get(0).getProperty("country_name")).isEqualTo("USA");
     }
   }
 }

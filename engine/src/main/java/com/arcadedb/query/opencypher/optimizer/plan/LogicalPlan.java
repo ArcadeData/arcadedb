@@ -138,10 +138,12 @@ public class LogicalPlan {
     final String[] nodeVars = new String[nodePatterns.size()];
     for (int i = 0; i < nodePatterns.size(); i++) {
       final NodePattern np = nodePatterns.get(i);
-      if (np.getVariable() != null) {
-        nodeVars[i] = np.getVariable();
-        if (!nodes.containsKey(np.getVariable()))
-          nodes.put(np.getVariable(), new LogicalNode(np.getVariable(), np.getLabels(), np.getProperties()));
+      final String variable = np.getVariable();
+      if (variable != null) {
+        nodeVars[i] = variable;
+        if (!nodes.containsKey(variable)) {
+          nodes.put(variable, new LogicalNode(variable, np.getLabels(), np.getProperties()));
+        }
       } else {
         nodeVars[i] = "  __anon" + anonNodeCounter++;
       }
