@@ -1474,6 +1474,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     List<Expression> dynamicLabels = null;
     Map<String, Object> properties = null;
     String propertiesParameterName = null;
+    boolean labelDisjunction = false;
 
     // Variable
     if (ctx.variable() != null) {
@@ -1483,6 +1484,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     // Label expression (static labels + Cypher 25 dynamic $(expression) labels)
     if (ctx.labelExpression() != null) {
       labels = extractLabels(ctx.labelExpression());
+      labelDisjunction = ParserUtils.isLabelDisjunction(ctx.labelExpression());
       final List<Cypher25Parser.ExpressionContext> dynCtxs = ParserUtils.collectDynamicLabelContexts(ctx.labelExpression());
       if (!dynCtxs.isEmpty()) {
         dynamicLabels = new ArrayList<>(dynCtxs.size());
@@ -1500,7 +1502,7 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         properties = visitProperties(propsCtx);
     }
 
-    return new NodePattern(variable, labels, dynamicLabels, properties, propertiesParameterName);
+    return new NodePattern(variable, labels, dynamicLabels, properties, propertiesParameterName, labelDisjunction);
   }
 
   public RelationshipPattern visitRelationshipPattern(final Cypher25Parser.RelationshipPatternContext ctx) {

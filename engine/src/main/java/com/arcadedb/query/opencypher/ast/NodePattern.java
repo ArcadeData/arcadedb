@@ -38,6 +38,7 @@ public class NodePattern implements PatternElement {
   private final Map<String, Object> properties;
   private final boolean explicitProperties;
   private final String propertiesParameterName;
+  private final boolean labelDisjunction;
 
   public NodePattern(final String variable, final List<String> labels, final Map<String, Object> properties) {
     this(variable, labels, properties, null);
@@ -50,12 +51,27 @@ public class NodePattern implements PatternElement {
 
   public NodePattern(final String variable, final List<String> labels, final List<Expression> dynamicLabels,
       final Map<String, Object> properties, final String propertiesParameterName) {
+    this(variable, labels, dynamicLabels, properties, propertiesParameterName, false);
+  }
+
+  public NodePattern(final String variable, final List<String> labels, final List<Expression> dynamicLabels,
+      final Map<String, Object> properties, final String propertiesParameterName,
+      final boolean labelDisjunction) {
     this.variable = variable;
     this.labels = labels != null ? labels : Collections.emptyList();
     this.dynamicLabels = dynamicLabels != null ? dynamicLabels : Collections.emptyList();
     this.properties = properties != null ? properties : Collections.emptyMap();
     this.explicitProperties = properties != null || propertiesParameterName != null;
     this.propertiesParameterName = propertiesParameterName;
+    this.labelDisjunction = labelDisjunction;
+  }
+
+  /**
+   * Returns true when the labels are combined with OR semantics ({@code (n:A|B)}).
+   * Default is AND semantics ({@code (n:A:B)}).
+   */
+  public boolean isLabelDisjunction() {
+    return labelDisjunction;
   }
 
   @Override

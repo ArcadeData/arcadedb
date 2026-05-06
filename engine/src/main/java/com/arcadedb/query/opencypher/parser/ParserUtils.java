@@ -89,6 +89,28 @@ public class ParserUtils {
   }
 
   /**
+   * Returns true when the label expression combines multiple labels with the
+   * disjunction operator {@code |} (e.g. {@code :A|B}). Conjunction ({@code :A:B}
+   * or {@code :A&B}) returns false. Single-label expressions also return false.
+   * Used by the AST builder so node patterns can carry the OR semantics through
+   * to the executor (issue #4105).
+   */
+  public static boolean isLabelDisjunction(final Cypher25Parser.LabelExpressionContext ctx) {
+    if (ctx == null)
+      return false;
+    final String text = ctx.getText();
+    if (text == null || text.indexOf('|') < 0)
+      return false;
+    // If both operators are present, treat as conjunction-of-disjunctions and let
+    // the executor fall back to AND semantics. Cypher 25's full label expression
+    // grammar (with parentheses) is not yet supported; this fix targets the
+    // common pure-OR case that issue #4105 reports.
+    if (text.indexOf('&') >= 0)
+      return false;
+    return true;
+  }
+
+  /**
    * Walks the label expression grammar tree collecting only static label names
    * ({@code LabelNameContext}). Dynamic {@code $(expression)} labels are skipped.
    */
@@ -281,8 +303,9 @@ public class ParserUtils {
             }
             break;
           default:
-            // For unrecognized escape sequences, keep the character as-is
-            result.append(c);
+            // For unrecognized escape sequences, preserve the backslash and the
+            // following character verbatim (matches Neo4j behavior - issue #4093).
+            result.append('\\').append(c);
             break;
         }
       } else if (c == '\\') {
