@@ -120,6 +120,16 @@ public class RebuildTypeStatement extends DDLStatement {
    * have the parameters in hand and want to bypass the settings-map parsing - notably the
    * chained REBUILD path in {@link AlterTypeStatement#executeDDL} where building a SQL string
    * to feed back through the parser would re-introduce identifier-quoting injection surface.
+   * <p>
+   * <b>Transaction scope.</b> When invoked standalone the caller is outside a transaction and
+   * the {@code implicitTx == true} branch commits every {@code finalBatchSize} records, capping
+   * memory + WAL pressure. When chained from {@link AlterTypeStatement#executeDDL} the DDL has
+   * already opened a transaction, so {@code implicitTx == false} and no intermediate commits
+   * fire (committing inside a caller-supplied transaction would leak the user's writes
+   * prematurely). For multi-million-record types the chained path can therefore exceed the
+   * single-transaction memory + WAL budget; operators should split the workflow into a
+   * standalone {@code REBUILD TYPE ... WITH repartition = true} followed by the bare
+   * {@code ALTER TYPE ...} (without {@code WITH repartition = true}) when the type is large.
    */
   ResultSet executeRebuild(final CommandContext context, final int finalBatchSize, final boolean finalRepartition) {
     final Database db = context.getDatabase();

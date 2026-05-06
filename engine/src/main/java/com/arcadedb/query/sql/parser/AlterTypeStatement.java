@@ -212,6 +212,19 @@ public class AlterTypeStatement extends DDLStatement {
       // defence-in-depth quoting guard and re-parse), keeping a zero-injection surface for the
       // chained command. Atomic across the ALTER + REBUILD as far as the caller is concerned:
       // a failure in either half throws and surfaces the boundary.
+      // <p>
+      // <b>Transaction-scope limitation.</b> DDL statements run inside the caller's transaction
+      // (the SQL command pipeline opens one before {@code executeDDL}), so
+      // {@code RebuildTypeStatement.executeRebuild} sees {@code db.isTransactionActive() == true}
+      // and takes the {@code implicitTx == false} branch: no intermediate batch commits fire and
+      // the entire scan + move phase runs inside one transaction. That is the correct contract -
+      // committing inside a caller-supplied transaction would leak the user's writes prematurely
+      // and break the "atomic ALTER + REBUILD" guarantee surfaced to the operator. For
+      // multi-million-record types this can grow the transaction past memory or WAL-size limits.
+      // Operators repartitioning very large types should run an explicit
+      // {@code REBUILD TYPE <name> WITH repartition = true} as a standalone command (which takes
+      // the {@code implicitTx == true} branch and commits in {@code DEFAULT_BATCH_SIZE} chunks),
+      // and then issue the bare {@code ALTER TYPE ...} without {@code WITH repartition = true}.
       final RebuildTypeStatement rebuild = new RebuildTypeStatement(-1);
       rebuild.typeName = name.copy();
       rebuild.polymorphic = false;

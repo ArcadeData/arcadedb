@@ -1980,9 +1980,10 @@ public class SelectExecutionPlanner {
     // planning (schema mutations take the same lock the planner doesn't hold), and the per
     // AndBlock loop below would otherwise call getBuckets(false) once per block on the planner
     // hot path.
-    // Local var inferred to avoid the FQN; the file's {@code Bucket} import refers to the SQL
-    // parser AST node, not the engine type returned here.
-    final var typeBuckets = docType.getBuckets(false);
+    // FQN is intentional: the file's top-level {@code Bucket} import refers to the SQL parser
+    // AST node, not the engine type returned here. Using {@code var} would silently rebind to
+    // the wrong type if a future edit added an {@code import com.arcadedb.engine.Bucket}.
+    final List<com.arcadedb.engine.Bucket> typeBuckets = docType.getBuckets(false);
 
     // Each AndBlock must fully bind every partition property; otherwise pruning is unsafe and we
     // fall back to the caller's filterClusters. The union of bucket names across blocks is the

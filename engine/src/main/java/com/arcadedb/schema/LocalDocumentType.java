@@ -83,7 +83,12 @@ public class LocalDocumentType implements DocumentType {
   // Private so subclasses (LocalVertexType, LocalEdgeType, LocalTimeSeriesType) cannot bypass
   // {@link #setNeedsRepartition(boolean)} and skip the schema.saveConfiguration() that the
   // setter triggers on every transition. Read via {@link #isNeedsRepartition()}.
-  private volatile boolean                          needsRepartition                  = false;
+  // {@link AtomicBoolean} (rather than {@code volatile boolean}) so the transition guard in
+  // {@link #setNeedsRepartition} is atomic: under concurrent DDL (two parallel
+  // {@code ALTER TYPE ... BUCKET +x} commands) the volatile-field read-check-write let both
+  // threads pass the guard and call {@code schema.saveConfiguration()} twice. CAS guarantees
+  // exactly one transition fires the save.
+  private final AtomicBoolean                       needsRepartition                  = new AtomicBoolean(false);
   // Throttle for the per-type query-time WARNING emitted when a query plan touches a type whose
   // {@code needsRepartition} is {@code true}. Same shape as the saturation throttles on
   // {@link com.arcadedb.query.QueryEngineManager} and
@@ -656,7 +661,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public boolean isNeedsRepartition() {
-    return needsRepartition;
+    return needsRepartition.get();
   }
 
   /**
@@ -671,10 +676,12 @@ public class LocalDocumentType implements DocumentType {
    * the load state.
    */
   public void setNeedsRepartition(final boolean needsRepartition) {
-    if (this.needsRepartition == needsRepartition)
-      return;
-    this.needsRepartition = needsRepartition;
-    schema.saveConfiguration();
+    // CAS guarantees that the save fires exactly once per real transition: only the thread that
+    // observes the opposite value and successfully flips it proceeds; any concurrent caller
+    // requesting the same target value either loses the race (CAS returns false) or finds the
+    // value already at the target. Both cases skip the {@code schema.saveConfiguration()} call.
+    if (this.needsRepartition.compareAndSet(!needsRepartition, needsRepartition))
+      schema.saveConfiguration();
   }
 
   /**
@@ -682,7 +689,7 @@ public class LocalDocumentType implements DocumentType {
    * without throttling a single workload can produce thousands of duplicate WARNING lines/sec.
    */
   public void warnIfNeedsRepartition() {
-    if (!needsRepartition)
+    if (!needsRepartition.get())
       return;
     final long now = System.currentTimeMillis();
     final long last = lastRepartitionWarnMs.get();
@@ -1492,7 +1499,7 @@ public class LocalDocumentType implements DocumentType {
 
     // Persist the repartition flag only when set, so the default case adds nothing to schema.json.
     // Loaded back in LocalSchema after the strategy itself is restored.
-    if (needsRepartition)
+    if (needsRepartition.get())
       type.put("needsRepartition", true);
 
     for (final TypeIndex i : getAllIndexes(false)) {

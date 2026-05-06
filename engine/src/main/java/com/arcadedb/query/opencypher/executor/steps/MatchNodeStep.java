@@ -75,8 +75,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final BooleanExpression   whereFilter; // Optional inline WHERE predicate (pushdown)
   private final ExpressionEvaluator evaluator;   // Shared evaluator for WHERE/ID expression resolution
   private final Expression          dynamicIdExpression; // Pre-analyzed expression for runtime RID resolution (issue #3864)
+  // Display-only diagnostic fields surfaced through {@link #prettyPrint}. Mirrors the
+  // {@code usedIndexName} pattern: written once during the first iterator setup and read by the
+  // pretty printer at plan-print time. Not safe to share a step instance across concurrent MATCH
+  // branches - if a future change drives parallel sub-plans through the same step, both fields
+  // need to move to a per-execution scope or be guarded.
   private       String              usedIndexName; // Track which index was used (if any)
-  private       String              usedPartitionBucket; // Track partition bucket pruning (if any)
+  private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
 
   /**
    * Creates a match node step.
@@ -372,6 +377,16 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // Use {@code !getProperties().isEmpty()} directly: {@link NodePattern#hasProperties}
         // is true when there are inline properties OR a parameter-form ({$props}); the latter
         // can't be evaluated at plan time and pruning would have to bail anyway.
+        // <p>
+        // <b>Asymmetry vs. SQL.</b> The SQL planner (see
+        // {@code SelectExecutionPlanner#derivePartitionPrunedClusters}) prunes the bucket set
+        // before the index-vs-scan decision, so even index-based fetch steps inherit the pruned
+        // cluster filter. This Cypher path runs as a full-scan fallback only - the two
+        // {@code tryFindAndUseIndex*} branches above intentionally pre-empt it because an index
+        // already constrains the result set tightly enough that the per-bucket fanout is not
+        // the bottleneck. Correctness is preserved either way; the optimisation is just
+        // narrower on the Cypher side. If we ever want full SQL parity, the bucket prune would
+        // have to feed into the index-iteration step rather than gate a separate iterator path.
         if (type != null && !pattern.getProperties().isEmpty()) {
           final Iterator<Identifiable> partitionedIter = tryPartitionPrunedIterator(type, label);
           if (partitionedIter != null)
