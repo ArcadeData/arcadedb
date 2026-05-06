@@ -73,6 +73,30 @@ public class LocalDocumentType implements DocumentType {
   // getPolymorphicProperties() on hot paths (cascadeDeleteExternalValues, addBucketInternal, addSuperType).
   // Maintained by LocalProperty.setExternal, dropProperty, and the schema-load path.
   final AtomicInteger                               ownExternalPropertyCount          = new AtomicInteger(0);
+  // Tracks whether the partition mapping is currently trustworthy. Set to {@code true} when a
+  // schema mutation (bucket add / drop, or strategy change between two partition shapes on a
+  // populated type) invalidates the {@code hash(propertyValue) % bucketCount} mapping for some
+  // existing records. While {@code true}, the partition-pruning planner rule must NOT fire -
+  // queries fall back to scanning every bucket and stay correct, just lose the optimization.
+  // Cleared by a successful {@code REBUILD TYPE <name> WITH repartition = true}. Persisted in
+  // {@code schema.json} only when {@code true} so the default case writes nothing extra.
+  // Private so subclasses (LocalVertexType, LocalEdgeType, LocalTimeSeriesType) cannot bypass
+  // {@link #setNeedsRepartition(boolean)} and skip the schema.saveConfiguration() that the
+  // setter triggers on every transition. Read via {@link #isNeedsRepartition()}.
+  // {@link AtomicBoolean} (rather than {@code volatile boolean}) so the transition guard in
+  // {@link #setNeedsRepartition} is atomic: under concurrent DDL (two parallel
+  // {@code ALTER TYPE ... BUCKET +x} commands) the volatile-field read-check-write let both
+  // threads pass the guard and call {@code schema.saveConfiguration()} twice. CAS guarantees
+  // exactly one transition fires the save.
+  private final AtomicBoolean                       needsRepartition                  = new AtomicBoolean(false);
+  // Throttle for the per-type query-time WARNING emitted when a query plan touches a type whose
+  // {@code needsRepartition} is {@code true}. Same shape as the saturation throttles on
+  // {@link com.arcadedb.query.QueryEngineManager} and
+  // {@link com.arcadedb.index.sparsevector.SparseVectorScoringPool}: at most one entry per
+  // 60-second window per type, initialised to 0L (not {@code Long.MIN_VALUE}) so the
+  // {@code now - last} subtraction does not overflow on the first call.
+  private static final long                         REPARTITION_WARN_INTERVAL_MS      = 60_000L;
+  private final AtomicLong                          lastRepartitionWarnMs             = new AtomicLong(0L);
 
   public LocalDocumentType(final LocalSchema schema, final String name) {
     this.schema = schema;
@@ -625,11 +649,149 @@ public class LocalDocumentType implements DocumentType {
     return bucketSelectionStrategy;
   }
 
+  /**
+   * Returns {@code true} when this type's partition mapping is stale - i.e. some existing records
+   * may not be in the bucket their current partition strategy would route them to. Set by schema
+   * mutations that change the partitioning surface (bucket add/drop on a partitioned type, or a
+   * strategy change between partitioned shapes on a populated type) and cleared by a successful
+   * {@code REBUILD TYPE &lt;name&gt; WITH repartition = true}. The query planner reads this flag
+   * before applying the partition-pruning rule: when {@code true} the rule does not fire and the
+   * query fans out across every bucket, staying correct at the cost of losing the optimisation
+   * until a rebuild runs.
+   */
+  @Override
+  public boolean isNeedsRepartition() {
+    return needsRepartition.get();
+  }
+
+  /**
+   * Sets the {@code needsRepartition} flag. Intended to be called from schema-mutation paths and
+   * from the rebuild command. Public so tests and the rebuild executor can manipulate it; not part
+   * of the public {@link com.arcadedb.schema.DocumentType} interface so user-level SQL can't reach
+   * it directly. Persisted to {@code schema.json} only when {@code true}.
+   * <p>
+   * When the value transitions, {@link LocalSchema#saveConfiguration} is invoked so the change
+   * survives a server restart. During schema load that call is a no-op (the schema's own
+   * {@code readingFromFile} guard postpones the write), so this is safe to call regardless of
+   * the load state.
+   */
+  public void setNeedsRepartition(final boolean needsRepartition) {
+    // CAS guarantees that the save fires exactly once per real transition: only the thread that
+    // observes the opposite value and successfully flips it proceeds; any concurrent caller
+    // requesting the same target value either loses the race (CAS returns false) or finds the
+    // value already at the target. Both cases skip the {@code schema.saveConfiguration()} call.
+    if (this.needsRepartition.compareAndSet(!needsRepartition, needsRepartition))
+      schema.saveConfiguration();
+  }
+
+  /**
+   * Throttled because the planner calls this on every prunable query against a stale type;
+   * without throttling a single workload can produce thousands of duplicate WARNING lines/sec.
+   */
+  public void warnIfNeedsRepartition() {
+    if (!needsRepartition.get())
+      return;
+    final long now = System.currentTimeMillis();
+    final long last = lastRepartitionWarnMs.get();
+    if (now - last <= REPARTITION_WARN_INTERVAL_MS)
+      return;
+    if (!lastRepartitionWarnMs.compareAndSet(last, now))
+      return;
+    LogManager.instance().log(this, Level.WARNING,
+        "Type '%s' has needsRepartition=true; partition-aware bucket pruning is disabled until "
+            + "`REBUILD TYPE %s WITH repartition = true` runs. Queries continue to return correct "
+            + "results but fan out across all %d buckets.",
+        null, name, name, buckets.size());
+  }
+
+  // Package-private accessors for the throttle timestamp used by the schema tests to pin the
+  // throttle-window contract without sleeping or scraping log output.
+  long lastRepartitionWarnMsForTesting() {
+    return lastRepartitionWarnMs.get();
+  }
+
+  void setLastRepartitionWarnMsForTesting(final long value) {
+    lastRepartitionWarnMs.set(value);
+  }
+
   @Override
   public DocumentType setBucketSelectionStrategy(final BucketSelectionStrategy selectionStrategy) {
+    final BucketSelectionStrategy previous = this.bucketSelectionStrategy;
     this.bucketSelectionStrategy = selectionStrategy;
     this.bucketSelectionStrategy.setType(this);
+    // Strategy-change flag flip (issue #4087). Switching the bucket-selection strategy on a
+    // populated type can leave existing records in buckets that no longer match the new
+    // strategy's hash. Two cases set the flag:
+    //   - non-partitioned -> partitioned: every existing record was placed by the old strategy
+    //     (round-robin / thread) without regard for the partition hash.
+    //   - partitioned -> partitioned with a different property set: the modulus is the same but
+    //     the hashed input differs, so most records will be in the wrong bucket.
+    // Skipped when the type has zero records (the partition mapping is trivially correct over
+    // an empty set). Also skipped when the new strategy is non-partitioned: round-robin and
+    // thread don't have a modulus invariant the planner can prune by, so no rebuild is needed.
+    // <p>
+    // Skipped during schema load: the persisted needsRepartition value gets re-applied by
+    // LocalSchema right after this call, and {@code hasAnyRecord()} would walk every bucket
+    // and call {@code count()} (per-bucket I/O) producing a value that's about to be
+    // overwritten anyway.
+    if (!schema.isReadingFromFile()
+        && selectionStrategy instanceof PartitionedBucketSelectionStrategy newPartitioned
+        && partitionShapeChanged(previous, newPartitioned)
+        && hasAnyRecord())
+      // Use the typed setter so the schema-save-on-transition contract fires consistently with
+      // every other site that mutates this flag. Direct field assignment would only work because
+      // the wrapping DDL happens to save the schema afterward; relying on that is brittle.
+      setNeedsRepartition(true);
     return this;
+  }
+
+  /**
+   * True if the type has at least one record across any of its (non-polymorphic) buckets.
+   * <p>
+   * <b>Performance.</b> Two-phase lookup. Phase 1 reads {@link LocalBucket#getCachedRecordCount}
+   * (a plain {@link AtomicLong} read, no I/O) on each bucket and short-circuits on the first
+   * positive count. The cache is populated by {@link Bucket#count}, transaction commits, and
+   * WAL replay - hot in steady state, so a populated type returns {@code true} in O(buckets)
+   * memory ops with no page-cache access. Phase 2 falls back to {@link Bucket#count} only when
+   * no cached value yielded a positive answer (every cache is {@code -1}, every cache is
+   * {@code 0}, or a mix of the two). That handles the cold-cache case AND the in-transaction
+   * delta case (e.g. a single TX that inserts records and then alters the schema), since
+   * {@link Bucket#count} folds the active transaction's delta into the returned value. The
+   * fallback also warms the cache, so subsequent DDL calls on the same type stay on Phase 1.
+   * <p>
+   * Called from {@link #setBucketSelectionStrategy(BucketSelectionStrategy)},
+   * {@link #addBucketInternal}, and {@link #removeBucketInternal} to gate the
+   * {@code needsRepartition} flag flip; a per-type record counter (along the lines of
+   * {@link #ownExternalPropertyCount}) would make this strictly O(1) but requires hooks on
+   * every record save / delete - tracked as a follow-up if the DDL hot path becomes a bottleneck
+   * on types with many buckets where Phase 1 routinely misses.
+   */
+  private boolean hasAnyRecord() {
+    // Phase 1: cheap cache-only check.
+    for (final Bucket b : buckets) {
+      if (b instanceof LocalBucket lb && lb.getCachedRecordCount() > 0L)
+        return true;
+    }
+    // Phase 2: cache miss or all-zero. Delegate to count() to cover cold caches and
+    // in-transaction deltas; the call warms the cache for next time.
+    for (final Bucket b : buckets) {
+      if (b.count() > 0L)
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Returns {@code true} when transitioning from {@code previous} to {@code newPartitioned}
+   * changes the partition shape - i.e. either the previous strategy was not partitioned at
+   * all, or it was partitioned on a different property set. Same property set on both sides
+   * means the hash inputs are identical and existing records are still correctly placed.
+   */
+  private static boolean partitionShapeChanged(final BucketSelectionStrategy previous,
+      final PartitionedBucketSelectionStrategy newPartitioned) {
+    if (!(previous instanceof PartitionedBucketSelectionStrategy oldPartitioned))
+      return true;
+    return !Objects.equals(oldPartitioned.getProperties(), newPartitioned.getProperties());
   }
 
   @Override
@@ -662,9 +824,8 @@ public class LocalDocumentType implements DocumentType {
       }
     }
 
-    this.bucketSelectionStrategy = selectionStrategy;
-    this.bucketSelectionStrategy.setType(this);
-    return this;
+    // Delegate to the typed setter so the needsRepartition flag-flip hook fires uniformly.
+    return setBucketSelectionStrategy(selectionStrategy);
   }
 
   @Override
@@ -965,6 +1126,18 @@ public class LocalDocumentType implements DocumentType {
             + "', because the bucket is already associated to the type '" + cl.getName() + "'");
     }
 
+    // If we already have a partitioned strategy in place, growing the bucket count changes the
+    // {@code hash(value) % bucketCount} modulus and invalidates the partition mapping for any
+    // existing record. Mark the type as needing a repartition so the planner-side pruning rule
+    // suppresses itself until {@code REBUILD TYPE} clears the flag. Skip when the strategy is
+    // not partitioned (round-robin / thread don't care about bucket count for correctness),
+    // skip on the very first bucket of a type (CREATE TYPE adds buckets one by one before any
+    // record can exist), and skip when the type is established but empty (no records means
+    // there's nothing to repartition - flagging would prompt a no-op rebuild).
+    final boolean partitionedAndPopulated = bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy
+        && !buckets.isEmpty()
+        && hasAnyRecord();
+
     buckets = CollectionUtils.addToUnmodifiableList(buckets, bucket);
     cachedPolymorphicBuckets = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBuckets, bucket);
 
@@ -972,6 +1145,11 @@ public class LocalDocumentType implements DocumentType {
     cachedPolymorphicBucketIds = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBucketIds, bucket.getFileId());
 
     bucketSelectionStrategy.setType(this);
+
+    if (partitionedAndPopulated)
+      // Use the typed setter so the schema-save-on-transition contract fires consistently with
+      // every other site that mutates this flag (see setNeedsRepartition Javadoc).
+      setNeedsRepartition(true);
 
     // AUTOMATICALLY CREATES THE INDEX ON THE NEW BUCKET (INCLUDING INHERITED INDEXES FROM PARENT TYPES)
     final Collection<TypeIndex> existentIndexes = getAllIndexes(true);
@@ -1192,6 +1370,13 @@ public class LocalDocumentType implements DocumentType {
       throw new SchemaException("Cannot remove the bucket '" + bucket.getName() + "' to the type '" + name
           + "', because the bucket is not associated to the type '" + getName() + "'");
 
+    // Symmetric to addBucketInternal: shrinking the bucket count under a partitioned strategy
+    // also invalidates the modulus. Skip on an empty type so a no-op rebuild isn't requested
+    // and a needless schema save isn't triggered. Use the typed setter so the
+    // schema-save-on-transition contract fires consistently (see setNeedsRepartition Javadoc).
+    if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy && hasAnyRecord())
+      setNeedsRepartition(true);
+
     buckets = CollectionUtils.removeFromUnmodifiableList(buckets, bucket);
     cachedPolymorphicBuckets = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBuckets, bucket);
 
@@ -1338,6 +1523,11 @@ public class LocalDocumentType implements DocumentType {
     if (!strategy.getName().equals(RoundRobinBucketSelectionStrategy.NAME))
       // WRITE ONLY IF NOT DEFAULT
       type.put("bucketSelectionStrategy", strategy.toJSON());
+
+    // Persist the repartition flag only when set, so the default case adds nothing to schema.json.
+    // Loaded back in LocalSchema after the strategy itself is restored.
+    if (needsRepartition.get())
+      type.put("needsRepartition", true);
 
     for (final TypeIndex i : getAllIndexes(false)) {
       for (final IndexInternal entry : i.getIndexesOnBuckets())

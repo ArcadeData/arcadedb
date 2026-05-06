@@ -258,6 +258,16 @@ public enum GlobalConfiguration {
   ASYNC_TX_BATCH_SIZE("arcadedb.asyncTxBatchSize", SCOPE.DATABASE,
       "Maximum number of operations to commit in batch by async thread", Integer.class, 1024 * 10),
 
+  REBUILD_REPARTITION_MAX_BUFFERED_RIDS("arcadedb.rebuild.repartition.maxBufferedRids", SCOPE.DATABASE,
+      """
+      Maximum number of misplaced RIDs the REBUILD TYPE WITH repartition = true command may buffer in heap \
+      before refusing to continue. The scan must capture every misplaced RID before the move phase can run \
+      (delete+insert during the scan would break iterator stability), so heap usage scales linearly with the \
+      number of misplaced records. Each entry costs ~16 bytes (ArrayList overhead included), so the default \
+      10M caps the buffer at ~160MB. If the cap is exceeded the command throws with an actionable error \
+      pointing the operator at smaller-batch alternatives.""",
+      Integer.class, 10_000_000),
+
   ASYNC_BACK_PRESSURE("arcadedb.asyncBackPressure", SCOPE.DATABASE,
       "When the asynchronous queue is full at a certain percentage, back pressure is applied", Integer.class, 0),
 

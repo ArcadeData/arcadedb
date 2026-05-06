@@ -45,6 +45,18 @@ public interface DocumentType {
 
   MutableDocument newRecord();
 
+  /**
+   * True if a schema mutation invalidated the partition mapping for existing records (bucket
+   * add/drop on a partitioned type, or strategy change on populated data). Cleared by a
+   * successful {@code REBUILD TYPE ... WITH repartition = true}. Default {@code false} for
+   * implementations that don't track it (e.g. unpartitioned types, view types). Exposed on
+   * the interface so consumers - including remote clients - can read it without down-casting
+   * to a specific implementation.
+   */
+  default boolean isNeedsRepartition() {
+    return false;
+  }
+
   default byte getType() {
     return Document.RECORD_TYPE;
   }

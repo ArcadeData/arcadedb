@@ -932,6 +932,71 @@ function dropIndex(indexName, type) {
   );
 }
 
+// Run REBUILD TYPE <name> WITH repartition = true and refresh the schema view on success. The
+// command is potentially long-running on large types (linear in record count); keep the user
+// informed via Toast notifications and re-render the type detail when done so the warning
+// banner disappears as soon as the flag is cleared. Records get NEW RIDs on relocation, so
+// types with inbound edges should not run this without re-pointing those edges first.
+function runRepartition(typeName) {
+  let database = getCurrentDatabase();
+  if (database == "") {
+    globalNotify("Error", "Database not selected", "danger");
+    return;
+  }
+  // Defence-in-depth: the SQL command interpolates {@code typeName} inside backtick-quoted
+  // identifier syntax. A literal backtick in the name would close the quoting and let the
+  // remainder of the name run as DDL. Standard schema creation refuses such names, but a
+  // forged schema.json or a mis-behaving migration tool could plant one. Validate against a
+  // strict identifier shape here so the server never sees a back-channel injection.
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(typeName)) {
+    globalNotify("Error",
+      "Cannot run repartition on type with non-identifier characters in its name. Rename the type first.",
+      "danger");
+    return;
+  }
+  globalConfirm(
+    "Run repartition rebuild",
+    "REBUILD TYPE <b>" + escapeHtml(typeName) + "</b> WITH repartition = true<br><br>" +
+    "This walks every record and moves rows whose current bucket no longer matches the partition strategy. " +
+    "Linear in record count - large types may take minutes.<br><br>" +
+    "<b>Warning:</b> records that move get a NEW RID. Inbound edges or RID-pinned references break.",
+    "warning",
+    function () {
+      globalNotify("Repartition started", "Running REBUILD TYPE " + escapeHtml(typeName) + " WITH repartition = true ...", "info");
+      jQuery
+        .ajax({
+          type: "POST",
+          url: "api/v1/command/" + database,
+          data: JSON.stringify({
+            language: "sql",
+            command: "REBUILD TYPE `" + typeName + "` WITH repartition = true",
+            serializer: "record",
+          }),
+          beforeSend: function (xhr) {
+            xhr.setRequestHeader("Authorization", globalCredentials);
+          },
+        })
+        .done(function (data) {
+          let moved = 0;
+          let rebuilt = 0;
+          if (data && data.result && data.result.length > 0) {
+            moved = data.result[0].recordsMoved || 0;
+            rebuilt = data.result[0].recordsRebuilt || 0;
+          }
+          globalNotify("Repartition complete",
+            "Type <b>" + escapeHtml(typeName) + "</b>: " + rebuilt + " records walked, " + moved + " moved.",
+            "success");
+          // Reload the schema and re-render the type detail so the warning banner clears.
+          displaySchema(function () { showTypeDetail(typeName); });
+        })
+        .fail(function (jqXHR) {
+          globalNotifyError(jqXHR.responseText);
+        });
+    },
+    null
+  );
+}
+
 function dropType(typeName) {
   let database = getCurrentDatabase();
   if (database == "") {
@@ -3147,7 +3212,38 @@ function showTypeDetail(typeName) {
   html += "<h4 style='margin:0;'>" + escapeHtml(row.name) + "</h4>";
   html += "<span class='db-type-category-badge' style='background-color:" + catColor + ";'>" + catLabel + "</span>";
   html += "<span style='color:#888; font-size:0.9rem;'>" + (row.records || 0).toLocaleString() + " records</span>";
+  if (row.bucketSelectionStrategy && row.bucketSelectionStrategy != "round-robin") {
+    html += "<span class='badge bg-info' title='Bucket selection strategy: " + escapeHtml(row.bucketSelectionStrategy) + "'>"
+         + escapeHtml(row.bucketSelectionStrategy) + "</span>";
+  }
   html += "</div>";
+
+  // Partition-mapping-stale banner (issue #4087). Surfaced when a schema mutation invalidated
+  // the partition modulus; the planner suppresses partition-aware bucket pruning until cleared.
+  // The "Run repartition" button issues `REBUILD TYPE <name> WITH repartition = true` and
+  // refreshes the schema view on completion. Records are SAFE while the flag is true (queries
+  // fan out and stay correct), but the optimisation is off until the rebuild runs.
+  if (row.needsRepartition === true) {
+    let btnId = "btnRepartition_" + row.name.replace(/[^a-zA-Z0-9]/g, "_");
+    // The button is wired programmatically (via addEventListener after the HTML lands in the
+    // DOM) rather than through an inline onclick. Inline handlers embedding row.name into a
+    // JS-string-in-HTML-attribute context are double-escape territory: even with escapeHtml,
+    // a name containing a literal double-quote escapes back to `"` after HTML decoding and
+    // breaks out of the JS string. The data-* attribute carries the untrusted value through
+    // a single HTML-escaping; the click handler reads it via dataset.typeName which the
+    // browser exposes as a plain string with no further interpretation.
+    html += "<div class='alert alert-warning d-flex align-items-center justify-content-between' role='alert' style='margin-bottom:14px;'>";
+    html += "  <div>";
+    html += "    <i class='fa fa-triangle-exclamation me-2'></i>";
+    html += "    <strong>Partition mapping is stale.</strong> ";
+    html += "    A bucket was added/dropped or the strategy changed; partition-aware query pruning is suppressed for this type. ";
+    html += "    Queries remain correct but lose the optimisation until a repartition rebuild runs.";
+    html += "  </div>";
+    html += "  <button id='" + escapeHtml(btnId) + "' class='btn btn-sm btn-warning js-repartition-btn' data-type-name='" + escapeHtml(row.name) + "'>";
+    html += "    <i class='fa fa-rotate'></i> Run Repartition";
+    html += "  </button>";
+    html += "</div>";
+  }
 
   // Parent types
   if (row.parentTypes && row.parentTypes.length > 0 && row.parentTypes[0] != "") {
@@ -3320,6 +3416,15 @@ function showTypeDetail(typeName) {
   html += "</div>";
 
   $("#dbTypeDetail").html(html);
+
+  // Wire the repartition button (issue #4087). Done programmatically rather than via inline
+  // onclick so the type name carries through a single HTML-escape (in the data-type-name
+  // attribute) and is read back as a plain string via dataset.typeName, with no JS-string
+  // interpretation. Avoids the double-escape footgun on type names with embedded quotes.
+  $("#dbTypeDetail .js-repartition-btn").on("click", function (e) {
+    e.preventDefault();
+    runRepartition(this.dataset.typeName);
+  });
 }
 
 var sidebarBadgeColors = {

@@ -25,6 +25,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -48,6 +49,10 @@ public class AlterTypeStatement extends DDLStatement {
   public Boolean          booleanValue;
   public Identifier       customKey;
   public Expression       customValue;
+  // Trailing settings clause `WITH key = value (, key = value)*` populated by the AST builder.
+  // Used today for `WITH repartition = true` to chain a rebuild atomically with a partition-
+  // invalidating ALTER (issue #4087); generic so future settings drop in cleanly.
+  public final Map<Identifier, Expression> settings = new LinkedHashMap<>();
 
   public AlterTypeStatement(final int id) {
     super(id);
@@ -91,6 +96,8 @@ public class AlterTypeStatement extends DDLStatement {
     result.booleanValue = booleanValue;
     result.customKey = customKey == null ? null : customKey.copy();
     result.customValue = customValue == null ? null : customValue.copy();
+    for (final Map.Entry<Identifier, Expression> e : settings.entrySet())
+      result.settings.put(e.getKey().copy(), e.getValue().copy());
     return result;
   }
 
@@ -182,6 +189,61 @@ public class AlterTypeStatement extends DDLStatement {
 
       type.setCustomValue(customKey.getStringValue(), value);
       result.setProperty("custom", customKey.getStringValue() + "=" + value);
+    }
+
+    // Trailing settings clause. Today we recognise `WITH repartition = true` (issue #4087): the
+    // partition mapping is now stale (bucket add/drop or strategy change), so chain a rebuild
+    // before returning. The DDL surfaces the moved-record count alongside the ALTER result so
+    // operators see the rebuild happened. Unknown settings throw - the supported list grows with
+    // explicit additions in this method.
+    boolean repartitionRequested = false;
+    for (final Map.Entry<Identifier, Expression> e : settings.entrySet()) {
+      final String key = e.getKey().getStringValue();
+      if (key.equalsIgnoreCase("repartition")) {
+        final Object raw = e.getValue().execute((Result) null, context);
+        repartitionRequested = parseBooleanSetting("ALTER TYPE", "repartition", raw);
+      } else
+        throw new CommandSQLParsingException(
+            "Unrecognized setting '" + key + "' in ALTER TYPE statement (supported: repartition)");
+    }
+    if (repartitionRequested) {
+      // Construct a RebuildTypeStatement and invoke its rebuild loop directly. This avoids
+      // serialising the type name back into a SQL string (which would otherwise need a
+      // defence-in-depth quoting guard and re-parse), keeping a zero-injection surface for the
+      // chained command. Atomic across the ALTER + REBUILD as far as the caller is concerned:
+      // a failure in either half throws and surfaces the boundary.
+      // <p>
+      // <b>Transaction-scope limitation.</b> DDL statements run inside the caller's transaction
+      // (the SQL command pipeline opens one before {@code executeDDL}), so
+      // {@code RebuildTypeStatement.executeRebuild} sees {@code db.isTransactionActive() == true}
+      // and takes the {@code implicitTx == false} branch: no intermediate batch commits fire and
+      // the entire scan + move phase runs inside one transaction. That is the correct contract -
+      // committing inside a caller-supplied transaction would leak the user's writes prematurely
+      // and break the "atomic ALTER + REBUILD" guarantee surfaced to the operator. For
+      // multi-million-record types this can grow the transaction past memory or WAL-size limits.
+      // Operators repartitioning very large types should run an explicit
+      // {@code REBUILD TYPE <name> WITH repartition = true} as a standalone command (which takes
+      // the {@code implicitTx == true} branch and commits in {@code DEFAULT_BATCH_SIZE} chunks),
+      // and then issue the bare {@code ALTER TYPE ...} without {@code WITH repartition = true}.
+      final RebuildTypeStatement rebuild = new RebuildTypeStatement(-1);
+      rebuild.typeName = name.copy();
+      rebuild.polymorphic = false;
+      // try-with-resources: any throw between the open and the explicit close would leak the
+      // ResultSet otherwise (e.g. deserialisation of the rebuild row, or any future addition
+      // that touches the row before close).
+      try (final ResultSet rebuildRs = rebuild.executeRebuild(context, RebuildTypeStatement.DEFAULT_BATCH_SIZE, true)) {
+        if (rebuildRs.hasNext()) {
+          final Result rebuildRow = rebuildRs.next();
+          // {@code recordsRebuilt} on the underlying REBUILD result is the *visited* count
+          // (includes records buffered for the move phase), so surface it as
+          // {@code repartitionVisited} here to avoid suggesting "records written into the new
+          // layout"; the actual relocation count is {@code repartitionMoved}.
+          if (rebuildRow.getProperty("recordsRebuilt") != null)
+            result.setProperty("repartitionVisited", rebuildRow.<Long>getProperty("recordsRebuilt"));
+          if (rebuildRow.getProperty("recordsMoved") != null)
+            result.setProperty("repartitionMoved", rebuildRow.<Long>getProperty("recordsMoved"));
+        }
+      }
     }
 
     result.setProperty("operation", "ALTER TYPE");

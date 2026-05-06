@@ -23,6 +23,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -30,6 +33,7 @@ import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.AggregateProjectionSplit;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
@@ -103,6 +107,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
@@ -1747,6 +1752,19 @@ public class SelectExecutionPlanner {
 
     // Check if this is a TimeSeries type — use the engine for range queries
     final DocumentType docType = context.getDatabase().getSchema().getType(identifier.getStringValue());
+
+    // Partition-aware bucket pruning. When the type uses a PartitionedBucketSelectionStrategy and
+    // the WHERE clause binds every partition property to a literal in every AndBlock, we can
+    // restrict the scan to the bucket(s) the partitioning hash would route those values to. The
+    // narrowed cluster set flows into every downstream path (index-based fetch, full scan with
+    // predicate pushdown, plain full scan) without any of those paths needing to know about
+    // partitioning. Skipped when the type's {@code needsRepartition} flag is true (the mapping
+    // is stale until {@code REBUILD TYPE Doc WITH repartition = true} runs); a throttled
+    // WARNING is emitted in that case so operators see the lost optimisation.
+    final Set<String> effectiveClusters = docType != null
+        ? derivePartitionPrunedClusters(docType, filterClusters, info, context)
+        : filterClusters;
+
     if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null) {
       // Extract time range from WHERE clause (if available)
       long fromTs = Long.MIN_VALUE;
@@ -1779,17 +1797,17 @@ public class SelectExecutionPlanner {
       return;
     }
 
-    if (handleTypeAsTargetWithIndexedFunction(plan, filterClusters, identifier, info, context)) {
+    if (handleTypeAsTargetWithIndexedFunction(plan, effectiveClusters, identifier, info, context)) {
       plan.chain(new FilterByTypeStep(identifier, context));
       return;
     }
 
-    if (handleTypeAsTargetWithIndex(plan, identifier, filterClusters, info, context)) {
+    if (handleTypeAsTargetWithIndex(plan, identifier, effectiveClusters, info, context)) {
       plan.chain(new FilterByTypeStep(identifier, context));
       return;
     }
 
-    if (info.orderBy != null && handleClassWithIndexForSortOnly(plan, identifier, filterClusters, info, context)) {
+    if (info.orderBy != null && handleClassWithIndexForSortOnly(plan, identifier, effectiveClusters, info, context)) {
       plan.chain(new FilterByTypeStep(identifier, context));
       return;
     }
@@ -1813,7 +1831,7 @@ public class SelectExecutionPlanner {
     final boolean whereRefersToLet = info.perRecordLetClause != null && info.whereClause != null
         && info.whereClause.toString().contains("$");
     if (info.whereClause != null && info.whereClause.baseExpression != null && !whereRefersToLet) {
-      final FetchFromTypeWithFilterStep fetcher = new FetchFromTypeWithFilterStep(identifier.getStringValue(), filterClusters,
+      final FetchFromTypeWithFilterStep fetcher = new FetchFromTypeWithFilterStep(identifier.getStringValue(), effectiveClusters,
           info.whereClause, info.projectedProperties, context, orderByRidAsc);
       if (orderByRidAsc != null)
         info.orderApplied = true;
@@ -1823,7 +1841,7 @@ public class SelectExecutionPlanner {
       return;
     }
 
-    final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), filterClusters, info,
+    final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), effectiveClusters, info,
         context, orderByRidAsc);
     if (orderByRidAsc != null)
       info.orderApplied = true;
@@ -1913,6 +1931,178 @@ public class SelectExecutionPlanner {
     if (exprStr.startsWith("@"))
       return exprStr;
     return null;
+  }
+
+  /**
+   * Partition-aware bucket pruning entry point. Inspects the type's bucket selection strategy and
+   * the WHERE clause; if every {@code AndBlock} in the flattened where binds every partition
+   * property to a literal, computes the corresponding bucket name(s) via the strategy's hash and
+   * returns a narrowed {@code filterClusters} set. Skipped (returns the original set unchanged)
+   * when:
+   * <ul>
+   *   <li>the type does not use {@link PartitionedBucketSelectionStrategy};</li>
+   *   <li>the type's {@code needsRepartition} flag is set (a schema mutation has invalidated the
+   *       partition mapping; a throttled WARNING is emitted on this path so operators see the
+   *       lost optimisation);</li>
+   *   <li>the WHERE clause has no flattened blocks, or any block leaves a partition property
+   *       unbound (we can't safely prune without knowing every partition coordinate).</li>
+   * </ul>
+   * The returned set is intersected with the caller-supplied {@code filterClusters} so explicit
+   * cluster filters in the SQL (e.g., {@code SELECT FROM Doc IN BUCKET 'doc_3'}) are honoured.
+   */
+  private static Set<String> derivePartitionPrunedClusters(final DocumentType docType, final Set<String> filterClusters,
+      final QueryPlanningInfo info, final CommandContext context) {
+    final BucketSelectionStrategy strategy = docType.getBucketSelectionStrategy();
+    if (!(strategy instanceof PartitionedBucketSelectionStrategy partitioned))
+      return filterClusters;
+
+    if (docType instanceof LocalDocumentType ldt && ldt.isNeedsRepartition()) {
+      // Mapping is stale; nudge the operator and bail out of the optimisation.
+      ldt.warnIfNeedsRepartition();
+      return filterClusters;
+    }
+
+    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
+      return filterClusters;
+
+    final List<String> partitionProps = partitioned.getProperties();
+    if (partitionProps == null || partitionProps.isEmpty())
+      return filterClusters;
+
+    // O(1) property -> position lookup. With composite partition keys (e.g.
+    // {@code partitioned(orgId, region)}), a {@code List.indexOf} inside the inner predicate
+    // loop would be O(n) per condition. Building a small map once amortises the cost.
+    final Map<String, Integer> partitionPropPositions = new HashMap<>(partitionProps.size());
+    for (int i = 0; i < partitionProps.size(); i++)
+      partitionPropPositions.put(partitionProps.get(i), i);
+
+    // Cache the bucket list once for the whole derivation. The list is invariant during
+    // planning (schema mutations take the same lock the planner doesn't hold), and the per
+    // AndBlock loop below would otherwise call getBuckets(false) once per block on the planner
+    // hot path.
+    // FQN is intentional: the file's top-level {@code Bucket} import refers to the SQL parser
+    // AST node, not the engine type returned here. Using {@code var} would silently rebind to
+    // the wrong type if a future edit added an {@code import com.arcadedb.engine.Bucket}.
+    final List<com.arcadedb.engine.Bucket> typeBuckets = docType.getBuckets(false);
+
+    // Each AndBlock must fully bind every partition property; otherwise pruning is unsafe and we
+    // fall back to the caller's filterClusters. The union of bucket names across blocks is the
+    // pruned set the OR-disjuncts collectively need to cover.
+    final Set<String> derivedBuckets = new HashSet<>();
+    for (final AndBlock andBlock : info.flattenedWhereClause) {
+      final Object[] keyValues = new Object[partitionProps.size()];
+      final boolean[] bound = new boolean[partitionProps.size()];
+      int boundCount = 0;
+
+      for (final BooleanExpression expr : andBlock.getSubBlocks()) {
+        if (!(expr instanceof BinaryCondition bc) || !(bc.getOperator() instanceof EqualsCompareOperator))
+          continue;
+
+        // Either side may carry the property reference; the literal sits on the other side.
+        String propName = extractBaseIdentifierName(bc.getLeft());
+        Expression literalSide = bc.getRight();
+        if (propName == null) {
+          propName = extractBaseIdentifierName(bc.getRight());
+          literalSide = bc.getLeft();
+        }
+        if (propName == null)
+          continue;
+
+        final Integer idxBoxed = partitionPropPositions.get(propName);
+        if (idxBoxed == null)
+          continue;
+        final int idx = idxBoxed;
+
+        if (literalSide == null || !literalSide.isEarlyCalculated(context))
+          continue;
+        // Plan-time pruning is unsafe when the literal is parameter-bound: the cached plan would
+        // reuse the first execution's bucket id for every subsequent binding.
+        if (literalSide.containsInputParameter())
+          continue;
+
+        if (!bound[idx]) {
+          final Object literalValue;
+          try {
+            literalValue = literalSide.execute((Result) null, context);
+          } catch (final Exception e) {
+            // Literal evaluation can fail at plan time for parameter-bound expressions that
+            // depend on context state we don't have here. Treat as "can't bind" and bail.
+            continue;
+          }
+          // A null literal at plan time also means "can't determine the bucket" - the strategy's
+          // hash treats null specially (skipped from the running sum), so a missing value would
+          // collapse every null-keyed query onto bucket 0 and silently drop records that live
+          // anywhere else. Skip pruning for this AndBlock instead.
+          if (literalValue == null)
+            continue;
+          keyValues[idx] = literalValue;
+          bound[idx] = true;
+          boundCount++;
+        }
+      }
+
+      if (boundCount != partitionProps.size())
+        return filterClusters;  // Block left a partition coordinate open; cannot prune.
+
+      final int bucketIndex = partitioned.getBucketIdByKeys(keyValues, false);
+      if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
+        return filterClusters;  // Strategy returned an out-of-range index; abort defensively.
+      derivedBuckets.add(typeBuckets.get(bucketIndex).getName());
+    }
+
+    if (derivedBuckets.isEmpty())
+      return filterClusters;
+
+    if (filterClusters == null || filterClusters.contains("*"))
+      return derivedBuckets;
+
+    final Set<String> intersected = new HashSet<>(derivedBuckets);
+    intersected.retainAll(filterClusters);
+    // If the intersection is empty the user's explicit cluster filter is incompatible with the
+    // partition-derived set - the query should return nothing. The downstream fetch step's
+    // filtering already handles this (no buckets pass), so returning the empty set is correct.
+    // Log at FINE so an operator chasing a "query mysteriously returns zero rows" report can grep
+    // for the type name and see that pruning + an explicit cluster filter intersected to empty.
+    if (intersected.isEmpty())
+      LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE,
+          "Partition pruning on type '%s' intersected to an empty set: derived buckets %s do not "
+              + "overlap the explicit cluster filter %s. Query will return zero rows.",
+          null, docType.getName(), derivedBuckets, filterClusters);
+    return intersected;
+  }
+
+  /**
+   * Returns the property name when {@code expr} is a plain unqualified base identifier
+   * (e.g. {@code tenant_id}), {@code null} otherwise. Walks the AST directly rather than
+   * delegating to {@link Expression#getDefaultAlias()} - {@code getDefaultAlias} is a
+   * projection-aliasing helper that synthesises an Identifier from {@code toString()} for
+   * non-base shapes, which would mask future semantic drift behind a name string.
+   * <p>
+   * Qualified references like {@code doc.tenant_id} carry a {@code modifier} chain on the
+   * BaseExpression and are rejected outright; the partition-pruning rule treats them as
+   * unprunable rather than guessing whether the modifier resolves to the partition property.
+   */
+  private static String extractBaseIdentifierName(final Expression expr) {
+    if (expr == null)
+      return null;
+    if (!(expr.getMathExpression() instanceof BaseExpression base))
+      return null;
+    // Modifier chain present (e.g. {@code doc.tenant_id}, {@code values[0]}): not a plain
+    // property reference, refuse to prune rather than guess. Log at FINE so operators tracing
+    // a missing-pruning report can see exactly why the rule bailed without any noise at INFO.
+    if (base.modifier != null) {
+      LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE,
+          "Partition pruning skipped: predicate uses qualified/modifier reference '%s', not a plain partition-property identifier",
+          null, expr);
+      return null;
+    }
+    final BaseIdentifier baseIdentifier = base.identifier;
+    if (baseIdentifier == null)
+      return null;
+    final SuffixIdentifier suffix = baseIdentifier.getSuffix();
+    if (suffix == null || suffix.identifier == null)
+      return null;
+    return suffix.identifier.getStringValue();
   }
 
   /**

@@ -215,6 +215,21 @@ public abstract class BooleanExpression extends SimpleNode {
     return false;
   }
 
+  /**
+   * True if this boolean expression (or any of its descendants) resolves through a parameter
+   * binding ({@code ?} / {@code :name}). Used by safety-sensitive plan-time decisions that must
+   * not bake a parameter-dependent value into a cached plan (e.g. partition-aware bucket
+   * pruning across CASE/WHEN clauses).
+   * <p>
+   * Default returns {@code true} - conservative for subclasses that haven't overridden it, on
+   * the principle that a missed parameter silently corrupts pruning while a false positive only
+   * suppresses the optimisation. Subclasses that can answer precisely (BinaryCondition,
+   * AndBlock, OrBlock, etc.) override.
+   */
+  public boolean containsInputParameter() {
+    return true;
+  }
+
   public abstract void extractSubQueries(final SubQueryCollector collector);
 
   /**

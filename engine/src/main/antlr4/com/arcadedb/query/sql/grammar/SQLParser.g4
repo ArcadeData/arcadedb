@@ -617,7 +617,7 @@ createEdgeBody
 // ============================================================================
 
 alterTypeBody
-    : identifier alterTypeItem (COMMA alterTypeItem)*
+    : identifier alterTypeItem (COMMA alterTypeItem)* (WITH alterTypeSetting (COMMA alterTypeSetting)*)?
     ;
 
 alterTypeItem
@@ -627,6 +627,13 @@ alterTypeItem
     | BUCKET ((PLUS | MINUS) identifier)+
     | CUSTOM identifier EQ expression
     | ALIASES (identifier (COMMA identifier)* | NULL)
+    ;
+
+// Trailing settings block. Supports "WITH repartition = true" (#4087) so an ALTER TYPE that
+// invalidates the partition mapping can chain a rebuild atomically. Generic so future settings
+// (e.g., a quiet-mode flag) drop in without re-touching the grammar.
+alterTypeSetting
+    : identifier EQ expression
     ;
 
 alterPropertyBody

@@ -5840,6 +5840,18 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       }
     }
 
+    // Trailing WITH key = value (, ...) settings clause. Used today by `WITH repartition = true`
+    // (issue #4087) to chain a rebuild atomically with a partitioning-invalidating ALTER. The
+    // grammar is generic so future settings drop in without re-touching this builder.
+    final List<SQLParser.AlterTypeSettingContext> settingCtxs = bodyCtx.alterTypeSetting();
+    if (settingCtxs != null) {
+      for (final SQLParser.AlterTypeSettingContext settingCtx : settingCtxs) {
+        final Identifier key = (Identifier) visit(settingCtx.identifier());
+        final Expression value = (Expression) visit(settingCtx.expression());
+        stmt.settings.put(key, value);
+      }
+    }
+
     return stmt;
   }
 

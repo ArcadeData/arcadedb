@@ -128,6 +128,13 @@ public class ParenthesisExpression extends MathExpression {
     return expression != null && expression.isEarlyCalculated(context);
   }
 
+  @Override
+  public boolean containsInputParameter() {
+    // {@code expression} is stored outside {@code childExpressions}, so the inherited
+    // MathExpression walker would miss any parameter wrapped in parentheses. Forward to it.
+    return (expression != null && expression.containsInputParameter()) || super.containsInputParameter();
+  }
+
   public SimpleNode splitForAggregation(final AggregateProjectionSplit aggregateProj, final CommandContext context) {
     if (isAggregate(context)) {
       final ParenthesisExpression result = new ParenthesisExpression(-1);

@@ -176,6 +176,12 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   @Override
+  public boolean containsInputParameter() {
+    return (left != null && left.containsInputParameter())
+        || (right != null && right.containsInputParameter());
+  }
+
+  @Override
   protected Object[] getIdentityElements() {
     return new Object[] { left, operator, right };
   }

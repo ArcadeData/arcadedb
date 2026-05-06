@@ -44,6 +44,15 @@ public class ArrayLiteralExpression extends MathExpression {
   }
 
   @Override
+  public boolean containsInputParameter() {
+    // {@code items} sit outside {@code childExpressions}; the inherited walker would miss them.
+    for (final Expression item : items)
+      if (item != null && item.containsInputParameter())
+        return true;
+    return super.containsInputParameter();
+  }
+
+  @Override
   public Object execute(final Identifiable currentRecord, final CommandContext context) {
     final List<Object> result = new ArrayList<>(items.size());
     for (final Expression item : items) {

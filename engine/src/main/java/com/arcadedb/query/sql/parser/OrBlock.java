@@ -93,6 +93,15 @@ public class OrBlock extends BooleanExpression {
     this.subBlocks = subBlocks;
   }
 
+  @Override
+  public boolean containsInputParameter() {
+    if (subBlocks != null)
+      for (final BooleanExpression sb : subBlocks)
+        if (sb != null && sb.containsInputParameter())
+          return true;
+    return false;
+  }
+
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (subBlocks == null || subBlocks.size() == 0) {
       return;

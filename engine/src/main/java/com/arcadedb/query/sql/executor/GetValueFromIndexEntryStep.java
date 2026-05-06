@@ -50,6 +50,15 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
     this.filterBucketIds = filterBucketIds;
   }
 
+  /**
+   * Read-only access to the bucket-id constraint applied to index entries (or {@code null}
+   * when no constraint is active and every value passes through). Surfaced for tests that
+   * need to verify partition-aware bucket pruning narrowed the per-bucket sub-index set.
+   */
+  public List<Integer> getFilterBucketIds() {
+    return filterBucketIds;
+  }
+
   @Override
   public ResultSet syncPull(final CommandContext context, final int nRecords) throws TimeoutException {
     final ExecutionStepInternal prevStep = checkForPrevious();

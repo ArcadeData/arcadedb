@@ -21,7 +21,10 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.Labels;
@@ -36,13 +39,13 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
-import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
@@ -71,7 +74,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final BooleanExpression   whereFilter; // Optional inline WHERE predicate (pushdown)
   private final ExpressionEvaluator evaluator;   // Shared evaluator for WHERE/ID expression resolution
   private final Expression          dynamicIdExpression; // Pre-analyzed expression for runtime RID resolution (issue #3864)
+  // Display-only diagnostic fields surfaced through {@link #prettyPrint}. Mirrors the
+  // {@code usedIndexName} pattern: written once during the first iterator setup and read by the
+  // pretty printer at plan-print time. Not safe to share a step instance across concurrent MATCH
+  // branches - if a future change drives parallel sub-plans through the same step, both fields
+  // need to move to a per-execution scope or be guarded.
   private       String              usedIndexName; // Track which index was used (if any)
+  private       String              usedPartitionBucket; // Track partition bucket pruning (if any) - same write-once-per-execution contract as usedIndexName
 
   /**
    * Creates a match node step.
@@ -327,17 +336,20 @@ public class MatchNodeStep extends AbstractExecutionStep {
 
     if (!labels.isEmpty()) {
       if (labels.size() == 1) {
-        // Single label - polymorphic iteration (existing behavior)
+        // Single label - polymorphic iteration (existing behavior). Resolve the type once and
+        // reuse the reference: every {@code getSchema().getType(label)} walks the type map, and
+        // this block runs per MATCH iteration, so the redundant lookups landed on a hot path.
         final String label = labels.get(0);
 
         // If the label does not exist in the schema, the match yields no rows
-        // (matches Neo4j semantics — issue #4090). Skip all index/iteration logic.
+        // (matches Neo4j semantics, issue #4090). Skip all index/iteration logic.
         if (!context.getDatabase().getSchema().existsType(label))
           return Collections.emptyIterator();
 
+        final DocumentType type = context.getDatabase().getSchema().getType(label);
+
         // OPTIMIZATION: Check if we can use an index for property lookup
-        if (pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
-          final DocumentType type = context.getDatabase().getSchema().getType(label);
+        if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
           // Try to find an index that matches the property constraints
           // Support composite indexes with partial keys (leftmost prefix matching)
           final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, currentInputResult);
@@ -348,17 +360,45 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // OPTIMIZATION: Check if WHERE clause has equality predicates that can use an index
         // This is critical for UNWIND...MATCH...WHERE patterns where the predicate references
         // an UNWIND variable (e.g., WHERE a.id = e.src_id)
-        if (whereFilter != null && currentInputResult != null) {
-          final DocumentType type = context.getDatabase().getSchema().getType(label);
+        if (type != null && whereFilter != null && currentInputResult != null) {
           final Iterator<Identifiable> indexedIter = tryFindAndUseIndexFromWhere(type, label, currentInputResult);
           if (indexedIter != null)
             return indexedIter;
         }
 
+        // OPTIMIZATION: Partition-aware bucket pruning. When the type uses a partitioned bucket
+        // strategy and the node-pattern's inline properties bind every partition property to a
+        // literal, switch the full-scan fallback to a single-bucket iteration. The partition
+        // strategy invariant guarantees every match for those property values lives in the
+        // hash-target bucket, so iterating other buckets is wasted work. Skipped when the type's
+        // {@code needsRepartition} flag is set (with a throttled WARNING).
+        // <p>
+        // Use {@code !getProperties().isEmpty()} directly: {@link NodePattern#hasProperties}
+        // is true when there are inline properties OR a parameter-form ({$props}); the latter
+        // can't be evaluated at plan time and pruning would have to bail anyway.
+        // <p>
+        // <b>Asymmetry vs. SQL.</b> The SQL planner (see
+        // {@code SelectExecutionPlanner#derivePartitionPrunedClusters}) prunes the bucket set
+        // before the index-vs-scan decision, so even index-based fetch steps inherit the pruned
+        // cluster filter. This Cypher path runs as a full-scan fallback only - the two
+        // {@code tryFindAndUseIndex*} branches above intentionally pre-empt it because an index
+        // already constrains the result set tightly enough that the per-bucket fanout is not
+        // the bottleneck. Correctness is preserved either way; the optimisation is just
+        // narrower on the Cypher side. If we ever want full SQL parity, the bucket prune would
+        // have to feed into the index-iteration step rather than gate a separate iterator path.
+        if (type != null && !pattern.getProperties().isEmpty()) {
+          final Iterator<Identifiable> partitionedIter = tryPartitionPrunedIterator(type, label);
+          if (partitionedIter != null)
+            return partitionedIter;
+        }
+
         // No index available - fall back to full type scan
-        @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
-            (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
-        return iter;
+        if (type != null) {
+          @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
+              (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
+          return iter;
+        }
+        return Collections.emptyIterator();
       }
 
       // Multiple labels - the iteration semantics depend on whether the labels are combined
@@ -443,14 +483,57 @@ public class MatchNodeStep extends AbstractExecutionStep {
     }
   }
 
-  /**
-   * Tries to find and use an index for the property constraints.
-   * Supports composite indexes with partial key matching (leftmost prefix).
-   *
-   * @param type  the document type
-   * @param label the type label
-   * @return iterator from index lookup, or null if no suitable index found
-   */
+  private Iterator<Identifiable> tryPartitionPrunedIterator(final DocumentType type, final String label) {
+    if (!(type.getBucketSelectionStrategy() instanceof PartitionedBucketSelectionStrategy partitioned))
+      return null;
+
+    if (type instanceof LocalDocumentType ldt && ldt.isNeedsRepartition()) {
+      // Stale mapping; nudge operators and bail.
+      ldt.warnIfNeedsRepartition();
+      return null;
+    }
+
+    final List<String> partitionProps = partitioned.getProperties();
+    if (partitionProps == null || partitionProps.isEmpty())
+      return null;
+
+    final Map<String, Object> patternProps = pattern.getProperties();
+    if (patternProps == null || patternProps.isEmpty())
+      return null;
+
+    // Every partition property must be bound to a usable literal. Parameters and Expression
+    // resolvers are skipped: a parameter-bound partition value would bake the bucket id into
+    // the cached plan and silently misroute later executions.
+    final Object[] keyValues = new Object[partitionProps.size()];
+    for (int i = 0; i < partitionProps.size(); i++) {
+      final String prop = partitionProps.get(i);
+      if (!patternProps.containsKey(prop))
+        return null;
+      final Object val = patternProps.get(prop);
+      if (val == null
+          || val instanceof CypherASTBuilder.ParameterReference
+          || val instanceof Expression)
+        return null;
+      keyValues[i] = val;
+    }
+
+    final int bucketIndex = partitioned.getBucketIdByKeys(keyValues, false);
+    // Cache the bucket list once for the bounds check + name lookup. The MATCH path runs per
+    // node iteration, so even one redundant {@code getBuckets} call lands on the hot path.
+    // TODO follow-up: hoist the bucket-list snapshot to step construction so high-fanout MATCH
+    // loops (UNWIND list -> MATCH per element) don't pay {@code getBuckets(false)} per
+    // iteration. See review note #8 (issue #4087 follow-up).
+    final List<? extends com.arcadedb.engine.Bucket> typeBuckets = type.getBuckets(false);
+    if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
+      return null;
+
+    final String bucketName = typeBuckets.get(bucketIndex).getName();
+    usedPartitionBucket = bucketName;
+    @SuppressWarnings("unchecked")
+    final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateBucket(bucketName);
+    return iter;
+  }
+
   private Iterator<Identifiable> tryFindAndUseIndex(final DocumentType type, final String label,
       final Result currentInputResult) {
     // Prepare property names and values from the pattern
@@ -845,6 +928,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     builder.append(")");
     if (usedIndexName != null)
       builder.append(" [index: ").append(usedIndexName).append("]");
+    if (usedPartitionBucket != null)
+      builder.append(" [partition: ").append(usedPartitionBucket).append("]");
     if (whereFilter != null)
       builder.append(" [filter: ").append(whereFilter.getText()).append("]");
     if (context.isProfiling()) {
