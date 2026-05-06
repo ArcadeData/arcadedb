@@ -150,6 +150,74 @@ class Issue4095DirectedRelReuseIsomorphismTest {
     assertThat(((Number) rows.get(0).getProperty("c")).longValue()).isEqualTo(2L);
   }
 
+  /**
+   * Three-hop anonymous chain of the same type. Exercises multiple synthetic counters
+   * and verifies all three slots bind to distinct edges.
+   */
+  @Test
+  void threeHopAnonymousSameTypeChainHasDistinctEdges() {
+    database.transaction(() -> database.command("opencypher",
+        """
+            CREATE (:Person4095 {name:'C1'})-[:KNOWS4095]->(:Person4095 {name:'C2'})
+                  -[:KNOWS4095]->(:Person4095 {name:'C3'})
+                  -[:KNOWS4095]->(:Person4095 {name:'C4'})"""));
+
+    final ResultSet result = database.query("opencypher",
+        """
+            MATCH (a:Person4095)-[:KNOWS4095]->(b:Person4095)-[:KNOWS4095]->(c:Person4095)-[:KNOWS4095]->(d:Person4095)
+            WHERE a.name STARTS WITH 'C'
+            RETURN a.name AS a, b.name AS b, c.name AS c, d.name AS d""");
+
+    final List<Result> rows = collect(result);
+    assertThat(rows).hasSize(1);
+    assertThat((String) rows.get(0).getProperty("a")).isEqualTo("C1");
+    assertThat((String) rows.get(0).getProperty("b")).isEqualTo("C2");
+    assertThat((String) rows.get(0).getProperty("c")).isEqualTo("C3");
+    assertThat((String) rows.get(0).getProperty("d")).isEqualTo("C4");
+  }
+
+  /**
+   * Mixed named + anonymous relationship variables in the same MATCH clause: both
+   * tracking paths must coexist and exclude each other's edges.
+   */
+  @Test
+  void mixedNamedAndAnonymousSameClauseBindsDistinctEdges() {
+    final ResultSet result = database.query("opencypher",
+        """
+            MATCH (s:Person4095)<-[r:KNOWS4095]-(f:Person4095)-[:KNOWS4095]->(d:Person4095)
+            WHERE f.name = 'Bob'
+            RETURN s.name AS s, type(r) AS rt, d.name AS d
+            ORDER BY s, d""");
+
+    final List<Result> rows = collect(result);
+    assertThat(rows).hasSize(2);
+    assertThat((String) rows.get(0).getProperty("s")).isEqualTo("Alice");
+    assertThat((String) rows.get(0).getProperty("d")).isEqualTo("Charlie");
+    assertThat((String) rows.get(1).getProperty("s")).isEqualTo("Charlie");
+    assertThat((String) rows.get(1).getProperty("d")).isEqualTo("Alice");
+  }
+
+  /**
+   * Cross-clause edge reuse must remain valid: relationship uniqueness is per-clause,
+   * not per-row, so the same physical edge in two separate MATCH clauses is allowed.
+   */
+  @Test
+  void crossClauseAnonymousEdgeReuseIsAllowed() {
+    final ResultSet result = database.query("opencypher",
+        """
+            MATCH (a:Person4095)-[:KNOWS4095]->(b:Person4095)
+            MATCH (b:Person4095)<-[:KNOWS4095]-(c:Person4095)
+            WHERE b.name = 'Eve'
+            RETURN count(*) AS cnt""");
+
+    final List<Result> rows = collect(result);
+    assertThat(rows).hasSize(1);
+    // Eve has 2 IN edges (Dave→Eve, Frank→Eve). First MATCH binds (a,b)=(Dave,Eve) or
+    // (Frank,Eve). Second MATCH binds c independently from b's IN edges. Same edge can
+    // legitimately fill the first MATCH's slot AND the second MATCH's slot, giving 4 rows.
+    assertThat(((Number) rows.get(0).getProperty("cnt")).longValue()).isEqualTo(4L);
+  }
+
   private static List<Result> collect(final ResultSet rs) {
     final List<Result> list = new ArrayList<>();
     while (rs.hasNext())

@@ -250,23 +250,19 @@ public class CypherOptimizer {
           break;
         }
       if (hasUntyped) {
+        // Untyped hops match any edge type, so every hop in the clause may collide.
         needs.addAll(clauseRels);
         continue;
       }
 
-      outer:
-      for (int i = 0; i < clauseRels.size(); i++) {
-        for (int j = 0; j < clauseRels.size(); j++) {
-          if (i == j)
-            continue;
-          for (final String type : clauseRels.get(i).getTypes()) {
-            if (clauseRels.get(j).getTypes().contains(type)) {
-              needs.add(clauseRels.get(i));
-              continue outer;
-            }
-          }
-        }
-      }
+      final Map<String, List<LogicalRelationship>> byType = new HashMap<>();
+      for (final LogicalRelationship rel : clauseRels)
+        for (final String type : rel.getTypes())
+          byType.computeIfAbsent(type, k -> new ArrayList<>()).add(rel);
+
+      for (final List<LogicalRelationship> sharingType : byType.values())
+        if (sharingType.size() > 1)
+          needs.addAll(sharingType);
     }
     return needs;
   }
