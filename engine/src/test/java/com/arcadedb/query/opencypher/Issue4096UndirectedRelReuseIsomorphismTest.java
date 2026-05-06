@@ -68,9 +68,10 @@ class Issue4096UndirectedRelReuseIsomorphismTest {
   @Test
   void undirectedMultiHopDoesNotReuseRelationship() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person4096)-[r1:KNOWS4096]-(b:Person4096)-[r2:KNOWS4096]-(c:Person4096) "
-            + "RETURN a.name AS a, b.name AS b, c.name AS c, r1 = r2 AS sameRel "
-            + "ORDER BY a, c");
+        """
+            MATCH (a:Person4096)-[r1:KNOWS4096]-(b:Person4096)-[r2:KNOWS4096]-(c:Person4096)
+            RETURN a.name AS a, b.name AS b, c.name AS c, r1 = r2 AS sameRel
+            ORDER BY a, c""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(2);
@@ -92,8 +93,9 @@ class Issue4096UndirectedRelReuseIsomorphismTest {
   @Test
   void undirectedMultiHopDistinctRelationshipCount() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person4096)-[r1:KNOWS4096]-(b:Person4096)-[r2:KNOWS4096]-(c:Person4096) "
-            + "WHERE r1 <> r2 RETURN count(*) AS cnt");
+        """
+            MATCH (a:Person4096)-[r1:KNOWS4096]-(b:Person4096)-[r2:KNOWS4096]-(c:Person4096)
+            WHERE r1 <> r2 RETURN count(*) AS cnt""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
@@ -108,9 +110,10 @@ class Issue4096UndirectedRelReuseIsomorphismTest {
   @Test
   void crossClauseEdgeReuseIsAllowed() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person4096)-[r1:KNOWS4096]-(b:Person4096) "
-            + "MATCH (b:Person4096)-[r2:KNOWS4096]-(c:Person4096) "
-            + "RETURN count(*) AS cnt");
+        """
+            MATCH (a:Person4096)-[r1:KNOWS4096]-(b:Person4096)
+            MATCH (b:Person4096)-[r2:KNOWS4096]-(c:Person4096)
+            RETURN count(*) AS cnt""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
@@ -128,9 +131,10 @@ class Issue4096UndirectedRelReuseIsomorphismTest {
   @Test
   void expandIntoPathDoesNotReuseRelationship() {
     final ResultSet result = database.query("opencypher",
-        "MATCH (a:Person4096 {name:'Alice'}), (c:Person4096 {name:'Charlie'}) "
-            + "MATCH (a)-[r1:KNOWS4096]-(b:Person4096), (b)-[r2:KNOWS4096]-(c) "
-            + "RETURN count(*) AS cnt");
+        """
+            MATCH (a:Person4096 {name:'Alice'}), (c:Person4096 {name:'Charlie'})
+            MATCH (a)-[r1:KNOWS4096]-(b:Person4096), (b)-[r2:KNOWS4096]-(c)
+            RETURN count(*) AS cnt""");
 
     final List<Result> rows = collect(result);
     assertThat(rows).hasSize(1);
