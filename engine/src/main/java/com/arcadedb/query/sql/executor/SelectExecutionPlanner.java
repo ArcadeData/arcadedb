@@ -33,6 +33,7 @@ import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.AggregateProjectionSplit;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BaseExpression;
@@ -99,8 +100,9 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
-import java.util.LinkedHashMap;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.logging.Level;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
@@ -2081,9 +2083,14 @@ public class SelectExecutionPlanner {
     if (!(expr.getMathExpression() instanceof BaseExpression base))
       return null;
     // Modifier chain present (e.g. {@code doc.tenant_id}, {@code values[0]}): not a plain
-    // property reference, refuse to prune rather than guess.
-    if (base.modifier != null)
+    // property reference, refuse to prune rather than guess. Log at FINE so operators tracing
+    // a missing-pruning report can see exactly why the rule bailed without any noise at INFO.
+    if (base.modifier != null) {
+      LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE,
+          "Partition pruning skipped: predicate uses qualified/modifier reference '%s', not a plain partition-property identifier",
+          null, expr);
       return null;
+    }
     final BaseIdentifier baseIdentifier = base.identifier;
     if (baseIdentifier == null)
       return null;

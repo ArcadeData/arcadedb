@@ -690,7 +690,7 @@ public class LocalDocumentType implements DocumentType {
       return;
     if (!lastRepartitionWarnMs.compareAndSet(last, now))
       return;
-    com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+    LogManager.instance().log(this, Level.WARNING,
         "Type '%s' has needsRepartition=true; partition-aware bucket pruning is disabled until "
             + "`REBUILD TYPE %s WITH repartition = true` runs. Queries continue to return correct "
             + "results but fan out across all %d buckets.",

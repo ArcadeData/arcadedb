@@ -94,12 +94,16 @@ class RebuildTypeRepartitionTest extends TestHelper {
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
     type.setNeedsRepartition(true);
 
-    database.command("sql", "REBUILD TYPE " + TYPE_NAME).close();
+    try {
+      database.command("sql", "REBUILD TYPE " + TYPE_NAME).close();
 
-    assertThat(type.isNeedsRepartition())
-        .as("REBUILD TYPE without `repartition = true` must NOT touch the flag")
-        .isTrue();
-    type.setNeedsRepartition(false); // reset for the next test
+      assertThat(type.isNeedsRepartition())
+          .as("REBUILD TYPE without `repartition = true` must NOT touch the flag")
+          .isTrue();
+    } finally {
+      // Always clear so a regression here doesn't poison the next test with a stale flag.
+      type.setNeedsRepartition(false);
+    }
   }
 
   @Test
@@ -162,9 +166,9 @@ class RebuildTypeRepartitionTest extends TestHelper {
     populateVertices();
 
     assertThatThrownBy(() -> database.command("sql", "REBUILD TYPE PartV WITH repartition = true"))
-        .hasMessageContaining("vertex")
         .hasMessageContaining("repartition")
-        .hasMessageContaining("not supported");
+        .hasMessageContaining("not supported")
+        .hasMessageContaining("PartV");
   }
 
   @Test
@@ -179,9 +183,9 @@ class RebuildTypeRepartitionTest extends TestHelper {
     });
 
     assertThatThrownBy(() -> database.command("sql", "REBUILD TYPE PartE WITH repartition = true"))
-        .hasMessageContaining("edge")
         .hasMessageContaining("repartition")
-        .hasMessageContaining("not supported");
+        .hasMessageContaining("not supported")
+        .hasMessageContaining("PartE");
   }
 
   @Test
@@ -197,8 +201,8 @@ class RebuildTypeRepartitionTest extends TestHelper {
     assertThatThrownBy(() ->
         database.command("sql",
             "ALTER TYPE PartV BucketSelectionStrategy `partitioned('tenant_id')` WITH repartition = true"))
-        .hasMessageContaining("vertex")
-        .hasMessageContaining("not supported");
+        .hasMessageContaining("not supported")
+        .hasMessageContaining("PartV");
   }
 
   // ---- shared scaffolding -------------------------------------------------

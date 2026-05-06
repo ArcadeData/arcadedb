@@ -57,7 +57,12 @@ class AlterTypeAtomicRepartitionTest extends TestHelper {
         .isFalse();
     assertThat(row.<String>getProperty("addBucket")).isEqualTo(TYPE_NAME + "_extra");
     assertThat(row.<Long>getProperty("repartitionVisited")).isEqualTo(4L);
-    assertThat(row.<Long>getProperty("repartitionMoved")).isNotNull();
+    // 4 records hashed under modulus 4, then re-checked under modulus 5: at least one tenant
+    // must shift to a new bucket (otherwise the test isn't exercising the move path), and at
+    // most all four shift. Bake a tight range rather than the exact JDK-hash-dependent value.
+    final Long moved = row.<Long>getProperty("repartitionMoved");
+    assertThat(moved).isNotNull();
+    assertThat(moved).isBetween(1L, 4L);
 
     // Every tenant must still be findable after the atomic ALTER+REBUILD.
     for (final String tenant : new String[] { "acme", "globex", "initech", "umbrella" }) {

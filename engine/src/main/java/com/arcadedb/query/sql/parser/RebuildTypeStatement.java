@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
@@ -32,11 +33,8 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
-import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.schema.VertexType;
 
 import java.util.*;
 
@@ -130,30 +128,21 @@ public class RebuildTypeStatement extends DDLStatement {
     if (type == null)
       throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
 
-    // Repartitioning gives every record a new RID and, for graph types, additionally:
-    //   * inbound edges from other vertices keep pointing at the old RID and silently break;
-    //   * outbound edges live in segments stored on the vertex itself, so delete+re-insert
-    //     wipes them - even on a type that has no inbound references.
-    // The move-phase re-creation path uses {@code db.newDocument}, which only ever writes the
-    // Document record-type byte. For any non-Document type (Vertex, Edge, TimeSeries) that
-    // would silently corrupt the store on the way back. None of these can be repaired without
-    // coordinating with every adjacent record (or, for TimeSeries, restoring the kind byte on
-    // every shard), so the rebuild refuses to run on non-Document types unconditionally. Drop
-    // and re-import under the new partitioning is the supported workflow.
-    if (finalRepartition
-        && (type instanceof VertexType || type instanceof EdgeType || type instanceof LocalTimeSeriesType)) {
-      final String kind;
-      if (type instanceof VertexType)
-        kind = "vertex";
-      else if (type instanceof EdgeType)
-        kind = "edge";
-      else
-        kind = "time-series";
+    // Repartitioning gives every record a new RID. The move-phase re-creation path uses
+    // {@code db.newDocument}, which only writes {@code Document.RECORD_TYPE}. Any type whose
+    // records carry a different kind byte (vertices, edges, time-series, future kinds) would
+    // be silently corrupted on the way back. Use the kind byte itself as the allowlist gate so
+    // future record-type subclasses get blocked by default rather than slipping through an
+    // exclusion list. Graph types additionally suffer integrity loss (inbound edges dangle on
+    // the old RID, outbound edge segments stored on the vertex are wiped by delete+re-insert);
+    // the supported workflow for any non-Document type is drop and re-import under the new
+    // partitioning.
+    if (finalRepartition && type.getType() != Document.RECORD_TYPE) {
       throw new CommandSQLParsingException(
-          "REBUILD TYPE on " + kind + " type '" + typeName.getStringValue() + "' with repartition = true is not "
-              + "supported: every record would receive a new RID, and the move-phase re-creation path writes a "
-              + "Document record-type byte that is incompatible with " + kind + " records. Drop and re-import the "
-              + "type under the new partitioning instead.");
+          "REBUILD TYPE on type '" + typeName.getStringValue() + "' with repartition = true is not supported: "
+              + "every record would receive a new RID, and the move-phase re-creation path writes a Document "
+              + "record-type byte that is incompatible with the type's actual record kind. Drop and re-import "
+              + "the type under the new partitioning instead.");
     }
 
     final long[] count = { 0L };
@@ -181,6 +170,16 @@ public class RebuildTypeStatement extends DDLStatement {
     // type is GC-prohibitive (per the project's memory mandate), and a per-record re-read in
     // the move phase costs one extra page-cache hit at most. The re-read also lets a record
     // that was updated after the scan land at the bucket its current value hashes to.
+    // <p>
+    // Heap requirement: this list holds one RID (~16 bytes including ArrayList overhead) per
+    // misplaced record across the whole scan. For a fully-misplaced 100M-record type that's
+    // ~1.6GB of heap. The cap below ({@link GlobalConfiguration#REBUILD_REPARTITION_MAX_BUFFERED_RIDS},
+    // default 10M = ~160MB) refuses to continue past the limit so a runaway rebuild doesn't
+    // silently OOM the server. Operators with larger types should split the work (drop and
+    // re-import, or partial rebuilds in disjoint key ranges); a streaming move-during-scan path
+    // would require a different bucket-iteration strategy and is tracked as a follow-up.
+    final int maxBufferedRids = db.getConfiguration().getValueAsInteger(
+        GlobalConfiguration.REBUILD_REPARTITION_MAX_BUFFERED_RIDS);
     final List<RID> pendingMoveRids = finalRepartition ? new ArrayList<>() : null;
 
     final long startNanos = System.nanoTime();
@@ -195,6 +194,14 @@ public class RebuildTypeStatement extends DDLStatement {
             // retained; the payload is re-read during the move phase to keep heap usage low.
             // Misplaced records are NOT counted in {@code scanCommittedSaves} - they aren't
             // committed in the new layout until the move phase rewrites them.
+            // Enforce the buffer cap before adding so we fail before crossing the limit. Caller
+            // sees an actionable error rather than the JVM running OOM mid-scan.
+            if (pendingMoveRids.size() >= maxBufferedRids)
+              throw new CommandExecutionException(
+                  "REBUILD TYPE WITH repartition = true exceeded the buffered-RIDs cap of " + maxBufferedRids
+                      + " on type '" + typeName.getStringValue() + "': too many records are misplaced for a single "
+                      + "in-place rebuild. Raise the cap via `arcadedb.rebuild.repartition.maxBufferedRids` if heap "
+                      + "allows, or drop and re-import the type under the new partitioning.");
             pendingMoveRids.add(currentRid);
             count[0]++;
           } else {
