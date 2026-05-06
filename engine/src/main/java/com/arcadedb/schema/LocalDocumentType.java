@@ -709,7 +709,13 @@ public class LocalDocumentType implements DocumentType {
     // Skipped when the type has zero records (the partition mapping is trivially correct over
     // an empty set). Also skipped when the new strategy is non-partitioned: round-robin and
     // thread don't have a modulus invariant the planner can prune by, so no rebuild is needed.
-    if (selectionStrategy instanceof PartitionedBucketSelectionStrategy newPartitioned
+    // <p>
+    // Skipped during schema load: the persisted needsRepartition value gets re-applied by
+    // LocalSchema right after this call, and {@code hasAnyRecord()} would walk every bucket
+    // and call {@code count()} (per-bucket I/O) producing a value that's about to be
+    // overwritten anyway.
+    if (!schema.readingFromFile
+        && selectionStrategy instanceof PartitionedBucketSelectionStrategy newPartitioned
         && partitionShapeChanged(previous, newPartitioned)
         && hasAnyRecord())
       // Use the typed setter so the schema-save-on-transition contract fires consistently with
@@ -738,7 +744,7 @@ public class LocalDocumentType implements DocumentType {
       final PartitionedBucketSelectionStrategy newPartitioned) {
     if (!(previous instanceof PartitionedBucketSelectionStrategy oldPartitioned))
       return true;
-    return !java.util.Objects.equals(oldPartitioned.getProperties(), newPartitioned.getProperties());
+    return !Objects.equals(oldPartitioned.getProperties(), newPartitioned.getProperties());
   }
 
   @Override
@@ -1077,11 +1083,13 @@ public class LocalDocumentType implements DocumentType {
     // {@code hash(value) % bucketCount} modulus and invalidates the partition mapping for any
     // existing record. Mark the type as needing a repartition so the planner-side pruning rule
     // suppresses itself until {@code REBUILD TYPE} clears the flag. Skip when the strategy is
-    // not partitioned (round-robin / thread don't care about bucket count for correctness) and
+    // not partitioned (round-robin / thread don't care about bucket count for correctness),
     // skip on the very first bucket of a type (CREATE TYPE adds buckets one by one before any
-    // record can exist, so flagging there would mark every fresh partitioned type as stale).
+    // record can exist), and skip when the type is established but empty (no records means
+    // there's nothing to repartition - flagging would prompt a no-op rebuild).
     final boolean partitionedAndPopulated = bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy
-        && !buckets.isEmpty();
+        && !buckets.isEmpty()
+        && hasAnyRecord();
 
     buckets = CollectionUtils.addToUnmodifiableList(buckets, bucket);
     cachedPolymorphicBuckets = CollectionUtils.addToUnmodifiableList(cachedPolymorphicBuckets, bucket);
@@ -1316,9 +1324,10 @@ public class LocalDocumentType implements DocumentType {
           + "', because the bucket is not associated to the type '" + getName() + "'");
 
     // Symmetric to addBucketInternal: shrinking the bucket count under a partitioned strategy
-    // also invalidates the modulus. Use the typed setter so the schema-save-on-transition
-    // contract fires consistently (see setNeedsRepartition Javadoc).
-    if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy)
+    // also invalidates the modulus. Skip on an empty type so a no-op rebuild isn't requested
+    // and a needless schema save isn't triggered. Use the typed setter so the
+    // schema-save-on-transition contract fires consistently (see setNeedsRepartition Javadoc).
+    if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy && hasAnyRecord())
       setNeedsRepartition(true);
 
     buckets = CollectionUtils.removeFromUnmodifiableList(buckets, bucket);

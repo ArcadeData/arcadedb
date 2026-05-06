@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
@@ -27,6 +28,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -50,7 +52,7 @@ import java.util.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RebuildTypeStatement extends DDLStatement {
-  private static final int DEFAULT_BATCH_SIZE = 10_000;
+  static final int DEFAULT_BATCH_SIZE = 10_000;
 
   public Identifier                  typeName;
   public boolean                     polymorphic = false;
@@ -62,15 +64,8 @@ public class RebuildTypeStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
-    final Database db = context.getDatabase();
-    final Schema schema = db.getSchema();
-    final DocumentType type = schema.getType(typeName.getStringValue());
-    if (type == null)
-      throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
-
     int batchSize = DEFAULT_BATCH_SIZE;
     boolean repartition = false;
-    boolean force = false;
     for (final Map.Entry<Expression, Expression> e : settings.entrySet()) {
       final String key = e.getKey().toString();
       if (key.equalsIgnoreCase("batchSize")) {
@@ -96,32 +91,44 @@ public class RebuildTypeStatement extends DDLStatement {
         // this; partitioned types without inbound edges are the supported workload.
         // Use execute(...) to evaluate uniformly across booleanValue / numeric / string literal
         // shapes - {@link Expression#value} is null for boolean literals, populated for numbers.
-        final Object raw = e.getValue().execute((com.arcadedb.query.sql.executor.Result) null, context);
+        final Object raw = e.getValue().execute((Result) null, context);
         repartition = parseBooleanSetting("REBUILD TYPE", "repartition", raw);
-      } else if (key.equalsIgnoreCase("force")) {
-        // Override for the graph-type guard (see below). Repartitioning a vertex/edge gives every
-        // record a new RID and breaks any edge that references it, so the rebuild refuses to run
-        // unless the caller explicitly opts in.
-        final Object raw = e.getValue().execute((com.arcadedb.query.sql.executor.Result) null, context);
-        force = parseBooleanSetting("REBUILD TYPE", "force", raw);
       } else
         throw new CommandSQLParsingException(
-            "Unrecognized setting '" + key + "' in REBUILD TYPE statement (supported: batchSize, repartition, force)");
+            "Unrecognized setting '" + key + "' in REBUILD TYPE statement (supported: batchSize, repartition)");
     }
-    final int finalBatchSize = batchSize;
-    final boolean finalRepartition = repartition;
+    return executeRebuild(context, batchSize, repartition);
+  }
 
-    // Repartitioning gives every record a new RID. Edges store their source/target as RIDs and
-    // vertex edge-segments reference adjacent edges by RID, so a repartition of any graph type
-    // silently rots every reference into or out of it. Block by default; require an explicit
-    // force = true so an operator with no edges (or one who has staged a re-pointing strategy)
-    // can still run it.
-    if (finalRepartition && !force && (type instanceof VertexType || type instanceof EdgeType)) {
+  /**
+   * Runs the rebuild loop with already-resolved parameters. Direct entry point for callers that
+   * have the parameters in hand and want to bypass the settings-map parsing - notably the
+   * chained REBUILD path in {@link AlterTypeStatement#executeDDL} where building a SQL string
+   * to feed back through the parser would re-introduce identifier-quoting injection surface.
+   */
+  ResultSet executeRebuild(final CommandContext context, final int finalBatchSize, final boolean finalRepartition) {
+    final Database db = context.getDatabase();
+    final Schema schema = db.getSchema();
+    final DocumentType type = schema.getType(typeName.getStringValue());
+    if (type == null)
+      throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
+
+    // Repartitioning gives every record a new RID. For graph types this means:
+    //   * inbound edges from other vertices keep pointing at the old RID and silently break;
+    //   * outbound edges live in segments stored on the vertex itself, so delete+re-insert
+    //     wipes them - even on a type that has no inbound references;
+    //   * the move-phase re-creation path uses {@code db.newDocument}, which would write a
+    //     Document record-type byte over what should be a Vertex or Edge.
+    // None of these can be repaired without coordinating with every adjacent record, so the
+    // rebuild refuses to run on graph types unconditionally. Drop and re-import under the new
+    // partitioning is the supported workflow for populated graph types.
+    if (finalRepartition && (type instanceof VertexType || type instanceof EdgeType)) {
       final String kind = type instanceof VertexType ? "vertex" : "edge";
       throw new CommandSQLParsingException(
-          "REBUILD TYPE on " + kind + " type '" + typeName.getStringValue() + "' with repartition = true would "
-              + "give every record a new RID and break inbound edge references. Add `WITH repartition = true, "
-              + "force = true` if there are no edges into this type (or you have already re-pointed them).");
+          "REBUILD TYPE on " + kind + " type '" + typeName.getStringValue() + "' with repartition = true is not "
+              + "supported: every record would receive a new RID, breaking inbound edge references and (for "
+              + "vertices) wiping outbound edge segments. Drop and re-import the type under the new partitioning "
+              + "instead.");
     }
 
     final long[] count = { 0L };
@@ -217,7 +224,7 @@ public class RebuildTypeStatement extends DDLStatement {
         for (int i = 0; i < pendingMoveRids.size(); i++) {
           final RID oldRid = pendingMoveRids.get(i);
           final var oldRecord = db.lookupByRID(oldRid, true);
-          if (oldRecord instanceof com.arcadedb.database.Document oldDoc) {
+          if (oldRecord instanceof Document oldDoc) {
             // Snapshot the current property map at move time, not at scan time, so concurrent
             // updates between scan and move are honoured (the new value lands at the bucket
             // its current property hash routes to, not the bucket the scan-time value would

@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.partitioning.PartitioningTestFixture;
 import com.arcadedb.schema.LocalDocumentType;
 
 import org.junit.jupiter.api.Test;
@@ -232,23 +233,12 @@ class PartitionPruningPlannerTest extends TestHelper {
   // ---- shared scaffolding -------------------------------------------------
 
   private void createPartitionedType() {
-    database.transaction(() -> {
-      database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(BUCKETS).create();
-      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".tenant_id STRING");
-      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".payload STRING");
-      database.command("sql", "CREATE INDEX ON " + TYPE_NAME + "(tenant_id) UNIQUE");
-      database.command("sql", "ALTER TYPE " + TYPE_NAME + " BucketSelectionStrategy `partitioned('tenant_id')`");
-    });
+    PartitioningTestFixture.createPartitionedDocType(database, TYPE_NAME, BUCKETS, true);
   }
 
 
   private void populate() {
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'acme', payload = 'p-acme'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'globex', payload = 'p-globex'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'initech', payload = 'p-initech'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'umbrella', payload = 'p-umbrella'");
-    });
+    PartitioningTestFixture.populateDocs(database, TYPE_NAME, true);
   }
 
   private static FetchFromTypeWithFilterStep findFetcher(final ExecutionPlan plan) {

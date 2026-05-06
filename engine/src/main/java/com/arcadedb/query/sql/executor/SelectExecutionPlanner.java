@@ -1744,7 +1744,7 @@ public class SelectExecutionPlanner {
     handleTypeAsTarget(plan, filterClusters, info.target, info, context);
   }
 
-  private void handleTypeAsTarget(final SelectExecutionPlan plan, Set<String> filterClusters, final FromClause from,
+  private void handleTypeAsTarget(final SelectExecutionPlan plan, final Set<String> filterClusters, final FromClause from,
       final QueryPlanningInfo info, final CommandContext context) {
     final Identifier identifier = from.getItem().getIdentifier();
 
@@ -1754,13 +1754,14 @@ public class SelectExecutionPlanner {
     // Partition-aware bucket pruning. When the type uses a PartitionedBucketSelectionStrategy and
     // the WHERE clause binds every partition property to a literal in every AndBlock, we can
     // restrict the scan to the bucket(s) the partitioning hash would route those values to. The
-    // narrowed {@code filterClusters} flows into every downstream path (index-based fetch, full
-    // scan with predicate pushdown, plain full scan) without any of those paths needing to know
-    // about partitioning. Skipped when the type's {@code needsRepartition} flag is true (the
-    // mapping is stale until {@code REBUILD TYPE Doc WITH repartition = true} runs); a throttled
+    // narrowed cluster set flows into every downstream path (index-based fetch, full scan with
+    // predicate pushdown, plain full scan) without any of those paths needing to know about
+    // partitioning. Skipped when the type's {@code needsRepartition} flag is true (the mapping
+    // is stale until {@code REBUILD TYPE Doc WITH repartition = true} runs); a throttled
     // WARNING is emitted in that case so operators see the lost optimisation.
-    if (docType != null)
-      filterClusters = derivePartitionPrunedClusters(docType, filterClusters, info, context);
+    final Set<String> effectiveClusters = docType != null
+        ? derivePartitionPrunedClusters(docType, filterClusters, info, context)
+        : filterClusters;
 
     if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null) {
       // Extract time range from WHERE clause (if available)
@@ -1794,17 +1795,17 @@ public class SelectExecutionPlanner {
       return;
     }
 
-    if (handleTypeAsTargetWithIndexedFunction(plan, filterClusters, identifier, info, context)) {
+    if (handleTypeAsTargetWithIndexedFunction(plan, effectiveClusters, identifier, info, context)) {
       plan.chain(new FilterByTypeStep(identifier, context));
       return;
     }
 
-    if (handleTypeAsTargetWithIndex(plan, identifier, filterClusters, info, context)) {
+    if (handleTypeAsTargetWithIndex(plan, identifier, effectiveClusters, info, context)) {
       plan.chain(new FilterByTypeStep(identifier, context));
       return;
     }
 
-    if (info.orderBy != null && handleClassWithIndexForSortOnly(plan, identifier, filterClusters, info, context)) {
+    if (info.orderBy != null && handleClassWithIndexForSortOnly(plan, identifier, effectiveClusters, info, context)) {
       plan.chain(new FilterByTypeStep(identifier, context));
       return;
     }
@@ -1828,7 +1829,7 @@ public class SelectExecutionPlanner {
     final boolean whereRefersToLet = info.perRecordLetClause != null && info.whereClause != null
         && info.whereClause.toString().contains("$");
     if (info.whereClause != null && info.whereClause.baseExpression != null && !whereRefersToLet) {
-      final FetchFromTypeWithFilterStep fetcher = new FetchFromTypeWithFilterStep(identifier.getStringValue(), filterClusters,
+      final FetchFromTypeWithFilterStep fetcher = new FetchFromTypeWithFilterStep(identifier.getStringValue(), effectiveClusters,
           info.whereClause, info.projectedProperties, context, orderByRidAsc);
       if (orderByRidAsc != null)
         info.orderApplied = true;
@@ -1838,7 +1839,7 @@ public class SelectExecutionPlanner {
       return;
     }
 
-    final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), filterClusters, info,
+    final FetchFromTypeExecutionStep fetcher = new FetchFromTypeExecutionStep(identifier.getStringValue(), effectiveClusters, info,
         context, orderByRidAsc);
     if (orderByRidAsc != null)
       info.orderApplied = true;
@@ -1970,7 +1971,9 @@ public class SelectExecutionPlanner {
     // planning (schema mutations take the same lock the planner doesn't hold), and the per
     // AndBlock loop below would otherwise call getBuckets(false) once per block on the planner
     // hot path.
-    final List<? extends com.arcadedb.engine.Bucket> typeBuckets = docType.getBuckets(false);
+    // Local var inferred to avoid the FQN; the file's {@code Bucket} import refers to the SQL
+    // parser AST node, not the engine type returned here.
+    final var typeBuckets = docType.getBuckets(false);
 
     // Each AndBlock must fully bind every partition property; otherwise pruning is unsafe and we
     // fall back to the caller's filterClusters. The union of bucket names across blocks is the
@@ -2053,7 +2056,8 @@ public class SelectExecutionPlanner {
   private static String extractBaseIdentifierName(final Expression expr) {
     if (expr == null || !expr.isBaseIdentifier())
       return null;
-    return expr.getDefaultAlias().getStringValue();
+    final Identifier alias = expr.getDefaultAlias();
+    return alias == null ? null : alias.getStringValue();
   }
 
   /**

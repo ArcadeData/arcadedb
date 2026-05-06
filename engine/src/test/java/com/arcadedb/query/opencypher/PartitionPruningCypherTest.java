@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.partitioning.PartitioningTestFixture;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.LocalDocumentType;
 
@@ -175,21 +176,10 @@ class PartitionPruningCypherTest extends TestHelper {
   // ---- shared scaffolding -------------------------------------------------
 
   private void createPartitionedVertexType() {
-    database.transaction(() -> {
-      database.getSchema().buildVertexType().withName(TYPE_NAME).withTotalBuckets(4).create();
-      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".tenant_id STRING");
-      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".payload STRING");
-      database.command("sql", "CREATE INDEX ON " + TYPE_NAME + "(tenant_id) UNIQUE");
-      database.command("sql", "ALTER TYPE " + TYPE_NAME + " BucketSelectionStrategy `partitioned('tenant_id')`");
-    });
+    PartitioningTestFixture.createPartitionedVertexType(database, TYPE_NAME, 4);
   }
 
   private void populate() {
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'acme', payload = 'p-acme'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'globex', payload = 'p-globex'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'initech', payload = 'p-initech'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'umbrella', payload = 'p-umbrella'");
-    });
+    PartitioningTestFixture.populateVertices(database, TYPE_NAME);
   }
 }

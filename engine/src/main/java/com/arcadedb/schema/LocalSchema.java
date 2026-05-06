@@ -111,7 +111,11 @@ public class LocalSchema implements Schema {
   private             String                                 dateTimeFormat                = GlobalConfiguration.DATE_TIME_FORMAT.getValueAsString();
   private             TimeZone                               timeZone                      = TimeZone.getDefault();
   private             ZoneId                                 zoneId                        = ZoneId.systemDefault();
-  private             boolean                                readingFromFile               = false;
+  // Package-private so {@link LocalDocumentType} can short-circuit work that the schema-load
+  // path performs redundantly (e.g. {@code hasAnyRecord()} bucket counting in
+  // {@code setBucketSelectionStrategy}: the persisted {@code needsRepartition} value is
+  // re-applied right after, so the flag-flip during load is wasted work).
+  boolean                                readingFromFile               = false;
   private final       AtomicLong                             dirtyGeneration               = new AtomicLong(0);
   private volatile    long                                   savedGeneration               = 0;
   private             boolean                                loadInRamCompleted            = false;

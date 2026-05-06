@@ -495,6 +495,9 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final int bucketIndex = partitioned.getBucketIdByKeys(keyValues, false);
     // Cache the bucket list once for the bounds check + name lookup. The MATCH path runs per
     // node iteration, so even one redundant {@code getBuckets} call lands on the hot path.
+    // TODO follow-up: hoist the bucket-list snapshot to step construction so high-fanout MATCH
+    // loops (UNWIND list -> MATCH per element) don't pay {@code getBuckets(false)} per
+    // iteration. See review note #8 (issue #4087 follow-up).
     final List<? extends com.arcadedb.engine.Bucket> typeBuckets = type.getBuckets(false);
     if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
       return null;

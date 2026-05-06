@@ -21,6 +21,7 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.partitioning.PartitioningTestFixture;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
@@ -51,31 +52,73 @@ class PartitioningRepartitionFlagTest extends TestHelper {
   @Test
   void addingABucketToAPartitionedPopulatedTypeFlipsTheFlag() {
     createPartitionedType();
+    populate();
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
     assertThat(type.isNeedsRepartition()).isFalse();
 
-    // Add a bucket while the type is partitioned. The pre-existing buckets carry the partition
-    // mapping under the old modulus, so growing the count invalidates them.
+    // Add a bucket while the type is partitioned and populated. The pre-existing buckets carry
+    // the partition mapping under the old modulus, so growing the count invalidates them.
     final LocalBucket newBucket = (LocalBucket) database.getSchema().createBucket("PartitionedDoc_extra");
     type.addBucket(newBucket);
 
     assertThat(type.isNeedsRepartition())
-        .as("addBucket on a partitioned type with existing buckets must flip needsRepartition to true")
+        .as("addBucket on a populated partitioned type must flip needsRepartition to true")
         .isTrue();
   }
 
   @Test
-  void removingABucketFromAPartitionedTypeFlipsTheFlag() {
+  void addingABucketToAPartitionedEmptyTypeDoesNotFlipTheFlag() {
+    // No records means the modulus invariant has nothing to invalidate. Flagging would prompt a
+    // no-op rebuild and a needless schema save.
     createPartitionedType();
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
     assertThat(type.isNeedsRepartition()).isFalse();
 
-    final Bucket toRemove = type.getBuckets(false).get(0);
-    type.removeBucket(toRemove);
+    final LocalBucket newBucket = (LocalBucket) database.getSchema().createBucket("PartitionedDoc_extra");
+    type.addBucket(newBucket);
 
     assertThat(type.isNeedsRepartition())
-        .as("removeBucket on a partitioned type must flip needsRepartition to true")
+        .as("addBucket on an empty partitioned type must NOT flip needsRepartition - nothing to repartition")
+        .isFalse();
+  }
+
+  @Test
+  void removingABucketFromAPartitionedPopulatedTypeFlipsTheFlag() {
+    createPartitionedType();
+    populate();
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
+    assertThat(type.isNeedsRepartition()).isFalse();
+
+    // Pick a bucket guaranteed to be empty so removeBucket doesn't fail validation. We added an
+    // extra empty bucket above so we always have at least one removable target regardless of how
+    // populate() distributed records across the original buckets.
+    final LocalBucket emptyExtra = (LocalBucket) database.getSchema().createBucket("PartitionedDoc_remove");
+    type.addBucket(emptyExtra);
+    // Re-clear in case adding the bucket flipped the flag (the partitioned + populated guard
+    // would set it). We only want to observe the removeBucket transition.
+    type.setNeedsRepartition(false);
+
+    type.removeBucket(emptyExtra);
+
+    assertThat(type.isNeedsRepartition())
+        .as("removeBucket on a populated partitioned type must flip needsRepartition to true")
         .isTrue();
+  }
+
+  @Test
+  void removingABucketFromAPartitionedEmptyTypeDoesNotFlipTheFlag() {
+    // Symmetric to addBucket: an empty type has nothing to repartition.
+    createPartitionedType();
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
+    final LocalBucket extra = (LocalBucket) database.getSchema().createBucket("PartitionedDoc_remove2");
+    type.addBucket(extra);
+    type.setNeedsRepartition(false);
+
+    type.removeBucket(extra);
+
+    assertThat(type.isNeedsRepartition())
+        .as("removeBucket on an empty partitioned type must NOT flip needsRepartition")
+        .isFalse();
   }
 
   @Test
@@ -253,12 +296,10 @@ class PartitioningRepartitionFlagTest extends TestHelper {
   // ---- shared scaffolding -------------------------------------------------
 
   private void createPartitionedType() {
-    database.transaction(() -> {
-      database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(4).create();
-      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".tenant_id STRING");
-      database.command("sql", "CREATE INDEX ON " + TYPE_NAME + "(tenant_id) UNIQUE");
-      database.command("sql",
-          "ALTER TYPE " + TYPE_NAME + " BucketSelectionStrategy `partitioned('tenant_id')`");
-    });
+    PartitioningTestFixture.createPartitionedDocType(database, TYPE_NAME, 4, false);
+  }
+
+  private void populate() {
+    PartitioningTestFixture.populateDocs(database, TYPE_NAME, false);
   }
 }

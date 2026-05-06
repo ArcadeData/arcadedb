@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.partitioning.PartitioningTestFixture;
 import com.arcadedb.schema.LocalDocumentType;
 
 import org.junit.jupiter.api.Test;
@@ -118,39 +119,24 @@ class RebuildTypeRepartitionTest extends TestHelper {
   }
 
   @Test
-  void repartitionOnVertexTypeRefusesWithoutForce() {
-    // Vertex repartition gives every vertex a new RID and silently breaks every edge that
-    // references it. The guard must surface that destruction up front so an operator can stop or
-    // explicitly opt in.
+  void repartitionOnVertexTypeIsRefused() {
+    // Vertex repartition would give every vertex a new RID. Inbound edges from other vertices
+    // would silently dangle, and outbound-edge segments stored on the vertex are wiped by the
+    // delete+re-insert. There's no safe in-place fix, so the rebuild is refused outright; the
+    // documented workflow is drop and re-import under the new partitioning.
     createPartitionedVertexType();
     populateVertices();
 
     assertThatThrownBy(() -> database.command("sql", "REBUILD TYPE PartV WITH repartition = true"))
         .hasMessageContaining("vertex")
         .hasMessageContaining("repartition")
-        .hasMessageContaining("force = true");
+        .hasMessageContaining("not supported");
   }
 
   @Test
-  void repartitionOnVertexTypeWithForceProceeds() {
-    // Force escape hatch for users who have no edges (or have already re-pointed them). The
-    // command must run to completion and clear the needsRepartition flag.
-    createPartitionedVertexType();
-    populateVertices();
-
-    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("PartV");
-    type.setNeedsRepartition(true);
-    final ResultSet rs = database.command("sql", "REBUILD TYPE PartV WITH repartition = true, force = true");
-    final Result row = rs.next();
-    rs.close();
-    assertThat(row.<Boolean>getProperty("repartition")).isTrue();
-    assertThat(type.isNeedsRepartition()).isFalse();
-  }
-
-  @Test
-  void repartitionOnEdgeTypeRefusesWithoutForce() {
-    // Edge RIDs are stored on adjacent vertices' edge segments; repartitioning an edge type
-    // would orphan every reference. Same guard as vertex types.
+  void repartitionOnEdgeTypeIsRefused() {
+    // Edge RIDs are referenced from adjacent vertices' edge segments; repartitioning an edge
+    // type would orphan every such reference. Same unconditional refusal as vertex types.
     database.transaction(() -> {
       database.getSchema().buildEdgeType().withName("PartE").withTotalBuckets(4).create();
       database.command("sql", "CREATE PROPERTY PartE.kind STRING");
@@ -161,11 +147,11 @@ class RebuildTypeRepartitionTest extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "REBUILD TYPE PartE WITH repartition = true"))
         .hasMessageContaining("edge")
         .hasMessageContaining("repartition")
-        .hasMessageContaining("force = true");
+        .hasMessageContaining("not supported");
   }
 
   @Test
-  void alterTypeRepartitionOnVertexRefusesWithoutForce() {
+  void alterTypeRepartitionOnVertexIsRefused() {
     // The atomic ALTER TYPE WITH repartition path chains a REBUILD; the guard must trip there
     // too so the destructive path is consistent regardless of entry point.
     database.transaction(() -> {
@@ -178,63 +164,24 @@ class RebuildTypeRepartitionTest extends TestHelper {
         database.command("sql",
             "ALTER TYPE PartV BucketSelectionStrategy `partitioned('tenant_id')` WITH repartition = true"))
         .hasMessageContaining("vertex")
-        .hasMessageContaining("force = true");
-  }
-
-  @Test
-  void alterTypeRepartitionOnVertexWithForceProceeds() {
-    // Force is plumbed through the ALTER TYPE → REBUILD chain.
-    database.transaction(() -> {
-      database.getSchema().buildVertexType().withName("PartV").withTotalBuckets(4).create();
-      database.command("sql", "CREATE PROPERTY PartV.tenant_id STRING");
-      database.command("sql", "CREATE PROPERTY PartV.payload STRING");
-      database.command("sql", "CREATE INDEX ON PartV(tenant_id) UNIQUE");
-    });
-    final ResultSet rs = database.command("sql",
-        "ALTER TYPE PartV BucketSelectionStrategy `partitioned('tenant_id')` WITH repartition = true, force = true");
-    final Result row = rs.next();
-    rs.close();
-    assertThat(row.<String>getProperty("operation")).isEqualTo("ALTER TYPE");
-    assertThat(row.<String>getProperty("result")).isEqualTo("OK");
+        .hasMessageContaining("not supported");
   }
 
   // ---- shared scaffolding -------------------------------------------------
 
   private void createPartitionedType() {
-    database.transaction(() -> {
-      database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(4).create();
-      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".tenant_id STRING");
-      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".payload STRING");
-      database.command("sql", "CREATE INDEX ON " + TYPE_NAME + "(tenant_id) UNIQUE");
-      database.command("sql", "ALTER TYPE " + TYPE_NAME + " BucketSelectionStrategy `partitioned('tenant_id')`");
-    });
+    PartitioningTestFixture.createPartitionedDocType(database, TYPE_NAME, 4, true);
   }
 
   private void populate() {
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'acme', payload = 'p-acme'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'globex', payload = 'p-globex'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'initech', payload = 'p-initech'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'umbrella', payload = 'p-umbrella'");
-    });
+    PartitioningTestFixture.populateDocs(database, TYPE_NAME, true);
   }
 
   private void createPartitionedVertexType() {
-    database.transaction(() -> {
-      database.getSchema().buildVertexType().withName("PartV").withTotalBuckets(4).create();
-      database.command("sql", "CREATE PROPERTY PartV.tenant_id STRING");
-      database.command("sql", "CREATE PROPERTY PartV.payload STRING");
-      database.command("sql", "CREATE INDEX ON PartV(tenant_id) UNIQUE");
-      database.command("sql", "ALTER TYPE PartV BucketSelectionStrategy `partitioned('tenant_id')`");
-    });
+    PartitioningTestFixture.createPartitionedVertexType(database, "PartV", 4);
   }
 
   private void populateVertices() {
-    database.transaction(() -> {
-      database.command("sql", "CREATE VERTEX PartV SET tenant_id = 'acme', payload = 'p-acme'");
-      database.command("sql", "CREATE VERTEX PartV SET tenant_id = 'globex', payload = 'p-globex'");
-      database.command("sql", "CREATE VERTEX PartV SET tenant_id = 'initech', payload = 'p-initech'");
-      database.command("sql", "CREATE VERTEX PartV SET tenant_id = 'umbrella', payload = 'p-umbrella'");
-    });
+    PartitioningTestFixture.populateVertices(database, "PartV");
   }
 }

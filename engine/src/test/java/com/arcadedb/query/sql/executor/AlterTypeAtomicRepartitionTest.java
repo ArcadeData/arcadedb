@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.partitioning.PartitioningTestFixture;
 import com.arcadedb.schema.LocalDocumentType;
 
 import org.junit.jupiter.api.Test;
@@ -77,10 +78,16 @@ class AlterTypeAtomicRepartitionTest extends TestHelper {
         "ALTER TYPE " + TYPE_NAME + " BUCKET +" + TYPE_NAME + "_extra2").close();
 
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
-    assertThat(type.isNeedsRepartition())
-        .as("plain ADD BUCKET without the repartition setting must leave the stale flag true")
-        .isTrue();
-    type.setNeedsRepartition(false);
+    try {
+      assertThat(type.isNeedsRepartition())
+          .as("plain ADD BUCKET without the repartition setting must leave the stale flag true")
+          .isTrue();
+    } finally {
+      // Clean up even on assertion failure so a regression here doesn't poison the next test
+      // with a stale-flagged shared schema (TestHelper drops between tests, but reset here is
+      // cheap and matches the pattern used by the Cypher tests).
+      type.setNeedsRepartition(false);
+    }
   }
 
   @Test
@@ -104,21 +111,10 @@ class AlterTypeAtomicRepartitionTest extends TestHelper {
   // ---- shared scaffolding -------------------------------------------------
 
   private void createPartitionedType() {
-    database.transaction(() -> {
-      database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(4).create();
-      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".tenant_id STRING");
-      database.command("sql", "CREATE PROPERTY " + TYPE_NAME + ".payload STRING");
-      database.command("sql", "CREATE INDEX ON " + TYPE_NAME + "(tenant_id) UNIQUE");
-      database.command("sql", "ALTER TYPE " + TYPE_NAME + " BucketSelectionStrategy `partitioned('tenant_id')`");
-    });
+    PartitioningTestFixture.createPartitionedDocType(database, TYPE_NAME, 4, true);
   }
 
   private void populate() {
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'acme', payload = 'p-acme'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'globex', payload = 'p-globex'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'initech', payload = 'p-initech'");
-      database.command("sql", "INSERT INTO " + TYPE_NAME + " SET tenant_id = 'umbrella', payload = 'p-umbrella'");
-    });
+    PartitioningTestFixture.populateDocs(database, TYPE_NAME, true);
   }
 }
