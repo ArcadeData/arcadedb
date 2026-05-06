@@ -478,7 +478,10 @@ public class PostgresNetworkExecutor extends Thread {
         resultSet = new IteratorResultSet(createResultSet("VERSION", "11.0.0").iterator());
       else if (query.query.equals("SELECT CURRENT_SCHEMA()"))
         resultSet = new IteratorResultSet(createResultSet("CURRENT_SCHEMA", database.getName()).iterator());
-      else if (query.query.equalsIgnoreCase("BEGIN") ||
+      else if (query.query.toUpperCase(Locale.ENGLISH).startsWith("SHOW ")) {
+        final String varName = query.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
+        resultSet = new IteratorResultSet(createResultSet(varName, getShowConfigValue(varName)).iterator());
+      } else if (query.query.equalsIgnoreCase("BEGIN") ||
           query.query.equalsIgnoreCase("BEGIN TRANSACTION")) {
         explicitTransactionStarted = true;
         database.begin();
@@ -1142,7 +1145,8 @@ public class PostgresNetworkExecutor extends Thread {
         createResultSet(portal, "LEVEL", level);
 
       } else if (upperCaseText.startsWith("SHOW ")) {
-        createResultSet(portal, "CURRENT_SCHEMA", database.getName());
+        final String varName = portal.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
+        createResultSet(portal, varName, getShowConfigValue(varName));
 
       } else if ("dbvis".equals(connectionProperties.get("application_name"))) {
         // SPECIAL CASES
@@ -1342,6 +1346,19 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     connectionProperties.put(paramName, parts[1]);
+  }
+
+  private String getShowConfigValue(final String varName) {
+    return switch (varName) {
+      case "server_version" -> PG_SERVER_VERSION;
+      case "standard_conforming_strings" -> "on";
+      case "integer_datetimes" -> "on";
+      case "client_encoding" -> "UTF8";
+      case "server_encoding" -> "UTF8";
+      case "timezone" -> "UTC";
+      case "transaction isolation level" -> database.getTransactionIsolationLevel().name().replace('_', ' ').toLowerCase(Locale.ENGLISH);
+      default -> database.getName();
+    };
   }
 
   private void setEmptyResultSet(final PostgresPortal portal) {

@@ -97,6 +97,24 @@ class PostgresProtocolIT extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void showServerVersion() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      ResultSet rs = st.executeQuery("SHOW server_version");
+      assertThat(rs.next()).isTrue();
+      assertThat(rs.getString("server_version")).isEqualTo(PostgresNetworkExecutor.PG_SERVER_VERSION);
+    }
+  }
+
+  @Test
+  void showStandardConformingStrings() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      ResultSet rs = st.executeQuery("SHOW standard_conforming_strings");
+      assertThat(rs.next()).isTrue();
+      assertThat(rs.getString("standard_conforming_strings")).isEqualTo("on");
+    }
+  }
+
   // ==================== SET Command Tests ====================
 
   @Test
