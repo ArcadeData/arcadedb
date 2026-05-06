@@ -103,6 +103,40 @@ class RebuildTypeRepartitionTest extends TestHelper {
   }
 
   @Test
+  void repartitionRebuildIsIdempotent() {
+    // A second REBUILD TYPE WITH repartition = true on a freshly-rebuilt type must be safe and
+    // a no-op: nothing to move, flag stays cleared, no records lost. Mirrors the on-retry path
+    // an operator follows after a partial failure - the docs guarantee idempotency, this test
+    // pins it.
+    createPartitionedType();
+    populate();
+
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
+    type.setNeedsRepartition(true);
+
+    // First run: should clear the flag.
+    database.command("sql", "REBUILD TYPE " + TYPE_NAME + " WITH repartition = true").close();
+    assertThat(type.isNeedsRepartition()).isFalse();
+
+    // Second run: zero records should need moving.
+    final ResultSet rs = database.command("sql", "REBUILD TYPE " + TYPE_NAME + " WITH repartition = true");
+    final Result row = rs.next();
+    rs.close();
+    assertThat(row.<Long>getProperty("recordsMoved"))
+        .as("a re-run on an already-clean type must move zero records")
+        .isEqualTo(0L);
+    assertThat(type.isNeedsRepartition()).isFalse();
+
+    // Every record must still be findable.
+    for (final String tenant : new String[] { "acme", "globex", "initech", "umbrella" }) {
+      try (final ResultSet check = database.query("sql",
+          "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = '" + tenant + "'")) {
+        assertThat(check.hasNext()).as("tenant '" + tenant + "' must still be reachable").isTrue();
+      }
+    }
+  }
+
+  @Test
   void unknownSettingIsRejected() {
     createPartitionedType();
     assertThatThrownBy(() -> database.command("sql", "REBUILD TYPE " + TYPE_NAME + " WITH foo = 'bar'"))

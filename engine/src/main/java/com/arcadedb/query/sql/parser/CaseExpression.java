@@ -175,20 +175,17 @@ public class CaseExpression extends MathExpression {
   public boolean containsInputParameter() {
     // CASE branches sit outside {@code childExpressions}; the inherited walker would miss any
     // parameter inside CASE/WHEN/THEN/ELSE. Walk every branch explicitly. The simple-form
-    // {@code WhenCondition} is a {@link WhereClause}; absent a generic parameter walker on the
-    // boolean-expression hierarchy, fall back to a string scan of its rendered form which is
-    // sufficient for the partition-pruning safety check (a false positive only suppresses the
-    // optimisation, never alters results).
+    // {@code WhenCondition} is a {@link WhereClause} - delegate to its baseExpression's own
+    // {@code containsInputParameter} (BooleanExpression default is conservatively true; the
+    // common shapes - BinaryCondition, AndBlock, OrBlock - override with precise walkers).
     if (caseExpression != null && caseExpression.containsInputParameter())
       return true;
     for (final CaseAlternative alternative : alternatives) {
       if (alternative.isSimpleForm()) {
         final WhereClause cond = alternative.getWhenCondition();
-        if (cond != null) {
-          final String rendered = cond.toString();
-          if (rendered.indexOf('?') >= 0 || rendered.indexOf(':') >= 0)
-            return true;
-        }
+        if (cond != null && cond.getBaseExpression() != null
+            && cond.getBaseExpression().containsInputParameter())
+          return true;
       } else if (alternative.getWhenExpression() != null && alternative.getWhenExpression().containsInputParameter())
         return true;
       if (alternative.getThenExpression() != null && alternative.getThenExpression().containsInputParameter())

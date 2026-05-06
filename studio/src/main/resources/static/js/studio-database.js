@@ -956,6 +956,17 @@ function runRepartition(typeName) {
     globalNotify("Error", "Database not selected", "danger");
     return;
   }
+  // Defence-in-depth: the SQL command interpolates {@code typeName} inside backtick-quoted
+  // identifier syntax. A literal backtick in the name would close the quoting and let the
+  // remainder of the name run as DDL. Standard schema creation refuses such names, but a
+  // forged schema.json or a mis-behaving migration tool could plant one. Validate against a
+  // strict identifier shape here so the server never sees a back-channel injection.
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(typeName)) {
+    globalNotify("Error",
+      "Cannot run repartition on type with non-identifier characters in its name. Rename the type first.",
+      "danger");
+    return;
+  }
   globalConfirm(
     "Run repartition rebuild",
     "REBUILD TYPE <b>" + escapeHtml(typeName) + "</b> WITH repartition = true<br><br>" +

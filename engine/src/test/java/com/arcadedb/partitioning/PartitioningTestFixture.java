@@ -20,6 +20,9 @@ package com.arcadedb.partitioning;
 
 import com.arcadedb.database.Database;
 
+import java.util.HashMap;
+import java.util.Map;
+
 /**
  * Shared scaffolding for partition-aware tests across modules. Centralises the
  * {@code CREATE TYPE + index + BucketSelectionStrategy partitioned(tenant_id)} setup so a future
@@ -68,11 +71,13 @@ public final class PartitioningTestFixture {
   public static void populateDocs(final Database database, final String typeName, final boolean includePayload) {
     database.transaction(() -> {
       for (final String tenant : TENANTS) {
-        if (includePayload)
-          database.command("sql",
-              "INSERT INTO " + typeName + " SET tenant_id = '" + tenant + "', payload = 'p-" + tenant + "'");
-        else
-          database.command("sql", "INSERT INTO " + typeName + " SET tenant_id = '" + tenant + "'");
+        final Map<String, Object> params = new HashMap<>();
+        params.put("t", tenant);
+        if (includePayload) {
+          params.put("p", "p-" + tenant);
+          database.command("sql", "INSERT INTO " + typeName + " SET tenant_id = :t, payload = :p", params);
+        } else
+          database.command("sql", "INSERT INTO " + typeName + " SET tenant_id = :t", params);
       }
     });
   }
@@ -81,8 +86,10 @@ public final class PartitioningTestFixture {
   public static void populateVertices(final Database database, final String typeName) {
     database.transaction(() -> {
       for (final String tenant : TENANTS) {
-        database.command("sql",
-            "CREATE VERTEX " + typeName + " SET tenant_id = '" + tenant + "', payload = 'p-" + tenant + "'");
+        final Map<String, Object> params = new HashMap<>();
+        params.put("t", tenant);
+        params.put("p", "p-" + tenant);
+        database.command("sql", "CREATE VERTEX " + typeName + " SET tenant_id = :t, payload = :p", params);
       }
     });
   }

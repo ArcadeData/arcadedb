@@ -169,6 +169,31 @@ class PartitionPruningPlannerTest extends TestHelper {
   }
 
   @Test
+  void literalPredicateActuallyPrunesToOneBucket() {
+    // Pins the AST-walking contract of {@code extractBaseIdentifierName}. The pruning code path
+    // walks {@code BaseExpression -> BaseIdentifier -> suffix.identifier.getStringValue()} to
+    // recover the property name. If that walk silently returns a different string than the
+    // partition property name, every literal predicate would fail the
+    // {@code partitionProps.indexOf(propName) < 0} check and pruning would be a no-op despite
+    // the planner accepting the path. The smoke check: a literal predicate against the
+    // partitioned property must narrow the index extract step to exactly one bucket - the
+    // hash-target for that value. Pruning to {@code BUCKETS} buckets here means the AST shape
+    // assumption broke.
+    createPartitionedType();
+    populate();
+
+    final ResultSet rs = database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = 'acme'");
+    final ExecutionPlan plan = rs.getExecutionPlan().orElseThrow();
+    final GetValueFromIndexEntryStep extract = findIndexExtract(plan);
+    assertThat(extract).isNotNull();
+    assertThat(extract.getFilterBucketIds())
+        .as("AST-walk must recover the property name correctly so the literal predicate prunes "
+            + "to a single bucket; if it fails to extract the name pruning would be a no-op")
+        .hasSize(1);
+    rs.close();
+  }
+
+  @Test
   void resultsAreCorrectAcrossEveryTenant() {
     // Sanity check across every partition: each WHERE returns exactly the matching record. Pins
     // that the partition-pruning rule never drops correct rows even when only one bucket is

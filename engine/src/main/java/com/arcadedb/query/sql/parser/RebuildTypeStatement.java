@@ -34,13 +34,30 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
 import java.util.*;
 
 /**
- * REBUILD TYPE typeName [POLYMORPHIC] [WITH batchSize = N] - re-serialises records to apply schema layout changes.
+ * REBUILD TYPE typeName [POLYMORPHIC] [WITH batchSize = N, repartition = true] - re-serialises records to apply
+ * schema layout changes. With {@code repartition = true}, additionally relocates records whose current bucket
+ * no longer matches the partition strategy's hash.
+ * <p>
+ * <b>Idempotent on partial failure.</b> The command is NOT atomic across batch boundaries: every committed
+ * batch persists into the new layout immediately. If the rebuild aborts mid-run (e.g. an exception during
+ * the move phase, or the leader crashing after some batches), the {@code needsRepartition} flag stays {@code
+ * true} so a re-run is required. That re-run is safe to issue without manual cleanup:
+ * <ul>
+ *   <li>The scan visits every record in the type. Records already relocated in the previous run are now in
+ *       their correct bucket and pass through the in-place save path; they are not queued for another move.
+ *   <li>The move phase looks up each pending RID with {@link com.arcadedb.database.Database#lookupByRID};
+ *       a previously-deleted record returns {@code null} and the loop skips it cleanly without creating a
+ *       ghost record.
+ * </ul>
+ * Repeated invocations therefore converge: a fully-clean rebuild is a no-op (no misplaced records to move),
+ * a partially-completed one finishes the remaining work.
  * <p>
  * <b>Behaviour under Raft HA.</b> This statement extends {@link DDLStatement}, so
  * {@code Statement.isDDL()} returns {@code true}. {@code RaftReplicatedDatabase.command()} therefore forwards
@@ -113,22 +130,30 @@ public class RebuildTypeStatement extends DDLStatement {
     if (type == null)
       throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
 
-    // Repartitioning gives every record a new RID. For graph types this means:
+    // Repartitioning gives every record a new RID and, for graph types, additionally:
     //   * inbound edges from other vertices keep pointing at the old RID and silently break;
     //   * outbound edges live in segments stored on the vertex itself, so delete+re-insert
-    //     wipes them - even on a type that has no inbound references;
-    //   * the move-phase re-creation path uses {@code db.newDocument}, which would write a
-    //     Document record-type byte over what should be a Vertex or Edge.
-    // None of these can be repaired without coordinating with every adjacent record, so the
-    // rebuild refuses to run on graph types unconditionally. Drop and re-import under the new
-    // partitioning is the supported workflow for populated graph types.
-    if (finalRepartition && (type instanceof VertexType || type instanceof EdgeType)) {
-      final String kind = type instanceof VertexType ? "vertex" : "edge";
+    //     wipes them - even on a type that has no inbound references.
+    // The move-phase re-creation path uses {@code db.newDocument}, which only ever writes the
+    // Document record-type byte. For any non-Document type (Vertex, Edge, TimeSeries) that
+    // would silently corrupt the store on the way back. None of these can be repaired without
+    // coordinating with every adjacent record (or, for TimeSeries, restoring the kind byte on
+    // every shard), so the rebuild refuses to run on non-Document types unconditionally. Drop
+    // and re-import under the new partitioning is the supported workflow.
+    if (finalRepartition
+        && (type instanceof VertexType || type instanceof EdgeType || type instanceof LocalTimeSeriesType)) {
+      final String kind;
+      if (type instanceof VertexType)
+        kind = "vertex";
+      else if (type instanceof EdgeType)
+        kind = "edge";
+      else
+        kind = "time-series";
       throw new CommandSQLParsingException(
           "REBUILD TYPE on " + kind + " type '" + typeName.getStringValue() + "' with repartition = true is not "
-              + "supported: every record would receive a new RID, breaking inbound edge references and (for "
-              + "vertices) wiping outbound edge segments. Drop and re-import the type under the new partitioning "
-              + "instead.");
+              + "supported: every record would receive a new RID, and the move-phase re-creation path writes a "
+              + "Document record-type byte that is incompatible with " + kind + " records. Drop and re-import the "
+              + "type under the new partitioning instead.");
     }
 
     final long[] count = { 0L };

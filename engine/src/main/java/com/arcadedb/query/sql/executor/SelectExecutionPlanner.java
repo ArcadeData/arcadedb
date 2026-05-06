@@ -99,6 +99,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -1967,6 +1968,15 @@ public class SelectExecutionPlanner {
     if (partitionProps == null || partitionProps.isEmpty())
       return filterClusters;
 
+    // O(1) property -> position lookup. With composite partition keys (e.g.
+    // {@code partitioned(orgId, region)}), a {@code List.indexOf} inside the inner predicate
+    // loop would be O(n) per condition. Building a small map once amortises the cost.
+    // {@code LinkedHashMap} preserves the declared property order, which the strategy uses to
+    // assemble {@code keyValues} for the hash.
+    final Map<String, Integer> partitionPropPositions = new LinkedHashMap<>(partitionProps.size());
+    for (int i = 0; i < partitionProps.size(); i++)
+      partitionPropPositions.put(partitionProps.get(i), i);
+
     // Cache the bucket list once for the whole derivation. The list is invariant during
     // planning (schema mutations take the same lock the planner doesn't hold), and the per
     // AndBlock loop below would otherwise call getBuckets(false) once per block on the planner
@@ -1998,9 +2008,10 @@ public class SelectExecutionPlanner {
         if (propName == null)
           continue;
 
-        final int idx = partitionProps.indexOf(propName);
-        if (idx < 0)
+        final Integer idxBoxed = partitionPropPositions.get(propName);
+        if (idxBoxed == null)
           continue;
+        final int idx = idxBoxed;
 
         if (literalSide == null || !literalSide.isEarlyCalculated(context))
           continue;

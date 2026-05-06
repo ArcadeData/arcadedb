@@ -56,7 +56,7 @@ class AlterTypeAtomicRepartitionTest extends TestHelper {
         .as("the trailing repartition setting must clear the flag in the same statement")
         .isFalse();
     assertThat(row.<String>getProperty("addBucket")).isEqualTo(TYPE_NAME + "_extra");
-    assertThat(row.<Long>getProperty("repartitionRebuilt")).isEqualTo(4L);
+    assertThat(row.<Long>getProperty("repartitionVisited")).isEqualTo(4L);
     assertThat(row.<Long>getProperty("repartitionMoved")).isNotNull();
 
     // Every tenant must still be findable after the atomic ALTER+REBUILD.

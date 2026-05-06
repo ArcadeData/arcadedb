@@ -221,8 +221,12 @@ public class AlterTypeStatement extends DDLStatement {
       try (final ResultSet rebuildRs = rebuild.executeRebuild(context, RebuildTypeStatement.DEFAULT_BATCH_SIZE, true)) {
         if (rebuildRs.hasNext()) {
           final Result rebuildRow = rebuildRs.next();
+          // {@code recordsRebuilt} on the underlying REBUILD result is the *visited* count
+          // (includes records buffered for the move phase), so surface it as
+          // {@code repartitionVisited} here to avoid suggesting "records written into the new
+          // layout"; the actual relocation count is {@code repartitionMoved}.
           if (rebuildRow.getProperty("recordsRebuilt") != null)
-            result.setProperty("repartitionRebuilt", rebuildRow.<Long>getProperty("recordsRebuilt"));
+            result.setProperty("repartitionVisited", rebuildRow.<Long>getProperty("recordsRebuilt"));
           if (rebuildRow.getProperty("recordsMoved") != null)
             result.setProperty("repartitionMoved", rebuildRow.<Long>getProperty("recordsMoved"));
         }
