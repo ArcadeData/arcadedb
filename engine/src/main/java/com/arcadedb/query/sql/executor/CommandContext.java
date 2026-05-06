@@ -82,4 +82,25 @@ public interface CommandContext {
   /** Context variable set by algorithm procedures to the total number of results they will yield.
    *  Used by CallStep to optimize count-only queries by skipping per-row Result object creation. */
   String RESULT_COUNT_HINT_VAR = "_resultCountHint";
+
+  /**
+   * Context variable holding the partition-pruned bucket file ids derived by
+   * {@code SelectExecutionPlanner.derivePartitionPrunedClusters}. Set when a SELECT's WHERE
+   * clause binds every partition property of the FROM type to a literal, so any downstream
+   * consumer (e.g. {@code vector.neighbors} / {@code vector.sparseNeighbors}) that does its
+   * own per-bucket fan-out can intersect this set with its full per-type bucket allow-list and
+   * skip indexes outside the partition.
+   * <p>
+   * Value type: {@link com.arcadedb.utility.IntHashSet} of bucket file ids.
+   * Companion variable: {@link #PARTITION_PRUNED_TYPE_NAME_VAR}.
+   */
+  String PARTITION_PRUNED_BUCKET_FILE_IDS_VAR = "_partitionPrunedBucketFileIds";
+
+  /**
+   * Companion to {@link #PARTITION_PRUNED_BUCKET_FILE_IDS_VAR}: the FROM type name the prune was
+   * derived from. Consumers must verify their target type matches before applying the prune so
+   * a vector-function call against an unrelated type in the same query (rare but possible) is
+   * not accidentally narrowed.
+   */
+  String PARTITION_PRUNED_TYPE_NAME_VAR = "_partitionPrunedTypeName";
 }

@@ -145,14 +145,21 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
 
   private List<LSMSparseVectorIndex> collectSparseIndexes(final String indexSpec, final TypeIndex typeIndex,
       final CommandContext context) {
-    final IntHashSet allowedBucketIds = new IntHashSet();
+    IntHashSet allowedBucketIds = new IntHashSet();
+    String specifiedTypeName = null;
     final int bracketStart = indexSpec.indexOf('[');
     if (bracketStart > 0 && indexSpec.endsWith("]")) {
-      final String specifiedTypeName = indexSpec.substring(0, bracketStart);
+      specifiedTypeName = indexSpec.substring(0, bracketStart);
       final DocumentType specifiedType = context.getDatabase().getSchema().getType(specifiedTypeName);
       for (final Bucket bucket : specifiedType.getBuckets(false))
         allowedBucketIds.add(bucket.getFileId());
     }
+
+    // Narrow to the partition-pruned subset when the outer SELECT bound every partition property
+    // (issue #4087 follow-up). Same rationale as {@link SQLFunctionVectorNeighbors}: skips per
+    // bucket sparse indexes outside the partition AND keeps results consistent with the WHERE.
+    if (specifiedTypeName != null)
+      allowedBucketIds = narrowAllowedBucketIdsByPartitionHint(allowedBucketIds, specifiedTypeName, context);
 
     final var bucketIndexes = typeIndex.getIndexesOnBuckets();
     final List<LSMSparseVectorIndex> result = new ArrayList<>();

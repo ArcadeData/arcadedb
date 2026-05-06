@@ -90,6 +90,7 @@ import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.Pair;
 
 import java.time.Instant;
@@ -2053,22 +2054,47 @@ public class SelectExecutionPlanner {
     if (derivedBuckets.isEmpty())
       return filterClusters;
 
-    if (filterClusters == null || filterClusters.contains("*"))
-      return derivedBuckets;
+    final Set<String> result;
+    if (filterClusters == null || filterClusters.contains("*")) {
+      result = derivedBuckets;
+    } else {
+      final Set<String> intersected = new HashSet<>(derivedBuckets);
+      intersected.retainAll(filterClusters);
+      // If the intersection is empty the user's explicit cluster filter is incompatible with the
+      // partition-derived set - the query should return nothing. The downstream fetch step's
+      // filtering already handles this (no buckets pass), so returning the empty set is correct.
+      // Log at FINE so an operator chasing a "query mysteriously returns zero rows" report can grep
+      // for the type name and see that pruning + an explicit cluster filter intersected to empty.
+      if (intersected.isEmpty())
+        LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE,
+            "Partition pruning on type '%s' intersected to an empty set: derived buckets %s do not "
+                + "overlap the explicit cluster filter %s. Query will return zero rows.",
+            null, docType.getName(), derivedBuckets, filterClusters);
+      result = intersected;
+    }
 
-    final Set<String> intersected = new HashSet<>(derivedBuckets);
-    intersected.retainAll(filterClusters);
-    // If the intersection is empty the user's explicit cluster filter is incompatible with the
-    // partition-derived set - the query should return nothing. The downstream fetch step's
-    // filtering already handles this (no buckets pass), so returning the empty set is correct.
-    // Log at FINE so an operator chasing a "query mysteriously returns zero rows" report can grep
-    // for the type name and see that pruning + an explicit cluster filter intersected to empty.
-    if (intersected.isEmpty())
-      LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE,
-          "Partition pruning on type '%s' intersected to an empty set: derived buckets %s do not "
-              + "overlap the explicit cluster filter %s. Query will return zero rows.",
-          null, docType.getName(), derivedBuckets, filterClusters);
-    return intersected;
+    // Stash the pruned bucket *file ids* on the context so consumers that do their own per-bucket
+    // fan-out can apply the same narrowing as the SQL fetch path. Today this benefits
+    // {@code vector.neighbors} / {@code vector.sparseNeighbors}: those functions enumerate per
+    // bucket vector sub-indexes and would otherwise scan every bucket of the type even when the
+    // outer query already pruned to a single bucket. Skipping unrelated bucket sub-indexes is a
+    // direct cost win and also narrows results to records that match the partition predicate.
+    // Skipped when the result set is empty - nothing to hint - and skipped when only a single
+    // bucket maps to "the whole type", in which case the function's per-type allow list already
+    // covers exactly the same set.
+    if (!result.isEmpty()) {
+      final IntHashSet bucketFileIds = new IntHashSet(result.size());
+      for (final String bucketName : result) {
+        final com.arcadedb.engine.Bucket bucket = context.getDatabase().getSchema().getBucketByName(bucketName);
+        if (bucket != null)
+          bucketFileIds.add(bucket.getFileId());
+      }
+      if (!bucketFileIds.isEmpty()) {
+        context.setVariable(CommandContext.PARTITION_PRUNED_BUCKET_FILE_IDS_VAR, bucketFileIds);
+        context.setVariable(CommandContext.PARTITION_PRUNED_TYPE_NAME_VAR, docType.getName());
+      }
+    }
+    return result;
   }
 
   /**

@@ -310,12 +310,16 @@ class PartitioningRepartitionFlagTest extends TestHelper {
 
     // Simulate the window expiring by rewinding the throttle past the 60-second boundary. The
     // next call must advance the timestamp again, proving the throttle releases on schedule
-    // without blocking the test on a real 60-second sleep.
-    type.setLastRepartitionWarnMsForTesting(System.currentTimeMillis() - 120_000L);
+    // without blocking the test on a real 60-second sleep. Compare against the rewound value
+    // (not against {@code firstStamp}) so the assertion stays robust on sub-millisecond fast
+    // paths where {@code System.currentTimeMillis()} has not advanced since {@code firstStamp}
+    // was sampled.
+    final long rewoundStamp = System.currentTimeMillis() - 120_000L;
+    type.setLastRepartitionWarnMsForTesting(rewoundStamp);
     type.warnIfNeedsRepartition();
     assertThat(type.lastRepartitionWarnMsForTesting())
-        .as("warn after the throttle window has elapsed must advance the timestamp")
-        .isGreaterThan(firstStamp);
+        .as("warn after the throttle window has elapsed must advance the timestamp from the rewound value")
+        .isGreaterThan(rewoundStamp);
   }
 
   // ---- shared scaffolding -------------------------------------------------

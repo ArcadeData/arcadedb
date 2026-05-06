@@ -135,10 +135,17 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // Get the bucket IDs that belong to the specified type (not polymorphic - just this type's own buckets).
     // IntHashSet is zero-boxing - the contains() in executeWithTypeIndex runs once per bucket index per
     // vector query, and avoiding Integer boxing on every probe matters under sustained ANN workloads.
-    final IntHashSet allowedBucketIds = new IntHashSet();
+    IntHashSet allowedBucketIds = new IntHashSet();
     for (final Bucket bucket : specifiedType.getBuckets(false)) {
       allowedBucketIds.add(bucket.getFileId());
     }
+
+    // Narrow the per-type bucket allow-list to the partition-pruned subset when the outer SELECT
+    // already restricted to specific buckets via a WHERE on the partition key (issue #4087
+    // follow-up). The function would otherwise enumerate every bucket sub-index even though the
+    // outer query is logically constrained to one bucket; the intersection skips work AND keeps
+    // results consistent with the WHERE.
+    allowedBucketIds = narrowAllowedBucketIdsByPartitionHint(allowedBucketIds, specifiedTypeName, context);
 
     return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, allowedRIDs, groupBy, groupSize, context);
   }
