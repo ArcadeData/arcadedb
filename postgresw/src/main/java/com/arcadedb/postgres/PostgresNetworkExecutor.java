@@ -292,8 +292,8 @@ public class PostgresNetworkExecutor extends Thread {
           portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
           portal.columns = getColumns(portal.cachedResultSet);
           if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
-            final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(portal.query);
-            if (schemaColumns != null && !schemaColumns.isEmpty())
+            final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query);
+            if (schemaColumns != null)
               portal.columns = schemaColumns;
           }
           writeRowDescription(portal.columns);
@@ -375,9 +375,9 @@ public class PostgresNetworkExecutor extends Thread {
             if (!portal.rowDescriptionSent) {
               final long serStart = System.nanoTime();
               portal.columns = getColumns(portal.cachedResultSet);
-              if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty() && portal.isExpectingResult) {
-                final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(portal.query);
-                if (schemaColumns != null && !schemaColumns.isEmpty())
+              if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
+                final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(portal.query);
+                if (schemaColumns != null)
                   portal.columns = schemaColumns;
               }
               writeRowDescription(portal.columns);
@@ -522,9 +522,9 @@ public class PostgresNetworkExecutor extends Thread {
 
       final long serStart = System.nanoTime();
       Map<String, PostgresType> columns = getColumns(cachedResultSet);
-      if (columns.isEmpty() && cachedResultSet.isEmpty() && upperCaseText.startsWith("SELECT")) {
-        final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(query.query);
-        if (schemaColumns != null && !schemaColumns.isEmpty())
+      if (columns.isEmpty() && cachedResultSet.isEmpty()) {
+        final Map<String, PostgresType> schemaColumns = resolveEmptyResultSchemaColumns(query.query);
+        if (schemaColumns != null)
           columns = schemaColumns;
       }
       writeRowDescription(columns);
@@ -859,6 +859,19 @@ public class PostgresNetworkExecutor extends Thread {
             query, e.getMessage());
       return null;
     }
+  }
+
+  /**
+   * Schema-discovery fallback for SELECT queries that returned 0 rows. RowDescription must still
+   * carry column metadata so JDBC clients (Spark/PySpark probe schema with WHERE 1=0) can build
+   * a typed result set. Returns null when the query is not a SELECT or no schema match is found,
+   * letting the caller fall through to the empty-RowDescription default.
+   */
+  private Map<String, PostgresType> resolveEmptyResultSchemaColumns(final String query) {
+    if (query == null || !query.toUpperCase(Locale.ENGLISH).trim().startsWith("SELECT"))
+      return null;
+    final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(query);
+    return (schemaColumns != null && !schemaColumns.isEmpty()) ? schemaColumns : null;
   }
 
   private void writeRowDescription(final Map<String, PostgresType> columns) {
