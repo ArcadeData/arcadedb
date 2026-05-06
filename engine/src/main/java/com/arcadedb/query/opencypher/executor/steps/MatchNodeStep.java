@@ -20,10 +20,14 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
@@ -354,6 +358,20 @@ public class MatchNodeStep extends AbstractExecutionStep {
           }
         }
 
+        // OPTIMIZATION: Partition-aware bucket pruning. When the type uses a partitioned bucket
+        // strategy and the node-pattern's inline properties bind every partition property to a
+        // literal, switch the full-scan fallback to a single-bucket iteration. The partition
+        // strategy invariant guarantees every match for those property values lives in the
+        // hash-target bucket, so iterating other buckets is wasted work. Skipped when the type's
+        // {@code needsRepartition} flag is set (with a throttled WARNING).
+        if (pattern.hasProperties() && !pattern.getProperties().isEmpty()
+            && context.getDatabase().getSchema().existsType(label)) {
+          final DocumentType type = context.getDatabase().getSchema().getType(label);
+          final Iterator<Identifiable> partitionedIter = tryPartitionPrunedIterator(type, label);
+          if (partitionedIter != null)
+            return partitionedIter;
+        }
+
         // No index available - fall back to full type scan
         if (context.getDatabase().getSchema().existsType(label)) {
           @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
@@ -443,6 +461,62 @@ public class MatchNodeStep extends AbstractExecutionStep {
    * @param label the type label
    * @return iterator from index lookup, or null if no suitable index found
    */
+  /**
+   * Returns an iterator restricted to the partition-target bucket when the type uses a
+   * {@link PartitionedBucketSelectionStrategy}, every partition property is bound to a
+   * non-parameter literal in the node pattern, and the type's {@code needsRepartition} flag is
+   * cleared. Returns {@code null} otherwise so the caller falls back to the full-scan path.
+   * <p>
+   * Records returned may include other documents that hashed to the same bucket (collision); the
+   * outer {@code matchesProperties} filter rejects those. The win is bucket-count-fold: at
+   * default {@code 4-32} bucket counts this is a 4x-32x reduction in records scanned for the
+   * full-scan fallback.
+   */
+  private Iterator<Identifiable> tryPartitionPrunedIterator(final DocumentType type, final String label) {
+    if (!(type.getBucketSelectionStrategy() instanceof PartitionedBucketSelectionStrategy partitioned))
+      return null;
+
+    if (type instanceof LocalDocumentType ldt && ldt.isNeedsRepartition()) {
+      // Stale mapping; nudge operators and bail.
+      ldt.warnIfNeedsRepartition();
+      return null;
+    }
+
+    final List<String> partitionProps = partitioned.getProperties();
+    if (partitionProps == null || partitionProps.isEmpty())
+      return null;
+
+    final Map<String, Object> patternProps = pattern.getProperties();
+    if (patternProps == null || patternProps.isEmpty())
+      return null;
+
+    // Every partition property must be bound to a usable literal. Parameters and Expression
+    // resolvers are skipped: a parameter-bound partition value would bake the bucket id into
+    // the cached plan and silently misroute later executions.
+    final Object[] keyValues = new Object[partitionProps.size()];
+    for (int i = 0; i < partitionProps.size(); i++) {
+      final String prop = partitionProps.get(i);
+      if (!patternProps.containsKey(prop))
+        return null;
+      final Object val = patternProps.get(prop);
+      if (val == null
+          || val instanceof CypherASTBuilder.ParameterReference
+          || val instanceof Expression)
+        return null;
+      keyValues[i] = val;
+    }
+
+    final int bucketIndex = partitioned.getBucketIdByKeys(keyValues, false);
+    if (bucketIndex < 0 || bucketIndex >= type.getBuckets(false).size())
+      return null;
+
+    final String bucketName = type.getBuckets(false).get(bucketIndex).getName();
+    usedIndexName = label + "[partition='" + bucketName + "']";
+    @SuppressWarnings("unchecked")
+    final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateBucket(bucketName);
+    return iter;
+  }
+
   private Iterator<Identifiable> tryFindAndUseIndex(final DocumentType type, final String label,
       final Result currentInputResult) {
     // Prepare property names and values from the pattern

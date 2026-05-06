@@ -48,6 +48,10 @@ public class AlterTypeStatement extends DDLStatement {
   public Boolean          booleanValue;
   public Identifier       customKey;
   public Expression       customValue;
+  // Trailing settings clause `WITH key = value (, key = value)*` populated by the AST builder.
+  // Used today for `WITH repartition = true` to chain a rebuild atomically with a partition-
+  // invalidating ALTER (issue #4087); generic so future settings drop in cleanly.
+  public final Map<Identifier, Expression> settings = new LinkedHashMap<>();
 
   public AlterTypeStatement(final int id) {
     super(id);
@@ -91,6 +95,8 @@ public class AlterTypeStatement extends DDLStatement {
     result.booleanValue = booleanValue;
     result.customKey = customKey == null ? null : customKey.copy();
     result.customValue = customValue == null ? null : customValue.copy();
+    for (final Map.Entry<Identifier, Expression> e : settings.entrySet())
+      result.settings.put(e.getKey().copy(), e.getValue().copy());
     return result;
   }
 
@@ -182,6 +188,46 @@ public class AlterTypeStatement extends DDLStatement {
 
       type.setCustomValue(customKey.getStringValue(), value);
       result.setProperty("custom", customKey.getStringValue() + "=" + value);
+    }
+
+    // Trailing settings clause. Today we recognise `WITH repartition = true` (issue #4087): the
+    // partition mapping is now stale (bucket add/drop or strategy change), so chain a rebuild
+    // before returning. The DDL surfaces the moved-record count alongside the ALTER result so
+    // operators see the rebuild happened. Unknown settings throw - the supported list grows with
+    // explicit additions in this method.
+    boolean repartitionRequested = false;
+    for (final Map.Entry<Identifier, Expression> e : settings.entrySet()) {
+      final String key = e.getKey().getStringValue();
+      if (key.equalsIgnoreCase("repartition")) {
+        final Object raw = e.getValue().execute((com.arcadedb.query.sql.executor.Result) null, context);
+        if (raw instanceof Boolean b)
+          repartitionRequested = b;
+        else if ("true".equalsIgnoreCase(String.valueOf(raw)))
+          repartitionRequested = true;
+        else if ("false".equalsIgnoreCase(String.valueOf(raw)))
+          repartitionRequested = false;
+        else
+          throw new CommandSQLParsingException(
+              "ALTER TYPE setting 'repartition' must be true or false, got: " + raw);
+      } else
+        throw new CommandSQLParsingException(
+            "Unrecognized setting '" + key + "' in ALTER TYPE statement (supported: repartition)");
+    }
+    if (repartitionRequested) {
+      // Reuse the existing REBUILD TYPE executor by issuing a SQL command on the same context.
+      // Atomic across the ALTER + REBUILD as far as the caller is concerned: a failure in either
+      // half throws and surfaces the boundary.
+      final String typeName = name.getStringValue();
+      final ResultSet rebuildRs = context.getDatabase()
+          .command("sql", "REBUILD TYPE `" + typeName + "` WITH repartition = true");
+      if (rebuildRs.hasNext()) {
+        final com.arcadedb.query.sql.executor.Result rebuildRow = rebuildRs.next();
+        if (rebuildRow.getProperty("recordsRebuilt") != null)
+          result.setProperty("repartitionRebuilt", rebuildRow.<Long>getProperty("recordsRebuilt"));
+        if (rebuildRow.getProperty("recordsMoved") != null)
+          result.setProperty("repartitionMoved", rebuildRow.<Long>getProperty("recordsMoved"));
+      }
+      rebuildRs.close();
     }
 
     result.setProperty("operation", "ALTER TYPE");

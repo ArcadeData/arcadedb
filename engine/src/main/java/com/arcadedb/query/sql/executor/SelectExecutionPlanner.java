@@ -23,6 +23,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -1741,12 +1744,24 @@ public class SelectExecutionPlanner {
     handleTypeAsTarget(plan, filterClusters, info.target, info, context);
   }
 
-  private void handleTypeAsTarget(final SelectExecutionPlan plan, final Set<String> filterClusters, final FromClause from,
+  private void handleTypeAsTarget(final SelectExecutionPlan plan, Set<String> filterClusters, final FromClause from,
       final QueryPlanningInfo info, final CommandContext context) {
     final Identifier identifier = from.getItem().getIdentifier();
 
     // Check if this is a TimeSeries type — use the engine for range queries
     final DocumentType docType = context.getDatabase().getSchema().getType(identifier.getStringValue());
+
+    // Partition-aware bucket pruning. When the type uses a PartitionedBucketSelectionStrategy and
+    // the WHERE clause binds every partition property to a literal in every AndBlock, we can
+    // restrict the scan to the bucket(s) the partitioning hash would route those values to. The
+    // narrowed {@code filterClusters} flows into every downstream path (index-based fetch, full
+    // scan with predicate pushdown, plain full scan) without any of those paths needing to know
+    // about partitioning. Skipped when the type's {@code needsRepartition} flag is true (the
+    // mapping is stale until {@code REBUILD TYPE Doc WITH repartition = true} runs); a throttled
+    // WARNING is emitted in that case so operators see the lost optimisation.
+    if (docType != null)
+      filterClusters = derivePartitionPrunedClusters(docType, filterClusters, info, context);
+
     if (docType instanceof LocalTimeSeriesType tsType && tsType.getEngine() != null) {
       // Extract time range from WHERE clause (if available)
       long fromTs = Long.MIN_VALUE;
@@ -1913,6 +1928,133 @@ public class SelectExecutionPlanner {
     if (exprStr.startsWith("@"))
       return exprStr;
     return null;
+  }
+
+  /**
+   * Partition-aware bucket pruning entry point. Inspects the type's bucket selection strategy and
+   * the WHERE clause; if every {@code AndBlock} in the flattened where binds every partition
+   * property to a literal, computes the corresponding bucket name(s) via the strategy's hash and
+   * returns a narrowed {@code filterClusters} set. Skipped (returns the original set unchanged)
+   * when:
+   * <ul>
+   *   <li>the type does not use {@link PartitionedBucketSelectionStrategy};</li>
+   *   <li>the type's {@code needsRepartition} flag is set (a schema mutation has invalidated the
+   *       partition mapping; a throttled WARNING is emitted on this path so operators see the
+   *       lost optimisation);</li>
+   *   <li>the WHERE clause has no flattened blocks, or any block leaves a partition property
+   *       unbound (we can't safely prune without knowing every partition coordinate).</li>
+   * </ul>
+   * The returned set is intersected with the caller-supplied {@code filterClusters} so explicit
+   * cluster filters in the SQL (e.g., {@code SELECT FROM Doc IN BUCKET 'doc_3'}) are honoured.
+   */
+  private static Set<String> derivePartitionPrunedClusters(final DocumentType docType, final Set<String> filterClusters,
+      final QueryPlanningInfo info, final CommandContext context) {
+    final BucketSelectionStrategy strategy = docType.getBucketSelectionStrategy();
+    if (!(strategy instanceof PartitionedBucketSelectionStrategy partitioned))
+      return filterClusters;
+
+    if (docType instanceof LocalDocumentType ldt && ldt.isNeedsRepartition()) {
+      // Mapping is stale; nudge the operator and bail out of the optimisation.
+      ldt.warnIfNeedsRepartition();
+      return filterClusters;
+    }
+
+    if (info.flattenedWhereClause == null || info.flattenedWhereClause.isEmpty())
+      return filterClusters;
+
+    final List<String> partitionProps = partitioned.getProperties();
+    if (partitionProps == null || partitionProps.isEmpty())
+      return filterClusters;
+
+    // Each AndBlock must fully bind every partition property; otherwise pruning is unsafe and we
+    // fall back to the caller's filterClusters. The union of bucket names across blocks is the
+    // pruned set the OR-disjuncts collectively need to cover.
+    final Set<String> derivedBuckets = new HashSet<>();
+    for (final AndBlock andBlock : info.flattenedWhereClause) {
+      final Object[] keyValues = new Object[partitionProps.size()];
+      final boolean[] bound = new boolean[partitionProps.size()];
+      int boundCount = 0;
+
+      for (final BooleanExpression expr : andBlock.getSubBlocks()) {
+        if (!(expr instanceof BinaryCondition bc) || !(bc.getOperator() instanceof EqualsCompareOperator))
+          continue;
+
+        // Either side may carry the property reference; the literal sits on the other side.
+        String propName = extractBaseIdentifierName(bc.getLeft());
+        Expression literalSide = bc.getRight();
+        if (propName == null) {
+          propName = extractBaseIdentifierName(bc.getRight());
+          literalSide = bc.getLeft();
+        }
+        if (propName == null)
+          continue;
+
+        final int idx = partitionProps.indexOf(propName);
+        if (idx < 0)
+          continue;
+
+        if (literalSide == null || !literalSide.isEarlyCalculated(context))
+          continue;
+        // Skip parameter-bound literals: planning evaluates {@code ?} / {@code :name} against
+        // whatever the context currently holds, but the plan is reused across executions with
+        // different parameter values. Baking the partition bucket into the plan based on the
+        // first execution's parameters silently misroutes every subsequent execution. Detect
+        // by string scan for the canonical SQL parameter markers; the alternative (recursing
+        // the AST for {@link BaseExpression#inputParam}) is more thorough but adds surface
+        // area for what is, in effect, a one-line guard.
+        final String literalText = literalSide.toString();
+        if (literalText.contains("?") || literalText.contains(":"))
+          continue;
+
+        if (!bound[idx]) {
+          final Object literalValue;
+          try {
+            literalValue = literalSide.execute((Result) null, context);
+          } catch (final Exception e) {
+            // Literal evaluation can fail at plan time for parameter-bound expressions that
+            // depend on context state we don't have here. Treat as "can't bind" and bail.
+            continue;
+          }
+          // A null literal at plan time also means "can't determine the bucket" - the strategy's
+          // hash treats null specially (skipped from the running sum), so a missing value would
+          // collapse every null-keyed query onto bucket 0 and silently drop records that live
+          // anywhere else. Skip pruning for this AndBlock instead.
+          if (literalValue == null)
+            continue;
+          keyValues[idx] = literalValue;
+          bound[idx] = true;
+          boundCount++;
+        }
+      }
+
+      if (boundCount != partitionProps.size())
+        return filterClusters;  // Block left a partition coordinate open; cannot prune.
+
+      final int bucketIndex = partitioned.getBucketIdByKeys(keyValues, false);
+      if (bucketIndex < 0 || bucketIndex >= docType.getBuckets(false).size())
+        return filterClusters;  // Strategy returned an out-of-range index; abort defensively.
+      derivedBuckets.add(docType.getBuckets(false).get(bucketIndex).getName());
+    }
+
+    if (derivedBuckets.isEmpty())
+      return filterClusters;
+
+    if (filterClusters == null || filterClusters.contains("*"))
+      return derivedBuckets;
+
+    final Set<String> intersected = new HashSet<>(derivedBuckets);
+    intersected.retainAll(filterClusters);
+    // If the intersection is empty the user's explicit cluster filter is incompatible with the
+    // partition-derived set - the query should return nothing. The downstream fetch step's
+    // filtering already handles this (no buckets pass), so returning the empty set is correct.
+    return intersected;
+  }
+
+  /** Returns the property name when {@code expr} is a plain base identifier, {@code null} otherwise. */
+  private static String extractBaseIdentifierName(final Expression expr) {
+    if (expr == null || !expr.isBaseIdentifier())
+      return null;
+    return expr.getDefaultAlias().getStringValue();
   }
 
   /**

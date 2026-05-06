@@ -20,6 +20,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.log.LogManager;
@@ -65,6 +67,7 @@ public class RebuildTypeStatement extends DDLStatement {
       throw new CommandExecutionException("Type not found: " + typeName.getStringValue());
 
     int batchSize = DEFAULT_BATCH_SIZE;
+    boolean repartition = false;
     for (final Map.Entry<Expression, Expression> e : settings.entrySet()) {
       final String key = e.getKey().toString();
       if (key.equalsIgnoreCase("batchSize")) {
@@ -81,13 +84,34 @@ public class RebuildTypeStatement extends DDLStatement {
         if (batchSize <= 0)
           throw new CommandSQLParsingException(
               "REBUILD TYPE setting 'batchSize' must be a positive integer, got: " + batchSize);
+      } else if (key.equalsIgnoreCase("repartition")) {
+        // Boolean opt-in. When true, every record whose current bucket no longer matches its
+        // partition strategy's hash is deleted from its current bucket and re-inserted into the
+        // target bucket - which gives it a NEW RID. The flag is cleared on full success only.
+        // RID-stable in-place moves are not supported by the current bucket layout, so callers
+        // with edges or RID-pinned references must handle re-pointing themselves before running
+        // this; partitioned types without inbound edges are the supported workload.
+        // Use execute(...) to evaluate uniformly across booleanValue / numeric / string literal
+        // shapes - {@link Expression#value} is null for boolean literals, populated for numbers.
+        final Object raw = e.getValue().execute((com.arcadedb.query.sql.executor.Result) null, context);
+        if (raw instanceof Boolean b)
+          repartition = b;
+        else if ("true".equalsIgnoreCase(String.valueOf(raw)))
+          repartition = true;
+        else if ("false".equalsIgnoreCase(String.valueOf(raw)))
+          repartition = false;
+        else
+          throw new CommandSQLParsingException(
+              "REBUILD TYPE setting 'repartition' must be true or false, got: " + raw);
       } else
         throw new CommandSQLParsingException(
-            "Unrecognized setting '" + key + "' in REBUILD TYPE statement (supported: batchSize)");
+            "Unrecognized setting '" + key + "' in REBUILD TYPE statement (supported: batchSize, repartition)");
     }
     final int finalBatchSize = batchSize;
+    final boolean finalRepartition = repartition;
 
     final long[] count = { 0L };
+    final long[] moved = { 0L };
     // Records committed in earlier batches and therefore NOT rolled back by a later failure: needed so we can
     // tell the caller exactly how many rows are already in the new layout when the rebuild aborts mid-stream.
     final long[] committedBefore = { 0L };
@@ -95,13 +119,38 @@ public class RebuildTypeStatement extends DDLStatement {
     if (implicitTx)
       db.begin();
 
+    // Buffered relocations: when {@code finalRepartition} is true we cannot delete+insert during
+    // the type scan because the new record would land in a later bucket and be visited again,
+    // double-counting and (depending on iterator semantics) breaking the in-flight bucket
+    // iterator. Instead we collect each misplaced record's payload and execute the moves AFTER
+    // the scan completes. The original record stays untouched during the scan; the post-scan
+    // pass deletes it and re-creates the document via the partition strategy's bucket router.
+    final List<Map<String, Object>> pendingMoves = finalRepartition ? new ArrayList<>() : null;
+    final List<RID> pendingMoveRids = finalRepartition ? new ArrayList<>() : null;
+
     final long startNanos = System.nanoTime();
     try {
       db.scanType(typeName.getStringValue(), polymorphic, rec -> {
-        final MutableDocument m = (MutableDocument) rec.modify();
-        m.markDirty();
-        m.save();
-        count[0]++;
+        if (finalRepartition) {
+          final MutableDocument m = (MutableDocument) rec.modify();
+          final RID currentRid = m.getIdentity();
+          final Bucket targetBucket = type.getBucketIdByRecord(m, false);
+          if (currentRid != null && targetBucket != null && targetBucket.getFileId() != currentRid.getBucketId()) {
+            // Buffered move - apply after scan to keep iterator stability.
+            pendingMoves.add(new HashMap<>(m.toMap(false)));
+            pendingMoveRids.add(currentRid);
+            count[0]++;
+          } else {
+            m.markDirty();
+            m.save();
+            count[0]++;
+          }
+        } else {
+          final MutableDocument m = (MutableDocument) rec.modify();
+          m.markDirty();
+          m.save();
+          count[0]++;
+        }
         // Batch only when we own the transaction. Committing inside a caller-supplied TX would leak the user's
         // writes prematurely and leave the trailing batch uncommitted.
         if (implicitTx && count[0] % finalBatchSize == 0) {
@@ -119,12 +168,38 @@ public class RebuildTypeStatement extends DDLStatement {
         return true;
       });
 
+      // Apply buffered relocations now that the scan is complete. Each move deletes the old
+      // record and creates a fresh one through the type's bucket-selection strategy, which
+      // routes it to the hash-target bucket. RIDs change.
+      if (finalRepartition && pendingMoves != null) {
+        for (int i = 0; i < pendingMoves.size(); i++) {
+          final RID oldRid = pendingMoveRids.get(i);
+          final Map<String, Object> snapshot = pendingMoves.get(i);
+          final var oldRecord = db.lookupByRID(oldRid, true);
+          if (oldRecord != null)
+            db.deleteRecord(oldRecord);
+          final MutableDocument fresh = db.newDocument(typeName.getStringValue());
+          fresh.fromMap(snapshot);
+          fresh.save();
+          moved[0]++;
+          if (implicitTx && (i + 1) % finalBatchSize == 0) {
+            db.commit();
+            committedBefore[0] = count[0];
+            db.begin();
+          }
+        }
+      }
+
       if (implicitTx)
         db.commit();
+      // Clear the needsRepartition flag only after the whole scan succeeded. Mid-rebuild crash
+      // leaves the flag set so a re-run is correct.
+      if (finalRepartition && type instanceof LocalDocumentType ldt)
+        ldt.setNeedsRepartition(false);
       final long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
       LogManager.instance().log(this, java.util.logging.Level.INFO,
-          "REBUILD TYPE '%s' completed: %,d records re-serialised in %,d ms",
-          null, typeName.getStringValue(), count[0], elapsedMs);
+          "REBUILD TYPE '%s' completed: %,d records re-serialised (repartition moves=%,d) in %,d ms",
+          null, typeName.getStringValue(), count[0], moved[0], elapsedMs);
     } catch (Exception e) {
       if (implicitTx && db.isTransactionActive())
         db.rollback();
@@ -166,7 +241,10 @@ public class RebuildTypeStatement extends DDLStatement {
     result.setProperty("operation", "rebuild type");
     result.setProperty("typeName", typeName.getStringValue());
     result.setProperty("polymorphic", polymorphic);
+    result.setProperty("repartition", finalRepartition);
     result.setProperty("recordsRebuilt", count[0]);
+    if (finalRepartition)
+      result.setProperty("recordsMoved", moved[0]);
     if (reclaimSkipped) {
       final String warning = "REBUILD TYPE " + typeName.getStringValue()
           + " ran inside a caller-supplied transaction; paired external buckets were NOT reclaimed because "
