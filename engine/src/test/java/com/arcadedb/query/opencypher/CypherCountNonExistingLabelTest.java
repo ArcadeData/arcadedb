@@ -85,4 +85,45 @@ class CypherCountNonExistingLabelTest {
       rs.close();
     });
   }
+
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/4090
+   * MATCH on a non-existing label with an inline property filter must not throw,
+   * it should return 0 like Neo4j.
+   */
+  @Test
+  void countOnNonExistingLabelWithInlinePropertyShouldReturnZero() {
+    database.transaction(() -> {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n:Test {name: \"Transaction Test\"}) RETURN COUNT(n)");
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.<Long>getProperty("COUNT(n)")).isEqualTo(0L);
+      assertThat(rs.hasNext()).isFalse();
+      rs.close();
+    });
+  }
+
+  @Test
+  void matchOnNonExistingLabelWithInlinePropertyShouldReturnEmpty() {
+    database.transaction(() -> {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n:Test {name: \"Transaction Test\"}) RETURN n");
+      assertThat(rs.hasNext()).isFalse();
+      rs.close();
+    });
+  }
+
+  @Test
+  void countOnNonExistingLabelWithWhereShouldReturnZero() {
+    database.transaction(() -> {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n:Test) WHERE n.name = \"Transaction Test\" RETURN COUNT(n)");
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat(result.<Long>getProperty("COUNT(n)")).isEqualTo(0L);
+      assertThat(rs.hasNext()).isFalse();
+      rs.close();
+    });
+  }
 }

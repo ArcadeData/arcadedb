@@ -64,10 +64,12 @@ public class StatisticsProvider {
         continue; // Already collected
       }
 
+      // Skip types that do not exist in the schema (issue #4090).
+      // schema.getType() throws SchemaException for unknown names, so existsType() must be checked first.
+      if (!schema.existsType(typeName))
+        continue;
+
       final DocumentType type = schema.getType(typeName);
-      if (type == null) {
-        continue; // Type doesn't exist
-      }
 
       // Collect type cardinality using cached O(1) count
       final long recordCount = database.countType(typeName, false);
@@ -214,8 +216,10 @@ public class StatisticsProvider {
     final Schema schema = database.getSchema();
 
     // Get edge type statistics
+    if (!schema.existsType(relationshipType))
+      return 10.0; // Fallback: no edge type found
     final DocumentType edgeType = schema.getType(relationshipType);
-    if (edgeType == null || !(edgeType instanceof EdgeType)) {
+    if (!(edgeType instanceof EdgeType)) {
       return 10.0; // Fallback: no edge type found
     }
 

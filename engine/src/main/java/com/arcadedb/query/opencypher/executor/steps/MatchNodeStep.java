@@ -330,16 +330,19 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // Single label - polymorphic iteration (existing behavior)
         final String label = labels.get(0);
 
+        // If the label does not exist in the schema, the match yields no rows
+        // (matches Neo4j semantics — issue #4090). Skip all index/iteration logic.
+        if (!context.getDatabase().getSchema().existsType(label))
+          return Collections.emptyIterator();
+
         // OPTIMIZATION: Check if we can use an index for property lookup
         if (pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
           final DocumentType type = context.getDatabase().getSchema().getType(label);
-          if (type != null) {
-            // Try to find an index that matches the property constraints
-            // Support composite indexes with partial keys (leftmost prefix matching)
-            final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, currentInputResult);
-            if (indexedIter != null)
-              return indexedIter;
-          }
+          // Try to find an index that matches the property constraints
+          // Support composite indexes with partial keys (leftmost prefix matching)
+          final Iterator<Identifiable> indexedIter = tryFindAndUseIndex(type, label, currentInputResult);
+          if (indexedIter != null)
+            return indexedIter;
         }
 
         // OPTIMIZATION: Check if WHERE clause has equality predicates that can use an index
@@ -347,20 +350,15 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // an UNWIND variable (e.g., WHERE a.id = e.src_id)
         if (whereFilter != null && currentInputResult != null) {
           final DocumentType type = context.getDatabase().getSchema().getType(label);
-          if (type != null) {
-            final Iterator<Identifiable> indexedIter = tryFindAndUseIndexFromWhere(type, label, currentInputResult);
-            if (indexedIter != null)
-              return indexedIter;
-          }
+          final Iterator<Identifiable> indexedIter = tryFindAndUseIndexFromWhere(type, label, currentInputResult);
+          if (indexedIter != null)
+            return indexedIter;
         }
 
         // No index available - fall back to full type scan
-        if (context.getDatabase().getSchema().existsType(label)) {
-          @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
-              (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
-          return iter;
-        }
-        return Collections.emptyIterator();
+        @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
+            (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(label, true);
+        return iter;
       }
 
       // Multiple labels - the iteration semantics depend on whether the labels are combined
