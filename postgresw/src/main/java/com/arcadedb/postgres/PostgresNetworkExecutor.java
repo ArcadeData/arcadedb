@@ -471,22 +471,28 @@ public class PostgresNetworkExecutor extends Thread {
 
       final long engineStart = System.nanoTime();
       final ResultSet resultSet;
-      if (query.query.toUpperCase(Locale.ENGLISH).startsWith("SET ")) {
+      final String upperCaseText = query.query.toUpperCase(Locale.ENGLISH);
+      if (upperCaseText.startsWith("SET ")) {
         setConfiguration(query.query);
         resultSet = new IteratorResultSet(createResultSet("STATUS", "Setting ignored").iterator());
-      } else if (query.query.equals("SELECT VERSION()"))
-        resultSet = new IteratorResultSet(createResultSet("VERSION", PG_SERVER_VERSION).iterator());
-      else if (query.query.equals("SELECT CURRENT_SCHEMA()"))
-        resultSet = new IteratorResultSet(createResultSet("CURRENT_SCHEMA", database.getName()).iterator());
-      else if (query.query.equalsIgnoreCase("SHOW TRANSACTION ISOLATION LEVEL")) {
+      } else if (upperCaseText.startsWith("SAVEPOINT ") ||
+          upperCaseText.startsWith("RELEASE ") ||
+          upperCaseText.startsWith("ROLLBACK TO ")) {
+        resultSet = new IteratorResultSet(Collections.emptyIterator());
+      } else if (query.query.equalsIgnoreCase("SELECT VERSION()") ||
+          query.query.equalsIgnoreCase("SELECT PG_CATALOG.VERSION()"))
+        resultSet = new IteratorResultSet(createResultSet("version", buildServerVersionString()).iterator());
+      else if (query.query.equalsIgnoreCase("SELECT CURRENT_SCHEMA()") ||
+          query.query.equalsIgnoreCase("SELECT PG_CATALOG.CURRENT_SCHEMA()"))
+        resultSet = new IteratorResultSet(createResultSet("current_schema", database.getName()).iterator());
+      else if (upperCaseText.equals("SHOW TRANSACTION ISOLATION LEVEL")) {
         final Database.TRANSACTION_ISOLATION_LEVEL dbIsolationLevel = database.getTransactionIsolationLevel();
         final String level = dbIsolationLevel.name().replace('_', ' ');
         resultSet = new IteratorResultSet(createResultSet("LEVEL", level).iterator());
-      } else if (query.query.toUpperCase(Locale.ENGLISH).startsWith("SHOW ")) {
+      } else if (upperCaseText.startsWith("SHOW ")) {
         final String varName = query.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
         resultSet = new IteratorResultSet(createResultSet(varName, getShowConfigValue(varName)).iterator());
-      } else if (query.query.equalsIgnoreCase("BEGIN") ||
-          query.query.equalsIgnoreCase("BEGIN TRANSACTION")) {
+      } else if (upperCaseText.equals("BEGIN") || upperCaseText.equals("BEGIN TRANSACTION")) {
         explicitTransactionStarted = true;
         database.begin();
         resultSet = new IteratorResultSet(Collections.emptyIterator());
@@ -1132,16 +1138,18 @@ public class PostgresNetworkExecutor extends Thread {
         // RETURN EMPTY RESULT
         portal.executed = true;
         portal.cachedResultSet = new ArrayList<>();
-      } else if (upperCaseText.startsWith("SAVEPOINT ")) {
+      } else if (upperCaseText.startsWith("SAVEPOINT ") ||
+          upperCaseText.startsWith("RELEASE ") ||
+          upperCaseText.startsWith("ROLLBACK TO ")) {
         portal.ignoreExecution = true;
       } else if (upperCaseText.startsWith("SET ")) {
         setConfiguration(portal.query);
         portal.ignoreExecution = true;
-      } else if (upperCaseText.equals("SELECT VERSION()")) {
-        createResultSet(portal, "VERSION", PG_SERVER_VERSION);
+      } else if (upperCaseText.equals("SELECT VERSION()") || upperCaseText.equals("SELECT PG_CATALOG.VERSION()")) {
+        createResultSet(portal, "version", buildServerVersionString());
 
-      } else if (upperCaseText.equals("SELECT CURRENT_SCHEMA()")) {
-        createResultSet(portal, "CURRENT_SCHEMA", database.getName());
+      } else if (upperCaseText.equals("SELECT CURRENT_SCHEMA()") || upperCaseText.equals("SELECT PG_CATALOG.CURRENT_SCHEMA()")) {
+        createResultSet(portal, "current_schema", database.getName());
 
       } else if (upperCaseText.equals("SHOW TRANSACTION ISOLATION LEVEL")) {
         final Database.TRANSACTION_ISOLATION_LEVEL dbIsolationLevel = database.getTransactionIsolationLevel();
@@ -1350,6 +1358,10 @@ public class PostgresNetworkExecutor extends Thread {
     }
 
     connectionProperties.put(paramName, parts[1]);
+  }
+
+  private String buildServerVersionString() {
+    return "PostgreSQL " + PG_SERVER_VERSION + " (ArcadeDB " + Constants.getRawVersion() + ")";
   }
 
   private String getShowConfigValue(final String varName) {

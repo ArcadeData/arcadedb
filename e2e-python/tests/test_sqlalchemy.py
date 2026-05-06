@@ -80,9 +80,9 @@ def test_sqlalchemy_create_and_insert():
     """SQLAlchemy DDL and DML via text() work end-to-end."""
     engine = get_engine(arcadedb)
     with engine.connect() as conn:
-        conn.execute(text("CREATE DOCUMENT TYPE IF NOT EXISTS SaProduct"))
+        conn.execute(text("CREATE DOCUMENT TYPE SaProduct IF NOT EXISTS"))
         conn.execute(text("INSERT INTO SaProduct (name, price) VALUES ('Widget', 9)"))
-        result = conn.execute(text("SELECT * FROM SaProduct"))
+        result = conn.execute(text("SELECT FROM SaProduct"))
         rows = result.fetchall()
         assert len(rows) >= 1
         flat = [str(v) for row in rows for v in row]
