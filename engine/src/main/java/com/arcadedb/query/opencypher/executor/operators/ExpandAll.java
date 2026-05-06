@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -138,6 +139,12 @@ public class ExpandAll extends AbstractPhysicalOperator {
             if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
               continue;
 
+            // Cypher path isomorphism: each relationship in a MATCH pattern must be
+            // a distinct edge. When this hop has a named edge variable, check that the
+            // edge is not already bound to another relationship variable in the result row.
+            if (edgeVariable != null && ExpandAll.this.isEdgeAlreadyUsed(currentInputResult, edge.getIdentity()))
+              continue;
+
             // Copy input result and add edge and target vertex
             final ResultInternal result = new ResultInternal();
             for (final String prop : currentInputResult.getPropertyNames()) {
@@ -197,6 +204,21 @@ public class ExpandAll extends AbstractPhysicalOperator {
     }
 
     return sb.toString();
+  }
+
+  /**
+   * Returns true if the given edge RID is already bound to any Edge-typed property in the row.
+   * Skips the current edge variable to avoid self-comparison on rebind.
+   */
+  private boolean isEdgeAlreadyUsed(final Result row, final RID edgeRid) {
+    for (final String prop : row.getPropertyNames()) {
+      if (prop.equals(edgeVariable))
+        continue;
+      final Object val = row.getProperty(prop);
+      if (val instanceof Edge && ((Edge) val).getIdentity().equals(edgeRid))
+        return true;
+    }
+    return false;
   }
 
   public String getSourceVariable() {
