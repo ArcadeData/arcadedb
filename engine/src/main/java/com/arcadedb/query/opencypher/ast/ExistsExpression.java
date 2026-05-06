@@ -124,7 +124,9 @@ public class ExistsExpression implements Expression {
   /**
    * Injects additional MATCH patterns into the subquery.
    * If the subquery starts with MATCH, adds patterns as comma-separated items.
-   * If it's a simple pattern (no MATCH keyword), wraps it with MATCH.
+   * If the subquery starts with another clause (RETURN, WITH, ...), prepends a
+   * MATCH clause that brings the outer-bound variables into scope.
+   * If it's a simple pattern (no leading clause keyword), wraps it with MATCH.
    */
   private static String injectMatchPatterns(final String subquery, final List<String> patterns) {
     final String trimmed = subquery.trim();
@@ -138,7 +140,14 @@ public class ExistsExpression implements Expression {
       return trimmed.substring(0, pos) + String.join(", ", patterns) + ", " + trimmed.substring(pos);
     }
 
-    // Simple pattern subquery (no MATCH keyword) — add patterns after wrapping
+    // Subquery body that starts with another clause keyword: just prepend
+    // MATCH so the outer-bound variables are in scope without injecting a
+    // WHERE that would short-circuit the body's own clauses.
+    if (upper.startsWith("RETURN") || upper.startsWith("WITH") || upper.startsWith("UNWIND")
+        || upper.startsWith("CALL") || upper.startsWith("OPTIONAL"))
+      return "MATCH " + String.join(", ", patterns) + " " + trimmed;
+
+    // Simple pattern subquery (no MATCH keyword) - add patterns after wrapping
     return "MATCH " + String.join(", ", patterns) + " WHERE " + trimmed;
   }
 

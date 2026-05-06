@@ -28,6 +28,8 @@ import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
@@ -410,48 +412,62 @@ public class GraphBatch implements AutoCloseable {
 
     final long startNs = System.nanoTime();
 
-    // --- PHASE 1: Create edge records for edges that need them (non-light) ---
-    final RID[] edgeRIDs = new RID[edgeCount];
-    beginTx();
+    // Track whether this flush started the transaction so a failure (e.g. DuplicatedKeyException
+    // surfaced by the bulk-edge index update introduced for issue #4113) doesn't leave the
+    // database with the half-written batch visible to the next caller.
+    final boolean startedTx = !database.isTransactionActive();
 
-    // Count non-light edges and group by bucket for bulk creation
-    int nonLightCount = 0;
-    for (int i = 0; i < edgeCount; i++) {
-      if (lightEdges && !edgeHasProperties[i])
-        edgeRIDs[i] = new RID(edgeTypeBucketIds[i], -1L);
-      else
-        nonLightCount++;
+    try {
+      // --- PHASE 1: Create edge records for edges that need them (non-light) ---
+      final RID[] edgeRIDs = new RID[edgeCount];
+      beginTx();
+
+      // Count non-light edges and group by bucket for bulk creation
+      int nonLightCount = 0;
+      for (int i = 0; i < edgeCount; i++) {
+        if (lightEdges && !edgeHasProperties[i])
+          edgeRIDs[i] = new RID(edgeTypeBucketIds[i], -1L);
+        else
+          nonLightCount++;
+      }
+
+      if (nonLightCount > 0)
+        createEdgeRecordsBulk(edgeRIDs, nonLightCount);
+
+
+      // --- PHASE 2: Partition by source bucket (O(n) counting sort + per-bucket position sort) ---
+      final int maxBucket = partitionBySourceBucket();
+
+      // --- PHASE 3: Connect outgoing edges ---
+      if (parallelFlush) {
+        // Commit edge records to release page locks before parallel work
+        database.commit();
+        connectOutgoingEdgesParallel(edgeRIDs, maxBucket);
+      } else {
+        connectOutgoingEdgesSorted(edgeRIDs);
+        database.commit();
+      }
+
+      // --- PHASE 4: Accumulate incoming edges in deferred buffer (array-only, no DB) ---
+      if (bidirectional)
+        accumulateIncomingEdges(edgeRIDs);
+
+      totalEdgesCreated += edgeCount;
+      totalFlushes++;
+      totalFlushTimeNs += System.nanoTime() - startNs;
+
+      // Reset buffer
+      edgeCount = 0;
+      // Clear property references to allow GC
+      Arrays.fill(edgeProperties, 0, edgeProperties.length, null);
+    } catch (final RuntimeException e) {
+      if (startedTx && database.isTransactionActive())
+        database.rollback();
+      // Discard the buffered edges so a subsequent close() / flush() doesn't replay them.
+      Arrays.fill(edgeProperties, 0, edgeProperties.length, null);
+      edgeCount = 0;
+      throw e;
     }
-
-    if (nonLightCount > 0)
-      createEdgeRecordsBulk(edgeRIDs, nonLightCount);
-
-
-    // --- PHASE 2: Partition by source bucket (O(n) counting sort + per-bucket position sort) ---
-    final int maxBucket = partitionBySourceBucket();
-
-    // --- PHASE 3: Connect outgoing edges ---
-    if (parallelFlush) {
-      // Commit edge records to release page locks before parallel work
-      database.commit();
-      connectOutgoingEdgesParallel(edgeRIDs, maxBucket);
-    } else {
-      connectOutgoingEdgesSorted(edgeRIDs);
-      database.commit();
-    }
-
-    // --- PHASE 4: Accumulate incoming edges in deferred buffer (array-only, no DB) ---
-    if (bidirectional)
-      accumulateIncomingEdges(edgeRIDs);
-
-    totalEdgesCreated += edgeCount;
-    totalFlushes++;
-    totalFlushTimeNs += System.nanoTime() - startNs;
-
-    // Reset buffer
-    edgeCount = 0;
-    // Clear property references to allow GC
-    Arrays.fill(edgeProperties, 0, edgeProperties.length, null);
   }
 
   /**
@@ -706,9 +722,23 @@ public class GraphBatch implements AutoCloseable {
       final RID[] bulkRIDs = new RID[nonLightCount];
       bucket.createRecordsBulk(serializedBuffers, 0, nonLightCount, bulkRIDs);
 
+      // Resolve indexes on this edge bucket once per flush (issue #4113):
+      // the bulk write skips LocalDatabase.createRecord, so unique/non-unique indexes are not
+      // updated unless we re-apply them here. Index entries scheduled in the transaction
+      // surface DuplicatedKeyException eagerly when a unique constraint is violated.
+      final List<IndexInternal> bucketIndexes = database.getSchema()
+          .getTypeByBucketId(firstBucket).getPolymorphicBucketIndexByBucketId(firstBucket, null);
+
       for (int k = 0; k < nonLightCount; k++) {
-        edgeRIDs[nonLightIndices[k]] = bulkRIDs[k];
+        final int i = nonLightIndices[k];
+        edgeRIDs[i] = bulkRIDs[k];
         database.getTransaction().updateBucketRecordDelta(firstBucket, +1);
+
+        if (!bucketIndexes.isEmpty())
+          indexEdgeProperties(bucketIndexes, bulkRIDs[k],
+              edgeSrcBucketIds[i], edgeSrcPositions[i],
+              edgeDstBucketIds[i], edgeDstPositions[i],
+              edgeProperties[i]);
       }
     } else {
       // Multiple buckets — fall back to per-edge standard creation
@@ -727,10 +757,61 @@ public class GraphBatch implements AutoCloseable {
     }
   }
 
+  /**
+   * Registers a freshly bulk-created edge into the indexes defined on its bucket.
+   * Mirrors the relevant portion of {@link com.arcadedb.database.DocumentIndexer#createDocument}
+   * but reads property values straight from the flat edge buffer instead of materializing
+   * a {@link MutableEdge}. The pseudo-properties {@code @out} and {@code @in} resolve to
+   * the source / destination vertex RIDs (issue #4113).
+   */
+  private void indexEdgeProperties(final List<IndexInternal> indexes, final RID rid,
+      final int srcBucket, final long srcPosition, final int dstBucket, final long dstPosition,
+      final Object[] properties) {
+    final RID[] ridArr = { rid };
+    for (final Index index : indexes) {
+      final List<String> keyNames = index.getPropertyNames();
+      final int keyCount = keyNames.size();
+      final Object[] keyValues = new Object[keyCount];
+      for (int p = 0; p < keyCount; p++) {
+        final String name = keyNames.get(p);
+        if ("@out".equals(name))
+          keyValues[p] = new RID(srcBucket, srcPosition);
+        else if ("@in".equals(name))
+          keyValues[p] = new RID(dstBucket, dstPosition);
+        else
+          keyValues[p] = lookupEdgeProperty(properties, name);
+      }
+      index.put(keyValues, ridArr);
+    }
+  }
+
+  /**
+   * Looks up a property value from the flat {@code [key, value, key, value, ...]} edge
+   * buffer used by {@link #newEdge}. Returns {@code null} when the property is absent.
+   */
+  private static Object lookupEdgeProperty(final Object[] properties, final String name) {
+    if (properties == null)
+      return null;
+    for (int i = 0; i < properties.length; i += 2) {
+      if (name.equals(properties[i]))
+        return properties[i + 1];
+    }
+    return null;
+  }
+
   @Override
   public void close() {
-    // Flush any remaining outgoing edges
-    flush();
+    RuntimeException flushFailure = null;
+
+    // Flush any remaining outgoing edges. Capture rather than rethrow so we can still drain the
+    // deferred IN buffer for previously-flushed edges; otherwise a unique-constraint violation
+    // on the trailing buffer (issue #4113) would leave already-persisted edges with no
+    // back-pointer and trip the database integrity checker.
+    try {
+      flush();
+    } catch (final RuntimeException e) {
+      flushFailure = e;
+    }
 
     // Connect all deferred incoming edges in one sorted pass
     if (bidirectional && inEdgeCount > 0)
@@ -747,6 +828,9 @@ public class GraphBatch implements AutoCloseable {
         "GraphBatch closed: vertices=%d edges=%d flushes=%d avgFlushMs=%.1f",
         null, totalVerticesCreated, totalEdgesCreated, totalFlushes,
         totalFlushes > 0 ? (totalFlushTimeNs / totalFlushes) / 1_000_000.0 : 0.0);
+
+    if (flushFailure != null)
+      throw flushFailure;
   }
 
   /**

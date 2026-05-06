@@ -339,6 +339,30 @@ class OpenCypherSpatialFunctionsComprehensiveTest {
     Assertions.assertThat(result.next().getProperty("inside") == null).isTrue();
   }
 
+  @Test
+  void pointWithinBBoxCrossmeridianInside() {
+    final ResultSet result = database.command("opencypher",
+        """
+        WITH
+          point({longitude: 179, latitude: 55.66}) AS lowerLeft,
+          point({longitude: -179, latitude: 55.70}) AS upperRight
+        RETURN point.withinBBox(point({longitude: 180, latitude: 55.66}), lowerLeft, upperRight) AS result""");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    assertThat((Boolean) result.next().getProperty("result")).isTrue();
+  }
+
+  @Test
+  void pointWithinBBoxCrossmeridianOutside() {
+    final ResultSet result = database.command("opencypher",
+        """
+        WITH
+          point({longitude: 170, latitude: 10}) AS lowerLeft,
+          point({longitude: -170, latitude: 20}) AS upperRight
+        RETURN point.withinBBox(point({longitude: 0, latitude: 15}), lowerLeft, upperRight) AS result""");
+    Assertions.assertThat(result.hasNext()).isTrue();
+    assertThat((Boolean) result.next().getProperty("result")).isFalse();
+  }
+
   // ==================== Combined/Integration Tests ====================
 
   @Test

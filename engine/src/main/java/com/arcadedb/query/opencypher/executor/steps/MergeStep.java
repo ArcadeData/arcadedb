@@ -650,7 +650,11 @@ public class MergeStep extends AbstractExecutionStep {
         if (indexIter != null) {
           while (indexIter.hasNext()) {
             final Identifiable identifiable = indexIter.next();
-            if (identifiable instanceof Vertex vertex && matchesProperties(vertex, evaluatedProperties))
+            if (identifiable == null)
+              continue;
+            // Index cursors yield RIDs; resolve to record to obtain the Vertex instance
+            final Vertex vertex = resolveVertex(identifiable);
+            if (vertex != null && matchesProperties(vertex, evaluatedProperties))
               matches.add(vertex);
           }
           return matches;
@@ -667,6 +671,23 @@ public class MergeStep extends AbstractExecutionStep {
           matches.add(vertex);
     }
     return matches;
+  }
+
+  /**
+   * Resolves an {@link Identifiable} (typically an RID returned by an index cursor) to a {@link Vertex} instance.
+   * Returns {@code null} if the record cannot be loaded or is not a vertex (e.g. dangling RID after deletion).
+   */
+  private Vertex resolveVertex(final Identifiable identifiable) {
+    if (identifiable instanceof Vertex v)
+      return v;
+    try {
+      final var record = context.getDatabase().lookupByRID(identifiable.getIdentity(), true);
+      if (record instanceof Vertex v)
+        return v;
+    } catch (final Exception ignore) {
+      // Record may have been removed or be inaccessible
+    }
+    return null;
   }
 
   /**

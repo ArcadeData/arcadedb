@@ -62,4 +62,24 @@ class IndexSyntaxTest extends TestHelper {
     var schema = database.getSchema();
     assertThat(schema.getIndexes().length > 0).isTrue();
   }
+
+  @Test
+  void rebuildEdgeIndexOnOutInProperties() {
+    database.command("sql", "CREATE VERTEX TYPE V");
+    database.command("sql", "CREATE EDGE TYPE E");
+    database.command("sql", "CREATE INDEX ON E (`@out`, `@in`) UNIQUE");
+
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX V SET id = 1");
+      database.command("sql", "CREATE VERTEX V SET id = 2");
+      database.command("sql", "CREATE EDGE E FROM (SELECT FROM V WHERE id = 1) TO (SELECT FROM V WHERE id = 2)");
+    });
+
+    // REBUILD INDEX * iterates every per-bucket leaf index, so the edge index over (@out, @in)
+    // is rebuilt through BucketIndexBuilder. The builder must accept @out/@in for edges even
+    // though they are not declared as regular properties on the type.
+    database.command("sql", "REBUILD INDEX *");
+
+    assertThat(database.getSchema().getIndexByName("E[@out,@in]")).isNotNull();
+  }
 }

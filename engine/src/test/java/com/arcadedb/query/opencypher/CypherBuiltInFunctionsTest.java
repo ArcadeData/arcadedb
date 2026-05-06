@@ -1226,6 +1226,61 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     assertThat((Boolean) fn.execute(new Object[] { point, lowerLeft, upperRight }, null)).isTrue();
   }
 
+  @Test
+  void pointWithinBBoxCrossmeridianInside() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("point.withinBBox");
+    final var point = Map.of("longitude", 180.0, "latitude", 55.66);
+    final var lowerLeft = Map.of("longitude", 179.0, "latitude", 55.66);
+    final var upperRight = Map.of("longitude", -179.0, "latitude", 55.70);
+    assertThat((Boolean) fn.execute(new Object[] { point, lowerLeft, upperRight }, null)).isTrue();
+  }
+
+  @Test
+  void pointWithinBBoxCrossmeridianOutside() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("point.withinBBox");
+    final var point = Map.of("longitude", 0.0, "latitude", 55.67);
+    final var lowerLeft = Map.of("longitude", 179.0, "latitude", 55.66);
+    final var upperRight = Map.of("longitude", -179.0, "latitude", 55.70);
+    assertThat((Boolean) fn.execute(new Object[] { point, lowerLeft, upperRight }, null)).isFalse();
+  }
+
+  @Test
+  void pointWithinBBoxCrossmeridianLongitudeInsideLatitudeOutside() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("point.withinBBox");
+    final var point = Map.of("longitude", 180.0, "latitude", 60.0);
+    final var lowerLeft = Map.of("longitude", 179.0, "latitude", 55.66);
+    final var upperRight = Map.of("longitude", -179.0, "latitude", 55.70);
+    assertThat((Boolean) fn.execute(new Object[] { point, lowerLeft, upperRight }, null)).isFalse();
+  }
+
+  @Test
+  void pointWithinBBoxCrossmeridianAtAntimeridian() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("point.withinBBox");
+    final var lowerLeft = Map.of("longitude", 179.0, "latitude", 55.66);
+    final var upperRight = Map.of("longitude", -179.0, "latitude", 55.70);
+    assertThat((Boolean) fn.execute(new Object[] { Map.of("longitude", -180.0, "latitude", 55.68), lowerLeft, upperRight }, null)).isTrue();
+    assertThat((Boolean) fn.execute(new Object[] { Map.of("longitude", 180.0, "latitude", 55.68), lowerLeft, upperRight }, null)).isTrue();
+  }
+
+  @Test
+  void pointWithinBBoxMixedCoordinateSystemsReturnsNull() {
+    final var factory = new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance());
+    final var fn = factory.getFunctionExecutor("point.withinBBox");
+    final var cartesian = Map.of("x", 5.0, "y", 5.0);
+    final var geographic = Map.of("longitude", 5.0, "latitude", 5.0);
+    final var cartesianBox = Map.of("x", 0.0, "y", 0.0);
+    final var cartesianBoxUR = Map.of("x", 10.0, "y", 10.0);
+    final var geographicBox = Map.of("longitude", 0.0, "latitude", 0.0);
+    final var geographicBoxUR = Map.of("longitude", 10.0, "latitude", 10.0);
+    assertThat(fn.execute(new Object[] { cartesian, geographicBox, geographicBoxUR }, null)).isNull();
+    assertThat(fn.execute(new Object[] { geographic, cartesianBox, cartesianBoxUR }, null)).isNull();
+    assertThat(fn.execute(new Object[] { cartesian, cartesianBox, geographicBoxUR }, null)).isNull();
+  }
+
   // ===================== VECTOR / VECTOR_NORM / VECTOR_DISTANCE FUNCTION TESTS (Issue #3427) =====================
 
   @Test

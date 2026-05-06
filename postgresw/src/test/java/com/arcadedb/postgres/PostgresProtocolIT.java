@@ -75,7 +75,16 @@ class PostgresProtocolIT extends BaseGraphServerTest {
     try (var conn = getConnection(); var st = conn.createStatement()) {
       ResultSet rs = st.executeQuery("SELECT VERSION()");
       assertThat(rs.next()).isTrue();
-      assertThat(rs.getString(1)).isNotNull();
+      assertThat(rs.getString(1)).startsWith("PostgreSQL " + PostgresNetworkExecutor.PG_SERVER_VERSION);
+    }
+  }
+
+  @Test
+  void selectVersionLowercase() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      ResultSet rs = st.executeQuery("select version()");
+      assertThat(rs.next()).isTrue();
+      assertThat(rs.getString(1)).startsWith("PostgreSQL " + PostgresNetworkExecutor.PG_SERVER_VERSION);
     }
   }
 
@@ -94,6 +103,24 @@ class PostgresProtocolIT extends BaseGraphServerTest {
       ResultSet rs = st.executeQuery("SHOW TRANSACTION ISOLATION LEVEL");
       assertThat(rs.next()).isTrue();
       assertThat(rs.getString("LEVEL")).isNotNull();
+    }
+  }
+
+  @Test
+  void showServerVersion() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      ResultSet rs = st.executeQuery("SHOW server_version");
+      assertThat(rs.next()).isTrue();
+      assertThat(rs.getString("server_version")).isEqualTo(PostgresNetworkExecutor.PG_SERVER_VERSION);
+    }
+  }
+
+  @Test
+  void showStandardConformingStrings() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      ResultSet rs = st.executeQuery("SHOW standard_conforming_strings");
+      assertThat(rs.next()).isTrue();
+      assertThat(rs.getString("standard_conforming_strings")).isEqualTo("on");
     }
   }
 

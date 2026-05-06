@@ -35,22 +35,32 @@ public class PointWithinBBoxFunction implements StatelessFunction {
   }
 
   @Override
-  @SuppressWarnings("unchecked")
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 3)
       throw new CommandExecutionException("point.withinBBox() requires exactly 3 arguments: point, lowerLeft, upperRight");
     if (args[0] == null || args[1] == null || args[2] == null)
       return null;
+    final boolean pointGeo = isGeographic(args[0]);
+    final boolean lowerLeftGeo = isGeographic(args[1]);
+    final boolean upperRightGeo = isGeographic(args[2]);
+    if (pointGeo != lowerLeftGeo || lowerLeftGeo != upperRightGeo)
+      return null;
     final double[] point = extractCoordinates(args[0]);
     final double[] lowerLeft = extractCoordinates(args[1]);
     final double[] upperRight = extractCoordinates(args[2]);
-    return lowerLeft[0] <= point[0] && point[0] <= upperRight[0]
-        && lowerLeft[1] <= point[1] && point[1] <= upperRight[1];
+    final boolean longitudeInRange;
+    if (lowerLeftGeo && lowerLeft[0] > upperRight[0])
+      // Crossmeridian bbox: lowerLeft.longitude > upperRight.longitude means the box wraps around ±180
+      longitudeInRange = point[0] >= lowerLeft[0] || point[0] <= upperRight[0];
+    else
+      longitudeInRange = lowerLeft[0] <= point[0] && point[0] <= upperRight[0];
+    return longitudeInRange && lowerLeft[1] <= point[1] && point[1] <= upperRight[1];
   }
 
   private double[] extractCoordinates(final Object value) {
     if (value instanceof Map<?, ?> map) {
-      // Try x/y first, then longitude/latitude
+      if (isGeographic(map))
+        return new double[] { ((Number) map.get("longitude")).doubleValue(), ((Number) map.get("latitude")).doubleValue() };
       if (map.containsKey("x") && map.containsKey("y"))
         return new double[] { ((Number) map.get("x")).doubleValue(), ((Number) map.get("y")).doubleValue() };
       if (map.containsKey("longitude") && map.containsKey("latitude"))
@@ -58,5 +68,18 @@ public class PointWithinBBoxFunction implements StatelessFunction {
       throw new CommandExecutionException("Point must have x/y or longitude/latitude properties");
     }
     throw new CommandExecutionException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
+  }
+
+  private boolean isGeographic(final Object value) {
+    if (!(value instanceof Map<?, ?> map))
+      return false;
+    final Object crs = map.get("crs");
+    if (crs instanceof String s) {
+      if (s.startsWith("WGS-84"))
+        return true;
+      if (s.startsWith("cartesian"))
+        return false;
+    }
+    return map.containsKey("longitude") && map.containsKey("latitude") && !map.containsKey("x");
   }
 }

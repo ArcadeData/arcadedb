@@ -1415,9 +1415,18 @@ public class CypherExecutionPlan {
             ("  nd" + anonymousVarCounter++);
         matchVariables.add(variable);
 
-        // Check if this variable was already bound in a previous MATCH clause
-        if (boundVariables.contains(variable)) {
-          // Variable already bound - skip creating a new MatchNodeStep
+        // Optimization: when the variable is already bound from a previous clause AND
+        // the new node pattern carries no additional constraints (no labels, no inline
+        // properties), skip the redundant MatchNodeStep - the carried binding already
+        // satisfies the empty constraint. We can only skip safely if the carried
+        // value is guaranteed to be a vertex (i.e. it came from a non-OPTIONAL MATCH).
+        // When the pattern adds labels or inline properties, MatchNodeStep must run
+        // so the constraints are checked against the bound vertex (and a null binding
+        // from an OPTIONAL MATCH correctly filters the row out - issue #4102).
+        if (boundVariables.contains(variable)
+            && !nodePattern.hasLabels()
+            && !nodePattern.hasProperties()) {
+          // Variable already bound and no new constraints - skip creating a new MatchNodeStep
           // But still handle zero-length named paths
           final String singlePathVar = pathPattern.hasPathVariable() ? pathPattern.getPathVariable() : null;
           if (singlePathVar != null) {

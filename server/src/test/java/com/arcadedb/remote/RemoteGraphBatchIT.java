@@ -335,4 +335,92 @@ class RemoteGraphBatchIT extends BaseGraphServerTest {
 
     database.close();
   }
+
+  /**
+   * Issue #4113: a UNIQUE composite index on an edge type must reject duplicates added via
+   * {@link RemoteGraphBatch}. Two duplicates inside the same flush both roll back (standard
+   * transaction semantics: the failing batch leaves no partial state behind), so no edge
+   * survives.
+   */
+  @Test
+  void uniqueEdgeIndexRejectsDuplicatesSameFlush() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    database.command("sql", "CREATE VERTEX TYPE zone");
+    database.command("sql", "CREATE VERTEX TYPE device");
+    database.command("sql", "CREATE PROPERTY zone.id STRING");
+    database.command("sql", "CREATE PROPERTY device.id STRING");
+    database.command("sql", "CREATE EDGE TYPE zone_device");
+    database.command("sql", "CREATE PROPERTY zone_device.from_id STRING");
+    database.command("sql", "CREATE INDEX ON zone_device (from_id) NOTUNIQUE");
+    database.command("sql", "CREATE PROPERTY zone_device.to_id STRING");
+    database.command("sql", "CREATE INDEX ON zone_device (to_id) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON zone_device (from_id,to_id) UNIQUE");
+
+    Throwable thrown = null;
+    try (final RemoteGraphBatch batch = database.batch().build()) {
+      final String zoneId = "zone1";
+      final String deviceId = "device1";
+      final String from = batch.createVertex("zone", "id", zoneId);
+      final String to = batch.createVertex("device", "id", deviceId);
+      batch.flush();
+      batch.createEdge("zone_device", from, to, "from_id", zoneId, "to_id", deviceId);
+      batch.createEdge("zone_device", from, to, "from_id", zoneId, "to_id", deviceId);
+      batch.flush();
+    } catch (final Throwable t) {
+      thrown = t;
+    }
+    assertThat(thrown).as("Expected duplicate-key error from the server").isNotNull();
+
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM zone_device")) {
+      assertThat(((Number) rs.nextIfAvailable().getProperty("cnt")).longValue()).isZero();
+    }
+
+    database.close();
+  }
+
+  /**
+   * Issue #4113: when the duplicate appears in a LATER server-side batch than the original,
+   * the first edge stays committed and only the duplicate is rejected.
+   */
+  @Test
+  void uniqueEdgeIndexRejectsDuplicatesAcrossFlushes() {
+    final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480, DATABASE_NAME, "root",
+        BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
+
+    database.command("sql", "CREATE VERTEX TYPE zone");
+    database.command("sql", "CREATE VERTEX TYPE device");
+    database.command("sql", "CREATE PROPERTY zone.id STRING");
+    database.command("sql", "CREATE PROPERTY device.id STRING");
+    database.command("sql", "CREATE EDGE TYPE zone_device");
+    database.command("sql", "CREATE PROPERTY zone_device.from_id STRING");
+    database.command("sql", "CREATE INDEX ON zone_device (from_id) NOTUNIQUE");
+    database.command("sql", "CREATE PROPERTY zone_device.to_id STRING");
+    database.command("sql", "CREATE INDEX ON zone_device (to_id) NOTUNIQUE");
+    database.command("sql", "CREATE INDEX ON zone_device (from_id,to_id) UNIQUE");
+
+    final String from;
+    final String to;
+    try (final RemoteGraphBatch batch = database.batch().build()) {
+      from = batch.createVertex("zone", "id", "zone1");
+      to = batch.createVertex("device", "id", "device1");
+      batch.flush();
+      batch.createEdge("zone_device", from, to, "from_id", "zone1", "to_id", "device1");
+    }
+
+    Throwable thrown = null;
+    try (final RemoteGraphBatch batch = database.batch().build()) {
+      batch.createEdge("zone_device", from, to, "from_id", "zone1", "to_id", "device1");
+    } catch (final Throwable t) {
+      thrown = t;
+    }
+    assertThat(thrown).as("Expected duplicate-key error from the server").isNotNull();
+
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM zone_device")) {
+      assertThat(((Number) rs.nextIfAvailable().getProperty("cnt")).longValue()).isOne();
+    }
+
+    database.close();
+  }
 }

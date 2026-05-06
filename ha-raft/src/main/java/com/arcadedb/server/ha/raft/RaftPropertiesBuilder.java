@@ -21,6 +21,8 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
+import com.arcadedb.server.ha.raft.ratis.FixedGrpcRpcType;
+import org.apache.ratis.RaftConfigKeys;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.server.RaftServerConfigKeys;
@@ -41,6 +43,14 @@ class RaftPropertiesBuilder {
 
   static RaftProperties build(final ContextConfiguration configuration) {
     final RaftProperties properties = new RaftProperties();
+
+    // Replace Ratis's stock GrpcLogAppender with our subclass that fixes RATIS-2523
+    // (heartbeat-only INCONSISTENCY loop after a follower restarts with empty Raft storage on
+    // an idle cluster). Wired via RpcType.valueOf which accepts a fully-qualified class name
+    // and reflectively instantiates it; FixedGrpcRpcType returns a FixedGrpcFactory that
+    // returns a FixedGrpcLogAppender subclass. Drop these three classes and revert this line
+    // to SupportedRpcType.GRPC once RATIS-2523 ships in an Apache Ratis release.
+    properties.set(RaftConfigKeys.Rpc.TYPE_KEY, FixedGrpcRpcType.class.getName());
 
     // Use the configured Raft port for the local gRPC bind address.
     // Note: the peer address in the server list may differ from the bind port when traffic

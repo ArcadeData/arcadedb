@@ -40,16 +40,23 @@ public class LogicalRelationship {
   private final Integer minHops;
   private final Integer maxHops;
   private final PathMode pathMode;
+  private final int clauseIndex;
 
   public LogicalRelationship(final String variable, final String sourceVariable, final String targetVariable,
                             final List<String> types, final Direction direction, final Map<String, Object> properties,
                             final Integer minHops, final Integer maxHops) {
-    this(variable, sourceVariable, targetVariable, types, direction, properties, minHops, maxHops, null);
+    this(variable, sourceVariable, targetVariable, types, direction, properties, minHops, maxHops, null, 0);
   }
 
   public LogicalRelationship(final String variable, final String sourceVariable, final String targetVariable,
                             final List<String> types, final Direction direction, final Map<String, Object> properties,
                             final Integer minHops, final Integer maxHops, final PathMode pathMode) {
+    this(variable, sourceVariable, targetVariable, types, direction, properties, minHops, maxHops, pathMode, 0);
+  }
+
+  public LogicalRelationship(final String variable, final String sourceVariable, final String targetVariable,
+                            final List<String> types, final Direction direction, final Map<String, Object> properties,
+                            final Integer minHops, final Integer maxHops, final PathMode pathMode, final int clauseIndex) {
     this.variable = variable;
     this.sourceVariable = sourceVariable;
     this.targetVariable = targetVariable;
@@ -60,6 +67,15 @@ public class LogicalRelationship {
     this.maxHops = maxHops;
     this.isVariableLength = minHops != null || maxHops != null;
     this.pathMode = pathMode;
+    this.clauseIndex = clauseIndex;
+  }
+
+  /**
+   * MATCH-clause index this relationship belongs to. Cypher relationship uniqueness only
+   * applies within a single MATCH clause, so the optimizer needs this to scope the check.
+   */
+  public int getClauseIndex() {
+    return clauseIndex;
   }
 
   public String getVariable() {

@@ -45,10 +45,16 @@ import java.util.Map;
 public class PatternPredicateExpression implements BooleanExpression {
   private final PathPattern pathPattern;
   private final boolean isNegated;
+  private final String patternText;
 
   public PatternPredicateExpression(final PathPattern pathPattern, final boolean isNegated) {
+    this(pathPattern, isNegated, null);
+  }
+
+  public PatternPredicateExpression(final PathPattern pathPattern, final boolean isNegated, final String patternText) {
     this.pathPattern = pathPattern;
     this.isNegated = isNegated;
+    this.patternText = patternText;
   }
 
   @Override
@@ -69,13 +75,21 @@ public class PatternPredicateExpression implements BooleanExpression {
       return false;
     }
 
+    // Multi-hop patterns or patterns whose start node does not bind to a row
+    // variable are not handled by the in-memory single-edge fast path. Delegate
+    // to the EXISTS subquery infrastructure so that the WHERE-pattern semantics
+    // mirror EXISTS { MATCH <pattern> } (Cypher spec).
+    if (pathPattern.getRelationshipCount() > 1 || isUncorrelatedStart(result))
+      return evaluateAsSubquery(result, context);
+
     // Get the start node
     final NodePattern startNodePattern = pathPattern.getNode(0);
     final Vertex startVertex = getVertexFromPattern(startNodePattern, result);
 
     if (startVertex == null) {
-      // Start node not found in result
-      return false;
+      // Start node not bound in result - delegate to EXISTS subquery (handles
+      // un-named or out-of-scope start nodes).
+      return evaluateAsSubquery(result, context);
     }
 
     // Get the relationship pattern
@@ -342,6 +356,38 @@ public class PatternPredicateExpression implements BooleanExpression {
       }
     }
     return true;
+  }
+
+  /**
+   * Returns true if the pattern's start node does not refer to a variable bound in the
+   * current row (i.e. the predicate is uncorrelated to the outer row's vertex bindings).
+   */
+  private boolean isUncorrelatedStart(final Result result) {
+    final NodePattern startNodePattern = pathPattern.getNode(0);
+    if (startNodePattern == null)
+      return true;
+    final String variable = startNodePattern.getVariable();
+    if (variable == null || variable.isEmpty())
+      return true;
+    if (result == null)
+      return true;
+    final Object value = result.getProperty(variable);
+    return !(value instanceof Vertex);
+  }
+
+  /**
+   * Evaluates the pattern predicate by delegating to a Cypher {@code EXISTS { MATCH ... }}
+   * subquery. Outer-row variables referenced inside the pattern are pinned via parameters,
+   * matching the semantics used by {@link ExistsExpression}.
+   */
+  private boolean evaluateAsSubquery(final Result result, final CommandContext context) {
+    if (patternText == null || patternText.isEmpty())
+      return false;
+
+    final String matchQuery = "MATCH " + patternText + " RETURN 1 LIMIT 1";
+    final ExistsExpression exists = new ExistsExpression(matchQuery, getText());
+    final Object value = exists.evaluate(result, context);
+    return Boolean.TRUE.equals(value);
   }
 
   @Override

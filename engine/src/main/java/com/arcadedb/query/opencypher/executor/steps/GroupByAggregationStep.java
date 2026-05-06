@@ -505,6 +505,18 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         collectAggregations(alt.getThenExpression(), innerAggs, innerFunctions);
       }
       collectAggregations(ce.getElseExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof ListSliceExpression lse) {
+      collectAggregations(lse.getListExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof ListIndexExpression lie) {
+      collectAggregations(lie.getListExpression(), innerAggs, innerFunctions);
+      collectAggregations(lie.getIndexExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof ReduceExpression re) {
+      collectAggregations(re.getInitialValue(), innerAggs, innerFunctions);
+      collectAggregations(re.getListExpression(), innerAggs, innerFunctions);
+      collectAggregations(re.getReduceExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof MapExpression me) {
+      for (final Expression value : me.getEntries().values())
+        collectAggregations(value, innerAggs, innerFunctions);
     } else if (expr instanceof BooleanWrapperExpression bwe) {
       collectBooleanAggregations(bwe.getBooleanExpression(), innerAggs, innerFunctions);
     }

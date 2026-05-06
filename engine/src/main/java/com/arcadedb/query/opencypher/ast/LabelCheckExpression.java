@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -81,24 +82,38 @@ public class LabelCheckExpression implements BooleanExpression {
     if (value == null)
       return null; // null:Label -> null in Cypher 3VL
 
-    if (!(value instanceof Vertex))
-      return false;
-
-    final Vertex vertex = (Vertex) value;
-
-    if (operator == LabelOperator.OR) {
-      for (final String label : labels) {
-        if (Labels.hasLabel(vertex, label))
-          return true;
+    if (value instanceof Vertex vertex) {
+      if (operator == LabelOperator.OR) {
+        for (final String label : labels) {
+          if (Labels.hasLabel(vertex, label))
+            return true;
+        }
+        return false;
       }
-      return false;
-    } else {
       for (final String label : labels) {
         if (!Labels.hasLabel(vertex, label))
           return false;
       }
       return true;
     }
+
+    if (value instanceof Edge edge) {
+      // For relationships, ":Type" is a type-equality predicate. With multiple
+      // labels, the OR operator (e.g. r:KNOWS|LIKES) checks if the edge is one
+      // of the listed types; a bare conjunction of type names cannot match an
+      // edge (which has exactly one type), so it evaluates to false.
+      final String edgeType = edge.getTypeName();
+      if (operator == LabelOperator.OR || labels.size() == 1) {
+        for (final String label : labels) {
+          if (label.equals(edgeType))
+            return true;
+        }
+        return false;
+      }
+      return false;
+    }
+
+    return false;
   }
 
   @Override

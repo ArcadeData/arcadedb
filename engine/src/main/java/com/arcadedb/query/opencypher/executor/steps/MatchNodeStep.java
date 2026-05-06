@@ -339,6 +339,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
         final String label = labels.get(0);
         final DocumentType type = context.getDatabase().getSchema().getType(label);
 
+        // If the label does not exist in the schema, the match yields no rows
+        // (matches Neo4j semantics — issue #4090). Skip all index/iteration logic.
+        if (!context.getDatabase().getSchema().existsType(label))
+          return Collections.emptyIterator();
+
         // OPTIMIZATION: Check if we can use an index for property lookup
         if (type != null && pattern.hasProperties() && !pattern.getProperties().isEmpty()) {
           // Try to find an index that matches the property constraints
@@ -382,21 +387,31 @@ public class MatchNodeStep extends AbstractExecutionStep {
         return Collections.emptyIterator();
       }
 
-      // Multiple labels - iterate all vertex types that extend ALL required labels.
-      // We can't use simple polymorphic iteration because A~B~C extends A, B, C
-      // individually but iterateType("A", true) may not include A~B~C.
-      // Instead, find all types that are instanceOf ALL labels and iterate them.
+      // Multiple labels - the iteration semantics depend on whether the labels are combined
+      // with OR (disjunction, e.g. (n:A|B)) or AND (conjunction, e.g. (n:A:B)).
+      final boolean disjunction = pattern.isLabelDisjunction();
       final List<Iterator<Identifiable>> iterators = new ArrayList<>();
       for (final DocumentType type : context.getDatabase().getSchema().getTypes()) {
         if (type instanceof VertexType) {
-          boolean matchesAll = true;
-          for (final String label : labels) {
-            if (!type.instanceOf(label)) {
-              matchesAll = false;
-              break;
+          boolean matches;
+          if (disjunction) {
+            matches = false;
+            for (final String label : labels) {
+              if (type.instanceOf(label)) {
+                matches = true;
+                break;
+              }
+            }
+          } else {
+            matches = true;
+            for (final String label : labels) {
+              if (!type.instanceOf(label)) {
+                matches = false;
+                break;
+              }
             }
           }
-          if (matchesAll) {
+          if (matches) {
             @SuppressWarnings("unchecked") final Iterator<Identifiable> iter =
                 (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
             iterators.add(iter);
@@ -753,6 +768,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final List<String> labels = resolveEffectiveLabels(currentResult);
     if (labels.size() <= 1)
       return true; // Single label already filtered by iterator
+    if (pattern.isLabelDisjunction()) {
+      for (final String label : labels)
+        if (Labels.hasLabel(vertex, label))
+          return true;
+      return false;
+    }
     for (final String label : labels)
       if (!Labels.hasLabel(vertex, label))
         return false;
@@ -772,6 +793,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
     final List<String> labels = resolveEffectiveLabels(currentResult);
     if (labels.isEmpty())
       return true;
+    if (pattern.isLabelDisjunction()) {
+      for (final String label : labels)
+        if (Labels.hasLabel(vertex, label))
+          return true;
+      return false;
+    }
     for (final String label : labels)
       if (!Labels.hasLabel(vertex, label))
         return false;
