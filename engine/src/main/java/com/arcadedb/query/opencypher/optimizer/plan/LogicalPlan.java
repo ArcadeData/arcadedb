@@ -107,13 +107,14 @@ public class LogicalPlan {
       return;
     }
 
-    for (final MatchClause matchClause : matchClauses) {
+    for (int clauseIndex = 0; clauseIndex < matchClauses.size(); clauseIndex++) {
+      final MatchClause matchClause = matchClauses.get(clauseIndex);
       if (!matchClause.hasPathPatterns()) {
         continue; // Phase 1 queries without parsed patterns
       }
 
       for (final PathPattern pathPattern : matchClause.getPathPatterns()) {
-        extractPathPattern(pathPattern);
+        extractPathPattern(pathPattern, clauseIndex);
       }
     }
   }
@@ -128,7 +129,7 @@ public class LogicalPlan {
    * The synthetic prefix "  __anon" (two leading spaces) mirrors the convention
    * in CypherExecutionPlan and cannot collide with user-defined variable names.
    */
-  private void extractPathPattern(final PathPattern pathPattern) {
+  private void extractPathPattern(final PathPattern pathPattern, final int clauseIndex) {
     final List<NodePattern> nodePatterns = pathPattern.getNodes();
     final List<RelationshipPattern> relPatterns = pathPattern.getRelationships();
 
@@ -160,7 +161,9 @@ public class LogicalPlan {
           relPattern.getDirection(),
           relPattern.getProperties(),
           relPattern.getMinHops(),
-          relPattern.getMaxHops()
+          relPattern.getMaxHops(),
+          null,
+          clauseIndex
       );
       relationships.add(logicalRel);
     }

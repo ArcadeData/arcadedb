@@ -23,10 +23,10 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
-import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
-import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.MatchClause;
 import com.arcadedb.query.opencypher.ast.WhereClause;
 import com.arcadedb.query.opencypher.executor.operators.CartesianProduct;
 import com.arcadedb.query.opencypher.executor.operators.ExpandAll;
@@ -36,15 +36,25 @@ import com.arcadedb.query.opencypher.executor.operators.GAVExpandAll;
 import com.arcadedb.query.opencypher.executor.operators.GAVExpandInto;
 import com.arcadedb.query.opencypher.executor.operators.GAVFusedChainOperator;
 import com.arcadedb.query.opencypher.executor.operators.PhysicalOperator;
-import com.arcadedb.query.opencypher.optimizer.plan.*;
-import com.arcadedb.query.opencypher.optimizer.rules.*;
+import com.arcadedb.query.opencypher.optimizer.plan.AnchorSelection;
+import com.arcadedb.query.opencypher.optimizer.plan.LogicalNode;
+import com.arcadedb.query.opencypher.optimizer.plan.LogicalPlan;
+import com.arcadedb.query.opencypher.optimizer.plan.LogicalRelationship;
+import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.optimizer.rules.ExpandIntoRule;
+import com.arcadedb.query.opencypher.optimizer.rules.FilterPushdownRule;
+import com.arcadedb.query.opencypher.optimizer.rules.IndexSelectionRule;
+import com.arcadedb.query.opencypher.optimizer.rules.JoinOrderRule;
+import com.arcadedb.query.opencypher.optimizer.rules.OptimizationRule;
 import com.arcadedb.query.opencypher.optimizer.statistics.CostModel;
 import com.arcadedb.query.opencypher.optimizer.statistics.StatisticsProvider;
-import com.arcadedb.schema.EdgeType;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.schema.EdgeType;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -77,24 +87,24 @@ import java.util.Set;
  */
 public class CypherOptimizer {
   // TODO: replace with runtime statistics once the statistics provider tracks per-type average degree
-  private static final double DEFAULT_AVG_DEGREE = 10.0;
+  private static final double DEFAULT_AVG_DEGREE              = 10.0;
   // TODO: replace with runtime statistics once histogram-based selectivity estimation is implemented
   private static final double DEFAULT_EXPAND_INTO_SELECTIVITY = 0.1;
-  private static final double DEFAULT_FILTER_SELECTIVITY = 0.5;
+  private static final double DEFAULT_FILTER_SELECTIVITY      = 0.5;
 
-  private final DatabaseInternal database;
-  private final CypherStatement statement;
+  private final DatabaseInternal    database;
+  private final CypherStatement     statement;
   private final Map<String, Object> parameters;
 
   private final StatisticsProvider statisticsProvider;
-  private final CostModel costModel;
-  private final AnchorSelector anchorSelector;
+  private final CostModel          costModel;
+  private final AnchorSelector     anchorSelector;
 
   private final List<OptimizationRule> rules;
 
   public CypherOptimizer(final DatabaseInternal database,
-                        final CypherStatement statement,
-                        final Map<String, Object> parameters) {
+      final CypherStatement statement,
+      final Map<String, Object> parameters) {
     this.database = database;
     this.statement = statement;
     this.parameters = parameters;
@@ -229,6 +239,7 @@ public class CypherOptimizer {
    * Extracts type names from the logical plan for statistics collection.
    *
    * @param plan the logical plan
+   *
    * @return list of type names
    */
   private List<String> extractTypeNames(final LogicalPlan plan) {
@@ -290,6 +301,7 @@ public class CypherOptimizer {
    * Creates the appropriate physical operator for the anchor node.
    *
    * @param anchor the selected anchor
+   *
    * @return physical operator (NodeIndexSeek or NodeByLabelScan)
    */
   private PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
@@ -304,11 +316,12 @@ public class CypherOptimizer {
    * @param logicalPlan    the logical plan
    * @param anchor         the selected anchor
    * @param anchorOperator the anchor operator to build upon
+   *
    * @return root operator of the expansion chain
    */
   private PhysicalOperator buildExpansionChain(final LogicalPlan logicalPlan,
-                                                final AnchorSelection anchor,
-                                                final PhysicalOperator anchorOperator) {
+      final AnchorSelection anchor,
+      final PhysicalOperator anchorOperator) {
     // Get optimization rules
     final JoinOrderRule joinOrderRule = (JoinOrderRule) rules.get(3);
     final ExpandIntoRule expandIntoRule = (ExpandIntoRule) rules.get(2);
@@ -326,17 +339,23 @@ public class CypherOptimizer {
             logicalPlan
         );
 
-    // Build operator chain
+    // Build operator chain. Track relationship variables added to the chain per
+    // MATCH-clause index so each new hop can scope its uniqueness check to its own
+    // clause - cross-clause edge reuse is valid Cypher and must not be blocked.
     PhysicalOperator currentOp = anchorOperator;
+    final Map<Integer, Set<String>> relVarsPerClause = new HashMap<>();
 
     for (final LogicalRelationship rel : orderedRels) {
+      final Set<String> sameClausePreceding = relVarsPerClause.getOrDefault(
+          rel.getClauseIndex(), Collections.emptySet());
+
       // Check if we should use ExpandInto (both endpoints bound)
       if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
         // Use ExpandInto for bounded patterns
-        currentOp = createExpandIntoOperator(rel, currentOp, boundVariables);
+        currentOp = createExpandIntoOperator(rel, currentOp, sameClausePreceding);
       } else {
         // Use ExpandAll for unbounded patterns
-        currentOp = createExpandAllOperator(rel, currentOp, boundVariables);
+        currentOp = createExpandAllOperator(rel, currentOp, boundVariables, sameClausePreceding);
 
         // Add label filter for target vertex if required
         currentOp = addTargetLabelFilter(logicalPlan, rel, currentOp);
@@ -345,6 +364,13 @@ public class CypherOptimizer {
       // Update bound variables after expansion
       boundVariables.add(rel.getSourceVariable());
       boundVariables.add(rel.getTargetVariable());
+
+      // Track this relationship variable for subsequent hops in the same clause
+      if (rel.getVariable() != null && !rel.getVariable().isEmpty()) {
+        relVarsPerClause
+            .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
+            .add(rel.getVariable());
+      }
     }
 
     return currentOp;
@@ -357,12 +383,14 @@ public class CypherOptimizer {
    * @param relationship   the logical relationship
    * @param input          the input operator
    * @param boundVariables the currently bound variables
+   *
    * @return ExpandAll operator
    */
   private PhysicalOperator createExpandAllOperator(
       final LogicalRelationship relationship,
       final PhysicalOperator input,
-      final Set<String> boundVariables) {
+      final Set<String> boundVariables,
+      final Set<String> sameClausePrecedingRelVars) {
     // Extract parameters from relationship
     String sourceVariable = relationship.getSourceVariable();
     final String edgeVariable = relationship.getVariable();
@@ -408,13 +436,14 @@ public class CypherOptimizer {
       final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(database, edgeTypes);
       if (provider != null) {
         // GAV expand: ~10x cheaper (array access vs linked list traversal)
-        final double gavCost = input.getEstimatedCost() + inputCardinality * DEFAULT_AVG_DEGREE * costModel.EXPAND_COST_PER_ROW * 0.1;
+        final double gavCost =
+            input.getEstimatedCost() + inputCardinality * DEFAULT_AVG_DEGREE * costModel.EXPAND_COST_PER_ROW * 0.1;
         return new GAVExpandAll(input, provider, sourceVariable, targetVariable, direction, edgeTypes,
             gavCost, outputCardinality);
       }
     }
 
-    return new ExpandAll(
+    final ExpandAll expandAll = new ExpandAll(
         input,
         sourceVariable,
         edgeVariable,
@@ -424,6 +453,8 @@ public class CypherOptimizer {
         totalCost,
         outputCardinality
     );
+    expandAll.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
+    return expandAll;
   }
 
   /**
@@ -442,15 +473,15 @@ public class CypherOptimizer {
   /**
    * Creates an ExpandInto operator for bounded pattern checking.
    *
-   * @param relationship    the logical relationship
-   * @param input           the input operator
-   * @param boundVariables  the currently bound variables
+   * @param relationship the logical relationship
+   * @param input        the input operator
+   *
    * @return ExpandInto operator
    */
   private PhysicalOperator createExpandIntoOperator(
       final LogicalRelationship relationship,
       final PhysicalOperator input,
-      final Set<String> boundVariables) {
+      final Set<String> sameClausePrecedingRelVars) {
     // Extract parameters from relationship
     final String sourceVariable = relationship.getSourceVariable();
     final String targetVariable = relationship.getTargetVariable();
@@ -461,8 +492,7 @@ public class CypherOptimizer {
     // Estimate cost and cardinality for ExpandInto
     // ExpandInto is much cheaper than ExpandAll because it's just an existence check
     final long inputCardinality = input.getEstimatedCardinality();
-    final double selectivity = DEFAULT_EXPAND_INTO_SELECTIVITY;
-    final long outputCardinality = (long) (inputCardinality * selectivity);
+    final long outputCardinality = (long) (inputCardinality * DEFAULT_EXPAND_INTO_SELECTIVITY);
     final double expandIntoCost = inputCardinality * 1.0; // O(1) per input row for existence check
     final double totalCost = input.getEstimatedCost() + expandIntoCost;
 
@@ -477,7 +507,7 @@ public class CypherOptimizer {
       }
     }
 
-    return new ExpandInto(
+    final ExpandInto expandInto = new ExpandInto(
         input,
         sourceVariable,
         targetVariable,
@@ -487,17 +517,20 @@ public class CypherOptimizer {
         totalCost,
         outputCardinality
     );
+    expandInto.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
+    return expandInto;
   }
 
   /**
    * Applies filter pushdown optimization by wrapping operators with FilterOperator.
    *
-   * @param logicalPlan the logical plan
+   * @param logicalPlan  the logical plan
    * @param rootOperator the root operator to wrap
+   *
    * @return root operator with filters applied
    */
   private PhysicalOperator applyFilterPushdown(final LogicalPlan logicalPlan,
-                                                final PhysicalOperator rootOperator) {
+      final PhysicalOperator rootOperator) {
     // Wrap the root operator with a FilterOperator for each WHERE clause
     // In a full implementation, we would analyze which filters can be pushed down
     // to lower operators (closer to data sources) for better performance.
@@ -708,11 +741,12 @@ public class CypherOptimizer {
    * @param logicalPlan the logical plan
    * @param rel         the logical relationship
    * @param input       the input operator
+   *
    * @return operator with label filter applied (or original if no filter needed)
    */
   private PhysicalOperator addTargetLabelFilter(final LogicalPlan logicalPlan,
-                                                 final LogicalRelationship rel,
-                                                 final PhysicalOperator input) {
+      final LogicalRelationship rel,
+      final PhysicalOperator input) {
     // Determine the actual expand target variable (may differ from rel.getTargetVariable()
     // when the optimizer reverses traversal direction)
     final String expandTargetVariable;
@@ -752,7 +786,7 @@ public class CypherOptimizer {
     final BooleanExpression labelFilter = new BooleanExpression() {
       @Override
       public boolean evaluate(final Result result,
-                              final CommandContext context) {
+          final CommandContext context) {
         final Object vertexObj = result.getProperty(expandTargetVariable);
         if (vertexObj instanceof Vertex) {
           final Vertex vertex = (Vertex) vertexObj;
@@ -784,6 +818,7 @@ public class CypherOptimizer {
    *
    * @param logicalPlan  the logical plan
    * @param physicalPlan the initial physical plan
+   *
    * @return optimized physical plan
    */
   private PhysicalPlan applyOptimizationRules(final LogicalPlan logicalPlan, PhysicalPlan physicalPlan) {

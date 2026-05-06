@@ -25,12 +25,14 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.RidHashSet;
 
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Physical operator that expands relationships from source vertices to target vertices.
@@ -51,6 +53,10 @@ public class ExpandAll extends AbstractPhysicalOperator {
   private final Direction direction;
   private final String[] edgeTypes;
   private String targetLabel;
+  // Same-MATCH-clause relationship variable names that were bound before this hop.
+  // Cypher relationship uniqueness applies only within a single MATCH clause, so this
+  // scoping prevents blocking valid cross-clause edge reuse.
+  private Set<String> sameClausePrecedingRelVars;
 
   public ExpandAll(final PhysicalOperator child, final String sourceVariable,
                   final String edgeVariable, final String targetVariable,
@@ -62,6 +68,16 @@ public class ExpandAll extends AbstractPhysicalOperator {
     this.targetVariable = targetVariable;
     this.direction = direction;
     this.edgeTypes = edgeTypes;
+  }
+
+  /**
+   * Sets the relationship variables bound earlier in the same MATCH clause as this hop.
+   * When this hop's edge candidate matches any RID held by these variables, the row is
+   * dropped to enforce Cypher relationship uniqueness. Variables from prior MATCH clauses
+   * are deliberately excluded so cross-clause edge reuse remains valid.
+   */
+  public void setSameClausePrecedingRelVars(final Set<String> sameClausePrecedingRelVars) {
+    this.sameClausePrecedingRelVars = sameClausePrecedingRelVars;
   }
 
   public void setTargetLabel(final String targetLabel) {
@@ -79,6 +95,9 @@ public class ExpandAll extends AbstractPhysicalOperator {
     return new ResultSet() {
       private Result currentInputResult = null;
       private Iterator<Edge> edgeIterator = null;
+      // Cached set of edge RIDs already bound by same-clause preceding rel vars in
+      // the current input row. Computed once per input row, queried per edge.
+      private RidHashSet currentInputUsedEdgeRids = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -127,6 +146,7 @@ public class ExpandAll extends AbstractPhysicalOperator {
             // Get edges from source vertex
             final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
             edgeIterator = sourceVertex.getEdges(arcadeDirection, edgeTypes).iterator();
+            currentInputUsedEdgeRids = collectUsedEdgeRids(currentInputResult);
           }
 
           // Expand edges to target vertices
@@ -136,6 +156,12 @@ public class ExpandAll extends AbstractPhysicalOperator {
             final Vertex targetVertex = getTargetVertex(edge, sourceVertex);
 
             if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
+              continue;
+
+            // Cypher path isomorphism: each relationship in a MATCH pattern must be
+            // a distinct edge. The set is empty when no same-clause rel var is bound
+            // (single-hop or first hop), so the contains() lookup is O(1) and free.
+            if (currentInputUsedEdgeRids != null && currentInputUsedEdgeRids.contains(edge.getIdentity()))
               continue;
 
             // Copy input result and add edge and target vertex
@@ -161,6 +187,26 @@ public class ExpandAll extends AbstractPhysicalOperator {
         inputResults.close();
       }
     };
+  }
+
+  /**
+   * Collects RIDs of edges already bound to same-clause preceding relationship variables
+   * in the input row. Returns null when no relevant binding is present, so the per-edge
+   * check stays free in the common single-hop case.
+   */
+  private RidHashSet collectUsedEdgeRids(final Result row) {
+    if (sameClausePrecedingRelVars == null || sameClausePrecedingRelVars.isEmpty())
+      return null;
+    RidHashSet used = null;
+    for (final String relVar : sameClausePrecedingRelVars) {
+      final Object val = row.getProperty(relVar);
+      if (val instanceof Edge) {
+        if (used == null)
+          used = new RidHashSet();
+        used.add(((Edge) val).getIdentity());
+      }
+    }
+    return used;
   }
 
   @Override
