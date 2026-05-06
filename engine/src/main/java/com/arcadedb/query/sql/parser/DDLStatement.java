@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.DDLExecutionPlan;
@@ -62,5 +63,35 @@ public abstract class DDLStatement extends Statement {
 
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
     return new DDLExecutionPlan(context, this);
+  }
+
+  /**
+   * Parses a {@code WITH} clause boolean setting. Accepts a {@link Boolean} directly, the
+   * strings {@code "true"} / {@code "false"} (case-insensitive), and any equivalent that
+   * {@link String#valueOf} produces from a literal expression. Throws
+   * {@link CommandSQLParsingException} with a locatable message on anything else.
+   * <p>
+   * Shared between DDL statements that accept boolean settings (e.g.
+   * {@code REBUILD TYPE ... WITH repartition = true} and
+   * {@code ALTER TYPE ... WITH repartition = true}) so the parsing semantics stay identical
+   * across statement types and a future addition picks up the same rules without re-deriving
+   * them.
+   *
+   * @param statementContext display label for the statement, used in the error message (e.g.
+   *                         {@code "REBUILD TYPE"}).
+   * @param settingName      the setting key, used in the error message.
+   * @param raw              the evaluated value of the setting expression (typically the
+   *                         result of {@code expression.execute(null, context)}).
+   */
+  protected static boolean parseBooleanSetting(final String statementContext, final String settingName, final Object raw) {
+    if (raw instanceof Boolean b)
+      return b;
+    final String text = String.valueOf(raw);
+    if ("true".equalsIgnoreCase(text))
+      return true;
+    if ("false".equalsIgnoreCase(text))
+      return false;
+    throw new CommandSQLParsingException(
+        statementContext + " setting '" + settingName + "' must be true or false, got: " + raw);
   }
 }

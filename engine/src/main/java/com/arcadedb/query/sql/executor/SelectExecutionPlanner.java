@@ -46,7 +46,6 @@ import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
-import com.arcadedb.query.sql.parser.MathExpression;
 import com.arcadedb.query.sql.parser.FunctionCall;
 import com.arcadedb.query.sql.parser.GeOperator;
 import com.arcadedb.query.sql.parser.GroupBy;
@@ -1967,6 +1966,12 @@ public class SelectExecutionPlanner {
     if (partitionProps == null || partitionProps.isEmpty())
       return filterClusters;
 
+    // Cache the bucket list once for the whole derivation. The list is invariant during
+    // planning (schema mutations take the same lock the planner doesn't hold), and the per
+    // AndBlock loop below would otherwise call getBuckets(false) once per block on the planner
+    // hot path.
+    final List<? extends com.arcadedb.engine.Bucket> typeBuckets = docType.getBuckets(false);
+
     // Each AndBlock must fully bind every partition property; otherwise pruning is unsafe and we
     // fall back to the caller's filterClusters. The union of bucket names across blocks is the
     // pruned set the OR-disjuncts collectively need to cover.
@@ -1996,16 +2001,9 @@ public class SelectExecutionPlanner {
 
         if (literalSide == null || !literalSide.isEarlyCalculated(context))
           continue;
-        // Skip parameter-bound literals: planning evaluates {@code ?} / {@code :name} against
-        // whatever the context currently holds, but the plan is reused across executions with
-        // different parameter values. Baking the partition bucket into the plan based on the
-        // first execution's parameters silently misroutes every subsequent execution. Detect
-        // by walking the expression AST for any {@link BaseExpression#inputParam} - the
-        // string-scan alternative ({@code toString().contains("?") || contains(":")}) silently
-        // disables pruning for legitimate string literals like {@code 'host:port'} or
-        // {@code 'what?'}, which is a quiet correctness regression on otherwise-prunable
-        // queries.
-        if (containsInputParameter(literalSide))
+        // Plan-time pruning is unsafe when the literal is parameter-bound: the cached plan would
+        // reuse the first execution's bucket id for every subsequent binding.
+        if (literalSide.containsInputParameter())
           continue;
 
         if (!bound[idx]) {
@@ -2033,9 +2031,6 @@ public class SelectExecutionPlanner {
         return filterClusters;  // Block left a partition coordinate open; cannot prune.
 
       final int bucketIndex = partitioned.getBucketIdByKeys(keyValues, false);
-      // Cache the bucket list for the bounds check + name lookup; without this we'd fetch the
-      // list twice per AndBlock on the planner hot path.
-      final List<? extends com.arcadedb.engine.Bucket> typeBuckets = docType.getBuckets(false);
       if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
         return filterClusters;  // Strategy returned an out-of-range index; abort defensively.
       derivedBuckets.add(typeBuckets.get(bucketIndex).getName());
@@ -2055,45 +2050,10 @@ public class SelectExecutionPlanner {
     return intersected;
   }
 
-  /** Returns the property name when {@code expr} is a plain base identifier, {@code null} otherwise. */
   private static String extractBaseIdentifierName(final Expression expr) {
     if (expr == null || !expr.isBaseIdentifier())
       return null;
     return expr.getDefaultAlias().getStringValue();
-  }
-
-  /**
-   * Walks the AST of {@code expr} looking for any {@link BaseExpression#inputParam} reference.
-   * Used by the partition-pruning rule to skip parameter-bound literals: their values aren't
-   * known at plan time and the plan is cached across executions, so baking the bucket id from
-   * the first execution would misroute every subsequent one. A string scan over
-   * {@code expr.toString()} would also catch it but produces false positives for literals
-   * containing {@code ?} or {@code :} (e.g. URLs, host:port, "what?").
-   */
-  private static boolean containsInputParameter(final Expression expr) {
-    if (expr == null)
-      return false;
-    if (mathContainsInputParameter(expr.getMathExpression()))
-      return true;
-    final Object exprValue = expr.value;
-    return exprValue instanceof MathExpression me && mathContainsInputParameter(me);
-  }
-
-  private static boolean mathContainsInputParameter(final MathExpression me) {
-    if (me == null)
-      return false;
-    if (me instanceof BaseExpression be) {
-      if (be.inputParam != null)
-        return true;
-      if (be.expression != null && containsInputParameter(be.expression))
-        return true;
-    }
-    // MathExpression aggregates child operands for arithmetic; recurse into each.
-    if (me.childExpressions != null)
-      for (final MathExpression child : me.childExpressions)
-        if (mathContainsInputParameter(child))
-          return true;
-    return false;
   }
 
   /**

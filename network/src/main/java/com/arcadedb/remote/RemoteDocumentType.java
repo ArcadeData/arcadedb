@@ -56,6 +56,7 @@ public class RemoteDocumentType implements DocumentType {
   private         Map<String, RemoteProperty> properties;
   private         Set<String>                 aliases = Collections.emptySet();
   private         Map<String, Object>         custom  = new HashMap<>();
+  private         boolean                     needsRepartition;
 
   RemoteDocumentType(final RemoteDatabase remoteDatabase, final Result record) {
     this.remoteDatabase = remoteDatabase;
@@ -104,6 +105,13 @@ public class RemoteDocumentType implements DocumentType {
 
     if (record.hasProperty("custom"))
       custom = record.getProperty("custom");
+
+    needsRepartition = record.hasProperty("needsRepartition") && Boolean.TRUE.equals(record.getProperty("needsRepartition"));
+  }
+
+  @Override
+  public boolean isNeedsRepartition() {
+    return needsRepartition;
   }
 
   @Override

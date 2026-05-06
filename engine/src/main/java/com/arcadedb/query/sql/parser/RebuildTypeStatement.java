@@ -30,8 +30,10 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.VertexType;
 
 import java.util.*;
 
@@ -68,6 +70,7 @@ public class RebuildTypeStatement extends DDLStatement {
 
     int batchSize = DEFAULT_BATCH_SIZE;
     boolean repartition = false;
+    boolean force = false;
     for (final Map.Entry<Expression, Expression> e : settings.entrySet()) {
       final String key = e.getKey().toString();
       if (key.equalsIgnoreCase("batchSize")) {
@@ -94,27 +97,45 @@ public class RebuildTypeStatement extends DDLStatement {
         // Use execute(...) to evaluate uniformly across booleanValue / numeric / string literal
         // shapes - {@link Expression#value} is null for boolean literals, populated for numbers.
         final Object raw = e.getValue().execute((com.arcadedb.query.sql.executor.Result) null, context);
-        if (raw instanceof Boolean b)
-          repartition = b;
-        else if ("true".equalsIgnoreCase(String.valueOf(raw)))
-          repartition = true;
-        else if ("false".equalsIgnoreCase(String.valueOf(raw)))
-          repartition = false;
-        else
-          throw new CommandSQLParsingException(
-              "REBUILD TYPE setting 'repartition' must be true or false, got: " + raw);
+        repartition = parseBooleanSetting("REBUILD TYPE", "repartition", raw);
+      } else if (key.equalsIgnoreCase("force")) {
+        // Override for the graph-type guard (see below). Repartitioning a vertex/edge gives every
+        // record a new RID and breaks any edge that references it, so the rebuild refuses to run
+        // unless the caller explicitly opts in.
+        final Object raw = e.getValue().execute((com.arcadedb.query.sql.executor.Result) null, context);
+        force = parseBooleanSetting("REBUILD TYPE", "force", raw);
       } else
         throw new CommandSQLParsingException(
-            "Unrecognized setting '" + key + "' in REBUILD TYPE statement (supported: batchSize, repartition)");
+            "Unrecognized setting '" + key + "' in REBUILD TYPE statement (supported: batchSize, repartition, force)");
     }
     final int finalBatchSize = batchSize;
     final boolean finalRepartition = repartition;
 
+    // Repartitioning gives every record a new RID. Edges store their source/target as RIDs and
+    // vertex edge-segments reference adjacent edges by RID, so a repartition of any graph type
+    // silently rots every reference into or out of it. Block by default; require an explicit
+    // force = true so an operator with no edges (or one who has staged a re-pointing strategy)
+    // can still run it.
+    if (finalRepartition && !force && (type instanceof VertexType || type instanceof EdgeType)) {
+      final String kind = type instanceof VertexType ? "vertex" : "edge";
+      throw new CommandSQLParsingException(
+          "REBUILD TYPE on " + kind + " type '" + typeName.getStringValue() + "' with repartition = true would "
+              + "give every record a new RID and break inbound edge references. Add `WITH repartition = true, "
+              + "force = true` if there are no edges into this type (or you have already re-pointed them).");
+    }
+
     final long[] count = { 0L };
     final long[] moved = { 0L };
-    // Records committed in earlier batches and therefore NOT rolled back by a later failure: needed so we can
-    // tell the caller exactly how many rows are already in the new layout when the rebuild aborts mid-stream.
+    // Records that have been written to their final layout AND committed in an earlier batch.
+    // For non-repartition rebuilds this advances on every per-record save (every visit produces
+    // a save). For repartition rebuilds the scan only saves the records that are already in the
+    // right bucket (misplaced ones go to {@code pendingMoveRids} and aren't saved until the
+    // post-scan move phase), so we must NOT use {@code count[0]} here - it would over-report
+    // by the misplaced-and-buffered delta. Tracked explicitly via {@code scanCommittedSaves}.
     final long[] committedBefore = { 0L };
+    // Cumulative running total of records that the scan loop wrote via {@code m.save()} (i.e.
+    // non-relocate path). After each scan-batch commit, this becomes the new {@code committedBefore}.
+    final long[] scanCommittedSaves = { 0L };
     final boolean implicitTx = !db.isTransactionActive();
     if (implicitTx)
       db.begin();
@@ -140,24 +161,31 @@ public class RebuildTypeStatement extends DDLStatement {
           if (currentRid != null && targetBucket != null && targetBucket.getFileId() != currentRid.getBucketId()) {
             // Buffered move - apply after scan to keep iterator stability. Only the RID is
             // retained; the payload is re-read during the move phase to keep heap usage low.
+            // Misplaced records are NOT counted in {@code scanCommittedSaves} - they aren't
+            // committed in the new layout until the move phase rewrites them.
             pendingMoveRids.add(currentRid);
             count[0]++;
           } else {
             m.markDirty();
             m.save();
             count[0]++;
+            scanCommittedSaves[0]++;
           }
         } else {
           final MutableDocument m = (MutableDocument) rec.modify();
           m.markDirty();
           m.save();
           count[0]++;
+          scanCommittedSaves[0]++;
         }
         // Batch only when we own the transaction. Committing inside a caller-supplied TX would leak the user's
         // writes prematurely and leave the trailing batch uncommitted.
         if (implicitTx && count[0] % finalBatchSize == 0) {
           db.commit();
-          committedBefore[0] = count[0];
+          // Only the records actually saved in this scan phase land in the new layout when the
+          // commit fires. Misplaced records counted in {@code count[0]} are still in their old
+          // bucket; they'll be rewritten (and counted) in the move phase below.
+          committedBefore[0] = scanCommittedSaves[0];
           // Per-batch progress line so an operator running REBUILD on a 100M-record type can observe forward
           // motion via the server log instead of staring at a frozen prompt for many minutes. Logged at INFO
           // so it's on by default but easy to silence by raising the level for this class.
@@ -181,12 +209,11 @@ public class RebuildTypeStatement extends DDLStatement {
       // with no original to replace. The whole delete+insert pair is gated on
       // {@code oldRecord != null}.
       if (finalRepartition && pendingMoveRids != null) {
-        // Move-phase commit cadence tracks the move counter, not the (now-frozen) scan
-        // counter. The error-recovery message uses {@code committedBefore[0]} to tell the
-        // operator how many rows are durably in the new layout when the rebuild aborts; using
-        // the scan counter here would over-report by the rebuild-only-touched-and-not-moved
-        // delta and confuse the recovery story.
-        long movePhaseCommittedBefore = 0L;
+        // Move-phase commit cadence tracks the move counter and adds it to the scan-phase
+        // committed saves. The error-recovery message uses {@code committedBefore[0]} to tell
+        // the operator how many rows are durably in the new layout when the rebuild aborts;
+        // adding {@code count[0]} here (which includes misplaced-but-not-yet-moved records)
+        // would over-report and confuse the recovery story.
         for (int i = 0; i < pendingMoveRids.size(); i++) {
           final RID oldRid = pendingMoveRids.get(i);
           final var oldRecord = db.lookupByRID(oldRid, true);
@@ -205,8 +232,7 @@ public class RebuildTypeStatement extends DDLStatement {
           }
           if (implicitTx && (i + 1) % finalBatchSize == 0) {
             db.commit();
-            movePhaseCommittedBefore = moved[0];
-            committedBefore[0] = count[0] + movePhaseCommittedBefore;
+            committedBefore[0] = scanCommittedSaves[0] + moved[0];
             db.begin();
           }
         }

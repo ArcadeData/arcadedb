@@ -90,14 +90,10 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
             r.setProperty("records", context.getDatabase().countType(typeName, false));
           r.setProperty("buckets", type.getBuckets(false).stream().map((b) -> b.getName()).collect(Collectors.toList()));
           r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
-          // Expose the partition-mapping-stale flag (issue #4087). True after a schema mutation
-          // that invalidated the partition modulus (bucket add/drop, strategy change on populated
-          // data); cleared by a successful REBUILD TYPE ... WITH repartition = true. While true,
-          // the planner's partition-aware bucket pruning is suppressed - queries stay correct
-          // but lose the optimisation. Surfaced unconditionally (not just when true) so Studio
-          // can render a green/red indicator either way without an extra schema lookup.
-          if (type instanceof LocalDocumentType ldt)
-            r.setProperty("needsRepartition", ldt.isNeedsRepartition());
+          // Expose the partition-mapping-stale flag (issue #4087). Set unconditionally via the
+          // {@link DocumentType} interface so any implementation - including future replica or
+          // proxy types - participates without an instanceof gate.
+          r.setProperty("needsRepartition", type.isNeedsRepartition());
 
           // Expose the primary->external bucket mapping for types that have any EXTERNAL property. Lets tooling
           // (Studio etc.) tell the user where the externalised values for each primary bucket are stored.

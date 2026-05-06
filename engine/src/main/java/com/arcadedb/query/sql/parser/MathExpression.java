@@ -863,6 +863,19 @@ public class MathExpression extends SimpleNode {
     this.childExpressions = childExpressions;
   }
 
+  /**
+   * True if this node or any descendant resolves through a parameter binding ({@code ?} / {@code :name}).
+   * The query planner uses it to skip plan-time decisions whose validity depends on a parameter
+   * value, since the plan is cached and reused across executions with different bindings.
+   */
+  public boolean containsInputParameter() {
+    if (childExpressions != null)
+      for (final MathExpression child : childExpressions)
+        if (child != null && child.containsInputParameter())
+          return true;
+    return false;
+  }
+
   public List<Operator> getOperators() {
     return operators;
   }

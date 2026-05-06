@@ -21,6 +21,8 @@ package com.arcadedb.schema;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 
 import org.junit.jupiter.api.Test;
@@ -193,6 +195,40 @@ class PartitioningRepartitionFlagTest extends TestHelper {
     assertThat(reopenedFalse.isNeedsRepartition())
         .as("clearing the flag must persist; reopen must NOT resurrect a stale true")
         .isFalse();
+  }
+
+  @Test
+  void selectFromSchemaTypesExposesNeedsRepartition() {
+    // FetchFromSchemaTypesStep is the canonical SQL surface for schema metadata; remote clients
+    // reload their RemoteDocumentType from this output, so the property must be on every row
+    // (regardless of whether the flag is set) so a remote consumer never silently sees the
+    // default-false fallback when the server actually has it true.
+    createPartitionedType();
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
+    type.setNeedsRepartition(true);
+
+    boolean foundOurType = false;
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:types WHERE name = '" + TYPE_NAME + "'")) {
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat(row.<String>getProperty("name")).isEqualTo(TYPE_NAME);
+        assertThat(row.hasProperty("needsRepartition"))
+            .as("FetchFromSchemaTypesStep must surface needsRepartition unconditionally so remote "
+                + "schema reloads pick it up")
+            .isTrue();
+        assertThat(row.<Boolean>getProperty("needsRepartition")).isTrue();
+        foundOurType = true;
+      }
+    }
+    assertThat(foundOurType).isTrue();
+
+    // Cleared flag also surfaces (false), not omitted.
+    type.setNeedsRepartition(false);
+    try (final ResultSet rs = database.query("sql", "SELECT FROM schema:types WHERE name = '" + TYPE_NAME + "'")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat(row.<Boolean>getProperty("needsRepartition")).isFalse();
+    }
   }
 
   @Test

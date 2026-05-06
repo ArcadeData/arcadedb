@@ -651,6 +651,7 @@ public class LocalDocumentType implements DocumentType {
    * query fans out across every bucket, staying correct at the cost of losing the optimisation
    * until a rebuild runs.
    */
+  @Override
   public boolean isNeedsRepartition() {
     return needsRepartition;
   }
@@ -674,12 +675,8 @@ public class LocalDocumentType implements DocumentType {
   }
 
   /**
-   * Emit a throttled {@code Level.WARNING} log line if this type's {@code needsRepartition} is
-   * currently {@code true} and at least {@link #REPARTITION_WARN_INTERVAL_MS} ms have elapsed
-   * since the last emission. Called by the query planner when the partition-pruning rule is
-   * suppressed by a stale mapping, so operators see the cost of the pending rebuild without log
-   * spam (one entry per type per 60-second window). Same shape as
-   * {@link com.arcadedb.query.QueryEngineManager}'s saturation throttle.
+   * Throttled because the planner calls this on every prunable query against a stale type;
+   * without throttling a single workload can produce thousands of duplicate WARNING lines/sec.
    */
   public void warnIfNeedsRepartition() {
     if (!needsRepartition)
@@ -715,7 +712,10 @@ public class LocalDocumentType implements DocumentType {
     if (selectionStrategy instanceof PartitionedBucketSelectionStrategy newPartitioned
         && partitionShapeChanged(previous, newPartitioned)
         && hasAnyRecord())
-      needsRepartition = true;
+      // Use the typed setter so the schema-save-on-transition contract fires consistently with
+      // every other site that mutates this flag. Direct field assignment would only work because
+      // the wrapping DDL happens to save the schema afterward; relying on that is brittle.
+      setNeedsRepartition(true);
     return this;
   }
 
@@ -1092,7 +1092,9 @@ public class LocalDocumentType implements DocumentType {
     bucketSelectionStrategy.setType(this);
 
     if (partitionedAndPopulated)
-      needsRepartition = true;
+      // Use the typed setter so the schema-save-on-transition contract fires consistently with
+      // every other site that mutates this flag (see setNeedsRepartition Javadoc).
+      setNeedsRepartition(true);
 
     // AUTOMATICALLY CREATES THE INDEX ON THE NEW BUCKET (INCLUDING INHERITED INDEXES FROM PARENT TYPES)
     final Collection<TypeIndex> existentIndexes = getAllIndexes(true);
@@ -1314,9 +1316,10 @@ public class LocalDocumentType implements DocumentType {
           + "', because the bucket is not associated to the type '" + getName() + "'");
 
     // Symmetric to addBucketInternal: shrinking the bucket count under a partitioned strategy
-    // also invalidates the modulus. Flag the type as needing repartition.
+    // also invalidates the modulus. Use the typed setter so the schema-save-on-transition
+    // contract fires consistently (see setNeedsRepartition Javadoc).
     if (bucketSelectionStrategy instanceof PartitionedBucketSelectionStrategy)
-      needsRepartition = true;
+      setNeedsRepartition(true);
 
     buckets = CollectionUtils.removeFromUnmodifiableList(buckets, bucket);
     cachedPolymorphicBuckets = CollectionUtils.removeFromUnmodifiableList(cachedPolymorphicBuckets, bucket);

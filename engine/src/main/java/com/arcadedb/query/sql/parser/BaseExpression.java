@@ -440,6 +440,15 @@ public class BaseExpression extends MathExpression {
     this.inputParam = inputParam;
   }
 
+  @Override
+  public boolean containsInputParameter() {
+    if (inputParam != null)
+      return true;
+    if (expression != null && expression.containsInputParameter())
+      return true;
+    return super.containsInputParameter();
+  }
+
   /**
    * Transforms, only if needed, the source string escaping the characters \ and ".
    *

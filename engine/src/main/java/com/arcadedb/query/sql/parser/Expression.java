@@ -424,6 +424,18 @@ public class Expression extends SimpleNode {
   }
 
   /**
+   * True if any node beneath this expression resolves through a parameter binding ({@code ?} /
+   * {@code :name}). The query planner uses it to skip plan-time decisions whose validity depends
+   * on a parameter value, since the plan is cached and reused across executions with different
+   * bindings.
+   */
+  public boolean containsInputParameter() {
+    if (mathExpression != null && mathExpression.containsInputParameter())
+      return true;
+    return value instanceof MathExpression me && me.containsInputParameter();
+  }
+
+  /**
    * if the condition involved the current pattern (MATCH statement, eg. $matched.something = foo), returns the name of involved
    * pattern aliases ("something" in this case)
    *

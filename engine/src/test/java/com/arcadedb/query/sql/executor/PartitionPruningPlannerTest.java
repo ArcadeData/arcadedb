@@ -24,6 +24,9 @@ import com.arcadedb.schema.LocalDocumentType;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -173,6 +176,59 @@ class PartitionPruningPlannerTest extends TestHelper {
     }
   }
 
+  @Test
+  void orOfPartitionLiteralsUnionsPrunedBuckets() {
+    // OR of two partition-bound literal predicates must derive the union of the two buckets the
+    // values hash to, not full fan-out. Pins the multi-AndBlock branch in
+    // {@link SelectExecutionPlanner#derivePartitionPrunedClusters}: each AndBlock contributes one
+    // bucket, the planner emits their union, and that flows into the top-level
+    // FilterByClustersStep that gates record visibility for the OR's parallel sub-branches.
+    createPartitionedType();
+    populate();
+
+    final ResultSet rs = database.query("sql",
+        "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = 'acme' OR tenant_id = 'globex'");
+    final ExecutionPlan plan = rs.getExecutionPlan().orElseThrow();
+    final FilterByClustersStep filter = findClusterFilter(plan);
+    assertThat(filter).as("OR of partition literals must produce a cluster filter").isNotNull();
+    // Two literals may collide on a single bucket under hash; either way the count must be
+    // strictly less than the full bucket count to prove pruning fired.
+    assertThat(filter.getClusters())
+        .as("OR over partition literals must prune to at most 2 buckets, never full fan-out")
+        .hasSizeLessThanOrEqualTo(2)
+        .hasSizeLessThan(BUCKETS);
+
+    final Set<String> tenants = new HashSet<>();
+    while (rs.hasNext())
+      tenants.add(rs.next().getProperty("tenant_id"));
+    rs.close();
+    assertThat(tenants).containsExactlyInAnyOrder("acme", "globex");
+  }
+
+  @Test
+  void orWithOneUnprunableBranchFallsBackToFanOut() {
+    // If any AndBlock can't be fully bound to partition literals, pruning must back off and the
+    // entire OR scans every bucket. {@code derivePartitionPrunedClusters} returns
+    // {@code filterClusters} unchanged when an AndBlock leaves a partition coordinate open.
+    createPartitionedType();
+    populate();
+
+    final ResultSet rs = database.query("sql",
+        "SELECT FROM " + TYPE_NAME + " WHERE tenant_id = 'acme' OR payload = 'p-globex'");
+    final ExecutionPlan plan = rs.getExecutionPlan().orElseThrow();
+    final FilterByClustersStep filter = findClusterFilter(plan);
+    assertThat(filter).isNotNull();
+    assertThat(filter.getClusters())
+        .as("OR with an unprunable branch must fall back to full fan-out")
+        .hasSize(BUCKETS);
+
+    final Set<String> tenants = new HashSet<>();
+    while (rs.hasNext())
+      tenants.add(rs.next().getProperty("tenant_id"));
+    rs.close();
+    assertThat(tenants).containsExactlyInAnyOrder("acme", "globex");
+  }
+
   // ---- shared scaffolding -------------------------------------------------
 
   private void createPartitionedType() {
@@ -184,6 +240,7 @@ class PartitionPruningPlannerTest extends TestHelper {
       database.command("sql", "ALTER TYPE " + TYPE_NAME + " BucketSelectionStrategy `partitioned('tenant_id')`");
     });
   }
+
 
   private void populate() {
     database.transaction(() -> {
@@ -205,6 +262,13 @@ class PartitionPruningPlannerTest extends TestHelper {
     for (final ExecutionStep step : plan.getSteps())
       if (step instanceof GetValueFromIndexEntryStep g)
         return g;
+    return null;
+  }
+
+  private static FilterByClustersStep findClusterFilter(final ExecutionPlan plan) {
+    for (final ExecutionStep step : plan.getSteps())
+      if (step instanceof FilterByClustersStep f)
+        return f;
     return null;
   }
 }

@@ -139,4 +139,8 @@ public class FilterByClustersStep extends AbstractExecutionStep {
         + String.join(", ", clusters);
   }
 
+  public Set<String> getClusters() {
+    return clusters;
+  }
+
 }

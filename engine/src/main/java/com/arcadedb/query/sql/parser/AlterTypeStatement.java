@@ -196,22 +196,20 @@ public class AlterTypeStatement extends DDLStatement {
     // operators see the rebuild happened. Unknown settings throw - the supported list grows with
     // explicit additions in this method.
     boolean repartitionRequested = false;
+    boolean forceRequested = false;
     for (final Map.Entry<Identifier, Expression> e : settings.entrySet()) {
       final String key = e.getKey().getStringValue();
       if (key.equalsIgnoreCase("repartition")) {
         final Object raw = e.getValue().execute((com.arcadedb.query.sql.executor.Result) null, context);
-        if (raw instanceof Boolean b)
-          repartitionRequested = b;
-        else if ("true".equalsIgnoreCase(String.valueOf(raw)))
-          repartitionRequested = true;
-        else if ("false".equalsIgnoreCase(String.valueOf(raw)))
-          repartitionRequested = false;
-        else
-          throw new CommandSQLParsingException(
-              "ALTER TYPE setting 'repartition' must be true or false, got: " + raw);
+        repartitionRequested = parseBooleanSetting("ALTER TYPE", "repartition", raw);
+      } else if (key.equalsIgnoreCase("force")) {
+        // Forwarded to the chained REBUILD TYPE; meaningful only when paired with repartition.
+        // See RebuildTypeStatement for the graph-type guard this disables.
+        final Object raw = e.getValue().execute((com.arcadedb.query.sql.executor.Result) null, context);
+        forceRequested = parseBooleanSetting("ALTER TYPE", "force", raw);
       } else
         throw new CommandSQLParsingException(
-            "Unrecognized setting '" + key + "' in ALTER TYPE statement (supported: repartition)");
+            "Unrecognized setting '" + key + "' in ALTER TYPE statement (supported: repartition, force)");
     }
     if (repartitionRequested) {
       // Reuse the existing REBUILD TYPE executor by issuing a SQL command on the same context.
@@ -233,8 +231,10 @@ public class AlterTypeStatement extends DDLStatement {
       // try-with-resources: any throw between the open and the explicit close would leak the
       // ResultSet otherwise (e.g. deserialisation of the rebuild row, or any future addition
       // that touches the row before close).
-      try (final ResultSet rebuildRs = context.getDatabase()
-          .command("sql", "REBUILD TYPE `" + typeName + "` WITH repartition = true")) {
+      final String rebuildSql = forceRequested
+          ? "REBUILD TYPE `" + typeName + "` WITH repartition = true, force = true"
+          : "REBUILD TYPE `" + typeName + "` WITH repartition = true";
+      try (final ResultSet rebuildRs = context.getDatabase().command("sql", rebuildSql)) {
         if (rebuildRs.hasNext()) {
           final com.arcadedb.query.sql.executor.Result rebuildRow = rebuildRs.next();
           if (rebuildRow.getProperty("recordsRebuilt") != null)

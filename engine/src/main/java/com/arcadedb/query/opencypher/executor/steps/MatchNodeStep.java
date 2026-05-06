@@ -76,6 +76,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final ExpressionEvaluator evaluator;   // Shared evaluator for WHERE/ID expression resolution
   private final Expression          dynamicIdExpression; // Pre-analyzed expression for runtime RID resolution (issue #3864)
   private       String              usedIndexName; // Track which index was used (if any)
+  private       String              usedPartitionBucket; // Track partition bucket pruning (if any)
 
   /**
    * Creates a match node step.
@@ -457,25 +458,6 @@ public class MatchNodeStep extends AbstractExecutionStep {
     }
   }
 
-  /**
-   * Tries to find and use an index for the property constraints.
-   * Supports composite indexes with partial key matching (leftmost prefix).
-   *
-   * @param type  the document type
-   * @param label the type label
-   * @return iterator from index lookup, or null if no suitable index found
-   */
-  /**
-   * Returns an iterator restricted to the partition-target bucket when the type uses a
-   * {@link PartitionedBucketSelectionStrategy}, every partition property is bound to a
-   * non-parameter literal in the node pattern, and the type's {@code needsRepartition} flag is
-   * cleared. Returns {@code null} otherwise so the caller falls back to the full-scan path.
-   * <p>
-   * Records returned may include other documents that hashed to the same bucket (collision); the
-   * outer {@code matchesProperties} filter rejects those. The win is bucket-count-fold: at
-   * default {@code 4-32} bucket counts this is a 4x-32x reduction in records scanned for the
-   * full-scan fallback.
-   */
   private Iterator<Identifiable> tryPartitionPrunedIterator(final DocumentType type, final String label) {
     if (!(type.getBucketSelectionStrategy() instanceof PartitionedBucketSelectionStrategy partitioned))
       return null;
@@ -518,7 +500,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
       return null;
 
     final String bucketName = typeBuckets.get(bucketIndex).getName();
-    usedIndexName = label + "[partition='" + bucketName + "']";
+    usedPartitionBucket = bucketName;
     @SuppressWarnings("unchecked")
     final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateBucket(bucketName);
     return iter;
@@ -906,6 +888,8 @@ public class MatchNodeStep extends AbstractExecutionStep {
     builder.append(")");
     if (usedIndexName != null)
       builder.append(" [index: ").append(usedIndexName).append("]");
+    if (usedPartitionBucket != null)
+      builder.append(" [partition: ").append(usedPartitionBucket).append("]");
     if (whereFilter != null)
       builder.append(" [filter: ").append(whereFilter.getText()).append("]");
     if (context.isProfiling()) {
