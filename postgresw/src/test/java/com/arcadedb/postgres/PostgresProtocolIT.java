@@ -989,4 +989,82 @@ class PostgresProtocolIT extends BaseGraphServerTest {
       assertThat(rs.next()).isTrue();
     }
   }
+
+  // ==================== Empty Result Schema Tests (issue #3971) ====================
+
+  /**
+   * WHERE 1=0 must return RowDescription with declared columns even when 0 rows are returned.
+   * Spark/PySpark sends this to discover schema before loading data; 0 columns means empty rows.
+   */
+  @Test
+  void selectWhere1Eq0ReturnsSchemaColumns() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      st.execute("CREATE DOCUMENT TYPE SparkSchemaTest IF NOT EXISTS");
+      st.execute("INSERT INTO SparkSchemaTest SET name = 'alice', age = 30");
+
+      ResultSet rs = st.executeQuery("SELECT name, age FROM SparkSchemaTest WHERE 1=0");
+      assertThat(rs.next()).isFalse();
+      ResultSetMetaData meta = rs.getMetaData();
+      assertThat(meta.getColumnCount()).isGreaterThan(0);
+      // Column names must include the projected fields
+      boolean foundName = false;
+      boolean foundAge = false;
+      for (int i = 1; i <= meta.getColumnCount(); i++) {
+        if ("name".equalsIgnoreCase(meta.getColumnName(i)))
+          foundName = true;
+        if ("age".equalsIgnoreCase(meta.getColumnName(i)))
+          foundAge = true;
+      }
+      assertThat(foundName).isTrue();
+      assertThat(foundAge).isTrue();
+    }
+  }
+
+  /**
+   * SELECT * FROM type WHERE 1=0 must return RowDescription with schema columns.
+   * This is the exact probe pattern used by Apache Spark JDBC connector.
+   */
+  @Test
+  void selectStarWhere1Eq0ReturnsSchemaColumns() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      st.execute("CREATE DOCUMENT TYPE SparkStarSchemaTest IF NOT EXISTS");
+      st.execute("INSERT INTO SparkStarSchemaTest SET city = 'Rome', population = 2800000");
+
+      ResultSet rs = st.executeQuery("SELECT * FROM SparkStarSchemaTest WHERE 1=0");
+      assertThat(rs.next()).isFalse();
+      ResultSetMetaData meta = rs.getMetaData();
+      assertThat(meta.getColumnCount()).isGreaterThan(0);
+      boolean foundCity = false;
+      for (int i = 1; i <= meta.getColumnCount(); i++) {
+        if ("city".equalsIgnoreCase(meta.getColumnName(i)))
+          foundCity = true;
+      }
+      assertThat(foundCity).isTrue();
+    }
+  }
+
+  /**
+   * Prepared statement with WHERE 1=0 must also return RowDescription with schema columns.
+   * JDBC drivers use the extended query protocol (Parse/Describe/Bind/Execute).
+   */
+  @Test
+  void preparedSelectWhere1Eq0ReturnsSchemaColumns() throws Exception {
+    try (var conn = getConnection(); var st = conn.createStatement()) {
+      st.execute("CREATE DOCUMENT TYPE SparkPreparedSchemaTest IF NOT EXISTS");
+      st.execute("INSERT INTO SparkPreparedSchemaTest SET label = 'x', value = 42");
+    }
+    try (var conn = getConnection();
+        var pst = conn.prepareStatement("SELECT label, value FROM SparkPreparedSchemaTest WHERE 1=0")) {
+      ResultSet rs = pst.executeQuery();
+      assertThat(rs.next()).isFalse();
+      ResultSetMetaData meta = rs.getMetaData();
+      assertThat(meta.getColumnCount()).isGreaterThan(0);
+      boolean foundLabel = false;
+      for (int i = 1; i <= meta.getColumnCount(); i++) {
+        if ("label".equalsIgnoreCase(meta.getColumnName(i)))
+          foundLabel = true;
+      }
+      assertThat(foundLabel).isTrue();
+    }
+  }
 }

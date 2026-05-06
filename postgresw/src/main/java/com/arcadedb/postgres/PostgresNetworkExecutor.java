@@ -291,6 +291,11 @@ public class PostgresNetworkExecutor extends Thread {
         if (portal.isExpectingResult) {
           portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
           portal.columns = getColumns(portal.cachedResultSet);
+          if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty()) {
+            final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(portal.query);
+            if (schemaColumns != null && !schemaColumns.isEmpty())
+              portal.columns = schemaColumns;
+          }
           writeRowDescription(portal.columns);
           portal.rowDescriptionSent = true;
         } else
@@ -370,6 +375,11 @@ public class PostgresNetworkExecutor extends Thread {
             if (!portal.rowDescriptionSent) {
               final long serStart = System.nanoTime();
               portal.columns = getColumns(portal.cachedResultSet);
+              if (portal.columns.isEmpty() && portal.cachedResultSet.isEmpty() && portal.isExpectingResult) {
+                final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(portal.query);
+                if (schemaColumns != null && !schemaColumns.isEmpty())
+                  portal.columns = schemaColumns;
+              }
               writeRowDescription(portal.columns);
               portal.rowDescriptionSent = true;
               profile.addSerializationNanos(System.nanoTime() - serStart);
@@ -511,7 +521,12 @@ public class PostgresNetworkExecutor extends Thread {
       profile.addEngineNanos(System.nanoTime() - engineStart);
 
       final long serStart = System.nanoTime();
-      final Map<String, PostgresType> columns = getColumns(cachedResultSet);
+      Map<String, PostgresType> columns = getColumns(cachedResultSet);
+      if (columns.isEmpty() && cachedResultSet.isEmpty() && upperCaseText.startsWith("SELECT")) {
+        final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(query.query);
+        if (schemaColumns != null && !schemaColumns.isEmpty())
+          columns = schemaColumns;
+      }
       writeRowDescription(columns);
       writeDataRows(cachedResultSet, columns);
       writeCommandComplete(queryText, cachedResultSet.size());
