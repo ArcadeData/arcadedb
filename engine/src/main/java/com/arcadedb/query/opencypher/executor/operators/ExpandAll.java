@@ -57,6 +57,9 @@ public class ExpandAll extends AbstractPhysicalOperator {
   // Cypher relationship uniqueness applies only within a single MATCH clause, so this
   // scoping prevents blocking valid cross-clause edge reuse.
   private Set<String> sameClausePrecedingRelVars;
+  // Synthetic row property name under which to stash this hop's edge when edgeVariable
+  // is null but the edge is still needed by later same-clause hops for the uniqueness check.
+  private String edgeTrackingVar;
 
   public ExpandAll(final PhysicalOperator child, final String sourceVariable,
                   final String edgeVariable, final String targetVariable,
@@ -78,6 +81,10 @@ public class ExpandAll extends AbstractPhysicalOperator {
    */
   public void setSameClausePrecedingRelVars(final Set<String> sameClausePrecedingRelVars) {
     this.sameClausePrecedingRelVars = sameClausePrecedingRelVars;
+  }
+
+  public void setEdgeTrackingVar(final String edgeTrackingVar) {
+    this.edgeTrackingVar = edgeTrackingVar;
   }
 
   public void setTargetLabel(final String targetLabel) {
@@ -172,6 +179,8 @@ public class ExpandAll extends AbstractPhysicalOperator {
 
             if (edgeVariable != null) {
               result.setProperty(edgeVariable, edge);
+            } else if (edgeTrackingVar != null) {
+              result.setProperty(edgeTrackingVar, edge);
             }
             if (targetVariable != null) {
               result.setProperty(targetVariable, targetVertex);
