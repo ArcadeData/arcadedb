@@ -660,9 +660,17 @@ public class LocalDocumentType implements DocumentType {
    * from the rebuild command. Public so tests and the rebuild executor can manipulate it; not part
    * of the public {@link com.arcadedb.schema.DocumentType} interface so user-level SQL can't reach
    * it directly. Persisted to {@code schema.json} only when {@code true}.
+   * <p>
+   * When the value transitions, {@link LocalSchema#saveConfiguration} is invoked so the change
+   * survives a server restart. During schema load that call is a no-op (the schema's own
+   * {@code readingFromFile} guard postpones the write), so this is safe to call regardless of
+   * the load state.
    */
   public void setNeedsRepartition(final boolean needsRepartition) {
+    if (this.needsRepartition == needsRepartition)
+      return;
     this.needsRepartition = needsRepartition;
+    schema.saveConfiguration();
   }
 
   /**

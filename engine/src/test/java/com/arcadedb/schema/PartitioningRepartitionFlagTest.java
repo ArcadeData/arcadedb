@@ -171,6 +171,31 @@ class PartitioningRepartitionFlagTest extends TestHelper {
   }
 
   @Test
+  void clearedFlagSurvivesReopen() {
+    // Pin the post-clear persistence contract: setNeedsRepartition(false) must trigger a schema
+    // save so a server restart doesn't resurrect the flag. Without the save, schema.json keeps
+    // the old `true` value and the load path reads it back, negating the rebuild that cleared
+    // it.
+    createPartitionedType();
+    final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
+    type.setNeedsRepartition(true);
+    assertThat(type.isNeedsRepartition()).isTrue();
+
+    // Reopen: confirm the persisted-true case survives.
+    reopenDatabase();
+    final LocalDocumentType reopenedTrue = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
+    assertThat(reopenedTrue.isNeedsRepartition()).as("persisted true must survive reopen").isTrue();
+
+    // Clear the flag, reopen, confirm the persisted-false case survives.
+    reopenedTrue.setNeedsRepartition(false);
+    reopenDatabase();
+    final LocalDocumentType reopenedFalse = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);
+    assertThat(reopenedFalse.isNeedsRepartition())
+        .as("clearing the flag must persist; reopen must NOT resurrect a stale true")
+        .isFalse();
+  }
+
+  @Test
   void warnIfNeedsRepartitionIsThrottled() {
     createPartitionedType();
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType(TYPE_NAME);

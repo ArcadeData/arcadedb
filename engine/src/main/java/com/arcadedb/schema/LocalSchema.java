@@ -1708,13 +1708,17 @@ public class LocalSchema implements Schema {
           final DocumentType type = getType(typeName);
           type.setBucketSelectionStrategy(bucketSelectionStrategy.getString("name"), properties);
         }
-        // Restore the persisted needsRepartition flag AFTER the strategy is set: otherwise the
-        // strategy-setter path could itself flip the flag during the load. Default false when the
-        // key is absent, since toJSON only emits the field when {@code true}.
-        if (schemaType.has("needsRepartition") && schemaType.getBoolean("needsRepartition")) {
-          final DocumentType type = getType(typeName);
-          if (type instanceof LocalDocumentType ldt)
-            ldt.setNeedsRepartition(true);
+        // Restore the persisted needsRepartition flag AFTER the strategy is set. We always force
+        // the flag to the persisted value (true OR false), because {@link
+        // LocalDocumentType#setBucketSelectionStrategy} can itself flip the flag to true when
+        // it sees a strategy shape change with records present - which is exactly the picture
+        // during load (default round-robin -> persisted partitioned, with records on disk). The
+        // persisted value wins: if the previous run cleared the flag via REBUILD TYPE WITH
+        // repartition, that cleared state must survive the restart.
+        final DocumentType type = getType(typeName);
+        if (type instanceof LocalDocumentType ldt) {
+          final boolean persisted = schemaType.has("needsRepartition") && schemaType.getBoolean("needsRepartition");
+          ldt.setNeedsRepartition(persisted);
         }
       }
 

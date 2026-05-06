@@ -25,9 +25,9 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
@@ -40,13 +40,13 @@ import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
-import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.VertexType;
 
 import java.util.ArrayList;
@@ -364,7 +364,11 @@ public class MatchNodeStep extends AbstractExecutionStep {
         // strategy invariant guarantees every match for those property values lives in the
         // hash-target bucket, so iterating other buckets is wasted work. Skipped when the type's
         // {@code needsRepartition} flag is set (with a throttled WARNING).
-        if (pattern.hasProperties() && !pattern.getProperties().isEmpty()
+        // <p>
+        // Use {@code !getProperties().isEmpty()} directly: {@link NodePattern#hasProperties}
+        // is true when there are inline properties OR a parameter-form ({$props}); the latter
+        // can't be evaluated at plan time and pruning would have to bail anyway.
+        if (!pattern.getProperties().isEmpty()
             && context.getDatabase().getSchema().existsType(label)) {
           final DocumentType type = context.getDatabase().getSchema().getType(label);
           final Iterator<Identifiable> partitionedIter = tryPartitionPrunedIterator(type, label);
@@ -507,10 +511,13 @@ public class MatchNodeStep extends AbstractExecutionStep {
     }
 
     final int bucketIndex = partitioned.getBucketIdByKeys(keyValues, false);
-    if (bucketIndex < 0 || bucketIndex >= type.getBuckets(false).size())
+    // Cache the bucket list once for the bounds check + name lookup. The MATCH path runs per
+    // node iteration, so even one redundant {@code getBuckets} call lands on the hot path.
+    final List<? extends com.arcadedb.engine.Bucket> typeBuckets = type.getBuckets(false);
+    if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
       return null;
 
-    final String bucketName = type.getBuckets(false).get(bucketIndex).getName();
+    final String bucketName = typeBuckets.get(bucketIndex).getName();
     usedIndexName = label + "[partition='" + bucketName + "']";
     @SuppressWarnings("unchecked")
     final Iterator<Identifiable> iter = (Iterator<Identifiable>) (Object) context.getDatabase().iterateBucket(bucketName);

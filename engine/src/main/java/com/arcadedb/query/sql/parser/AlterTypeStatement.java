@@ -217,17 +217,32 @@ public class AlterTypeStatement extends DDLStatement {
       // Reuse the existing REBUILD TYPE executor by issuing a SQL command on the same context.
       // Atomic across the ALTER + REBUILD as far as the caller is concerned: a failure in either
       // half throws and surfaces the boundary.
+      // <p>
+      // Defense-in-depth against SQL injection in the chained REBUILD TYPE call: backticks
+      // around the identifier protect every shell character except a literal backtick, which
+      // would close the quoting prematurely and let an attacker inject DDL. ArcadeDB's parser
+      // does not currently support backtick-escape inside identifiers, so the only safe path
+      // is to reject embedded backticks at this boundary. Type names containing a backtick
+      // can't be created via standard SQL anyway; this guard catches names that arrived via a
+      // back-channel (e.g., a forged schema.json or a migration tool that bypassed validation).
       final String typeName = name.getStringValue();
-      final ResultSet rebuildRs = context.getDatabase()
-          .command("sql", "REBUILD TYPE `" + typeName + "` WITH repartition = true");
-      if (rebuildRs.hasNext()) {
-        final com.arcadedb.query.sql.executor.Result rebuildRow = rebuildRs.next();
-        if (rebuildRow.getProperty("recordsRebuilt") != null)
-          result.setProperty("repartitionRebuilt", rebuildRow.<Long>getProperty("recordsRebuilt"));
-        if (rebuildRow.getProperty("recordsMoved") != null)
-          result.setProperty("repartitionMoved", rebuildRow.<Long>getProperty("recordsMoved"));
+      if (typeName.indexOf('`') >= 0)
+        throw new CommandSQLParsingException(
+            "Cannot chain REBUILD TYPE for type with embedded backtick in its name: '" + typeName
+                + "'. Run REBUILD TYPE separately or rename the type first.");
+      // try-with-resources: any throw between the open and the explicit close would leak the
+      // ResultSet otherwise (e.g. deserialisation of the rebuild row, or any future addition
+      // that touches the row before close).
+      try (final ResultSet rebuildRs = context.getDatabase()
+          .command("sql", "REBUILD TYPE `" + typeName + "` WITH repartition = true")) {
+        if (rebuildRs.hasNext()) {
+          final com.arcadedb.query.sql.executor.Result rebuildRow = rebuildRs.next();
+          if (rebuildRow.getProperty("recordsRebuilt") != null)
+            result.setProperty("repartitionRebuilt", rebuildRow.<Long>getProperty("recordsRebuilt"));
+          if (rebuildRow.getProperty("recordsMoved") != null)
+            result.setProperty("repartitionMoved", rebuildRow.<Long>getProperty("recordsMoved"));
+        }
       }
-      rebuildRs.close();
     }
 
     result.setProperty("operation", "ALTER TYPE");

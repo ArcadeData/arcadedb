@@ -3240,6 +3240,13 @@ function showTypeDetail(typeName) {
   // fan out and stay correct), but the optimisation is off until the rebuild runs.
   if (row.needsRepartition === true) {
     let btnId = "btnRepartition_" + row.name.replace(/[^a-zA-Z0-9]/g, "_");
+    // The button is wired programmatically (via addEventListener after the HTML lands in the
+    // DOM) rather than through an inline onclick. Inline handlers embedding row.name into a
+    // JS-string-in-HTML-attribute context are double-escape territory: even with escapeHtml,
+    // a name containing a literal double-quote escapes back to `"` after HTML decoding and
+    // breaks out of the JS string. The data-* attribute carries the untrusted value through
+    // a single HTML-escaping; the click handler reads it via dataset.typeName which the
+    // browser exposes as a plain string with no further interpretation.
     html += "<div class='alert alert-warning d-flex align-items-center justify-content-between' role='alert' style='margin-bottom:14px;'>";
     html += "  <div>";
     html += "    <i class='fa fa-triangle-exclamation me-2'></i>";
@@ -3247,7 +3254,7 @@ function showTypeDetail(typeName) {
     html += "    A bucket was added/dropped or the strategy changed; partition-aware query pruning is suppressed for this type. ";
     html += "    Queries remain correct but lose the optimisation until a repartition rebuild runs.";
     html += "  </div>";
-    html += "  <button id='" + btnId + "' class='btn btn-sm btn-warning' onclick=\"runRepartition('" + row.name.replace(/'/g, "\\'") + "'); return false;\">";
+    html += "  <button id='" + btnId + "' class='btn btn-sm btn-warning js-repartition-btn' data-type-name='" + escapeHtml(row.name) + "'>";
     html += "    <i class='fa fa-rotate'></i> Run Repartition";
     html += "  </button>";
     html += "</div>";
@@ -3424,6 +3431,15 @@ function showTypeDetail(typeName) {
   html += "</div>";
 
   $("#dbTypeDetail").html(html);
+
+  // Wire the repartition button (issue #4087). Done programmatically rather than via inline
+  // onclick so the type name carries through a single HTML-escape (in the data-type-name
+  // attribute) and is read back as a plain string via dataset.typeName, with no JS-string
+  // interpretation. Avoids the double-escape footgun on type names with embedded quotes.
+  $("#dbTypeDetail .js-repartition-btn").on("click", function (e) {
+    e.preventDefault();
+    runRepartition(this.dataset.typeName);
+  });
 }
 
 var sidebarBadgeColors = {

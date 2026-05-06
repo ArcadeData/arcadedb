@@ -122,10 +122,12 @@ public class RebuildTypeStatement extends DDLStatement {
     // Buffered relocations: when {@code finalRepartition} is true we cannot delete+insert during
     // the type scan because the new record would land in a later bucket and be visited again,
     // double-counting and (depending on iterator semantics) breaking the in-flight bucket
-    // iterator. Instead we collect each misplaced record's payload and execute the moves AFTER
-    // the scan completes. The original record stays untouched during the scan; the post-scan
-    // pass deletes it and re-creates the document via the partition strategy's bucket router.
-    final List<Map<String, Object>> pendingMoves = finalRepartition ? new ArrayList<>() : null;
+    // iterator. Instead we capture only the RIDs of misplaced records and re-read each one
+    // during the post-scan move phase. We deliberately do NOT snapshot the property maps at
+    // scan time: holding full record payloads in heap for every misplaced record on a large
+    // type is GC-prohibitive (per the project's memory mandate), and a per-record re-read in
+    // the move phase costs one extra page-cache hit at most. The re-read also lets a record
+    // that was updated after the scan land at the bucket its current value hashes to.
     final List<RID> pendingMoveRids = finalRepartition ? new ArrayList<>() : null;
 
     final long startNanos = System.nanoTime();
@@ -136,8 +138,8 @@ public class RebuildTypeStatement extends DDLStatement {
           final RID currentRid = m.getIdentity();
           final Bucket targetBucket = type.getBucketIdByRecord(m, false);
           if (currentRid != null && targetBucket != null && targetBucket.getFileId() != currentRid.getBucketId()) {
-            // Buffered move - apply after scan to keep iterator stability.
-            pendingMoves.add(new HashMap<>(m.toMap(false)));
+            // Buffered move - apply after scan to keep iterator stability. Only the RID is
+            // retained; the payload is re-read during the move phase to keep heap usage low.
             pendingMoveRids.add(currentRid);
             count[0]++;
           } else {
@@ -168,23 +170,43 @@ public class RebuildTypeStatement extends DDLStatement {
         return true;
       });
 
-      // Apply buffered relocations now that the scan is complete. Each move deletes the old
-      // record and creates a fresh one through the type's bucket-selection strategy, which
-      // routes it to the hash-target bucket. RIDs change.
-      if (finalRepartition && pendingMoves != null) {
-        for (int i = 0; i < pendingMoves.size(); i++) {
+      // Apply buffered relocations now that the scan is complete. Each move re-reads the
+      // current record state (so updates concurrent with the scan land at the bucket their new
+      // values hash to), deletes it, and creates a fresh one through the type's bucket-selection
+      // strategy. RIDs change.
+      // <p>
+      // <b>Concurrent-delete safety.</b> Between the scan's RID capture and this loop another
+      // commit may have deleted the original record. {@code lookupByRID} returns {@code null}
+      // in that case; we MUST skip the insert too, otherwise we'd materialise a ghost record
+      // with no original to replace. The whole delete+insert pair is gated on
+      // {@code oldRecord != null}.
+      if (finalRepartition && pendingMoveRids != null) {
+        // Move-phase commit cadence tracks the move counter, not the (now-frozen) scan
+        // counter. The error-recovery message uses {@code committedBefore[0]} to tell the
+        // operator how many rows are durably in the new layout when the rebuild aborts; using
+        // the scan counter here would over-report by the rebuild-only-touched-and-not-moved
+        // delta and confuse the recovery story.
+        long movePhaseCommittedBefore = 0L;
+        for (int i = 0; i < pendingMoveRids.size(); i++) {
           final RID oldRid = pendingMoveRids.get(i);
-          final Map<String, Object> snapshot = pendingMoves.get(i);
           final var oldRecord = db.lookupByRID(oldRid, true);
-          if (oldRecord != null)
+          if (oldRecord instanceof com.arcadedb.database.Document oldDoc) {
+            // Snapshot the current property map at move time, not at scan time, so concurrent
+            // updates between scan and move are honoured (the new value lands at the bucket
+            // its current property hash routes to, not the bucket the scan-time value would
+            // have hit). This also keeps heap usage proportional to RID count rather than to
+            // total record payload.
+            final Map<String, Object> snapshot = new HashMap<>(oldDoc.toMap(false));
             db.deleteRecord(oldRecord);
-          final MutableDocument fresh = db.newDocument(typeName.getStringValue());
-          fresh.fromMap(snapshot);
-          fresh.save();
-          moved[0]++;
+            final MutableDocument fresh = db.newDocument(typeName.getStringValue());
+            fresh.fromMap(snapshot);
+            fresh.save();
+            moved[0]++;
+          }
           if (implicitTx && (i + 1) % finalBatchSize == 0) {
             db.commit();
-            committedBefore[0] = count[0];
+            movePhaseCommittedBefore = moved[0];
+            committedBefore[0] = count[0] + movePhaseCommittedBefore;
             db.begin();
           }
         }
