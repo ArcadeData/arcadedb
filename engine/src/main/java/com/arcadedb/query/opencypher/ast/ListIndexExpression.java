@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
@@ -42,12 +43,15 @@ public class ListIndexExpression implements Expression {
 
   @Override
   public Object evaluate(final Result result, final CommandContext context) {
-    final Object listValue = listExpression.evaluate(result, context);
+    // Route through the shared evaluator so that aggregation overrides applied
+    // by AggregationStep / GroupByAggregationStep are honored when the list or
+    // index sub-expression contains an inline aggregator (issue #4100).
+    final Object listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listExpression, result, context);
     if (listValue == null) {
       return null;
     }
 
-    final Object indexValue = indexExpression.evaluate(result, context);
+    final Object indexValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(indexExpression, result, context);
     if (indexValue == null) {
       return null;
     }

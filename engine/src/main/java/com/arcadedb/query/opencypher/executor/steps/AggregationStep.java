@@ -32,9 +32,11 @@ import com.arcadedb.query.opencypher.ast.LogicalExpression;
 import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
 import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
+import com.arcadedb.query.opencypher.ast.ListIndexExpression;
 import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
 import com.arcadedb.query.opencypher.ast.ListSliceExpression;
 import com.arcadedb.query.opencypher.ast.MapExpression;
+import com.arcadedb.query.opencypher.ast.ReduceExpression;
 import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
@@ -270,6 +272,13 @@ public class AggregationStep extends AbstractExecutionStep {
         collectAggregations(value, innerAggs, innerFunctions);
     } else if (expr instanceof ListSliceExpression lse) {
       collectAggregations(lse.getListExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof ListIndexExpression lie) {
+      collectAggregations(lie.getListExpression(), innerAggs, innerFunctions);
+      collectAggregations(lie.getIndexExpression(), innerAggs, innerFunctions);
+    } else if (expr instanceof ReduceExpression re) {
+      collectAggregations(re.getInitialValue(), innerAggs, innerFunctions);
+      collectAggregations(re.getListExpression(), innerAggs, innerFunctions);
+      collectAggregations(re.getReduceExpression(), innerAggs, innerFunctions);
     } else if (expr instanceof BooleanWrapperExpression bwe) {
       collectBooleanAggregations(bwe.getBooleanExpression(), innerAggs, innerFunctions);
     }

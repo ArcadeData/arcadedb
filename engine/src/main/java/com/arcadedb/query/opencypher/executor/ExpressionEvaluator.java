@@ -49,19 +49,32 @@ import java.util.Map;
  * Handles variables, property access, and function calls.
  */
 public class ExpressionEvaluator {
+  /**
+   * Aggregation overrides are stored thread-locally so that all
+   * {@code ExpressionEvaluator} instances - including the shared static one
+   * used by AST nodes like {@link com.arcadedb.query.opencypher.ast.ReduceExpression}
+   * and {@link com.arcadedb.query.opencypher.ast.ListIndexExpression} - see the
+   * same overrides during a single aggregation flush, while keeping concurrent
+   * queries on different threads isolated.
+   */
+  private static final ThreadLocal<Map<String, Object>> AGGREGATION_OVERRIDES = new ThreadLocal<>();
+
   private final CypherFunctionFactory functionFactory;
-  private Map<String, Object> aggregationOverrides;
 
   public ExpressionEvaluator(final CypherFunctionFactory functionFactory) {
     this.functionFactory = functionFactory;
   }
 
   public void setAggregationOverrides(final Map<String, Object> overrides) {
-    this.aggregationOverrides = overrides;
+    AGGREGATION_OVERRIDES.set(overrides);
   }
 
   public void clearAggregationOverrides() {
-    this.aggregationOverrides = null;
+    AGGREGATION_OVERRIDES.remove();
+  }
+
+  private Map<String, Object> aggregationOverrides() {
+    return AGGREGATION_OVERRIDES.get();
   }
 
   /**
@@ -84,11 +97,11 @@ public class ExpressionEvaluator {
       return evaluateComparison((ComparisonExpressionWrapper) expression, result, context);
     } else if (expression instanceof BooleanWrapperExpression bwe) {
       return evaluateBooleanWrapper(bwe, result, context);
-    } else if (aggregationOverrides != null && expression instanceof MapExpression me) {
+    } else if (aggregationOverrides() != null && expression instanceof MapExpression me) {
       return evaluateMap(me, result, context);
-    } else if (aggregationOverrides != null && expression instanceof ListComprehensionExpression) {
+    } else if (aggregationOverrides() != null && expression instanceof ListComprehensionExpression) {
       return evaluateListComprehension((ListComprehensionExpression) expression, result, context);
-    } else if (aggregationOverrides != null && expression instanceof ListPredicateExpression) {
+    } else if (aggregationOverrides() != null && expression instanceof ListPredicateExpression) {
       return evaluateListPredicate((ListPredicateExpression) expression, result, context);
     } else if (expression instanceof ListSliceExpression lse) {
       return evaluateListSlice(lse, result, context);
@@ -114,10 +127,11 @@ public class ExpressionEvaluator {
   private Object evaluateFunction(final FunctionCallExpression expression, final Result result,
       final CommandContext context) {
     // Check for pre-computed aggregation override
-    if (aggregationOverrides != null && expression.isAggregation()) {
+    final Map<String, Object> overrides = aggregationOverrides();
+    if (overrides != null && expression.isAggregation()) {
       final String key = expression.getText();
-      if (aggregationOverrides.containsKey(key))
-        return aggregationOverrides.get(key);
+      if (overrides.containsKey(key))
+        return overrides.get(key);
     }
 
     // Get function - use cache if available to avoid repeated lookups
