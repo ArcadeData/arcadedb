@@ -138,6 +138,18 @@ class RaftIdleReplicaRestartIT extends BaseRaftHATest {
             + "Observed %d such warnings in the 15s observation window - leader is stuck", loopCountAfterCatchup)
         .isLessThanOrEqualTo(2);
 
+    // Confirm the cluster is functional: writes on the leader after the replica restart must
+    // reach the replica.
+    final var leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.transaction(() -> {
+      if (!leaderDb.getSchema().existsType("PostRestart"))
+        leaderDb.getSchema().createVertexType("PostRestart");
+    });
+    leaderDb.transaction(() -> {
+      for (int i = 0; i < 10; i++)
+        leaderDb.newVertex("PostRestart").set("idx", i).save();
+    });
+
     assertClusterConsistency();
 
     // The restarted replica must have the post-restart data.
