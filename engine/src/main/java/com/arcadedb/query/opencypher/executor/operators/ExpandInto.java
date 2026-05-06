@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Physical operator that checks for the existence of a relationship between two known vertices.
@@ -60,6 +61,9 @@ public class ExpandInto extends AbstractPhysicalOperator {
   private final String    edgeVariable;
   private final Direction direction;
   private final String[]  edgeTypes;
+  // Same-MATCH-clause relationship variable names that were bound before this hop.
+  // See ExpandAll for the rationale.
+  private Set<String>     sameClausePrecedingRelVars;
 
   public ExpandInto(final PhysicalOperator child, final String sourceVariable,
                     final String targetVariable, final String edgeVariable,
@@ -71,6 +75,14 @@ public class ExpandInto extends AbstractPhysicalOperator {
     this.edgeVariable = edgeVariable;
     this.direction = direction;
     this.edgeTypes = edgeTypes;
+  }
+
+  /**
+   * Sets the relationship variables bound earlier in the same MATCH clause as this hop.
+   * Used to enforce Cypher relationship uniqueness within the clause.
+   */
+  public void setSameClausePrecedingRelVars(final Set<String> sameClausePrecedingRelVars) {
+    this.sameClausePrecedingRelVars = sameClausePrecedingRelVars;
   }
 
   @Override
@@ -149,6 +161,15 @@ public class ExpandInto extends AbstractPhysicalOperator {
 
           // If connected, produce output row
           if (connected) {
+            // Cypher path isomorphism: drop rows where the discovered edge is the same
+            // as one already bound to a same-clause preceding rel var. We only resolve
+            // the connecting edge for the check when the bound set is non-empty.
+            if (connectedEdge == null && ExpandInto.this.hasUsedRels(inputResult)) {
+              connectedEdge = ExpandInto.this.findEdgeForCheck(sourceVertex, targetVertex, arcadeDirection);
+            }
+            if (connectedEdge != null && ExpandInto.this.isSameClauseEdgeReuse(inputResult, connectedEdge.getIdentity()))
+              continue;
+
             final ResultInternal result = new ResultInternal();
 
             // Copy all properties from input
@@ -207,6 +228,70 @@ public class ExpandInto extends AbstractPhysicalOperator {
         inputResults.close();
       }
     };
+  }
+
+  /**
+   * True iff at least one same-clause preceding rel var holds an Edge in this row.
+   * Used as a cheap gate before falling back to a full {@code findEdge} for the check.
+   */
+  private boolean hasUsedRels(final Result row) {
+    if (sameClausePrecedingRelVars == null)
+      return false;
+    for (final String relVar : sameClausePrecedingRelVars) {
+      if (row.getProperty(relVar) instanceof Edge)
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * True iff {@code edgeRid} matches the RID of any edge currently bound to a
+   * same-clause preceding rel var in {@code row}.
+   */
+  private boolean isSameClauseEdgeReuse(final Result row, final RID edgeRid) {
+    if (sameClausePrecedingRelVars == null || sameClausePrecedingRelVars.isEmpty())
+      return false;
+    for (final String relVar : sameClausePrecedingRelVars) {
+      final Object val = row.getProperty(relVar);
+      if (val instanceof Edge && ((Edge) val).getIdentity().equals(edgeRid))
+        return true;
+    }
+    return false;
+  }
+
+  /**
+   * Loads the connecting edge purely to perform the isomorphism check. Only invoked
+   * when {@code edgeVariable} is null (no binding required) but a same-clause check
+   * is needed and the input row has at least one edge bound.
+   */
+  private Edge findEdgeForCheck(final Vertex source, final Vertex target,
+                                final Vertex.DIRECTION direction) {
+    if (edgeTypes == null || edgeTypes.length == 0)
+      return findEdgeRaw(source, target, direction, null);
+    for (final String edgeType : edgeTypes) {
+      final Edge e = findEdgeRaw(source, target, direction, edgeType);
+      if (e != null)
+        return e;
+    }
+    return null;
+  }
+
+  private Edge findEdgeRaw(final Vertex source, final Vertex target,
+                           final Vertex.DIRECTION direction, final String edgeType) {
+    final DatabaseInternal database = (DatabaseInternal) source.getDatabase();
+    final VertexInternal sourceInternal = (VertexInternal) source;
+    final int[] edgeBucketFilter;
+    if (edgeType != null) {
+      edgeBucketFilter = database.getSchema().getType(edgeType).getBuckets(true).stream()
+          .mapToInt(b -> b.getFileId()).toArray();
+    } else {
+      edgeBucketFilter = null;
+    }
+    final RID edgeRID = database.getGraphEngine()
+        .getFirstEdgeConnectedToVertex(sourceInternal, target, direction, edgeBucketFilter);
+    if (edgeRID != null)
+      return database.lookupByRID(edgeRID, true).asEdge();
+    return null;
   }
 
   @Override

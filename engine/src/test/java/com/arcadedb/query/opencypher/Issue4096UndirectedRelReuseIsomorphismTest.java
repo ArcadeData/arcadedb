@@ -101,23 +101,41 @@ class Issue4096UndirectedRelReuseIsomorphismTest {
   }
 
   /**
-   * Named undirected multi-hop: total count must equal the count with explicit r1 <> r2 filter.
-   * If the bug is present, the unfiltered query returns more rows than the filtered one.
+   * Cross-clause edge reuse must be allowed: relationship uniqueness only applies
+   * within a single MATCH clause. The optimizer merges all MATCH clauses into one
+   * logical plan, so the isomorphism check must be scoped per MATCH clause.
    */
   @Test
-  void undirectedMultiHopTotalCountMatchesExplicitFilter() {
-    final ResultSet unfiltered = database.query("opencypher",
-        "MATCH (a:Person4096)-[r1:KNOWS4096]-(b:Person4096)-[r2:KNOWS4096]-(c:Person4096) "
+  void crossClauseEdgeReuseIsAllowed() {
+    final ResultSet result = database.query("opencypher",
+        "MATCH (a:Person4096)-[r1:KNOWS4096]-(b:Person4096) "
+            + "MATCH (b:Person4096)-[r2:KNOWS4096]-(c:Person4096) "
             + "RETURN count(*) AS cnt");
-    final List<Result> unfilteredRows = collect(unfiltered);
 
-    final ResultSet filtered = database.query("opencypher",
-        "MATCH (a:Person4096)-[r1:KNOWS4096]-(b:Person4096)-[r2:KNOWS4096]-(c:Person4096) "
-            + "WHERE r1 <> r2 RETURN count(*) AS cnt");
-    final List<Result> filteredRows = collect(filtered);
+    final List<Result> rows = collect(result);
+    assertThat(rows).hasSize(1);
+    // Expected breakdown for Alice-KNOWS->Bob-KNOWS->Charlie:
+    //   first MATCH (undirected) yields 4 (a,b) pairs;
+    //   for each pair, second MATCH from b yields 1 or 2 c's, totalling 6.
+    assertThat(((Number) rows.get(0).getProperty("cnt")).longValue()).isEqualTo(6L);
+  }
 
-    assertThat(((Number) unfilteredRows.get(0).getProperty("cnt")).longValue())
-        .isEqualTo(((Number) filteredRows.get(0).getProperty("cnt")).longValue());
+  /**
+   * ExpandInto path: when both endpoints of the second hop are bound (via comma-separated
+   * pattern with both endpoints anchored), the optimizer picks ExpandInto. The isomorphism
+   * check must apply there too.
+   */
+  @Test
+  void expandIntoPathDoesNotReuseRelationship() {
+    final ResultSet result = database.query("opencypher",
+        "MATCH (a:Person4096 {name:'Alice'}), (c:Person4096 {name:'Charlie'}) "
+            + "MATCH (a)-[r1:KNOWS4096]-(b:Person4096), (b)-[r2:KNOWS4096]-(c) "
+            + "RETURN count(*) AS cnt");
+
+    final List<Result> rows = collect(result);
+    assertThat(rows).hasSize(1);
+    // Only one valid traversal: Alice-r1-Bob-r2-Charlie (r1 != r2).
+    assertThat(((Number) rows.get(0).getProperty("cnt")).longValue()).isEqualTo(1L);
   }
 
   private static List<Result> collect(final ResultSet rs) {

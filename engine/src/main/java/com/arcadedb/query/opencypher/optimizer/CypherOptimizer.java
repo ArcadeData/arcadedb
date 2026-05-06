@@ -45,6 +45,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -326,17 +328,23 @@ public class CypherOptimizer {
             logicalPlan
         );
 
-    // Build operator chain
+    // Build operator chain. Track relationship variables added to the chain per
+    // MATCH-clause index so each new hop can scope its uniqueness check to its own
+    // clause - cross-clause edge reuse is valid Cypher and must not be blocked.
     PhysicalOperator currentOp = anchorOperator;
+    final Map<Integer, Set<String>> relVarsPerClause = new HashMap<>();
 
     for (final LogicalRelationship rel : orderedRels) {
+      final Set<String> sameClausePreceding = relVarsPerClause.getOrDefault(
+          rel.getClauseIndex(), Collections.emptySet());
+
       // Check if we should use ExpandInto (both endpoints bound)
       if (expandIntoRule.shouldUseExpandInto(rel, boundVariables)) {
         // Use ExpandInto for bounded patterns
-        currentOp = createExpandIntoOperator(rel, currentOp, boundVariables);
+        currentOp = createExpandIntoOperator(rel, currentOp, boundVariables, sameClausePreceding);
       } else {
         // Use ExpandAll for unbounded patterns
-        currentOp = createExpandAllOperator(rel, currentOp, boundVariables);
+        currentOp = createExpandAllOperator(rel, currentOp, boundVariables, sameClausePreceding);
 
         // Add label filter for target vertex if required
         currentOp = addTargetLabelFilter(logicalPlan, rel, currentOp);
@@ -345,6 +353,13 @@ public class CypherOptimizer {
       // Update bound variables after expansion
       boundVariables.add(rel.getSourceVariable());
       boundVariables.add(rel.getTargetVariable());
+
+      // Track this relationship variable for subsequent hops in the same clause
+      if (rel.getVariable() != null && !rel.getVariable().isEmpty()) {
+        relVarsPerClause
+            .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
+            .add(rel.getVariable());
+      }
     }
 
     return currentOp;
@@ -362,7 +377,8 @@ public class CypherOptimizer {
   private PhysicalOperator createExpandAllOperator(
       final LogicalRelationship relationship,
       final PhysicalOperator input,
-      final Set<String> boundVariables) {
+      final Set<String> boundVariables,
+      final Set<String> sameClausePrecedingRelVars) {
     // Extract parameters from relationship
     String sourceVariable = relationship.getSourceVariable();
     final String edgeVariable = relationship.getVariable();
@@ -414,7 +430,7 @@ public class CypherOptimizer {
       }
     }
 
-    return new ExpandAll(
+    final ExpandAll expandAll = new ExpandAll(
         input,
         sourceVariable,
         edgeVariable,
@@ -424,6 +440,8 @@ public class CypherOptimizer {
         totalCost,
         outputCardinality
     );
+    expandAll.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
+    return expandAll;
   }
 
   /**
@@ -450,7 +468,8 @@ public class CypherOptimizer {
   private PhysicalOperator createExpandIntoOperator(
       final LogicalRelationship relationship,
       final PhysicalOperator input,
-      final Set<String> boundVariables) {
+      final Set<String> boundVariables,
+      final Set<String> sameClausePrecedingRelVars) {
     // Extract parameters from relationship
     final String sourceVariable = relationship.getSourceVariable();
     final String targetVariable = relationship.getTargetVariable();
@@ -477,7 +496,7 @@ public class CypherOptimizer {
       }
     }
 
-    return new ExpandInto(
+    final ExpandInto expandInto = new ExpandInto(
         input,
         sourceVariable,
         targetVariable,
@@ -487,6 +506,8 @@ public class CypherOptimizer {
         totalCost,
         outputCardinality
     );
+    expandInto.setSameClausePrecedingRelVars(sameClausePrecedingRelVars);
+    return expandInto;
   }
 
   /**
