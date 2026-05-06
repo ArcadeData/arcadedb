@@ -2061,6 +2061,13 @@ public class SelectExecutionPlanner {
     // If the intersection is empty the user's explicit cluster filter is incompatible with the
     // partition-derived set - the query should return nothing. The downstream fetch step's
     // filtering already handles this (no buckets pass), so returning the empty set is correct.
+    // Log at FINE so an operator chasing a "query mysteriously returns zero rows" report can grep
+    // for the type name and see that pruning + an explicit cluster filter intersected to empty.
+    if (intersected.isEmpty())
+      LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE,
+          "Partition pruning on type '%s' intersected to an empty set: derived buckets %s do not "
+              + "overlap the explicit cluster filter %s. Query will return zero rows.",
+          null, docType.getName(), derivedBuckets, filterClusters);
     return intersected;
   }
 

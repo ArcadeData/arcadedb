@@ -20,7 +20,6 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.Record;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;

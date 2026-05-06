@@ -745,8 +745,35 @@ public class LocalDocumentType implements DocumentType {
     return this;
   }
 
-  /** True if the type has at least one record across any of its (non-polymorphic) buckets. */
+  /**
+   * True if the type has at least one record across any of its (non-polymorphic) buckets.
+   * <p>
+   * <b>Performance.</b> Two-phase lookup. Phase 1 reads {@link LocalBucket#getCachedRecordCount}
+   * (a plain {@link AtomicLong} read, no I/O) on each bucket and short-circuits on the first
+   * positive count. The cache is populated by {@link Bucket#count}, transaction commits, and
+   * WAL replay - hot in steady state, so a populated type returns {@code true} in O(buckets)
+   * memory ops with no page-cache access. Phase 2 falls back to {@link Bucket#count} only when
+   * no cached value yielded a positive answer (every cache is {@code -1}, every cache is
+   * {@code 0}, or a mix of the two). That handles the cold-cache case AND the in-transaction
+   * delta case (e.g. a single TX that inserts records and then alters the schema), since
+   * {@link Bucket#count} folds the active transaction's delta into the returned value. The
+   * fallback also warms the cache, so subsequent DDL calls on the same type stay on Phase 1.
+   * <p>
+   * Called from {@link #setBucketSelectionStrategy(BucketSelectionStrategy)},
+   * {@link #addBucketInternal}, and {@link #removeBucketInternal} to gate the
+   * {@code needsRepartition} flag flip; a per-type record counter (along the lines of
+   * {@link #ownExternalPropertyCount}) would make this strictly O(1) but requires hooks on
+   * every record save / delete - tracked as a follow-up if the DDL hot path becomes a bottleneck
+   * on types with many buckets where Phase 1 routinely misses.
+   */
   private boolean hasAnyRecord() {
+    // Phase 1: cheap cache-only check.
+    for (final Bucket b : buckets) {
+      if (b instanceof LocalBucket lb && lb.getCachedRecordCount() > 0L)
+        return true;
+    }
+    // Phase 2: cache miss or all-zero. Delegate to count() to cover cold caches and
+    // in-transaction deltas; the call warms the cache for next time.
     for (final Bucket b : buckets) {
       if (b.count() > 0L)
         return true;
