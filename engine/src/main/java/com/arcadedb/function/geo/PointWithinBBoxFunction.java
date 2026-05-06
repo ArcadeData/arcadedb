@@ -35,7 +35,6 @@ public class PointWithinBBoxFunction implements StatelessFunction {
   }
 
   @Override
-  @SuppressWarnings("unchecked")
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 3)
       throw new CommandExecutionException("point.withinBBox() requires exactly 3 arguments: point, lowerLeft, upperRight");
@@ -44,13 +43,17 @@ public class PointWithinBBoxFunction implements StatelessFunction {
     final double[] point = extractCoordinates(args[0]);
     final double[] lowerLeft = extractCoordinates(args[1]);
     final double[] upperRight = extractCoordinates(args[2]);
-    return lowerLeft[0] <= point[0] && point[0] <= upperRight[0]
-        && lowerLeft[1] <= point[1] && point[1] <= upperRight[1];
+    final boolean longitudeInRange;
+    if (isGeographic(args[1]) && lowerLeft[0] > upperRight[0])
+      // Crossmeridian bbox: lowerLeft.longitude > upperRight.longitude means the box wraps around ±180
+      longitudeInRange = point[0] >= lowerLeft[0] || point[0] <= upperRight[0];
+    else
+      longitudeInRange = lowerLeft[0] <= point[0] && point[0] <= upperRight[0];
+    return longitudeInRange && lowerLeft[1] <= point[1] && point[1] <= upperRight[1];
   }
 
   private double[] extractCoordinates(final Object value) {
     if (value instanceof Map<?, ?> map) {
-      // Try x/y first, then longitude/latitude
       if (map.containsKey("x") && map.containsKey("y"))
         return new double[] { ((Number) map.get("x")).doubleValue(), ((Number) map.get("y")).doubleValue() };
       if (map.containsKey("longitude") && map.containsKey("latitude"))
@@ -58,5 +61,9 @@ public class PointWithinBBoxFunction implements StatelessFunction {
       throw new CommandExecutionException("Point must have x/y or longitude/latitude properties");
     }
     throw new CommandExecutionException("point.withinBBox() arguments must be point values (maps with x/y or longitude/latitude)");
+  }
+
+  private boolean isGeographic(final Object value) {
+    return value instanceof Map<?, ?> map && map.containsKey("longitude");
   }
 }
