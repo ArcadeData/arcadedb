@@ -99,6 +99,11 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
       int i = 0;
 
       for (final String propertyName : propertyNames) {
+        if (type instanceof LocalEdgeType && (Property.OUT_PROPERTY.equals(propertyName) || Property.IN_PROPERTY.equals(propertyName))) {
+          keyTypes[i++] = Type.LINK;
+          continue;
+        }
+
         final Property property = type.getPolymorphicPropertyIfExists(propertyName);
         if (property == null)
           throw new SchemaException(
