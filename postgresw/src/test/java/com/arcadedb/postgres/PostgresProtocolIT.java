@@ -75,7 +75,7 @@ class PostgresProtocolIT extends BaseGraphServerTest {
     try (var conn = getConnection(); var st = conn.createStatement()) {
       ResultSet rs = st.executeQuery("SELECT VERSION()");
       assertThat(rs.next()).isTrue();
-      assertThat(rs.getString(1)).isNotNull();
+      assertThat(rs.getString(1)).isEqualTo(PostgresNetworkExecutor.PG_SERVER_VERSION);
     }
   }
 

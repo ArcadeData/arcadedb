@@ -475,10 +475,14 @@ public class PostgresNetworkExecutor extends Thread {
         setConfiguration(query.query);
         resultSet = new IteratorResultSet(createResultSet("STATUS", "Setting ignored").iterator());
       } else if (query.query.equals("SELECT VERSION()"))
-        resultSet = new IteratorResultSet(createResultSet("VERSION", "11.0.0").iterator());
+        resultSet = new IteratorResultSet(createResultSet("VERSION", PG_SERVER_VERSION).iterator());
       else if (query.query.equals("SELECT CURRENT_SCHEMA()"))
         resultSet = new IteratorResultSet(createResultSet("CURRENT_SCHEMA", database.getName()).iterator());
-      else if (query.query.toUpperCase(Locale.ENGLISH).startsWith("SHOW ")) {
+      else if (query.query.equalsIgnoreCase("SHOW TRANSACTION ISOLATION LEVEL")) {
+        final Database.TRANSACTION_ISOLATION_LEVEL dbIsolationLevel = database.getTransactionIsolationLevel();
+        final String level = dbIsolationLevel.name().replace('_', ' ');
+        resultSet = new IteratorResultSet(createResultSet("LEVEL", level).iterator());
+      } else if (query.query.toUpperCase(Locale.ENGLISH).startsWith("SHOW ")) {
         final String varName = query.query.substring(5).trim().toLowerCase(Locale.ENGLISH);
         resultSet = new IteratorResultSet(createResultSet(varName, getShowConfigValue(varName)).iterator());
       } else if (query.query.equalsIgnoreCase("BEGIN") ||
@@ -1134,7 +1138,7 @@ public class PostgresNetworkExecutor extends Thread {
         setConfiguration(portal.query);
         portal.ignoreExecution = true;
       } else if (upperCaseText.equals("SELECT VERSION()")) {
-        createResultSet(portal, "VERSION", "11.0.0");
+        createResultSet(portal, "VERSION", PG_SERVER_VERSION);
 
       } else if (upperCaseText.equals("SELECT CURRENT_SCHEMA()")) {
         createResultSet(portal, "CURRENT_SCHEMA", database.getName());
@@ -1356,8 +1360,7 @@ public class PostgresNetworkExecutor extends Thread {
       case "client_encoding" -> "UTF8";
       case "server_encoding" -> "UTF8";
       case "timezone" -> "UTC";
-      case "transaction isolation level" -> database.getTransactionIsolationLevel().name().replace('_', ' ').toLowerCase(Locale.ENGLISH);
-      default -> database.getName();
+      default -> "";
     };
   }
 
@@ -1725,7 +1728,7 @@ public class PostgresNetworkExecutor extends Thread {
 
     if (matcher.find()) {
       language = matcher.group(1);
-      queryText = query.substring(matcher.end());
+      queryText = query.substring(matcher.end()).trim();
     }
 
     return new Query(language, queryText);
