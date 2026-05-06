@@ -226,6 +226,48 @@ public class CypherOptimizer {
   }
 
   /**
+   * Returns the relationships that must store their edge in the row so subsequent
+   * same-clause hops can enforce Cypher relationship uniqueness. A hop is included
+   * when another hop in the same MATCH clause shares an edge type or either is untyped.
+   */
+  private Set<LogicalRelationship> computeNeedsEdgeTracking(final List<LogicalRelationship> orderedRels) {
+    if (orderedRels.size() <= 1)
+      return Collections.emptySet();
+
+    final Map<Integer, List<LogicalRelationship>> byClause = new HashMap<>();
+    for (final LogicalRelationship rel : orderedRels)
+      byClause.computeIfAbsent(rel.getClauseIndex(), k -> new ArrayList<>()).add(rel);
+
+    final Set<LogicalRelationship> needs = new HashSet<>();
+    for (final List<LogicalRelationship> clauseRels : byClause.values()) {
+      if (clauseRels.size() <= 1)
+        continue;
+
+      boolean hasUntyped = false;
+      for (final LogicalRelationship rel : clauseRels)
+        if (rel.getTypes().isEmpty()) {
+          hasUntyped = true;
+          break;
+        }
+      if (hasUntyped) {
+        // Untyped hops match any edge type, so every hop in the clause may collide.
+        needs.addAll(clauseRels);
+        continue;
+      }
+
+      final Map<String, List<LogicalRelationship>> byType = new HashMap<>();
+      for (final LogicalRelationship rel : clauseRels)
+        for (final String type : rel.getTypes())
+          byType.computeIfAbsent(type, k -> new ArrayList<>()).add(rel);
+
+      for (final List<LogicalRelationship> sharingType : byType.values())
+        if (sharingType.size() > 1)
+          needs.addAll(sharingType);
+    }
+    return needs;
+  }
+
+  /**
    * Builds a logical plan from the Cypher AST.
    *
    * @return logical plan
@@ -345,6 +387,9 @@ public class CypherOptimizer {
     PhysicalOperator currentOp = anchorOperator;
     final Map<Integer, Set<String>> relVarsPerClause = new HashMap<>();
 
+    final Set<LogicalRelationship> needsEdgeTracking = computeNeedsEdgeTracking(orderedRels);
+    int syntheticEdgeVarCounter = 0;
+
     for (final LogicalRelationship rel : orderedRels) {
       final Set<String> sameClausePreceding = relVarsPerClause.getOrDefault(
           rel.getClauseIndex(), Collections.emptySet());
@@ -357,6 +402,17 @@ public class CypherOptimizer {
         // Use ExpandAll for unbounded patterns
         currentOp = createExpandAllOperator(rel, currentOp, boundVariables, sameClausePreceding);
 
+        // Must run before addTargetLabelFilter wraps currentOp.
+        if ((rel.getVariable() == null || rel.getVariable().isEmpty())
+            && needsEdgeTracking.contains(rel)
+            && currentOp instanceof ExpandAll expand) {
+          final String synVar = "  anon_e_" + (syntheticEdgeVarCounter++);
+          expand.setEdgeTrackingVar(synVar);
+          relVarsPerClause
+              .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
+              .add(synVar);
+        }
+
         // Add label filter for target vertex if required
         currentOp = addTargetLabelFilter(logicalPlan, rel, currentOp);
       }
@@ -365,7 +421,7 @@ public class CypherOptimizer {
       boundVariables.add(rel.getSourceVariable());
       boundVariables.add(rel.getTargetVariable());
 
-      // Track this relationship variable for subsequent hops in the same clause
+      // Track named relationship variables for subsequent hops in the same clause
       if (rel.getVariable() != null && !rel.getVariable().isEmpty()) {
         relVarsPerClause
             .computeIfAbsent(rel.getClauseIndex(), k -> new HashSet<>())
