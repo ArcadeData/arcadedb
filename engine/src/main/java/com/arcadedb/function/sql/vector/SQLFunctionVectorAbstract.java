@@ -213,9 +213,8 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
    * <p>
    * Returns the input unchanged when the planner did not stash a hint, when the hint was
    * derived from a different FROM type than the function's target, or when the hint is empty.
-   * The intersection is computed via {@link IntHashSet#forEach}; building a fresh set keeps the
-   * input immutable so two parallel function calls in the same projection cannot stomp on each
-   * other's narrowed view.
+   * Builds a fresh {@link IntHashSet} (rather than mutating the input) so concurrent function
+   * calls in the same projection do not stomp on each other's narrowed view.
    * <p>
    * Net effect: a query like {@code SELECT vector.neighbors('Doc[embedding]', ..., k) FROM Doc
    * WHERE tenant_id = 'X'} on a {@code partitioned('tenant_id')} type only enumerates the

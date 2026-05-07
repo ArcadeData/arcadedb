@@ -93,6 +93,14 @@ public interface CommandContext {
    * <p>
    * Value type: {@link com.arcadedb.utility.IntHashSet} of bucket file ids.
    * Companion variable: {@link #PARTITION_PRUNED_TYPE_NAME_VAR}.
+   * <p>
+   * <b>NOTE (multi-type queries).</b> The slot is single-valued: a query that triggers pruning
+   * on more than one partitioned type (e.g. a future projection that calls
+   * {@code vector.neighbors} on type A while the FROM clause prunes type B) will have its first
+   * type's hint silently overwritten by the second derivation. The companion type-name variable
+   * blocks cross-type misapplication on the read side, but the first type's hint is lost. Today
+   * the planner only calls this from a single FROM-type context so this is not reachable; if
+   * multi-type pruning is ever added, swap the two scalars for a {@code Map<String, IntHashSet>}.
    */
   String PARTITION_PRUNED_BUCKET_FILE_IDS_VAR = "_partitionPrunedBucketFileIds";
 

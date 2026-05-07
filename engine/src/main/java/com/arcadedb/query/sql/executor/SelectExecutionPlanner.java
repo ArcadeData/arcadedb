@@ -1762,6 +1762,11 @@ public class SelectExecutionPlanner {
     // partitioning. Skipped when the type's {@code needsRepartition} flag is true (the mapping
     // is stale until {@code REBUILD TYPE Doc WITH repartition = true} runs); a throttled
     // WARNING is emitted in that case so operators see the lost optimisation.
+    // <p>
+    // <b>Side effect.</b> When pruning fires, {@link #derivePartitionPrunedClusters} also stashes
+    // the pruned bucket file ids on {@code context} (see
+    // {@link CommandContext#PARTITION_PRUNED_BUCKET_FILE_IDS_VAR}) for downstream consumers like
+    // {@code vector.neighbors} that do their own per-bucket fan-out and need the same narrowing.
     final Set<String> effectiveClusters = docType != null
         ? derivePartitionPrunedClusters(docType, filterClusters, info, context)
         : filterClusters;
@@ -2051,6 +2056,10 @@ public class SelectExecutionPlanner {
       derivedBuckets.add(typeBuckets.get(bucketIndex).getName());
     }
 
+    // No partition prune was derivable (no AndBlock fully bound the partition properties); fall
+    // back to the caller's filterClusters. The hint-stashing block below is skipped intentionally:
+    // with no pruning, downstream consumers (vector.neighbors etc.) must keep their full per-type
+    // bucket allow-list, which the absence of the context variables already gives them.
     if (derivedBuckets.isEmpty())
       return filterClusters;
 

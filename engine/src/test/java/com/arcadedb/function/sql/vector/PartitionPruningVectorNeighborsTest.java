@@ -152,11 +152,13 @@ class PartitionPruningVectorNeighborsTest extends TestHelper {
       assertThat(neighbors).isNotNull();
       assertThat(neighbors).hasSizeGreaterThanOrEqualTo(1);
 
-      // At least one of the three close-cluster tenants must surface in the global top-3.
+      // At least one of the close-cluster tenants must surface in the global top-3. The fixture
+      // only inserts {@code globex} and {@code umbrella} as close-cluster members; {@code initech}
+      // is intentionally excluded because it would collide with {@code acme}'s bucket.
       boolean foundCloseCluster = false;
       for (final Map<String, Object> neighbour : neighbors) {
         final String tenant = ((Document) neighbour.get("record")).getString("tenant_id");
-        if ("globex".equals(tenant) || "initech".equals(tenant) || "umbrella".equals(tenant)) {
+        if ("globex".equals(tenant) || "umbrella".equals(tenant)) {
           foundCloseCluster = true;
           break;
         }
