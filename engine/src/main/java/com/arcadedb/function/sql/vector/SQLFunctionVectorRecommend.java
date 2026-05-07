@@ -179,7 +179,11 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<indexSpec>, <positiveRids>, <negativeRids>, <k>[, options])";
+    // {@code indexSpec} must be in {@code Type[property]} form (NOT a bare index name like
+    // {@code vector.neighbors} accepts) because the function needs to know which property to read
+    // off each example record. The inconsistency with vector.neighbors's bare-name form is
+    // deliberate: recommend has a hard requirement on the property name.
+    return NAME + "(<Type[property]>, <positiveRids>, <negativeRids>, <k>[, options])";
   }
 
   /**
@@ -197,10 +201,12 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
     } else if (raw instanceof Iterable<?> iter) {
       for (final Object o : iter)
         addOne(out, o, role);
-    } else if (raw.getClass().isArray()) {
-      final int n = java.lang.reflect.Array.getLength(raw);
-      for (int i = 0; i < n; i++)
-        addOne(out, java.lang.reflect.Array.get(raw, i), role);
+    } else if (raw instanceof Object[] arr) {
+      // Java-API callers may hand in an Object[]; the SQL parser produces List/Iterable so the
+      // primitive-array reflection path the previous version had is unreachable in practice.
+      // Direct cast + loop is faster and avoids the reflection import.
+      for (final Object o : arr)
+        addOne(out, o, role);
     } else if (raw instanceof String s) {
       out.add(parseStringAsRid(s, role));
     } else {

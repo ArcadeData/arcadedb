@@ -79,4 +79,43 @@ class SparsePostingReplayKeyTest {
     assertThat(replayKeys[0]).isInstanceOf(SparsePostingReplayKey.class);
     assertThat(originalKeys[0]).isNotInstanceOf(SparsePostingReplayKey.class);
   }
+
+  /**
+   * Pins the {@code TransactionIndexContext} dedup contract for the put-then-remove
+   * same-(dim, rid)-same-weight case: the marker collides with itself in the dedup map, so
+   * {@code HashMap.put} overwrite leaves whichever IndexKey was put last. The user's
+   * last-write-wins intent (delete after insert in the same tx → doc deleted) survives.
+   * <p>
+   * This is the reviewer-flagged scenario where keying dedup on operation kind would split the
+   * two ops into distinct entries and the two-phase commit (REMOVEs first, ADDs second) would
+   * REVERSE the user intent: the post-remove ADD would resurrect the doc. The current
+   * weight-keyed design relies on this collision to preserve correctness.
+   */
+  @Test
+  void samePutAndRemoveMarkerCollideForLastWriteWins() {
+    final SparsePostingReplayKey put = new SparsePostingReplayKey(5, R1, 0.5f);
+    final SparsePostingReplayKey rem = new SparsePostingReplayKey(5, R1, 0.5f);
+    assertThat(put).isEqualTo(rem);
+    assertThat(put.hashCode()).isEqualTo(rem.hashCode());
+    // The collision is the dedup-map mechanism that makes "put then remove with same weight"
+    // produce a deletion (HashMap.put overwrite of the put's IndexKey by the remove's IndexKey).
+    // If a future change adds a tombstone field to the marker, this assertion will break and the
+    // change author MUST revisit the put-then-remove preservation in a regression test before
+    // shipping.
+  }
+
+  /**
+   * Companion contract: zero-weight put and remove paths are both filtered before reaching
+   * queueOrApply (the wrapper's remove() path skips {@code values[i] == 0.0f}, same for put).
+   * This means the put(d, r, 0.0f)-vs-remove(d, r) collision the reviewer flagged is unreachable
+   * via the public API today. If a future direct caller (e.g. a rebuild path) bypasses that
+   * filter, the dedup-map collision behaviour above still produces last-write-wins.
+   */
+  @Test
+  void zeroWeightMarkerIsLegalAndDedupsLikeNonZero() {
+    final SparsePostingReplayKey a = new SparsePostingReplayKey(5, R1, 0.0f);
+    final SparsePostingReplayKey b = new SparsePostingReplayKey(5, R1, 0.0f);
+    assertThat(a).isEqualTo(b);
+    assertThat(a.compareTo(b)).isZero();
+  }
 }

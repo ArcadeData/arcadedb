@@ -120,6 +120,11 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
+    // Note on the {@code limit} option vs an outer SQL LIMIT: the option truncates the result
+    // BEFORE rows leave the function (so the rebuild + sort cost scales with limit, not with the
+    // upstream candidate count). An outer {@code LIMIT N} on the enclosing SELECT applies after.
+    // Both can be combined: the inner limit caps reranker work, the outer limit caps final
+    // result size. If only one is set, the function's truncation respects only that one.
     return NAME + "(<source>, { boosts: [{ field, weight }, ...][, limit] })";
   }
 

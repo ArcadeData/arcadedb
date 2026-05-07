@@ -186,6 +186,52 @@ class PaginatedSparseVectorEngineTombstoneTriggerTest extends TestHelper {
   }
 
   /**
+   * Pins the user-visible-state preservation contract that {@code dropAllTombstones=false}
+   * provides: when a tombstone-triggered compaction includes both the original insert and the
+   * tombstone in the same merge, the merged segment must end up with the tombstone (last-write-
+   * wins on aligned RIDs), so {@code topK} continues to skip the deleted document. Without this
+   * test, a future change that flips the trigger to {@code dropAllTombstones=true} could silently
+   * "resurrect" deleted records when the matching insert sits in older segments outside the
+   * compaction input set.
+   */
+  @Test
+  void tombstonedRidStaysInvisibleAfterCompaction() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    try (final PaginatedSparseVectorEngine engine = nonCompactingEngine(db, "TombstonePreservationTest")) {
+      // Segment 1: the insert. Segments 2-3: filler. Segment 4: the tombstone for R1.
+      final RID r1 = new RID(0, 1L);
+      engine.put(0, r1, 0.5f);
+      engine.flush();
+      engine.put(0, new RID(0, 2L), 0.5f);
+      engine.flush();
+      engine.put(0, new RID(0, 3L), 0.5f);
+      engine.flush();
+      engine.remove(0, r1);
+      engine.flush();
+      assertThat(engine.segmentCount()).isEqualTo(4);
+
+      // R1 is invisible BEFORE compaction (sanity).
+      assertThat(ridsFromTopK(engine.topK(new int[] { 0 }, new float[] { 1.0f }, 5))).doesNotContain(r1);
+
+      // Manually compact all 4 segments with dropAllTombstones=false (the same setting the
+      // tombstone-ratio trigger uses). The merge sees insert(R1) in seg 1 and tombstone(R1) in
+      // seg 4; newest-source-wins emits the tombstone and the insert is implicitly dropped.
+      engine.compactOldest(4);
+      assertThat(engine.segmentCount()).isEqualTo(1);
+
+      // R1 must STILL be invisible after compaction.
+      assertThat(ridsFromTopK(engine.topK(new int[] { 0 }, new float[] { 1.0f }, 5))).doesNotContain(r1);
+    }
+  }
+
+  private static java.util.List<RID> ridsFromTopK(final java.util.List<com.arcadedb.index.sparsevector.RidScore> hits) {
+    final java.util.List<RID> out = new java.util.ArrayList<>(hits.size());
+    for (final var h : hits)
+      out.add(h.rid());
+    return out;
+  }
+
+  /**
    * Build a standalone engine whose size-tiered auto-compaction gate cannot fire under any
    * unit-test workload (very high tier fanout). Mirrors the helper in
    * {@code LSMSparseVectorIndexLifecycleTest}.

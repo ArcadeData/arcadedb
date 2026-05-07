@@ -186,55 +186,31 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
       return rawResult;
 
     // Re-rank the candidate pool by per-pair margin sum. Skip example RIDs.
+    // Embedding read: prefer the projected row when the upstream pipeline includes the column
+    // (saves one record lookup per candidate), but fall back to {@code db.lookupByRID(...)} when
+    // it is absent. Custom selective upstream projections, future optimisations that strip large
+    // arrays from result rows, and any non-{@code vector.neighbors} caller can all produce rows
+    // without the embedding; the fallback ensures the function still works. Same shape as
+    // {@link SQLFunctionVectorMmr}, just with the in-row fast path on top.
     final HashSet<RID> exampleRids = new HashSet<>(embeddingCache.keySet());
     final ArrayList<Scored> rescored = new ArrayList<>(rawList.size());
-    int candidatesScanned = 0;
-    int candidatesMissingEmbedding = 0;
     for (final Object row : rawList) {
       if (!(row instanceof Map<?, ?> m))
         continue;
       final Object ridObj = m.get("@rid");
       final RID rid;
-      if (ridObj instanceof RID r) rid = r;
-      else if (ridObj instanceof Identifiable id) rid = id.getIdentity();
+      if (ridObj instanceof Identifiable id) rid = id.getIdentity();
       else continue;
       if (exampleRids.contains(rid))
         continue;
-      candidatesScanned++;
-      // The vector.neighbors output already includes the candidate's record; read the embedding
-      // off the projected map directly to skip a redundant lookupByRID.
-      final Object embeddingObj = m.get(propertyName);
-      if (embeddingObj == null) {
-        candidatesMissingEmbedding++;
+      final float[] cVec = readCandidateEmbedding(db, rid, m, propertyName, expectedDim);
+      if (cVec == null)
         continue;
-      }
-      final float[] cVec;
-      try {
-        cVec = toFloatArray(embeddingObj);
-      } catch (final RuntimeException ignored) {
-        candidatesMissingEmbedding++;
-        continue;
-      }
-      if (cVec.length != expectedDim) {
-        candidatesMissingEmbedding++;
-        continue;
-      }
       float score = 0.0f;
       for (final float[][] pair : resolvedPairs)
         score += VectorUtils.cosineSimilarity(cVec, pair[0]) - VectorUtils.cosineSimilarity(cVec, pair[1]);
       rescored.add(new Scored(row, score));
     }
-    // If the upstream {@code vector.neighbors} call did not project the embedding property into
-    // each candidate's row (e.g. a custom selective projection upstream stripped it), every row
-    // would be silently dropped here and the function would return empty for no obvious reason.
-    // Log a WARNING when the drop ratio crosses a clearly-bad threshold so this surfaces in the
-    // server log instead of as an inexplicably empty result. Below the threshold the
-    // drops are treated as ordinary data-quality issues and not reported.
-    if (candidatesScanned > 0 && candidatesMissingEmbedding * 2 > candidatesScanned)
-      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
-          NAME + " dropped %d/%d candidate rows because their '%s' embedding was missing or wrong-shape; "
-              + "ensure the upstream vector.neighbors call projects the embedding column into the result",
-          candidatesMissingEmbedding, candidatesScanned, propertyName);
     rescored.sort((a, b) -> Float.compare(b.score(), a.score()));
 
     final ArrayList<Object> out = new ArrayList<>(Math.min(k, rescored.size()));
@@ -259,7 +235,41 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<indexSpec>, <pairs: list of [pos, neg]>, <k>[, options])";
+    // {@code indexSpec} must be in {@code Type[property]} form (NOT a bare index name like
+    // {@code vector.neighbors} accepts) because the function needs the property name to read
+    // example embeddings off the records. Same constraint as {@code vector.recommend}.
+    return NAME + "(<Type[property]>, <pairs: list of [pos, neg]>, <k>[, options])";
+  }
+
+  /**
+   * Reads a candidate's embedding for the per-pair margin scoring step. Tries the projected row
+   * first (zero IO when the upstream call included the property in its output) and falls back
+   * to {@code db.lookupByRID} when it is absent (the realistic case when {@code vector.neighbors}
+   * is composed without an explicit projection of the embedding column). Returns {@code null}
+   * when the record is gone, the property is missing on disk too, the value cannot be coerced
+   * to {@code float[]}, or the dimension does not match the expected width.
+   */
+  private float[] readCandidateEmbedding(final BasicDatabase db, final RID rid, final Map<?, ?> row,
+      final String propertyName, final int expectedDim) {
+    Object raw = row.get(propertyName);
+    if (raw == null) {
+      // Fast path missed (the embedding is not in the projected row); fall back to the record.
+      try {
+        final Document rec = (Document) db.lookupByRID(rid, true);
+        raw = rec.get(propertyName);
+      } catch (final RecordNotFoundException ignored) {
+        return null;
+      }
+      if (raw == null)
+        return null;
+    }
+    final float[] v;
+    try {
+      v = toFloatArray(raw);
+    } catch (final RuntimeException ignored) {
+      return null;
+    }
+    return v.length == expectedDim ? v : null;
   }
 
   private float[] loadEmbedding(final BasicDatabase db, final RID rid, final String propertyName,

@@ -25,7 +25,6 @@ import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.lang.reflect.Field;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -54,7 +53,7 @@ class PaginatedSparseVectorEngineBackpressureTest extends TestHelper {
     final DatabaseInternal db = (DatabaseInternal) database;
     try (final PaginatedSparseVectorEngine engine = new PaginatedSparseVectorEngine(
         db, "BackpressureNoOpTest", SegmentParameters.defaults(), /* threshold */ 100L)) {
-      final ReentrantLock mutatorLock = mutatorLockOf(engine);
+      final ReentrantLock mutatorLock = engine.mutatorLockForTest();
       // Hold the mutator lock from this thread; a put below the hard limit must not even try
       // to acquire it, so the call must return without observable delay.
       mutatorLock.lock();
@@ -92,7 +91,7 @@ class PaginatedSparseVectorEngineBackpressureTest extends TestHelper {
         engine.put(0, new RID(0, 100L + i), 0.1f * (i + 1));
       assertThat(engine.memtablePostings()).isGreaterThanOrEqualTo(2 * flushThreshold);
 
-      final ReentrantLock mutatorLock = mutatorLockOf(engine);
+      final ReentrantLock mutatorLock = engine.mutatorLockForTest();
       final CountDownLatch lockHeld = new CountDownLatch(1);
       final CountDownLatch releaseSignal = new CountDownLatch(1);
       final long holdMs = 200L;
@@ -141,13 +140,4 @@ class PaginatedSparseVectorEngineBackpressureTest extends TestHelper {
     }
   }
 
-  private static ReentrantLock mutatorLockOf(final PaginatedSparseVectorEngine engine) {
-    try {
-      final Field field = PaginatedSparseVectorEngine.class.getDeclaredField("mutatorLock");
-      field.setAccessible(true);
-      return (ReentrantLock) field.get(engine);
-    } catch (final ReflectiveOperationException e) {
-      throw new RuntimeException("Failed to access mutatorLock for backpressure test", e);
-    }
-  }
 }

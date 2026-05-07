@@ -32,26 +32,33 @@ import com.arcadedb.database.RID;
  * dedup-map entries (it routes through {@code BinaryComparator.compareTo}, which falls back to
  * {@code Comparable}).
  * <p>
- * <b>Dedup contract.</b> {@code equals} / {@code hashCode} are field-wise (the record contract).
- * Weight participates in equality, so two puts on the same {@code (dim, rid)} with different
- * weights are distinct entries in the {@code TransactionIndexContext} dedup map and both replay
- * to the engine. This is intentional and preserves the prior MVP's behavior. The user-visible
- * outcome is correct in both directions:
+ * <b>Dedup contract - intentionally weight-keyed, not operation-keyed.</b> {@code equals} /
+ * {@code hashCode} are field-wise (the record contract): {@code (dim, rid, weight)} are all in.
+ * Critically, the operation kind (ADD vs REMOVE) is <i>not</i> stored on the marker. This is
+ * deliberate. {@code TransactionIndexContext} stores the operation on the IndexKey wrapper that
+ * holds this marker, NOT in {@link #equals}. Same-{@code (dim, rid, weight)} put and remove in
+ * the same transaction therefore collide into a single dedup-map entry, and HashMap.put
+ * overwrite semantics mean the LAST operation wins:
  * <ul>
- *   <li>Same weight twice: the second IndexKey equals the first; the dedup map keeps one entry;
- *       one replay call. No wasted work.</li>
- *   <li>Different weights in one transaction (e.g. {@code put(d, r, 0.3)} then
- *       {@code put(d, r, 0.5)}): both entries survive the dedup map; both replay in order. The
- *       engine memtable is a {@code ConcurrentSkipListMap<RID, Float>} which last-write-wins on
- *       the {@code put}, so the final value at {@code (d, r)} is {@code 0.5} - the user's intent.
- *       Cost: one extra replay call per duplicate-with-different-weight, bounded by per-tx
- *       posting volume.</li>
+ *   <li>{@code put(d, r, 0.5)} then {@code remove(d, r)} (where remove pulls
+ *       {@code weight=0.5} from the record's current value): the remove IndexKey overwrites
+ *       the put IndexKey in the dedup map, so only REMOVE replays. Doc deleted. CORRECT.</li>
+ *   <li>{@code remove(d, r)} then {@code put(d, r, 0.5)}: the put IndexKey overwrites the
+ *       remove IndexKey, so only ADD replays. Doc inserted. CORRECT.</li>
  * </ul>
- * Keying dedup on {@code (dim, rid)} only would also work (HashMap.put overwrite would keep the
- * later entry), but at the cost of either subtle "first write wins" semantics if the dedup map
- * variant ever shifts (e.g. to {@code putIfAbsent}) or a custom equality contract that diverges
- * from the record auto-implementation. Field-wise equality plus the memtable's natural overwrite
- * is the simpler and more durable design.
+ * Including the operation kind in equality (or carrying a {@code tombstone} flag here) would
+ * keep both entries distinct in the dedup map, and {@code TransactionIndexContext}'s
+ * two-phase commit (REMOVEs first, then ADDs) would re-order them: the put-then-remove case
+ * would end with the doc INSERTED instead of deleted. The current weight-keyed design relies on
+ * dedup-map overwrite to preserve user intent.
+ * <p>
+ * <b>Different-weight cases.</b> Two puts with different weights on the same {@code (d, r)}
+ * are distinct entries; both replay to the engine in order, and the memtable's
+ * {@code ConcurrentSkipListMap.put} last-write-wins for the final value (cost: one extra replay
+ * per duplicate-with-different-weight, bounded by per-tx posting volume). The realistic UPDATE
+ * pattern (remove-OLD-then-put-NEW with different weights) goes through TransactionIndexContext's
+ * REMOVE-then-ADD ordering correctly: remove of OLD weight, then put of NEW weight, ends with
+ * the new weight in the memtable.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

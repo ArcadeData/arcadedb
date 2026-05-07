@@ -91,6 +91,20 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * transaction in the flush path would deadlock or corrupt state. Letting {@code maybeFlush}
    * (post-commit callback) drive flushes keeps the call site safe; the soft-block here just
    * ensures puts don't outrun those flushes.
+   * <p>
+   * <b>No hard cap; OOM risk under maybeFlush starvation.</b> The check-then-lock dance is not
+   * atomic: if a flush is in flight the put queues behind it, but if the lock is uncontended
+   * (no flush running) the put proceeds even when the memtable has already crossed the
+   * threshold. So a workload that writes faster than the post-commit {@code maybeFlush}
+   * callback can drain - typically because the {@code DatabaseAsyncExecutor} pool is saturated
+   * by other work and the callback is queued, or because flushes are themselves slow on a
+   * write-amplifying compaction cycle - can grow the memtable to {@code k * flushThreshold} for
+   * arbitrary {@code k}, and eventually OOM. There is no hard rejection path here. Operators
+   * monitoring {@code memtablePostings} on the Studio Server tab should treat sustained values
+   * past {@code 2 * flushThreshold} as a signal to investigate flush throughput, not as a
+   * "backpressure absorbed it" event. A genuine hard cap (rejecting writes) would require
+   * surfacing the rejection through the wrapper's commit pipeline; that is intentionally not in
+   * this PR.
    */
   static final long MEMTABLE_BACKPRESSURE_FACTOR = 2L;
 
@@ -741,6 +755,18 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       out[i] = active[i].segmentId();
     Arrays.sort(out);
     return out;
+  }
+
+  /**
+   * Test-only accessor for the engine's mutator lock. Used by the backpressure regression test
+   * to exercise the soft-block path: the test takes the lock from a worker thread to simulate an
+   * in-flight flush, then verifies that a put past the threshold blocks until release. Reflection
+   * was the previous workaround; a typed package-private accessor keeps the field name from
+   * leaking into test code that would otherwise silently break on a rename. The lock is fully
+   * encapsulated for production: nothing on the public API exposes it.
+   */
+  ReentrantLock mutatorLockForTest() {
+    return mutatorLock;
   }
 
   // --- lifecycle ------------------------------------------------------------

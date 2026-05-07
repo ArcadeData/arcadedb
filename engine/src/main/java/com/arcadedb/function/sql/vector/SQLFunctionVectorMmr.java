@@ -69,6 +69,15 @@ import java.util.Set;
  * 1024-dim float embeddings would use ~400 MB. Always cap the upstream candidate pool with a
  * reasonable {@code k}; the diversity benefit plateaus well before tens of thousands of
  * candidates.
+ * <p>
+ * <b>Negative-cosine clipping.</b> The diversity penalty clips to {@code 0} for any
+ * {@code maxCosToSelected} that is negative ({@code Math.max(0.0f, ...)}). Two candidates
+ * pointing in <i>opposite</i> directions therefore do not contribute a diversity bonus; they
+ * just have no penalty. This is a deliberate simplification - Qdrant's MMR does not clip and
+ * lets opposite candidates "earn" extra negative penalty (i.e. be preferred over orthogonal
+ * ones). For most embedding workloads (where cosine similarity is roughly in {@code [0, 1]}
+ * because embeddings sit in the positive half-sphere) the difference is invisible. If you need
+ * Qdrant-identical scores for opposite-direction candidates, this is the documented gap.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

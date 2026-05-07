@@ -344,13 +344,19 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     final JSONObject byDatabase = new JSONObject();
     for (final String dbName : httpServer.getServer().getDatabaseNames()) {
       try {
-        final ServerDatabase db = httpServer.getServer().getDatabase(dbName);
+        // Use the {@code allowLoad=false} variant so a database that was unloaded between
+        // getDatabaseNames() and getDatabase() does NOT get re-opened by the metrics scrape.
+        // Forcing a load on every poll would convert {@code /server} into a database-open
+        // workload at Studio's poll cadence; the metrics card legitimately has no opinion on
+        // databases that are not currently in memory.
+        final ServerDatabase db = httpServer.getServer().getDatabase(dbName, false, false);
         final JSONObject indexes = LSMSparseVectorIndexMetrics.buildJSON(db);
         if (indexes.length() > 0)
           byDatabase.put(dbName, indexes);
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.FINE,
-            "Skipping sparse-vector metrics for database '%s' (likely being dropped or reopened): %s",
+            "Skipping sparse-vector metrics for database '%s' (likely being dropped, reopened, or "
+                + "concurrently unloaded): %s",
             dbName, e.getMessage());
       }
     }

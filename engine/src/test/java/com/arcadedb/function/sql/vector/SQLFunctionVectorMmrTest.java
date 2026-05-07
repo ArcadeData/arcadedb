@@ -108,6 +108,39 @@ class SQLFunctionVectorMmrTest extends TestHelper {
         .hasMessageContaining("lambda");
   }
 
+  /**
+   * Composition test: pipe {@code vector.neighbors} (which emits a {@code distance} field, not
+   * {@code score}) directly into {@code vector.mmr}. The shared
+   * {@code SQLFunctionVectorAbstract.extractScoreFromRow} auto-flips distance to similarity, so
+   * the composition must work without manual sign-flipping at the SQL boundary. Without the
+   * auto-flip, every row's score would be NaN at materialize time and silently dropped. This
+   * test pins the composition contract that prevents that silent-data-loss regression.
+   */
+  @Test
+  void composesWithVectorNeighborsDistanceField() {
+    // Set up a vector index and the same A/B/C cluster fixture used by setupClusterFixture.
+    final List<RID> rids = setupClusterFixture();
+    database.transaction(() -> {
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON %s (embedding) LSM_VECTOR
+          METADATA { dimensions: 3, similarity: 'COSINE' }""".formatted(TYPE));
+    });
+
+    // Query at A's location. vector.neighbors returns rows with {@code distance}, not
+    // {@code score}. mmr must accept this shape.
+    final ResultSet rs = database.query("sql",
+        "SELECT expand(`vector.mmr`("
+            + "`vector.neighbors`('" + TYPE + "[embedding]', [1.0, 0.1, 0.0], 3), "
+            + "'embedding', { lambda: 0.5, k: 3 }))");
+    final List<RID> got = new ArrayList<>();
+    while (rs.hasNext()) got.add((RID) rs.next().getProperty("@rid"));
+    rs.close();
+    // All three docs should appear (k=3 candidates, all valid). The exact order depends on the
+    // diversity tradeoff; the assertion is that mmr produced any results at all - a NaN-dropped
+    // run would return empty.
+    assertThat(got).hasSize(3).containsExactlyInAnyOrder(rids.get(0), rids.get(1), rids.get(2));
+  }
+
   @Test
   void candidatesWithoutEmbeddingPropertyAreSkipped() {
     final List<RID> rids = setupClusterFixture();
