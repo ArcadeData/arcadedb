@@ -72,8 +72,11 @@ public final class VectorUtils {
   public static float[] dequantizeInt8ToFloat(final byte[] int8) {
     final float[] result = new float[int8.length];
     for (int i = 0; i < int8.length; i++) {
-      final int b = int8[i] < -127 ? -127 : int8[i];
-      result[i] = b / 127.0f;
+      // Java promotes byte to int for comparison and arithmetic, so the literal -127 / 127 are
+      // compared against the sign-extended byte value (-128..127). The explicit (int) cast makes
+      // the intent obvious: clamp the [-128] edge case up to -127 before the divide.
+      final int b = (int) int8[i];
+      result[i] = (b < -127 ? -127 : b) / 127.0f;
     }
     return result;
   }

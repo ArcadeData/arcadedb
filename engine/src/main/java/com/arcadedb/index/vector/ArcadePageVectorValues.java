@@ -227,9 +227,7 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return deletedSentinelVector;
       }
 
-      // The encoding-aware overload dequantizes a byte[] only when the index uses INT8 encoding;
-      // under FLOAT32 a stray byte[] property is rejected up-front rather than silently producing
-      // scaled floats. Unsupported types surface as a WARNING for operational triage.
+      // Unsupported vector property types surface as a WARNING for operational triage.
       final float[] vector;
       try {
         vector = VectorUtils.toFloatArray(vectorObj,

@@ -127,11 +127,8 @@ class GrowableVectorValues implements RandomAccessVectorValues {
       if (lsmIndex != null)
         vector = lsmIndex.readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
 
-      // Fall back to document lookup. The encoding-aware overload only dequantizes byte[] when
-      // the index uses INT8 encoding; under FLOAT32 a stray byte[] property would be rejected
-      // rather than silently producing scaled floats. A WARNING is emitted on unsupported types
-      // so operators can detect when an INT8 index is silently losing vectors during search -
-      // matches the sibling ArcadePageVectorValues path.
+      // Fall back to document lookup. WARNING on unsupported types so an INT8 index silently
+      // losing vectors during search is observable, matching ArcadePageVectorValues.
       if (vector == null && vectorPropertyName != null) {
         final var record = database.lookupByRID(loc.rid, false);
         final Document doc = (Document) record;

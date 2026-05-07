@@ -49,10 +49,12 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.BucketLSMVectorIndexBuilder;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
@@ -365,6 +367,28 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 + "dequantized floats. Pick one (encoding=INT8 for payload/storage savings, OR quantization=INT8 "
                 + "for index-internal compression) but not both.");
 
+      // Property-type / encoding consistency: the document property type is what callers actually
+      // pass into put(); the encoding is what the index expects. A mismatch (e.g. ARRAY_OF_FLOATS
+      // property declared with encoding=INT8) yields a value that toFloatArray cannot dequantize
+      // and the put() path either silently treats stored floats as if they were the int8 input
+      // (encoding=INT8 + ARRAY_OF_FLOATS), or surfaces a confusing rejection at every query
+      // (encoding=FLOAT32 + BINARY). Checking up front turns those silent or late failures into
+      // a single clear builder-time error.
+      final DocumentType propertyOwner = builder.getDatabase().getSchema().getType(vectorBuilder.getTypeName());
+      final String propertyName = vectorBuilder.getPropertyNames()[0];
+      final Property property = propertyOwner.getPolymorphicPropertyIfExists(propertyName);
+      if (property != null) {
+        final Type propertyType = property.getType();
+        if (vectorBuilder.encoding == VectorEncoding.INT8 && propertyType != Type.BINARY)
+          throw new IndexException(
+              "Vector index encoding=INT8 requires property '" + propertyName + "' to be declared as BINARY (one byte per dim), "
+                  + "but it is declared as " + propertyType + ". Either change the property type to BINARY or set encoding=FLOAT32.");
+        if (vectorBuilder.encoding == VectorEncoding.FLOAT32 && propertyType == Type.BINARY)
+          throw new IndexException(
+              "Vector index encoding=FLOAT32 (default) does not support a BINARY property '" + propertyName
+                  + "'. Either declare the property as ARRAY_OF_FLOATS or set encoding=INT8 to ingest pre-quantized bytes.");
+      }
+
       final LSMVectorIndex index = new LSMVectorIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE,
           builder.getPageSize(), vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(),
@@ -376,14 +400,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
           vectorBuilder.pqSubspaces, vectorBuilder.pqClusters, vectorBuilder.pqCenterGlobally,
           vectorBuilder.pqTrainingLimit);
       // INT8 ingest encoding is plumbed via the metadata field after construction to avoid
-      // ballooning the already-17-arg primary constructor (issue #4132). The metadata default is
-      // FLOAT32; we overwrite it only when the builder requested a different encoding. The brief
-      // window where the index exists with FLOAT32 encoding before this assignment is unobservable
-      // because the factory hasn't published the reference yet - the new index is returned after
-      // the field is set.
-      // TODO(#4132 follow-up): consolidate the constructor's positional args into a single
-      // LSMVectorIndexConfig record so encoding (and any future field) joins the rest of the
-      // metadata at construction time, eliminating the post-publication mutation entirely.
+      // ballooning the already-17-arg primary constructor. The metadata default is FLOAT32; we
+      // overwrite it only when the builder requested a different encoding. The brief window where
+      // the index exists with FLOAT32 encoding before this assignment is unobservable because the
+      // factory hasn't published the reference yet - the new index is returned after the field is
+      // set. Tracked for follow-up under #4134 (consolidate the positional args into a config
+      // record so encoding joins the rest of the metadata at construction time).
       index.metadata.encoding = vectorBuilder.encoding;
       return index;
     }
@@ -917,9 +939,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 return false;
               }
             } else {
-              // Without quantization: validate by reading from document. toFloatArray throws on
-              // unsupported types instead of returning null - the surrounding try/catch already
-              // turns any failure into "invalid vector", and an INT8 byte[] is a supported input.
+              // Without quantization: validate by reading from document.
               try {
                 final Record record = getDatabase().lookupByRID(loc.rid, false);
                 if (record == null)
@@ -1192,9 +1212,6 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final RID rid = doc.getIdentity();
             if (!ridToLatestVector.containsKey(rid)) {
               // Document exists but was not found in pages - add it with a synthetic vector ID.
-              // toFloatArray handles both float[] (FLOAT32 encoding) and byte[] (INT8 encoding,
-              // dequantized via VectorUtils.dequantizeInt8ToFloat). An unsupported type or a
-              // dimension/zero-vector mismatch is silently skipped, matching the prior contract.
               final Object vectorObj = doc.get(vectorProp);
               if (vectorObj != null) {
                 try {
@@ -1345,9 +1362,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               skippedDeletedDocs++;
             }
           } else {
-            // Without quantization: validate by reading from document. toFloatArray handles both
-            // float[] (FLOAT32 encoding) and byte[] (INT8 encoding, dequantized once); the
-            // surrounding catch turns any conversion failure into "skip this vector".
+            // Without quantization: validate by reading from document.
             try {
               final Record record = database.lookupByRID(loc.rid, false);
 
@@ -3320,10 +3335,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (values == null || values.length == 0)
         throw new IllegalArgumentException("Values cannot be null or empty");
 
-      // Validate vector - can be ComparableVector (transaction replay), float[] (FLOAT32 encoding,
-      // historical default), or byte[] (INT8 encoding, dequantized server-side; jvector#665 tracks
-      // native int8 HNSW). The encoding-aware overload only accepts byte[] when metadata.encoding
-      // is INT8, otherwise it rejects to keep non-INT8 indexes from silently scaling stray bytes.
+      // ComparableVector (transaction replay), float[] (FLOAT32), or byte[] (INT8 only; rejected
+      // for non-INT8 indexes by the encoding-aware overload).
       final float[] vector;
       if (keys[0] instanceof ComparableVector c)
         vector = c.vector;

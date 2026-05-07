@@ -1,10 +1,3 @@
-package com.arcadedb.schema;
-
-import com.arcadedb.index.vector.VectorEncoding;
-import com.arcadedb.index.vector.VectorQuantizationType;
-import com.arcadedb.serializer.json.JSONObject;
-import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
-
 /*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
@@ -19,7 +12,17 @@ import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
+package com.arcadedb.schema;
+
+import com.arcadedb.index.vector.VectorEncoding;
+import com.arcadedb.index.vector.VectorQuantizationType;
+import com.arcadedb.serializer.json.JSONObject;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
+
 public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      dimensions;
   public VectorSimilarityFunction similarityFunction       = VectorSimilarityFunction.COSINE;

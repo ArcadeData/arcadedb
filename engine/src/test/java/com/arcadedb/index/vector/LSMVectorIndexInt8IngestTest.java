@@ -239,6 +239,49 @@ class LSMVectorIndexInt8IngestTest extends TestHelper {
   }
 
   @Test
+  void rejectsInt8EncodingWithFloatPropertyType() {
+    // Property-type / encoding mismatch: INT8 encoding requires the document property to be
+    // BINARY (one byte per dim). Declaring ARRAY_OF_FLOATS with encoding=INT8 would silently
+    // store floats and confuse downstream put/query paths - reject up front.
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Doc")
+          .createProperty("embedding", Type.ARRAY_OF_FLOATS);
+
+      assertThatThrownBy(() -> database.getSchema()
+          .buildTypeIndex("Doc", new String[] { "embedding" })
+          .withLSMVectorType()
+          .withDimensions(DIMENSIONS)
+          .withSimilarity("COSINE")
+          .withEncoding(VectorEncoding.INT8)
+          .create())
+          .rootCause()
+          .isInstanceOf(IndexException.class)
+          .hasMessageContaining("encoding=INT8 requires property")
+          .hasMessageContaining("BINARY");
+    });
+  }
+
+  @Test
+  void rejectsFloat32EncodingWithBinaryPropertyType() {
+    // Mirror image: FLOAT32 encoding does not understand a BINARY property column.
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Doc")
+          .createProperty("embedding", Type.BINARY);
+
+      assertThatThrownBy(() -> database.getSchema()
+          .buildTypeIndex("Doc", new String[] { "embedding" })
+          .withLSMVectorType()
+          .withDimensions(DIMENSIONS)
+          .withSimilarity("COSINE")
+          .create())
+          .rootCause()
+          .isInstanceOf(IndexException.class)
+          .hasMessageContaining("encoding=FLOAT32")
+          .hasMessageContaining("BINARY");
+    });
+  }
+
+  @Test
   void rejectsInt8EncodingPlusInt8Quantization() {
     // Picking encoding=INT8 and quantization=INT8 means dequantize-on-ingest then
     // re-quantize-internally - silent double-processing on data that was already lossy at the wire

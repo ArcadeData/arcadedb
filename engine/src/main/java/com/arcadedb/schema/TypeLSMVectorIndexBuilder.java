@@ -203,7 +203,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    * @param encoding the vector encoding
    */
   public TypeLSMVectorIndexBuilder withEncoding(final VectorEncoding encoding) {
-    ((LSMVectorIndexMetadata) metadata).encoding = encoding;
+    vectorMetadata().encoding = encoding;
     return this;
   }
 
@@ -215,11 +215,26 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    */
   public TypeLSMVectorIndexBuilder withEncoding(final String encoding) {
     try {
-      ((LSMVectorIndexMetadata) metadata).encoding = VectorEncoding.valueOf(encoding.toUpperCase());
+      vectorMetadata().encoding = VectorEncoding.valueOf(encoding.toUpperCase());
       return this;
     } catch (final IllegalArgumentException e) {
       throw new IndexException("Invalid vector encoding: " + encoding + ". Supported values: FLOAT32, INT8");
     }
+  }
+
+  /**
+   * Returns {@code metadata} narrowed to {@link LSMVectorIndexMetadata}. The constructor of this
+   * builder always installs an LSMVectorIndexMetadata, but {@link #withMetadata(IndexMetadata)}
+   * allows the caller to override it; the explicit guard turns "subclasser swapped a different
+   * metadata in via {@code withMetadata}" into a clear error rather than a {@link ClassCastException}
+   * blamed on an unrelated line.
+   */
+  private LSMVectorIndexMetadata vectorMetadata() {
+    if (metadata instanceof LSMVectorIndexMetadata m)
+      return m;
+    throw new IndexException(
+        "TypeLSMVectorIndexBuilder.metadata is not an LSMVectorIndexMetadata (got "
+            + (metadata == null ? "null" : metadata.getClass().getSimpleName()) + ")");
   }
 
   /**
