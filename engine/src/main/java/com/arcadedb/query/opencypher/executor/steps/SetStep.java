@@ -27,6 +27,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -211,10 +212,11 @@ public class SetStep extends AbstractExecutionStep {
     if (mutableDoc != doc && variableToUpdate != null)
       ((ResultInternal) result).setProperty(variableToUpdate, mutableDoc);
 
-    final Object value = evaluator.evaluate(item.getValueExpression(), result, context);
+    Object value = evaluator.evaluate(item.getValueExpression(), result, context);
     if (value == null)
       mutableDoc.remove(item.getProperty());
     else {
+      value = TemporalUtil.toCoreJavaType(value);
       validatePropertyValue(value);
       mutableDoc.set(item.getProperty(), value);
     }

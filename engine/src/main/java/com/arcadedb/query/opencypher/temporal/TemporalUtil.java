@@ -373,6 +373,32 @@ public final class TemporalUtil {
     return nanos;
   }
 
+  /**
+   * Convert a Cypher temporal value to a form that ArcadeDB can serialize.
+   *
+   * CypherDateTime is kept as its ISO-8601 string representation (not unwrapped to ZonedDateTime)
+   * so that: (a) untyped properties store it as TYPE_STRING, preserving timezone info for
+   * later component access via PropertyAccessExpression.convertFromStorage(); and (b) for
+   * schema-typed DATETIME properties, Type.convert() can parse the string to the target Java type.
+   *
+   * Non-temporal values are returned unchanged.
+   */
+  public static Object toCoreJavaType(final Object value) {
+    if (value instanceof CypherDateTime dt)
+      return dt.toString();
+    if (value instanceof CypherDate d)
+      return d.getValue();
+    if (value instanceof CypherLocalDateTime ldt)
+      return ldt.getValue();
+    if (value instanceof CypherLocalTime lt)
+      return lt.getValue().toString();
+    if (value instanceof CypherTime t)
+      return t.getValue().toString();
+    if (value instanceof CypherDuration dur)
+      return dur.toString();
+    return value;
+  }
+
   private static boolean isTimeOnly(final CypherTemporalValue val) {
     return val instanceof CypherLocalTime || val instanceof CypherTime;
   }

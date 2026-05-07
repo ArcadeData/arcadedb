@@ -37,6 +37,7 @@ import com.arcadedb.query.opencypher.ast.SetClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -827,7 +828,7 @@ public class MergeStep extends AbstractExecutionStep {
 
       // If the value is an Expression object, evaluate it in the current result context
       if (value instanceof Expression) {
-        value = evaluator.evaluate((Expression) value, result, context);
+        value = TemporalUtil.toCoreJavaType(evaluator.evaluate((Expression) value, result, context));
       }
       // Resolve parameter references (e.g., $username -> actual value from context)
       else if (value instanceof CypherASTBuilder.ParameterReference) {
@@ -895,11 +896,11 @@ public class MergeStep extends AbstractExecutionStep {
           if (!(obj instanceof Document doc))
             break;
           final MutableDocument mutableDoc = doc.modify();
-          final Object value = evaluator.evaluate(item.getValueExpression(), result, context);
+          Object value = evaluator.evaluate(item.getValueExpression(), result, context);
           if (value == null)
             mutableDoc.remove(item.getProperty());
           else
-            mutableDoc.set(item.getProperty(), value);
+            mutableDoc.set(item.getProperty(), TemporalUtil.toCoreJavaType(value));
           mutableDoc.save();
           ((ResultInternal) result).setProperty(variable, mutableDoc);
           break;

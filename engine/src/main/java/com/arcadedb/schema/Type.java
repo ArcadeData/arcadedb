@@ -588,10 +588,15 @@ public enum Type {
                 return LocalDateTime.parse(valueAsString);
               } catch (Exception e) {
                 try {
-                  return LocalDateTime.parse(valueAsString,
-                      DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
-                } catch (final DateTimeParseException ignore) {
-                  return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+                  // Handle timezone-aware strings (e.g. from Cypher datetime()): strip timezone
+                  return ZonedDateTime.parse(valueAsString).toLocalDateTime();
+                } catch (Exception e2) {
+                  try {
+                    return LocalDateTime.parse(valueAsString,
+                        DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+                  } catch (final DateTimeParseException ignore) {
+                    return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+                  }
                 }
               }
             else {

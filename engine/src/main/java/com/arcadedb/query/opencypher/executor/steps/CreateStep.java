@@ -489,19 +489,9 @@ public class CreateStep extends AbstractExecutionStep {
     if (value == null || value instanceof Number || value instanceof String || value instanceof Boolean)
       return value;
 
-    // Handle single temporal values
-    if (value instanceof CypherDate)
-      return ((CypherDate) value).getValue();
-    if (value instanceof CypherLocalDateTime)
-      return ((CypherLocalDateTime) value).getValue();
-    if (value instanceof CypherDateTime)
-      return value.toString(); // Store as String to preserve timezone info
-    if (value instanceof CypherLocalTime)
-      return ((CypherLocalTime) value).getValue().toString();
-    if (value instanceof CypherTime)
-      return ((CypherTime) value).getValue().toString();
-    if (value instanceof CypherDuration)
-      return value.toString();
+    // Handle single temporal values via shared converter
+    if (value instanceof CypherTemporalValue)
+      return TemporalUtil.toCoreJavaType(value);
 
     // Handle collections - only iterate if the collection could contain temporal values
     if (value instanceof Collection<?> collection) {
