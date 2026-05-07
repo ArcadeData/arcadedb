@@ -200,6 +200,27 @@ class LSMVectorIndexInt8IngestTest extends TestHelper {
   }
 
   @Test
+  void sqlCreateIndexAcceptsEncodingMetadataKey() {
+    // Pin the SQL DDL surface: `CREATE INDEX ... LSM_VECTOR METADATA {..., encoding: 'INT8'}`
+    // must reach withMetadata(JSONObject) -> withEncoding and produce an INT8 index. A drift in
+    // the JSON key name (e.g. "encoding" vs "vectorEncoding") would silently fall through to the
+    // FLOAT32 default and waste 4x payload, so the contract gets a dedicated test.
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Doc")
+          .createProperty("embedding", Type.BINARY);
+
+      database.command("sql",
+          "CREATE INDEX ON Doc (embedding) LSM_VECTOR METADATA "
+              + "{dimensions: " + DIMENSIONS + ", similarity: 'COSINE', encoding: 'INT8'}");
+
+      final TypeIndex idx = (TypeIndex) database.getSchema().getIndexByName("Doc[embedding]");
+      final LSMVectorIndex lsm = (LSMVectorIndex) idx.getIndexesOnBuckets()[0];
+      assertThat(lsm.getMetadata().encoding).isEqualTo(VectorEncoding.INT8);
+      assertThat(lsm.getKeyTypes()).containsExactly(Type.BINARY);
+    });
+  }
+
+  @Test
   void int8EncodingSurvivesReopen() {
     database.transaction(() -> {
       final DocumentType docType = database.getSchema().createDocumentType("Doc");

@@ -3412,6 +3412,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Called by TransactionIndexContext during commit replay for efficient batch processing (issue #3864).
    * Skips per-vector HNSW graph inserts and schedules a single inactivity rebuild at the end.
    * Vectors are immediately visible in search via delta scan (mergeWithDeltaScan).
+   * <p>
+   * <b>Failure handling differs from {@link #put(Object[], RID[])} on purpose.</b> {@code put}
+   * throws on a bad key type because the caller is still on the stack and can react;
+   * {@code putBatch} runs during commit replay where the originating caller has long returned, so
+   * a thrown exception would abort the entire batch and lose every following row. Instead, each
+   * bad row is logged at WARNING (with rid, type, and cause) and the batch continues - silent
+   * index drift is the only failure mode worse than skipping a single row, and the WARNING gives
+   * operators a signal to investigate.
    *
    * @param keysList list of key arrays, each containing a single ComparableVector or float[]
    * @param ridsList list of corresponding RIDs

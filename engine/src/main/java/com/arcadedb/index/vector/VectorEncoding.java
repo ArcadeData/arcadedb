@@ -53,7 +53,28 @@ public enum VectorEncoding {
    * dequantizer in {@link com.arcadedb.index.vector.VectorUtils#dequantizeInt8ToFloat(byte[])}
    * therefore clamps {@code -128} up to {@code -127}; callers feeding non-Cohere/OpenAI byte
    * sources should be aware that this is a silent numeric correction for the {@code -128} edge
-   * case (no impact on values in {@code [-127, 127]}).
+   * case (no impact on values in {@code [-127, 127]}). The dequantizer also emits a one-time
+   * {@code WARNING} the first time a {@code -128} byte is seen so operators can investigate.
    */
-  INT8
+  INT8;
+
+  /**
+   * Resolves a string into a {@link VectorEncoding} with a uniform error message; shared by
+   * {@code TypeLSMVectorIndexBuilder.withEncoding(String)} and the bucket-level builder so the
+   * accepted-values list cannot drift between the two entry points.
+   *
+   * @param name the encoding name (case-insensitive)
+   *
+   * @return the matching enum constant
+   *
+   * @throws IllegalArgumentException if {@code name} is not a recognized encoding
+   */
+  public static VectorEncoding fromString(final String name) {
+    try {
+      return VectorEncoding.valueOf(name.toUpperCase());
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Invalid vector encoding: " + name + ". Supported values: FLOAT32, INT8", e);
+    }
+  }
 }

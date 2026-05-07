@@ -85,6 +85,11 @@ class VectorUtilsTest {
 
   @Test
   void toFloatArrayPassesThroughFloatArrayUnchanged() {
+    // The encoding-aware overload only intercepts byte[] inputs - any other type, including
+    // float[], delegates straight to the bare overload, which returns the input array reference
+    // verbatim (no defensive copy). Asserting identity on all three call shapes pins the
+    // pass-through contract so a future widening of the byte[] branch (e.g. accepting
+    // double[] under INT8) would surface as a failing test rather than as a silent reallocation.
     final float[] in = { 0.1f, 0.2f, 0.3f };
     assertThat(VectorUtils.toFloatArray(in)).isSameAs(in);
     assertThat(VectorUtils.toFloatArray(in, VectorEncoding.FLOAT32)).isSameAs(in);

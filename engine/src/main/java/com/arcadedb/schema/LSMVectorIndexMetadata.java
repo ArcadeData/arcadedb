@@ -73,7 +73,7 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
       this.quantizationType = VectorQuantizationType.valueOf(metadata.getString("quantization"));
 
     if (metadata.has("encoding"))
-      this.encoding = VectorEncoding.valueOf(metadata.getString("encoding").toUpperCase());
+      this.encoding = VectorEncoding.fromString(metadata.getString("encoding"));
 
     if (metadata.has("maxConnections"))
       this.maxConnections = metadata.getInt("maxConnections");

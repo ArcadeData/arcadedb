@@ -212,10 +212,10 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
    */
   public BucketLSMVectorIndexBuilder withEncoding(final String encoding) {
     try {
-      this.encoding = VectorEncoding.valueOf(encoding.toUpperCase());
+      this.encoding = VectorEncoding.fromString(encoding);
       return this;
     } catch (final IllegalArgumentException e) {
-      throw new IndexException("Invalid vector encoding: " + encoding + ". Supported values: FLOAT32, INT8");
+      throw new IndexException(e.getMessage(), e);
     }
   }
 

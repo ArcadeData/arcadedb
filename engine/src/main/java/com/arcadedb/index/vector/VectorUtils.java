@@ -18,11 +18,14 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.vector.VectorUtil;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 
 import static io.github.jbellis.jvector.vector.VectorUtil.cosine;
 import static io.github.jbellis.jvector.vector.VectorUtil.squareL2Distance;
@@ -35,6 +38,14 @@ import static io.github.jbellis.jvector.vector.VectorUtil.squareL2Distance;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class VectorUtils {
+
+  /**
+   * One-time WARNING gate for {@link #dequantizeInt8ToFloat(byte[])} on byte {@code -128} inputs.
+   * Cohere/OpenAI int8 endpoints emit {@code [-127, 127]} only; encountering a {@code -128}
+   * indicates a non-Cohere/OpenAI byte source where the silent clamp to {@code -127} (preserving
+   * unit-norm for COSINE) is a meaningful asymmetric correction. Logged at most once per process.
+   */
+  private static final AtomicBoolean DEQUANTIZE_MIN128_WARNED = new AtomicBoolean(false);
 
   private VectorUtils() {
   }
@@ -71,13 +82,21 @@ public final class VectorUtils {
    */
   public static float[] dequantizeInt8ToFloat(final byte[] int8) {
     final float[] result = new float[int8.length];
+    boolean sawMin128 = false;
     for (int i = 0; i < int8.length; i++) {
       // Java promotes byte to int for comparison and arithmetic, so the literal -127 / 127 are
       // compared against the sign-extended byte value (-128..127). The explicit (int) cast makes
       // the intent obvious: clamp the [-128] edge case up to -127 before the divide.
       final int b = (int) int8[i];
+      if (b < -127)
+        sawMin128 = true;
       result[i] = (b < -127 ? -127 : b) / 127.0f;
     }
+    if (sawMin128 && DEQUANTIZE_MIN128_WARNED.compareAndSet(false, true))
+      LogManager.instance().log(VectorUtils.class, Level.WARNING,
+          "INT8 dequantization encountered byte value -128 and clamped it to -127 "
+              + "(Cohere/OpenAI calibration emits [-127, 127] only). Subsequent occurrences will not be logged. "
+              + "Verify the byte source if precise [-128, 127] handling is required.");
     return result;
   }
 

@@ -215,10 +215,10 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
    */
   public TypeLSMVectorIndexBuilder withEncoding(final String encoding) {
     try {
-      vectorMetadata().encoding = VectorEncoding.valueOf(encoding.toUpperCase());
+      vectorMetadata().encoding = VectorEncoding.fromString(encoding);
       return this;
     } catch (final IllegalArgumentException e) {
-      throw new IndexException("Invalid vector encoding: " + encoding + ". Supported values: FLOAT32, INT8");
+      throw new IndexException(e.getMessage(), e);
     }
   }
 
