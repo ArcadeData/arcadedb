@@ -1,0 +1,269 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.function.sql.vector;
+
+import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.FunctionOptions;
+import com.arcadedb.index.vector.VectorUtils;
+import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
+
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/**
+ * Maximal Marginal Relevance (MMR) reranker. Diversifies a scored candidate set by greedily
+ * picking the candidate that maximises {@code lambda * score - (1 - lambda) * max(cos(c, s))}
+ * for every {@code s} already selected, where {@code score} is the candidate's relevance to
+ * the query (carried in from the upstream {@code vector.neighbors} / {@code vector.fuse} /
+ * {@code SELECT ... ORDER BY score} source) and {@code cos(c, s)} is the cosine similarity
+ * between the candidate's and the selected one's embedding vectors. Closes a P1 gap from the
+ * Qdrant/Milvus comparison: RAG systems typically want a diverse top-K, not near-duplicates.
+ * <p>
+ * Usage: {@code vector.mmr(source, embeddingProperty[, options])}
+ * <ul>
+ *   <li><b>source</b>: any iterable of rows with at least an {@code @rid} and a numeric
+ *       {@code score}. Same shape contract as {@link SQLFunctionVectorFuse}.</li>
+ *   <li><b>embeddingProperty</b>: name of the vector property to read from each candidate's
+ *       record (e.g. {@code 'embedding'}). Must contain a {@code float[]} or any {@code List}
+ *       of numbers; all candidates' vectors must share the same dimension.</li>
+ *   <li><b>options.lambda</b> (default {@code 0.5}): tradeoff between relevance and diversity.
+ *       {@code 1.0} = relevance only (returns top-K by score), {@code 0.0} = diversity only
+ *       (after the seed pick).</li>
+ *   <li><b>options.k</b> (default = candidate count): max rows to return.</li>
+ * </ul>
+ * <p>
+ * Score conventions: assumes higher is better. Sources whose native score is a distance should
+ * either be wrapped in a sub-SELECT that flips the score, or paired with {@code vector.fuse}
+ * upstream which handles the flip automatically.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
+  public static final String NAME = "vector.mmr";
+
+  private static final java.util.Set<String> OPTIONS = java.util.Set.of("lambda", "k");
+
+  private static final float DEFAULT_LAMBDA = 0.5f;
+
+  public SQLFunctionVectorMmr() {
+    super(NAME);
+  }
+
+  @Override
+  public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
+      final CommandContext context) {
+    if (params == null || params.length < 2)
+      throw new CommandSQLParsingException(getSyntax());
+
+    final Object source = params[0];
+    if (!(params[1] instanceof String embeddingProperty) || embeddingProperty.isEmpty())
+      throw new CommandSQLParsingException(NAME + " 2nd argument must be the embedding property name (string)");
+
+    Map<?, ?> rawOpts = null;
+    if (params.length > 2) {
+      if (!(params[2] instanceof Map<?, ?> m))
+        throw new CommandSQLParsingException(NAME + " 3rd argument must be an options map");
+      rawOpts = m;
+    }
+    final FunctionOptions opts = new FunctionOptions(NAME, rawOpts, OPTIONS);
+    final float lambda = (float) opts.getDouble("lambda", DEFAULT_LAMBDA);
+    if (Float.isNaN(lambda) || lambda < 0.0f || lambda > 1.0f)
+      throw new CommandSQLParsingException(NAME + " lambda must be in [0, 1], got " + lambda);
+
+    final List<Candidate> candidates = materializeCandidates(source);
+    if (candidates.isEmpty())
+      return new ArrayList<>(0);
+
+    final int k = opts.getInt("k", candidates.size());
+    if (k <= 0)
+      return new ArrayList<>(0);
+
+    final BasicDatabase db = context.getDatabase();
+
+    // Pre-fetch each candidate's embedding once. Skip candidates whose record was deleted or
+    // whose embedding property is missing/wrong-shape; they are silently dropped (the caller
+    // already paid to score them upstream, so a missing embedding here is a data-quality issue
+    // rather than a query error). Dimension mismatch IS an error - the cosine math would
+    // silently produce garbage.
+    final ArrayList<Candidate> usable = new ArrayList<>(candidates.size());
+    int expectedDim = -1;
+    for (final Candidate c : candidates) {
+      try {
+        final Document rec = (Document) db.lookupByRID(c.rid, true);
+        final Object raw = rec.get(embeddingProperty);
+        if (raw == null)
+          continue;
+        c.vector = toFloatArray(raw);
+        if (expectedDim == -1) {
+          expectedDim = c.vector.length;
+        } else if (c.vector.length != expectedDim) {
+          throw new CommandSQLParsingException(
+              NAME + " embedding dimension mismatch on " + c.rid + ": " + c.vector.length
+                  + " vs " + expectedDim);
+        }
+        c.record = rec;
+        usable.add(c);
+      } catch (final RecordNotFoundException ignored) {
+        // candidate's record was deleted between the upstream scoring and now; drop it
+      }
+    }
+    if (usable.isEmpty())
+      return new ArrayList<>(0);
+
+    // Greedy MMR. We track each remaining candidate's max cosine to the selected set; on each
+    // round we update only the just-added selectee's contribution to those running maxes,
+    // turning the inner loop into O(|usable|) per round instead of O(|usable| * |selected|).
+    // Total cost: O(k * |usable|) similarity computations, plus the pre-fetch above. Memory:
+    // O(|usable|) for the running-max array.
+    final int targetK = Math.min(k, usable.size());
+    final boolean[] picked = new boolean[usable.size()];
+    final float[] maxCosToSelected = new float[usable.size()];
+    java.util.Arrays.fill(maxCosToSelected, Float.NEGATIVE_INFINITY);
+    final List<Candidate> selected = new ArrayList<>(targetK);
+
+    for (int step = 0; step < targetK; step++) {
+      int bestIdx = -1;
+      float bestObjective = Float.NEGATIVE_INFINITY;
+      for (int i = 0; i < usable.size(); i++) {
+        if (picked[i])
+          continue;
+        // First pick: no diversity penalty (no selected set), so the objective collapses to
+        // {@code lambda * score} - i.e. the top-scored candidate wins, which matches the MMR
+        // formal definition where the running-max is undefined / -inf.
+        final float diversityPenalty = (step == 0)
+            ? 0.0f
+            : Math.max(0.0f, maxCosToSelected[i]);  // negative cos rounded up (no anti-bonus)
+        final float objective = lambda * usable.get(i).score - (1.0f - lambda) * diversityPenalty;
+        if (objective > bestObjective) {
+          bestObjective = objective;
+          bestIdx = i;
+        }
+      }
+      if (bestIdx < 0)
+        break;
+      picked[bestIdx] = true;
+      final Candidate winner = usable.get(bestIdx);
+      selected.add(winner);
+      // Update running max-cos for everyone still in the pool.
+      for (int i = 0; i < usable.size(); i++) {
+        if (picked[i])
+          continue;
+        final float cos = VectorUtils.cosineSimilarity(usable.get(i).vector, winner.vector);
+        if (cos > maxCosToSelected[i])
+          maxCosToSelected[i] = cos;
+      }
+    }
+
+    final ArrayList<Object> result = new ArrayList<>(selected.size());
+    for (final Candidate c : selected) {
+      final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+      entry.put("record", c.record);
+      for (final String prop : c.record.getPropertyNames())
+        entry.put(prop, c.record.get(prop));
+      entry.put("@rid", c.record.getIdentity());
+      entry.put("@type", c.record.getTypeName());
+      entry.put("score", c.score);
+      result.add(entry);
+    }
+    return result;
+  }
+
+  public String getSyntax() {
+    return NAME + "(<source>, <embeddingProperty>[, {lambda: 0.5, k: <int>}])";
+  }
+
+  private static final class Candidate {
+    final RID    rid;
+    final float  score;
+    float[]      vector;
+    Document     record;
+
+    Candidate(final RID rid, final float score) {
+      this.rid = rid;
+      this.score = score;
+    }
+  }
+
+  private static List<Candidate> materializeCandidates(final Object src) {
+    if (src == null)
+      return java.util.Collections.emptyList();
+    if (!(src instanceof Iterable<?> iter))
+      throw new CommandSQLParsingException(NAME + " 1st argument must be an iterable of scored rows, got "
+          + src.getClass().getSimpleName());
+    final ArrayList<Candidate> out = new ArrayList<>();
+    for (final Object row : iter) {
+      final RID rid = extractRid(row);
+      if (rid == null)
+        continue;
+      final float score = extractScore(row);
+      if (Float.isNaN(score))
+        throw new CommandSQLParsingException(
+            NAME + " requires every source row to carry a numeric 'score' field; missing on row " + rid);
+      out.add(new Candidate(rid, score));
+    }
+    return out;
+  }
+
+  private static RID extractRid(final Object row) {
+    if (row == null)
+      return null;
+    if (row instanceof Map<?, ?> m) {
+      Object v = m.get("@rid");
+      if (v == null) v = m.get("rid");
+      if (v instanceof RID r) return r;
+      if (v instanceof Identifiable id) return id.getIdentity();
+      return null;
+    }
+    if (row instanceof Result r) {
+      if (r.getIdentity().isPresent())
+        return r.getIdentity().get();
+      Object v = r.getProperty("@rid");
+      if (v == null) v = r.getProperty("rid");
+      if (v instanceof RID rid) return rid;
+      if (v instanceof Identifiable id) return id.getIdentity();
+      return null;
+    }
+    if (row instanceof Identifiable id)
+      return id.getIdentity();
+    return null;
+  }
+
+  private static float extractScore(final Object row) {
+    if (row instanceof Map<?, ?> m) {
+      final Object v = m.get("score");
+      if (v instanceof Number n) return n.floatValue();
+      return Float.NaN;
+    }
+    if (row instanceof Result r) {
+      final Object v = r.getProperty("score");
+      if (v instanceof Number n) return n.floatValue();
+      return Float.NaN;
+    }
+    return Float.NaN;
+  }
+}

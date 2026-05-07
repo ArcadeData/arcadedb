@@ -134,7 +134,13 @@ import com.arcadedb.function.sql.vector.SQLFunctionVectorHasInf;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorHasNaN;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorHybridScore;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorIsNormalized;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorL1Distance;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorL1Norm;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorMmr;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorBoost;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorDiscover;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorRecommend;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorRerank;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorL2Distance;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorLInfNorm;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorMagnitude;
@@ -300,6 +306,11 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     // Similarity Scoring
     register(SQLFunctionVectorCosineSimilarity.NAME, new SQLFunctionVectorCosineSimilarity());
     register(SQLFunctionVectorL2Distance.NAME, new SQLFunctionVectorL2Distance());
+    // L1 (Manhattan) distance with two aliases - {@code vector.l1Distance} matches the
+    // {@code vector.l2Distance} naming, {@code vector.manhattanDistance} is the explicit form
+    // discovered by users searching for "manhattan".
+    register(SQLFunctionVectorL1Distance.NAME, new SQLFunctionVectorL1Distance());
+    register(SQLFunctionVectorL1Distance.NAME_ALIAS, new SQLFunctionVectorL1Distance(SQLFunctionVectorL1Distance.NAME_ALIAS));
     // Vector Arithmetic
     register(SQLFunctionVectorAdd.NAME, new SQLFunctionVectorAdd());
     register(SQLFunctionVectorSubtract.NAME, new SQLFunctionVectorSubtract());
@@ -313,6 +324,11 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     // Reranking Functions
     register(SQLFunctionVectorRRFScore.NAME, new SQLFunctionVectorRRFScore());
     register(SQLFunctionVectorNormalizeScores.NAME, new SQLFunctionVectorNormalizeScores());
+    register(SQLFunctionVectorMmr.NAME, new SQLFunctionVectorMmr());
+    register(SQLFunctionVectorRecommend.NAME, new SQLFunctionVectorRecommend());
+    register(SQLFunctionVectorDiscover.NAME, new SQLFunctionVectorDiscover());
+    register(SQLFunctionVectorBoost.NAME, new SQLFunctionVectorBoost());
+    register(SQLFunctionVectorRerank.NAME, new SQLFunctionVectorRerank());
     // Hybrid Search Scoring
     register(SQLFunctionVectorHybridScore.NAME, new SQLFunctionVectorHybridScore());
     register(SQLFunctionVectorScoreTransform.NAME, new SQLFunctionVectorScoreTransform());
