@@ -199,4 +199,15 @@ public interface CypherStatement {
   default boolean hasSubquery() {
     return false;
   }
+
+  /**
+   * Returns true if any write clause (CREATE, MERGE, SET, DELETE, REMOVE, FOREACH)
+   * appears before a MATCH in clause order. Used to disable the optimizer fast path
+   * for those queries, because that path executes MATCH first via the physical plan
+   * and chains writes afterwards, breaking same-statement write-then-read visibility.
+   * Pre-computed at parse time to avoid scanning on every execution.
+   */
+  default boolean hasWriteBeforeMatch() {
+    return false;
+  }
 }

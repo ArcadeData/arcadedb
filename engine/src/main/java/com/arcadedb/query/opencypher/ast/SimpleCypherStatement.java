@@ -52,6 +52,7 @@ public class SimpleCypherStatement implements CypherStatement {
   private final boolean            hasUnwindBeforeMatch;
   private final boolean            hasWithBeforeMatch;
   private final boolean            hasSubquery;
+  private final boolean            hasWriteBeforeMatch;
 
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
                                final WhereClause whereClause, final ReturnClause returnClause,
@@ -153,6 +154,30 @@ public class SimpleCypherStatement implements CypherStatement {
     this.hasUnwindBeforeMatch = computeHasClauseBeforeMatch(ClauseEntry.ClauseType.UNWIND);
     this.hasWithBeforeMatch = computeHasClauseBeforeMatch(ClauseEntry.ClauseType.WITH);
     this.hasSubquery = computeHasSubquery();
+    this.hasWriteBeforeMatch = computeHasWriteBeforeMatch();
+  }
+
+  private boolean computeHasWriteBeforeMatch() {
+    if (clausesInOrder == null || clausesInOrder.isEmpty())
+      // Legacy constructors don't populate clausesInOrder. When both writes and MATCH coexist,
+      // the order is unknown - conservatively disable the optimizer fast path so write-then-read
+      // visibility is preserved. Mirrors the fallback in computeHasClauseBeforeMatch.
+      return !readOnly && !matchClauses.isEmpty();
+    int firstWriteOrder = Integer.MAX_VALUE;
+    int firstMatchOrder = Integer.MAX_VALUE;
+    for (final ClauseEntry entry : clausesInOrder) {
+      final ClauseEntry.ClauseType t = entry.getType();
+      if (t == ClauseEntry.ClauseType.CREATE
+          || t == ClauseEntry.ClauseType.MERGE
+          || t == ClauseEntry.ClauseType.SET
+          || t == ClauseEntry.ClauseType.DELETE
+          || t == ClauseEntry.ClauseType.REMOVE
+          || t == ClauseEntry.ClauseType.FOREACH)
+        firstWriteOrder = Math.min(firstWriteOrder, entry.getOrder());
+      else if (t == ClauseEntry.ClauseType.MATCH)
+        firstMatchOrder = Math.min(firstMatchOrder, entry.getOrder());
+    }
+    return firstWriteOrder < firstMatchOrder;
   }
 
   private boolean computeHasVariableLengthPath() {
@@ -306,6 +331,11 @@ public class SimpleCypherStatement implements CypherStatement {
   @Override
   public boolean hasWithBeforeMatch() {
     return hasWithBeforeMatch;
+  }
+
+  @Override
+  public boolean hasWriteBeforeMatch() {
+    return hasWriteBeforeMatch;
   }
 
   @Override
