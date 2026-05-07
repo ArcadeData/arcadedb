@@ -247,6 +247,22 @@ public enum GlobalConfiguration {
           + "parallelism but never fails the query.",
       Integer.class, 1024),
 
+  SPARSE_VECTOR_SCORING_POOL_THREADS("arcadedb.sparseVectorScoringPoolThreads", SCOPE.JVM,
+      "Maximum number of threads in the JVM-wide pool that backs LSM_SPARSE_VECTOR top-K "
+          + "fan-out (per-bucket parallel scoring on partitioned types and types with multiple "
+          + "buckets). Kept on its own pool rather than sharing the QueryEngineManager pool so "
+          + "long-running graph algorithms never queue scoring tasks behind seconds-long graph "
+          + "chunks. 0 = available cores (min 2).",
+      Integer.class, 0),
+
+  SPARSE_VECTOR_SCORING_QUEUE_SIZE("arcadedb.sparseVectorScoringQueueSize", SCOPE.JVM,
+      "Maximum number of tasks that can wait in the sparse-vector scoring pool's queue before "
+          + "the CallerRuns rejection policy fires. Scoring fan-out is fine-grained (per-bucket "
+          + "topK calls), so the default of 1024 covers a wide range of workloads. Once the "
+          + "queue is full, the submitter executes the task inline, which degrades parallelism "
+          + "but never fails the query.",
+      Integer.class, 1024),
+
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
       "Queue implementation to use between 'standard' and 'fast'. 'standard' consumes less CPU than the 'fast' implementation, but it could be slower with high loads",
       String.class, "standard", Set.of("standard", "fast")),
