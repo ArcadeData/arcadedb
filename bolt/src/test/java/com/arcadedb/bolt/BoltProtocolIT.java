@@ -1638,4 +1638,69 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       }
     }
   }
+
+  /**
+   * Regression for #4129: EXPLAIN <cypher> over Bolt must populate ResultSummary#plan().
+   * Before the fix, the engine returned the plan as a synthetic record and never set it
+   * in the PULL SUCCESS metadata, so {@code summary.plan()} was always null and tools like
+   * googleapis/mcp-toolbox's {@code dry_run} feature failed with "no execution plan".
+   */
+  @Test
+  void explainCypherPopulatesPlanInSummary() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // seed a row so the parser/optimizer has something to plan against
+        session.run("CREATE (n:ExplainPerson {age: 30}) RETURN n").consume();
+
+        final Result result = session.run("EXPLAIN MATCH (n:ExplainPerson) WHERE n.age > $minAge RETURN n",
+            Values.parameters("minAge", 18));
+
+        // EXPLAIN must not return any record - the plan is metadata, not data.
+        assertThat(result.hasNext()).isFalse();
+
+        final ResultSummary summary = result.consume();
+        assertThat(summary).isNotNull();
+        assertThat(summary.hasPlan()).isTrue();
+        assertThat(summary.hasProfile()).isFalse();
+        assertThat(summary.plan()).isNotNull();
+        assertThat(summary.plan().operatorType()).isNotEmpty();
+        // textual plan is exposed under args["string-representation"], the conventional
+        // key drivers and tools (incl. neo4j-go-driver) read for human-friendly output
+        assertThat(summary.plan().arguments()).containsKey("string-representation");
+        assertThat(summary.plan().arguments().get("string-representation").asString())
+            .containsIgnoringCase("OpenCypher");
+      }
+    }
+  }
+
+  /**
+   * Regression for #4129: PROFILE <cypher> over Bolt must execute the query, return rows,
+   * AND populate ResultSummary#profile() in the PULL SUCCESS metadata.
+   */
+  @Test
+  void profileCypherPopulatesProfileInSummaryAndReturnsRecords() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        try (Transaction tx = session.beginTransaction()) {
+          tx.run("CREATE (n:ProfilePerson {age: 21})").consume();
+          tx.run("CREATE (n:ProfilePerson {age: 42})").consume();
+          tx.commit();
+        }
+
+        final Result result = session.run("PROFILE MATCH (n:ProfilePerson) WHERE n.age > $minAge RETURN n.age AS age",
+            Values.parameters("minAge", 18));
+
+        // PROFILE must still execute and stream rows.
+        final List<Record> rows = result.list();
+        assertThat(rows).hasSize(2);
+
+        final ResultSummary summary = result.consume();
+        assertThat(summary).isNotNull();
+        assertThat(summary.hasProfile()).isTrue();
+        assertThat(summary.profile()).isNotNull();
+        assertThat(summary.profile().operatorType()).isNotEmpty();
+        assertThat(summary.profile().arguments()).containsKey("string-representation");
+      }
+    }
+  }
 }

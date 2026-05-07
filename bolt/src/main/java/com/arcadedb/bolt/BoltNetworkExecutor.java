@@ -41,6 +41,8 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.ExecutionPlan;
+import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -133,6 +135,10 @@ public class BoltNetworkExecutor extends Thread {
   private long               queryStartTime; // Nanosecond timestamp when query execution started
   private long               firstRecordTime; // Nanosecond timestamp when first record was retrieved
   private boolean            isWriteOperation; // Whether the current query performs writes
+  // EXPLAIN / PROFILE state, populated in handleRun, surfaced in handlePull SUCCESS metadata
+  // so Neo4j drivers can read it via ResultSummary#plan() / #profile().
+  private Map<String, Object> currentPlanMetadata;
+  private String              currentPlanMetadataKey; // "plan" for EXPLAIN, "profile" for PROFILE
 
   public BoltNetworkExecutor(final ArcadeDBServer server, final Socket socket, final BoltNetworkListener listener)
       throws IOException {
@@ -476,6 +482,8 @@ public class BoltNetworkExecutor extends Thread {
     currentResultSet = null;
     currentFields = null;
     firstResult = null;
+    currentPlanMetadata = null;
+    currentPlanMetadataKey = null;
 
     sendSuccess(Map.of());
 
@@ -544,12 +552,37 @@ public class BoltNetworkExecutor extends Thread {
       // Determine if this is a write query using the query analyzer
       isWriteOperation = isWriteQuery(query);
 
+      // Detect EXPLAIN / PROFILE prefix so we can later surface the execution plan
+      // in PULL SUCCESS metadata (consumed by Neo4j drivers as ResultSummary#plan / #profile).
+      // The OpenCypher engine itself also strips the prefix, but we need to know which one
+      // was present here to choose between record-streaming (PROFILE) and plan-only (EXPLAIN)
+      // and to pick the correct metadata key.
+      currentPlanMetadata = null;
+      currentPlanMetadataKey = null;
+      final String trimmedQuery = query == null ? "" : query.trim();
+      final String upperQuery = trimmedQuery.toUpperCase();
+      final boolean explainMode = upperQuery.startsWith("EXPLAIN ");
+      final boolean profileMode = !explainMode && upperQuery.startsWith("PROFILE ");
+
       // Use command() for writes, query() for reads
       if (isWriteOperation) {
         currentResultSet = database.command("opencypher", query, params);
       } else {
         currentResultSet = database.query("opencypher", query, params);
       }
+
+      // Capture the plan from the engine. EXPLAIN returns ExplainResultSet (one synthetic row
+      // exposing getExecutionPlan()); PROFILE returns InternalResultSet with setPlan() set.
+      if (explainMode || profileMode) {
+        currentPlanMetadataKey = explainMode ? "plan" : "profile";
+        currentPlanMetadata = buildPlanMetadata(currentResultSet, profileMode);
+        if (explainMode) {
+          // For EXPLAIN, the only "row" in the result set is the plan itself: drain it so that
+          // the client sees zero records, matching Neo4j's EXPLAIN semantics.
+          drainResultSet(currentResultSet);
+        }
+      }
+
       currentFields = extractFieldNames(currentResultSet);
       recordsStreamed = 0;
 
@@ -652,6 +685,11 @@ public class BoltNetworkExecutor extends Thread {
         final long tLastMs = (System.nanoTime() - queryStartTime) / 1_000_000;
         metadata.put("t_last", tLastMs);
 
+        // Surface execution plan from EXPLAIN / PROFILE (PME) so neo4j drivers populate
+        // ResultSummary#plan() / #profile() instead of returning null.
+        if (currentPlanMetadata != null && currentPlanMetadataKey != null)
+          metadata.put(currentPlanMetadataKey, currentPlanMetadata);
+
         if (currentResultSet != null) {
           try {
             currentResultSet.close();
@@ -663,6 +701,8 @@ public class BoltNetworkExecutor extends Thread {
         currentFields = null;
         firstResult = null;
         syntheticResults = null;
+        currentPlanMetadata = null;
+        currentPlanMetadataKey = null;
         state = explicitTransaction ? State.TX_READY : State.READY;
       }
       metadata.put("has_more", hasMore);
@@ -710,6 +750,12 @@ public class BoltNetworkExecutor extends Thread {
     syntheticResults = null;
 
     final Map<String, Object> metadata = new LinkedHashMap<>();
+    // Even on DISCARD we still surface the plan so EXPLAIN clients that DISCARD instead
+    // of PULL still get ResultSummary#plan / #profile populated.
+    if (currentPlanMetadata != null && currentPlanMetadataKey != null)
+      metadata.put(currentPlanMetadataKey, currentPlanMetadata);
+    currentPlanMetadata = null;
+    currentPlanMetadataKey = null;
     metadata.put("has_more", false);
 
     sendSuccess(metadata);
@@ -1416,6 +1462,79 @@ public class BoltNetworkExecutor extends Thread {
    */
   private String generateBookmark() {
     return "arcade:tx:" + System.currentTimeMillis();
+  }
+
+  /**
+   * Build a Bolt plan map (matches the Plan / ProfilePlan structure expected by
+   * {@code org.neo4j.driver.summary.ResultSummary#plan()} / {@code #profile()}).
+   * The map has keys: {@code operatorType}, {@code identifiers}, {@code args},
+   * and {@code children}. We do not currently produce a true operator tree from
+   * the OpenCypher engine output: instead we synthesize a single root node and
+   * embed the textual plan plus the column list under {@code args}, which is
+   * what every Neo4j driver consumes verbatim.
+   */
+  private Map<String, Object> buildPlanMetadata(final ResultSet resultSet, final boolean profileMode) {
+    if (resultSet == null)
+      return null;
+
+    final ExecutionPlan plan = resultSet.getExecutionPlan().orElse(null);
+    if (plan == null)
+      return null;
+
+    final Map<String, Object> args = new LinkedHashMap<>();
+    final String prettyPrint = plan.prettyPrint(0, 2);
+    if (prettyPrint != null && !prettyPrint.isEmpty())
+      args.put("string-representation", prettyPrint);
+
+    if (profileMode) {
+      // PROFILE plans expose per-step counters via ExecutionStep; surface a flat list
+      // alongside the textual representation so DBaaS-style introspection still works.
+      final List<ExecutionStep> steps = plan.getSteps();
+      if (steps != null && !steps.isEmpty()) {
+        final List<String> stepNames = new ArrayList<>(steps.size());
+        for (final ExecutionStep step : steps)
+          stepNames.add(step.getClass().getSimpleName());
+        args.put("steps", stepNames);
+      }
+    }
+
+    final Map<String, Object> root = new LinkedHashMap<>();
+    root.put("operatorType", profileMode ? "ArcadeDB.OpenCypher.ProfilePlan" : "ArcadeDB.OpenCypher.Plan");
+    root.put("identifiers", currentFields != null ? currentFields : List.<String>of());
+    root.put("args", args);
+    root.put("children", List.<Map<String, Object>>of());
+
+    if (profileMode) {
+      // ProfilePlan inherits Plan and adds dbHits/rows/pageCacheHits/etc. We do not yet
+      // collect per-operator stats, so report 0 instead of leaving the fields absent —
+      // some drivers (e.g. neo4j-go-driver) check field presence and would otherwise
+      // surface "no profile" even though we returned one.
+      root.put("dbHits", 0L);
+      root.put("rows", 0L);
+      root.put("pageCacheMisses", 0L);
+      root.put("pageCacheHits", 0L);
+      root.put("pageCacheHitRatio", 0.0d);
+      root.put("time", 0L);
+    }
+    return root;
+  }
+
+  /**
+   * Drain (without sending) all remaining rows of the supplied result set so that
+   * subsequent {@code hasNext()} returns false. Does not close: the existing PULL
+   * completion path closes the result set after streaming. Used for EXPLAIN, where
+   * the engine emits a synthetic row carrying the plan that the Bolt client should
+   * not see as a record (Neo4j EXPLAIN returns zero records).
+   */
+  private void drainResultSet(final ResultSet resultSet) {
+    if (resultSet == null)
+      return;
+    try {
+      while (resultSet.hasNext())
+        resultSet.next();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Failed to drain ResultSet for EXPLAIN", e);
+    }
   }
 
   /**
