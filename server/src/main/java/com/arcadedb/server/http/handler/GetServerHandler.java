@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
+import com.arcadedb.index.sparsevector.LSMSparseVectorIndexMetrics;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -206,6 +207,12 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     // cumulative count and downstream tools (Prometheus rate(), etc.) can derive a rate.
     metricsJSON.put("executors", buildExecutorsJSON(registry));
 
+    // PER-INDEX SPARSE VECTOR COUNTERS. One row per logical TypeIndex aggregated across all
+    // per-bucket sub-indexes; surfaced on the Studio Server tab so operators can see compaction
+    // lag (memtable not draining) and segment-count growth without log-grepping. The shape is
+    // {dbName: {indexName: {memtablePostings, segmentCount, totalPostings}}}.
+    metricsJSON.put("sparseVectorIndexes", buildSparseVectorIndexesJSON());
+
     int serverEventsSummaryErrors = 0;
     int serverEventsSummaryWarnings = 0;
     int serverEventsSummaryInfo = 0;
@@ -326,6 +333,23 @@ public class GetServerHandler extends AbstractServerHttpHandler {
    * Extracted as a static helper so the JSON shape can be unit-tested without booting an HTTP
    * server.
    */
+  /**
+   * Walks every open server database and emits one entry per database whose value is the
+   * {@link LSMSparseVectorIndexMetrics#buildJSON} snapshot for that database. Databases without
+   * any sparse-vector index produce an empty inner object - Studio hides the card when the
+   * outer object is empty (no databases have any sparse indexes).
+   */
+  private JSONObject buildSparseVectorIndexesJSON() {
+    final JSONObject byDatabase = new JSONObject();
+    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
+      final ServerDatabase db = httpServer.getServer().getDatabase(dbName);
+      final JSONObject indexes = LSMSparseVectorIndexMetrics.buildJSON(db);
+      if (indexes.length() > 0)
+        byDatabase.put(dbName, indexes);
+    }
+    return byDatabase;
+  }
+
   public static JSONObject buildExecutorsJSON(final MeterRegistry registry) {
     final JSONObject executorsJSON = new JSONObject();
     registry.getMeters().stream()

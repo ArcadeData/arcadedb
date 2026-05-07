@@ -281,6 +281,30 @@
             </div>
           </div>
         </div>
+
+        <!-- Sparse Vector Indexes -->
+        <div class="card mb-3" id="srvSparseVectorCard" style="display: none;">
+          <div class="card-header">
+            Sparse Vector Indexes
+            <span class="text-muted small ms-2">live memtable / segment / posting counters per LSM_SPARSE_VECTOR index</span>
+          </div>
+          <div class="card-body p-0">
+            <div class="table-responsive">
+              <table class="table table-sm table-striped mb-0">
+                <thead>
+                  <tr>
+                    <th>Database</th>
+                    <th>Index</th>
+                    <th class="text-end">Memtable Postings</th>
+                    <th class="text-end">Segments</th>
+                    <th class="text-end">Total Postings</th>
+                  </tr>
+                </thead>
+                <tbody id="srvMetricSparseVectorTable"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
