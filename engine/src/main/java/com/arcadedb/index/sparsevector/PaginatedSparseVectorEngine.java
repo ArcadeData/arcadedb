@@ -254,10 +254,24 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * Backpressure hook for {@link #put} and {@link #remove}. When the memtable has accumulated
    * more than {@link #memtableBackpressureThreshold} live entries and a flush is in flight (i.e.
    * another thread holds {@link #mutatorLock}), the calling thread briefly joins the lock queue
-   * so its write happens after the in-progress flush has swapped the memtable. The lock
-   * take/release is essentially free when no flush is running. Without this, sustained write rate
-   * exceeding flush rate would let the memtable grow unbounded between {@link #maybeFlush} calls,
-   * and eventually OOM. See {@link #MEMTABLE_BACKPRESSURE_FACTOR} for the design rationale.
+   * so its write happens after the in-progress flush has swapped the memtable.
+   * <p>
+   * <b>Advisory only - no-op when no flush is running.</b> The lock take/release is essentially
+   * free when uncontended, so a put past the threshold proceeds immediately if no flush is in
+   * flight. The mechanism only resists writes that race a concurrent flush; it does not block
+   * writes that simply outpace the per-commit {@link #maybeFlush} callback (e.g. when the
+   * post-commit callback is delayed by {@code DatabaseAsyncExecutor} pool saturation).
+   * <p>
+   * <b>Capacity planning.</b> The threshold is {@code MEMTABLE_BACKPRESSURE_FACTOR (=2) *
+   * memtableFlushThreshold}. In an extreme write burst where flush latency exceeds the time to
+   * add another {@code memtableFlushThreshold} postings, the memtable can transiently exceed
+   * {@code 2 * memtableFlushThreshold} entries before the next post-commit callback drains it.
+   * Sized your {@code memtableFlushThreshold} so that {@code 2x * postingBytes} fits comfortably
+   * in heap with the worst-case concurrent transaction count.
+   * <p>
+   * Without this, sustained write rate exceeding flush rate would let the memtable grow
+   * unbounded between {@link #maybeFlush} calls, and eventually OOM. See
+   * {@link #MEMTABLE_BACKPRESSURE_FACTOR} for the design rationale.
    */
   private void applyBackpressureIfNeeded() {
     if (memtable.get().totalPostings() < memtableBackpressureThreshold)

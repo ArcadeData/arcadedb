@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.sql.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -227,17 +228,32 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       // contending for index I/O after the caller has moved on. Collect the per-future errors,
       // attach the rest as suppressed, then throw the first. On interrupt, cancel outstanding work
       // so we do not pay for compute we will never observe.
-      // Per-task timeout: caps the wait at SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS so a deadlocked
-      // bucket index (e.g. wedged on a write lock during compaction or stuck in an HA replication
-      // race) surfaces a descriptive error instead of hanging the caller indefinitely. Setting the
-      // timeout to 0 falls back to an untimed get(); not recommended in production.
-      final int timeoutSeconds = com.arcadedb.GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getValueAsInteger();
+      // <p>
+      // Single deadline across the whole fan-out: caps the total wall-clock at
+      // SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS regardless of bucket count. A per-future timeout
+      // would let N wedged buckets accumulate up to N * timeoutSeconds before the caller sees an
+      // error (e.g. 16 buckets * 30s = 8-minute hang for a deadlocked compaction). The deadline
+      // approach keeps the worst case at a single timeoutSeconds. timeoutSeconds <= 0 disables
+      // the deadline entirely (untimed gets); not recommended in production.
+      final int timeoutSeconds = GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getValueAsInteger();
+      final long deadlineNs = timeoutSeconds > 0
+          ? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
+          : Long.MAX_VALUE;
       final List<Throwable> errors = new ArrayList<>();
       for (final Future<List<RidScore>> f : futures) {
         try {
-          final List<RidScore> partial = timeoutSeconds > 0
-              ? f.get(timeoutSeconds, TimeUnit.SECONDS)
-              : f.get();
+          final List<RidScore> partial;
+          if (timeoutSeconds <= 0) {
+            partial = f.get();
+          } else {
+            // Compute the remaining budget for this future from the shared deadline; if zero or
+            // negative the deadline has already passed and we treat this as a timeout without
+            // even attempting to await.
+            final long remainingNs = deadlineNs - System.nanoTime();
+            if (remainingNs <= 0L)
+              throw new TimeoutException("deadline elapsed before draining future");
+            partial = f.get(remainingNs, TimeUnit.NANOSECONDS);
+          }
           merged.addAll(partial);
         } catch (final InterruptedException ie) {
           Thread.currentThread().interrupt();
@@ -252,7 +268,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
             other.cancel(true);
           throw new RuntimeException("Sparse-vector top-K fan-out timed out after "
               + timeoutSeconds + "s (configurable via "
-              + com.arcadedb.GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
+              + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
         } catch (final ExecutionException ee) {
           errors.add(ee.getCause() != null ? ee.getCause() : ee);
         }

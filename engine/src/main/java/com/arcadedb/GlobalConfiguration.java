@@ -252,7 +252,9 @@ public enum GlobalConfiguration {
           + "fan-out (per-bucket parallel scoring on partitioned types and types with multiple "
           + "buckets). Kept on its own pool rather than sharing the QueryEngineManager pool so "
           + "long-running graph algorithms never queue scoring tasks behind seconds-long graph "
-          + "chunks. 0 = available cores (min 2).",
+          + "chunks. 0 = available cores (min 2). REQUIRES JVM RESTART: the pool is a lazy "
+          + "singleton constructed once on first use; later changes to this value have no effect "
+          + "until the JVM restarts.",
       Integer.class, 0),
 
   SPARSE_VECTOR_SCORING_QUEUE_SIZE("arcadedb.sparseVectorScoringQueueSize", SCOPE.JVM,
@@ -260,17 +262,20 @@ public enum GlobalConfiguration {
           + "the CallerRuns rejection policy fires. Scoring fan-out is fine-grained (per-bucket "
           + "topK calls), so the default of 1024 covers a wide range of workloads. Once the "
           + "queue is full, the submitter executes the task inline, which degrades parallelism "
-          + "but never fails the query.",
+          + "but never fails the query. REQUIRES JVM RESTART: same singleton lifecycle as "
+          + "SPARSE_VECTOR_SCORING_POOL_THREADS.",
       Integer.class, 1024),
 
   SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS("arcadedb.sparseVectorScoringTimeoutSeconds", SCOPE.JVM,
-      "Per-task wall-clock timeout for the parallel sparse-vector top-K fan-out. Each per-bucket "
-          + "scoring task is awaited with this timeout; on expiry the future is cancelled and the "
-          + "query fails with a descriptive error rather than hanging the caller indefinitely. "
+      "Wall-clock deadline for the parallel sparse-vector top-K fan-out. Computed once before "
+          + "the drain loop and shared across all per-bucket futures, so the worst case for N "
+          + "wedged buckets is a single timeoutSeconds (not N * timeoutSeconds). On expiry every "
+          + "still-pending future is cancelled and the query fails with a descriptive error. "
           + "Catches the case where a bucket's index is stuck on a write lock during compaction, "
           + "an HA replication race wedged a segment open, or a JVM-level pause stalled the worker "
           + "thread. Set to 0 to disable the timeout (caller will block indefinitely; not "
-          + "recommended for production).",
+          + "recommended for production). Re-read on every query, so changes take effect without "
+          + "restart (unlike the pool sizing knobs above).",
       Integer.class, 30),
 
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,

@@ -27,6 +27,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -186,7 +187,7 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
    */
   private static List<RID> parseRidList(final Object raw, final String role) {
     if (raw == null)
-      return java.util.Collections.emptyList();
+      return Collections.emptyList();
     final List<RID> out = new ArrayList<>();
     if (raw instanceof RID rid) {
       out.add(rid);

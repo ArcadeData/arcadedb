@@ -132,6 +132,39 @@ class SQLFunctionVectorBoostTest extends TestHelper {
         .hasMessageContaining("boosts");
   }
 
+  /**
+   * Contract pin for the materialize-time score gate: rows the function does not recognise as a
+   * scored shape (anything other than Map / Result with a numeric {@code score}/{@code distance}
+   * field) are silently dropped. This is intentional - upstream pipelines hand out
+   * {@code @rid + score} tuples, and a row that lacks both is missing the data the boost loop
+   * needs. Without coverage, a future refactor that admits NaN-base rows could let unscored
+   * shapes propagate through and surface as corrupt output.
+   */
+  @Test
+  void unrecognisedRowShapeIsSilentlyDropped() {
+    final SQLFunctionVectorBoost function = new SQLFunctionVectorBoost();
+    final com.arcadedb.query.sql.executor.BasicCommandContext ctx =
+        new com.arcadedb.query.sql.executor.BasicCommandContext();
+    ctx.setDatabase(database);
+
+    final Map<String, Object> mapRow = row("A", 0.9f, 1.0f);
+    final List<Object> mixed = new ArrayList<>();
+    mixed.add(mapRow);
+    mixed.add("opaque-string-no-score-field");
+
+    @SuppressWarnings("unchecked")
+    final List<Object> result = (List<Object>) function.execute(null, null, null,
+        new Object[] { mixed, Map.of("boosts", List.of(Map.of("field", "popularity", "weight", 0.0))) },
+        ctx);
+
+    // Only the Map-shaped row survives - the bare String had no score, was rejected at the
+    // materialize-time NaN gate.
+    assertThat(result).hasSize(1);
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> only = (Map<String, Object>) result.get(0);
+    assertThat(only.get("name")).isEqualTo("A");
+  }
+
   // --- helpers ---
 
   private static Map<String, Object> row(final String name, final float score, final float popularity) {

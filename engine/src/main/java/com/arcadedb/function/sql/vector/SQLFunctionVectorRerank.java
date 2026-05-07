@@ -115,7 +115,9 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
             + " (matching the query vector)");
 
       final float similarity = VectorUtils.cosineSimilarity(queryVector, candVec);
-      rescored.add(new Scored(rid, rec, similarity));
+      // The {@code rid} is recoverable from {@code rec.getIdentity()} so it does not need to be
+      // stored on the Scored record - dropping it keeps the data class minimal.
+      rescored.add(new Scored(rec, similarity));
     }
 
     rescored.sort((a, b) -> Float.compare(b.score(), a.score()));
@@ -140,5 +142,5 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
     return NAME + "(<source>, <queryVector>, <embeddingProperty>, <k>)";
   }
 
-  private record Scored(RID rid, Document record, float score) {}
+  private record Scored(Document record, float score) {}
 }

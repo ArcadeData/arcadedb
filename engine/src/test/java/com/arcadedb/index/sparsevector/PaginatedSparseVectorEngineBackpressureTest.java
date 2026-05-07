@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -78,6 +79,7 @@ class PaginatedSparseVectorEngineBackpressureTest extends TestHelper {
    * then verify the put thread observed at least that wait.
    */
   @Test
+  @Tag("slow")
   void putBlocksOnMutatorLockOnceMemtableExceedsHardLimit() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
     final long flushThreshold = 5L;

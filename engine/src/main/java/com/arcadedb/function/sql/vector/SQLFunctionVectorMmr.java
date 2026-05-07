@@ -25,11 +25,13 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.FunctionOptions;
+import com.arcadedb.index.sparsevector.RidScore;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -102,39 +104,38 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
     if (Float.isNaN(lambda) || lambda < 0.0f || lambda > 1.0f)
       throw new CommandSQLParsingException(NAME + " lambda must be in [0, 1], got " + lambda);
 
-    final List<Candidate> candidates = materializeCandidates(source);
-    if (candidates.isEmpty())
+    final List<RidScore> rawCandidates = materializeCandidates(source);
+    if (rawCandidates.isEmpty())
       return new ArrayList<>(0);
 
-    final int k = opts.getInt("k", candidates.size());
+    final int k = opts.getInt("k", rawCandidates.size());
     if (k <= 0)
       return new ArrayList<>(0);
 
     final BasicDatabase db = context.getDatabase();
 
-    // Pre-fetch each candidate's embedding once. Skip candidates whose record was deleted or
-    // whose embedding property is missing/wrong-shape; they are silently dropped (the caller
-    // already paid to score them upstream, so a missing embedding here is a data-quality issue
-    // rather than a query error). Dimension mismatch IS an error - the cosine math would
-    // silently produce garbage.
-    final ArrayList<Candidate> usable = new ArrayList<>(candidates.size());
+    // Pre-fetch each candidate's embedding once and build a fully-populated Candidate. Skip
+    // candidates whose record was deleted or whose embedding property is missing/wrong-shape;
+    // they are silently dropped (the caller already paid to score them upstream, so a missing
+    // embedding here is a data-quality issue rather than a query error). Dimension mismatch IS
+    // an error - the cosine math would silently produce garbage.
+    final ArrayList<Candidate> usable = new ArrayList<>(rawCandidates.size());
     int expectedDim = -1;
-    for (final Candidate c : candidates) {
+    for (final RidScore rs : rawCandidates) {
       try {
-        final Document rec = (Document) db.lookupByRID(c.rid, true);
+        final Document rec = (Document) db.lookupByRID(rs.rid(), true);
         final Object raw = rec.get(embeddingProperty);
         if (raw == null)
           continue;
-        c.vector = toFloatArray(raw);
+        final float[] vector = toFloatArray(raw);
         if (expectedDim == -1) {
-          expectedDim = c.vector.length;
-        } else if (c.vector.length != expectedDim) {
+          expectedDim = vector.length;
+        } else if (vector.length != expectedDim) {
           throw new CommandSQLParsingException(
-              NAME + " embedding dimension mismatch on " + c.rid + ": " + c.vector.length
+              NAME + " embedding dimension mismatch on " + rs.rid() + ": " + vector.length
                   + " vs " + expectedDim);
         }
-        c.record = rec;
-        usable.add(c);
+        usable.add(new Candidate(rs.score(), vector, rec));
       } catch (final RecordNotFoundException ignored) {
         // candidate's record was deleted between the upstream scoring and now; drop it
       }
@@ -150,7 +151,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
     final int targetK = Math.min(k, usable.size());
     final boolean[] picked = new boolean[usable.size()];
     final float[] maxCosToSelected = new float[usable.size()];
-    java.util.Arrays.fill(maxCosToSelected, Float.NEGATIVE_INFINITY);
+    Arrays.fill(maxCosToSelected, Float.NEGATIVE_INFINITY);
     final List<Candidate> selected = new ArrayList<>(targetK);
 
     for (int step = 0; step < targetK; step++) {
@@ -165,7 +166,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
         final float diversityPenalty = (step == 0)
             ? 0.0f
             : Math.max(0.0f, maxCosToSelected[i]);  // negative cos rounded up (no anti-bonus)
-        final float objective = lambda * usable.get(i).score - (1.0f - lambda) * diversityPenalty;
+        final float objective = lambda * usable.get(i).score() - (1.0f - lambda) * diversityPenalty;
         if (objective > bestObjective) {
           bestObjective = objective;
           bestIdx = i;
@@ -180,7 +181,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
       for (int i = 0; i < usable.size(); i++) {
         if (picked[i])
           continue;
-        final float cos = VectorUtils.cosineSimilarity(usable.get(i).vector, winner.vector);
+        final float cos = VectorUtils.cosineSimilarity(usable.get(i).vector(), winner.vector());
         if (cos > maxCosToSelected[i])
           maxCosToSelected[i] = cos;
       }
@@ -189,12 +190,12 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
     final ArrayList<Object> result = new ArrayList<>(selected.size());
     for (final Candidate c : selected) {
       final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-      entry.put("record", c.record);
-      for (final String prop : c.record.getPropertyNames())
-        entry.put(prop, c.record.get(prop));
-      entry.put("@rid", c.record.getIdentity());
-      entry.put("@type", c.record.getTypeName());
-      entry.put("score", c.score);
+      entry.put("record", c.record());
+      for (final String prop : c.record().getPropertyNames())
+        entry.put(prop, c.record().get(prop));
+      entry.put("@rid", c.record().getIdentity());
+      entry.put("@type", c.record().getTypeName());
+      entry.put("score", c.score());
       result.add(entry);
     }
     return result;
@@ -204,25 +205,20 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
     return NAME + "(<source>, <embeddingProperty>[, {lambda: 0.5, k: <int>}])";
   }
 
-  private static final class Candidate {
-    final RID    rid;
-    final float  score;
-    float[]      vector;
-    Document     record;
+  /**
+   * Fully-hydrated candidate: an immutable record carrying the score, the embedding vector, and
+   * the underlying document. Built in one shot inside the execute method's lookup loop, so the
+   * MMR loop never sees a partial-state Candidate.
+   */
+  private record Candidate(float score, float[] vector, Document record) {}
 
-    Candidate(final RID rid, final float score) {
-      this.rid = rid;
-      this.score = score;
-    }
-  }
-
-  private static List<Candidate> materializeCandidates(final Object src) {
+  private static List<RidScore> materializeCandidates(final Object src) {
     if (src == null)
-      return java.util.Collections.emptyList();
+      return Collections.emptyList();
     if (!(src instanceof Iterable<?> iter))
       throw new CommandSQLParsingException(NAME + " 1st argument must be an iterable of scored rows, got "
           + src.getClass().getSimpleName());
-    final ArrayList<Candidate> out = new ArrayList<>();
+    final ArrayList<RidScore> out = new ArrayList<>();
     for (final Object row : iter) {
       final RID rid = extractRidFromRow(row);
       if (rid == null)
@@ -235,7 +231,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
       if (Float.isNaN(score))
         throw new CommandSQLParsingException(
             NAME + " requires every source row to carry a numeric 'score' or 'distance' field; missing on row " + rid);
-      out.add(new Candidate(rid, score));
+      out.add(new RidScore(rid, score));
     }
     return out;
   }

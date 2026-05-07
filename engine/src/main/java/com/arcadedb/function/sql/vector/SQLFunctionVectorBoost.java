@@ -97,20 +97,21 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
       // {@code ORDER BY score} consume the boosted value. Build a new map so we never mutate
       // upstream storage (Result objects are read-only views; a shared LinkedHashMap could be
       // referenced by something else upstream).
+      // <p>
+      // Only Map and Result reach this point: {@link #materialize} drops any row whose score
+      // cannot be extracted, and {@link SQLFunctionVectorAbstract#extractScoreFromRow} returns
+      // {@code NaN} for any other shape. So no "pass-through for unknown shape" branch is needed.
       final LinkedHashMap<String, Object> rebuilt = new LinkedHashMap<>();
       if (s.row() instanceof Map<?, ?> m) {
         for (final var e : m.entrySet())
           rebuilt.put(String.valueOf(e.getKey()), e.getValue());
-      } else if (s.row() instanceof Result r) {
+      } else {
+        // Must be a Result - the materialize-time NaN guard ruled out everything else.
+        final Result r = (Result) s.row();
         for (final String prop : r.getPropertyNames())
           rebuilt.put(prop, r.getProperty(prop));
         if (r.getIdentity().isPresent())
           rebuilt.put("@rid", r.getIdentity().get());
-      } else {
-        // Pass-through for shapes we don't recognise. The score recomputation already happened;
-        // the user just won't see the boostedScore field reflected on this row.
-        out.add(s.row());
-        continue;
       }
       rebuilt.put("score", s.boostedScore());
       out.add(rebuilt);
