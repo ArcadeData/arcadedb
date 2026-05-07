@@ -78,6 +78,23 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   static final long DEFAULT_MEMTABLE_FLUSH_THRESHOLD = 1_000_000L;
 
   /**
+   * Soft-block factor: once {@code memtable.totalPostings() >= memtableFlushThreshold * factor},
+   * {@link #put} briefly waits on {@link #mutatorLock} so any in-progress flush has a chance to
+   * swap the memtable out before we add another posting to it. The wait is bounded - if no flush
+   * is running the lock take/release is microsecond-cost, and if one is running we block exactly
+   * for its remaining duration. This is the backpressure described in
+   * {@code docs/sparse-vector-storage-design.md} ("Risks - Memtable pressure under high write
+   * rate"): with the soft trigger ({@code maybeFlush}) firing per commit, sustained write rate
+   * exceeding flush rate would otherwise let the memtable grow unbounded between flushes and
+   * eventually OOM. We deliberately do <i>not</i> call {@link #flush} from {@code put}: the
+   * commit-replay path runs inside an outer {@code database.transaction(...)}, and a nested
+   * transaction in the flush path would deadlock or corrupt state. Letting {@code maybeFlush}
+   * (post-commit callback) drive flushes keeps the call site safe; the soft-block here just
+   * ensures puts don't outrun those flushes.
+   */
+  static final long MEMTABLE_HARD_LIMIT_FACTOR = 2L;
+
+  /**
    * Size-tiered compaction parameters. After a successful {@link #flush()} the engine groups
    * active segments into geometric tiers by posting count and, if any tier has at least
    * {@link #DEFAULT_TIER_FANOUT} segments, merges that tier's oldest {@code fanout} segments
@@ -102,10 +119,26 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   static final long DEFAULT_TIER_BASE_POSTINGS = DEFAULT_MEMTABLE_FLUSH_THRESHOLD;
 
+  /**
+   * Tombstone-ratio threshold for the secondary compaction trigger (Tier 2 follow-up to #4068).
+   * If size-tiered compaction has not picked up a segment but at least one segment carries
+   * {@code tombstones / totalPostings >= TOMBSTONE_RATIO_TRIGGER}, the gate falls through to a
+   * file-count-bounded compaction that includes the high-tombstone segment plus enough older
+   * neighbors (up to {@link #DEFAULT_TIER_FANOUT}) to merge them into one. This is what
+   * eventually drains delete-heavy indexes whose segments would otherwise never grow into the
+   * next tier and accumulate tombstones forever. The merge runs with
+   * {@code dropAllTombstones=false} so the user-visible state is preserved exactly: tombstones
+   * with a matching insert in an OLDER segment outside the input set still shadow that insert
+   * after the merge. The win is purely in segment count (multi-segment-with-tombstones collapse
+   * into one, BMW DAAT pays a smaller per-query merge cost).
+   */
+  static final double TOMBSTONE_RATIO_TRIGGER = 0.30;
+
   private final DatabaseInternal  database;
   private final String            indexName;
   private final SegmentParameters params;
   private final long              memtableFlushThreshold;
+  private final long              memtableHardLimit;
   private final int               tierFanout;
   private final long              tierBasePostings;
 
@@ -156,6 +189,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     this.indexName = indexName;
     this.params = params;
     this.memtableFlushThreshold = memtableFlushThreshold;
+    this.memtableHardLimit = Math.multiplyExact(memtableFlushThreshold, MEMTABLE_HARD_LIMIT_FACTOR);
     this.tierFanout = tierFanout;
     this.tierBasePostings = tierBasePostings;
     loadExistingSegments();
@@ -190,6 +224,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   public void put(final int dim, final RID rid, final float weight) {
     ensureOpen();
+    applyBackpressureIfNeeded();
     memtable.get().put(dim, rid, weight);
   }
 
@@ -211,7 +246,28 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   public void remove(final int dim, final RID rid) {
     ensureOpen();
+    applyBackpressureIfNeeded();
     memtable.get().remove(dim, rid);
+  }
+
+  /**
+   * Backpressure hook for {@link #put} and {@link #remove}. When the memtable has accumulated
+   * more than {@link #memtableHardLimit} live entries and a flush is in flight (i.e. another
+   * thread holds {@link #mutatorLock}), the calling thread briefly joins the lock queue so its
+   * write happens after the in-progress flush has swapped the memtable. The lock take/release
+   * is essentially free when no flush is running. Without this, sustained write rate exceeding
+   * flush rate would let the memtable grow unbounded between {@link #maybeFlush} calls, and
+   * eventually OOM. See {@link #MEMTABLE_HARD_LIMIT_FACTOR} for the design rationale.
+   */
+  private void applyBackpressureIfNeeded() {
+    if (memtable.get().totalPostings() < memtableHardLimit)
+      return;
+    // Wait for any in-progress flush (or the next one to take the lock if maybeFlush is queued)
+    // to publish its memtable swap. Re-entrant: if this thread is already inside a flush() on
+    // the same engine (e.g. a future caller invokes put() from a flush sub-callback), the lock
+    // is recursively re-acquired and immediately released - no deadlock.
+    mutatorLock.lock();
+    mutatorLock.unlock();
   }
 
   // --- reads ----------------------------------------------------------------
@@ -425,8 +481,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         final int t = tierOf(r.totalPostings());
         byTier.computeIfAbsent(t, k -> new ArrayList<>()).add(r);
       }
-      // Pick the lowest-tier overflow first so write amplification stays minimal: small inputs
-      // means cheap merge.
+      // Primary trigger: pick the lowest-tier overflow first so write amplification stays minimal.
       final int[] sortedTiers = byTier.keySet().stream().mapToInt(Integer::intValue).sorted().toArray();
       for (final int t : sortedTiers) {
         final List<PaginatedSegmentReader> sameTier = byTier.get(t);
@@ -435,7 +490,44 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         sameTier.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
         return sameTier.subList(0, tierFanout).toArray(new PaginatedSegmentReader[0]);
       }
-      return null;
+      // Secondary trigger: tombstone-ratio cleanup. A delete-heavy index where segments never
+      // grow into the next tier would otherwise accumulate small tombstone-rich segments that BMW
+      // DAAT must still walk on every query. Once the corpus has at least {@code tierFanout}
+      // segments AND at least one of them is past {@link #TOMBSTONE_RATIO_TRIGGER}, pick that
+      // segment plus its (fanout - 1) oldest neighbors so the merge collapses file count.
+      // Gating on {@code active.length >= tierFanout} (already enforced by the early return above)
+      // prevents the 2-segment ping-pong where every flush re-merges the same pair.
+      PaginatedSegmentReader heaviestTombstoneSeg = null;
+      double heaviestRatio = 0.0;
+      for (final PaginatedSegmentReader r : active) {
+        final long total = r.totalPostings();
+        if (total <= 0L)
+          continue;
+        final double ratio = (double) r.tombstoneCount() / (double) total;
+        if (ratio >= TOMBSTONE_RATIO_TRIGGER && ratio > heaviestRatio) {
+          heaviestTombstoneSeg = r;
+          heaviestRatio = ratio;
+        }
+      }
+      if (heaviestTombstoneSeg == null)
+        return null;
+      // Pair the high-tombstone segment with the (fanout - 1) oldest neighbors so newest-wins
+      // precedence inside mergeIntoBuilder lines up with on-disk order.
+      final List<PaginatedSegmentReader> all = new ArrayList<>(active.length);
+      all.addAll(Arrays.asList(active));
+      all.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+      final List<PaginatedSegmentReader> picked = new ArrayList<>(tierFanout);
+      final long heavyId = heaviestTombstoneSeg.segmentId();
+      picked.add(heaviestTombstoneSeg);
+      for (final PaginatedSegmentReader r : all) {
+        if (picked.size() >= tierFanout)
+          break;
+        if (r.segmentId() == heavyId)
+          continue;
+        picked.add(r);
+      }
+      picked.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+      return picked.toArray(new PaginatedSegmentReader[0]);
     });
   }
 

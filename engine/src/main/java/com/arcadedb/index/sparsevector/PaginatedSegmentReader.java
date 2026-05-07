@@ -49,6 +49,7 @@ public final class PaginatedSegmentReader implements AutoCloseable {
   private final long                   totalPostings;
   private final int                    totalDims;
   private final long[]                 parentSegments;
+  private final long                   tombstoneCount;
 
   // Sorted parallel arrays: dimIds[i] -> trailer at (trailerPageNums[i], trailerOffsets[i] & 0xFFFF).
   private final int[]                                 dimIds;
@@ -118,9 +119,13 @@ public final class PaginatedSegmentReader implements AutoCloseable {
       this.parentSegments[i] = manifestPage.readLong(cursor);
       cursor += 8;
     }
-    // Skip the two reserved 8-byte slots (the first was originally
-    // {@code tombstoneFloorSegment}; see SparseSegmentBuilder.writeManifest).
-    cursor += 8 + 8;
+    // Slot 0 (8 bytes): total tombstones in this segment, written by SparseSegmentBuilder
+    // (Tier 2 follow-up to #4068). Older segments built before this field was populated read 0L
+    // here, which is a safe under-report - the engine's tombstone-ratio compaction trigger just
+    // skips those segments. Slot 1 stays reserved.
+    this.tombstoneCount = manifestPage.readLong(cursor);
+    cursor += 8;
+    cursor += 8; // skip reserved slot 1
     // Manifest CRC validation. Layout written by SparseSegmentBuilder.writeManifest covers
     // segmentId + parentCount + parents[] + reserved(16), with the CRC of all of those in the
     // last 4 bytes. A bit-flipped manifest could otherwise return wrong {@code parentSegments}
@@ -186,6 +191,16 @@ public final class PaginatedSegmentReader implements AutoCloseable {
 
   public long totalPostings() {
     return totalPostings;
+  }
+
+  /**
+   * Number of tombstones inside this segment, parsed from the manifest's tombstone slot. Used by
+   * the engine's tombstone-ratio compaction trigger (Tier 2). Returns 0 for segments built before
+   * this field was populated - those segments are simply skipped by the trigger, never falsely
+   * flagged.
+   */
+  public long tombstoneCount() {
+    return tombstoneCount;
   }
 
   public int totalDims() {

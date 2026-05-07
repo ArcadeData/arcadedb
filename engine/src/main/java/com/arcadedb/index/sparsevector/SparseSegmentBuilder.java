@@ -93,6 +93,11 @@ public final class SparseSegmentBuilder implements AutoCloseable {
   private final List<int[]> dimIndex = new ArrayList<>();
 
   private long    totalPostings;
+  // Count of tombstones across all dims of this segment. Used by the engine's
+  // tombstone-ratio compaction trigger (Tier 2) to surface delete-heavy segments that size-tiered
+  // compaction alone never picks up. Incremented inline by appendTombstone via appendInternal so we
+  // do not have to re-walk the block buffer at finalize time.
+  private long    totalTombstones;
   private boolean finished;
 
   // Reusable payload scratch space, sized once at construction. Used by:
@@ -200,6 +205,8 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     blockWeights[blockCursor] = weight;
     blockTombstones[blockCursor] = tombstone;
     blockCursor++;
+    if (tombstone)
+      totalTombstones++;
     if (blockCursor == params.blockSize())
       flushBlock();
   }
@@ -541,14 +548,15 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     payloadBuf.putInt(parentCount);
     for (final long p : parentSegments)
       payloadBuf.putLong(p);
-    // Two reserved 8-byte slots. The first slot was originally reserved for a
-    // {@code tombstoneFloorSegment} - the oldest segment id whose tombstones can be physically
-    // dropped during compaction - but the current compaction path uses a binary
-    // {@code dropAllTombstones} flag set by {@link #compactAll}, so the floor is dead weight.
-    // Kept as reserved bytes so manifest layout stays at the same size; revisit if a tiered
-    // tombstone-eviction policy lands.
-    payloadBuf.putLong(0L);                     // reserved (formerly tombstoneFloorSegment)
-    payloadBuf.putLong(0L);                     // reserved
+    // Slot 0 (8 bytes): total tombstones written into this segment. Tier 2 follow-up to #4068:
+    // the engine uses this to surface delete-heavy segments to the tombstone-ratio compaction
+    // trigger without walking every dim's metadata. Older segments built before this field was
+    // populated wrote 0L here, which is a safe under-report (the trigger simply skips them).
+    payloadBuf.putLong(totalTombstones);
+    // Slot 1 (8 bytes): reserved for future use. Kept zero so the manifest layout stays at the
+    // same size; a future addition can repurpose it without bumping the format version (the CRC
+    // is stable as long as the slot stays consistent within a build).
+    payloadBuf.putLong(0L);
     final CRC32 crc = new CRC32();
     crc.update(payloadScratch, 0, size - 4);
     payloadBuf.putInt((int) crc.getValue());
