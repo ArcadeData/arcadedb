@@ -100,6 +100,9 @@
               <textarea id="inputCommand" name="inputCommand"></textarea>
             </div>
             <div class="query-editor-actions">
+              <button class="editor-action-btn editor-clear-btn" onclick="clearQuery()" title="Clear query">
+                <i class="fa fa-eraser"></i>
+              </button>
               <button class="editor-action-btn editor-save-btn" onclick="saveCurrentQuery()" title="Save query">
                 <i class="fa fa-bookmark"></i>
               </button>
@@ -410,6 +413,18 @@
   function resetHistoryNavigation() {
     historyNavIndex = -1;
     historyNavBuffer = "";
+  }
+
+  function clearQuery() {
+    if (editor == null) return;
+    if (editor.getValue() === "") {
+      editor.focus();
+      return;
+    }
+    editor.setValue("");
+    editor.setCursor(0, 0);
+    resetHistoryNavigation();
+    editor.focus();
   }
 
   function initQuery() {
