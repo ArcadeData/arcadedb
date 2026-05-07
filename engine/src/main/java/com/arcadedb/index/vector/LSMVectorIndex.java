@@ -353,7 +353,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     public IndexInternal create(final IndexBuilder<? extends Index> builder) {
       final BucketLSMVectorIndexBuilder vectorBuilder = (BucketLSMVectorIndexBuilder) builder;
 
-      return new LSMVectorIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
+      final LSMVectorIndex index = new LSMVectorIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE,
           builder.getPageSize(), vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(),
           vectorBuilder.dimensions,
@@ -363,6 +363,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
           vectorBuilder.mutationsBeforeRebuild, vectorBuilder.storeVectorsInGraph, vectorBuilder.addHierarchy,
           vectorBuilder.pqSubspaces, vectorBuilder.pqClusters, vectorBuilder.pqCenterGlobally,
           vectorBuilder.pqTrainingLimit);
+      // INT8 ingest encoding is plumbed via the metadata field after construction to avoid
+      // ballooning the already-17-arg primary constructor (issue #4132). The metadata default is
+      // FLOAT32; we overwrite it only when the builder requested a different encoding.
+      index.metadata.encoding = vectorBuilder.encoding;
+      return index;
     }
   }
 
@@ -3165,8 +3170,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
-    if (keys == null || keys.length == 0 || !(keys[0] instanceof float[] queryVector))
-      throw new IllegalArgumentException("Expected float array as key for vector search");
+    if (keys == null || keys.length == 0 || keys[0] == null)
+      throw new IllegalArgumentException("Expected float array, byte array (INT8), or supported vector type as key for vector search");
+
+    final float[] queryVector;
+    try {
+      queryVector = VectorUtils.toFloatArray(keys[0]);
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException(
+          "Expected float array, byte array (INT8), or supported vector type as key for vector search, got " + keys[0].getClass(), e);
+    }
 
     if (queryVector.length != metadata.dimensions)
       throw new IllegalArgumentException(
@@ -3274,16 +3287,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
       if (values == null || values.length == 0)
         throw new IllegalArgumentException("Values cannot be null or empty");
 
-      // Validate vector - can be either float[] or ComparableVector (from transaction replay)
+      // Validate vector - can be ComparableVector (transaction replay), float[] (FLOAT32 encoding,
+      // historical default), or byte[] (INT8 encoding, dequantized server-side; jvector#665 tracks
+      // native int8 HNSW). VectorUtils.toFloatArray covers float[]/double[]/List/byte[].
       final float[] vector;
       if (keys[0] instanceof ComparableVector c)
         vector = c.vector;
-      else
-        vector = VectorUtils.convertToFloatArray(keys[0]);
-
-      if (vector == null) {
-        throw new IllegalArgumentException(
-            "Expected float array or ComparableVector as key for vector index, got " + keys[0].getClass());
+      else {
+        try {
+          vector = VectorUtils.toFloatArray(keys[0]);
+        } catch (final IllegalArgumentException e) {
+          throw new IllegalArgumentException(
+              "Expected float array, byte array (INT8), or ComparableVector as key for vector index, got " + keys[0].getClass(), e);
+        }
       }
 
       if (vector.length != metadata.dimensions)
@@ -3370,10 +3386,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final float[] vector;
         if (keys[0] instanceof ComparableVector c)
           vector = c.vector;
-        else
-          vector = VectorUtils.convertToFloatArray(keys[0]);
+        else {
+          try {
+            vector = VectorUtils.toFloatArray(keys[0]);
+          } catch (final IllegalArgumentException e) {
+            continue;
+          }
+        }
 
-        if (vector == null || vector.length != metadata.dimensions)
+        if (vector.length != metadata.dimensions)
           continue;
 
         final int id = nextId.getAndIncrement();
@@ -3749,6 +3770,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     if (metadata.quantizationType != VectorQuantizationType.NONE)
       json.put("quantization", metadata.quantizationType.name());
+    if (metadata.encoding != VectorEncoding.FLOAT32)
+      json.put("encoding", metadata.encoding.name());
     json.put("maxConnections", metadata.maxConnections);
     json.put("beamWidth", metadata.beamWidth);
     json.put("idPropertyName", metadata.idPropertyName);
@@ -4238,7 +4261,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public Type[] getKeyTypes() {
-    return new Type[] { Type.ARRAY_OF_FLOATS };
+    // Honour the index encoding: an INT8 index is built over a {@code byte[]} property (one
+    // signed byte per dimension, stored as ArcadeDB's {@code BINARY} type which maps to a Java
+    // {@code byte[]}). The default FLOAT32 path keeps the historical contract.
+    return new Type[] {
+        metadata.encoding == VectorEncoding.INT8 ? Type.BINARY : Type.ARRAY_OF_FLOATS
+    };
   }
 
   public int getDimensions() {

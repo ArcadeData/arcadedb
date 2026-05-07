@@ -51,6 +51,25 @@ public final class VectorUtils {
   }
 
   /**
+   * Dequantizes a signed int8 byte array into float values using the Cohere/OpenAI calibration
+   * convention: {@code value / 127.0f}. Used on the read path when an HNSW index is built over a
+   * {@link VectorEncoding#INT8}-encoded property — JVector 4.0.0-rc.8 still requires
+   * {@code float32} for HNSW build/search internally (see
+   * <a href="https://github.com/datastax/jvector/issues/665">datastax/jvector#665</a>). The
+   * conversion is lossless within the source's int8 resolution.
+   *
+   * @param int8 the signed byte vector (one byte per dimension)
+   *
+   * @return a float vector of the same length where each element equals {@code int8[i] / 127.0f}
+   */
+  public static float[] dequantizeInt8ToFloat(final byte[] int8) {
+    final float[] result = new float[int8.length];
+    for (int i = 0; i < int8.length; i++)
+      result[i] = int8[i] / 127.0f;
+    return result;
+  }
+
+  /**
    * Converts various object types to a float array.
    * Handles: float[], double[], Object[] (of Number), List (of Number).
    *
@@ -63,6 +82,8 @@ public final class VectorUtils {
   public static float[] toFloatArray(final Object vectorObj) {
     if (vectorObj instanceof float[] f)
       return f;
+    if (vectorObj instanceof byte[] b)
+      return dequantizeInt8ToFloat(b);
     if (vectorObj instanceof double[] d) {
       final float[] result = new float[d.length];
       for (int i = 0; i < d.length; i++)

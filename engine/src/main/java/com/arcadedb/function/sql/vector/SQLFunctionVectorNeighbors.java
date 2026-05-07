@@ -30,6 +30,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -294,41 +295,42 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   }
 
   /**
-   * Extract query vector from the key parameter.
+   * Extract query vector from the key parameter. Accepts {@code float[]}, {@code byte[]}
+   * (INT8-encoded, dequantized via {@link VectorUtils#dequantizeInt8ToFloat}), {@code double[]},
+   * arrays/lists of numbers, or a vertex-id string whose stored vector property is read back and
+   * converted - the property may itself be {@code byte[]} when the index uses INT8 encoding.
    */
   private float[] extractQueryVector(final Object key, final LSMVectorIndex lsmIndex, final CommandContext context) {
-    // If key is already a vector, use it directly
-    if (key instanceof float[] floatArray) {
-      return floatArray;
-    } else if (key instanceof Object[] objArray && objArray.length > 0 && objArray[0] instanceof Number) {
-      // Convert array of numbers to float array
-      final float[] queryVector = new float[objArray.length];
-      for (int i = 0; i < objArray.length; i++) {
-        queryVector[i] = ((Number) objArray[i]).floatValue();
-      }
-      return queryVector;
-    } else {
-      // Key is a vertex identifier - fetch the vertex and get its vector
-      final String keyStr = key.toString();
+    // Vertex-id lookup path: if the key is a string and not a literal vector, fetch the stored vector property.
+    if (key instanceof String keyStr) {
       final String typeName = lsmIndex.getTypeName();
       final String vectorProperty = lsmIndex.getPropertyNames().getFirst();
       final String idProperty = lsmIndex.getIdPropertyName();
 
-      // Query for the vertex by the configured ID property
       final ResultSet rs = context.getDatabase().query("sql",
           "SELECT " + vectorProperty + " FROM " + typeName + " WHERE " + idProperty + " = ? LIMIT 1", keyStr);
 
-      float[] queryVector = null;
+      Object stored = null;
       if (rs.hasNext()) {
         final var result = rs.next();
-        queryVector = result.getProperty(vectorProperty);
+        stored = result.getProperty(vectorProperty);
       }
       rs.close();
 
-      if (queryVector == null) {
+      if (stored == null)
         throw new CommandSQLParsingException("Could not find vertex with key '" + keyStr + "' or extract vector");
+
+      try {
+        return VectorUtils.toFloatArray(stored);
+      } catch (final IllegalArgumentException e) {
+        throw new CommandSQLParsingException("Could not extract vector for key '" + keyStr + "': " + e.getMessage());
       }
-      return queryVector;
+    }
+
+    try {
+      return VectorUtils.toFloatArray(key);
+    } catch (final IllegalArgumentException e) {
+      throw new CommandSQLParsingException("Unsupported query vector type: " + key.getClass().getSimpleName());
     }
   }
 
