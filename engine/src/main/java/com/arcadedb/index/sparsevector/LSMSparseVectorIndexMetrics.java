@@ -59,7 +59,13 @@ public final class LSMSparseVectorIndexMetrics {
     for (final Index index : database.getSchema().getIndexes()) {
       if (!(index instanceof LSMSparseVectorIndex sparse))
         continue;
+      // {@code getEngine()} can return null for an index that is mid-drop or whose engine
+      // construction was deferred. The Studio card has no business reporting transient
+      // intermediate state - skip and let the next scrape pick the row up once the index is
+      // either fully gone or fully open.
       final PaginatedSparseVectorEngine engine = sparse.getEngine();
+      if (engine == null)
+        continue;
       final TypeIndex typeIndex = sparse.getTypeIndex();
       final String key = typeIndex != null ? typeIndex.getName() : sparse.getName();
 

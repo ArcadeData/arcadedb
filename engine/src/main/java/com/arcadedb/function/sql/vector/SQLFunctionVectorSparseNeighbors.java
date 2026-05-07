@@ -221,18 +221,30 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       final List<Future<List<RidScore>>> futures = new ArrayList<>(indexes.size());
       for (final LSMSparseVectorIndex idx : indexes)
         futures.add(pool.submit(() -> idx.topK(queryIndices, queryValues, fetchK, allowedRIDs)));
+      // Drain ALL futures even when one fails: a partial drain leaves the still-running tasks
+      // contending for index I/O after the caller has moved on. Collect the per-future errors,
+      // attach the rest as suppressed, then throw the first. On interrupt, cancel outstanding work
+      // so we do not pay for compute we will never observe.
+      final List<Throwable> errors = new ArrayList<>();
       for (final Future<List<RidScore>> f : futures) {
         try {
           merged.addAll(f.get());
         } catch (final InterruptedException ie) {
           Thread.currentThread().interrupt();
+          for (final Future<?> other : futures)
+            other.cancel(true);
           throw new RuntimeException("Interrupted during sparse-vector top-K fan-out", ie);
         } catch (final ExecutionException ee) {
-          final Throwable cause = ee.getCause();
-          if (cause instanceof RuntimeException re)
-            throw re;
-          throw new RuntimeException("Sparse-vector top-K fan-out failed", cause != null ? cause : ee);
+          errors.add(ee.getCause() != null ? ee.getCause() : ee);
         }
+      }
+      if (!errors.isEmpty()) {
+        final Throwable first = errors.getFirst();
+        final RuntimeException toThrow = first instanceof RuntimeException re ? re
+            : new RuntimeException("Sparse-vector top-K fan-out failed", first);
+        for (int i = 1; i < errors.size(); i++)
+          toThrow.addSuppressed(errors.get(i));
+        throw toThrow;
       }
     }
 

@@ -200,13 +200,17 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     final ArrayList<Object> out = new ArrayList<>(Math.min(k, rescored.size()));
     for (int i = 0; i < rescored.size() && out.size() < k; i++) {
       // Override the upstream "distance"/"score" with the discovery score so a downstream
-      // {@code vector.fuse} or `ORDER BY score` sees the right signal.
+      // {@code vector.fuse} or `ORDER BY score` sees the right signal. Always rebuild into a
+      // fresh map: mutating the caller-supplied map in place would let one round of discover
+      // poison the next (e.g. inside a LET / subquery the same row dict gets reused with the
+      // previous round's score still attached). Building a copy is cheap and the safer default.
       final Object row = rescored.get(i).row;
       if (row instanceof Map<?, ?> mm) {
-        @SuppressWarnings("unchecked")
-        final Map<String, Object> mut = (Map<String, Object>) mm;
-        mut.put("score", rescored.get(i).score);
-        out.add(mut);
+        final java.util.LinkedHashMap<String, Object> rebuilt = new java.util.LinkedHashMap<>();
+        for (final var e : mm.entrySet())
+          rebuilt.put(String.valueOf(e.getKey()), e.getValue());
+        rebuilt.put("score", rescored.get(i).score);
+        out.add(rebuilt);
       } else {
         out.add(row);
       }
