@@ -319,14 +319,16 @@ a.nav-link.active.show {
   transition: color 0.15s, background-color 0.15s;
 }
 
-.editor-save-btn {
+.editor-save-btn,
+.editor-clear-btn {
   width: 32px;
   height: 32px;
   border-radius: 4px;
   font-size: 0.95rem;
 }
 
-.editor-save-btn:hover {
+.editor-save-btn:hover,
+.editor-clear-btn:hover {
   color: var(--color-brand);
   background-color: var(--color-brand-light);
 }
