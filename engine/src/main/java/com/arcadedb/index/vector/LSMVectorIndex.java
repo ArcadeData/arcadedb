@@ -380,8 +380,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // FLOAT32; we overwrite it only when the builder requested a different encoding. The brief
       // window where the index exists with FLOAT32 encoding before this assignment is unobservable
       // because the factory hasn't published the reference yet - the new index is returned after
-      // the field is set. Tech debt: a future refactor that consolidates the constructor arguments
-      // into a config record should fold this back into construction time.
+      // the field is set.
+      // TODO(#4132 follow-up): consolidate the constructor's positional args into a single
+      // LSMVectorIndexConfig record so encoding (and any future field) joins the rest of the
+      // metadata at construction time, eliminating the post-publication mutation entirely.
       index.metadata.encoding = vectorBuilder.encoding;
       return index;
     }
@@ -926,7 +928,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 final Object vectorObj = doc.get(vectorProp);
                 if (vectorObj == null)
                   return false;
-                final float[] vector = VectorUtils.toFloatArray(vectorObj);
+                final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
                 return vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
               } catch (final Exception e) {
                 return false;
@@ -1196,7 +1198,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               final Object vectorObj = doc.get(vectorProp);
               if (vectorObj != null) {
                 try {
-                  final float[] vector = VectorUtils.toFloatArray(vectorObj);
+                  final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
                   if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
                     final int syntheticId = nextId.getAndIncrement();
                     ridToLatestVector.put(rid, new VectorEntryForGraphBuild(syntheticId, rid, false, -1));
@@ -1353,7 +1355,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               final Object vectorObj = doc.get(vectorProp);
 
               if (vectorObj != null) {
-                final float[] vector = VectorUtils.toFloatArray(vectorObj);
+                final float[] vector = VectorUtils.toFloatArray(vectorObj, metadata.encoding);
 
                 if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
                   vectorLocationSnapshot.put(vectorId, loc);
@@ -3206,7 +3208,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     final float[] queryVector;
     try {
-      queryVector = VectorUtils.toFloatArray(keys[0]);
+      queryVector = VectorUtils.toFloatArray(keys[0], metadata.encoding);
     } catch (final IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Expected float array, byte array (INT8), or supported vector type as key for vector search, got " + keys[0].getClass(), e);
@@ -3320,13 +3322,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // Validate vector - can be ComparableVector (transaction replay), float[] (FLOAT32 encoding,
       // historical default), or byte[] (INT8 encoding, dequantized server-side; jvector#665 tracks
-      // native int8 HNSW). VectorUtils.toFloatArray covers float[]/double[]/List/byte[].
+      // native int8 HNSW). The encoding-aware overload only accepts byte[] when metadata.encoding
+      // is INT8, otherwise it rejects to keep non-INT8 indexes from silently scaling stray bytes.
       final float[] vector;
       if (keys[0] instanceof ComparableVector c)
         vector = c.vector;
       else {
         try {
-          vector = VectorUtils.toFloatArray(keys[0]);
+          vector = VectorUtils.toFloatArray(keys[0], metadata.encoding);
         } catch (final IllegalArgumentException e) {
           throw new IllegalArgumentException(
               "Expected float array, byte array (INT8), or ComparableVector as key for vector index, got " + keys[0].getClass(), e);
@@ -3420,7 +3423,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           vector = c.vector;
         else {
           try {
-            vector = VectorUtils.toFloatArray(keys[0]);
+            vector = VectorUtils.toFloatArray(keys[0], metadata.encoding);
           } catch (final IllegalArgumentException e) {
             // Drop the row but log loudly: putBatch runs during commit replay where the originating
             // call site has long returned, so a swallowed conversion failure is the only thing

@@ -21,13 +21,16 @@ package com.arcadedb.index.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -230,6 +233,7 @@ class LSMVectorIndexInt8IngestTest extends TestHelper {
           .withDimensions(DIMENSIONS)
           .withEncoding("FP16")
           .create())
+          .isInstanceOf(IndexException.class)
           .hasMessageContaining("Invalid vector encoding");
     });
   }
@@ -307,6 +311,53 @@ class LSMVectorIndexInt8IngestTest extends TestHelper {
       assertThat(hits).isNotEmpty();
       final int topId = ((Number) hits.get(0).getFirst().asDocument().get("id")).intValue();
       assertThat(topId).isEqualTo(0);
+    });
+  }
+
+  @Test
+  void sqlVectorNeighborsAcceptsByteArrayQuery() {
+    // SQL surface coverage: the vector.neighbors function must accept a raw byte[] query when the
+    // target index is INT8-encoded. Prior to the encoding-aware overload, extractQueryVector ran
+    // raw byte[] through the unconditional dequantize - this test pins the contract via the SQL
+    // entry point so a future regression in either path is caught.
+    database.transaction(() -> {
+      final DocumentType docType = database.getSchema().createDocumentType("Doc");
+      docType.createProperty("id", Type.INTEGER);
+      docType.createProperty("embedding", Type.BINARY);
+
+      database.getSchema()
+          .buildTypeIndex("Doc", new String[] { "embedding" })
+          .withLSMVectorType()
+          .withDimensions(DIMENSIONS)
+          .withSimilarity("COSINE")
+          .withEncoding(VectorEncoding.INT8)
+          .create();
+
+      for (int i = 0; i < NUM_VECTORS; i++) {
+        final MutableDocument doc = database.newDocument("Doc");
+        doc.set("id", i);
+        doc.set("embedding", quantize(generateNormalizedTestVector(DIMENSIONS, i)));
+        doc.save();
+      }
+    });
+
+    database.transaction(() -> {
+      final byte[] byteQuery = quantize(generateNormalizedTestVector(DIMENSIONS, 0));
+      final ResultSet rs = database.command("sql",
+          "SELECT expand(`vector.neighbors`('Doc[embedding]', :q, 5))", Map.of("q", byteQuery));
+
+      int rowCount = 0;
+      int firstId = Integer.MIN_VALUE;
+      while (rs.hasNext()) {
+        final var row = rs.next();
+        if (rowCount == 0)
+          firstId = ((Number) row.getProperty("id")).intValue();
+        rowCount++;
+      }
+      rs.close();
+
+      assertThat(rowCount).isGreaterThan(0);
+      assertThat(firstId).isEqualTo(0);
     });
   }
 

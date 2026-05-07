@@ -46,6 +46,14 @@ public enum VectorEncoding {
    * Signed int8 vector property; 1 byte per dimension. Bytes are dequantized to float using
    * {@code value / 127.0f} (Cohere / OpenAI int8 calibration convention) before the HNSW graph
    * sees them - lossless within the int8 source's own resolution.
+   * <p>
+   * <b>Calibration note:</b> Java's {@code byte} range is {@code [-128, 127]} but the
+   * Cohere/OpenAI calibration only emits {@code [-127, 127]}. A raw {@code -128} would dequantize
+   * to {@code -1.0079f}, breaking the unit-norm assumption COSINE similarity relies on. The
+   * dequantizer in {@link com.arcadedb.index.vector.VectorUtils#dequantizeInt8ToFloat(byte[])}
+   * therefore clamps {@code -128} up to {@code -127}; callers feeding non-Cohere/OpenAI byte
+   * sources should be aware that this is a silent numeric correction for the {@code -128} edge
+   * case (no impact on values in {@code [-127, 127]}).
    */
   INT8
 }

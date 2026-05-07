@@ -80,28 +80,33 @@ public final class VectorUtils {
 
   /**
    * Converts various object types to a float array.
-   * Handles: float[], double[], Object[] (of Number), List (of Number), String literal (e.g.
-   * {@code "[1.0, 2.0]"}), and {@code byte[]} (INT8 encoded, see below).
+   * Handles: float[], double[], Object[] (of Number), List (of Number), and String literal (e.g.
+   * {@code "[1.0, 2.0]"}).
    * <p>
-   * <b>Important:</b> a {@code byte[]} input is interpreted as a signed-int8 vector and dequantized
-   * via {@link #dequantizeInt8ToFloat(byte[])} (Cohere/OpenAI calibration {@code value / 127.0f}).
-   * This is the contract the {@link VectorEncoding#INT8} index encoding relies on. Callers that
-   * are <em>not</em> in an INT8 index context must not pass a raw {@code byte[]} into this method:
-   * the dequantization is applied unconditionally, so a non-INT8 byte sequence (binary keys, raw
-   * blob storage) would silently produce scaled floats instead of an error. Convert such inputs
-   * up-front rather than relying on this method to recognise them.
+   * <b>byte[] is intentionally rejected.</b> A signed-int8 byte sequence has no inherent meaning
+   * outside an {@link VectorEncoding#INT8} index context: a raw {@code byte[]} could be a binary
+   * key, a stored blob, or genuine int8-quantized vector data, and silently dequantizing by
+   * {@code v / 127.0f} for non-vector callers would produce nonsense floats with no error signal.
+   * Callers operating in an INT8 index context must use {@link #toFloatArray(Object,VectorEncoding)}
+   * (which dispatches based on the encoding) or call {@link #dequantizeInt8ToFloat(byte[])}
+   * directly. SQL math/utility functions (vector.add, vector.cosineSimilarity, etc.) call this
+   * non-encoded variant and therefore reject {@code byte[]} - users must dequantize first.
    *
    * @param vectorObj the object to convert
    *
    * @return float array representation
    *
-   * @throws IllegalArgumentException if the input type is not supported or contains non-numeric elements
+   * @throws IllegalArgumentException if the input type is not supported (including {@code byte[]})
+   *                                  or contains non-numeric elements
    */
   public static float[] toFloatArray(final Object vectorObj) {
     if (vectorObj instanceof float[] f)
       return f;
-    if (vectorObj instanceof byte[] b)
-      return dequantizeInt8ToFloat(b);
+    if (vectorObj instanceof byte[])
+      throw new IllegalArgumentException(
+          "byte[] vector is only supported in an INT8-encoded index context. Use "
+              + "VectorUtils.toFloatArray(value, VectorEncoding.INT8) or "
+              + "VectorUtils.dequantizeInt8ToFloat(byte[]) explicitly.");
     if (vectorObj instanceof double[] d) {
       final float[] result = new float[d.length];
       for (int i = 0; i < d.length; i++)
@@ -144,32 +149,26 @@ public final class VectorUtils {
   }
 
   /**
-   * Converts various object types to a float array.
-   * Returns null on unsupported types instead of throwing an exception.
+   * Encoding-aware variant of {@link #toFloatArray(Object)} for callers operating in an index
+   * context. When {@code encoding == INT8} a {@code byte[]} input is dequantized via
+   * {@link #dequantizeInt8ToFloat(byte[])}; for any other encoding the call delegates to the
+   * strict {@link #toFloatArray(Object)} and a {@code byte[]} input is rejected as in non-index
+   * contexts. All other input types (float[], double[], Object[], List, String) behave the same
+   * regardless of encoding.
    *
-   * @param vectorObj the object to convert (float[], List, etc.)
+   * @param vectorObj the object to convert
+   * @param encoding  the index encoding context (FLOAT32 to reject byte[], INT8 to dequantize)
    *
-   * @return float array representation, or null if the type is not supported
+   * @return float array representation
    *
-   * @deprecated use {@link #toFloatArray(Object)} instead
+   * @throws IllegalArgumentException if the input type is not supported, the input is a
+   *                                  {@code byte[]} but {@code encoding} is not INT8, or the
+   *                                  input contains non-numeric elements
    */
-  @Deprecated
-  public static float[] convertToFloatArray(final Object vectorObj) {
-    if (vectorObj instanceof float[] f)
-      return f;
-    if (vectorObj instanceof double[] d) {
-      final float[] vector = new float[d.length];
-      for (int i = 0; i < d.length; i++)
-        vector[i] = (float) d[i];
-      return vector;
-    }
-    if (vectorObj instanceof List<?> list) {
-      final float[] vector = new float[list.size()];
-      for (int i = 0; i < list.size(); i++)
-        vector[i] = ((Number) list.get(i)).floatValue();
-      return vector;
-    }
-    return null;
+  public static float[] toFloatArray(final Object vectorObj, final VectorEncoding encoding) {
+    if (encoding == VectorEncoding.INT8 && vectorObj instanceof byte[] b)
+      return dequantizeInt8ToFloat(b);
+    return toFloatArray(vectorObj);
   }
 
   /**

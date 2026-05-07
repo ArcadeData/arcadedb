@@ -227,14 +227,13 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return deletedSentinelVector;
       }
 
-      // toFloatArray handles float[] (FLOAT32 encoding) and byte[] (INT8 encoding, dequantized
-      // via VectorUtils.dequantizeInt8ToFloat) plus the historical double[]/Object[]/List/String
-      // shapes. Unsupported types throw IllegalArgumentException, which we surface as a WARNING -
-      // the previous null-returning helper was incorrectly flagging legitimate INT8 byte[]
-      // properties as malformed.
+      // The encoding-aware overload dequantizes a byte[] only when the index uses INT8 encoding;
+      // under FLOAT32 a stray byte[] property is rejected up-front rather than silently producing
+      // scaled floats. Unsupported types surface as a WARNING for operational triage.
       final float[] vector;
       try {
-        vector = VectorUtils.toFloatArray(vectorObj);
+        vector = VectorUtils.toFloatArray(vectorObj,
+            lsmIndex != null ? lsmIndex.getMetadata().encoding : VectorEncoding.FLOAT32);
       } catch (final IllegalArgumentException e) {
         LogManager.instance().log(this, Level.WARNING,
             "Vector property '%s' has unsupported type %s (RID=%s): %s",

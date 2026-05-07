@@ -320,15 +320,17 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       if (stored == null)
         throw new CommandSQLParsingException("Could not find vertex with key '" + keyStr + "' or extract vector");
 
+      // Encoding-aware: a byte[] property is only valid when the index is INT8-encoded.
       try {
-        return VectorUtils.toFloatArray(stored);
+        return VectorUtils.toFloatArray(stored, lsmIndex.getMetadata().encoding);
       } catch (final IllegalArgumentException e) {
         throw new CommandSQLParsingException("Could not extract vector for key '" + keyStr + "': " + e.getMessage());
       }
     }
 
+    // Direct query vector. Allow byte[] as a query when the target index uses INT8 encoding.
     try {
-      return VectorUtils.toFloatArray(key);
+      return VectorUtils.toFloatArray(key, lsmIndex.getMetadata().encoding);
     } catch (final IllegalArgumentException e) {
       throw new CommandSQLParsingException("Unsupported query vector type: " + key.getClass().getSimpleName());
     }

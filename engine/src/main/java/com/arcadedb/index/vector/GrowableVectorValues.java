@@ -127,18 +127,22 @@ class GrowableVectorValues implements RandomAccessVectorValues {
       if (lsmIndex != null)
         vector = lsmIndex.readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
 
-      // Fall back to document lookup. toFloatArray handles float[] (FLOAT32 encoding) and byte[]
-      // (INT8 encoding, dequantized once via VectorUtils.dequantizeInt8ToFloat); an unsupported
-      // type or null property is turned into a null vector for the validity check below.
+      // Fall back to document lookup. The encoding-aware overload only dequantizes byte[] when
+      // the index uses INT8 encoding; under FLOAT32 a stray byte[] property would be rejected
+      // rather than silently producing scaled floats. A WARNING is emitted on unsupported types
+      // so operators can detect when an INT8 index is silently losing vectors during search -
+      // matches the sibling ArcadePageVectorValues path.
       if (vector == null && vectorPropertyName != null) {
         final var record = database.lookupByRID(loc.rid, false);
         final Document doc = (Document) record;
         final Object raw = doc.get(vectorPropertyName);
         if (raw != null) {
           try {
-            vector = VectorUtils.toFloatArray(raw);
-          } catch (final IllegalArgumentException ignored) {
-            // unsupported vector type for this index encoding - leaves vector null
+            vector = VectorUtils.toFloatArray(raw, lsmIndex != null ? lsmIndex.getMetadata().encoding : VectorEncoding.FLOAT32);
+          } catch (final IllegalArgumentException e) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Vector property '%s' has unsupported type %s (RID=%s, ordinal=%d): %s",
+                vectorPropertyName, raw.getClass().getName(), loc.rid, ordinal, e.getMessage());
           }
         }
       }
