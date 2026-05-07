@@ -156,17 +156,18 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
    * ids and {@code keys[1]} is a {@code float[]} of weights. Each non-zero dim is queued for the
    * transaction or applied directly to the engine memtable depending on transaction status.
    * <p>
-   * Replay call (from {@code TransactionIndexContext} at commit time): the keys are an already
-   * expanded scalar posting {@code [Integer dim_id, RID rid, Float weight]} and are applied
-   * directly to the engine.
+   * Replay call (from {@code TransactionIndexContext} at commit time): {@code keys[0]} is a
+   * {@link SparsePostingReplayKey} produced by {@link #queueOrApply}. The typed marker (issue
+   * #4073) replaces the prior {@code [Integer, RID, Float]} 3-tuple shape that required
+   * {@code instanceof} chains to disambiguate from the original call shape.
    */
   @Override
   public void put(final Object[] keys, final RID[] rids) {
     if (rids == null || rids.length == 0)
       return;
 
-    if (!isOriginalCall(keys)) {
-      applyScalarPostingFromReplay(keys, true);
+    if (isReplayKey(keys)) {
+      applyReplayPosting((SparsePostingReplayKey) keys[0], true);
       return;
     }
 
@@ -206,8 +207,8 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
 
   @Override
   public void remove(final Object[] keys) {
-    if (!isOriginalCall(keys)) {
-      applyScalarPostingFromReplay(keys, false);
+    if (isReplayKey(keys)) {
+      applyReplayPosting((SparsePostingReplayKey) keys[0], false);
       return;
     }
     // The wrapper's mandatory shape `(int[] indices, float[] values)` carries no RID, so we have
@@ -224,13 +225,11 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   public void remove(final Object[] keys, final Identifiable rid) {
     if (rid == null)
       return;
-    if (!isOriginalCall(keys)) {
-      // Replay path. {@code keys[1]} already carries the per-posting RID (the same value Raft
-      // serialized into the WAL), so {@code applyScalarPostingFromReplay} re-extracts it from
-      // there to keep the original/replay paths shape-identical. The {@code rid} parameter is
-      // intentionally unused on this branch; the underlying LSM-Tree shell never sees these
-      // postings, so there is no inner remove() to forward it to.
-      applyScalarPostingFromReplay(keys, false);
+    if (isReplayKey(keys)) {
+      // Replay path. The marker carries the per-posting RID (the same value Raft serialized into
+      // the WAL); the {@code rid} parameter is intentionally unused on this branch since the
+      // underlying LSM-Tree shell never sees these postings.
+      applyReplayPosting((SparsePostingReplayKey) keys[0], false);
       return;
     }
 
@@ -404,7 +403,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       tx.addIndexOperation(this,
           add ? TransactionIndexContext.IndexKey.IndexKeyOperation.ADD
               : TransactionIndexContext.IndexKey.IndexKeyOperation.REMOVE,
-          new Object[] { dim, rid, weight }, rid);
+          new Object[] { new SparsePostingReplayKey(dim, rid, weight) }, rid);
       tx.addAfterCommitCallbackIfAbsent("sparse-flush:" + getName(), engine::maybeFlush);
       return;
     }
@@ -414,22 +413,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
       engine.remove(dim, rid);
   }
 
-  /** Apply a scalar posting (3-tuple {@code [dim, RID, weight]}) coming from commit replay. */
-  private void applyScalarPostingFromReplay(final Object[] keys, final boolean add) {
-    if (keys == null || keys.length < 2)
-      return;
-    if (!(keys[0] instanceof Number nDim))
-      return;
-    if (!(keys[1] instanceof RID rid))
-      return;
-    final int dim = nDim.intValue();
-    if (add) {
-      if (keys.length < 3 || !(keys[2] instanceof Number nW))
-        return;
-      engine.put(dim, rid, nW.floatValue());
-    } else {
-      engine.remove(dim, rid);
-    }
+  /** Apply a single posting carried through commit replay via {@link SparsePostingReplayKey}. */
+  private void applyReplayPosting(final SparsePostingReplayKey key, final boolean add) {
+    if (add)
+      engine.put(key.dim(), key.rid(), key.weight());
+    else
+      engine.remove(key.dim(), key.rid());
   }
 
   // --------------------------- pure delegation below ---------------------------
@@ -662,16 +651,12 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
   // --------------------------- helpers ---------------------------
 
   /**
-   * An "original" call carries the user-supplied parallel arrays {@code (indices, weights)}.
-   * Anything else (already-expanded scalar postings coming from the transaction commit replay
-   * path, or null/empty arrays) falls through to the scalar handling.
+   * Detects a transaction-commit replay frame: a single-element {@code Object[]} whose only
+   * element is a {@link SparsePostingReplayKey}. Anything else is the original DocumentIndexer
+   * call shape (parallel arrays of indices and weights).
    */
-  private static boolean isOriginalCall(final Object[] keys) {
-    if (keys == null || keys.length != 2)
-      return false;
-    final boolean firstIsArray = keys[0] instanceof int[] || keys[0] instanceof Integer[] || keys[0] instanceof List<?>;
-    final boolean secondIsArray = keys[1] instanceof float[] || keys[1] instanceof Float[] || keys[1] instanceof List<?>;
-    return firstIsArray && secondIsArray;
+  private static boolean isReplayKey(final Object[] keys) {
+    return keys != null && keys.length == 1 && keys[0] instanceof SparsePostingReplayKey;
   }
 
   private static int[] toIntArray(final Object o) {

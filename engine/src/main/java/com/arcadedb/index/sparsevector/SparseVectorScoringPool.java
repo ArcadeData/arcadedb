@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
 import java.util.concurrent.ExecutorService;
@@ -53,13 +54,13 @@ import java.util.logging.Level;
  * returns a correct top-K. The fallback count is exposed via {@link #getPoolStats()} so
  * dashboards can surface saturation.
  * <p>
- * <b>Currently unused.</b> The {@code topK} hot path in {@link PaginatedSparseVectorEngine}
- * still runs serially - parallel dispatch is the deliverable of follow-up issue #4085. Until
- * that lands, this pool is allocated for telemetry symmetry with {@link com.arcadedb.query.QueryEngineManager}'s
- * pool (so dashboards have a "reserved scoring pool" row even before any work flows through it)
- * and the operator-facing config knobs are intentionally absent from {@code GlobalConfiguration} -
- * they will return alongside the dispatch wiring. The hardcoded defaults below are sized for the
- * common 4-8 core box; revisit when #4085 lands.
+ * <b>Wired since #4085.</b> {@code SQLFunctionVectorSparseNeighbors} fans out per-bucket
+ * {@code topK} calls onto this pool when a query targets multiple buckets (partitioned types,
+ * or types with multiple physical buckets). Within a single bucket's index the scoring still
+ * runs serially - per-segment RID-range partitioning was investigated but deferred because the
+ * absolute gain is small relative to network + serialization overhead at the latencies the
+ * serial 10M benchmark already lands at. The pool is sized through the
+ * {@link GlobalConfiguration#SPARSE_VECTOR_SCORING_POOL_THREADS} / {@code _QUEUE_SIZE} knobs.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -76,10 +77,8 @@ public final class SparseVectorScoringPool {
     static final SparseVectorScoringPool INSTANCE = new SparseVectorScoringPool();
   }
 
-  /** Default thread count: {@code max(2, available cores)}. */
+  /** Floor for the auto-sized thread count when {@code SPARSE_VECTOR_SCORING_POOL_THREADS=0}. */
   private static final int DEFAULT_THREADS_FLOOR = 2;
-  /** Default queue size: same shape as {@link com.arcadedb.query.QueryEngineManager}'s pool. */
-  private static final int DEFAULT_QUEUE_SIZE    = 1024;
 
   private final ThreadPoolExecutor executor;
   private final AtomicLong         callerRunCount       = new AtomicLong();
@@ -93,8 +92,28 @@ public final class SparseVectorScoringPool {
   private final AtomicLong         lastSaturationWarnMs = new AtomicLong(0L);
 
   private SparseVectorScoringPool() {
-    final int threads = Math.max(DEFAULT_THREADS_FLOOR, Runtime.getRuntime().availableProcessors());
-    final int queueSize = DEFAULT_QUEUE_SIZE;
+    // 0 = auto-size to available cores (with a floor of {@link #DEFAULT_THREADS_FLOOR}). Any
+    // explicit positive value wins, so an operator can pin the pool size to e.g. half the cores
+    // on a box that also runs Gremlin / Polyglot scripts that compete for CPU. Negative values
+    // are coerced to the floor for safety; the configuration validator already rejects them at
+    // GlobalConfiguration parse time, but the coercion here makes test-side bypasses safe too.
+    // A negative configured value silently falling back to a default is exactly the kind of
+    // misconfiguration that hides bad sizing - log it at WARNING so operators see something
+    // when their setting did not stick.
+    final int configuredThreads = GlobalConfiguration.SPARSE_VECTOR_SCORING_POOL_THREADS.getValueAsInteger();
+    if (configuredThreads < 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Sparse-vector scoring pool: negative configured thread count (%d), falling back to auto-size (max(%d, cores))",
+          configuredThreads, DEFAULT_THREADS_FLOOR);
+    final int threads = configuredThreads > 0
+        ? configuredThreads
+        : Math.max(DEFAULT_THREADS_FLOOR, Runtime.getRuntime().availableProcessors());
+    final int configuredQueueSize = GlobalConfiguration.SPARSE_VECTOR_SCORING_QUEUE_SIZE.getValueAsInteger();
+    if (configuredQueueSize < 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Sparse-vector scoring pool: negative configured queue size (%d), falling back to default 1024",
+          configuredQueueSize);
+    final int queueSize = configuredQueueSize > 0 ? configuredQueueSize : 1024;
     final AtomicInteger workerSeq = new AtomicInteger();
 
     final ThreadPoolExecutor pool = new ThreadPoolExecutor(
@@ -163,9 +182,10 @@ public final class SparseVectorScoringPool {
   /**
    * Snapshot of the scoring pool's load at one instant. Same shape as
    * {@link com.arcadedb.query.QueryEngineManager.PoolStats} so a single dashboard can render
-   * both. Sustained growth in {@link #callerRunFallbacks} signals that scoring is queueing
-   * faster than the pool can drain it - operator-facing sizing knobs return alongside the
-   * dispatch wiring in follow-up #4085.
+   * both. Sustained growth in {@code callerRunFallbacks} signals that scoring is queueing
+   * faster than the pool can drain it - bump
+   * {@link GlobalConfiguration#SPARSE_VECTOR_SCORING_POOL_THREADS} or
+   * {@link GlobalConfiguration#SPARSE_VECTOR_SCORING_QUEUE_SIZE} to absorb the burst.
    */
   public record PoolStats(int poolSize, int activeThreads, int queueDepth, int queueCapacityRemaining,
                           long completedTasks, long callerRunFallbacks) {

@@ -308,7 +308,7 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
     // The engine is closed; the file is still on disk. Read the segment header to find the
     // manifest page, then overwrite the manifest's last 4 bytes (CRC) with garbage. Layout
     // (defined by SparseSegmentBuilder.writeManifest): segmentId(8) + parentCount(4) +
-    // parents[parentCount * 8] + reserved(8) + reserved(8) + crc(4). With no compaction
+    // parents[parentCount * 8] + tombstoneCount(8) + reserved(8) + crc(4). With no compaction
     // history the segment has parentCount = 0, so manifest size = 28.
     final java.nio.file.Path path = java.nio.file.Path.of(segmentFilePath);
     final int manifestPageNum;

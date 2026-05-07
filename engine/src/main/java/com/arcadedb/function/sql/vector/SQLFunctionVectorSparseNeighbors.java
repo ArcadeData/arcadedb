@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.sql.vector;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -30,6 +31,7 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
 import com.arcadedb.index.sparsevector.RidScore;
+import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
@@ -40,6 +42,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * Returns the top-K nearest records by sparse-vector dot product against a {@code LSM_SPARSE_VECTOR}
@@ -58,7 +65,7 @@ import java.util.Set;
 public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.sparseNeighbors";
 
-  private static final Set<String> OPTIONS = Set.of("filter", "groupBy", "groupSize");
+  private static final Set<String> OPTIONS = Set.of("filter", "groupBy", "groupSize", "minScore");
 
   // Hard cap on the candidate pool when grouping is enabled. Same rationale as
   // SQLFunctionVectorNeighbors.MAX_FETCH_CANDIDATES: bounds memory at a few MB on pathological
@@ -90,6 +97,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     Set<RID> allowedRIDs = null;
     String groupBy = null;
     int groupSize = 1;
+    float minScore = Float.NEGATIVE_INFINITY;
     if (params.length >= 5 && params[4] != null) {
       if (params[4] instanceof Map<?, ?> rawMap) {
         final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
@@ -98,6 +106,13 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
         groupSize = opts.getInt("groupSize", 1);
         if (groupSize < 1)
           throw new CommandSQLParsingException(NAME + " groupSize must be >= 1, got " + groupSize);
+        // Range gate (Tier 4 follow-up). Drop neighbors whose score (BM25 / dot product / IDF
+        // weighted sum, higher is better) falls below {@code minScore}. The result set may be
+        // smaller than {@code k} when the threshold is tight; that is the documented contract of
+        // a range query. Post-filter on the merged BMW DAAT result.
+        minScore = (float) opts.getDouble("minScore", Double.NEGATIVE_INFINITY);
+        if (Float.isNaN(minScore))
+          throw new CommandSQLParsingException(NAME + " minScore must be a number, not NaN");
       } else {
         throw new CommandSQLParsingException(NAME + " 5th parameter must be an options map, got: " + params[4]);
       }
@@ -110,7 +125,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       throw new CommandSQLParsingException(
           "Index '" + indexSpec + "' is not a sparse vector index");
 
-    return executeWithIndexes(sparseIndexes, queryIndices, queryValues, k, allowedRIDs, groupBy, groupSize, context);
+    return executeWithIndexes(sparseIndexes, queryIndices, queryValues, k, allowedRIDs, groupBy, groupSize, minScore, context);
   }
 
   private TypeIndex resolveTypeIndex(final String indexSpec, final CommandContext context) {
@@ -177,7 +192,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
 
   private Object executeWithIndexes(final List<LSMSparseVectorIndex> indexes, final int[] queryIndices,
       final float[] queryValues, final int k, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
-      final CommandContext context) {
+      final float minScore, final CommandContext context) {
 
     // Over-fetch when grouping so the post-traversal filter has enough material to fill k groups
     // at groupSize each. Same 5x cushion and MAX_FETCH_CANDIDATES cap as `vector.neighbors`.
@@ -194,8 +209,79 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
     }
 
     final ArrayList<RidScore> merged = new ArrayList<>();
-    for (final LSMSparseVectorIndex idx : indexes)
-      merged.addAll(idx.topK(queryIndices, queryValues, fetchK, allowedRIDs));
+    if (indexes.size() <= 1) {
+      // Single bucket: no parallelism opportunity. Skip the pool dispatch overhead and run the
+      // topK on the calling thread.
+      for (final LSMSparseVectorIndex idx : indexes)
+        merged.addAll(idx.topK(queryIndices, queryValues, fetchK, allowedRIDs));
+    } else {
+      // Multi-bucket fan-out (#4085). Per-bucket sub-indexes are independent: different buckets
+      // contain disjoint RID ranges, so per-bucket top-K calls have no shared mutable state and
+      // need no coordination. Submit each call to the dedicated SparseVectorScoringPool and gather
+      // results. The pool's CallerRuns rejection policy guarantees the call always completes -
+      // worst case it runs inline on the submitter thread, which is exactly the serial fallback.
+      final ExecutorService pool = SparseVectorScoringPool.getInstance().getExecutorService();
+      final List<Future<List<RidScore>>> futures = new ArrayList<>(indexes.size());
+      for (final LSMSparseVectorIndex idx : indexes)
+        futures.add(pool.submit(() -> idx.topK(queryIndices, queryValues, fetchK, allowedRIDs)));
+      // Drain ALL futures even when one fails: a partial drain leaves the still-running tasks
+      // contending for index I/O after the caller has moved on. Collect the per-future errors,
+      // attach the rest as suppressed, then throw the first. On interrupt, cancel outstanding work
+      // so we do not pay for compute we will never observe.
+      // <p>
+      // Single deadline across the whole fan-out: caps the total wall-clock at
+      // SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS regardless of bucket count. A per-future timeout
+      // would let N wedged buckets accumulate up to N * timeoutSeconds before the caller sees an
+      // error (e.g. 16 buckets * 30s = 8-minute hang for a deadlocked compaction). The deadline
+      // approach keeps the worst case at a single timeoutSeconds. timeoutSeconds <= 0 disables
+      // the deadline entirely (untimed gets); not recommended in production.
+      final int timeoutSeconds = GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getValueAsInteger();
+      final long deadlineNs = timeoutSeconds > 0
+          ? System.nanoTime() + TimeUnit.SECONDS.toNanos(timeoutSeconds)
+          : Long.MAX_VALUE;
+      final List<Throwable> errors = new ArrayList<>();
+      for (final Future<List<RidScore>> f : futures) {
+        try {
+          final List<RidScore> partial;
+          if (timeoutSeconds <= 0) {
+            partial = f.get();
+          } else {
+            // Compute the remaining budget for this future from the shared deadline; if zero or
+            // negative the deadline has already passed and we treat this as a timeout without
+            // even attempting to await.
+            final long remainingNs = deadlineNs - System.nanoTime();
+            if (remainingNs <= 0L)
+              throw new TimeoutException("deadline elapsed before draining future");
+            partial = f.get(remainingNs, TimeUnit.NANOSECONDS);
+          }
+          merged.addAll(partial);
+        } catch (final InterruptedException ie) {
+          Thread.currentThread().interrupt();
+          for (final Future<?> other : futures)
+            other.cancel(true);
+          throw new RuntimeException("Interrupted during sparse-vector top-K fan-out", ie);
+        } catch (final TimeoutException te) {
+          // Cancel every still-pending future so the pool stops working on results we will not
+          // observe. The cancelled-from-the-pool task may still throw an InterruptedException
+          // inside its IO; we don't await those (cancel(true) returns immediately).
+          for (final Future<?> other : futures)
+            other.cancel(true);
+          throw new RuntimeException("Sparse-vector top-K fan-out timed out after "
+              + timeoutSeconds + "s (configurable via "
+              + GlobalConfiguration.SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS.getKey() + ")", te);
+        } catch (final ExecutionException ee) {
+          errors.add(ee.getCause() != null ? ee.getCause() : ee);
+        }
+      }
+      if (!errors.isEmpty()) {
+        final Throwable first = errors.getFirst();
+        final RuntimeException toThrow = first instanceof RuntimeException re ? re
+            : new RuntimeException("Sparse-vector top-K fan-out failed", first);
+        for (int i = 1; i < errors.size(); i++)
+          toThrow.addSuppressed(errors.get(i));
+        throw toThrow;
+      }
+    }
 
     merged.sort((a, b) -> Float.compare(b.score(), a.score()));
 
@@ -210,6 +296,11 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       } else if (groups.isFull()) {
         break;
       }
+
+      // Range gate. merged is sorted by score descending, so once we observe the first neighbor
+      // whose score is below minScore, every subsequent one will too - break out of the loop.
+      if (neighbor.score() < minScore)
+        break;
 
       final Document record;
       try {

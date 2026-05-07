@@ -239,6 +239,79 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     return narrowed;
   }
 
+  /**
+   * Reads the {@code @rid} of a candidate row produced by an upstream sparse / dense / fuse
+   * vector pipeline. Accepts the three shapes those pipelines emit interchangeably:
+   * a {@link Map} with an {@code @rid} or {@code rid} entry, a {@link com.arcadedb.query.sql.executor.Result}
+   * with the same fields or with {@code Result#getIdentity()} set, or a bare {@link Identifiable}.
+   * Returns {@code null} when no recognisable RID is present so callers can skip the row instead of
+   * throwing on an unfamiliar shape.
+   * <p>
+   * Centralised here so the four reranker functions ({@code vector.mmr}, {@code vector.recommend},
+   * {@code vector.discover}, {@code vector.rerank} - and {@code vector.boost} via its source-row
+   * iteration) share one canonical implementation. Diverging copies in earlier patches drifted
+   * silently (e.g. one variant did not check {@code Result#getIdentity()}); a single helper makes
+   * those drifts impossible.
+   */
+  protected static RID extractRidFromRow(final Object row) {
+    if (row == null)
+      return null;
+    if (row instanceof Map<?, ?> m) {
+      Object v = m.get("@rid");
+      if (v == null) v = m.get("rid");
+      if (v instanceof RID r) return r;
+      if (v instanceof Identifiable id) return id.getIdentity();
+      return null;
+    }
+    if (row instanceof com.arcadedb.query.sql.executor.Result r) {
+      if (r.getIdentity().isPresent())
+        return r.getIdentity().get();
+      Object v = r.getProperty("@rid");
+      if (v == null) v = r.getProperty("rid");
+      if (v instanceof RID rid) return rid;
+      if (v instanceof Identifiable id) return id.getIdentity();
+      return null;
+    }
+    if (row instanceof Identifiable id)
+      return id.getIdentity();
+    return null;
+  }
+
+  /**
+   * Reads a candidate row's similarity score, with the same auto-flip rules as
+   * {@link SQLFunctionVectorFuse#extractScore}: prefer {@code score} or {@code $score}
+   * (similarity-shaped, higher = better), fall back to the negated {@code distance} field that
+   * {@code vector.neighbors} emits (distance-shaped, lower = better - we flip the sign so the
+   * rest of the pipeline can assume one direction). Returns {@link Float#NaN} when no recognisable
+   * score field is present so callers can either skip the row or treat NaN as "missing score".
+   * <p>
+   * Critical: every reranker function that consumes vector function output MUST go through this
+   * helper, not its own variant. A bare-{@code score}-only extractor will silently drop every row
+   * piped in from {@code vector.neighbors} (which emits {@code distance}) - exactly the
+   * silent-data-loss bug the consolidation was meant to prevent.
+   */
+  protected static float extractScoreFromRow(final Object row) {
+    if (row instanceof Map<?, ?> m) {
+      final Object score = m.get("score");
+      if (score instanceof Number n) return n.floatValue();
+      final Object dollar = m.get("$score");
+      if (dollar instanceof Number n) return n.floatValue();
+      final Object distance = m.get("distance");
+      if (distance instanceof Number n) return -n.floatValue();
+      return Float.NaN;
+    }
+    if (row instanceof com.arcadedb.query.sql.executor.Result r) {
+      final Object score = r.getProperty("score");
+      if (score instanceof Number n) return n.floatValue();
+      final Object dollar = r.getProperty("$score");
+      if (dollar instanceof Number n) return n.floatValue();
+      final Object distance = r.getProperty("distance");
+      if (distance instanceof Number n) return -n.floatValue();
+      return Float.NaN;
+    }
+    return Float.NaN;
+  }
+
   protected static Set<RID> parseRidFilter(final List<?> items, final String functionName, final CommandContext context) {
     if (items == null || items.isEmpty())
       return null;

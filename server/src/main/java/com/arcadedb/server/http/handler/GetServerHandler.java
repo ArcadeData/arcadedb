@@ -22,6 +22,7 @@ import com.arcadedb.Constants;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.Profiler;
+import com.arcadedb.index.sparsevector.LSMSparseVectorIndexMetrics;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
@@ -206,6 +207,12 @@ public class GetServerHandler extends AbstractServerHttpHandler {
     // cumulative count and downstream tools (Prometheus rate(), etc.) can derive a rate.
     metricsJSON.put("executors", buildExecutorsJSON(registry));
 
+    // PER-INDEX SPARSE VECTOR COUNTERS. One row per logical TypeIndex aggregated across all
+    // per-bucket sub-indexes; surfaced on the Studio Server tab so operators can see compaction
+    // lag (memtable not draining) and segment-count growth without log-grepping. The shape is
+    // {dbName: {indexName: {memtablePostings, segmentCount, totalPostings}}}.
+    metricsJSON.put("sparseVectorIndexes", buildSparseVectorIndexesJSON());
+
     int serverEventsSummaryErrors = 0;
     int serverEventsSummaryWarnings = 0;
     int serverEventsSummaryInfo = 0;
@@ -313,6 +320,47 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       value = class1.getName();
 
     return value;
+  }
+
+  /**
+   * Walks every open server database and emits one entry per database whose value is the
+   * {@link LSMSparseVectorIndexMetrics#buildJSON} snapshot for that database. Databases without
+   * any sparse-vector index produce an empty inner object - Studio hides the card when the
+   * outer object is empty (no databases have any sparse indexes).
+   * <p>
+   * Per-database lookups are guarded so that a database being concurrently dropped (and
+   * therefore throwing on {@code getDatabase(name)}) cannot fail the entire {@code /server}
+   * metrics response. The skipped row is logged at {@code FINE} so the next scrape, when the
+   * database is either fully back or fully gone, has a clean signal again.
+   * <p>
+   * <b>Cost.</b> Called on every {@code /api/v1/server} scrape; cost is O(databases * indexes)
+   * with each index contributing a constant-time read of three counters
+   * ({@link com.arcadedb.index.sparsevector.PaginatedSparseVectorEngine#totalPostings} etc.). At
+   * Studio's default poll interval and typical deployments (a handful of databases each with a
+   * handful of sparse indexes) the cost is negligible. Future caching could amortize it on
+   * deployments with thousands of indexes per database; not worth the staleness budget today.
+   */
+  private JSONObject buildSparseVectorIndexesJSON() {
+    final JSONObject byDatabase = new JSONObject();
+    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
+      try {
+        // Use the {@code allowLoad=false} variant so a database that was unloaded between
+        // getDatabaseNames() and getDatabase() does NOT get re-opened by the metrics scrape.
+        // Forcing a load on every poll would convert {@code /server} into a database-open
+        // workload at Studio's poll cadence; the metrics card legitimately has no opinion on
+        // databases that are not currently in memory.
+        final ServerDatabase db = httpServer.getServer().getDatabase(dbName, false, false);
+        final JSONObject indexes = LSMSparseVectorIndexMetrics.buildJSON(db);
+        if (indexes.length() > 0)
+          byDatabase.put(dbName, indexes);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.FINE,
+            "Skipping sparse-vector metrics for database '%s' (likely being dropped, reopened, or "
+                + "concurrently unloaded): %s",
+            dbName, e.getMessage());
+      }
+    }
+    return byDatabase;
   }
 
   /**

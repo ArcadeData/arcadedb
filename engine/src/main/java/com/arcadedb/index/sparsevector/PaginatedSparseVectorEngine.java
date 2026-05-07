@@ -78,6 +78,37 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   static final long DEFAULT_MEMTABLE_FLUSH_THRESHOLD = 1_000_000L;
 
   /**
+   * Backpressure factor: once {@code memtable.totalPostings() >= memtableFlushThreshold * factor},
+   * {@link #put} briefly waits on {@link #mutatorLock} so any in-progress flush has a chance to
+   * swap the memtable out before we add another posting to it. <b>Soft block, not a rejection</b>:
+   * the put always eventually proceeds; the wait is bounded by the in-progress flush duration (or
+   * is essentially free when no flush is running). This is the backpressure described in
+   * {@code docs/sparse-vector-storage-design.md} ("Risks - Memtable pressure under high write
+   * rate"): with the soft trigger ({@code maybeFlush}) firing per commit, sustained write rate
+   * exceeding flush rate would otherwise let the memtable grow unbounded between flushes and
+   * eventually OOM. We deliberately do <i>not</i> call {@link #flush} from {@code put}: the
+   * commit-replay path runs inside an outer {@code database.transaction(...)}, and a nested
+   * transaction in the flush path would deadlock or corrupt state. Letting {@code maybeFlush}
+   * (post-commit callback) drive flushes keeps the call site safe; the soft-block here just
+   * ensures puts don't outrun those flushes.
+   * <p>
+   * <b>No hard cap; OOM risk under maybeFlush starvation.</b> The check-then-lock dance is not
+   * atomic: if a flush is in flight the put queues behind it, but if the lock is uncontended
+   * (no flush running) the put proceeds even when the memtable has already crossed the
+   * threshold. So a workload that writes faster than the post-commit {@code maybeFlush}
+   * callback can drain - typically because the {@code DatabaseAsyncExecutor} pool is saturated
+   * by other work and the callback is queued, or because flushes are themselves slow on a
+   * write-amplifying compaction cycle - can grow the memtable to {@code k * flushThreshold} for
+   * arbitrary {@code k}, and eventually OOM. There is no hard rejection path here. Operators
+   * monitoring {@code memtablePostings} on the Studio Server tab should treat sustained values
+   * past {@code 2 * flushThreshold} as a signal to investigate flush throughput, not as a
+   * "backpressure absorbed it" event. A genuine hard cap (rejecting writes) would require
+   * surfacing the rejection through the wrapper's commit pipeline; that is intentionally not in
+   * this PR.
+   */
+  static final long MEMTABLE_BACKPRESSURE_FACTOR = 2L;
+
+  /**
    * Size-tiered compaction parameters. After a successful {@link #flush()} the engine groups
    * active segments into geometric tiers by posting count and, if any tier has at least
    * {@link #DEFAULT_TIER_FANOUT} segments, merges that tier's oldest {@code fanout} segments
@@ -102,10 +133,35 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   static final long DEFAULT_TIER_BASE_POSTINGS = DEFAULT_MEMTABLE_FLUSH_THRESHOLD;
 
+  /**
+   * Tombstone-ratio threshold for the secondary compaction trigger (Tier 2 follow-up to #4068).
+   * If size-tiered compaction has not picked up a segment but at least one segment carries
+   * {@code tombstones / totalPostings >= TOMBSTONE_RATIO_TRIGGER}, the gate falls through to a
+   * file-count-bounded compaction that includes the high-tombstone segment plus enough older
+   * neighbors (up to {@link #DEFAULT_TIER_FANOUT}) to merge them into one. This is what
+   * eventually drains delete-heavy indexes whose segments would otherwise never grow into the
+   * next tier and accumulate tombstones forever. The merge runs with
+   * {@code dropAllTombstones=false} so the user-visible state is preserved exactly: tombstones
+   * with a matching insert in an OLDER segment outside the input set still shadow that insert
+   * after the merge. The win is purely in segment count (multi-segment-with-tombstones collapse
+   * into one, BMW DAAT pays a smaller per-query merge cost).
+   * <p>
+   * <b>Legacy segments.</b> Segments built before the manifest gained a
+   * {@code totalTombstones} slot read 0L for their tombstone count and are therefore never
+   * picked by this trigger - even if their actual on-disk tombstone ratio is high. There is no
+   * automatic migration: rebuilding the count would require an O(dims) trailer scan per legacy
+   * segment on first open, which is not free for high-vocab corpora. Operators on a database
+   * that pre-dates this commit and that historically saw a delete-heavy workload should run
+   * {@code REBUILD INDEX <name>} once to compact every segment into a fresh size-tiered shape;
+   * subsequent flushes write the new manifest slot and the trigger applies normally.
+   */
+  static final double TOMBSTONE_RATIO_TRIGGER = 0.30;
+
   private final DatabaseInternal  database;
   private final String            indexName;
   private final SegmentParameters params;
   private final long              memtableFlushThreshold;
+  private final long              memtableBackpressureThreshold;
   private final int               tierFanout;
   private final long              tierBasePostings;
 
@@ -156,6 +212,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     this.indexName = indexName;
     this.params = params;
     this.memtableFlushThreshold = memtableFlushThreshold;
+    this.memtableBackpressureThreshold = Math.multiplyExact(memtableFlushThreshold, MEMTABLE_BACKPRESSURE_FACTOR);
     this.tierFanout = tierFanout;
     this.tierBasePostings = tierBasePostings;
     loadExistingSegments();
@@ -190,6 +247,13 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   public void put(final int dim, final RID rid, final float weight) {
     ensureOpen();
+    // Advisory backpressure - yields to a concurrent flush so the put lands in the swapped-out
+    // memtable when one is in flight, but does NOT block until the memtable drops below the
+    // threshold. After the lock release, the put adds to the (still possibly oversized) current
+    // memtable. The advisory shape is intentional: a hard block here would risk a nested-transaction
+    // deadlock (the commit-replay path runs inside an outer transaction). See
+    // {@link #applyBackpressureIfNeeded} for the full design rationale.
+    applyBackpressureIfNeeded();
     memtable.get().put(dim, rid, weight);
   }
 
@@ -211,7 +275,45 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   public void remove(final int dim, final RID rid) {
     ensureOpen();
+    // Advisory backpressure - same contract as in {@link #put}: yields to a concurrent flush but
+    // does not hard-block.
+    applyBackpressureIfNeeded();
     memtable.get().remove(dim, rid);
+  }
+
+  /**
+   * Backpressure hook for {@link #put} and {@link #remove}. When the memtable has accumulated
+   * more than {@link #memtableBackpressureThreshold} live entries and a flush is in flight (i.e.
+   * another thread holds {@link #mutatorLock}), the calling thread briefly joins the lock queue
+   * so its write happens after the in-progress flush has swapped the memtable.
+   * <p>
+   * <b>Advisory only - no-op when no flush is running.</b> The lock take/release is essentially
+   * free when uncontended, so a put past the threshold proceeds immediately if no flush is in
+   * flight. The mechanism only resists writes that race a concurrent flush; it does not block
+   * writes that simply outpace the per-commit {@link #maybeFlush} callback (e.g. when the
+   * post-commit callback is delayed by {@code DatabaseAsyncExecutor} pool saturation).
+   * <p>
+   * <b>Capacity planning.</b> The threshold is {@code MEMTABLE_BACKPRESSURE_FACTOR (=2) *
+   * memtableFlushThreshold}. In an extreme write burst where flush latency exceeds the time to
+   * add another {@code memtableFlushThreshold} postings, the memtable can transiently exceed
+   * {@code 2 * memtableFlushThreshold} entries before the next post-commit callback drains it.
+   * Sized your {@code memtableFlushThreshold} so that {@code 2x * postingBytes} fits comfortably
+   * in heap with the worst-case concurrent transaction count.
+   * <p>
+   * Without this, sustained write rate exceeding flush rate would let the memtable grow
+   * unbounded between {@link #maybeFlush} calls, and eventually OOM. See
+   * {@link #MEMTABLE_BACKPRESSURE_FACTOR} for the design rationale.
+   */
+  private void applyBackpressureIfNeeded() {
+    if (memtable.get().totalPostings() < memtableBackpressureThreshold)
+      return;
+    // Wait for any in-progress flush (or the next one to take the lock if maybeFlush is queued)
+    // to publish its memtable swap. Re-entrant: if this thread is already inside a flush() on
+    // the same engine (e.g. a future caller invokes put() from a flush sub-callback), the
+    // ReentrantLock just bumps the hold count and immediately decrements it on unlock; the outer
+    // flush retains the lock throughout - no deadlock, no unintended early release.
+    mutatorLock.lock();
+    mutatorLock.unlock();
   }
 
   // --- reads ----------------------------------------------------------------
@@ -425,8 +527,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         final int t = tierOf(r.totalPostings());
         byTier.computeIfAbsent(t, k -> new ArrayList<>()).add(r);
       }
-      // Pick the lowest-tier overflow first so write amplification stays minimal: small inputs
-      // means cheap merge.
+      // Primary trigger: pick the lowest-tier overflow first so write amplification stays minimal.
       final int[] sortedTiers = byTier.keySet().stream().mapToInt(Integer::intValue).sorted().toArray();
       for (final int t : sortedTiers) {
         final List<PaginatedSegmentReader> sameTier = byTier.get(t);
@@ -435,7 +536,50 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         sameTier.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
         return sameTier.subList(0, tierFanout).toArray(new PaginatedSegmentReader[0]);
       }
-      return null;
+      // Secondary trigger: tombstone-ratio cleanup. A delete-heavy index where segments never
+      // grow into the next tier would otherwise accumulate small tombstone-rich segments that BMW
+      // DAAT must still walk on every query. Once the corpus has at least {@code tierFanout}
+      // segments AND at least one of them is past {@link #TOMBSTONE_RATIO_TRIGGER}, pick that
+      // segment plus its (fanout - 1) oldest neighbors so the merge collapses file count.
+      // Gating on {@code active.length >= tierFanout} (already enforced by the early return above)
+      // prevents the 2-segment ping-pong where every flush re-merges the same pair.
+      PaginatedSegmentReader heaviestTombstoneSeg = null;
+      double heaviestRatio = 0.0;
+      for (final PaginatedSegmentReader r : active) {
+        final long total = r.totalPostings();
+        if (total <= 0L)
+          continue;
+        final double ratio = (double) r.tombstoneCount() / (double) total;
+        if (ratio >= TOMBSTONE_RATIO_TRIGGER && ratio > heaviestRatio) {
+          heaviestTombstoneSeg = r;
+          heaviestRatio = ratio;
+        }
+      }
+      if (heaviestTombstoneSeg == null)
+        return null;
+      // Pair the high-tombstone segment with the (fanout - 1) oldest neighbors so newest-wins
+      // precedence inside mergeIntoBuilder lines up with on-disk order.
+      // <p>
+      // Tier mixing here is intentional: the trigger's goal is file-count reduction (drain the
+      // delete-heavy index of small tombstone-rich segments BMW DAAT must walk on every query),
+      // not the write-amplification minimisation that the primary size-tiered branch optimises
+      // for. Pulling the oldest neighbors regardless of tier is a single-pass collapse; the next
+      // flush will rebalance the tier distribution naturally.
+      final List<PaginatedSegmentReader> all = new ArrayList<>(active.length);
+      all.addAll(Arrays.asList(active));
+      all.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+      final List<PaginatedSegmentReader> picked = new ArrayList<>(tierFanout);
+      final long heavyId = heaviestTombstoneSeg.segmentId();
+      picked.add(heaviestTombstoneSeg);
+      for (final PaginatedSegmentReader r : all) {
+        if (picked.size() >= tierFanout)
+          break;
+        if (r.segmentId() == heavyId)
+          continue;
+        picked.add(r);
+      }
+      picked.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
+      return picked.toArray(new PaginatedSegmentReader[0]);
     });
   }
 
@@ -611,6 +755,18 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       out[i] = active[i].segmentId();
     Arrays.sort(out);
     return out;
+  }
+
+  /**
+   * Test-only accessor for the engine's mutator lock. Used by the backpressure regression test
+   * to exercise the soft-block path: the test takes the lock from a worker thread to simulate an
+   * in-flight flush, then verifies that a put past the threshold blocks until release. Reflection
+   * was the previous workaround; a typed package-private accessor keeps the field name from
+   * leaking into test code that would otherwise silently break on a rename. The lock is fully
+   * encapsulated for production: nothing on the public API exposes it.
+   */
+  ReentrantLock mutatorLockForTest() {
+    return mutatorLock;
   }
 
   // --- lifecycle ------------------------------------------------------------

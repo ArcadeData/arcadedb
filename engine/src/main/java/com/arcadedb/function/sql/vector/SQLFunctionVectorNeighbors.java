@@ -52,7 +52,7 @@ import java.util.Set;
 public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.neighbors";
 
-  private static final Set<String> OPTIONS = Set.of("efSearch", "filter", "groupBy", "groupSize");
+  private static final Set<String> OPTIONS = Set.of("efSearch", "filter", "groupBy", "groupSize", "maxDistance");
 
   // Hard cap on the candidate pool the index is asked to materialize when grouping is enabled.
   // Prevents memory exhaustion on pathological combinations of `k` and `groupSize` (e.g. k=1000,
@@ -87,6 +87,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     Set<RID> allowedRIDs = null;
     String groupBy = null;
     int groupSize = 1;
+    float maxDistance = Float.POSITIVE_INFINITY;
 
     if (params.length >= 4 && params[3] != null) {
       if (params[3] instanceof Map<?, ?> rawMap) {
@@ -97,6 +98,16 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
         groupSize = opts.getInt("groupSize", 1);
         if (groupSize < 1)
           throw new CommandSQLParsingException(NAME + " groupSize must be >= 1, got " + groupSize);
+        // Range-search gate (Tier 4 follow-up). Drop neighbors whose distance is strictly greater
+        // than {@code maxDistance}; the result set may legitimately be smaller than {@code limit}
+        // when the threshold is tight, which is the documented contract of a range-style query.
+        // The check is a post-filter on top of the regular HNSW top-K - JVector's HNSW does not
+        // expose a native range mode, so we still pay for the K candidates the index returns;
+        // setting a generous {@code limit} alongside a tight {@code maxDistance} matches the
+        // intent (radius search bounded by an outer cap).
+        maxDistance = (float) opts.getDouble("maxDistance", Double.POSITIVE_INFINITY);
+        if (Float.isNaN(maxDistance))
+          throw new CommandSQLParsingException(NAME + " maxDistance must be a number, not NaN");
       } else if (params[3] instanceof Number n) {
         efSearch = n.intValue();
       } else {
@@ -115,7 +126,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       // Assume it's just an index name
       final Index directIndex = context.getDatabase().getSchema().getIndexByName(indexSpec);
       if (directIndex instanceof TypeIndex typeIndex) {
-        return executeWithTypeIndex(typeIndex, null, key, limit, efSearch, allowedRIDs, groupBy, groupSize, context);
+        return executeWithTypeIndex(typeIndex, null, key, limit, efSearch, allowedRIDs, groupBy, groupSize, maxDistance, context);
       }
       throw new CommandSQLParsingException(
           "Index '" + indexSpec + "' is not a vector index (found: " + (directIndex != null ? directIndex.getClass().getSimpleName() : "null") + ")");
@@ -147,12 +158,12 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // results consistent with the WHERE.
     allowedBucketIds = narrowAllowedBucketIdsByPartitionHint(allowedBucketIds, specifiedTypeName, context);
 
-    return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, allowedRIDs, groupBy, groupSize, context);
+    return executeWithTypeIndex(typeIndex, allowedBucketIds, key, limit, efSearch, allowedRIDs, groupBy, groupSize, maxDistance, context);
   }
 
   private Object executeWithTypeIndex(final TypeIndex typeIndex, final IntHashSet allowedBucketIds, final Object key,
       final int limit, final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
-      final CommandContext context) {
+      final float maxDistance, final CommandContext context) {
     final var bucketIndexes = typeIndex.getIndexesOnBuckets();
     if (bucketIndexes == null || bucketIndexes.length == 0) {
       throw new CommandSQLParsingException("Index '" + typeIndex.getName() + "' has no bucket indexes");
@@ -178,7 +189,7 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     }
 
     // Search across all matching vector indexes and merge results
-    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, allowedRIDs, groupBy, groupSize, context);
+    return executeWithLSMVectorIndexes(vectorIndexes, key, limit, efSearch, allowedRIDs, groupBy, groupSize, maxDistance, context);
   }
 
   /**
@@ -189,9 +200,14 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * top-{@code limit} <em>groups</em> are returned, each capped at {@code groupSize} rows. Best-effort:
    * fewer groups may be returned if the candidate pool runs out before {@code limit} groups are filled,
    * in which case raising the index's {@code efSearch} option improves coverage.
+   * <p>
+   * <b>Parameter sprawl</b> (8 positional args). Each new option that lands here adds another
+   * parameter. The next addition should refactor to a {@code VectorSearchOptions} record - keeping
+   * it positional for now to minimise the blast radius of the maxDistance / Tier 4 follow-ups.
    */
   private Object executeWithLSMVectorIndexes(final List<LSMVectorIndex> vectorIndexes, final Object key, final int limit,
-      final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize, final CommandContext context) {
+      final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,
+      final float maxDistance, final CommandContext context) {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.get(0), context);
 
@@ -239,6 +255,12 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       } else if (groups.isFull()) {
         break;
       }
+
+      // Range gate. allNeighbors is already sorted by distance ascending, so once we observe the
+      // first neighbor whose distance exceeds maxDistance, every following one will too - break
+      // the whole loop instead of just continuing.
+      if (neighbor.getSecond() > maxDistance)
+        break;
 
       final RID rid = neighbor.getFirst();
       final Document record;

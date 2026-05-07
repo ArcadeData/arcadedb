@@ -313,6 +313,36 @@ function displayMetrics() {
     executorsHtml += "</tr>";
   }
   $("#srvMetricExecutorsTable").html(executorsHtml || "<tr><td colspan='6' class='text-muted text-center'>No executor pool metrics available.</td></tr>");
+
+  // Sparse Vector Indexes table - rendered from metrics.sparseVectorIndexes. Shape:
+  //   { dbName: { typeIndexName: { memtablePostings, segmentCount, totalPostings } } }
+  // The card is hidden when no database has any sparse-vector indexes (the common case for
+  // installs that don't use LSM_SPARSE_VECTOR), so it doesn't take up real estate by default.
+  var spIdx = serverData.metrics.sparseVectorIndexes || {};
+  var spDbNames = Object.keys(spIdx).sort();
+  var spHtml = "";
+  for (var i = 0; i < spDbNames.length; i++) {
+    var dbName = spDbNames[i];
+    var indexes = spIdx[dbName] || {};
+    var indexNames = Object.keys(indexes).sort();
+    for (var j = 0; j < indexNames.length; j++) {
+      var idxName = indexNames[j];
+      var entry = indexes[idxName] || {};
+      spHtml += "<tr>";
+      spHtml += "<td>" + escapeHtml(dbName) + "</td>";
+      spHtml += "<td><code>" + escapeHtml(idxName) + "</code></td>";
+      spHtml += "<td class='text-end'>" + Math.round(entry.memtablePostings || 0).toLocaleString() + "</td>";
+      spHtml += "<td class='text-end'>" + Math.round(entry.segmentCount || 0).toLocaleString() + "</td>";
+      spHtml += "<td class='text-end'>" + Math.round(entry.totalPostings || 0).toLocaleString() + "</td>";
+      spHtml += "</tr>";
+    }
+  }
+  if (spHtml === "") {
+    $("#srvSparseVectorCard").hide();
+  } else {
+    $("#srvMetricSparseVectorTable").html(spHtml);
+    $("#srvSparseVectorCard").show();
+  }
 }
 
 function updateServerSetting(key, value) {
