@@ -27,6 +27,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.SetClause;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -211,10 +212,11 @@ public class SetStep extends AbstractExecutionStep {
     if (mutableDoc != doc && variableToUpdate != null)
       ((ResultInternal) result).setProperty(variableToUpdate, mutableDoc);
 
-    final Object value = evaluator.evaluate(item.getValueExpression(), result, context);
+    Object value = evaluator.evaluate(item.getValueExpression(), result, context);
     if (value == null)
       mutableDoc.remove(item.getProperty());
     else {
+      value = TemporalUtil.toCoreJavaType(value);
       validatePropertyValue(value);
       mutableDoc.set(item.getProperty(), value);
     }
@@ -257,7 +259,7 @@ public class SetStep extends AbstractExecutionStep {
     // Set new properties from map (skip null values - they mean "remove")
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
       if (entry.getValue() != null)
-        mutableDoc.set(entry.getKey(), entry.getValue());
+        mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
     }
 
     mutableDoc.save();
@@ -290,7 +292,7 @@ public class SetStep extends AbstractExecutionStep {
       if (entry.getValue() == null)
         mutableDoc.remove(entry.getKey());
       else
-        mutableDoc.set(entry.getKey(), entry.getValue());
+        mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
     }
 
     mutableDoc.save();

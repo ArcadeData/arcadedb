@@ -25,6 +25,9 @@ import java.time.temporal.IsoFields;
 import java.time.temporal.Temporal;
 import java.time.temporal.TemporalAdjusters;
 import java.time.temporal.WeekFields;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -371,6 +374,61 @@ public final class TemporalUtil {
     else
       nanos += defaultNanos % 1_000;
     return nanos;
+  }
+
+  /**
+   * Convert a Cypher temporal value (or a collection/array containing temporal values) to a form
+   * that ArcadeDB can serialize.
+   *
+   * CypherDateTime is kept as its ISO-8601 string representation (not unwrapped to ZonedDateTime)
+   * so that: (a) untyped properties store it as TYPE_STRING, preserving timezone info for
+   * later component access via PropertyAccessExpression.convertFromStorage(); and (b) for
+   * schema-typed DATETIME properties, Type.convert() parses the string into the target Java type
+   * (timezone is dropped on a LocalDateTime target, matching the SQL sysdate() semantics).
+   *
+   * Non-temporal scalars and collections of non-temporal scalars are returned unchanged.
+   */
+  public static Object toCoreJavaType(final Object value) {
+    if (value == null || value instanceof Number || value instanceof String || value instanceof Boolean)
+      return value;
+
+    if (value instanceof CypherDateTime dt)
+      return dt.toString();
+    if (value instanceof CypherDate d)
+      return d.getValue();
+    if (value instanceof CypherLocalDateTime ldt)
+      return ldt.getValue();
+    if (value instanceof CypherLocalTime lt)
+      return lt.getValue().toString();
+    if (value instanceof CypherTime t)
+      return t.getValue().toString();
+    if (value instanceof CypherDuration dur)
+      return dur.toString();
+
+    // Recurse into collections - skip when first element is a non-temporal scalar (vector embeddings, etc.)
+    if (value instanceof Collection<?> collection) {
+      if (collection.isEmpty())
+        return value;
+      final Object first = collection.iterator().next();
+      if (first instanceof Number || first instanceof String || first instanceof Boolean)
+        return value;
+      final List<Object> converted = new ArrayList<>(collection.size());
+      for (final Object item : collection)
+        converted.add(toCoreJavaType(item));
+      return converted;
+    }
+    if (value instanceof Object[] array) {
+      if (array.length == 0)
+        return value;
+      if (array[0] instanceof Number || array[0] instanceof String || array[0] instanceof Boolean)
+        return value;
+      final Object[] converted = new Object[array.length];
+      for (int i = 0; i < array.length; i++)
+        converted[i] = toCoreJavaType(array[i]);
+      return converted;
+    }
+
+    return value;
   }
 
   private static boolean isTimeOnly(final CypherTemporalValue val) {
