@@ -119,6 +119,10 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException(NAME + " overfetch budget exceeded: k=" + k
           + ", overfetch=" + overfetchFactor + " would request " + candidatePoolL
           + " candidates (cap " + MAX_OVERFETCH_K + ")");
+    // Unreachable today (MAX_OVERFETCH_K = 100k is well below Integer.MAX_VALUE) but kept as a
+    // self-documenting safety net that catches the only condition under which the cast below
+    // could lose precision: a future operator raises MAX_OVERFETCH_K above 2^31. Removing it
+    // would require a code-review re-audit at that point.
     if (candidatePoolL > Integer.MAX_VALUE)
       throw new CommandSQLParsingException(NAME + " candidate pool size " + candidatePoolL
           + " exceeds Integer.MAX_VALUE; reduce k or overfetch");
@@ -156,6 +160,15 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     // region of the embedding space where pos vectors dominate. Not the optimisation target of
     // discovery scoring (that's the per-pair-margin sum we apply post-fetch), but a reasonable
     // proxy for "where do positive examples cluster".
+    // <p>
+    // <b>Magnitude.</b> The seed is a sum of differences and does not have a particular norm.
+    // For COSINE indexes (the default for sparse + most dense vector deployments) JVector's
+    // similarity is invariant to the query vector's magnitude, so the unnormalised seed produces
+    // the same candidate ranking as a normalised one. For DOT_PRODUCT and EUCLIDEAN indexes the
+    // magnitude does matter, but a "blend pos and neg directions weighted by their per-pair
+    // margins" semantic is what we intend - normalising would erase the intentional emphasis on
+    // pairs whose positive/negative examples are far apart. We therefore deliberately do NOT
+    // normalise the seed; downstream KNN sees the difference vector as-is.
     final float[] seedVector = new float[expectedDim];
     for (final float[][] pair : resolvedPairs) {
       for (int i = 0; i < expectedDim; i++)
@@ -175,6 +188,8 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     // Re-rank the candidate pool by per-pair margin sum. Skip example RIDs.
     final HashSet<RID> exampleRids = new HashSet<>(embeddingCache.keySet());
     final ArrayList<Scored> rescored = new ArrayList<>(rawList.size());
+    int candidatesScanned = 0;
+    int candidatesMissingEmbedding = 0;
     for (final Object row : rawList) {
       if (!(row instanceof Map<?, ?> m))
         continue;
@@ -185,24 +200,41 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
       else continue;
       if (exampleRids.contains(rid))
         continue;
+      candidatesScanned++;
       // The vector.neighbors output already includes the candidate's record; read the embedding
       // off the projected map directly to skip a redundant lookupByRID.
       final Object embeddingObj = m.get(propertyName);
-      if (embeddingObj == null)
+      if (embeddingObj == null) {
+        candidatesMissingEmbedding++;
         continue;
+      }
       final float[] cVec;
       try {
         cVec = toFloatArray(embeddingObj);
       } catch (final RuntimeException ignored) {
+        candidatesMissingEmbedding++;
         continue;
       }
-      if (cVec.length != expectedDim)
+      if (cVec.length != expectedDim) {
+        candidatesMissingEmbedding++;
         continue;
+      }
       float score = 0.0f;
       for (final float[][] pair : resolvedPairs)
         score += VectorUtils.cosineSimilarity(cVec, pair[0]) - VectorUtils.cosineSimilarity(cVec, pair[1]);
       rescored.add(new Scored(row, score));
     }
+    // If the upstream {@code vector.neighbors} call did not project the embedding property into
+    // each candidate's row (e.g. a custom selective projection upstream stripped it), every row
+    // would be silently dropped here and the function would return empty for no obvious reason.
+    // Log a WARNING when the drop ratio crosses a clearly-bad threshold so this surfaces in the
+    // server log instead of as an inexplicably empty result. Below the threshold the
+    // drops are treated as ordinary data-quality issues and not reported.
+    if (candidatesScanned > 0 && candidatesMissingEmbedding * 2 > candidatesScanned)
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+          NAME + " dropped %d/%d candidate rows because their '%s' embedding was missing or wrong-shape; "
+              + "ensure the upstream vector.neighbors call projects the embedding column into the result",
+          candidatesMissingEmbedding, candidatesScanned, propertyName);
     rescored.sort((a, b) -> Float.compare(b.score(), a.score()));
 
     final ArrayList<Object> out = new ArrayList<>(Math.min(k, rescored.size()));

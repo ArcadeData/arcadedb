@@ -200,6 +200,10 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
    * top-{@code limit} <em>groups</em> are returned, each capped at {@code groupSize} rows. Best-effort:
    * fewer groups may be returned if the candidate pool runs out before {@code limit} groups are filled,
    * in which case raising the index's {@code efSearch} option improves coverage.
+   * <p>
+   * <b>Parameter sprawl</b> (8 positional args). Each new option that lands here adds another
+   * parameter. The next addition should refactor to a {@code VectorSearchOptions} record - keeping
+   * it positional for now to minimise the blast radius of the maxDistance / Tier 4 follow-ups.
    */
   private Object executeWithLSMVectorIndexes(final List<LSMVectorIndex> vectorIndexes, final Object key, final int limit,
       final int efSearch, final Set<RID> allowedRIDs, final String groupBy, final int groupSize,

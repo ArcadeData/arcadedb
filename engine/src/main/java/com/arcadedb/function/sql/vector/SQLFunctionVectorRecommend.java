@@ -166,10 +166,11 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
       if (filtered.size() >= k)
         break;
       if (row instanceof Map<?, ?> m) {
-        final Object rid = m.get("@rid");
-        if (rid instanceof RID r && exclude.contains(r))
-          continue;
-        if (rid instanceof Identifiable id && exclude.contains(id.getIdentity()))
+        // RID extends Identifiable, so a single instanceof check covers both the
+        // {@code RID r -> exclude.contains(r)} fast path and the rarer
+        // {@code Identifiable id -> exclude.contains(id.getIdentity())} indirection. The
+        // earlier two-branch version had unreachable second branch on a {@code RID} value.
+        if (m.get("@rid") instanceof Identifiable id && exclude.contains(id.getIdentity()))
           continue;
       }
       filtered.add(row);

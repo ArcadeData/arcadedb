@@ -131,6 +131,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * with a matching insert in an OLDER segment outside the input set still shadow that insert
    * after the merge. The win is purely in segment count (multi-segment-with-tombstones collapse
    * into one, BMW DAAT pays a smaller per-query merge cost).
+   * <p>
+   * <b>Legacy segments.</b> Segments built before the manifest gained a
+   * {@code totalTombstones} slot read 0L for their tombstone count and are therefore never
+   * picked by this trigger - even if their actual on-disk tombstone ratio is high. There is no
+   * automatic migration: rebuilding the count would require an O(dims) trailer scan per legacy
+   * segment on first open, which is not free for high-vocab corpora. Operators on a database
+   * that pre-dates this commit and that historically saw a delete-heavy workload should run
+   * {@code REBUILD INDEX <name>} once to compact every segment into a fresh size-tiered shape;
+   * subsequent flushes write the new manifest slot and the trigger applies normally.
    */
   static final double TOMBSTONE_RATIO_TRIGGER = 0.30;
 
@@ -224,6 +233,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   public void put(final int dim, final RID rid, final float weight) {
     ensureOpen();
+    // Advisory backpressure - yields to a concurrent flush so the put lands in the swapped-out
+    // memtable when one is in flight, but does NOT block until the memtable drops below the
+    // threshold. After the lock release, the put adds to the (still possibly oversized) current
+    // memtable. The advisory shape is intentional: a hard block here would risk a nested-transaction
+    // deadlock (the commit-replay path runs inside an outer transaction). See
+    // {@link #applyBackpressureIfNeeded} for the full design rationale.
     applyBackpressureIfNeeded();
     memtable.get().put(dim, rid, weight);
   }
@@ -246,6 +261,8 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    */
   public void remove(final int dim, final RID rid) {
     ensureOpen();
+    // Advisory backpressure - same contract as in {@link #put}: yields to a concurrent flush but
+    // does not hard-block.
     applyBackpressureIfNeeded();
     memtable.get().remove(dim, rid);
   }

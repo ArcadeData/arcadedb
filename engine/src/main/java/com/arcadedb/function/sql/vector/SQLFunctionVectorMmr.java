@@ -79,6 +79,14 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
 
   private static final float DEFAULT_LAMBDA = 0.5f;
 
+  /**
+   * Threshold for the WARNING-level log when the in-memory candidate pool gets large. Ten
+   * million floats is roughly 40 MB; below this, the heap impact is small enough that the
+   * Javadoc warning suffices and a runtime log would just be noise. Above it, operators want
+   * to see the line in their server log rather than diagnose unexplained GC pressure later.
+   */
+  private static final long MMR_HEAP_WARN_FLOATS = 10_000_000L;
+
   public SQLFunctionVectorMmr() {
     super(NAME);
   }
@@ -142,6 +150,17 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
     }
     if (usable.isEmpty())
       return new ArrayList<>(0);
+
+    // Surface oversized candidate pools at query time. The Javadoc warns about the O(N * dim)
+    // heap cost; this WARNING fires when the actual cost crosses ~40 MB (10M float estimate),
+    // turning an unbounded mmr() call into an observable signal in the server log instead of an
+    // unexplained heap pressure event later. Heuristic-only: integer overflow in the multiply is
+    // possible at extreme values but the threshold check would short-circuit well before that.
+    if ((long) usable.size() * expectedDim > MMR_HEAP_WARN_FLOATS)
+      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+          NAME + " loaded %d candidates x %d-dim embeddings (~%d MB) - bound the upstream candidate "
+              + "pool with a smaller k to reduce heap pressure",
+          usable.size(), expectedDim, (long) usable.size() * expectedDim * 4L / (1024L * 1024L));
 
     // Greedy MMR. We track each remaining candidate's max cosine to the selected set; on each
     // round we update only the just-added selectee's contribution to those running maxes,

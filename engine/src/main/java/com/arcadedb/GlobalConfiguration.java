@@ -275,7 +275,11 @@ public enum GlobalConfiguration {
           + "an HA replication race wedged a segment open, or a JVM-level pause stalled the worker "
           + "thread. Set to 0 to disable the timeout (caller will block indefinitely; not "
           + "recommended for production). Re-read on every query, so changes take effect without "
-          + "restart (unlike the pool sizing knobs above).",
+          + "restart (unlike the pool sizing knobs above). Minimum recommended value: 5 seconds. "
+          + "Very short configured timeouts (e.g. 1-2s for integration tests) can produce "
+          + "spurious failures on a saturated host - a JVM GC pause or OS scheduling delay "
+          + "between deadline computation and the first future drain can consume the whole budget "
+          + "before any work runs.",
       Integer.class, 30),
 
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
