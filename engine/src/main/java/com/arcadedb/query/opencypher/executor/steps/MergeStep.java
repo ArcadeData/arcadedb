@@ -806,7 +806,7 @@ public class MergeStep extends AbstractExecutionStep {
         }
       }
 
-      document.set(key, value);
+      document.set(key, TemporalUtil.toCoreJavaType(value));
     }
   }
 
@@ -834,7 +834,7 @@ public class MergeStep extends AbstractExecutionStep {
       else if (value instanceof CypherASTBuilder.ParameterReference) {
         final String paramName = ((CypherASTBuilder.ParameterReference) value).getName();
         if (context.getInputParameters() != null)
-          value = context.getInputParameters().get(paramName);
+          value = TemporalUtil.toCoreJavaType(context.getInputParameters().get(paramName));
       }
       // Legacy support: If the value looks like a property access (e.g., "BatchEntry.subtype"),
       // try to evaluate it against the current result context
@@ -922,7 +922,7 @@ public class MergeStep extends AbstractExecutionStep {
               mutableDoc.remove(prop);
           for (final Map.Entry<String, Object> entry : map.entrySet())
             if (entry.getValue() != null)
-              mutableDoc.set(entry.getKey(), entry.getValue());
+              mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
           mutableDoc.save();
           ((ResultInternal) result).setProperty(variable, mutableDoc);
           break;
@@ -943,7 +943,7 @@ public class MergeStep extends AbstractExecutionStep {
             if (entry.getValue() == null)
               mutableDoc.remove(entry.getKey());
             else
-              mutableDoc.set(entry.getKey(), entry.getValue());
+              mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
           mutableDoc.save();
           ((ResultInternal) result).setProperty(variable, mutableDoc);
           break;

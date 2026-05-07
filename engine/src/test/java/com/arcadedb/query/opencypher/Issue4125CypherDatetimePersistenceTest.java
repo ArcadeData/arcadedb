@@ -20,12 +20,15 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -59,22 +62,30 @@ class Issue4125CypherDatetimePersistenceTest {
 
   @Test
   void createWithDatetimePersists() {
+    final LocalDateTime before = LocalDateTime.now().minusMinutes(1);
     database.command("opencypher", "CREATE (n:Foo {id: 'a', t: datetime()})");
+    final LocalDateTime after = LocalDateTime.now().plusMinutes(1);
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Foo {id: 'a'}) RETURN n.t AS t")) {
       final Object t = rs.next().getProperty("t");
-      assertThat(t).as("datetime() set via CREATE must persist on DATETIME property").isNotNull();
+      assertThat(t).as("datetime() set via CREATE must persist on DATETIME property")
+          .isNotNull().isInstanceOf(CypherLocalDateTime.class);
+      assertThat(((CypherLocalDateTime) t).getValue()).isBetween(before, after);
     }
   }
 
   @Test
   void setDatetimeNowPersists() {
     database.command("opencypher", "CREATE (n:Foo {id: 'b'})");
+    final LocalDateTime before = LocalDateTime.now().minusMinutes(1);
     database.command("opencypher", "MATCH (n:Foo {id: 'b'}) SET n.t = datetime()");
+    final LocalDateTime after = LocalDateTime.now().plusMinutes(1);
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Foo {id: 'b'}) RETURN n.t AS t")) {
       final Object t = rs.next().getProperty("t");
-      assertThat(t).as("datetime() set via SET must persist on DATETIME property").isNotNull();
+      assertThat(t).as("datetime() set via SET must persist on DATETIME property")
+          .isNotNull().isInstanceOf(CypherLocalDateTime.class);
+      assertThat(((CypherLocalDateTime) t).getValue()).isBetween(before, after);
     }
   }
 
@@ -85,28 +96,38 @@ class Issue4125CypherDatetimePersistenceTest {
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Foo {id: 'c'}) RETURN n.t AS t")) {
       final Object t = rs.next().getProperty("t");
-      assertThat(t).as("datetime(string) set via SET must persist on DATETIME property").isNotNull();
+      assertThat(t).as("datetime(string) set via SET must persist on DATETIME property")
+          .isNotNull().isInstanceOf(CypherLocalDateTime.class);
+      assertThat(((CypherLocalDateTime) t).getValue()).isEqualTo(LocalDateTime.of(2026, 1, 1, 0, 0, 0));
     }
   }
 
   @Test
   void mergeOnCreateSetDatetimePersists() {
+    final LocalDateTime before = LocalDateTime.now().minusMinutes(1);
     database.command("opencypher", "MERGE (n:Foo {id: 'merge-a'}) ON CREATE SET n.t = datetime()");
+    final LocalDateTime after = LocalDateTime.now().plusMinutes(1);
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Foo {id: 'merge-a'}) RETURN n.t AS t")) {
       final Object t = rs.next().getProperty("t");
-      assertThat(t).as("datetime() set via MERGE ON CREATE SET must persist").isNotNull();
+      assertThat(t).as("datetime() set via MERGE ON CREATE SET must persist")
+          .isNotNull().isInstanceOf(CypherLocalDateTime.class);
+      assertThat(((CypherLocalDateTime) t).getValue()).isBetween(before, after);
     }
   }
 
   @Test
   void mergeOnMatchSetDatetimePersists() {
     database.command("opencypher", "CREATE (n:Foo {id: 'merge-b'})");
+    final LocalDateTime before = LocalDateTime.now().minusMinutes(1);
     database.command("opencypher", "MERGE (n:Foo {id: 'merge-b'}) ON MATCH SET n.t = datetime()");
+    final LocalDateTime after = LocalDateTime.now().plusMinutes(1);
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Foo {id: 'merge-b'}) RETURN n.t AS t")) {
       final Object t = rs.next().getProperty("t");
-      assertThat(t).as("datetime() set via MERGE ON MATCH SET must persist").isNotNull();
+      assertThat(t).as("datetime() set via MERGE ON MATCH SET must persist")
+          .isNotNull().isInstanceOf(CypherLocalDateTime.class);
+      assertThat(((CypherLocalDateTime) t).getValue()).isBetween(before, after);
     }
   }
 }

@@ -259,7 +259,7 @@ public class SetStep extends AbstractExecutionStep {
     // Set new properties from map (skip null values - they mean "remove")
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
       if (entry.getValue() != null)
-        mutableDoc.set(entry.getKey(), entry.getValue());
+        mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
     }
 
     mutableDoc.save();
@@ -292,7 +292,7 @@ public class SetStep extends AbstractExecutionStep {
       if (entry.getValue() == null)
         mutableDoc.remove(entry.getKey());
       else
-        mutableDoc.set(entry.getKey(), entry.getValue());
+        mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
     }
 
     mutableDoc.save();
