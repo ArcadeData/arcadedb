@@ -127,11 +127,20 @@ class GrowableVectorValues implements RandomAccessVectorValues {
       if (lsmIndex != null)
         vector = lsmIndex.readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
 
-      // Fall back to document lookup
+      // Fall back to document lookup. toFloatArray handles float[] (FLOAT32 encoding) and byte[]
+      // (INT8 encoding, dequantized once via VectorUtils.dequantizeInt8ToFloat); an unsupported
+      // type or null property is turned into a null vector for the validity check below.
       if (vector == null && vectorPropertyName != null) {
         final var record = database.lookupByRID(loc.rid, false);
         final Document doc = (Document) record;
-        vector = VectorUtils.convertToFloatArray(doc.get(vectorPropertyName));
+        final Object raw = doc.get(vectorPropertyName);
+        if (raw != null) {
+          try {
+            vector = VectorUtils.toFloatArray(raw);
+          } catch (final IllegalArgumentException ignored) {
+            // unsupported vector type for this index encoding - leaves vector null
+          }
+        }
       }
 
       if (vector != null && vector.length == dimensions && !VectorUtils.isZeroVector(vector)) {

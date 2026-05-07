@@ -234,6 +234,82 @@ class LSMVectorIndexInt8IngestTest extends TestHelper {
     });
   }
 
+  @Test
+  void rejectsInt8EncodingPlusInt8Quantization() {
+    // Picking encoding=INT8 and quantization=INT8 means dequantize-on-ingest then
+    // re-quantize-internally - silent double-processing on data that was already lossy at the wire
+    // level. The factory handler now blocks the combination outright (issue #4132 review fix).
+    database.transaction(() -> {
+      final DocumentType docType = database.getSchema().createDocumentType("Doc");
+      docType.createProperty("embedding", Type.BINARY);
+
+      assertThatThrownBy(() -> database.getSchema()
+          .buildTypeIndex("Doc", new String[] { "embedding" })
+          .withLSMVectorType()
+          .withDimensions(DIMENSIONS)
+          .withSimilarity("COSINE")
+          .withEncoding(VectorEncoding.INT8)
+          .withQuantization(VectorQuantizationType.INT8)
+          .create())
+          .rootCause()
+          .hasMessageContaining("Combining encoding=INT8 with quantization=INT8");
+    });
+  }
+
+  @Test
+  void int8VectorsSurviveRebuildAfterReopen() {
+    // Regression guard for the rebuild paths that previously called the deprecated
+    // VectorUtils.convertToFloatArray (returns null for byte[]). Without the fix, an INT8 index
+    // reopened from disk would silently rebuild the HNSW graph from an empty vector set: every
+    // vector would be flagged invalid by the validation pass, and downstream search returns
+    // nothing. We insert N int8 vectors, run a search to materialise the graph, reopen the
+    // database to force a rebuild from disk, and assert the same query still returns hits.
+    database.transaction(() -> {
+      final DocumentType docType = database.getSchema().createDocumentType("Doc");
+      docType.createProperty("id", Type.INTEGER);
+      docType.createProperty("embedding", Type.BINARY);
+
+      database.getSchema()
+          .buildTypeIndex("Doc", new String[] { "embedding" })
+          .withLSMVectorType()
+          .withDimensions(DIMENSIONS)
+          .withSimilarity("COSINE")
+          .withEncoding(VectorEncoding.INT8)
+          .create();
+
+      for (int i = 0; i < NUM_VECTORS; i++) {
+        final MutableDocument doc = database.newDocument("Doc");
+        doc.set("id", i);
+        doc.set("embedding", quantize(generateNormalizedTestVector(DIMENSIONS, i)));
+        doc.save();
+      }
+
+      // Force the HNSW graph to be built and persisted before the reopen.
+      final TypeIndex idx = (TypeIndex) database.getSchema().getIndexByName("Doc[embedding]");
+      final LSMVectorIndex lsm = (LSMVectorIndex) idx.getIndexesOnBuckets()[0];
+      final List<Pair<RID, Float>> beforeReopen = lsm.findNeighborsFromVector(
+          generateNormalizedTestVector(DIMENSIONS, 0), 5);
+      assertThat(beforeReopen).isNotEmpty();
+    });
+
+    reopenDatabase();
+
+    database.transaction(() -> {
+      final TypeIndex idx = (TypeIndex) database.getSchema().getIndexByName("Doc[embedding]");
+      final LSMVectorIndex lsm = (LSMVectorIndex) idx.getIndexesOnBuckets()[0];
+      assertThat(lsm.getMetadata().encoding).isEqualTo(VectorEncoding.INT8);
+
+      // Searching after reopen exercises the validation + preload paths that previously called
+      // convertToFloatArray. If any of those paths silently dropped int8 vectors, we'd get an
+      // empty hit list here.
+      final List<Pair<RID, Float>> hits = lsm.findNeighborsFromVector(
+          generateNormalizedTestVector(DIMENSIONS, 0), 5);
+      assertThat(hits).isNotEmpty();
+      final int topId = ((Number) hits.get(0).getFirst().asDocument().get("id")).intValue();
+      assertThat(topId).isEqualTo(0);
+    });
+  }
+
   /**
    * Quantizes a {@code float} vector to signed int8 using the Cohere/OpenAI calibration convention
    * ({@code round(v * 127)}, clamped to [-127, 127]). Mirror image of {@link

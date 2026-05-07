@@ -80,7 +80,16 @@ public final class VectorUtils {
 
   /**
    * Converts various object types to a float array.
-   * Handles: float[], double[], Object[] (of Number), List (of Number).
+   * Handles: float[], double[], Object[] (of Number), List (of Number), String literal (e.g.
+   * {@code "[1.0, 2.0]"}), and {@code byte[]} (INT8 encoded, see below).
+   * <p>
+   * <b>Important:</b> a {@code byte[]} input is interpreted as a signed-int8 vector and dequantized
+   * via {@link #dequantizeInt8ToFloat(byte[])} (Cohere/OpenAI calibration {@code value / 127.0f}).
+   * This is the contract the {@link VectorEncoding#INT8} index encoding relies on. Callers that
+   * are <em>not</em> in an INT8 index context must not pass a raw {@code byte[]} into this method:
+   * the dequantization is applied unconditionally, so a non-INT8 byte sequence (binary keys, raw
+   * blob storage) would silently produce scaled floats instead of an error. Convert such inputs
+   * up-front rather than relying on this method to recognise them.
    *
    * @param vectorObj the object to convert
    *

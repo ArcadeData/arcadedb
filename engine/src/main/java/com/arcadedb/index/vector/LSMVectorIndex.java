@@ -353,6 +353,18 @@ public class LSMVectorIndex implements Index, IndexInternal {
     public IndexInternal create(final IndexBuilder<? extends Index> builder) {
       final BucketLSMVectorIndexBuilder vectorBuilder = (BucketLSMVectorIndexBuilder) builder;
 
+      // Reject the (encoding=INT8, quantization=INT8) combination: wire/storage is already int8,
+      // and JVector's internal INT8 scalar quantization re-runs the same lossy reduction on the
+      // float vectors we just dequantized at ingest. The user's intent is almost certainly one or
+      // the other, not both. If a future use case justifies this combination, lift the guard with
+      // a deliberate justification - silent double-processing is the failure mode we are blocking.
+      if (vectorBuilder.encoding == VectorEncoding.INT8 && vectorBuilder.quantizationType == VectorQuantizationType.INT8)
+        throw new IndexException(
+            "Combining encoding=INT8 with quantization=INT8 is redundant: the property is already byte-quantized "
+                + "at the wire level, so JVector's internal INT8 scalar quantization would re-quantize the "
+                + "dequantized floats. Pick one (encoding=INT8 for payload/storage savings, OR quantization=INT8 "
+                + "for index-internal compression) but not both.");
+
       final LSMVectorIndex index = new LSMVectorIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE,
           builder.getPageSize(), vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(),
@@ -903,15 +915,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 return false;
               }
             } else {
-              // Without quantization: validate by reading from document
+              // Without quantization: validate by reading from document. toFloatArray throws on
+              // unsupported types instead of returning null - the surrounding try/catch already
+              // turns any failure into "invalid vector", and an INT8 byte[] is a supported input.
               try {
                 final Record record = getDatabase().lookupByRID(loc.rid, false);
                 if (record == null)
                   return false;
                 final Document doc = (Document) record;
                 final Object vectorObj = doc.get(vectorProp);
-                final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
-                return vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
+                if (vectorObj == null)
+                  return false;
+                final float[] vector = VectorUtils.toFloatArray(vectorObj);
+                return vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector);
               } catch (final Exception e) {
                 return false;
               }
@@ -1173,13 +1189,20 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final Document doc = (Document) record;
             final RID rid = doc.getIdentity();
             if (!ridToLatestVector.containsKey(rid)) {
-              // Document exists but was not found in pages - add it with a synthetic vector ID
+              // Document exists but was not found in pages - add it with a synthetic vector ID.
+              // toFloatArray handles both float[] (FLOAT32 encoding) and byte[] (INT8 encoding,
+              // dequantized via VectorUtils.dequantizeInt8ToFloat). An unsupported type or a
+              // dimension/zero-vector mismatch is silently skipped, matching the prior contract.
               final Object vectorObj = doc.get(vectorProp);
               if (vectorObj != null) {
-                final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
-                if (vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
-                  final int syntheticId = nextId.getAndIncrement();
-                  ridToLatestVector.put(rid, new VectorEntryForGraphBuild(syntheticId, rid, false, -1));
+                try {
+                  final float[] vector = VectorUtils.toFloatArray(vectorObj);
+                  if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
+                    final int syntheticId = nextId.getAndIncrement();
+                    ridToLatestVector.put(rid, new VectorEntryForGraphBuild(syntheticId, rid, false, -1));
+                  }
+                } catch (final IllegalArgumentException ignored) {
+                  // unsupported vector type for this index encoding - skip
                 }
               }
             }
@@ -1320,19 +1343,23 @@ public class LSMVectorIndex implements Index, IndexInternal {
               skippedDeletedDocs++;
             }
           } else {
-            // Without quantization: validate by reading from document
+            // Without quantization: validate by reading from document. toFloatArray handles both
+            // float[] (FLOAT32 encoding) and byte[] (INT8 encoding, dequantized once); the
+            // surrounding catch turns any conversion failure into "skip this vector".
             try {
               final Record record = database.lookupByRID(loc.rid, false);
 
               final Document doc = (Document) record;
               final Object vectorObj = doc.get(vectorProp);
 
-              final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
+              if (vectorObj != null) {
+                final float[] vector = VectorUtils.toFloatArray(vectorObj);
 
-              if (vector != null && vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
-                vectorLocationSnapshot.put(vectorId, loc);
-                validVectorIds.add(vectorId);
-                preloadedVectors.put(vectorId, vts.createFloatVector(vector));
+                if (vector.length == metadata.dimensions && !VectorUtils.isZeroVector(vector)) {
+                  vectorLocationSnapshot.put(vectorId, loc);
+                  validVectorIds.add(vectorId);
+                  preloadedVectors.put(vectorId, vts.createFloatVector(vector));
+                }
               }
 
             } catch (final RecordNotFoundException e) {
