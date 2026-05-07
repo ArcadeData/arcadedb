@@ -82,4 +82,10 @@ public interface CommandContext {
   /** Context variable set by algorithm procedures to the total number of results they will yield.
    *  Used by CallStep to optimize count-only queries by skipping per-row Result object creation. */
   String RESULT_COUNT_HINT_VAR = "_resultCountHint";
+
+  /** Partition-pruned bucket file ids ({@link com.arcadedb.utility.IntHashSet}) for the FROM type named in {@link #PARTITION_PRUNED_TYPE_NAME_VAR}. Single-valued: only one partitioned FROM type per query (issue #4087). */
+  String PARTITION_PRUNED_BUCKET_FILE_IDS_VAR = "_partitionPrunedBucketFileIds";
+
+  /** Companion to {@link #PARTITION_PRUNED_BUCKET_FILE_IDS_VAR}: the FROM type name the prune was derived from. Consumers must match before applying. */
+  String PARTITION_PRUNED_TYPE_NAME_VAR = "_partitionPrunedTypeName";
 }

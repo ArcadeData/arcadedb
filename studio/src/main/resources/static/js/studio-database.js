@@ -1520,7 +1520,7 @@ function createType(category) {
     html += "<small class='text-muted' style='display:block;margin-top:-10px;margin-bottom:10px;'>No existing " + escapeHtml(catLabel.toLowerCase()) + " types to extend from.</small>";
 
   // Buckets + Page Size
-  html += "<div class='row mb-3'>";
+  html += "<div class='row mb-2'>";
   html += "<div class='col-6'>";
   html += "<label for='inputCreateTypeBuckets'>Buckets (optional)</label>";
   html += "<input class='form-control mt-1' id='inputCreateTypeBuckets' type='number' min='1' max='32' placeholder='default'>";
@@ -1529,6 +1529,21 @@ function createType(category) {
   html += "<label for='inputCreateTypePageSize'>Page Size (optional)</label>";
   html += "<input class='form-control mt-1' id='inputCreateTypePageSize' type='number' min='1' placeholder='default'>";
   html += "</div>";
+  html += "</div>";
+
+  // Partition-strategy hint (issue #4087 follow-up). Surfaced near the bucket count because that
+  // is the field most directly tied to the partition-strategy decision: > 1 bucket is what makes
+  // partitioning useful, and the strategy itself defaults to round-robin and is set post-create
+  // via ALTER TYPE (Studio surfaces a stale-mapping banner + Run Repartition button on the type
+  // detail panel when a later schema mutation invalidates an existing partition mapping). The
+  // hint nudges the operator toward a partitioned strategy at schema-design time so the
+  // optimisation is in place before data lands, instead of being noticed retroactively.
+  html += "<div class='alert alert-info py-2 px-3 mb-3' style='font-size:0.82rem;'>";
+  html += "<i class='fa fa-circle-info me-1'></i> ";
+  html += "<strong>Tip:</strong> If your data is scoped by tenant, customer, region, or another high-cardinality identifier, ";
+  html += "partition by that property (after creating the type and its properties) for query-time bucket pruning. ";
+  html += "<a href='https://docs.arcadedb.com/arcadedb/concepts/basics#schema-design-101-bucket-strategy' target='_blank' rel='noopener noreferrer'>";
+  html += "Schema design 101 <i class='fa fa-external-link-alt' style='font-size:0.75rem;'></i></a>";
   html += "</div>";
 
   // Options row

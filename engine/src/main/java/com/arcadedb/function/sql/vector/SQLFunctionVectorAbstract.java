@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.utility.IntHashSet;
 
 import java.util.HashSet;
 import java.util.List;
@@ -203,6 +204,39 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
     public boolean isFull() {
       return filledGroups >= limit;
     }
+  }
+
+  /**
+   * Narrows {@code allowedBucketIds} (the per-type bucket allow-list assembled from
+   * {@code DocumentType.getBuckets(false)}) to the partition-pruned subset stashed on the
+   * {@link CommandContext} by {@code SelectExecutionPlanner.derivePartitionPrunedClusters}.
+   * <p>
+   * Returns the input unchanged when the planner did not stash a hint, when the hint was
+   * derived from a different FROM type than the function's target, or when the hint is empty.
+   * Builds a fresh {@link IntHashSet} (rather than mutating the input) so concurrent function
+   * calls in the same projection do not stomp on each other's narrowed view.
+   * <p>
+   * Net effect: a query like {@code SELECT vector.neighbors('Doc[embedding]', ..., k) FROM Doc
+   * WHERE tenant_id = 'X'} on a {@code partitioned('tenant_id')} type only enumerates the
+   * vector sub-index for {@code X}'s bucket instead of the full N-bucket fan-out. Issue #4087
+   * follow-up.
+   */
+  protected static IntHashSet narrowAllowedBucketIdsByPartitionHint(final IntHashSet allowedBucketIds,
+      final String typeName, final CommandContext context) {
+    if (allowedBucketIds == null || allowedBucketIds.isEmpty() || typeName == null || context == null)
+      return allowedBucketIds;
+    final Object hintTypeName = context.getVariable(CommandContext.PARTITION_PRUNED_TYPE_NAME_VAR);
+    if (!(hintTypeName instanceof String hintType) || !hintType.equals(typeName))
+      return allowedBucketIds;
+    final Object hintIds = context.getVariable(CommandContext.PARTITION_PRUNED_BUCKET_FILE_IDS_VAR);
+    if (!(hintIds instanceof IntHashSet hintSet) || hintSet.isEmpty())
+      return allowedBucketIds;
+    final IntHashSet narrowed = new IntHashSet(Math.min(allowedBucketIds.size(), hintSet.size()));
+    allowedBucketIds.forEach(id -> {
+      if (hintSet.contains(id))
+        narrowed.add(id);
+    });
+    return narrowed;
   }
 
   protected static Set<RID> parseRidFilter(final List<?> items, final String functionName, final CommandContext context) {
