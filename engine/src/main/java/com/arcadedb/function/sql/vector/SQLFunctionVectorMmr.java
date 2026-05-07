@@ -27,7 +27,6 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -58,9 +57,16 @@ import java.util.Set;
  *   <li><b>options.k</b> (default = candidate count): max rows to return.</li>
  * </ul>
  * <p>
- * Score conventions: assumes higher is better. Sources whose native score is a distance should
- * either be wrapped in a sub-SELECT that flips the score, or paired with {@code vector.fuse}
- * upstream which handles the flip automatically.
+ * Score conventions: the function reads {@code score} or {@code $score} (similarity-shaped) and
+ * auto-flips a {@code distance} field (lower-better, native to {@code vector.neighbors}) so
+ * upstream sources compose with one direction.
+ * <p>
+ * <b>Heap pressure.</b> All N candidate embeddings are loaded into JVM heap before the greedy
+ * loop starts (cost: O(N * dim) memory). This is the standard MMR tradeoff but worth bounding
+ * the upstream source: a {@code vector.neighbors} call that fetches 100k candidates with
+ * 1024-dim float embeddings would use ~400 MB. Always cap the upstream candidate pool with a
+ * reasonable {@code k}; the diversity benefit plateaus well before tens of thousands of
+ * candidates.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -218,53 +224,19 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
           + src.getClass().getSimpleName());
     final ArrayList<Candidate> out = new ArrayList<>();
     for (final Object row : iter) {
-      final RID rid = extractRid(row);
+      final RID rid = extractRidFromRow(row);
       if (rid == null)
         continue;
-      final float score = extractScore(row);
+      // Use the shared score extractor: it auto-flips a {@code distance} field to similarity, so
+      // {@code vector.mmr} accepts the output of {@code vector.neighbors} (which emits distance,
+      // not score) directly. A bare-{@code score}-only extractor here would silently drop every
+      // row piped from {@code vector.neighbors} - exactly the silent-data-loss class of bug.
+      final float score = extractScoreFromRow(row);
       if (Float.isNaN(score))
         throw new CommandSQLParsingException(
-            NAME + " requires every source row to carry a numeric 'score' field; missing on row " + rid);
+            NAME + " requires every source row to carry a numeric 'score' or 'distance' field; missing on row " + rid);
       out.add(new Candidate(rid, score));
     }
     return out;
-  }
-
-  private static RID extractRid(final Object row) {
-    if (row == null)
-      return null;
-    if (row instanceof Map<?, ?> m) {
-      Object v = m.get("@rid");
-      if (v == null) v = m.get("rid");
-      if (v instanceof RID r) return r;
-      if (v instanceof Identifiable id) return id.getIdentity();
-      return null;
-    }
-    if (row instanceof Result r) {
-      if (r.getIdentity().isPresent())
-        return r.getIdentity().get();
-      Object v = r.getProperty("@rid");
-      if (v == null) v = r.getProperty("rid");
-      if (v instanceof RID rid) return rid;
-      if (v instanceof Identifiable id) return id.getIdentity();
-      return null;
-    }
-    if (row instanceof Identifiable id)
-      return id.getIdentity();
-    return null;
-  }
-
-  private static float extractScore(final Object row) {
-    if (row instanceof Map<?, ?> m) {
-      final Object v = m.get("score");
-      if (v instanceof Number n) return n.floatValue();
-      return Float.NaN;
-    }
-    if (row instanceof Result r) {
-      final Object v = r.getProperty("score");
-      if (v instanceof Number n) return n.floatValue();
-      return Float.NaN;
-    }
-    return Float.NaN;
   }
 }

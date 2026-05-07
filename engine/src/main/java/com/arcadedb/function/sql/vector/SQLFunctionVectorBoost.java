@@ -20,11 +20,11 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -78,8 +78,7 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
     if (!(params[1] instanceof Map<?, ?> rawOpts))
       throw new CommandSQLParsingException(NAME + " 2nd argument must be an options map with 'boosts' entry");
 
-    final com.arcadedb.function.sql.FunctionOptions opts =
-        new com.arcadedb.function.sql.FunctionOptions(NAME, rawOpts, OPTIONS);
+    final FunctionOptions opts = new FunctionOptions(NAME, rawOpts, OPTIONS);
     final List<?> rawBoosts = opts.getList("boosts");
     if (rawBoosts == null || rawBoosts.isEmpty())
       throw new CommandSQLParsingException(NAME + " 'boosts' option is required and must be non-empty");
@@ -88,7 +87,7 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
     final Boost[] boosts = parseBoosts(rawBoosts);
 
     final List<Scored> scored = materialize(source, boosts);
-    scored.sort(Comparator.comparingDouble((Scored s) -> s.boostedScore).reversed());
+    scored.sort((a, b) -> Float.compare(b.boostedScore(), a.boostedScore()));
 
     final int targetSize = limit > 0 ? Math.min(limit, scored.size()) : scored.size();
     final ArrayList<Object> out = new ArrayList<>(targetSize);
@@ -99,10 +98,10 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
       // upstream storage (Result objects are read-only views; a shared LinkedHashMap could be
       // referenced by something else upstream).
       final LinkedHashMap<String, Object> rebuilt = new LinkedHashMap<>();
-      if (s.row instanceof Map<?, ?> m) {
+      if (s.row() instanceof Map<?, ?> m) {
         for (final var e : m.entrySet())
           rebuilt.put(String.valueOf(e.getKey()), e.getValue());
-      } else if (s.row instanceof Result r) {
+      } else if (s.row() instanceof Result r) {
         for (final String prop : r.getPropertyNames())
           rebuilt.put(prop, r.getProperty(prop));
         if (r.getIdentity().isPresent())
@@ -110,10 +109,10 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
       } else {
         // Pass-through for shapes we don't recognise. The score recomputation already happened;
         // the user just won't see the boostedScore field reflected on this row.
-        out.add(s.row);
+        out.add(s.row());
         continue;
       }
-      rebuilt.put("score", s.boostedScore);
+      rebuilt.put("score", s.boostedScore());
       out.add(rebuilt);
     }
     return out;
@@ -131,10 +130,14 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
           + source.getClass().getSimpleName());
     final List<Scored> out = new ArrayList<>();
     for (final Object row : iter) {
-      final float base = extractBaseSimilarity(row);
+      final float base = extractScoreFromRow(row);
       if (Float.isNaN(base))
         continue;
-      double boosted = base;
+      // Accumulate in double so a long sum of small per-field contributions does not lose
+      // precision before the final cast back to float for the row's {@code score} field. Pure
+      // float would be fine for typical 1-3 boost terms but the double accumulator costs
+      // virtually nothing and keeps headroom.
+      double boostedAcc = base;
       for (final Boost b : boosts) {
         final Object raw = readField(row, b.field);
         if (raw == null)
@@ -142,34 +145,11 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
         if (!(raw instanceof Number n))
           throw new CommandSQLParsingException(NAME + " boost field '" + b.field
               + "' must be numeric on every row, got: " + raw.getClass().getSimpleName());
-        boosted += (double) b.weight * n.doubleValue();
+        boostedAcc += (double) b.weight * n.doubleValue();
       }
-      out.add(new Scored(row, boosted));
+      out.add(new Scored(row, (float) boostedAcc));
     }
     return out;
-  }
-
-  /** Same auto-flip rules as {@link SQLFunctionVectorFuse}: prefer score, fall back to {@code -distance}. */
-  private static float extractBaseSimilarity(final Object row) {
-    if (row instanceof Map<?, ?> m) {
-      final Object score = m.get("score");
-      if (score instanceof Number n) return n.floatValue();
-      final Object dollar = m.get("$score");
-      if (dollar instanceof Number n) return n.floatValue();
-      final Object distance = m.get("distance");
-      if (distance instanceof Number n) return -n.floatValue();
-      return Float.NaN;
-    }
-    if (row instanceof Result r) {
-      final Object score = r.getProperty("score");
-      if (score instanceof Number n) return n.floatValue();
-      final Object dollar = r.getProperty("$score");
-      if (dollar instanceof Number n) return n.floatValue();
-      final Object distance = r.getProperty("distance");
-      if (distance instanceof Number n) return -n.floatValue();
-      return Float.NaN;
-    }
-    return Float.NaN;
   }
 
   private static Object readField(final Object row, final String field) {
@@ -203,9 +183,5 @@ public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
 
   private record Boost(String field, float weight) {}
 
-  private static final class Scored {
-    final Object row;
-    final double boostedScore;
-    Scored(final Object row, final double boostedScore) { this.row = row; this.boostedScore = boostedScore; }
-  }
+  private record Scored(Object row, float boostedScore) {}
 }

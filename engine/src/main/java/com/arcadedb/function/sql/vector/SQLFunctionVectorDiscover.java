@@ -203,7 +203,7 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
         score += VectorUtils.cosineSimilarity(cVec, pair[0]) - VectorUtils.cosineSimilarity(cVec, pair[1]);
       rescored.add(new Scored(row, score));
     }
-    rescored.sort((a, b) -> Float.compare(b.score, a.score));
+    rescored.sort((a, b) -> Float.compare(b.score(), a.score()));
 
     final ArrayList<Object> out = new ArrayList<>(Math.min(k, rescored.size()));
     for (int i = 0; i < rescored.size() && out.size() < k; i++) {
@@ -212,12 +212,12 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
       // fresh map: mutating the caller-supplied map in place would let one round of discover
       // poison the next (e.g. inside a LET / subquery the same row dict gets reused with the
       // previous round's score still attached). Building a copy is cheap and the safer default.
-      final Object row = rescored.get(i).row;
+      final Object row = rescored.get(i).row();
       if (row instanceof Map<?, ?> mm) {
         final LinkedHashMap<String, Object> rebuilt = new LinkedHashMap<>();
         for (final var e : mm.entrySet())
           rebuilt.put(String.valueOf(e.getKey()), e.getValue());
-        rebuilt.put("score", rescored.get(i).score);
+        rebuilt.put("score", rescored.get(i).score());
         out.add(rebuilt);
       } else {
         out.add(row);
@@ -307,9 +307,5 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     public String toString() { return "(" + positive + ", " + negative + ")"; }
   }
 
-  private static final class Scored {
-    final Object row;
-    final float  score;
-    Scored(final Object row, final float score) { this.row = row; this.score = score; }
-  }
+  private record Scored(Object row, float score) {}
 }

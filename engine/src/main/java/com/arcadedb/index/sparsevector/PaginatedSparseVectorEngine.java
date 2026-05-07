@@ -264,8 +264,9 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       return;
     // Wait for any in-progress flush (or the next one to take the lock if maybeFlush is queued)
     // to publish its memtable swap. Re-entrant: if this thread is already inside a flush() on
-    // the same engine (e.g. a future caller invokes put() from a flush sub-callback), the lock
-    // is recursively re-acquired and immediately released - no deadlock.
+    // the same engine (e.g. a future caller invokes put() from a flush sub-callback), the
+    // ReentrantLock just bumps the hold count and immediately decrements it on unlock; the outer
+    // flush retains the lock throughout - no deadlock, no unintended early release.
     mutatorLock.lock();
     mutatorLock.unlock();
   }
@@ -513,6 +514,12 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         return null;
       // Pair the high-tombstone segment with the (fanout - 1) oldest neighbors so newest-wins
       // precedence inside mergeIntoBuilder lines up with on-disk order.
+      // <p>
+      // Tier mixing here is intentional: the trigger's goal is file-count reduction (drain the
+      // delete-heavy index of small tombstone-rich segments BMW DAAT must walk on every query),
+      // not the write-amplification minimisation that the primary size-tiered branch optimises
+      // for. Pulling the oldest neighbors regardless of tier is a single-pass collapse; the next
+      // flush will rebalance the tier distribution naturally.
       final List<PaginatedSegmentReader> all = new ArrayList<>(active.length);
       all.addAll(Arrays.asList(active));
       all.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));

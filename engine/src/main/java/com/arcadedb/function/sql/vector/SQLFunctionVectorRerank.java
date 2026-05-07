@@ -26,13 +26,10 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
-import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
-import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Declarative multi-stage retrieval (Qdrant-style "prefetch + rerank"). Takes a stage-1
@@ -94,7 +91,7 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
     final ArrayList<Scored> rescored = new ArrayList<>();
     final int expectedDim = queryVector.length;
     for (final Object row : iter) {
-      final RID rid = extractRid(row);
+      final RID rid = extractRidFromRow(row);
       if (rid == null)
         continue;
       final Document rec;
@@ -121,19 +118,19 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
       rescored.add(new Scored(rid, rec, similarity));
     }
 
-    rescored.sort(Comparator.comparingDouble((Scored s) -> s.score).reversed());
+    rescored.sort((a, b) -> Float.compare(b.score(), a.score()));
 
     final int targetSize = Math.min(k, rescored.size());
     final ArrayList<Object> out = new ArrayList<>(targetSize);
     for (int i = 0; i < targetSize; i++) {
       final Scored s = rescored.get(i);
       final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
-      entry.put("record", s.record);
-      for (final String prop : s.record.getPropertyNames())
-        entry.put(prop, s.record.get(prop));
-      entry.put("@rid", s.record.getIdentity());
-      entry.put("@type", s.record.getTypeName());
-      entry.put("score", s.score);
+      entry.put("record", s.record());
+      for (final String prop : s.record().getPropertyNames())
+        entry.put(prop, s.record().get(prop));
+      entry.put("@rid", s.record().getIdentity());
+      entry.put("@type", s.record().getTypeName());
+      entry.put("score", s.score());
       out.add(entry);
     }
     return out;
@@ -143,38 +140,5 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
     return NAME + "(<source>, <queryVector>, <embeddingProperty>, <k>)";
   }
 
-  private static RID extractRid(final Object row) {
-    if (row == null)
-      return null;
-    if (row instanceof Map<?, ?> m) {
-      Object v = m.get("@rid");
-      if (v == null) v = m.get("rid");
-      if (v instanceof RID r) return r;
-      if (v instanceof Identifiable id) return id.getIdentity();
-      return null;
-    }
-    if (row instanceof Result r) {
-      if (r.getIdentity().isPresent())
-        return r.getIdentity().get();
-      Object v = r.getProperty("@rid");
-      if (v == null) v = r.getProperty("rid");
-      if (v instanceof RID rid) return rid;
-      if (v instanceof Identifiable id) return id.getIdentity();
-      return null;
-    }
-    if (row instanceof Identifiable id)
-      return id.getIdentity();
-    return null;
-  }
-
-  private static final class Scored {
-    final RID      rid;
-    final Document record;
-    final double   score;
-    Scored(final RID rid, final Document record, final double score) {
-      this.rid = rid;
-      this.record = record;
-      this.score = score;
-    }
-  }
+  private record Scored(RID rid, Document record, float score) {}
 }

@@ -332,6 +332,13 @@ public class GetServerHandler extends AbstractServerHttpHandler {
    * therefore throwing on {@code getDatabase(name)}) cannot fail the entire {@code /server}
    * metrics response. The skipped row is logged at {@code FINE} so the next scrape, when the
    * database is either fully back or fully gone, has a clean signal again.
+   * <p>
+   * <b>Cost.</b> Called on every {@code /api/v1/server} scrape; cost is O(databases * indexes)
+   * with each index contributing a constant-time read of three counters
+   * ({@link com.arcadedb.index.sparsevector.PaginatedSparseVectorEngine#totalPostings} etc.). At
+   * Studio's default poll interval and typical deployments (a handful of databases each with a
+   * handful of sparse indexes) the cost is negligible. Future caching could amortize it on
+   * deployments with thousands of indexes per database; not worth the staleness budget today.
    */
   private JSONObject buildSparseVectorIndexesJSON() {
     final JSONObject byDatabase = new JSONObject();
