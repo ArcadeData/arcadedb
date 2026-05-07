@@ -8,9 +8,12 @@ from typing import Any, Iterable, Optional
 
 import jpype
 
+from ._logging import get_logger, log_swallowed_exception
 from .exceptions import ArcadeDBError
 from .graph import Document, Vertex
 from .type_conversion import convert_python_to_java
+
+_LOGGER = get_logger(__name__)
 
 
 class GraphBatch:
@@ -119,7 +122,7 @@ class GraphBatch:
                 try:
                     self._java_db.rollback()
                 except Exception:
-                    pass
+                    log_swallowed_exception(_LOGGER, "during batch vertex rollback")
             raise ArcadeDBError(
                 f"Failed to create batch vertex of type '{type_name}': {e}"
             ) from e

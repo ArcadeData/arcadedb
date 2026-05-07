@@ -100,8 +100,10 @@ def get_docker_version() -> str | None:
 
 
 def fetch_json(url: str) -> dict:
+    if not url.startswith("https://"):
+        raise ValueError(f"Refusing to open non-HTTPS URL: {url!r}")
     req = Request(url, headers={"User-Agent": "arcadedb-bench"})
-    with urlopen(req, timeout=30) as response:
+    with urlopen(req, timeout=30) as response:  # nosec B310 - https-only
         payload = json.load(response)
     if not isinstance(payload, dict):
         raise RuntimeError(f"Expected JSON object from {url}")
@@ -914,7 +916,9 @@ def get_qdrant_version(client) -> str | None:
 
 
 def qdrant_project_name(db_path: Path) -> str:
-    digest = hashlib.sha1(str(db_path).encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(
+        str(db_path).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:10]
     return f"arcadb-qdrant-{digest}"
 
 
@@ -1004,7 +1008,9 @@ def wait_for_qdrant_ready(host: str, port: int, timeout_sec: int = 120) -> None:
     while True:
         for url in urls:
             try:
-                with urlopen(url, timeout=3) as response:
+                with urlopen(
+                    url, timeout=3
+                ) as response:  # nosec B310 - localhost health-check URL
                     if 200 <= int(response.status) < 500:
                         return
             except Exception:
@@ -1120,7 +1126,8 @@ def run_repeated_search(
             **run_stats,
             "run": run_idx + 1,
             "query_order_hash": hashlib.sha1(
-                ",".join(str(v) for v in run_qids).encode("utf-8")
+                ",".join(str(v) for v in run_qids).encode("utf-8"),
+                usedforsecurity=False,
             ).hexdigest(),
         }
         per_run_stats.append(run_stats)
@@ -1240,7 +1247,9 @@ def ensure_milvus_compose_file(compose_file: Path, release_tag: str) -> None:
             "https://github.com/milvus-io/milvus/releases/download/"
             f"{release_tag}/milvus-standalone-docker-compose.yml"
         )
-        urlretrieve(url, str(compose_file))
+        urlretrieve(
+            url, str(compose_file)
+        )  # nosec B310 - url is a hardcoded https://github.com URL
         raw = compose_file.read_text(encoding="utf-8")
 
     sanitized = re.sub(r"(?m)^\s*version\s*:\s*.*\n", "", raw)
@@ -1255,7 +1264,9 @@ def ensure_milvus_compose_file(compose_file: Path, release_tag: str) -> None:
 
 
 def milvus_project_name(db_path: Path) -> str:
-    digest = hashlib.sha1(str(db_path).encode("utf-8")).hexdigest()[:10]
+    digest = hashlib.sha1(
+        str(db_path).encode("utf-8"), usedforsecurity=False
+    ).hexdigest()[:10]
     return f"arcadb-milvus-{digest}"
 
 

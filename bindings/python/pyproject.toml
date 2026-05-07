@@ -47,6 +47,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov",
     "numpy>=1.20.0",
+    "bandit>=1.9.0",
 ]
 vector = [
     "numpy>=1.20.0",
@@ -83,3 +84,13 @@ markers = [
     "server: tests that require server/studio support",
     "integration: tests that require external components",
 ]
+
+[tool.bandit]
+# Skip recursion into test data and build artifacts.
+# Patterns are matched as substrings, so anchor with leading "/" to avoid
+# accidentally excluding files like examples/11_vector_index_build.py.
+exclude_dirs = ["/tests/.cache/", "/build/", "/dist/"]
+# B101 (assert_used) is the standard pytest idiom and the production source
+# (src/) intentionally contains no assert statements - so we skip it globally
+# rather than maintaining a per-file glob list.
+skips = ["B101"]

@@ -109,7 +109,11 @@ def test_custom_jvm_args_no_duplicates():
 def test_error_file_env():
     """Test ARCADEDB_JVM_ERROR_FILE injection."""
     with patch.dict(
-        os.environ, {"ARCADEDB_JVM_ERROR_FILE": "/tmp/crash.log"}, clear=True
+        os.environ,
+        {
+            "ARCADEDB_JVM_ERROR_FILE": "/tmp/crash.log"
+        },  # nosec B108 - test-only path for JVM error file argument
+        clear=True,
     ):
         args = _build_jvm_args(
             heap_size="4g",

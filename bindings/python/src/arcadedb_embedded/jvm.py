@@ -388,9 +388,14 @@ def _build_jvm_args(
 
 
 def shutdown_jvm():
-    """Shutdown JVM if it was started by this module."""
+    """Shutdown JVM if it was started by this module.
+
+    JPype can raise RuntimeError when the JVM is already mid-shutdown or
+    has been detached from the calling thread; in that case there is
+    nothing left for us to do.
+    """
     if jpype.isJVMStarted():
         try:
             jpype.shutdownJVM()
-        except Exception:
-            pass  # Ignore errors during shutdown
+        except RuntimeError:
+            return

@@ -27,10 +27,13 @@ from typing import TYPE_CHECKING, Any, Callable, Optional, Sequence, Union
 
 import jpype
 
+from ._logging import get_logger, log_swallowed_exception
 from .type_conversion import convert_python_to_java
 
 if TYPE_CHECKING:
     from .core import Database
+
+_LOGGER = get_logger(__name__)
 
 
 class AsyncExecutor:
@@ -209,7 +212,7 @@ class AsyncExecutor:
             if bool(self._java_async.isProcessing()):
                 return True
         except Exception:
-            pass
+            log_swallowed_exception(_LOGGER, "while polling isProcessing()")
 
         try:
             return not bool(self._java_async.waitCompletion(0))

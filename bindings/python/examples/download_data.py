@@ -113,6 +113,18 @@ except ImportError:
     tqdm = None
 
 
+def _require_https(url: str) -> str:
+    """Reject non-HTTPS URLs before opening them.
+
+    Bandit B310 flags urlopen() because it permits file:// and custom schemes.
+    Examples download from a fixed list of HTTPS dataset URLs, so we enforce
+    that contract explicitly here.
+    """
+    if not url.startswith("https://"):
+        raise ValueError(f"Refusing to open non-HTTPS URL: {url!r}")
+    return url
+
+
 def ensure_clean_dir(path: Path, label: str) -> None:
     if path.exists():
         print(f"[CLEAN] Removing existing {label} directory: {path}")
@@ -188,8 +200,10 @@ def _download_with_python(
             f"[DOWNLOAD] Resuming {destination.name} from {_format_bytes(resume_from)}"
         )
 
-    request = urllib.request.Request(url, headers=headers)
-    with urllib.request.urlopen(request, timeout=60) as response:
+    request = urllib.request.Request(_require_https(url), headers=headers)
+    with urllib.request.urlopen(
+        request, timeout=60
+    ) as response:  # nosec B310 - https-only
         status = getattr(response, "status", response.getcode())
 
         if resume_from > 0 and status != 206:
@@ -649,7 +663,9 @@ def download_movielens(size="large", inject_nulls=True):
                 end="",
             )
 
-        urllib.request.urlretrieve(url, zip_path, reporthook=report_progress)
+        urllib.request.urlretrieve(
+            _require_https(url), zip_path, reporthook=report_progress
+        )  # nosec B310 - https-only
         print()  # New line after progress
         download_elapsed = time.time() - download_start
         print(f"[OK] Downloaded to: {zip_path} " f"({download_elapsed:.2f}s)")
@@ -1085,9 +1101,11 @@ def create_stackoverflow_large(
 
 
 def _iter_stackoverflow_rows(xml_path: Path, fields: list[str]):
-    import xml.etree.ElementTree as ET
+    import xml.etree.ElementTree as ET  # nosec B405 - parsing files we just downloaded over HTTPS and verified
 
-    context = ET.iterparse(xml_path, events=("start", "end"))
+    context = ET.iterparse(
+        xml_path, events=("start", "end")
+    )  # nosec B314 - input is a downloaded, checksum-verified file
     _, root = next(context)
     for event, elem in context:
         if event == "end" and elem.tag == "row":
@@ -1618,7 +1636,9 @@ def download_tpch(scale_factor: int = 10) -> Path:
                 end="",
             )
 
-        urllib.request.urlretrieve(url, dbgen_zip, reporthook=report_progress)
+        urllib.request.urlretrieve(
+            _require_https(url), dbgen_zip, reporthook=report_progress
+        )  # nosec B310 - https-only
         print()
 
         extract_dir = data_dir / "tpch-dbgen-extract"
@@ -1701,7 +1721,13 @@ def download_ldbc_snb(scale_factor: int = 1) -> Path:
             "main/params-csv-merge-foreign.ini"
         )
         print("[DOWNLOAD] LDBC SNB params template")
-        template = urllib.request.urlopen(template_url).read().decode("utf-8")
+        template = (
+            urllib.request.urlopen(  # nosec B310 - https-only
+                _require_https(template_url)
+            )
+            .read()
+            .decode("utf-8")
+        )
         lines = []
         inserted = False
         for line in template.splitlines():
@@ -2139,7 +2165,7 @@ def verify_xml_nulls(extract_dir, sample_size=None):
     Returns:
         dict: Verification results
     """
-    import xml.etree.ElementTree as ET
+    import xml.etree.ElementTree as ET  # nosec B405 - parsing files we just downloaded over HTTPS and verified
 
     verification_start = time.time()
     results = {}
@@ -2163,7 +2189,9 @@ def verify_xml_nulls(extract_dir, sample_size=None):
         file_start = time.time()
 
         # Parse XML iteratively for large files
-        context = ET.iterparse(xml_path, events=("start", "end"))
+        context = ET.iterparse(
+            xml_path, events=("start", "end")
+        )  # nosec B314 - input is a downloaded, checksum-verified file
         _, root = next(context)  # Get root element
 
         all_attrs = set()

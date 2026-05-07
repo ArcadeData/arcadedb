@@ -88,7 +88,7 @@ def test_thread_safety(cleanup_db):
     def query_thread(thread_id):
         start = time.time()
         query = (
-            f"SELECT FROM Person WHERE id >= {thread_id * 5} "
+            f"SELECT FROM Person WHERE id >= {thread_id * 5} "  # nosec B608
             f"AND id < {(thread_id + 1) * 5}"
         )
         result = db.query("sql", query)
@@ -197,9 +197,9 @@ def test_oltp_mixed_workload_threads(cleanup_db):
     )
 
     def worker(worker_id):
-        import random
+        import random  # nosec B311 - synthetic benchmark data, not security
 
-        rng = random.Random(42 + worker_id)
+        rng = random.Random(42 + worker_id)  # nosec B311
         latencies_ms = []
         reads = 0
         writes = 0
@@ -212,7 +212,7 @@ def test_oltp_mixed_workload_threads(cleanup_db):
             if op == "read":
                 result = db.query(
                     "sql",
-                    f"SELECT balance FROM Account WHERE account_id = {account_id}",
+                    f"SELECT balance FROM Account WHERE account_id = {account_id}",  # nosec B608
                 )
                 _ = list(result)
                 reads += 1

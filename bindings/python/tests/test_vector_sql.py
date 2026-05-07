@@ -517,8 +517,7 @@ class TestVectorSQL:
             # Should return list of RIDs or similar
             assert len(res) > 0
         except Exception:
-            # Maybe it expects type name?
-            pass
+            pass  # nosec B110 - best-effort probe; index API may expect type name instead
 
     def test_vector_neighbors_accepts_parameterized_index_and_vector(self, test_db):
         """SQL vectorNeighbors should accept bound index and vector parameters."""
@@ -548,7 +547,7 @@ class TestVectorSQL:
 
     def test_vector_delete_and_search_others_sql(self, test_db):
         """Test deleting vertices in a larger dataset using SQL."""
-        import random
+        import random  # nosec B311 - synthetic vector data
 
         # Create schema
         test_db.command("sql", "CREATE VERTEX TYPE DocSql")
@@ -580,11 +579,15 @@ class TestVectorSQL:
 
         with test_db.transaction():
             for i in range(num_vectors):
-                vec = [random.random() for _ in range(dims)]
+                vec = [random.random() for _ in range(dims)]  # nosec B311
                 vectors.append(vec)
-                # Insert via SQL using string formatting
+                # Embedded literals: the wrapper's _convert_args path supports
+                # only one positional ? per call (numpy/list rebinding); a
+                # multi-? signature would dispatch to JPype as
+                # command(str, str, int, list) which has no Java overload.
                 test_db.command(
-                    "sql", f"INSERT INTO DocSql SET id = {i}, embedding = {vec}"
+                    "sql",
+                    f"INSERT INTO DocSql SET id = {i}, embedding = {vec}",  # nosec B608
                 )
 
         # Delete every 10th vector
@@ -592,7 +595,7 @@ class TestVectorSQL:
 
         with test_db.transaction():
             for i in deleted_indices:
-                test_db.command("sql", f"DELETE FROM DocSql WHERE id = {i}")
+                test_db.command("sql", "DELETE FROM DocSql WHERE id = ?", i)
 
         # Verify
         for i in range(num_vectors):
@@ -601,7 +604,8 @@ class TestVectorSQL:
             # Search using projection and ORDER BY alias
             rs = test_db.query(
                 "sql",
-                f"SELECT id, vectorL2Distance(embedding, {vec}) as dist FROM DocSql ORDER BY dist ASC LIMIT 1",
+                # Vector literal is required by vectorL2Distance(); not user input.
+                f"SELECT id, vectorL2Distance(embedding, {vec}) as dist FROM DocSql ORDER BY dist ASC LIMIT 1",  # nosec B608
             )
 
             row = next(rs, None)
@@ -677,7 +681,8 @@ class TestVectorSQL:
         # Using vectorL2Distance for distance calculation
         rs = test_db.query(
             "sql",
-            f"SELECT name, vectorL2Distance(vector, {query_vector}) as dist FROM {doc_type} ORDER BY dist ASC LIMIT 2",
+            # Vector literal is required by vectorL2Distance(); not user input.
+            f"SELECT name, vectorL2Distance(vector, {query_vector}) as dist FROM {doc_type} ORDER BY dist ASC LIMIT 2",  # nosec B608
         )
 
         results = list(rs)

@@ -338,10 +338,13 @@ def main() -> int:
             for row in db.query(
                 "sql",
                 "SELECT FROM SensorReading "
-                f"WHERE ts BETWEEN {raw_window_start} AND {raw_window_end} "
-                f"AND sensor_id = '{focus_sensor.sensor_id}' "
-                f"AND building = '{focus_sensor.building}' "
+                "WHERE ts BETWEEN ? AND ? "
+                "AND sensor_id = ? AND building = ? "
                 "ORDER BY ts",
+                raw_window_start,
+                raw_window_end,
+                focus_sensor.sensor_id,
+                focus_sensor.building,
             )
         ]
         print_rows(

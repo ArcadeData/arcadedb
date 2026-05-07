@@ -32,7 +32,11 @@ class ArcadeDBServer:
             config: Optional configuration dictionary with keys like:
                 - http_port: HTTP API port (default: 2480)
                 - binary_port: Binary protocol port (default: 2424)
-                - host: Host to bind to (default: 0.0.0.0)
+                - host: Host to bind to (default: "localhost"). Pass "0.0.0.0"
+                    explicitly to expose the server on all IPv4 interfaces, or
+                    "::" for all IPv6 interfaces. Earlier versions defaulted to
+                    "0.0.0.0"; the default was tightened to loopback in the
+                    Python bindings v0.x security cleanup.
                 - mode: Server mode (default: development)
             jvm_kwargs: Optional JVM args passed to start_jvm()
                 Example: {"heap_size": "8g"}
@@ -61,7 +65,9 @@ class ArcadeDBServer:
         mode = self._config.get("mode", "development")
         context_config.setValue("arcadedb.server.mode", mode)
 
-        host = self._config.get("host", "0.0.0.0")
+        # Default to loopback; callers must opt in to "0.0.0.0" explicitly to
+        # expose the server on all interfaces.
+        host = self._config.get("host", "localhost")
         context_config.setValue("arcadedb.server.httpIncomingHost", host)
 
         http_port = self._config.get("http_port", 2480)
@@ -100,13 +106,16 @@ class ArcadeDBServer:
             raise ArcadeDBError(f"Failed to stop server: {e}") from e
 
     def __del__(self):
-        """Finalizer - ensure server is stopped."""
+        """Finalizer - ensure server is stopped.
+
+        See Database.__del__ for rationale on the narrowed except clause.
+        """
         try:
             if self._started and self._java_server is not None:
                 self._java_server.stop()
                 self._started = False
-        except Exception:
-            pass  # Ignore errors during garbage collection
+        except (AttributeError, RuntimeError):
+            return
 
     def get_database(self, name: str) -> Database:
         """
@@ -162,7 +171,7 @@ class ArcadeDBServer:
     def get_studio_url(self) -> str:
         """Get the URL for the Studio web interface."""
         host = self._config.get("host", "localhost")
-        if host == "0.0.0.0":
+        if host in ("0.0.0.0", "::"):  # nosec B104 - equality comparison, not a bind
             host = "localhost"
         port = self.get_http_port()
         return f"http://{host}:{port}/"
