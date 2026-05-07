@@ -1071,9 +1071,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Check if expression6 contains an EXISTS expression
     // This handles cases like: WHERE EXISTS { (p)-[:WORKS_AT]->(:Company) }
+    // Require the EXISTS to span the entire expression6 text (allowing for whitespace),
+    // otherwise an inner EXISTS inside a parenthesized OR/AND would be returned alone
+    // and silently drop the surrounding boolean operators (issue #4126).
     final Cypher25Parser.Expression6Context expr6 = ctx.expression6();
     final Cypher25Parser.ExistsExpressionContext existsExpr = expressionBuilder.findExistsExpressionRecursive(expr6);
-    if (existsExpr != null && compCtx == null) {
+    if (existsExpr != null && compCtx == null
+        && existsExpr.getText().length() >= expr6.getText().length() - 2) {
       // Parse the EXISTS expression and wrap it as a boolean expression
       final ExistsExpression exists = expressionBuilder.parseExistsExpression(existsExpr);
       // ExistsExpression implements Expression, we need to wrap it to return as BooleanExpression
