@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.vector.VectorEncoding;
 import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
@@ -191,6 +192,52 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   /**
+   * Sets the wire / storage encoding of the vector property. {@link VectorEncoding#FLOAT32} (default)
+   * keeps the historical contract: documents store float32 in {@code ARRAY_OF_FLOATS} columns.
+   * {@link VectorEncoding#INT8} accepts pre-quantized signed bytes (one byte per dim) end-to-end:
+   * 4x smaller HTTP payloads, 4x smaller bucket storage, no client-side dequantize round trip.
+   * The HNSW build/search still runs on {@code float32} internally
+   * (<a href="https://github.com/datastax/jvector/issues/665">datastax/jvector#665</a>); bytes are
+   * dequantized once on the read path via {@code value / 127.0f}.
+   *
+   * @param encoding the vector encoding
+   */
+  public TypeLSMVectorIndexBuilder withEncoding(final VectorEncoding encoding) {
+    vectorMetadata().encoding = encoding;
+    return this;
+  }
+
+  /**
+   * Sets the wire / storage encoding by string name (FLOAT32, INT8). See
+   * {@link #withEncoding(VectorEncoding)} for the trade-offs.
+   *
+   * @param encoding the encoding name
+   */
+  public TypeLSMVectorIndexBuilder withEncoding(final String encoding) {
+    try {
+      vectorMetadata().encoding = VectorEncoding.fromString(encoding);
+      return this;
+    } catch (final IllegalArgumentException e) {
+      throw new IndexException(e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Returns {@code metadata} narrowed to {@link LSMVectorIndexMetadata}. The constructor of this
+   * builder always installs an LSMVectorIndexMetadata, but {@link #withMetadata(IndexMetadata)}
+   * allows the caller to override it; the explicit guard turns "subclasser swapped a different
+   * metadata in via {@code withMetadata}" into a clear error rather than a {@link ClassCastException}
+   * blamed on an unrelated line.
+   */
+  private LSMVectorIndexMetadata vectorMetadata() {
+    if (metadata instanceof LSMVectorIndexMetadata m)
+      return m;
+    throw new IndexException(
+        "TypeLSMVectorIndexBuilder.metadata is not an LSMVectorIndexMetadata (got "
+            + (metadata == null ? "null" : metadata.getClass().getSimpleName()) + ")");
+  }
+
+  /**
    * Sets the number of subspaces (M) for Product Quantization.
    * Only applicable when quantization type is PRODUCT.
    * The value must evenly divide the number of dimensions.
@@ -265,6 +312,9 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
 
     if (json.has("quantization"))
       withQuantization(json.getString("quantization"));
+
+    if (json.has("encoding"))
+      withEncoding(json.getString("encoding"));
 
     if (json.has("maxConnections"))
       meta.maxConnections = json.getInt("maxConnections");

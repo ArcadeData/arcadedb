@@ -20,6 +20,7 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.IndexException;
+import com.arcadedb.index.vector.VectorEncoding;
 import com.arcadedb.index.vector.VectorQuantizationType;
 import com.arcadedb.serializer.json.JSONObject;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
@@ -33,6 +34,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   public int                      dimensions;
   public VectorSimilarityFunction similarityFunction       = VectorSimilarityFunction.COSINE;
   public VectorQuantizationType   quantizationType         = VectorQuantizationType.NONE;
+  public VectorEncoding           encoding                 = VectorEncoding.FLOAT32;
   public int                      maxConnections           = 16;
   public int                      beamWidth                = 100;
   public float                    neighborOverflowFactor   = 1.2f;
@@ -193,6 +195,31 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
   }
 
   /**
+   * Sets the wire / storage encoding of the vector property. See
+   * {@link TypeLSMVectorIndexBuilder#withEncoding(VectorEncoding)} for the trade-offs.
+   *
+   * @param encoding the vector encoding
+   */
+  public BucketLSMVectorIndexBuilder withEncoding(final VectorEncoding encoding) {
+    this.encoding = encoding;
+    return this;
+  }
+
+  /**
+   * Sets the wire / storage encoding by string name (FLOAT32, INT8).
+   *
+   * @param encoding the encoding name
+   */
+  public BucketLSMVectorIndexBuilder withEncoding(final String encoding) {
+    try {
+      this.encoding = VectorEncoding.fromString(encoding);
+      return this;
+    } catch (final IllegalArgumentException e) {
+      throw new IndexException(e.getMessage(), e);
+    }
+  }
+
+  /**
    * Sets the number of subspaces (M) for Product Quantization.
    * Only applicable when quantization type is PRODUCT.
    * The value must evenly divide the number of dimensions.
@@ -258,6 +285,7 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
       this.dimensions = v.dimensions;
       withSimilarity(v.similarityFunction.name());
       this.quantizationType = v.quantizationType;
+      this.encoding = v.encoding;
       this.maxConnections = v.maxConnections;
       this.beamWidth = v.beamWidth;
       this.neighborOverflowFactor = v.neighborOverflowFactor;
@@ -287,6 +315,9 @@ public class BucketLSMVectorIndexBuilder extends BucketIndexBuilder {
 
     if (metadata.has("quantization"))
       withQuantization(metadata.getString("quantization"));
+
+    if (metadata.has("encoding"))
+      withEncoding(metadata.getString("encoding"));
 
     if (metadata.has("maxConnections"))
       this.maxConnections = metadata.getInt("maxConnections");

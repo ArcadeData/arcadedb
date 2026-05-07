@@ -134,7 +134,7 @@ Legend: ✅ Full, ⚠️ Partial, ❌ Missing.
 | Float32 vectors                                     | ✅                                               | ✅                                           | ✅                                           |
 | Float16 vectors                                     | ❌                                               | ❌                                           | ✅                                           |
 | BFloat16 vectors                                    | ❌                                               | ❌                                           | ✅                                           |
-| INT8 vector type (pre-quantized ingest)             | ⚠️ INT8 quantization, not ingest type            | ✅                                           | ✅                                           |
+| INT8 vector type (pre-quantized ingest)             | ✅ `withEncoding(INT8)`, BINARY column ([#4132](https://github.com/ArcadeData/arcadedb/issues/4132) shipped via Java/binary API; HTTP/JSON wire routing tracked in [#4135](https://github.com/ArcadeData/arcadedb/issues/4135); HNSW internals still float pending [jvector#665](https://github.com/datastax/jvector/issues/665)) | ✅                                           | ✅                                           |
 | Scalar (INT8) quantization at index build           | ✅                                               | ✅                                           | ✅                                           |
 | Binary quantization (1-bit)                         | ✅                                               | ✅                                           | ✅                                           |
 | Product quantization (PQ)                           | ✅                                               | ⚠️ scalar+binary preferred                   | ✅                                           |
@@ -546,12 +546,21 @@ intentionally a non-axis: ranking is by user value first.
 
 #### Pre-quantized ingest types (uint8, INT8, Float16, BFloat16)
 - **Source:** M (full) / Q (partial) - **Priority:** P2 - **Risk:** Low-Medium - **Popularity:** Medium
-- **Status:** ArcadeDB stores float32 and quantizes internally. Milvus
-  accepts FLOAT16, BFLOAT16, and INT8 ingest types directly; Qdrant accepts
-  uint8.
+- **Status:** **INT8 shipped** ([#4132](https://github.com/ArcadeData/arcadedb/issues/4132)).
+  ArcadeDB now accepts signed-int8 vectors end-to-end via
+  `withEncoding(VectorEncoding.INT8)` on the type/bucket index builder (also
+  available as `WITH encoding INT8` in SQL `CREATE INDEX` metadata). The
+  document property is declared as `BINARY` (one byte per dimension) and the
+  HTTP payload + bucket storage shrink 4x vs the float32 default. JVector
+  4.0.0-rc.8 still requires `float32` for HNSW build/search internally
+  ([datastax/jvector#665](https://github.com/datastax/jvector/issues/665)
+  tracks native int8 HNSW); bytes are dequantized once on the read path via
+  `value / 127.0f` (Cohere/OpenAI calibration convention). Float16 / BFloat16
+  ingest still pending.
 - **Why it matters:** Saves 4x bandwidth and storage when the embedding
-  provider already produces half-precision (Cohere, OpenAI newer endpoints,
-  self-hosted Sentence Transformers). Small additive feature.
+  provider already produces int8 (Cohere int8 endpoints, OpenAI
+  text-embedding-3-large reduced precision, Sentence Transformers with int8
+  quantization). FP16 / BF16 ingest remains a future addition.
 
 #### Manhattan (L1) distance - shipped
 - **Source:** Q - **Priority:** P2 - **Risk:** Low - **Popularity:** Low-Medium
@@ -824,8 +833,13 @@ versus Qdrant/Milvus.
     and `SQLFunctionVectorDiscoverTest`.
 18. **Multi-vector (ColBERT) native index** - larger investment, depends
     on JVector roadmap.
-19. **Pre-quantized ingest types** (uint8, INT8, Float16, BFloat16) -
-    schema-level change, deferred.
+19. ~~**Pre-quantized ingest types** (INT8)~~ - **shipped** for INT8
+    ([#4132](https://github.com/ArcadeData/arcadedb/issues/4132)). Use
+    `withEncoding(VectorEncoding.INT8)` on the index builder; the property
+    column is declared as `BINARY` (one byte per dim) and HTTP / storage
+    payloads shrink 4x. HNSW still runs on float32 internally pending
+    [datastax/jvector#665](https://github.com/datastax/jvector/issues/665).
+    Float16 / BFloat16 ingest still deferred.
     ~~**manhattan distance**~~ (shipped as brute-force SQL function;
     indexed path blocked on JVector adding L1).
     ~~**declarative prefetch**~~ - **shipped** (`vector.rerank`).

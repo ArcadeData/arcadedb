@@ -127,11 +127,21 @@ class GrowableVectorValues implements RandomAccessVectorValues {
       if (lsmIndex != null)
         vector = lsmIndex.readVectorFromOffset(loc.absoluteFileOffset, loc.isCompacted);
 
-      // Fall back to document lookup
+      // Fall back to document lookup. WARNING on unsupported types so an INT8 index silently
+      // losing vectors during search is observable, matching ArcadePageVectorValues.
       if (vector == null && vectorPropertyName != null) {
         final var record = database.lookupByRID(loc.rid, false);
         final Document doc = (Document) record;
-        vector = VectorUtils.convertToFloatArray(doc.get(vectorPropertyName));
+        final Object raw = doc.get(vectorPropertyName);
+        if (raw != null) {
+          try {
+            vector = VectorUtils.toFloatArray(raw, lsmIndex != null ? lsmIndex.getMetadata().encoding : VectorEncoding.FLOAT32);
+          } catch (final IllegalArgumentException e) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Vector property '%s' has unsupported type %s (RID=%s, ordinal=%d): %s",
+                vectorPropertyName, raw.getClass().getName(), loc.rid, ordinal, e.getMessage());
+          }
+        }
       }
 
       if (vector != null && vector.length == dimensions && !VectorUtils.isZeroVector(vector)) {

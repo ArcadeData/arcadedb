@@ -713,9 +713,10 @@ class LSMVectorIndexStorageBenchmark {
         final var doc = record.asDocument();
         final RID rid = doc.getIdentity();
         final Object vectorObj = doc.get("embedding");
-        final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
-        if (vector != null) {
-          allVectors.put(rid, vector);
+        try {
+          allVectors.put(rid, VectorUtils.toFloatArray(vectorObj));
+        } catch (final IllegalArgumentException ignored) {
+          // benchmark data is float[]; tolerate the rare unsupported entry rather than aborting
         }
         return true;
       });

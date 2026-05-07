@@ -18,11 +18,14 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.log.LogManager;
 import io.github.jbellis.jvector.vector.VectorUtil;
 import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
 import java.util.List;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 
 import static io.github.jbellis.jvector.vector.VectorUtil.cosine;
 import static io.github.jbellis.jvector.vector.VectorUtil.squareL2Distance;
@@ -35,6 +38,14 @@ import static io.github.jbellis.jvector.vector.VectorUtil.squareL2Distance;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public final class VectorUtils {
+
+  /**
+   * One-time WARNING gate for {@link #dequantizeInt8ToFloat(byte[])} on byte {@code -128} inputs.
+   * Cohere/OpenAI int8 endpoints emit {@code [-127, 127]} only; encountering a {@code -128}
+   * indicates a non-Cohere/OpenAI byte source where the silent clamp to {@code -127} (preserving
+   * unit-norm for COSINE) is a meaningful asymmetric correction. Logged at most once per process.
+   */
+  private static final AtomicBoolean DEQUANTIZE_MIN128_WARNED = new AtomicBoolean(false);
 
   private VectorUtils() {
   }
@@ -51,18 +62,73 @@ public final class VectorUtils {
   }
 
   /**
+   * Dequantizes a signed int8 byte array into float values using the Cohere/OpenAI calibration
+   * convention: {@code value / 127.0f}. Used on the read path when an HNSW index is built over a
+   * {@link VectorEncoding#INT8}-encoded property; JVector 4.0.0-rc.8 still requires
+   * {@code float32} for HNSW build/search internally (see
+   * <a href="https://github.com/datastax/jvector/issues/665">datastax/jvector#665</a>). The
+   * conversion is lossless within the source's int8 resolution.
+   * <p>
+   * Java's {@code byte} range is {@code [-128, 127]}, but the Cohere/OpenAI calibration only emits
+   * {@code [-127, 127]}: a raw {@code -128} would dequantize to {@code -1.0079f} and break the
+   * unit-norm assumption COSINE similarity relies on. The implementation therefore clamps
+   * {@code -128} up to {@code -127} so a third-party caller passing a non-Cohere/OpenAI byte source
+   * still produces well-behaved scores.
+   *
+   * @param int8 the signed byte vector (one byte per dimension)
+   *
+   * @return a float vector of the same length where each element equals
+   *         {@code max(int8[i], -127) / 127.0f}
+   */
+  public static float[] dequantizeInt8ToFloat(final byte[] int8) {
+    final float[] result = new float[int8.length];
+    boolean sawMin128 = false;
+    for (int i = 0; i < int8.length; i++) {
+      // Java promotes byte to int for comparison and arithmetic, so the literal -127 / 127 are
+      // compared against the sign-extended byte value (-128..127). The explicit (int) cast makes
+      // the intent obvious: clamp the [-128] edge case up to -127 before the divide.
+      final int b = (int) int8[i];
+      if (b < -127)
+        sawMin128 = true;
+      result[i] = (b < -127 ? -127 : b) / 127.0f;
+    }
+    if (sawMin128 && DEQUANTIZE_MIN128_WARNED.compareAndSet(false, true))
+      LogManager.instance().log(VectorUtils.class, Level.WARNING,
+          "INT8 dequantization encountered byte value -128 and clamped it to -127 "
+              + "(Cohere/OpenAI calibration emits [-127, 127] only). Subsequent occurrences will not be logged. "
+              + "Verify the byte source if precise [-128, 127] handling is required.");
+    return result;
+  }
+
+  /**
    * Converts various object types to a float array.
-   * Handles: float[], double[], Object[] (of Number), List (of Number).
+   * Handles: float[], double[], Object[] (of Number), List (of Number), and String literal (e.g.
+   * {@code "[1.0, 2.0]"}).
+   * <p>
+   * <b>byte[] is intentionally rejected.</b> A signed-int8 byte sequence has no inherent meaning
+   * outside an {@link VectorEncoding#INT8} index context: a raw {@code byte[]} could be a binary
+   * key, a stored blob, or genuine int8-quantized vector data, and silently dequantizing by
+   * {@code v / 127.0f} for non-vector callers would produce nonsense floats with no error signal.
+   * Callers operating in an INT8 index context must use {@link #toFloatArray(Object,VectorEncoding)}
+   * (which dispatches based on the encoding) or call {@link #dequantizeInt8ToFloat(byte[])}
+   * directly. SQL math/utility functions (vector.add, vector.cosineSimilarity, etc.) call this
+   * non-encoded variant and therefore reject {@code byte[]} - users must dequantize first.
    *
    * @param vectorObj the object to convert
    *
    * @return float array representation
    *
-   * @throws IllegalArgumentException if the input type is not supported or contains non-numeric elements
+   * @throws IllegalArgumentException if the input type is not supported (including {@code byte[]})
+   *                                  or contains non-numeric elements
    */
   public static float[] toFloatArray(final Object vectorObj) {
     if (vectorObj instanceof float[] f)
       return f;
+    if (vectorObj instanceof byte[])
+      throw new IllegalArgumentException(
+          "byte[] vector is only supported in an INT8-encoded index context. Use "
+              + "VectorUtils.toFloatArray(value, VectorEncoding.INT8) or "
+              + "VectorUtils.dequantizeInt8ToFloat(byte[]) explicitly.");
     if (vectorObj instanceof double[] d) {
       final float[] result = new float[d.length];
       for (int i = 0; i < d.length; i++)
@@ -105,32 +171,26 @@ public final class VectorUtils {
   }
 
   /**
-   * Converts various object types to a float array.
-   * Returns null on unsupported types instead of throwing an exception.
+   * Encoding-aware variant of {@link #toFloatArray(Object)} for callers operating in an index
+   * context. When {@code encoding == INT8} a {@code byte[]} input is dequantized via
+   * {@link #dequantizeInt8ToFloat(byte[])}; for any other encoding the call delegates to the
+   * strict {@link #toFloatArray(Object)} and a {@code byte[]} input is rejected as in non-index
+   * contexts. All other input types (float[], double[], Object[], List, String) behave the same
+   * regardless of encoding.
    *
-   * @param vectorObj the object to convert (float[], List, etc.)
+   * @param vectorObj the object to convert
+   * @param encoding  the index encoding context (FLOAT32 to reject byte[], INT8 to dequantize)
    *
-   * @return float array representation, or null if the type is not supported
+   * @return float array representation
    *
-   * @deprecated use {@link #toFloatArray(Object)} instead
+   * @throws IllegalArgumentException if the input type is not supported, the input is a
+   *                                  {@code byte[]} but {@code encoding} is not INT8, or the
+   *                                  input contains non-numeric elements
    */
-  @Deprecated
-  public static float[] convertToFloatArray(final Object vectorObj) {
-    if (vectorObj instanceof float[] f)
-      return f;
-    if (vectorObj instanceof double[] d) {
-      final float[] vector = new float[d.length];
-      for (int i = 0; i < d.length; i++)
-        vector[i] = (float) d[i];
-      return vector;
-    }
-    if (vectorObj instanceof List<?> list) {
-      final float[] vector = new float[list.size()];
-      for (int i = 0; i < list.size(); i++)
-        vector[i] = ((Number) list.get(i)).floatValue();
-      return vector;
-    }
-    return null;
+  public static float[] toFloatArray(final Object vectorObj, final VectorEncoding encoding) {
+    if (encoding == VectorEncoding.INT8 && vectorObj instanceof byte[] b)
+      return dequantizeInt8ToFloat(b);
+    return toFloatArray(vectorObj);
   }
 
   /**

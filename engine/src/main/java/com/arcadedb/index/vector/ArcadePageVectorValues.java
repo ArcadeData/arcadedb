@@ -227,11 +227,15 @@ public class ArcadePageVectorValues implements RandomAccessVectorValues {
         return deletedSentinelVector;
       }
 
-      final float[] vector = VectorUtils.convertToFloatArray(vectorObj);
-      if (vector == null) {
+      // Unsupported vector property types surface as a WARNING for operational triage.
+      final float[] vector;
+      try {
+        vector = VectorUtils.toFloatArray(vectorObj,
+            lsmIndex != null ? lsmIndex.getMetadata().encoding : VectorEncoding.FLOAT32);
+      } catch (final IllegalArgumentException e) {
         LogManager.instance().log(this, Level.WARNING,
-            "Vector property '%s' is not float[] or List (type=%s, RID=%s)",
-            vectorPropertyName, vectorObj.getClass().getName(), loc.rid);
+            "Vector property '%s' has unsupported type %s (RID=%s): %s",
+            vectorPropertyName, vectorObj.getClass().getName(), loc.rid, e.getMessage());
         return deletedSentinelVector;
       }
 

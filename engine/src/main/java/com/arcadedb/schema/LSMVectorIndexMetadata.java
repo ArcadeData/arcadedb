@@ -1,9 +1,3 @@
-package com.arcadedb.schema;
-
-import com.arcadedb.index.vector.VectorQuantizationType;
-import com.arcadedb.serializer.json.JSONObject;
-import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
-
 /*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
@@ -18,11 +12,29 @@ import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
  */
+package com.arcadedb.schema;
+
+import com.arcadedb.index.vector.VectorEncoding;
+import com.arcadedb.index.vector.VectorQuantizationType;
+import com.arcadedb.serializer.json.JSONObject;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
+
 public class LSMVectorIndexMetadata extends IndexMetadata {
   public int                      dimensions;
   public VectorSimilarityFunction similarityFunction       = VectorSimilarityFunction.COSINE;
   public VectorQuantizationType   quantizationType         = VectorQuantizationType.NONE;
+  /**
+   * Application-side encoding of the vector property (FLOAT32 default, INT8 opt-in). Distinct
+   * from {@link #quantizationType}: encoding is what the document column stores; quantization
+   * is what the index does internally on top. INT8 ingest skips a client-side
+   * {@code int8 → float32} round-trip and shrinks the HTTP payload + document bucket 4x. See
+   * {@link VectorEncoding}.
+   */
+  public VectorEncoding           encoding                 = VectorEncoding.FLOAT32;
   public int                      maxConnections           = 16;
   public int                      beamWidth                = 100;
   public int                      efSearch                 = 100;  // Search beam width (higher = better recall but slower)
@@ -59,6 +71,9 @@ public class LSMVectorIndexMetadata extends IndexMetadata {
 
     if (metadata.has("quantization"))
       this.quantizationType = VectorQuantizationType.valueOf(metadata.getString("quantization"));
+
+    if (metadata.has("encoding"))
+      this.encoding = VectorEncoding.fromString(metadata.getString("encoding"));
 
     if (metadata.has("maxConnections"))
       this.maxConnections = metadata.getInt("maxConnections");
