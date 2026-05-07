@@ -234,7 +234,8 @@ public class CypherExecutionPlan {
       // Use pre-computed flags from the cached CypherStatement to avoid scanning clause lists per execution
       if (physicalPlan != null && physicalPlan.getRootOperator() != null
           && !statement.hasUnwindBeforeMatch() && !statement.hasSubquery()
-          && !statement.hasWithBeforeMatch() && !statement.hasVariableLengthPath()) {
+          && !statement.hasWithBeforeMatch() && !statement.hasVariableLengthPath()
+          && !statement.hasWriteBeforeMatch()) {
         // Use optimizer - execute physical operators directly
         // Note: For Phase 4, we only optimize MATCH patterns
         // RETURN, ORDER BY, LIMIT are still handled by execution steps
@@ -476,7 +477,7 @@ public class CypherExecutionPlan {
 
           final boolean hasVLP2 = hasVariableLengthPath();
           if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2
-              && !hasVLP2)
+              && !hasVLP2 && !statement.hasWriteBeforeMatch())
             rootStep = buildExecutionStepsWithOptimizer(context);
           else
             rootStep = buildExecutionSteps(context);

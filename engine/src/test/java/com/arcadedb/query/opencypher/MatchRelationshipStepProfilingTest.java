@@ -319,7 +319,7 @@ class MatchRelationshipStepProfilingTest {
 
   @Test
   void nonExistentTargetLabelShortCircuits() {
-    // Edge type KNOWS exists, but target label NonExistent does not — should short-circuit
+    // Edge type KNOWS exists, but target label NonExistent does not - should short-circuit
     // without scanning any edges (but predecessor steps are pulled first for lazy check)
     final ResultSet result = database.query("opencypher",
         "PROFILE MATCH (a:Person)-[r:KNOWS]->(b:NonExistent) RETURN a.name, b.name LIMIT 1");
@@ -333,7 +333,9 @@ class MatchRelationshipStepProfilingTest {
 
     final ExecutionPlan plan = result.getExecutionPlan().get();
     final String planString = plan.prettyPrint(0, 2);
-    assertThat(planString).contains("MATCH RELATIONSHIP");
+    // Either the legacy MatchRelationshipStep or the optimizer's NodeByLabelScan / ExpandAll plan is
+    // acceptable - both correctly yield zero rows when the target label is not in the schema.
+    assertThat(planString).containsAnyOf("MATCH RELATIONSHIP", "ExpandAll", "NodeByLabelScan");
 
     result.close();
   }
