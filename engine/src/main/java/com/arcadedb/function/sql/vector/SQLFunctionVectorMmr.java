@@ -34,6 +34,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Maximal Marginal Relevance (MMR) reranker. Diversifies a scored candidate set by greedily
@@ -66,7 +67,7 @@ import java.util.Map;
 public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.mmr";
 
-  private static final java.util.Set<String> OPTIONS = java.util.Set.of("lambda", "k");
+  private static final Set<String> OPTIONS = Set.of("lambda", "k");
 
   private static final float DEFAULT_LAMBDA = 0.5f;
 

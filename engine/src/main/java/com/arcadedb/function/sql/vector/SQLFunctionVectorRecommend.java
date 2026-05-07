@@ -68,6 +68,15 @@ import java.util.Set;
  * upstream selection and this call are silently dropped; if every positive is dropped, the
  * function returns an empty list rather than running a degenerate KNN with a zero query vector.
  * Embedding dimension mismatch across examples throws.
+ * <p>
+ * <b>Zero-vector edge case.</b> When the positive and negative centroids cancel out (e.g. the
+ * surviving positives and negatives mean to the same point in the embedding space, or the
+ * negatives are exactly the additive inverse of the positives), the resulting query vector is
+ * zero or near-zero. KNN against a zero vector is well-defined for {@code COSINE} similarity
+ * (every candidate has the same similarity, so the order is unstable) but practically useless;
+ * the function does not currently detect this case. Callers worried about it should check the
+ * dispersion of their positives/negatives upstream, or use {@code vector.discover} (which scores
+ * by per-pair margin sum and so degrades gracefully when the centroid signal cancels).
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

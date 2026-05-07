@@ -28,6 +28,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Score-boost reranker. Lets product teams blend vector relevance with arbitrary scalar business
@@ -61,7 +62,7 @@ import java.util.Map;
 public class SQLFunctionVectorBoost extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.boost";
 
-  private static final java.util.Set<String> OPTIONS = java.util.Set.of("boosts", "limit");
+  private static final Set<String> OPTIONS = Set.of("boosts", "limit");
 
   public SQLFunctionVectorBoost() {
     super(NAME);

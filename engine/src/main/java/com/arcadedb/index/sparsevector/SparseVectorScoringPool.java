@@ -97,11 +97,22 @@ public final class SparseVectorScoringPool {
     // on a box that also runs Gremlin / Polyglot scripts that compete for CPU. Negative values
     // are coerced to the floor for safety; the configuration validator already rejects them at
     // GlobalConfiguration parse time, but the coercion here makes test-side bypasses safe too.
+    // A negative configured value silently falling back to a default is exactly the kind of
+    // misconfiguration that hides bad sizing - log it at WARNING so operators see something
+    // when their setting did not stick.
     final int configuredThreads = GlobalConfiguration.SPARSE_VECTOR_SCORING_POOL_THREADS.getValueAsInteger();
+    if (configuredThreads < 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Sparse-vector scoring pool: negative configured thread count (%d), falling back to auto-size (max(%d, cores))",
+          configuredThreads, DEFAULT_THREADS_FLOOR);
     final int threads = configuredThreads > 0
         ? configuredThreads
         : Math.max(DEFAULT_THREADS_FLOOR, Runtime.getRuntime().availableProcessors());
     final int configuredQueueSize = GlobalConfiguration.SPARSE_VECTOR_SCORING_QUEUE_SIZE.getValueAsInteger();
+    if (configuredQueueSize < 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Sparse-vector scoring pool: negative configured queue size (%d), falling back to default 1024",
+          configuredQueueSize);
     final int queueSize = configuredQueueSize > 0 ? configuredQueueSize : 1024;
     final AtomicInteger workerSeq = new AtomicInteger();
 

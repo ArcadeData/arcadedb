@@ -323,6 +323,34 @@ public class GetServerHandler extends AbstractServerHttpHandler {
   }
 
   /**
+   * Walks every open server database and emits one entry per database whose value is the
+   * {@link LSMSparseVectorIndexMetrics#buildJSON} snapshot for that database. Databases without
+   * any sparse-vector index produce an empty inner object - Studio hides the card when the
+   * outer object is empty (no databases have any sparse indexes).
+   * <p>
+   * Per-database lookups are guarded so that a database being concurrently dropped (and
+   * therefore throwing on {@code getDatabase(name)}) cannot fail the entire {@code /server}
+   * metrics response. The skipped row is logged at {@code FINE} so the next scrape, when the
+   * database is either fully back or fully gone, has a clean signal again.
+   */
+  private JSONObject buildSparseVectorIndexesJSON() {
+    final JSONObject byDatabase = new JSONObject();
+    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
+      try {
+        final ServerDatabase db = httpServer.getServer().getDatabase(dbName);
+        final JSONObject indexes = LSMSparseVectorIndexMetrics.buildJSON(db);
+        if (indexes.length() > 0)
+          byDatabase.put(dbName, indexes);
+      } catch (final RuntimeException e) {
+        LogManager.instance().log(this, Level.FINE,
+            "Skipping sparse-vector metrics for database '%s' (likely being dropped or reopened): %s",
+            dbName, e.getMessage());
+      }
+    }
+    return byDatabase;
+  }
+
+  /**
    * Walks the Micrometer registry collecting every gauge whose name starts with
    * {@code arcadedb.executor.} and groups them by their {@code pool} tag into a JSON object of
    * the shape Studio's {@code studio-server.js} expects:
@@ -333,23 +361,6 @@ public class GetServerHandler extends AbstractServerHttpHandler {
    * Extracted as a static helper so the JSON shape can be unit-tested without booting an HTTP
    * server.
    */
-  /**
-   * Walks every open server database and emits one entry per database whose value is the
-   * {@link LSMSparseVectorIndexMetrics#buildJSON} snapshot for that database. Databases without
-   * any sparse-vector index produce an empty inner object - Studio hides the card when the
-   * outer object is empty (no databases have any sparse indexes).
-   */
-  private JSONObject buildSparseVectorIndexesJSON() {
-    final JSONObject byDatabase = new JSONObject();
-    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
-      final ServerDatabase db = httpServer.getServer().getDatabase(dbName);
-      final JSONObject indexes = LSMSparseVectorIndexMetrics.buildJSON(db);
-      if (indexes.length() > 0)
-        byDatabase.put(dbName, indexes);
-    }
-    return byDatabase;
-  }
-
   public static JSONObject buildExecutorsJSON(final MeterRegistry registry) {
     final JSONObject executorsJSON = new JSONObject();
     registry.getMeters().stream()

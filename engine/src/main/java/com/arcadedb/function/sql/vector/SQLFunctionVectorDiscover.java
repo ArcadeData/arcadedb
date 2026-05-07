@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
@@ -103,8 +104,7 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
         throw new CommandSQLParsingException(NAME + " 4th argument must be an options map");
       rawOpts = m;
     }
-    final com.arcadedb.function.sql.FunctionOptions opts =
-        new com.arcadedb.function.sql.FunctionOptions(NAME, rawOpts, OPTIONS);
+    final FunctionOptions opts = new FunctionOptions(NAME, rawOpts, OPTIONS);
     final int efSearch = opts.getInt("efSearch", -1);
     final int overfetchFactor = opts.getInt("overfetch", DEFAULT_OVERFETCH);
     if (overfetchFactor < 1)
@@ -214,7 +214,7 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
       // previous round's score still attached). Building a copy is cheap and the safer default.
       final Object row = rescored.get(i).row;
       if (row instanceof Map<?, ?> mm) {
-        final java.util.LinkedHashMap<String, Object> rebuilt = new java.util.LinkedHashMap<>();
+        final LinkedHashMap<String, Object> rebuilt = new LinkedHashMap<>();
         for (final var e : mm.entrySet())
           rebuilt.put(String.valueOf(e.getKey()), e.getValue());
         rebuilt.put("score", rescored.get(i).score);
@@ -269,13 +269,16 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
 
   private Pair parseOnePair(final Object raw) {
     final List<RID> rids = new ArrayList<>(2);
+    // List / Iterable covers what the SQL parser produces for {@code [#1:1, #1:2]}; Object[]
+    // covers the case where a Java caller hands in a fixed-size array. No reflection needed:
+    // primitive RID arrays would not type-check against the {@code asRid(Object)} entry-point
+    // anyway, so Object[] is the only array shape we need to admit.
     if (raw instanceof Iterable<?> iter) {
       for (final Object o : iter)
         rids.add(asRid(o));
-    } else if (raw != null && raw.getClass().isArray()) {
-      final int n = java.lang.reflect.Array.getLength(raw);
-      for (int i = 0; i < n; i++)
-        rids.add(asRid(java.lang.reflect.Array.get(raw, i)));
+    } else if (raw instanceof Object[] arr) {
+      for (final Object o : arr)
+        rids.add(asRid(o));
     } else {
       throw new CommandSQLParsingException(NAME + " each pair must be a 2-element list, got: " + raw);
     }

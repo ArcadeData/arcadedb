@@ -78,11 +78,11 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   static final long DEFAULT_MEMTABLE_FLUSH_THRESHOLD = 1_000_000L;
 
   /**
-   * Soft-block factor: once {@code memtable.totalPostings() >= memtableFlushThreshold * factor},
+   * Backpressure factor: once {@code memtable.totalPostings() >= memtableFlushThreshold * factor},
    * {@link #put} briefly waits on {@link #mutatorLock} so any in-progress flush has a chance to
-   * swap the memtable out before we add another posting to it. The wait is bounded - if no flush
-   * is running the lock take/release is microsecond-cost, and if one is running we block exactly
-   * for its remaining duration. This is the backpressure described in
+   * swap the memtable out before we add another posting to it. <b>Soft block, not a rejection</b>:
+   * the put always eventually proceeds; the wait is bounded by the in-progress flush duration (or
+   * is essentially free when no flush is running). This is the backpressure described in
    * {@code docs/sparse-vector-storage-design.md} ("Risks - Memtable pressure under high write
    * rate"): with the soft trigger ({@code maybeFlush}) firing per commit, sustained write rate
    * exceeding flush rate would otherwise let the memtable grow unbounded between flushes and
@@ -92,7 +92,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * (post-commit callback) drive flushes keeps the call site safe; the soft-block here just
    * ensures puts don't outrun those flushes.
    */
-  static final long MEMTABLE_HARD_LIMIT_FACTOR = 2L;
+  static final long MEMTABLE_BACKPRESSURE_FACTOR = 2L;
 
   /**
    * Size-tiered compaction parameters. After a successful {@link #flush()} the engine groups
@@ -138,7 +138,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   private final String            indexName;
   private final SegmentParameters params;
   private final long              memtableFlushThreshold;
-  private final long              memtableHardLimit;
+  private final long              memtableBackpressureThreshold;
   private final int               tierFanout;
   private final long              tierBasePostings;
 
@@ -189,7 +189,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     this.indexName = indexName;
     this.params = params;
     this.memtableFlushThreshold = memtableFlushThreshold;
-    this.memtableHardLimit = Math.multiplyExact(memtableFlushThreshold, MEMTABLE_HARD_LIMIT_FACTOR);
+    this.memtableBackpressureThreshold = Math.multiplyExact(memtableFlushThreshold, MEMTABLE_BACKPRESSURE_FACTOR);
     this.tierFanout = tierFanout;
     this.tierBasePostings = tierBasePostings;
     loadExistingSegments();
@@ -252,15 +252,15 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
 
   /**
    * Backpressure hook for {@link #put} and {@link #remove}. When the memtable has accumulated
-   * more than {@link #memtableHardLimit} live entries and a flush is in flight (i.e. another
-   * thread holds {@link #mutatorLock}), the calling thread briefly joins the lock queue so its
-   * write happens after the in-progress flush has swapped the memtable. The lock take/release
-   * is essentially free when no flush is running. Without this, sustained write rate exceeding
-   * flush rate would let the memtable grow unbounded between {@link #maybeFlush} calls, and
-   * eventually OOM. See {@link #MEMTABLE_HARD_LIMIT_FACTOR} for the design rationale.
+   * more than {@link #memtableBackpressureThreshold} live entries and a flush is in flight (i.e.
+   * another thread holds {@link #mutatorLock}), the calling thread briefly joins the lock queue
+   * so its write happens after the in-progress flush has swapped the memtable. The lock
+   * take/release is essentially free when no flush is running. Without this, sustained write rate
+   * exceeding flush rate would let the memtable grow unbounded between {@link #maybeFlush} calls,
+   * and eventually OOM. See {@link #MEMTABLE_BACKPRESSURE_FACTOR} for the design rationale.
    */
   private void applyBackpressureIfNeeded() {
-    if (memtable.get().totalPostings() < memtableHardLimit)
+    if (memtable.get().totalPostings() < memtableBackpressureThreshold)
       return;
     // Wait for any in-progress flush (or the next one to take the lock if maybeFlush is queued)
     // to publish its memtable swap. Re-entrant: if this thread is already inside a flush() on
