@@ -2247,15 +2247,24 @@ public class SelectExecutionPlanner {
 
   /**
    * Extracts a TagFilter from the flattened WHERE clause by matching equality predicates on TAG columns.
-   * Only simple equality conditions (column = 'value') on TAG columns are extracted.
+   * <p>
+   * The flattened WHERE is in DNF form: a list of AndBlocks where the overall predicate is the OR of
+   * each block. A row qualifies for push-down only if every block constrains the tag column to a
+   * (possibly different) literal via equality; in that case we can safely push the union of those
+   * values down as an IN filter (the residual FilterStep eliminates any false positives).
+   * <p>
+   * If even one block has no equality on a given tag column, that block could match a row with any
+   * tag value, so push-down on that column would be unsound and is skipped.
    */
   private static TagFilter extractTagFilter(final List<AndBlock> flattenedWhere, final List<ColumnDefinition> columns,
       final String timestampColumn, final CommandContext context) {
-    if (flattenedWhere == null)
+    if (flattenedWhere == null || flattenedWhere.isEmpty())
       return null;
 
-    TagFilter filter = null;
+    final int tagCount = columns.size();
+    final List<Map<Integer, Set<Object>>> perBlockEqualities = new ArrayList<>(flattenedWhere.size());
     for (final AndBlock andBlock : flattenedWhere) {
+      final Map<Integer, Set<Object>> blockMap = new HashMap<>();
       for (final BooleanExpression expr : andBlock.getSubBlocks()) {
         if (!(expr instanceof BinaryCondition binary))
           continue;
@@ -2265,12 +2274,11 @@ public class SelectExecutionPlanner {
         final String rightStr = binary.right != null ? binary.right.toString().trim() : null;
         if (leftStr == null || rightStr == null)
           continue;
-        // Skip timestamp predicates — already handled by time range extraction
+        // Skip timestamp predicates, already handled by time range extraction
         if (timestampColumn.equals(leftStr) || timestampColumn.equals(rightStr))
           continue;
 
-        // Determine which side is the column name and which is the value
-        for (int i = 0; i < columns.size(); i++) {
+        for (int i = 0; i < tagCount; i++) {
           final ColumnDefinition col = columns.get(i);
           if (col.getRole() != ColumnDefinition.ColumnRole.TAG)
             continue;
@@ -2282,17 +2290,46 @@ public class SelectExecutionPlanner {
           final Object value = valueExpr.execute((Identifiable) null, context);
           if (value == null)
             continue;
-          // Column index for TagFilter is the non-timestamp column index
-          int nonTsIdx = -1;
-          for (int j = 0; j <= i; j++)
-            if (columns.get(j).getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
-              nonTsIdx++;
-          filter = filter == null ? TagFilter.eq(nonTsIdx, value.toString()) : filter.and(nonTsIdx, value.toString());
+          final int nonTsIdx = nonTsIndexOf(columns, i);
+          blockMap.computeIfAbsent(nonTsIdx, k -> new HashSet<>()).add(value.toString());
           break;
         }
       }
+      perBlockEqualities.add(blockMap);
+    }
+
+    // For each tag column, push down only if every block constrains it; values are unioned across blocks.
+    TagFilter filter = null;
+    for (int i = 0; i < tagCount; i++) {
+      final ColumnDefinition col = columns.get(i);
+      if (col.getRole() != ColumnDefinition.ColumnRole.TAG)
+        continue;
+      final int nonTsIdx = nonTsIndexOf(columns, i);
+
+      final Set<Object> unionValues = new HashSet<>();
+      boolean inEveryBlock = true;
+      for (final Map<Integer, Set<Object>> blockMap : perBlockEqualities) {
+        final Set<Object> values = blockMap.get(nonTsIdx);
+        if (values == null || values.isEmpty()) {
+          inEveryBlock = false;
+          break;
+        }
+        unionValues.addAll(values);
+      }
+      if (!inEveryBlock || unionValues.isEmpty())
+        continue;
+
+      filter = filter == null ? TagFilter.in(nonTsIdx, unionValues) : filter.andIn(nonTsIdx, unionValues);
     }
     return filter;
+  }
+
+  private static int nonTsIndexOf(final List<ColumnDefinition> columns, final int columnIndex) {
+    int nonTsIdx = -1;
+    for (int j = 0; j <= columnIndex; j++)
+      if (columns.get(j).getRole() != ColumnDefinition.ColumnRole.TIMESTAMP)
+        nonTsIdx++;
+    return nonTsIdx;
   }
 
   /**
