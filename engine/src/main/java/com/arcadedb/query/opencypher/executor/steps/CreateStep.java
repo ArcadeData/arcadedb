@@ -41,7 +41,6 @@ import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.*;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -481,55 +480,11 @@ public class CreateStep extends AbstractExecutionStep {
   }
 
   /**
-   * Convert CypherTemporalValue objects to java.time types for ArcadeDB storage.
-   * Handles both single values and collections/arrays of temporal values.
+   * Convert CypherTemporalValue objects (and collections of them) to types ArcadeDB can serialize.
+   * Delegates to the shared TemporalUtil so all Cypher write paths apply identical conversion.
    */
   private static Object convertTemporalForStorage(final Object value) {
-    // Fast path: skip non-temporal primitives, numbers, strings, and boolean (common case for vector embeddings)
-    if (value == null || value instanceof Number || value instanceof String || value instanceof Boolean)
-      return value;
-
-    // Handle single temporal values
-    if (value instanceof CypherDate)
-      return ((CypherDate) value).getValue();
-    if (value instanceof CypherLocalDateTime)
-      return ((CypherLocalDateTime) value).getValue();
-    if (value instanceof CypherDateTime)
-      return value.toString(); // Store as String to preserve timezone info
-    if (value instanceof CypherLocalTime)
-      return ((CypherLocalTime) value).getValue().toString();
-    if (value instanceof CypherTime)
-      return ((CypherTime) value).getValue().toString();
-    if (value instanceof CypherDuration)
-      return value.toString();
-
-    // Handle collections - only iterate if the collection could contain temporal values
-    if (value instanceof Collection<?> collection) {
-      if (collection.isEmpty())
-        return value;
-      // Check the first element: if it's a simple type (Number, String, Boolean),
-      // the entire collection is unlikely to contain temporal values
-      final Object first = collection.iterator().next();
-      if (first instanceof Number || first instanceof String || first instanceof Boolean)
-        return value;
-      // Collection may contain temporal values, convert each element
-      final List<Object> converted = new ArrayList<>(collection.size());
-      for (final Object item : collection)
-        converted.add(convertTemporalForStorage(item));
-      return converted;
-    }
-    if (value instanceof Object[] array) {
-      if (array.length == 0)
-        return value;
-      if (array[0] instanceof Number || array[0] instanceof String || array[0] instanceof Boolean)
-        return value;
-      final Object[] converted = new Object[array.length];
-      for (int i = 0; i < array.length; i++)
-        converted[i] = convertTemporalForStorage(array[i]);
-      return converted;
-    }
-
-    return value;
+    return TemporalUtil.toCoreJavaType(value);
   }
 
   /**
