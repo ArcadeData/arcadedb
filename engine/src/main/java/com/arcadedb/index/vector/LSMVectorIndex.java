@@ -365,7 +365,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
           vectorBuilder.pqTrainingLimit);
       // INT8 ingest encoding is plumbed via the metadata field after construction to avoid
       // ballooning the already-17-arg primary constructor (issue #4132). The metadata default is
-      // FLOAT32; we overwrite it only when the builder requested a different encoding.
+      // FLOAT32; we overwrite it only when the builder requested a different encoding. The brief
+      // window where the index exists with FLOAT32 encoding before this assignment is unobservable
+      // because the factory hasn't published the reference yet - the new index is returned after
+      // the field is set. Tech debt: a future refactor that consolidates the constructor arguments
+      // into a config record should fold this back into construction time.
       index.metadata.encoding = vectorBuilder.encoding;
       return index;
     }
@@ -3304,7 +3308,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       if (vector.length != metadata.dimensions)
         throw new IllegalArgumentException(
-            "Vector dimension " + vector.length + " does not match index dimension " + metadata.dimensions);
+            "Vector dimension does not match index dimension " + metadata.dimensions + ": got "
+                + keys[0].getClass().getSimpleName() + " of length " + vector.length);
 
       final RID rid = values[0];
       final TransactionContext.STATUS txStatus = getDatabase().getTransaction().getStatus();
@@ -3390,12 +3395,22 @@ public class LSMVectorIndex implements Index, IndexInternal {
           try {
             vector = VectorUtils.toFloatArray(keys[0]);
           } catch (final IllegalArgumentException e) {
+            // Drop the row but log loudly: putBatch runs during commit replay where the originating
+            // call site has long returned, so a swallowed conversion failure is the only thing
+            // separating an operator from silent index drift. The cause is preserved for triage.
+            LogManager.instance().log(this, Level.WARNING,
+                "Vector index '%s' skipping batch entry for %s: unsupported key type %s (%s)",
+                indexName, rid, keys[0].getClass().getSimpleName(), e.getMessage());
             continue;
           }
         }
 
-        if (vector.length != metadata.dimensions)
+        if (vector.length != metadata.dimensions) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Vector index '%s' skipping batch entry for %s: %s of length %d does not match index dimension %d",
+              indexName, rid, keys[0].getClass().getSimpleName(), vector.length, metadata.dimensions);
           continue;
+        }
 
         final int id = nextId.getAndIncrement();
         persistVectorWithLocation(id, rid, vector);

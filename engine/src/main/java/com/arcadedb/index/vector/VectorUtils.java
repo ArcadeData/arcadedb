@@ -53,19 +53,28 @@ public final class VectorUtils {
   /**
    * Dequantizes a signed int8 byte array into float values using the Cohere/OpenAI calibration
    * convention: {@code value / 127.0f}. Used on the read path when an HNSW index is built over a
-   * {@link VectorEncoding#INT8}-encoded property — JVector 4.0.0-rc.8 still requires
+   * {@link VectorEncoding#INT8}-encoded property; JVector 4.0.0-rc.8 still requires
    * {@code float32} for HNSW build/search internally (see
    * <a href="https://github.com/datastax/jvector/issues/665">datastax/jvector#665</a>). The
    * conversion is lossless within the source's int8 resolution.
+   * <p>
+   * Java's {@code byte} range is {@code [-128, 127]}, but the Cohere/OpenAI calibration only emits
+   * {@code [-127, 127]}: a raw {@code -128} would dequantize to {@code -1.0079f} and break the
+   * unit-norm assumption COSINE similarity relies on. The implementation therefore clamps
+   * {@code -128} up to {@code -127} so a third-party caller passing a non-Cohere/OpenAI byte source
+   * still produces well-behaved scores.
    *
    * @param int8 the signed byte vector (one byte per dimension)
    *
-   * @return a float vector of the same length where each element equals {@code int8[i] / 127.0f}
+   * @return a float vector of the same length where each element equals
+   *         {@code max(int8[i], -127) / 127.0f}
    */
   public static float[] dequantizeInt8ToFloat(final byte[] int8) {
     final float[] result = new float[int8.length];
-    for (int i = 0; i < int8.length; i++)
-      result[i] = int8[i] / 127.0f;
+    for (int i = 0; i < int8.length; i++) {
+      final int b = int8[i] < -127 ? -127 : int8[i];
+      result[i] = b / 127.0f;
+    }
     return result;
   }
 

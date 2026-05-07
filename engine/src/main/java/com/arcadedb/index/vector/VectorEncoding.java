@@ -27,13 +27,13 @@ package com.arcadedb.index.vector;
  * <ul>
  *   <li>{@link #FLOAT32} (default) - the document's vector property is {@code ARRAY_OF_FLOATS}
  *       (4 bytes per dim). Backwards-compatible behavior; nothing changes vs. pre-#4132.</li>
- *   <li>{@link #INT8} - the document's vector property is {@code ARRAY_OF_BYTES} (1 byte per
- *       dim, signed). Callers using providers that emit int8 directly (Cohere `int8` endpoints,
- *       OpenAI `text-embedding-3-large` reduced precision, Sentence Transformers with int8
- *       quantization) skip a precision-losing client-side {@code int8 → float32 → server} round
- *       trip. The HTTP payload and document-bucket storage shrink 4×. JVector 4.0.0-rc.8 still
- *       requires {@code float32} for HNSW build/search internally, so the engine dequantizes
- *       on the read path; native int8 HNSW is tracked at
+ *   <li>{@link #INT8} - the document's vector property is {@code BINARY} (the ArcadeDB type that
+ *       maps to a Java {@code byte[]}; one signed byte per dim). Callers using providers that emit
+ *       int8 directly (Cohere `int8` endpoints, OpenAI `text-embedding-3-large` reduced precision,
+ *       Sentence Transformers with int8 quantization) skip a precision-losing client-side
+ *       {@code int8 -> float32 -> server} round trip. The HTTP payload and document-bucket storage
+ *       shrink 4x. JVector 4.0.0-rc.8 still requires {@code float32} for HNSW build/search
+ *       internally, so the engine dequantizes on the read path; native int8 HNSW is tracked at
  *       <a href="https://github.com/datastax/jvector/issues/665">datastax/jvector#665</a>.</li>
  * </ul>
  *
