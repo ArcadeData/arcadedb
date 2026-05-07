@@ -92,7 +92,7 @@ public class SQLFunctionVectorRerank extends SQLFunctionVectorAbstract {
 
     final BasicDatabase db = context.getDatabase();
     final ArrayList<Scored> rescored = new ArrayList<>();
-    int expectedDim = queryVector.length;
+    final int expectedDim = queryVector.length;
     for (final Object row : iter) {
       final RID rid = extractRid(row);
       if (rid == null)

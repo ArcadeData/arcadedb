@@ -263,6 +263,16 @@ public enum GlobalConfiguration {
           + "but never fails the query.",
       Integer.class, 1024),
 
+  SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS("arcadedb.sparseVectorScoringTimeoutSeconds", SCOPE.JVM,
+      "Per-task wall-clock timeout for the parallel sparse-vector top-K fan-out. Each per-bucket "
+          + "scoring task is awaited with this timeout; on expiry the future is cancelled and the "
+          + "query fails with a descriptive error rather than hanging the caller indefinitely. "
+          + "Catches the case where a bucket's index is stuck on a write lock during compaction, "
+          + "an HA replication race wedged a segment open, or a JVM-level pause stalled the worker "
+          + "thread. Set to 0 to disable the timeout (caller will block indefinitely; not "
+          + "recommended for production).",
+      Integer.class, 30),
+
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
       "Queue implementation to use between 'standard' and 'fast'. 'standard' consumes less CPU than the 'fast' implementation, but it could be slower with high loads",
       String.class, "standard", Set.of("standard", "fast")),

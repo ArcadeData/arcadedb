@@ -138,6 +138,28 @@ class SQLFunctionVectorRecommendTest extends TestHelper {
         .hasMessageContaining("Type[property]");
   }
 
+  @Test
+  void unknownOptionKeyIsRejected() {
+    // A typo like {@code efSerach} (vs {@code efSearch}) used to be silently dropped; pinning the
+    // strict-validation contract guards against the typo class.
+    assertThatThrownBy(() -> database.query("sql",
+        "SELECT expand(`vector.recommend`('Doc[embedding]', [?], [], 3, { efSerach: 10 }))",
+        ridByName.get("A")))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("efSerach");
+  }
+
+  @Test
+  void filterOptionIsExplicitlyRejected() {
+    // {@code vector.neighbors} treats filter as an allow-list, but recommendation needs the
+    // inverse (examples must NOT appear in result). Reject up-front so the user is not surprised.
+    assertThatThrownBy(() -> database.query("sql",
+        "SELECT expand(`vector.recommend`('Doc[embedding]', [?], [], 3, { filter: [?] }))",
+        ridByName.get("A"), ridByName.get("B")))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("filter");
+  }
+
   /**
    * Forwarded {@code groupBy} option - sanity that recommendation results respect grouping (the
    * inner {@code vector.neighbors} call gets the option). With one doc per name, each row is its

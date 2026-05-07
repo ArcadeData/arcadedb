@@ -109,12 +109,20 @@ public class SQLFunctionVectorDiscover extends SQLFunctionVectorAbstract {
     final int overfetchFactor = opts.getInt("overfetch", DEFAULT_OVERFETCH);
     if (overfetchFactor < 1)
       throw new CommandSQLParsingException(NAME + " overfetch must be >= 1, got " + overfetchFactor);
+    // Defensive ordering: compute in long so the multiplication cannot overflow even with very
+    // large k * overfetch combinations, then guard against the int truncation explicitly. The
+    // MAX_OVERFETCH_K cap (100k today) is far below Integer.MAX_VALUE so the (int) cast below is
+    // safe today, but the explicit guard keeps the safety argument self-documenting and protects
+    // against a future bump of MAX_OVERFETCH_K that crosses the 2^31 boundary.
     final long candidatePoolL = (long) k * overfetchFactor;
     if (candidatePoolL > MAX_OVERFETCH_K)
       throw new CommandSQLParsingException(NAME + " overfetch budget exceeded: k=" + k
           + ", overfetch=" + overfetchFactor + " would request " + candidatePoolL
           + " candidates (cap " + MAX_OVERFETCH_K + ")");
-      final int candidatePool = (int) candidatePoolL;
+    if (candidatePoolL > Integer.MAX_VALUE)
+      throw new CommandSQLParsingException(NAME + " candidate pool size " + candidatePoolL
+          + " exceeds Integer.MAX_VALUE; reduce k or overfetch");
+    final int candidatePool = (int) candidatePoolL;
 
     final int bracketStart = indexSpec.indexOf('[');
     if (bracketStart < 0 || !indexSpec.endsWith("]"))

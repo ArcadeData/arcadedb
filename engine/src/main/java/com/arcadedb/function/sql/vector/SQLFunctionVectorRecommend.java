@@ -266,17 +266,29 @@ public class SQLFunctionVectorRecommend extends SQLFunctionVectorAbstract {
 
   /**
    * Forwards only the options {@code vector.neighbors} understands ({@code efSearch},
-   * {@code groupBy}, {@code groupSize}). The {@code filter} option is intentionally dropped:
-   * {@code vector.neighbors} treats it as an allow-list, but recommendation needs the inverse,
-   * which is handled by the post-filter step in {@link #execute}.
+   * {@code groupBy}, {@code groupSize}) and rejects everything else with a clear message. The
+   * {@code filter} option is intentionally rejected too: {@code vector.neighbors} treats it as an
+   * allow-list, but recommendation needs the inverse (the example RIDs must NOT appear in the
+   * result), which is handled by the post-filter step in {@link #execute}. Surfacing a typo
+   * (e.g. {@code efSerach} for {@code efSearch}) as a parse error catches a class of silent-bug
+   * that the pre-fix version dropped on the floor.
    */
   private static LinkedHashMap<String, Object> buildInnerOptions(final Object userOptions) {
     final LinkedHashMap<String, Object> out = new LinkedHashMap<>();
     if (userOptions instanceof Map<?, ?> userMap) {
       for (final var e : userMap.entrySet()) {
         final String key = String.valueOf(e.getKey());
-        if (FORWARDED_OPTIONS.contains(key))
+        if (FORWARDED_OPTIONS.contains(key)) {
           out.put(key, e.getValue());
+        } else if ("filter".equals(key)) {
+          throw new CommandSQLParsingException(
+              NAME + " does not accept the 'filter' option (the example RIDs are excluded "
+                  + "automatically; use a separate WHERE on the outer query if you need additional "
+                  + "exclusions)");
+        } else {
+          throw new CommandSQLParsingException(
+              NAME + " does not recognise option '" + key + "'. Allowed: " + FORWARDED_OPTIONS);
+        }
       }
     }
     return out;
