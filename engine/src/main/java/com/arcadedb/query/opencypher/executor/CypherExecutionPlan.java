@@ -476,8 +476,10 @@ public class CypherExecutionPlan {
           final boolean hasWithBeforeMatch2 = hasWithPrecedingMatch();
 
           final boolean hasVLP2 = hasVariableLengthPath();
+          final boolean hasWriteBeforeMatch2 = statement.hasWriteBeforeMatch();
+          final boolean hasSubquery2 = statement.hasSubquery();
           if (physicalPlan != null && physicalPlan.getRootOperator() != null && !hasUnwindBeforeMatch && !hasWithBeforeMatch2
-              && !hasVLP2 && !statement.hasWriteBeforeMatch())
+              && !hasVLP2 && !hasWriteBeforeMatch2 && !hasSubquery2)
             rootStep = buildExecutionStepsWithOptimizer(context);
           else
             rootStep = buildExecutionSteps(context);

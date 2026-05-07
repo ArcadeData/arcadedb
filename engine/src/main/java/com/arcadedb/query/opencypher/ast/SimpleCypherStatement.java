@@ -159,7 +159,10 @@ public class SimpleCypherStatement implements CypherStatement {
 
   private boolean computeHasWriteBeforeMatch() {
     if (clausesInOrder == null || clausesInOrder.isEmpty())
-      return false;
+      // Legacy constructors don't populate clausesInOrder. When both writes and MATCH coexist,
+      // the order is unknown - conservatively disable the optimizer fast path so write-then-read
+      // visibility is preserved. Mirrors the fallback in computeHasClauseBeforeMatch.
+      return !readOnly && !matchClauses.isEmpty();
     int firstWriteOrder = Integer.MAX_VALUE;
     int firstMatchOrder = Integer.MAX_VALUE;
     for (final ClauseEntry entry : clausesInOrder) {
