@@ -20,11 +20,13 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -90,11 +92,11 @@ class PartitionPruningVectorNeighborsTest extends TestHelper {
     // and one of our chosen tenants now collides with acme, the {@code vectorNeighbors...} tests
     // below would silently degrade (the prune would still narrow but the bucket would contain
     // both tenants). This sanity check makes that failure mode loud.
-    final Map<String, Integer> tenantBucket = new java.util.HashMap<>();
+    final Map<String, Integer> tenantBucket = new HashMap<>();
     try (final ResultSet rs = database.query("sql", "SELECT tenant_id, @rid AS rid FROM " + TYPE_NAME)) {
       while (rs.hasNext()) {
         final Result r = rs.next();
-        final com.arcadedb.database.RID rid = (com.arcadedb.database.RID) r.getProperty("rid");
+        final RID rid = (RID) r.getProperty("rid");
         tenantBucket.put(r.getProperty("tenant_id"), rid.getBucketId());
       }
     }

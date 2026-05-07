@@ -1568,7 +1568,7 @@ function createType(category) {
   html += "<i class='fa fa-circle-info me-1'></i> ";
   html += "<strong>Tip:</strong> If your data is scoped by tenant, customer, region, or another high-cardinality identifier, ";
   html += "partition by that property (after creating the type and its properties) for query-time bucket pruning. ";
-  html += "<a href='https://docs.arcadedb.com/#schema-design-101-bucket-strategy' target='_blank' rel='noopener noreferrer'>";
+  html += "<a href='https://docs.arcadedb.com/arcadedb/concepts/basics#schema-design-101-bucket-strategy' target='_blank' rel='noopener noreferrer'>";
   html += "Schema design 101 <i class='fa fa-external-link-alt' style='font-size:0.75rem;'></i></a>";
   html += "</div>";
 

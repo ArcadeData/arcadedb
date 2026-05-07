@@ -83,32 +83,9 @@ public interface CommandContext {
    *  Used by CallStep to optimize count-only queries by skipping per-row Result object creation. */
   String RESULT_COUNT_HINT_VAR = "_resultCountHint";
 
-  /**
-   * Context variable holding the partition-pruned bucket file ids derived by
-   * {@code SelectExecutionPlanner.derivePartitionPrunedClusters}. Set when a SELECT's WHERE
-   * clause binds every partition property of the FROM type to a literal, so any downstream
-   * consumer (e.g. {@code vector.neighbors} / {@code vector.sparseNeighbors}) that does its
-   * own per-bucket fan-out can intersect this set with its full per-type bucket allow-list and
-   * skip indexes outside the partition.
-   * <p>
-   * Value type: {@link com.arcadedb.utility.IntHashSet} of bucket file ids.
-   * Companion variable: {@link #PARTITION_PRUNED_TYPE_NAME_VAR}.
-   * <p>
-   * <b>NOTE (multi-type queries).</b> The slot is single-valued: a query that triggers pruning
-   * on more than one partitioned type (e.g. a future projection that calls
-   * {@code vector.neighbors} on type A while the FROM clause prunes type B) will have its first
-   * type's hint silently overwritten by the second derivation. The companion type-name variable
-   * blocks cross-type misapplication on the read side, but the first type's hint is lost. Today
-   * the planner only calls this from a single FROM-type context so this is not reachable; if
-   * multi-type pruning is ever added, swap the two scalars for a {@code Map<String, IntHashSet>}.
-   */
+  /** Partition-pruned bucket file ids ({@link com.arcadedb.utility.IntHashSet}) for the FROM type named in {@link #PARTITION_PRUNED_TYPE_NAME_VAR}. Single-valued: only one partitioned FROM type per query (issue #4087). */
   String PARTITION_PRUNED_BUCKET_FILE_IDS_VAR = "_partitionPrunedBucketFileIds";
 
-  /**
-   * Companion to {@link #PARTITION_PRUNED_BUCKET_FILE_IDS_VAR}: the FROM type name the prune was
-   * derived from. Consumers must verify their target type matches before applying the prune so
-   * a vector-function call against an unrelated type in the same query (rare but possible) is
-   * not accidentally narrowed.
-   */
+  /** Companion to {@link #PARTITION_PRUNED_BUCKET_FILE_IDS_VAR}: the FROM type name the prune was derived from. Consumers must match before applying. */
   String PARTITION_PRUNED_TYPE_NAME_VAR = "_partitionPrunedTypeName";
 }

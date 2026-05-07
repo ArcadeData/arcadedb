@@ -2088,9 +2088,10 @@ public class SelectExecutionPlanner {
     // bucket vector sub-indexes and would otherwise scan every bucket of the type even when the
     // outer query already pruned to a single bucket. Skipping unrelated bucket sub-indexes is a
     // direct cost win and also narrows results to records that match the partition predicate.
-    // Skipped when the result set is empty - nothing to hint - and skipped when only a single
-    // bucket maps to "the whole type", in which case the function's per-type allow list already
-    // covers exactly the same set.
+    // Skipped when the result set is empty (nothing to hint). When the pruned set happens to
+    // equal the type's full bucket set (e.g. an OR across every tenant value), the hint is still
+    // stashed and the function-side intersection is a no-op; not worth the extra type-bucket
+    // lookup to detect.
     if (!result.isEmpty()) {
       final IntHashSet bucketFileIds = new IntHashSet(result.size());
       for (final String bucketName : result) {

@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -89,7 +90,7 @@ class PartitionPruningVectorSparseNeighborsTest extends TestHelper {
     try (final ResultSet rs = database.query("sql", "SELECT tenant_id, @rid AS rid FROM " + TYPE_NAME)) {
       while (rs.hasNext()) {
         final Result r = rs.next();
-        final com.arcadedb.database.RID rid = (com.arcadedb.database.RID) r.getProperty("rid");
+        final RID rid = (RID) r.getProperty("rid");
         tenantBucket.put(r.getProperty("tenant_id"), rid.getBucketId());
       }
     }
