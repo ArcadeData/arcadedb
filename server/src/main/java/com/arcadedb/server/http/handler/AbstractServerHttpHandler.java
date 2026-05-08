@@ -283,6 +283,15 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                         realException.getMessage());
         sendErrorResponse(exchange, 400, "Query is not idempotent", realException, null);
+      } else if (realException instanceof IllegalArgumentException) {
+        // Bad client input (malformed parameter, unparseable marker, etc.) wrapped by the
+        // surrounding transaction wrapper. Surface as HTTP 400 just like the un-wrapped
+        // IllegalArgumentException catch arm above so the contract is symmetric regardless of
+        // whether the request happened to run inside a transaction.
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 400, "Cannot execute command", realException, null);
       } else {
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),

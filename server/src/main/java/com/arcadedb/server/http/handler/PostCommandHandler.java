@@ -109,6 +109,12 @@ public class PostCommandHandler extends AbstractQueryHandler {
       paramMap = new HashMap<>();
     }
 
+    // Decode typed JSON markers ($bytes, $int8) before any transaction starts so a malformed
+    // marker surfaces as a clean HTTP 400 via the IllegalArgumentException catch arm in
+    // AbstractServerHttpHandler, instead of being wrapped by the surrounding TransactionException
+    // and downgraded to HTTP 500.
+    paramMap = AbstractQueryHandler.decodeTypedJsonMarkers(paramMap);
+
     if (limit != -1) {
       if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
         final String commandLC = command.toLowerCase(Locale.ENGLISH).trim();

@@ -160,6 +160,38 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
   }
 
   @Test
+  void int8MarkerNullValueIsRejected() {
+    final Map<String, Object> in = new LinkedHashMap<>();
+    final Map<String, Object> inner = new LinkedHashMap<>();
+    inner.put("$int8", null);
+    in.put("q", inner);
+
+    assertThatThrownBy(() -> AbstractQueryHandler.decodeTypedJsonMarkers(in))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("$int8")
+        .hasMessageContaining("null");
+  }
+
+  @Test
+  void deeplyNestedPayloadIsRejected() {
+    // Build a chain {"q": {"l1": {"l2": ... {"l40": "x"}}}} that exceeds the decoder's depth
+    // ceiling and assert the wire-side guard fires before a JVM stack overflow can.
+    Map<String, Object> deepest = new LinkedHashMap<>();
+    deepest.put("leaf", "x");
+    for (int i = 0; i < 40; i++) {
+      final Map<String, Object> wrapper = new LinkedHashMap<>();
+      wrapper.put("l" + i, deepest);
+      deepest = wrapper;
+    }
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("q", deepest);
+
+    assertThatThrownBy(() -> AbstractQueryHandler.decodeTypedJsonMarkers(in))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("nesting exceeds");
+  }
+
+  @Test
   void bytesMarkerNullValueIsRejected() {
     // A single-key map with $bytes holding null is almost certainly a client mistake - surface it
     // as a wire error rather than passing the map through unchanged.

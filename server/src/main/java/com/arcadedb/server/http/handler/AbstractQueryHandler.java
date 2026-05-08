@@ -282,7 +282,6 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   protected Object mapParams(Map<String, Object> paramMap) {
     if (paramMap != null) {
-      paramMap = decodeTypedJsonMarkers(paramMap);
       if (!paramMap.isEmpty() && paramMap.containsKey("0")) {
         // ORDINAL
         final Object[] array = new Object[paramMap.size()];
@@ -295,6 +294,15 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       paramMap = Collections.emptyMap();
     return paramMap;
   }
+
+  /**
+   * Hard ceiling on nested {@code Map}/{@code List} depth that {@link #decodeTypedJsonMarker}
+   * traverses, mostly to avoid {@link StackOverflowError} on a hostile or accidentally-deep JSON
+   * payload. The HTTP JSON parser already imposes its own limits, but the decoder runs after the
+   * parser and only inherits whatever shape arrived; a defensive guard here keeps the contract
+   * explicit. 32 levels is well past anything a real query parameter would carry.
+   */
+  private static final int MAX_TYPED_MARKER_DEPTH = 32;
 
   /**
    * Decodes typed JSON markers ({@code $bytes}, {@code $int8}) in {@code paramMap} into
@@ -311,7 +319,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     Map<String, Object> result = null;
     for (final Map.Entry<String, Object> entry : paramMap.entrySet()) {
       final Object original = entry.getValue();
-      final Object decoded = decodeTypedJsonMarker(original);
+      final Object decoded = decodeTypedJsonMarker(original, 0);
       if (decoded != original && result == null) {
         result = new LinkedHashMap<>(paramMap);
       }
@@ -321,7 +329,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     return result != null ? result : paramMap;
   }
 
-  private static Object decodeTypedJsonMarker(final Object value) {
+  private static Object decodeTypedJsonMarker(final Object value, final int depth) {
+    if (depth > MAX_TYPED_MARKER_DEPTH)
+      throw new IllegalArgumentException(
+          "Parameter nesting exceeds " + MAX_TYPED_MARKER_DEPTH + " levels - typed-marker decoder refuses to recurse further.");
     if (value instanceof Map<?, ?> m && m.size() == 1) {
       final Map.Entry<?, ?> only = m.entrySet().iterator().next();
       if ("$bytes".equals(only.getKey()))
@@ -331,23 +342,27 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     }
     if (value instanceof Map<?, ?> m) {
       Map<String, Object> rewritten = null;
+      int idx = 0;
       for (final Map.Entry<?, ?> entry : m.entrySet()) {
         final Object key = entry.getKey();
         if (!(key instanceof String sk))
           throw new IllegalArgumentException(
               "Parameter map keys must be strings, found " + (key == null ? "null" : key.getClass().getSimpleName()));
         final Object original = entry.getValue();
-        final Object decoded = decodeTypedJsonMarker(original);
+        final Object decoded = decodeTypedJsonMarker(original, depth + 1);
         if (decoded != original && rewritten == null) {
           rewritten = new LinkedHashMap<>(m.size());
+          int j = 0;
           for (final Map.Entry<?, ?> prior : m.entrySet()) {
-            if (prior.getKey() == sk)
+            if (j == idx)
               break;
             rewritten.put((String) prior.getKey(), prior.getValue());
+            j++;
           }
         }
         if (rewritten != null)
           rewritten.put(sk, decoded);
+        idx++;
       }
       return rewritten != null ? rewritten : value;
     }
@@ -355,7 +370,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
       List<Object> rewritten = null;
       for (int i = 0; i < list.size(); i++) {
         final Object original = list.get(i);
-        final Object decoded = decodeTypedJsonMarker(original);
+        final Object decoded = decodeTypedJsonMarker(original, depth + 1);
         if (decoded != original && rewritten == null) {
           rewritten = new ArrayList<>(list.size());
           for (int j = 0; j < i; j++)

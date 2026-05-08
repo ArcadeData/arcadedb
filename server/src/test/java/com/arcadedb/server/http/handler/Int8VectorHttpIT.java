@@ -104,6 +104,59 @@ class Int8VectorHttpIT extends BaseGraphServerTest {
     assertThat(hits.getJSONObject(0).getInt("id")).isEqualTo(0);
   }
 
+  @Test
+  void int8MarkerOutOfRangeReturnsHttp400() throws Exception {
+    // Confirm the IllegalArgumentException -> HTTP 400 chain is wired in the integration context,
+    // not just in the unit decoder. 200 sits outside the signed byte range; the decoder rejects.
+    final JSONArray bad = new JSONArray();
+    for (int i = 0; i < DIMENSIONS; i++)
+      bad.put(i == 0 ? 200 : 0);
+
+    final JSONObject params = new JSONObject();
+    params.put("q", new JSONObject().put("$int8", bad));
+
+    final HttpResult res = postQueryRaw(
+        "SELECT expand(`vector.neighbors`('" + INDEX_TYPE + "[embedding]', :q, 5))",
+        params);
+    assertThat(res.status).as("expected 400 but body was: %s", res.body).isEqualTo(400);
+    assertThat(res.body).contains("$int8");
+    assertThat(res.body).contains("out of byte range");
+  }
+
+  private record HttpResult(int status, String body) {
+  }
+
+  private HttpResult postQueryRaw(final String command, final JSONObject params) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URI(
+        "http://127.0.0.1:2480/api/v1/query/" + getDatabaseName()).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setRequestProperty("Authorization",
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+
+    final JSONObject payload = new JSONObject();
+    payload.put("language", "sql");
+    payload.put("command", command);
+    payload.put("params", params);
+
+    connection.setDoOutput(true);
+    final byte[] data = payload.toString().getBytes(StandardCharsets.UTF_8);
+    connection.setRequestProperty("Content-Length", Integer.toString(data.length));
+    try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
+      wr.write(data);
+    }
+    connection.connect();
+    try {
+      final int status = connection.getResponseCode();
+      final String body = status >= 400 && connection.getErrorStream() != null
+          ? new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8)
+          : status < 400 ? readResponse(connection) : "";
+      return new HttpResult(status, body);
+    } finally {
+      connection.disconnect();
+    }
+  }
+
   private JSONObject postQuery(final String command, final JSONObject params) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         "http://127.0.0.1:2480/api/v1/query/" + getDatabaseName()).toURL().openConnection();
