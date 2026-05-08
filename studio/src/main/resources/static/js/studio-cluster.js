@@ -54,6 +54,18 @@ function renderClusterData(data) {
   updateMetricsSummary(data);
 }
 
+// Maps the server-side ClusterMonitor.ReplicaStatus enum to a Bootstrap badge style and a status
+// dot color. STALLED is the pre-churn signal so it gets red/danger; HEALTHY stays green.
+function replicaStatusStyle(status) {
+  switch (status) {
+    case "HEALTHY":        return { badge: "bg-success",   dot: "limegreen" };
+    case "CATCHING_UP":    return { badge: "bg-info",      dot: "deepskyblue" };
+    case "FALLING_BEHIND": return { badge: "bg-warning",   dot: "orange" };
+    case "STALLED":        return { badge: "bg-danger",    dot: "crimson" };
+    default:               return { badge: "bg-secondary", dot: "limegreen" }; // UNKNOWN / leader / no data
+  }
+}
+
 function renderNodeCards(data) {
   var container = $("#clusterNodeCards");
   container.empty();
@@ -72,19 +84,37 @@ function renderNodeCards(data) {
       : '<span class="badge bg-secondary">FOLLOWER</span>';
     var localBadge = isLocal ? ' <span class="badge bg-info" style="font-size:0.6rem;">LOCAL</span>' : '';
 
-    var dotColor = "limegreen";
+    // replicaStatus is only sent for followers and only by a leader's status export.
+    // A leader card has no status badge (its color comes from the LEADER role badge already).
+    var statusStyle = replicaStatusStyle(peer.replicaStatus);
+    var statusBadge = (!isLeader && peer.replicaStatus)
+      ? ' <span class="badge ' + statusStyle.badge + '" style="font-size:0.6rem;">' + escapeHtml(peer.replicaStatus) + '</span>'
+      : '';
+
+    var dotColor = isLeader ? "limegreen" : statusStyle.dot;
     var statusDot = '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:' + dotColor + '; margin-right:6px;"></span>';
+
+    // Lag and matchIndex are present only when the local node is the leader (it's the leader who
+    // tracks per-follower replication state). Show them inline so a STALLED follower is obvious.
+    var lagLine = "";
+    if (!isLeader && peer.matchIndex != null) {
+      var lagText = "matchIndex=" + escapeHtml(String(peer.matchIndex));
+      lagLine = '<div style="font-size:0.72rem; color:var(--text-secondary); margin-top:2px;">'
+        + '<i class="fas fa-tachometer-alt" style="margin-right:4px;"></i>' + lagText
+        + '</div>';
+    }
 
     var card = '<div class="' + colClass + '">'
       + '<div class="card h-100" style="border: 2px solid ' + borderColor + '; border-radius: 10px;">'
       + '<div class="card-body py-2 px-3">'
       + '<div class="d-flex align-items-center justify-content-between">'
       + '<div>' + statusDot + '<b style="font-size:0.85rem;">' + escapeHtml(peer.id) + '</b>' + localBadge + '</div>'
-      + '<div>' + roleBadge + '</div>'
+      + '<div>' + roleBadge + statusBadge + '</div>'
       + '</div>'
       + '<div style="font-size:0.78rem; color:var(--text-secondary); margin-top:4px;">'
       + '<i class="fas fa-network-wired" style="margin-right:4px;"></i>' + escapeHtml(peer.address || "")
       + '</div>'
+      + lagLine
       + '</div></div></div>';
 
     container.append(card);
@@ -103,13 +133,16 @@ function renderPeerManagement(data) {
       ? '<span class="badge bg-success" style="font-size:0.65rem;">LEADER</span>'
       : '<span class="badge bg-secondary" style="font-size:0.65rem;">FOLLOWER</span>';
     var localTag = isLocal ? ' <span class="badge bg-info" style="font-size:0.6rem;">LOCAL</span>' : '';
+    var statusBadge = (!isLeader && peer.replicaStatus)
+      ? ' <span class="badge ' + replicaStatusStyle(peer.replicaStatus).badge + '" style="font-size:0.6rem;">' + escapeHtml(peer.replicaStatus) + '</span>'
+      : '';
 
     container.append(
       '<div class="d-flex align-items-center justify-content-between py-1 px-2 mb-1" '
       + 'style="font-size:0.82rem; background:var(--bg-main); border-radius:6px; border:1px solid var(--border-light);">'
       + '<div><i class="fa fa-server" style="color:var(--color-brand); margin-right:6px;"></i>'
       + escapeHtml(peer.id) + ' <span style="color:var(--text-secondary); font-size:0.75rem;">(' + escapeHtml(peer.address || "") + ')</span>'
-      + localTag + ' ' + roleBadge + '</div>'
+      + localTag + ' ' + roleBadge + statusBadge + '</div>'
       + '</div>'
     );
   }

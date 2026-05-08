@@ -90,6 +90,9 @@ class RaftClusterStatusExporter {
             if (lag != null)
               peerJSON.put("lagging", lag > clusterMonitor.getLagWarningThreshold()
                   && clusterMonitor.getLagWarningThreshold() > 0);
+            // Studio renders this as a colored badge in the cluster view, so a STALLED follower
+            // jumps out at the operator without having to compare numbers in their head.
+            peerJSON.put("replicaStatus", clusterMonitor.getReplicaStatus(peerId).name());
           }
           break;
         }
@@ -186,6 +189,7 @@ class RaftClusterStatusExporter {
 
       String lagStr = "";
       String latencyStr = "";
+      String statusStr = "";
       if (!isPeerLeader) {
         final long[] state = followerState.get(peerId);
         if (state != null) {
@@ -199,13 +203,15 @@ class RaftClusterStatusExporter {
           if (elapsedMs <= heartbeatInterval)
             latencyStr = elapsedMs + " ms";
         }
+        if (clusterMonitor != null)
+          statusStr = clusterMonitor.getReplicaStatus(peerId).name();
       }
 
-      rows.add(new String[] { peerId, address, role, lagStr, latencyStr });
+      rows.add(new String[] { peerId, address, role, lagStr, latencyStr, statusStr });
     }
 
     // Calculate column widths
-    final String[] headers = { "SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY" };
+    final String[] headers = { "SERVER", "ADDRESS", "ROLE", "LAG", "LATENCY", "STATUS" };
     final int[] widths = new int[headers.length];
     for (int i = 0; i < headers.length; i++)
       widths[i] = headers[i].length();

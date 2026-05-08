@@ -92,6 +92,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final    AtomicLong                electionCount    = new AtomicLong(0);
   private volatile long                      lastElectionTime = 0;
   private final    long                      startTime        = System.currentTimeMillis();
+  // Tracks the previous leader so leader-change logs can show "X -> Y" instead of just "Y".
+  // Useful when diagnosing churn: if X == Y across multiple changes, the leader is bouncing.
+  private volatile RaftPeerId                previousLeaderId = null;
+  // Tracks the highest term observed so notifyTermIndexUpdated can log only the first time we
+  // see each term (otherwise it fires on every config/metadata entry, which is noisy).
+  private final    AtomicLong                highestTermSeen  = new AtomicLong(-1);
 
   private volatile ArcadeDBServer server;
   private volatile RaftHAServer   raftHAServer;
@@ -319,14 +325,42 @@ public class ArcadeStateMachine extends BaseStateMachine {
   public void notifyLeaderChanged(final RaftGroupMemberId groupMemberId, final RaftPeerId newLeaderId) {
     super.notifyLeaderChanged(groupMemberId, newLeaderId);
 
+    final long previousElectionTime = lastElectionTime;
+    final long now = System.currentTimeMillis();
     electionCount.incrementAndGet();
-    lastElectionTime = System.currentTimeMillis();
+    lastElectionTime = now;
 
     if (raftHAServer == null || newLeaderId == null)
       return;
 
+    final RaftPeerId prevId = previousLeaderId;
+    previousLeaderId = newLeaderId;
+
     final String leaderName = raftHAServer.getPeerDisplayName(newLeaderId);
-    LogManager.instance().log(this, Level.INFO, "Leader elected: %s", leaderName);
+    final long currentTerm = getLastAppliedTermIndex() != null ? getLastAppliedTermIndex().getTerm() : -1;
+
+    if (prevId == null) {
+      // First leader observed since startup - no churn signal yet.
+      LogManager.instance().log(this, Level.INFO, "Leader elected: %s (term=%d)", leaderName, currentTerm);
+    } else if (prevId.equals(newLeaderId)) {
+      // The same node is leader again. Almost always means a step-down/re-election cycle: the
+      // leader couldn't keep heartbeats flowing (busy appender threads under bulk-load, GC pause,
+      // disk stall) and another node started an election with a higher term. The original leader
+      // sees the higher term, steps down, then wins the next election because it has the most
+      // up-to-date log. If you see this repeatedly under load, raise arcadedb.ha.electionTimeoutMin
+      // and Max, or reduce per-batch size.
+      final long sinceLast = previousElectionTime > 0 ? now - previousElectionTime : -1;
+      LogManager.instance().log(this, Level.WARNING,
+          "Leader churn: %s re-elected (term=%d, %d ms since last leader change). "
+              + "Likely cause: leader heartbeat blocked by bulk-load replication. "
+              + "Tune arcadedb.ha.electionTimeoutMin/Max higher or reduce batch size.",
+          leaderName, currentTerm, sinceLast);
+    } else {
+      // Different node became leader. Normal failover (network, server restart, etc.).
+      final String prevName = raftHAServer.getPeerDisplayName(prevId);
+      LogManager.instance().log(this, Level.INFO, "Leader changed: %s -> %s (term=%d)",
+          prevName, leaderName, currentTerm);
+    }
 
     // Recreate the RaftClient so its gRPC channels perform fresh DNS resolution.
     // After a network partition, channels to isolated peers enter TRANSIENT_FAILURE

@@ -564,6 +564,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final RaftTransactionBroker oldBroker = transactionBroker;
       transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize, queueSize,
           offerTimeout, grpcMessageSizeMax, this::refreshRaftClient);
+      // Transfer undispatched entries from the old broker to the new one BEFORE stopping the old
+      // broker, so a brief leader hiccup (e.g. self-stepdown -> re-elected leader) does not surface
+      // "Group committer shutting down" errors to in-flight callers. transferPendingTo() also halts
+      // the old flusher, so the subsequent stop() just closes the now-empty queue.
+      oldBroker.transferPendingTo(transactionBroker);
       oldBroker.stop();
     }
 

@@ -116,4 +116,17 @@ public class RaftTransactionBroker {
   public void stop() {
     groupCommitter.stop();
   }
+
+  /**
+   * Transfers undispatched (still-queued) entries from this broker to {@code target} and stops
+   * the local flusher. Used by {@code RaftHAServer.refreshRaftClient} so a brief leader hiccup
+   * does not surface "Group committer shutting down" errors to in-flight callers; the entries
+   * are re-dispatched on the fresh client and the original {@code submitAndWait} callers stay
+   * blocked until they replicate successfully (or fail through the normal error path).
+   *
+   * @return number of entries transferred
+   */
+  public int transferPendingTo(final RaftTransactionBroker target) {
+    return groupCommitter.transferPendingTo(target.groupCommitter);
+  }
 }

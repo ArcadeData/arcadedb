@@ -183,6 +183,58 @@ class RaftGroupCommitter {
       pending.future.complete(new QuorumNotReachedException("Group committer shutting down"));
   }
 
+  /**
+   * Stops the flusher and transfers undispatched (still {@code PENDING}) entries from this
+   * committer's queue into {@code target}'s queue, preserving their original futures so the
+   * original {@link #submitAndWait} caller blocks until the entry is replicated through the
+   * fresh client. Used during {@code RaftHAServer.refreshRaftClient} so a brief leader hiccup
+   * does not surface as "Group committer shutting down" errors to in-flight callers.
+   * <p>
+   * Entries that have already been dispatched to the old {@link RaftClient} stay attached to
+   * that client and are completed with the usual error path; we cannot safely re-send them on
+   * the new client because Ratis may have committed them on the old one.
+   *
+   * @return number of entries transferred
+   */
+  int transferPendingTo(final RaftGroupCommitter target) {
+    running = false;
+    flusher.interrupt();
+    try {
+      flusher.join(1_000);
+    } catch (final InterruptedException ie) {
+      Thread.currentThread().interrupt();
+    }
+
+    int transferred = 0;
+    int dropped = 0;
+    CancellablePendingEntry pending;
+    while ((pending = queue.poll()) != null) {
+      // Only PENDING entries can be safely re-sent. DISPATCHED ones are already tied to the
+      // old RaftClient's SlidingWindow; CANCELLED ones already had their futures completed.
+      if (pending.state.get() != CancellablePendingEntry.PENDING) {
+        // Already dispatched or cancelled: complete with the standard shutdown error so the
+        // caller sees a NeedRetryException and retries against the new broker on its own.
+        if (!pending.future.isDone())
+          pending.future.complete(new QuorumNotReachedException("Group committer shutting down"));
+        dropped++;
+        continue;
+      }
+      // Re-queue on the new committer's queue. offer() may fail if the new queue is already
+      // full; in that case we surface a retryable error rather than blocking the refresh path.
+      if (!target.queue.offer(pending)) {
+        pending.future.complete(new ReplicationQueueFullException(
+            "Replication queue full after RaftClient refresh; retry"));
+        dropped++;
+        continue;
+      }
+      transferred++;
+    }
+    if (transferred > 0 || dropped > 0)
+      LogManager.instance().log(this, Level.INFO,
+          "Transferred %d pending entries to fresh committer (%d dropped)", transferred, dropped);
+    return transferred;
+  }
+
   private void flushLoop() {
     final List<CancellablePendingEntry> batch = new ArrayList<>(maxBatchSize);
 
@@ -332,7 +384,7 @@ class RaftGroupCommitter {
 
     final byte[]                       entry;
     final CompletableFuture<Exception> future = new CompletableFuture<>();
-    private final AtomicInteger        state  = new AtomicInteger(PENDING);
+    final AtomicInteger                state  = new AtomicInteger(PENDING);
 
     CancellablePendingEntry(final byte[] entry) {
       this.entry = entry;

@@ -152,6 +152,51 @@ class RaftGroupCommitterTest {
     }
   }
 
+  /**
+   * Regression for the customer report on 2026-05-08: heavy parallel ingest causes a brief leader
+   * step-down/re-election cycle, during which the in-flight transactions saw "Group committer
+   * shutting down" because the broker was hard-stopped. With this fix, undispatched entries are
+   * transferred to the new committer so the original {@code submitAndWait} caller completes via
+   * the new committer's normal path (success, retryable error, etc.) instead of a hard stop error.
+   */
+  @Test
+  void transferPendingToHandsOffUndispatchedEntries() throws Exception {
+    // Both committers use a null RaftClient: any entry that reaches a flusher fails with
+    // "RaftClient not available" (which is what we want for this test - it's NOT a "shutting down"
+    // failure, so we can distinguish the two error paths).
+    final RaftGroupCommitter source = new RaftGroupCommitter(null, Quorum.MAJORITY, 30_000);
+    final RaftGroupCommitter target = new RaftGroupCommitter(null, Quorum.MAJORITY, 30_000);
+
+    // Submit an entry in a background thread. submitAndWait blocks until the future completes.
+    final java.util.concurrent.CompletableFuture<String> result =
+        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+          try {
+            source.submitAndWait(new byte[] { 1, 2, 3 });
+            return "ok";
+          } catch (final QuorumNotReachedException e) {
+            return e.getMessage();
+          }
+        });
+
+    // Race the source flusher (100ms poll) to transfer the entry before it fires. If we lose the
+    // race, the test still passes - the entry is dispatched on source and fails with
+    // "RaftClient not available", which we accept below.
+    final int transferred = source.transferPendingTo(target);
+    assertThat(transferred).isBetween(0, 1);
+
+    final String message = result.get(5, java.util.concurrent.TimeUnit.SECONDS);
+    // Critical: must NOT be the "Group committer shutting down" message that would surface if we
+    // failed pending entries on the source. The new committer (target) handles it instead.
+    assertThat(message).doesNotContain("Group committer shutting down");
+    // Either the transfer raced ahead and the entry was completed by the target's null-client
+    // path, or the source flusher caught it first - either is acceptable as long as we don't
+    // surface the hard-stop error.
+    assertThat(message).containsAnyOf("not available", "ok");
+
+    source.stop();
+    target.stop();
+  }
+
   @Test
   void isClientClosedRecognizesAlreadyClosedException() {
     assertThat(RaftGroupCommitter.isClientClosed(null)).isFalse();

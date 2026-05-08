@@ -615,10 +615,19 @@ public enum GlobalConfiguration {
   HA_QUORUM_TIMEOUT("arcadedb.ha.quorumTimeout", SCOPE.SERVER, "Timeout waiting for the quorum", Long.class, 10000),
 
   HA_ELECTION_TIMEOUT_MIN("arcadedb.ha.electionTimeoutMin", SCOPE.SERVER,
-      "Minimum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 2000),
+      """
+      Minimum election timeout in milliseconds: a follower starts a new election if it has not heard from \
+      the leader for this many ms. Default of 5000ms is a balance between fast failover and resilience to \
+      heartbeat blips under heavy ingest. Bump higher for WAN clusters or sustained bulk-load workloads where \
+      leader appender threads compete with replication.""",
+      Integer.class, 5000),
 
   HA_ELECTION_TIMEOUT_MAX("arcadedb.ha.electionTimeoutMax", SCOPE.SERVER,
-      "Maximum election timeout in milliseconds. Increase for high-latency WAN clusters", Integer.class, 5000),
+      """
+      Maximum election timeout in milliseconds. Default of 10000ms is a balance between fast failover and \
+      resilience to heartbeat blips under heavy ingest. Bump higher for WAN clusters or sustained bulk-load \
+      workloads where leader appender threads compete with replication.""",
+      Integer.class, 10_000),
 
   HA_LOG_SEGMENT_SIZE("arcadedb.ha.logSegmentSize", SCOPE.SERVER,
       "Maximum Raft log segment size (e.g. '64MB', '128MB')", String.class, "64MB"),
