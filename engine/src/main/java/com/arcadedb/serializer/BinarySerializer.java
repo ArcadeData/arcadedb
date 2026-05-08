@@ -389,9 +389,15 @@ public class BinarySerializer {
   }
 
   public void serializeValue(final Database database, final Binary serialized, final byte type, Object value) {
+    serializeValue(database, serialized, type, value, true);
+  }
+
+  public void serializeValue(final Database database, final Binary serialized, final byte type, Object value,
+      final boolean applyEncryption) {
     if (value == null)
       return;
-    Binary content = dataEncryption != null ? new Binary() : serialized;
+    final boolean encrypt = applyEncryption && dataEncryption != null;
+    Binary content = encrypt ? new Binary() : serialized;
 
     switch (type) {
     case BinaryTypes.TYPE_NULL:
@@ -642,7 +648,7 @@ public class BinarySerializer {
       LogManager.instance().log(this, Level.INFO, "Error on serializing value '" + value + "', type not supported");
     }
 
-    if (dataEncryption != null) {
+    if (encrypt) {
       switch (type) {
       case BinaryTypes.TYPE_NULL:
       case BinaryTypes.TYPE_COMPRESSED_RID:
@@ -680,7 +686,12 @@ public class BinarySerializer {
 
   public Object deserializeValue(final Database database, final Binary deserialized, final byte type,
       final EmbeddedModifier embeddedModifier) {
-    final Binary content = dataEncryption != null &&
+    return deserializeValue(database, deserialized, type, embeddedModifier, true);
+  }
+
+  public Object deserializeValue(final Database database, final Binary deserialized, final byte type,
+      final EmbeddedModifier embeddedModifier, final boolean applyEncryption) {
+    final Binary content = applyEncryption && dataEncryption != null &&
         type != BinaryTypes.TYPE_NULL &&
         type != BinaryTypes.TYPE_COMPRESSED_RID &&
         type != BinaryTypes.TYPE_RID ? new Binary(dataEncryption.decrypt(deserialized.getBytes())) : deserialized;
