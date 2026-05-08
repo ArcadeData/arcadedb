@@ -18,6 +18,8 @@
  */
 package com.arcadedb.index;
 
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.RID;
 import com.arcadedb.engine.Component;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Type;
@@ -84,4 +86,25 @@ public interface IndexInternal extends Index {
   IndexInternal getAssociatedIndex();
 
   void updateTypeName(String newTypeName);
+
+  /**
+   * Replay entry point invoked by {@code TransactionIndexContext.applyChanges} at commit time.
+   * Default implementation forwards to {@link Index#put(Object[], RID[])}. Wrapper indexes that
+   * re-shape keys on the original call (e.g. {@code LSMTreeFullTextIndex} which tokenizes raw
+   * text into one posting per analyzed term, or {@code LSMTreeGeoIndex} which tokenizes a WKT
+   * shape into GeoHash cells) override this to skip the wrapping logic on replay, since the
+   * keys queued onto the transaction are already the storage form (issue #4073).
+   */
+  default void putReplay(final Object[] keys, final RID[] rids) {
+    put(keys, rids);
+  }
+
+  /**
+   * Replay entry point invoked by {@code TransactionIndexContext.applyChanges} at commit time
+   * for REMOVE / REPLACE operations. Default implementation forwards to
+   * {@link Index#remove(Object[], Identifiable)}. See {@link #putReplay} for the rationale.
+   */
+  default void removeReplay(final Object[] keys, final Identifiable rid) {
+    remove(keys, rid);
+  }
 }

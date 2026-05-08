@@ -286,23 +286,17 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   /**
    * Indexes a document.
-   * Tokenizes the input values and updates the underlying LSM tree.
-   * Handles both single-property and multi-property indexes.
+   * <p>
+   * Always treats {@code keys} as the raw property values from {@code DocumentIndexer} and
+   * analyzes them into one storage token per non-stop term. The transaction commit replay
+   * uses {@link #putReplay}, which forwards already-analyzed tokens to the underlying
+   * LSM-Tree unchanged (issue #4073).
    *
    * @param keys The values of the indexed properties for the document.
    * @param rids The RIDs associated with these keys (usually just one).
    */
   @Override
   public void put(final Object[] keys, final RID[] rids) {
-    // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
-    // (TransactionIndexContext stores tokens during transaction and replays them at commit time)
-    // In that case, pass through directly to the underlying index without re-tokenizing
-    if (keys.length != getPropertyCount()) {
-      // Already tokenized - pass through directly
-      underlyingIndex.put(keys, rids);
-      return;
-    }
-
     if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
@@ -334,13 +328,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public void remove(final Object[] keys) {
-    // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
-    if (keys.length != getPropertyCount()) {
-      // Already tokenized - pass through directly
-      underlyingIndex.remove(keys);
-      return;
-    }
-
     if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
@@ -370,13 +357,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
-    // If keys.length doesn't match propertyCount, this is a tokenized value from commit replay
-    if (keys.length != getPropertyCount()) {
-      // Already tokenized - pass through directly
-      underlyingIndex.remove(keys, rid);
-      return;
-    }
-
     if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
@@ -396,6 +376,25 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         }
       }
     }
+  }
+
+  /**
+   * Replay entry point invoked by {@code TransactionIndexContext.applyChanges} at commit time
+   * (issue #4073). The {@code keys} are already analyzed storage tokens (queued by the
+   * underlying LSM-Tree at original-call time), so the wrapper must NOT re-analyze them.
+   * Forwards directly to the underlying index, which fixes the latent single-property case
+   * where the prior shape-sniff heuristic ({@code keys.length != getPropertyCount()}) would
+   * silently re-tokenize already-analyzed tokens (a soundness hazard for non-idempotent
+   * analyzers such as stemmers or stop-word filters).
+   */
+  @Override
+  public void putReplay(final Object[] keys, final RID[] rids) {
+    underlyingIndex.put(keys, rids);
+  }
+
+  @Override
+  public void removeReplay(final Object[] keys, final Identifiable rid) {
+    underlyingIndex.remove(keys, rid);
   }
 
   @Override

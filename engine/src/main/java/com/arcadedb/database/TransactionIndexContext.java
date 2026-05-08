@@ -172,23 +172,23 @@ public class TransactionIndexContext {
     checkUniqueIndexKeys();
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
-      final Index index = database.getSchema().getIndexByName(entry.getKey());
+      final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
 
       for (final Map.Entry<ComparableKey, Map<IndexKey, IndexKey>> keyValueEntries : keys.entrySet()) {
         final Collection<IndexKey> values = keyValueEntries.getValue().values();
         for (final IndexKey key : values) {
           if (key.operation == IndexKey.IndexKeyOperation.REMOVE)
-            index.remove(key.keyValues, key.rid);
+            index.removeReplay(key.keyValues, key.rid);
           else if (key.operation == IndexKey.IndexKeyOperation.REPLACE && key.oldRid != null)
             // REMOVE THE OLD RID THAT WAS REPLACED BY A NEW ONE IN THE SAME BUCKET
-            index.remove(key.keyValues, key.oldRid);
+            index.removeReplay(key.keyValues, key.oldRid);
         }
       }
     }
 
     for (final Map.Entry<String, TreeMap<ComparableKey, Map<IndexKey, IndexKey>>> entry : indexEntries.entrySet()) {
-      final Index index = database.getSchema().getIndexByName(entry.getKey());
+      final IndexInternal index = (IndexInternal) database.getSchema().getIndexByName(entry.getKey());
       final Map<ComparableKey, Map<IndexKey, IndexKey>> keys = entry.getValue();
 
       // Batch optimization for vector indexes (issue #3864): collect all ADD operations
@@ -229,14 +229,14 @@ public class TransactionIndexContext {
           if (!rids2Insert.isEmpty()) {
             final RID[] rids = new RID[rids2Insert.size()];
             rids2Insert.toArray(rids);
-            index.put(keyValueEntries.getKey().values, rids);
+            index.putReplay(keyValueEntries.getKey().values, rids);
           }
 
         } else {
           for (final IndexKey key : values) {
             if (key.operation == IndexKey.IndexKeyOperation.ADD ||
                 key.operation == IndexKey.IndexKeyOperation.REPLACE)
-              index.put(key.keyValues, new RID[] { key.rid });
+              index.putReplay(key.keyValues, new RID[] { key.rid });
           }
         }
       }

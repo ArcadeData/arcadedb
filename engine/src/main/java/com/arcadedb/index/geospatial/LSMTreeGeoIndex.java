@@ -152,16 +152,13 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     if (keys == null || keys.length == 0 || keys[0] == null)
       return;
 
-    // If keys[0] is already a Shape object, it came from a direct query — not valid for indexing.
-    // If keys[0] is a String, it may be either WKT (from the original put) or a pre-tokenized
-    // GeoHash string (from transaction commit replay after a transactional put).
-    // We detect the replay case by attempting WKT parse: if it fails but the value looks like
-    // a GeoHash token (short alphanumeric), pass it directly to the underlying index.
+    // Always treats keys[0] as a Shape or a WKT String. The transaction commit replay uses
+    // {@link #putReplay}, which forwards already-tokenized GeoHash cells to the underlying
+    // LSM-Tree unchanged (issue #4073, replaces the prior looksLikeGeoHashToken heuristic).
     final Object key0 = keys[0];
 
-    if (key0 instanceof Shape) {
-      // Direct Shape input — extract tokens and index them
-      indexShape((Shape) key0, rids);
+    if (key0 instanceof Shape shape) {
+      indexShape(shape, rids);
       return;
     }
 
@@ -170,12 +167,6 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     try {
       shape = GeoUtils.getSpatialContext().getFormats().getWktReader().read(wkt);
     } catch (final Exception e) {
-      // WKT parse failed. Check if this looks like a pre-tokenized GeoHash string
-      // (commit replay scenario: transaction re-applies individual tokens via put()).
-      if (looksLikeGeoHashToken(wkt)) {
-        underlyingIndex.put(keys, rids);
-        return;
-      }
       LogManager.instance().log(this, Level.WARNING,
           "Geospatial index: skipping invalid WKT '%s': %s", wkt, e.getMessage());
       return;
@@ -186,28 +177,13 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
 
   /**
    * Tokenizes a shape using the geohash prefix tree strategy and stores each token in the
-   * underlying LSM index.
+   * underlying LSM index. Inside a transaction the underlying LSM-Tree queues the per-token
+   * write onto {@code TransactionIndexContext}; commit replay then re-enters via
+   * {@link #putReplay}, which skips re-tokenization.
    */
   private void indexShape(final Shape shape, final RID[] rids) {
     for (final String token : extractTokens(shape))
-      underlyingIndex.put(new Object[]{token}, rids);
-  }
-
-  /**
-   * Returns true if the string looks like a GeoHash token (lowercase alphanumeric, max precision
-   * length). Used to detect transaction commit replay where individual pre-tokenized GeoHash
-   * strings are re-passed to put() by the TransactionIndexContext.
-   */
-  private boolean looksLikeGeoHashToken(final String s) {
-    if (s == null || s.isEmpty() || s.length() > precision)
-      return false;
-    for (int i = 0; i < s.length(); i++) {
-      final char c = s.charAt(i);
-      // GeoHash alphabet: 0-9, b-z (excluding a, i, l, o)
-      if (!((c >= '0' && c <= '9') || (c >= 'b' && c <= 'z' && c != 'i' && c != 'l' && c != 'o')))
-        return false;
-    }
-    return true;
+      underlyingIndex.put(new Object[] { token }, rids);
   }
 
   @Override
@@ -263,7 +239,7 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     if (keys == null || keys.length == 0 || keys[0] == null)
       return;
     for (final String token : extractTokens(keys[0]))
-      underlyingIndex.remove(new Object[]{token});
+      underlyingIndex.remove(new Object[] { token });
   }
 
   @Override
@@ -271,7 +247,25 @@ public class LSMTreeGeoIndex implements Index, IndexInternal {
     if (keys == null || keys.length == 0 || keys[0] == null)
       return;
     for (final String token : extractTokens(keys[0]))
-      underlyingIndex.remove(new Object[]{token}, rid);
+      underlyingIndex.remove(new Object[] { token }, rid);
+  }
+
+  /**
+   * Replay entry point invoked by {@code TransactionIndexContext.applyChanges} at commit time
+   * (issue #4073). The {@code keys} are already tokenized GeoHash cells (queued by the
+   * underlying LSM-Tree at original-call time), so the wrapper must NOT attempt to re-parse
+   * them as WKT. Forwards directly to the underlying index, removing the prior
+   * {@code looksLikeGeoHashToken} character-class heuristic that would otherwise misclassify
+   * any short alphanumeric input.
+   */
+  @Override
+  public void putReplay(final Object[] keys, final RID[] rids) {
+    underlyingIndex.put(keys, rids);
+  }
+
+  @Override
+  public void removeReplay(final Object[] keys, final Identifiable rid) {
+    underlyingIndex.remove(keys, rid);
   }
 
   @Override

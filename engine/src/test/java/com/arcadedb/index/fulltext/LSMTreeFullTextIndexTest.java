@@ -577,6 +577,89 @@ class LSMTreeFullTextIndexTest extends TestHelper {
     });
   }
 
+  /**
+   * Contract test for {@link LSMTreeFullTextIndex#putReplay} (issue #4073). At commit time
+   * {@code TransactionIndexContext.applyChanges} hands the wrapper already-analyzed storage
+   * tokens (queued by the underlying LSM-Tree at original-call time). {@code putReplay} must
+   * forward them verbatim to the underlying index, NOT re-analyze them.
+   * <p>
+   * The observable: {@code put} of a multi-word value tokenizes into N postings;
+   * {@code putReplay} of the same string stores it as a single posting (no tokenization).
+   * This pins the contract that fixes the prior shape-sniff heuristic - which would silently
+   * re-analyze single-property tokens at replay (a soundness hazard with non-idempotent
+   * analyzers like stemmers).
+   */
+  @Test
+  void putReplayForwardsTokenVerbatimWithoutTokenizing() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE ReplayDoc");
+      database.command("sql", "CREATE PROPERTY ReplayDoc.text STRING");
+      database.command("sql", "CREATE INDEX ON ReplayDoc (text) FULL_TEXT");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ReplayDoc[text]");
+      final LSMTreeFullTextIndex idx = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
+
+      assertThat(idx.countEntries()).isZero();
+
+      // Three space-separated words; put() would tokenize into three postings.
+      final String multiWord = "alpha beta gamma";
+      final com.arcadedb.database.RID rid = new com.arcadedb.database.RID(idx.getAssociatedBucketId(), 0);
+
+      idx.putReplay(new Object[] { multiWord }, new com.arcadedb.database.RID[] { rid });
+    });
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ReplayDoc[text]");
+      final LSMTreeFullTextIndex idx = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
+
+      // putReplay stores the string as a single posting (no tokenization). If the wrapper had
+      // re-analyzed it, countEntries would be 3 (one per word).
+      assertThat(idx.countEntries()).isEqualTo(1L);
+    });
+  }
+
+  /**
+   * Mirror test for {@link LSMTreeFullTextIndex#removeReplay}: an already-analyzed storage
+   * token carried through commit replay must reach the underlying index verbatim. Verifies
+   * via {@code idx.get} (which honors per-RID tombstones) instead of {@code countEntries}
+   * (which would still count tombstoned entries).
+   */
+  @Test
+  void removeReplayForwardsTokenVerbatimWithoutTokenizing() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE ReplayRemoveDoc");
+      database.command("sql", "CREATE PROPERTY ReplayRemoveDoc.text STRING");
+      database.command("sql", "CREATE INDEX ON ReplayRemoveDoc (text) FULL_TEXT");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ReplayRemoveDoc[text]");
+      final LSMTreeFullTextIndex idx = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
+
+      final com.arcadedb.database.RID rid = new com.arcadedb.database.RID(idx.getAssociatedBucketId(), 0);
+      // Single lowercase token survives StandardAnalyzer unchanged; this lets idx.get find it.
+      idx.putReplay(new Object[] { "alphabetagamma" }, new com.arcadedb.database.RID[] { rid });
+    });
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ReplayRemoveDoc[text]");
+      final LSMTreeFullTextIndex idx = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
+
+      assertThat(idx.get(new Object[] { "alphabetagamma" }).hasNext()).isTrue();
+
+      final com.arcadedb.database.RID rid = new com.arcadedb.database.RID(idx.getAssociatedBucketId(), 0);
+      idx.removeReplay(new Object[] { "alphabetagamma" }, rid);
+    });
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ReplayRemoveDoc[text]");
+      final LSMTreeFullTextIndex idx = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
+      assertThat(idx.get(new Object[] { "alphabetagamma" }).hasNext()).isFalse();
+    });
+  }
+
   private boolean skipIndexing(final String toIndex) {
     boolean skip = false;
     for (int j = 0; j < toIndex.length(); j++) {

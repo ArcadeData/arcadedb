@@ -113,30 +113,31 @@ class LSMTreeGeoIndexTest extends TestHelper {
   }
 
   /**
-   * Exercises the transaction-replay path: LSM-Tree calls put() a second time during commit with
-   * the already-tokenized GeoHash strings. The looksLikeGeoHashToken() heuristic must recognise
-   * them and pass them through to the underlying index unchanged, rather than trying to parse them
-   * as WKT (which would fail or lose data).
+   * Exercises the transaction-replay path (issue #4073). At commit time
+   * {@code TransactionIndexContext.applyChanges} invokes {@link LSMTreeGeoIndex#putReplay}
+   * with already-tokenized GeoHash cells (queued by the underlying LSM-Tree at original-call
+   * time). {@code putReplay} must forward them to the underlying index unchanged - not try to
+   * parse them as WKT, and not run them back through the GeoHash tokenizer.
+   * <p>
+   * This replaces the prior {@code looksLikeGeoHashToken} character-class heuristic on
+   * {@code put}, which would misclassify any short alphanumeric WKT input as a replay token.
    */
   @Test
-  void transactionReplayWithPreTokenizedGeohashStrings() throws Exception {
+  void putReplayPassesGeohashTokenThroughToUnderlyingIndex() throws Exception {
     final LSMTreeGeoIndex idx = createAndRegisterIndex("test-geo-replay");
 
     final RID rid = new RID(1, 0);
+    final String geohashToken = "u0n"; // a Base-32 GeoHash prefix; not a valid WKT shape
 
-    // Normal WKT put — this indexes the point and generates GeoHash tokens
-    database.transaction(() -> idx.put(new Object[]{"POINT (10.0 45.0)"}, new RID[]{rid}));
+    assertThat(idx.countEntries()).isZero();
 
-    // Simulate commit replay: put() called directly with a short GeoHash token (as the LSM-Tree
-    // TransactionIndexContext does on second-phase commit). The token must be accepted and stored.
-    final String geohashToken = "u0n"; // a valid GeoHash prefix in the Base-32 alphabet
-    database.transaction(() -> idx.put(new Object[]{geohashToken}, new RID[]{rid}));
+    // putReplay simulates what TransactionIndexContext.applyChanges hands to the wrapper at
+    // commit time: an already-tokenized GeoHash cell. If the wrapper re-tokenized this string,
+    // either the WKT parse would fail (silently dropping the entry) or the GeoHash tokenizer
+    // would expand it into many child tokens; either way countEntries would not be exactly 1.
+    database.transaction(() -> idx.putReplay(new Object[]{geohashToken}, new RID[]{rid}));
 
-    // The point should still be retrievable (both the original and the replayed tokens are present)
-    final Shape searchShape = GeoUtils.getSpatialContext()
-        .getShapeFactory().rect(5.0, 15.0, 40.0, 50.0);
-    final IndexCursor cursor = idx.get(new Object[]{searchShape});
-    assertThat(cursor.hasNext()).isTrue();
+    assertThat(idx.countEntries()).isEqualTo(1L);
   }
 
   @Test
