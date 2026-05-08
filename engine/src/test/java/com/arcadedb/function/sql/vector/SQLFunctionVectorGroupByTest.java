@@ -226,6 +226,79 @@ class SQLFunctionVectorGroupByTest extends TestHelper {
     }).hasMessageContaining("over-fetch budget exceeded");
   }
 
+  /**
+   * The integrated path replaces the MVP post-filter with a per-group min-heap inside the BMW
+   * DAAT loop. Two-group corpus where the doc with the lowest RID per group has the lowest score
+   * against the query: a "first per group" implementation (which the post-filter would degenerate
+   * to without the global score sort) returns the low-scoring docs. The integrated path's per
+   * group min-heap evicts the lower score when a higher one arrives later in the BMW loop, so the
+   * returned per-group winner is the highest-scoring member.
+   */
+  @Test
+  void sparseGroupByReturnsHighestScorePerGroup() {
+    buildSchema();
+    database.transaction(() -> {
+      for (int g = 0; g < 2; g++) {
+        for (int i = 0; i < 3; i++) {
+          final MutableDocument d = database.newDocument(TYPE_NAME);
+          d.set("source_file", g == 0 ? "best_per_group_A" : "best_per_group_B");
+          d.set("embedding", new float[8]);
+          d.set("tokens", new int[] { 1 });
+          d.set("weights", new float[] { 0.1f * (i + 1) });
+          d.save();
+        }
+      }
+    });
+
+    final ResultSet rs = database.query("sql",
+        "SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?, { groupBy: 'source_file', groupSize: 1 }))",
+        SPARSE_IDX, new int[] { 1 }, new float[] { 1.0f }, 2);
+
+    final HashMap<String, Float> bestPerGroup = new HashMap<>();
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      bestPerGroup.put(row.getProperty("source_file"), ((Number) row.getProperty("score")).floatValue());
+    }
+
+    assertThat(bestPerGroup).hasSize(2);
+    assertThat(bestPerGroup.get("best_per_group_A")).isNotNull();
+    assertThat(bestPerGroup.get("best_per_group_B")).isNotNull();
+    // Top per group must be the highest weight (0.3f * 1.0f = 0.3f), not the first encountered.
+    assertThat(bestPerGroup.get("best_per_group_A")).isCloseTo(0.3f, org.assertj.core.data.Offset.offset(1e-3f));
+    assertThat(bestPerGroup.get("best_per_group_B")).isCloseTo(0.3f, org.assertj.core.data.Offset.offset(1e-3f));
+  }
+
+  @Test
+  void sparseGroupByGroupSize2KeepsTopTwoByScore() {
+    buildSchema();
+    database.transaction(() -> {
+      // 5 docs in one group with weights 0.1, 0.2, 0.3, 0.4, 0.5. groupSize=2, k=1 should return
+      // docs with weights 0.5 and 0.4 (the top two), not the first two encountered.
+      for (int i = 0; i < 5; i++) {
+        final MutableDocument d = database.newDocument(TYPE_NAME);
+        d.set("source_file", "single_group");
+        d.set("embedding", new float[8]);
+        d.set("tokens", new int[] { 1 });
+        d.set("weights", new float[] { 0.1f * (i + 1) });
+        d.save();
+      }
+    });
+
+    final ResultSet rs = database.query("sql",
+        "SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?, { groupBy: 'source_file', groupSize: 2 }))",
+        SPARSE_IDX, new int[] { 1 }, new float[] { 1.0f }, 1);
+
+    final java.util.ArrayList<Float> scores = new java.util.ArrayList<>();
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      scores.add(((Number) row.getProperty("score")).floatValue());
+    }
+    assertThat(scores).hasSize(2);
+    scores.sort((a, b) -> Float.compare(b, a));
+    assertThat(scores.get(0)).isCloseTo(0.5f, org.assertj.core.data.Offset.offset(1e-3f));
+    assertThat(scores.get(1)).isCloseTo(0.4f, org.assertj.core.data.Offset.offset(1e-3f));
+  }
+
   @Test
   void groupByComposesWithFilter() {
     buildSchema();

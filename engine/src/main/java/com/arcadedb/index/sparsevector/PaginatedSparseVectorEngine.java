@@ -343,6 +343,39 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
   }
 
   /**
+   * Top-K with traversal-integrated {@code groupBy} / {@code groupSize} (issue #4071). Replaces the
+   * MVP's {@code topK} + over-fetch + post-filter pattern with a per-group min-heap inside the BMW
+   * DAAT loop. {@code groupKeyResolver} is consulted once per scored document; {@code allowedRIDs}
+   * is applied inline so callers no longer need to over-fetch to compensate for selective filters.
+   *
+   * @see BmwScorer#topKGrouped
+   */
+  public List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final int limit,
+      final int groupSize, final Function<RID, Object> groupKeyResolver, final java.util.Set<RID> allowedRIDs) throws IOException {
+    ensureOpen();
+    if (limit <= 0 || groupSize <= 0)
+      return List.of();
+    if (queryDims.length != queryWeights.length)
+      throw new IllegalArgumentException("queryDims and queryWeights must have equal length");
+
+    refreshSegmentsFromFileManager();
+
+    final Memtable mtSnapshot = memtable.get();
+    final PaginatedSegmentReader[] segSnapshot = segments.get();
+
+    final DimCursor[] cursors = new DimCursor[queryDims.length];
+    try {
+      for (int i = 0; i < queryDims.length; i++)
+        cursors[i] = openMergedCursor(queryDims[i], mtSnapshot, segSnapshot);
+      return BmwScorer.topKGrouped(queryDims, queryWeights, cursors, limit, groupSize, groupKeyResolver, allowedRIDs);
+    } finally {
+      for (final DimCursor c : cursors)
+        if (c != null)
+          c.close();
+    }
+  }
+
+  /**
    * Number of distinct live (non-tombstone) postings under one dim across the memtable + active
    * segments, after newest-source-wins merging. Used to compute IDF document frequency.
    */

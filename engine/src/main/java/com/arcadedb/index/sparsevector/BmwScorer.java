@@ -23,8 +23,11 @@ import com.arcadedb.database.RID;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.PriorityQueue;
+import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Top-K scoring with BlockMax-WAND DAAT (document-at-a-time) over merged dim cursors.
@@ -168,6 +171,186 @@ public final class BmwScorer {
     final List<RidScore> out = new ArrayList<>(heap);
     out.sort((a, b) -> Float.compare(b.score(), a.score()));
     return out;
+  }
+
+  /**
+   * Top-K BMW DAAT with traversal-integrated {@code groupBy} / {@code groupSize} (issue #4071).
+   * Replaces the global K-heap with a per-group min-heap so the post-traversal filter that the
+   * MVP applied on top of {@link #topK} no longer needs an over-fetched candidate pool. The
+   * {@code groupKeyResolver} is consulted once per scored document; the resolver typically reads
+   * the group field off the materialised record, so callers should keep it cheap.
+   * <p>
+   * <b>Threshold semantics with per-group state.</b> The BMW pruning threshold is a lower bound on
+   * any score that could still enter the result set. For non-grouped top-K that is the K-th best
+   * score so far; for grouped top-K the analogue is "the lowest score that could replace any
+   * group's worst member". Until {@code limit} groups have all reached {@code groupSize} (so any
+   * candidate could open a new group or fill an empty slot), the threshold stays at
+   * {@link Float#NEGATIVE_INFINITY} and the loop accepts every candidate that survives BMW's other
+   * gates. Once globally full, the threshold is the minimum across per-group worst scores - any
+   * score below it cannot beat any group's worst, so the BMW prefix-sum pivot can prune it
+   * straight away. The threshold is conservative (a candidate above it may still be rejected
+   * because its specific group has a higher worst), which is fine: pruning is correct, just
+   * slightly less aggressive than non-grouped top-K.
+   * <p>
+   * <b>{@code allowedRIDs} filter.</b> Applied inline in the scoring branch: a pivot RID outside
+   * the whitelist is dropped without scoring (cursors still advance so the loop progresses). This
+   * removes the over-fetch + post-filter pattern that {@link LSMSparseVectorIndex#topK} used to
+   * compensate for highly selective filters.
+   *
+   * @param queryDims        query dim ids
+   * @param queryWeights     query weights, parallel to {@code queryDims}; must be non-negative
+   * @param cursors          per-dim cursors, parallel to {@code queryDims}; nulls allowed for dims
+   *                         absent from every source
+   * @param limit            max number of distinct groups to return
+   * @param groupSize        max records per group
+   * @param groupKeyResolver maps a candidate RID to its group key; {@code null} group keys are
+   *                         allowed (treated as the "null" group), matching the MVP's HashMap
+   *                         null-key handling
+   * @param allowedRIDs      optional RID whitelist; {@code null} or empty means no restriction
+   *
+   * @return at most {@code limit * groupSize} (RID, score) pairs sorted by score descending. Each
+   *         distinct group key in the result has at most {@code groupSize} entries and the result
+   *         covers at most {@code limit} distinct groups.
+   *
+   * @throws IllegalArgumentException if input arrays mismatch length, query weights are NaN /
+   *                                  infinite / negative, or {@code groupKeyResolver} is null.
+   * @throws IOException              propagated from the underlying cursor reads.
+   */
+  public static List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final DimCursor[] cursors,
+      final int limit, final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs)
+      throws IOException {
+    if (queryDims.length != queryWeights.length || queryWeights.length != cursors.length)
+      throw new IllegalArgumentException("queryDims, queryWeights, cursors must have the same length");
+    for (final float w : queryWeights) {
+      if (Float.isNaN(w) || Float.isInfinite(w))
+        throw new IllegalArgumentException("query weights must be finite numbers; got " + w);
+      if (w < 0.0f)
+        throw new IllegalArgumentException("query weights must be non-negative; got " + w);
+    }
+    if (groupKeyResolver == null)
+      throw new IllegalArgumentException("groupKeyResolver must not be null");
+    if (limit <= 0 || groupSize <= 0)
+      return List.of();
+
+    final List<DimEntry> live = new ArrayList<>(cursors.length);
+    for (int i = 0; i < cursors.length; i++) {
+      if (cursors[i] == null)
+        continue;
+      cursors[i].start();
+      if (cursors[i].isExhausted())
+        continue;
+      live.add(new DimEntry(cursors[i], queryWeights[i]));
+    }
+    if (live.isEmpty())
+      return List.of();
+
+    final boolean filterActive = allowedRIDs != null && !allowedRIDs.isEmpty();
+
+    // Per-group state. Each min-heap holds at most groupSize entries; peek == that group's worst.
+    final HashMap<Object, PriorityQueue<RidScore>> groups = new HashMap<>(limit);
+    int filledGroups = 0;
+    float threshold = Float.NEGATIVE_INFINITY;
+
+    while (!live.isEmpty()) {
+      sortByCurrentRid(live);
+
+      final int pivot = findPivot(live, threshold);
+      if (pivot < 0)
+        break;
+
+      final RID pivotRid = live.get(pivot).cursor.currentRid();
+      if (live.get(0).cursor.currentRid().equals(pivotRid)) {
+        if (filterActive && !allowedRIDs.contains(pivotRid)) {
+          // Whitelist rejected. Skip the doc; advance every aligned cursor.
+          for (final DimEntry e : live) {
+            if (pivotRid.equals(e.cursor.currentRid()))
+              e.cursor.advance();
+          }
+        } else {
+          boolean tombstoned = false;
+          float score = 0.0f;
+          for (final DimEntry e : live) {
+            if (!pivotRid.equals(e.cursor.currentRid()))
+              break;
+            if (e.cursor.isTombstone()) {
+              tombstoned = true;
+              break;
+            }
+            score += e.queryWeight * e.cursor.currentWeight();
+          }
+          if (!tombstoned) {
+            // Resolve the candidate's group and apply per-group admission.
+            final Object groupKey = groupKeyResolver.apply(pivotRid);
+            final PriorityQueue<RidScore> group = groups.get(groupKey);
+            boolean stateChanged = false;
+            if (group == null) {
+              if (groups.size() < limit) {
+                final PriorityQueue<RidScore> opened = new PriorityQueue<>(groupSize, Comparator.comparing(RidScore::score));
+                opened.add(new RidScore(pivotRid, score));
+                groups.put(groupKey, opened);
+                if (groupSize == 1)
+                  filledGroups++;
+                stateChanged = true;
+              }
+              // else: limit groups already open and this one is a new key - reject.
+            } else if (group.size() < groupSize) {
+              group.add(new RidScore(pivotRid, score));
+              if (group.size() == groupSize)
+                filledGroups++;
+              stateChanged = true;
+            } else if (score > group.peek().score()) {
+              group.poll();
+              group.add(new RidScore(pivotRid, score));
+              stateChanged = true;
+            }
+            // Recompute the global threshold once every group has reached capacity. Until then
+            // stays at NEGATIVE_INFINITY: a candidate could still open a new group or fill an
+            // empty slot inside an existing one, so BMW pruning would be incorrect.
+            if (stateChanged && filledGroups == limit && groups.size() == limit)
+              threshold = computeGlobalMinWorst(groups);
+          }
+          // Advance every aligned cursor.
+          for (final DimEntry e : live) {
+            if (pivotRid.equals(e.cursor.currentRid()))
+              e.cursor.advance();
+          }
+        }
+      } else {
+        // Skip the prefix [0..pivot] forward to pivotRid. Cursors past pivot already at >= pivotRid.
+        for (int i = 0; i <= pivot; i++) {
+          final DimEntry e = live.get(i);
+          if (SparseSegmentBuilder.compareRid(e.cursor.currentRid(), pivotRid) < 0)
+            e.cursor.seekTo(pivotRid);
+        }
+      }
+
+      removeExhausted(live);
+    }
+
+    int total = 0;
+    for (final PriorityQueue<RidScore> pq : groups.values())
+      total += pq.size();
+    final List<RidScore> out = new ArrayList<>(total);
+    for (final PriorityQueue<RidScore> pq : groups.values())
+      out.addAll(pq);
+    out.sort((a, b) -> Float.compare(b.score(), a.score()));
+    return out;
+  }
+
+  /**
+   * Minimum score across per-group worst-score watermarks. Used as the BMW pruning threshold once
+   * every group has reached capacity; any candidate score at or below this value cannot beat any
+   * group's worst member and so cannot enter the result set, so BMW's prefix-sum pivot can prune
+   * the rest of the loop without scoring it.
+   */
+  private static float computeGlobalMinWorst(final HashMap<Object, PriorityQueue<RidScore>> groups) {
+    float min = Float.POSITIVE_INFINITY;
+    for (final PriorityQueue<RidScore> pq : groups.values()) {
+      final RidScore worst = pq.peek();
+      if (worst != null && worst.score() < min)
+        min = worst.score();
+    }
+    return min == Float.POSITIVE_INFINITY ? Float.NEGATIVE_INFINITY : min;
   }
 
   // ---------- internals ----------

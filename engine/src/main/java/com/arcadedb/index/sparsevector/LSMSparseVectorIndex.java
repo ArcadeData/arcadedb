@@ -50,6 +50,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -328,6 +329,76 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
         break;
     }
     return out;
+  }
+
+  /**
+   * Top-K with traversal-integrated {@code groupBy} (issue #4071). Equivalent shape to
+   * {@link #topK} but pushes the grouping into the BMW DAAT loop: a per-group min-heap replaces
+   * the global K-heap, the {@code allowedRIDs} filter is applied inline (no over-fetch), and the
+   * pruning threshold tightens to the global per-group worst once every group has reached
+   * {@code groupSize}.
+   * <p>
+   * Picks up the same IDF weighting as {@link #topK} when the index was created with
+   * {@code modifier = "IDF"} so callers can swap the two methods without changing the scoring
+   * model.
+   *
+   * @param queryIndices     non-negative dimension ids of the query
+   * @param queryValues      weights matching {@code queryIndices}
+   * @param limit            max number of distinct groups to return; must be {@code > 0}
+   * @param groupSize        max records per group; must be {@code > 0}
+   * @param allowedRIDs      optional whitelist; applied inside the BMW loop, no over-fetch needed
+   * @param groupKeyResolver maps a candidate RID to its group key; {@code null} group keys are
+   *                         allowed (single "null" bucket)
+   *
+   * @return ordered list of (RID, score) pairs from highest to lowest score; capped at
+   *         {@code limit * groupSize}, with each distinct group key represented at most
+   *         {@code groupSize} times.
+   */
+  public List<RidScore> topKGrouped(final int[] queryIndices, final float[] queryValues, final int limit, final int groupSize,
+      final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver) {
+    if (queryIndices == null || queryValues == null)
+      throw new IndexException("Query indices and values must not be null");
+    if (queryIndices.length != queryValues.length)
+      throw new IndexException(
+          "Query indices and values must have the same length (got " + queryIndices.length + " and " + queryValues.length + ")");
+    if (limit <= 0)
+      throw new IndexException("limit must be > 0");
+    if (groupSize <= 0)
+      throw new IndexException("groupSize must be > 0");
+    if (groupKeyResolver == null)
+      throw new IndexException("groupKeyResolver must not be null");
+
+    final boolean useIDF = sparseMetadata != null
+        && LSMSparseVectorIndexMetadata.MODIFIER_IDF.equals(sparseMetadata.modifier);
+
+    final float[] effectiveWeights = new float[queryValues.length];
+    if (useIDF) {
+      final long n = totalDocuments();
+      final HashMap<Integer, Long> dfCache = new HashMap<>();
+      for (int i = 0; i < queryIndices.length; i++) {
+        final int qDim = queryIndices[i];
+        if (qDim < 0)
+          throw new IndexException("Query dimension must be >= 0, found: " + qDim);
+        if (queryValues[i] == 0.0f) {
+          effectiveWeights[i] = 0.0f;
+          continue;
+        }
+        Long df = dfCache.get(qDim);
+        if (df == null) {
+          df = countPostings(qDim);
+          dfCache.put(qDim, df);
+        }
+        effectiveWeights[i] = queryValues[i] * idf(n, df);
+      }
+    } else {
+      System.arraycopy(queryValues, 0, effectiveWeights, 0, queryValues.length);
+    }
+
+    try {
+      return engine.topKGrouped(queryIndices, effectiveWeights, limit, groupSize, groupKeyResolver, allowedRIDs);
+    } catch (final IOException e) {
+      throw new IndexException("Sparse vector grouped top-K failed", e);
+    }
   }
 
   /** Counts live postings under one dimension via the engine's merged cursor. O(df). */

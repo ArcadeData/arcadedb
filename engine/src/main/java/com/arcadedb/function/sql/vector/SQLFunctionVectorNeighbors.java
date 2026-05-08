@@ -44,6 +44,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * Returns the K neighbors from a vertex. This function requires a vector index has been created beforehand.
@@ -212,37 +213,51 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
     // Get the query vector
     final float[] queryVector = extractQueryVector(key, vectorIndexes.get(0), context);
 
-    // When grouping, over-fetch candidates so the post-traversal filter has enough material to
-    // fill limit groups at groupSize each. The 5x cushion is empirical; highly skewed group
-    // distributions may need more, in which case users can lift recall via efSearch.
-    //
-    // Hard-cap the fetch at MAX_FETCH_CANDIDATES so a pathological combination of `limit` and
-    // `groupSize` cannot blow up the candidate pool. The product is computed in long arithmetic
-    // first to detect overflow before truncating to int.
-    final int fetchPerIndex;
-    if (groupBy == null) {
-      fetchPerIndex = limit;
-    } else {
+    // Memory-budget guard for the integrated path (issue #4071): the per-group Bits filter caps
+    // memory at O(limit * groupSize) per bucket, but we still reject pathological combinations
+    // (e.g. limit=10000, groupSize=10000 = 100M candidates) so the search loop does not allocate
+    // arrays in the GiB range. Same shape (and exception text) as the MVP cap so existing tests
+    // probing the boundary remain valid.
+    if (groupBy != null) {
       final long requested = Math.max((long) limit * groupSize * 5L, (long) limit);
       if (requested > MAX_FETCH_CANDIDATES)
         throw new CommandSQLParsingException(NAME + " over-fetch budget exceeded: limit=" + limit
             + ", groupSize=" + groupSize + " would require " + requested
             + " candidates (cap " + MAX_FETCH_CANDIDATES + "). Reduce limit or groupSize.");
-      fetchPerIndex = (int) requested;
     }
 
-    // Search across all indexes and collect results
+    final BasicDatabase db = context.getDatabase();
+
+    // Resolver for the integrated grouped path. Lookup misses (record not found - e.g. stale
+    // postings after a backup restore) map to a synthetic null group key so the candidate falls
+    // into the single null bucket, matching the SQL-layer post-filter's HashMap null-key handling.
+    final Function<RID, Object> groupKeyResolver = groupBy == null ? null : rid -> {
+      try {
+        final Document record = (Document) db.lookupByRID(rid, true);
+        return readNestedField(record, groupBy);
+      } catch (final RecordNotFoundException e) {
+        return null;
+      }
+    };
+
+    // Per-bucket fetch cap. Non-grouped path keeps the original {@code fetchPerIndex = limit}
+    // shape; the grouped path uses {@code limit} as the distinct-group budget on each bucket and
+    // relies on the SQL-layer global GroupAdmissionState to reduce cross-bucket overlap.
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
 
     for (final LSMVectorIndex lsmIndex : vectorIndexes) {
-      final List<Pair<RID, Float>> neighbors = lsmIndex.findNeighborsFromVector(queryVector, fetchPerIndex, efSearch, allowedRIDs);
+      final List<Pair<RID, Float>> neighbors;
+      if (groupBy == null)
+        neighbors = lsmIndex.findNeighborsFromVector(queryVector, limit, efSearch, allowedRIDs);
+      else
+        neighbors = lsmIndex.findNeighborsFromVectorGrouped(queryVector, limit, groupSize, efSearch, allowedRIDs,
+            groupKeyResolver);
       allNeighbors.addAll(neighbors);
     }
 
     // Sort by distance (ascending - closer is better for similarity search)
     allNeighbors.sort(Comparator.comparing(Pair::getSecond));
 
-    final BasicDatabase db = context.getDatabase();
     final ArrayList<Object> result = new ArrayList<>();
     final GroupAdmissionState groups = groupBy != null ? new GroupAdmissionState(limit, groupSize) : null;
 

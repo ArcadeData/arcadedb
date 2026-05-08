@@ -106,6 +106,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
+import java.util.function.Function;
 import java.util.logging.Level;
 
 /**
@@ -3014,6 +3015,171 @@ public class LSMVectorIndex implements Index, IndexInternal {
       }
     } finally {
       // Track search latency
+      final long elapsed = System.currentTimeMillis() - startTime;
+      metrics.addSearchLatency(elapsed);
+    }
+  }
+
+  /**
+   * Search for k nearest neighbors with traversal-integrated {@code groupBy} (issue #4071). Pushes
+   * the per-group cap into the JVector graph traversal via a {@link GroupedRIDBitsFilter}: nodes
+   * whose group has already reached {@code groupSize} during the HNSW walk are filtered out before
+   * scoring. The search budget is sized to {@code limit * groupSize} so JVector can fill the heap
+   * even when groups are exhausted.
+   * <p>
+   * <b>Approximate best-per-group.</b> Unlike the sparse path's per-group min-heap, the dense
+   * traversal cannot consult scores when the {@link Bits} filter runs (it gates eligibility before
+   * scoring). Group admission therefore happens in HNSW visit order. HNSW visits approximately
+   * best-first, so the first {@code groupSize} candidates per group are usually among the best,
+   * but the integration is not score-exact - callers that need a strict best-per-group guarantee
+   * should keep the SQL-layer post-filter, which re-applies {@code GroupAdmissionState} on the
+   * search output and can fall back to the MVP behaviour at higher {@code efSearch}.
+   * <p>
+   * <b>Delta scan and brute-force fallback are skipped.</b> The two augmentations would re-admit
+   * candidates outside the per-group cap; the delta path because it scores newly-inserted vectors
+   * not yet visible to HNSW (no Bits filter applied), the brute-force path because it walks every
+   * vector when the graph search returned too few hits. Skipping them is correct for the grouped
+   * contract; callers that depend on either should use {@link #findNeighborsFromVector} and apply
+   * the {@code GroupAdmissionState} post-filter at the SQL layer.
+   *
+   * @param queryVector      query embedding
+   * @param limit            max number of distinct groups to return; must be {@code > 0}
+   * @param groupSize        max members per group; must be {@code > 0}
+   * @param efSearch         search beam width override; {@code -1} uses the index default
+   * @param allowedRIDs      optional RID whitelist
+   * @param groupKeyResolver maps a candidate RID to its group key
+   *
+   * @return list of (RID, distance) pairs sorted ascending by distance, capped at {@code limit *
+   *         groupSize} entries with each distinct group key appearing at most {@code groupSize}
+   *         times.
+   */
+  public List<Pair<RID, Float>> findNeighborsFromVectorGrouped(final float[] queryVector, final int limit, final int groupSize,
+      final int efSearch, final Set<RID> allowedRIDs, final Function<RID, Object> groupKeyResolver) {
+    if (limit <= 0 || groupSize <= 0)
+      return Collections.emptyList();
+    if (groupKeyResolver == null)
+      throw new IllegalArgumentException("groupKeyResolver must not be null");
+
+    final long startTime = System.currentTimeMillis();
+    metrics.incrementSearchOperations();
+
+    try {
+      if (queryVector == null)
+        throw new IllegalArgumentException("Query vector cannot be null");
+
+      if (queryVector.length != metadata.dimensions)
+        throw new IllegalArgumentException(
+            "Query vector dimension " + queryVector.length + " does not match index dimension " + metadata.dimensions);
+
+      if (metadata.similarityFunction == VectorSimilarityFunction.COSINE && VectorUtils.isZeroVector(queryVector))
+        throw new IllegalArgumentException(
+            "Query vector cannot be a zero vector when using COSINE similarity (causes undefined similarity)");
+
+      ensureGraphAvailable();
+      rebuildGraphBeforeSearch();
+
+      final int searchK = limit * groupSize;
+      boolean readLockHeld = false;
+      lock.readLock().lock();
+      readLockHeld = true;
+      try {
+        if (graphIndex == null || vectorIndex.size() == 0)
+          return Collections.emptyList();
+
+        final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
+
+        final String vectorProp =
+            metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
+        final RandomAccessVectorValues vectors;
+        if (liveVectorValues != null && liveBuilder != null && graphIndex == liveBuilder.getGraph()) {
+          vectors = liveVectorValues;
+        } else {
+          vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions, vectorProp,
+              vectorIndex, ordinalToVectorId, this);
+        }
+
+        // Group-aware Bits filter. Wraps the same RID validity + allowedRIDs gating that
+        // RIDBitsFilter applies, plus per-group counters that reject candidates whose group has
+        // reached capacity. Per-search state lives on the filter instance; do not reuse the
+        // instance across calls.
+        final Bits bitsFilter = new GroupedRIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex,
+            groupKeyResolver, limit, groupSize);
+
+        final SearchResult searchResult;
+        try (final GraphSearcher searcher = new GraphSearcher(graphIndex)) {
+          final ScoreFunction.ExactScoreFunction exactScoreFunction = (node) ->
+              metadata.similarityFunction.compare(queryVectorFloat, vectors.getVector(node));
+          final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
+
+          // Choose efSearch the same way the non-grouped path does, but skip the
+          // resume-on-too-few branch: the Bits filter intentionally rejects candidates whose
+          // group has reached groupSize, so a "too few results" outcome is the contract, not a
+          // beam-width problem. JVector's resume() resets the result state and runs another pass;
+          // when the Bits filter has already locked groups full, the second pass admits nothing
+          // new and we lose the first-pass survivors. Keep the first-pass result and let callers
+          // raise efSearch explicitly when they need wider coverage.
+          final int effectiveEfSearch;
+          if (efSearch > 0) {
+            effectiveEfSearch = Math.max(searchK, efSearch);
+          } else if (metadata.efSearch != 100) {
+            effectiveEfSearch = Math.max(searchK, metadata.efSearch);
+          } else {
+            final int graphSize = graphIndex.size();
+            effectiveEfSearch = graphSize < 10_000 ? Math.max(searchK, 100) : Math.max(searchK * 2, 20);
+          }
+          searchResult = searcher.search(ssp, searchK, effectiveEfSearch, 0.0f, 0.0f, bitsFilter);
+        }
+
+        LogManager.instance()
+            .log(this, Level.INFO,
+                "GraphSearcher (grouped) returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d, limit=%d, groupSize=%d",
+                searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length, limit, groupSize);
+
+        final List<Pair<RID, Float>> results = new ArrayList<>(searchK);
+        int skippedOutOfBounds = 0;
+        int skippedDeletedOrNull = 0;
+        for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
+          final int ordinal = nodeScore.node;
+          if (ordinal < 0 || ordinal >= ordinalToVectorId.length) {
+            skippedOutOfBounds++;
+            continue;
+          }
+          final int vectorId = ordinalToVectorId[ordinal];
+          final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
+          if (loc == null || loc.deleted) {
+            skippedDeletedOrNull++;
+            continue;
+          }
+          // Defensive post-filter: JVector may include the entry node despite Bits, and the
+          // GroupedRIDBitsFilter has already enforced the group cap, so we only need to re-check
+          // the RID whitelist here for parity with findNeighborsFromVector.
+          if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
+            continue;
+
+          final float score = nodeScore.score;
+          final float distance = switch (metadata.similarityFunction) {
+            case COSINE -> 2.0f * (1.0f - score);
+            case EUCLIDEAN -> score;
+            case DOT_PRODUCT -> -score;
+            default -> score;
+          };
+          results.add(new Pair<>(bindRid(loc.rid), distance));
+        }
+
+        LogManager.instance()
+            .log(this, Level.INFO,
+                "Vector grouped search returned %d results (skipped: %d out of bounds, %d deleted/null)",
+                results.size(), skippedOutOfBounds, skippedDeletedOrNull);
+        return results;
+
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE, "Error performing grouped vector search", e);
+        throw new IndexException("Error performing grouped vector search", e);
+      } finally {
+        if (readLockHeld)
+          lock.readLock().unlock();
+      }
+    } finally {
       final long elapsed = System.currentTimeMillis() - startTime;
       metrics.addSearchLatency(elapsed);
     }
