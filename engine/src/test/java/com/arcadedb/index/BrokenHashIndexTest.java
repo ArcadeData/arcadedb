@@ -90,4 +90,23 @@ class BrokenHashIndexTest extends TestHelper {
       }
     });
   }
+
+  @Test
+  void selectByEqualsOnHashIndexedStringFindsTheEntry() {
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().createDocumentType("EntryStr");
+      t.createProperty("name", Type.STRING).setMandatory(true).setNotNull(true);
+      t.createTypeIndex(Schema.INDEX_TYPE.HASH, true, "name");
+    });
+    database.transaction(() -> {
+      database.newDocument("EntryStr").set("name", "alice").save();
+    });
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM EntryStr WHERE name = :name", Map.of("name", "alice"))) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("alice");
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
 }
