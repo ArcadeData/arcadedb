@@ -18,13 +18,13 @@
  */
 package com.arcadedb.index.sparsevector;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.sparsevector.SegmentFormat.RidCompression;
 import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
-import java.nio.ByteOrder;
 
 /**
  * Forward cursor over the postings of a single dim within a page-backed sealed segment. Implements
@@ -53,21 +53,14 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
   private boolean       blockDecoded;
   private boolean       exhausted;
 
-  // Reusable decode scratch space, sized once to a full page payload. Decoding a block consumes
-  // the buffer linearly (RIDs first, then weights), so we can reuse it across blocks and across
-  // queries on this cursor without allocating per-block byte[] / ByteBuffer pairs. Cuts out the
-  // dominant allocation in BMW-DAAT under high-fanout queries.
-  // <p>
-  // FUTURE: at the default 64 KiB page this is a 64 KiB allocation per cursor instance. A query
-  // over D query dims fanning out across S segments allocates D * S of these (D=30, S=15 -&gt; ~28
-  // MiB per query, reclaimed when the query finishes). Under concurrent load this is real heap
-  // pressure. The natural fix is a thread-local or {@link java.util.concurrent.ConcurrentLinkedDeque}-backed
-  // pool of {@code byte[pageContentSize]} buffers handed to cursors at {@link #start} and
-  // returned at {@link #close}. Deferred until #4085 (parallel scoring) lands - parallel
-  // dispatch multiplies the allocation rate by the parallelism factor, so the right time to
-  // tackle this is alongside the dispatch wiring.
-  private final byte[]     decodeScratch;
-  private final ByteBuffer decodeView;
+  // Required scratch capacity (one full page of payload). The byte[] / ByteBuffer pair is
+  // borrowed from {@link com.arcadedb.database.DatabaseContext.DatabaseContextTL#getTemporaryBuffer1()}
+  // inside {@link #decodeBlockIfNeeded} - the same per-thread Binary that BinarySerializer and
+  // friends already share. Decoded values land in this cursor's {@code blockRids} /
+  // {@code blockWeights} / {@code blockTombstones} arrays before the call returns, so the
+  // buffer can be clobbered by any subsequent caller on the same thread without affecting us
+  // (issue #4086).
+  private final int scratchSize;
 
   PaginatedSegmentDimCursor(final PaginatedSegmentReader reader, final PaginatedDimMetadata meta) {
     this.reader = reader;
@@ -76,9 +69,7 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     this.blockRids = new RID[params.blockSize()];
     this.blockWeights = new float[params.blockSize()];
     this.blockTombstones = new boolean[params.blockSize()];
-    final int maxPayload = reader.component().pageContentSize();
-    this.decodeScratch = new byte[maxPayload];
-    this.decodeView = ByteBuffer.wrap(decodeScratch).order(ByteOrder.BIG_ENDIAN);
+    this.scratchSize = reader.component().pageContentSize();
   }
 
   public int dimId() {
@@ -251,7 +242,13 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
     final int pageNum = meta.blockPageNum(currentBlock);
     final int offsetInPage = meta.blockOffset(currentBlock);
     final BlockHeader bh = meta.blockHeader(currentBlock);
-    final ByteBuffer buf = reader.readBlockPayloadInto(pageNum, offsetInPage, decodeScratch, decodeView);
+    // {@code getTemporaryBuffer1} returns a cleared per-thread {@link Binary}; {@code size(int)}
+    // grows the underlying byte[] to {@code scratchSize} on first sparse-vector decode and is a
+    // no-op on subsequent calls. The default Binary uses big-endian byte order, matching the
+    // segment format.
+    final Binary scratch = reader.component().getDatabase().getContext().getTemporaryBuffer1();
+    scratch.size(scratchSize);
+    final ByteBuffer buf = reader.readBlockPayloadInto(pageNum, offsetInPage, scratch.getContent(), scratch.getByteBuffer());
 
     final int n = bh.postingCount();
     blockSize = n;
