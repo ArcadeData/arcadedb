@@ -276,6 +276,96 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
     });
   }
 
+  /**
+   * Regression for issue #4142: the GraphBatch edge serializer landed strings on
+   * {@link com.arcadedb.utility.DateUtils#dateTimeToTimestamp(Object, java.time.temporal.ChronoUnit)}
+   * which only accepted {@link java.time.LocalDateTime#parse(CharSequence)} formats. Vertices
+   * tolerated ISO-8601 strings with a {@code Z} or {@code ±HH:mm} zone designator (the default
+   * {@code Date.toJSON()} output in JS/Python/Go/Java); edges threw HTTP 500. Both paths must
+   * accept the same set of formats.
+   */
+  @Test
+  void edgeIsoDateTimeWithZSuffix() throws Exception {
+    testEachServer((serverIndex) -> {
+      executeCommand(serverIndex, "sql", "CREATE VERTEX TYPE V4142 IF NOT EXISTS");
+      executeCommand(serverIndex, "sql", "CREATE EDGE TYPE E4142 IF NOT EXISTS");
+      executeCommand(serverIndex, "sql", "CREATE PROPERTY V4142.ts IF NOT EXISTS DATETIME");
+      executeCommand(serverIndex, "sql", "CREATE PROPERTY E4142.ts IF NOT EXISTS DATETIME");
+
+      // Vertex first: was already accepted before the fix - asserts no regression on that path.
+      final String vertexBody = "{\"@type\":\"vertex\",\"@class\":\"V4142\",\"@id\":\"v1\",\"ts\":\"2026-05-08T18:37:54Z\"}\n";
+      final JSONObject vResult = postBatch(serverIndex, vertexBody, "application/x-ndjson", "");
+      assertThat(vResult.getInt("verticesCreated")).isEqualTo(1);
+
+      // Edge with Z suffix - the broken case before the fix.
+      final String edgeBody = """
+          {"@type":"vertex","@class":"V4142","@id":"a4142"}
+          {"@type":"vertex","@class":"V4142","@id":"b4142"}
+          {"@type":"edge","@class":"E4142","@from":"a4142","@to":"b4142","ts":"2026-05-08T18:37:54Z"}
+          """;
+      final JSONObject eResult = postBatch(serverIndex, edgeBody, "application/x-ndjson", "");
+      assertThat(eResult.getInt("verticesCreated")).isEqualTo(2);
+      assertThat(eResult.getInt("edgesCreated")).isEqualTo(1);
+
+      // Confirm the timestamp survived the round-trip: the rebased wall-clock matches what
+      // {@code parseIsoDateTime} produces given the database's configured timezone. The
+      // computation mirrors the engine path so the assertion stays stable regardless of the
+      // JVM's default zone.
+      final JSONObject query = executeCommand(serverIndex, "sql", "SELECT ts FROM E4142");
+      final String ts = query.getJSONObject("result").getJSONArray("records").getJSONObject(0).getString("ts");
+      final java.time.ZonedDateTime input = java.time.ZonedDateTime.parse("2026-05-08T18:37:54Z");
+      final String expectedDate = input.withZoneSameInstant(java.time.ZoneId.systemDefault())
+          .toLocalDateTime()
+          .toLocalDate()
+          .toString();
+      assertThat(ts).startsWith(expectedDate);
+    });
+  }
+
+  /**
+   * Regression for issue #4142: the milliseconds + {@code Z} suffix variant
+   * ({@code 2026-05-08T18:37:54.000Z}) is the most common shape produced by
+   * {@code new Date().toISOString()} in JavaScript and friends.
+   */
+  @Test
+  void edgeIsoDateTimeWithMillisAndZSuffix() throws Exception {
+    testEachServer((serverIndex) -> {
+      executeCommand(serverIndex, "sql", "CREATE VERTEX TYPE V4142b IF NOT EXISTS");
+      executeCommand(serverIndex, "sql", "CREATE EDGE TYPE E4142b IF NOT EXISTS");
+      executeCommand(serverIndex, "sql", "CREATE PROPERTY E4142b.ts IF NOT EXISTS DATETIME");
+
+      final String body = """
+          {"@type":"vertex","@class":"V4142b","@id":"a4142b"}
+          {"@type":"vertex","@class":"V4142b","@id":"b4142b"}
+          {"@type":"edge","@class":"E4142b","@from":"a4142b","@to":"b4142b","ts":"2026-05-08T18:37:54.000Z"}
+          """;
+      final JSONObject result = postBatch(serverIndex, body, "application/x-ndjson", "");
+      assertThat(result.getInt("edgesCreated")).isEqualTo(1);
+    });
+  }
+
+  /**
+   * Regression for issue #4142: ISO-8601 with explicit numeric offset
+   * ({@code 2026-05-08T18:37:54+00:00}) is what {@code java.time.OffsetDateTime.toString()}
+   * produces.
+   */
+  @Test
+  void edgeIsoDateTimeWithExplicitOffset() throws Exception {
+    testEachServer((serverIndex) -> {
+      executeCommand(serverIndex, "sql", "CREATE VERTEX TYPE V4142c IF NOT EXISTS");
+      executeCommand(serverIndex, "sql", "CREATE EDGE TYPE E4142c IF NOT EXISTS");
+      executeCommand(serverIndex, "sql", "CREATE PROPERTY E4142c.ts IF NOT EXISTS DATETIME");
+
+      final String body = """
+          {"@type":"vertex","@class":"V4142c","@id":"a4142c"}
+          {"@type":"vertex","@class":"V4142c","@id":"b4142c"}
+          {"@type":"edge","@class":"E4142c","@from":"a4142c","@to":"b4142c","ts":"2026-05-08T18:37:54+00:00"}
+          """;
+      final JSONObject result = postBatch(serverIndex, body, "application/x-ndjson", "");
+      assertThat(result.getInt("edgesCreated")).isEqualTo(1);
+    });
+  }
+
   private JSONObject postBatch(final int serverIndex, final String body, final String contentType,
       final String queryParams) throws Exception {
     final HttpURLConnection conn = openBatchConnection(serverIndex, contentType, queryParams);

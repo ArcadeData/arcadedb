@@ -31,6 +31,7 @@ import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
+import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.TemporalAccessor;
@@ -121,6 +122,16 @@ public class DateUtils {
   }
 
   public static Long dateTimeToTimestamp(final Object value, final ChronoUnit precisionToUse) {
+    return dateTimeToTimestamp(null, value, precisionToUse);
+  }
+
+  /**
+   * Database-aware overload: when {@code value} is a {@link String}, the schema-configured
+   * date/time formats are tried as fallbacks after ISO-8601, mirroring the vertex path in
+   * {@code Type.convert}. Used by the binary serializer (and thus by GraphBatch's edge bulk
+   * path) so that vertex and edge ingestion accept the same set of inputs - issue #4142.
+   */
+  public static Long dateTimeToTimestamp(final Database database, final Object value, final ChronoUnit precisionToUse) {
     if (value == null)
       return null;
 
@@ -205,12 +216,56 @@ public class DateUtils {
       if (FileUtils.isLong(string))
         timestamp = Long.parseLong(value.toString());
       else
-        return dateTimeToTimestamp(LocalDateTime.parse(string), precisionToUse);
+        return dateTimeToTimestamp(database, parseIsoDateTime(database, string), precisionToUse);
     } else
       // UNSUPPORTED
       return null;
 
     return timestamp;
+  }
+
+  /**
+   * Mirrors the vertex string-to-{@link LocalDateTime} fallback chain in {@code Type.convert}
+   * so the GraphBatch edge bulk path (which bypasses {@code Type.convert}) accepts the same
+   * set of inputs - issue #4142. Tries, in order:
+   * <ol>
+   *   <li>{@link LocalDateTime#parse(CharSequence)} (ISO without zone);</li>
+   *   <li>{@link ZonedDateTime#parse(CharSequence)} for ISO inputs ending in {@code Z} or
+   *   with a {@code ±HH:mm} offset - the resulting instant is rebased onto the database's
+   *   configured zone (default {@link ZoneId#systemDefault()}) before stripping the offset,
+   *   so the stored wall-clock follows the database's locale rather than the input's;</li>
+   *   <li>the schema's {@code dateTimeFormat};</li>
+   *   <li>the schema's {@code dateFormat}.</li>
+   * </ol>
+   * When {@code database} is {@code null} only the ISO formats are tried and offset-bearing
+   * inputs keep their wall-clock without rebasing, matching legacy parsing behavior in
+   * scopes without a schema.
+   */
+  private static LocalDateTime parseIsoDateTime(final Database database, final String string) {
+    try {
+      return LocalDateTime.parse(string);
+    } catch (final DateTimeParseException e) {
+      try {
+        final ZonedDateTime parsed = ZonedDateTime.parse(string);
+        if (database != null) {
+          final ZoneId zoneId = database.getSchema().getZoneId();
+          if (zoneId != null)
+            return parsed.withZoneSameInstant(zoneId).toLocalDateTime();
+        }
+        return parsed.toLocalDateTime();
+      } catch (final DateTimeParseException e2) {
+        if (database != null) {
+          try {
+            return LocalDateTime.parse(string,
+                DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
+          } catch (final DateTimeParseException ignore) {
+            return LocalDateTime.parse(string,
+                DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
+          }
+        }
+        throw e2;
+      }
+    }
   }
 
   public static ChronoUnit parsePrecision(final String precision) {

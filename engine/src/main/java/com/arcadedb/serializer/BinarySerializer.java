@@ -453,7 +453,7 @@ public class BinarySerializer {
     case BinaryTypes.TYPE_DATETIME:
     case BinaryTypes.TYPE_DATETIME_MICROS:
     case BinaryTypes.TYPE_DATETIME_NANOS:
-      serializeDateTime(content, value, type);
+      serializeDateTime(database, content, value, type);
       break;
     case BinaryTypes.TYPE_DECIMAL:
       content.putNumber(((BigDecimal) value).scale());
@@ -1303,8 +1303,8 @@ public class BinarySerializer {
     return comparator;
   }
 
-  private void serializeDateTime(final Binary content, final Object value, final byte type) {
-    content.putUnsignedNumber(DateUtils.dateTimeToTimestamp(value, DateUtils.getPrecisionFromBinaryType(type)));
+  private void serializeDateTime(final Database database, final Binary content, final Object value, final byte type) {
+    content.putUnsignedNumber(DateUtils.dateTimeToTimestamp(database, value, DateUtils.getPrecisionFromBinaryType(type)));
   }
 
   public void setDataEncryption(final DataEncryption dataEncryption) {
