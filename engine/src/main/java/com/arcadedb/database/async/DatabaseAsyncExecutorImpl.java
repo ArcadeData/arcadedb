@@ -57,7 +57,11 @@ import java.util.logging.Level;
 public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   private final DatabaseInternal     database;
   private final ContextConfiguration configuration;
-  private       AsyncThread[]        executorThreads;
+  // Volatile + lifecycleLock-guarded: createThreads/shutdownThreads/kill mutate this field; readers
+  // (scheduleTask, getThreadCount, getStats, ...) snapshot it locally before iterating so they cannot
+  // observe a half-built or just-nulled array. See lifecycleLock for the publish discipline.
+  private volatile AsyncThread[]     executorThreads;
+  private final Object               lifecycleLock                 = new Object();
   private       int                  parallelLevel                 = 1;
   private       int                  commitEvery;
   private       int                  backPressurePercentage        = 0;
@@ -218,9 +222,10 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     final DBAsyncStats stats = new DBAsyncStats();
 
     stats.queueSize = 0;
-    if (executorThreads != null)
-      for (int i = 0; i < executorThreads.length; ++i)
-        stats.queueSize += executorThreads[i].queue.size();
+    final AsyncThread[] threads = executorThreads;
+    if (threads != null)
+      for (int i = 0; i < threads.length; ++i)
+        stats.queueSize += threads[i].queue.size();
 
     stats.scheduledTasks = counterScheduledTasks.get();
 
@@ -276,10 +281,11 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * Looks for an empty queue or the queue with less messages.
    */
   private int getBestSlot() {
+    final AsyncThread[] threads = executorThreads;
     int minQueueSize = 0;
     int minQueueIndex = -1;
-    for (int i = 0; i < executorThreads.length; ++i) {
-      final int qSize = executorThreads[i].queue.size() + (executorThreads[i].isExecutingTask() ? 1 : 0);
+    for (int i = 0; i < threads.length; ++i) {
+      final int qSize = threads[i].queue.size() + (threads[i].isExecutingTask() ? 1 : 0);
 
       if (qSize == 0)
         // EMPTY QUEUE, USE THIS
@@ -308,16 +314,17 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public boolean waitCompletion(long timeout) {
-    if (executorThreads == null)
+    final AsyncThread[] threads = executorThreads;
+    if (threads == null)
       return true;
 
     final DatabaseAsyncAbstractCallbackTask[] semaphores =
-        new DatabaseAsyncAbstractCallbackTask[executorThreads.length];
+        new DatabaseAsyncAbstractCallbackTask[threads.length];
 
-    for (int i = 0; i < executorThreads.length; ++i)
+    for (int i = 0; i < threads.length; ++i)
       try {
         semaphores[i] = new DatabaseAsyncCompletion();
-        executorThreads[i].queue.put(semaphores[i]);
+        threads[i].queue.put(semaphores[i]);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
         return false;
@@ -661,11 +668,15 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   @Override
   public void kill() {
-    if (executorThreads != null) {
-      // WAIT FOR SHUTDOWN, MAX 1S EACH
-      for (int i = 0; i < executorThreads.length; ++i)
-        executorThreads[i].forceShutdown = true;
+    synchronized (lifecycleLock) {
+      final AsyncThread[] threads = executorThreads;
+      if (threads == null)
+        return;
+      // Unpublish first so concurrent callers stop targeting the about-to-die threads.
       executorThreads = null;
+      // WAIT FOR SHUTDOWN, MAX 1S EACH
+      for (int i = 0; i < threads.length; ++i)
+        threads[i].forceShutdown = true;
     }
   }
 
@@ -706,7 +717,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
   @Override
   public int getThreadCount() {
-    return executorThreads != null ? executorThreads.length : 0;
+    final AsyncThread[] threads = executorThreads;
+    return threads != null ? threads.length : 0;
   }
 
   public static class DBAsyncStats {
@@ -718,35 +730,51 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     if (parallelLevel < 1)
       parallelLevel = 1;
 
-    shutdownThreads();
+    // Build the new pool fully before publishing, so readers never observe a half-initialized
+    // array. Synchronization on lifecycleLock serializes concurrent createThreads/shutdownThreads
+    // calls (the prior version could NPE under concurrent GraphBatch users; see issue: heavy
+    // parallel inserts triggered "Cannot store to object array because executorThreads is null").
+    synchronized (lifecycleLock) {
+      shutdownThreadsLocked();
 
-    executorThreads = new AsyncThread[parallelLevel];
-    for (int i = 0; i < parallelLevel; ++i) {
-      executorThreads[i] = new AsyncThread(database, i);
-      executorThreads[i].start();
+      final AsyncThread[] newThreads = new AsyncThread[parallelLevel];
+      this.parallelLevel = parallelLevel;
+      for (int i = 0; i < parallelLevel; ++i) {
+        newThreads[i] = new AsyncThread(database, i);
+        newThreads[i].start();
+      }
+
+      this.executorThreads = newThreads;
     }
-
-    this.parallelLevel = parallelLevel;
   }
 
   private void shutdownThreads() {
-    if (executorThreads != null) {
-      try {
-        // SET SHUTDOWN STATUS TO ALL THE THREADS
-        for (int i = 0; i < executorThreads.length; ++i)
-          executorThreads[i].shutdown = true;
+    synchronized (lifecycleLock) {
+      shutdownThreadsLocked();
+    }
+  }
 
-        // WAIT FOR SHUTDOWN, MAX 10S EACH
-        for (int i = 0; i < executorThreads.length; ++i) {
-          executorThreads[i].queue.put(FORCE_EXIT);
-          executorThreads[i].join(10000);
-        }
-      } catch (final InterruptedException e) {
-        // IGNORE IT
-        Thread.currentThread().interrupt();
-      } finally {
-        executorThreads = null;
+  // Caller must hold lifecycleLock.
+  private void shutdownThreadsLocked() {
+    final AsyncThread[] toClose = executorThreads;
+    if (toClose == null)
+      return;
+
+    // Unpublish first so concurrent readers stop seeing the about-to-die threads.
+    executorThreads = null;
+    try {
+      // SET SHUTDOWN STATUS TO ALL THE THREADS
+      for (int i = 0; i < toClose.length; ++i)
+        toClose[i].shutdown = true;
+
+      // WAIT FOR SHUTDOWN, MAX 10S EACH
+      for (int i = 0; i < toClose.length; ++i) {
+        toClose[i].queue.put(FORCE_EXIT);
+        toClose[i].join(10000);
       }
+    } catch (final InterruptedException e) {
+      // IGNORE IT
+      Thread.currentThread().interrupt();
     }
   }
 
@@ -789,7 +817,12 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
       if (slot == -1)
         slot = getBestSlot();
 
-      final BlockingQueue<DatabaseAsyncTask> queue = executorThreads[slot].queue;
+      final AsyncThread[] threads = executorThreads;
+      if (threads == null)
+        throw new DatabaseOperationException(
+            "Async executor has been shut down; cannot schedule asynchronous task " + task);
+
+      final BlockingQueue<DatabaseAsyncTask> queue = threads[slot].queue;
 
       if (applyBackPressureOnPercentage > 0) {
         final int queueFullAt = 100 - (queue.remainingCapacity() * 100 / (queue.remainingCapacity() + queue.size()));
@@ -838,17 +871,21 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   }
 
   public int getSlot(final int value) {
-    return (value & 0x7fffffff) % executorThreads.length;
+    final AsyncThread[] threads = executorThreads;
+    if (threads == null)
+      throw new DatabaseOperationException("Async executor has been shut down");
+    return (value & 0x7fffffff) % threads.length;
   }
 
   @Override
   public boolean isProcessing() {
-    if (executorThreads != null)
-      for (int i = 0; i < executorThreads.length; ++i) {
-        if (executorThreads[i].isExecutingTask())
+    final AsyncThread[] threads = executorThreads;
+    if (threads != null)
+      for (int i = 0; i < threads.length; ++i) {
+        if (threads[i].isExecutingTask())
           return true;
 
-        if (executorThreads[i].queue.size() > 0)
+        if (threads[i].queue.size() > 0)
           return true;
       }
     return false;

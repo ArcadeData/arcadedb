@@ -717,6 +717,13 @@ public enum GlobalConfiguration {
       "gRPC flow control window size in bytes for Ratis append-entries traffic. Larger values help catch-up replication after partitions.",
       Long.class, 4L * 1024 * 1024),
 
+  HA_GRPC_MESSAGE_SIZE_MAX("arcadedb.ha.grpcMessageSizeMax", SCOPE.SERVER,
+      """
+      Maximum size in bytes of a single Raft gRPC message (a replicated transaction or schema entry). \
+      Defaults to 128MB, higher than Ratis's 64MB stock default, so reasonable bulk-load batches do not get rejected. \
+      Lower it to bound memory exposure on hostile inputs; raise it if a single transaction legitimately exceeds 128MB.""",
+      Long.class, 128L * 1024 * 1024),
+
   HA_SNAPSHOT_MAX_CONCURRENT("arcadedb.ha.snapshotMaxConcurrent", SCOPE.SERVER,
       "Maximum number of concurrent snapshot downloads served by the leader. Requests over this limit receive HTTP 503.",
       Integer.class, 2),

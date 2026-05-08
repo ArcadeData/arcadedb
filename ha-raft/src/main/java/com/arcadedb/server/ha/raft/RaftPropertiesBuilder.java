@@ -69,6 +69,13 @@ class RaftPropertiesBuilder {
     final long flowControlWindow = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_FLOW_CONTROL_WINDOW);
     GrpcConfigKeys.setFlowControlWindow(properties, SizeInBytes.valueOf(flowControlWindow));
 
+    // Override Ratis's 64MB stock per-message cap. A single replicated transaction (e.g. a 50k-vertex
+    // GraphBatch with all its index updates) can exceed 64MB; with the stock cap that one transaction
+    // is rejected by the gRPC client and the SlidingWindow stays CLOSED indefinitely. The single key
+    // applies symmetrically to inbound and outbound gRPC messages.
+    final long grpcMessageSizeMax = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX);
+    GrpcConfigKeys.setMessageSizeMax(properties, SizeInBytes.valueOf(grpcMessageSizeMax));
+
     // Staging timeout: when adding a new peer, the leader syncs it before committing the
     // config change. This bounds how long the leader waits for the new peer to catch up.
     RaftServerConfigKeys.setStagingTimeout(properties, TimeDuration.valueOf(30, TimeUnit.SECONDS));

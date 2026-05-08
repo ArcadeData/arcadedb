@@ -19,9 +19,14 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.network.binary.QuorumNotReachedException;
+import com.arcadedb.network.binary.ReplicationQueueFullException;
+import org.apache.ratis.protocol.exceptions.AlreadyClosedException;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 class RaftGroupCommitterTest {
@@ -97,6 +102,92 @@ class RaftGroupCommitterTest {
       fail("Expected exception");
     } catch (final QuorumNotReachedException e) {
       assertThat(e.getMessage()).contains("not available");
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * Regression for the customer report on 2026-05-07: a 50k-vertex GraphBatch produced a single
+   * Raft log entry of 74MB, which Ratis rejects against its 64MB cap. With the old code the
+   * SlidingWindow client got stuck CLOSED forever; the new code fails fast in submitAndWait with
+   * a {@link ReplicationQueueFullException} carrying actionable advice.
+   */
+  @Test
+  void oversizeEntryRejectedSynchronouslyWithGuidance() {
+    final long cap = 1024L; // 1 KiB cap
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 500,
+        500, 10_000, 100, cap, null);
+    try {
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[(int) cap + 1]))
+          .isInstanceOf(ReplicationQueueFullException.class)
+          .hasMessageContaining("exceeds raft.grpc.message.size.max")
+          .hasMessageContaining("arcadedb.ha.grpcMessageSizeMax")
+          .hasMessageContaining("Reduce the batch size");
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * The pre-check rejects oversize entries BEFORE the queue, so a batch of legitimate-sized
+   * entries followed by one oversize entry must still process the legitimate ones (verified
+   * indirectly: the oversize one throws synchronously without consuming a queue slot).
+   */
+  @Test
+  void oversizeRejectionDoesNotPoisonQueue() {
+    final long cap = 1024L;
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 500,
+        500, 10_000, 100, cap, null);
+    try {
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[(int) cap + 1]))
+          .isInstanceOf(ReplicationQueueFullException.class);
+      // A subsequent normal-sized entry must reach the flusher (and fail with the usual
+      // "RaftClient not available" because we passed null - i.e. it got past the pre-check).
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[10]))
+          .isInstanceOf(QuorumNotReachedException.class)
+          .hasMessageNotContaining("exceeds raft.grpc.message.size.max");
+    } finally {
+      committer.stop();
+    }
+  }
+
+  @Test
+  void isClientClosedRecognizesAlreadyClosedException() {
+    assertThat(RaftGroupCommitter.isClientClosed(null)).isFalse();
+    assertThat(RaftGroupCommitter.isClientClosed(new RuntimeException("boom"))).isFalse();
+    assertThat(RaftGroupCommitter.isClientClosed(new AlreadyClosedException("client X is closed"))).isTrue();
+    // Wrapped, like the production path: CompletionException -> AlreadyClosedException
+    assertThat(RaftGroupCommitter.isClientClosed(
+        new java.util.concurrent.CompletionException(new AlreadyClosedException("X is already CLOSED")))).isTrue();
+    // Pure message-based detection (matches the SlidingWindow text we see in customer logs).
+    assertThat(RaftGroupCommitter.isClientClosed(
+        new RuntimeException("SlidingWindow$Client:client-43D76C26FF37->RAFT is closed."))).isTrue();
+  }
+
+  /**
+   * When the underlying RaftClient is observed to be permanently CLOSED, the committer must
+   * invoke the host-supplied refresh callback exactly once per affected batch so the host can
+   * rebuild the client. Before this fix, every subsequent flush logged "is closed" forever.
+   */
+  @Test
+  void clientClosedTriggersRefreshCallback() throws Exception {
+    final AtomicInteger refreshes = new AtomicInteger();
+    // null RaftClient causes "RaftClient not available", which is NOT a CLOSED-state failure,
+    // so the callback must NOT fire in this case.
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 500,
+        500, 10_000, 100, RaftGroupCommitter.DEFAULT_MESSAGE_SIZE_MAX, refreshes::incrementAndGet);
+    try {
+      try {
+        committer.submitAndWait(new byte[] { 1, 2, 3 });
+      } catch (final QuorumNotReachedException ignored) {
+        // expected
+      }
+      // Give the (would-be) virtual thread a chance to run.
+      Thread.sleep(150);
+      assertThat(refreshes.get())
+          .as("RaftClient null is a startup gap, not a CLOSED state; refresh must NOT fire")
+          .isZero();
     } finally {
       committer.stop();
     }

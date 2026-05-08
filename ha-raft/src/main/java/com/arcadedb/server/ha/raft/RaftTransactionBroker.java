@@ -47,8 +47,23 @@ public class RaftTransactionBroker {
 
   public RaftTransactionBroker(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
       final int maxBatchSize, final int maxQueueSize, final int offerTimeoutMs) {
+    this(raftClient, quorum, quorumTimeout, maxBatchSize, maxQueueSize, offerTimeoutMs,
+        RaftGroupCommitter.DEFAULT_MESSAGE_SIZE_MAX, null);
+  }
+
+  /**
+   * @param messageSizeMax  per-entry size cap matching {@code raft.grpc.message.size.max}. Entries
+   *                        larger than this are rejected synchronously instead of being dispatched
+   *                        and rejected by the Ratis gRPC client (which corrupts the SlidingWindow).
+   * @param onClientClosed  invoked when the underlying Ratis client is detected to be permanently
+   *                        CLOSED. Production code wires this to {@code RaftHAServer.refreshRaftClient}
+   *                        so a fresh client takes over; tests may pass {@code null}.
+   */
+  public RaftTransactionBroker(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
+      final int maxBatchSize, final int maxQueueSize, final int offerTimeoutMs,
+      final long messageSizeMax, final Runnable onClientClosed) {
     this.groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, maxBatchSize, maxQueueSize,
-        offerTimeoutMs);
+        offerTimeoutMs, messageSizeMax, onClientClosed);
   }
 
   /**
