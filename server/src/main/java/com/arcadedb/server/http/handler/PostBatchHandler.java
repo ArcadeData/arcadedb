@@ -21,7 +21,9 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.batch.BatchRecord;
 import com.arcadedb.server.http.handler.batch.BatchRecordStream;
@@ -32,11 +34,16 @@ import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 
 import java.io.InputStream;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * High-performance HTTP handler for bulk-loading vertices and edges using the GraphBatch API.
@@ -64,7 +71,8 @@ import java.util.Map;
  */
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
-  private static final int VERTEX_BATCH_SIZE = 10_000;
+  private static final int        VERTEX_BATCH_SIZE = 10_000;
+  private static final HttpClient HTTP_CLIENT       = HttpClient.newHttpClient();
 
   public PostBatchHandler(final HttpServer httpServer) {
     super(httpServer);
@@ -97,7 +105,7 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     if (databaseParam == null || databaseParam.isEmpty())
       return new ExecutionResponse(400, "{ \"error\" : \"Database parameter is required\"}");
 
-    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
+    final String databaseName = databaseParam.getFirst();
 
     // Determine format from Content-Type
     final HeaderValues contentTypeHeader = exchange.getRequestHeaders().get("Content-Type");
@@ -105,6 +113,16 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
         ? contentTypeHeader.getFirst().toLowerCase()
         : "application/x-ndjson";
 
+    // On a follower of a replicated database the request must run on the leader: the bulk
+    // path mutates shared state (schema dictionary, type metadata) that only the leader can
+    // serialize. Without forwarding, a single batch with several new property keys hits the
+    // race in Dictionary.getIdByName as the local state machine apply runs concurrently with
+    // the user thread (issue #4122).
+    final HAServerPlugin ha = httpServer.getServer().getHA();
+    if (ha != null && !ha.isLeader())
+      return forwardBatchToLeader(exchange, ha, databaseName, user, contentType);
+
+    final DatabaseInternal database = httpServer.getServer().getDatabase(databaseName, false, false);
     final boolean isCsv = contentType.contains("text/csv");
 
     // Configure GraphBatch from query parameters
@@ -272,5 +290,56 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     final String expectedEdgeCount = getQueryParameter(exchange, "expectedEdgeCount");
     if (expectedEdgeCount != null)
       builder.withExpectedEdgeCount(Integer.parseInt(expectedEdgeCount));
+  }
+
+  /**
+   * Forwards the streaming batch payload to the cluster leader. Used when the request lands on
+   * a follower: the bulk-load path mutates shared state (schema dictionary, type metadata)
+   * that only the leader can safely serialize. Mirrors the engine-level forwarding already used
+   * by {@code RaftReplicatedDatabase.command()} for SQL writes.
+   */
+  private ExecutionResponse forwardBatchToLeader(final HttpServerExchange exchange, final HAServerPlugin ha,
+      final String databaseName, final ServerSecurityUser user, final String contentType) throws Exception {
+
+    final String leaderAddress = ha.getLeaderAddress();
+    if (leaderAddress == null || leaderAddress.isBlank())
+      return new ExecutionResponse(503,
+          "{ \"error\" : \"Cannot forward batch to leader: leader address is not available\"}");
+
+    final String clusterToken = ha.getClusterToken();
+    if (clusterToken == null || clusterToken.isBlank())
+      return new ExecutionResponse(503,
+          "{ \"error\" : \"Cannot forward batch to leader: cluster token is not configured\"}");
+
+    if (user == null || user.getName() == null || user.getName().isBlank())
+      return new ExecutionResponse(401,
+          "{ \"error\" : \"Cannot forward batch to leader: no authenticated user in the current security context\"}");
+
+    String url = "http://" + leaderAddress + "/api/v1/batch/" + databaseName;
+    final String queryString = exchange.getQueryString();
+    if (queryString != null && !queryString.isEmpty())
+      url += "?" + queryString;
+
+    final InputStream body = exchange.getInputStream();
+    final HttpRequest.Builder builder = HttpRequest.newBuilder()
+        .uri(URI.create(url))
+        .header("Content-Type", contentType)
+        .header("X-ArcadeDB-Cluster-Token", clusterToken)
+        .header("X-ArcadeDB-Forwarded-User", user.getName())
+        .POST(HttpRequest.BodyPublishers.ofInputStream(() -> body));
+
+    try {
+      final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
+      return new ExecutionResponse(response.statusCode(), response.body());
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
+      LogManager.instance().log(this, Level.WARNING, "Interrupted while forwarding /batch to leader at %s", leaderAddress);
+      return new ExecutionResponse(503,
+          "{ \"error\" : \"Interrupted while forwarding batch to leader\"}");
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error forwarding /batch to leader at %s: %s", leaderAddress, e.getMessage());
+      return new ExecutionResponse(503,
+          "{ \"error\" : \"Error forwarding batch to leader: " + e.getMessage().replace("\"", "'") + "\"}");
+    }
   }
 }
