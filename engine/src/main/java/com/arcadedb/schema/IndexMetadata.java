@@ -29,6 +29,14 @@ public class IndexMetadata {
   public List<String> collations;
   public int          associatedBucketId;
 
+  /**
+   * User-supplied name of the {@link com.arcadedb.index.TypeIndex} aggregating this bucket-level
+   * index, or {@code null} when no manual name was provided (then the auto-derived
+   * {@code typeName + "[" + propertyNames + "]"} form is used). Persisted in the bucket-level
+   * indexJSON so the manual name survives schema reload (issue #4139).
+   */
+  public String       typeIndexName;
+
   public IndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     this.typeName = typeName;
     this.propertyNames = propertyNames != null ? List.of(propertyNames) : List.of();
@@ -42,6 +50,7 @@ public class IndexMetadata {
     final JSONArray collationsJSON = metadata.getJSONArray("collations", null);
     if (collationsJSON != null)
       collations = collationsJSON.toListOfStrings();
+    typeIndexName = metadata.getString("typeIndexName", null);
   }
 
   /**

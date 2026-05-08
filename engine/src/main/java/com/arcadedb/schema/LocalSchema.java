@@ -1586,6 +1586,12 @@ public class LocalSchema implements Schema {
             IndexInternal index = indexMap.get(indexName);
             if (index != null) {
               index.setMetadata(indexJSON);
+              // Apply the user-supplied TypeIndex name (issue #4139) here so it works for every
+              // index implementation (LSM, Hash, FullText, Geo, Sparse/Dense Vector). Each
+              // {@code setMetadata(JSONObject)} differs across classes and we do not want to
+              // duplicate this read in all of them; addIndexInternal below consults the metadata.
+              if (indexJSON.has("typeIndexName"))
+                index.getMetadata().typeIndexName = indexJSON.getString("typeIndexName");
 
               if (indexJSON.has("type")) {
                 final String configuredIndexType = indexJSON.getString("type");
@@ -1668,6 +1674,12 @@ public class LocalSchema implements Schema {
                         NULL_STRATEGY.ERROR;
 
                     index.setNullStrategy(nullStrategy);
+                    // Carry the manual TypeIndex name (issue #4139) onto the metadata for the
+                    // orphan-relinking path too. addIndexInternal reads this when minting the
+                    // TypeIndex; without this hop, an index file renamed by compaction loses its
+                    // user-supplied name on the next reload.
+                    if (entry.getValue().has("typeIndexName"))
+                      index.getMetadata().typeIndexName = entry.getValue().getString("typeIndexName");
                     type.addIndexInternal(index, bucket.getFileId(), properties, null);
                     LogManager.instance()
                         .log(this, Level.FINE, "Relinked orphan index '%s' to type '%s'", null, indexName, type.getName());
@@ -2074,6 +2086,10 @@ public class LocalSchema implements Schema {
     // Copy collation settings from builder metadata to the index
     if (metadata != null && metadata.collations != null)
       index.getMetadata().collations = metadata.collations;
+    // Copy the user-supplied TypeIndex name through to the bucket-level metadata so the
+    // upcoming addIndexInternal mints the TypeIndex under the manual name (issue #4139).
+    if (metadata != null && metadata.typeIndexName != null)
+      index.getMetadata().typeIndexName = metadata.typeIndexName;
 
     try {
       registerFile(index.getComponent());

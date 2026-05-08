@@ -90,6 +90,14 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
     while (database.isAsyncProcessing())
       database.async().waitCompletion();
 
+    // Carry the user-supplied TypeIndex name (set via {@link #withIndexName}) onto the
+    // IndexMetadata so it propagates to each per-bucket index and ultimately to
+    // {@link LocalDocumentType#addIndexInternal} which reads it when minting the TypeIndex.
+    // Without this hop the manual name is dropped and the auto-derived
+    // typeName + "[propertyNames]" form is used (issue #4139).
+    if (indexName != null && !indexName.isEmpty())
+      metadata.typeIndexName = indexName;
+
     final LocalSchema schema = database.getSchema().getEmbedded();
 
     final LocalDocumentType type = schema.getType(metadata.typeName);

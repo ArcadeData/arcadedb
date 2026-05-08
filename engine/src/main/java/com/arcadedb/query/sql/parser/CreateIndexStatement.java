@@ -96,8 +96,15 @@ public class CreateIndexStatement extends DDLStatement {
       name = null;
     }
 
+    // Capture whether the user supplied a manual TypeIndex name in the statement before the
+    // existsIndex shortcut backfills {@code name} with the auto-derived form. Only the manual
+    // case must reach the builder via {@link IndexBuilder#withIndexName} (issue #4139); for the
+    // auto-derived case the resolution happens in {@link LocalDocumentType#addIndexInternal} so
+    // both paths agree on the canonical {@code typeName + "[" + propertyNames + "]"} shape.
+    final boolean userProvidedName = name != null;
+
     if (name == null)
-      // GENERATE THE NAME AUTOMATICALLY
+      // GENERATE THE NAME AUTOMATICALLY (used only for the existsIndex shortcut below).
       name = new Identifier(typeName.getStringValue() + propertyList.toString().replace(", ", ","));
 
     final String[] fields = calculateProperties(context);
@@ -154,8 +161,11 @@ public class CreateIndexStatement extends DDLStatement {
     TypeIndexBuilder builder = database.getSchema().buildTypeIndex(typeName.getStringValue(), fields);
     builder = builder.withType(indexType);  // This may return LSMVectorIndexBuilder for LSM_VECTOR
 
-    // Set index name if provided
-    if (name != null)
+    // Only forward the manual TypeIndex name when the user actually wrote one. Forwarding the
+    // auto-derived placeholder above would override the canonical {@code typeName + "[..]"} shape
+    // computed by addIndexInternal (it differs for {@code BY ITEM}/{@code BY KEY} indexes where
+    // the property list rendering does not include the modifier).
+    if (userProvidedName && name != null)
       builder.withIndexName(name.getValue());
 
     builder.withIgnoreIfExists(ifNotExists);
