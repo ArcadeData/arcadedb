@@ -389,9 +389,15 @@ public class BinarySerializer {
   }
 
   public void serializeValue(final Database database, final Binary serialized, final byte type, Object value) {
+    serializeValue(database, serialized, type, value, true);
+  }
+
+  public void serializeValue(final Database database, final Binary serialized, final byte type, Object value,
+      final boolean applyEncryption) {
     if (value == null)
       return;
-    Binary content = dataEncryption != null ? new Binary() : serialized;
+    final boolean encrypt = applyEncryption && dataEncryption != null;
+    Binary content = encrypt ? new Binary() : serialized;
 
     switch (type) {
     case BinaryTypes.TYPE_NULL:
@@ -477,13 +483,13 @@ public class BinarySerializer {
     }
     case BinaryTypes.TYPE_LIST: {
       switch (value) {
-      case Collection<?> list -> serializeListEntries(database, content, list, list.size(), "list");
-      case Object[] array -> serializeListEntries(database, content, Arrays.asList(array), array.length, "array");
+      case Collection<?> list -> serializeListEntries(database, content, list, list.size(), "list", applyEncryption);
+      case Object[] array -> serializeListEntries(database, content, Arrays.asList(array), array.length, "array", applyEncryption);
       case Iterable<?> iter -> {
         final List<Object> list = new ArrayList<>();
         for (Object o : iter)
           list.add(o);
-        serializeListEntries(database, content, list, list.size(), "iterable");
+        serializeListEntries(database, content, list, list.size(), "iterable", applyEncryption);
       }
       default -> {
         // PRIMITIVE ARRAY (component type not matched by the cases above)
@@ -503,7 +509,7 @@ public class BinarySerializer {
               valueToWrite = null;
             }
             content.putByte(entryType);
-            serializeValue(database, content, entryType, valueToWrite);
+            serializeValue(database, content, entryType, valueToWrite, applyEncryption);
           } catch (Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "Error on serializing array value for element %d = '%s'",
                 i, entryValue);
@@ -578,9 +584,9 @@ public class BinarySerializer {
       content.putUnsignedNumber(validCount);
       for (int i = 0; i < validCount; ++i) {
         content.putByte(keyTypes[i]);
-        serializeValue(database, content, keyTypes[i], keys[i]);
+        serializeValue(database, content, keyTypes[i], keys[i], applyEncryption);
         content.putByte(valueTypes[i]);
-        serializeValue(database, content, valueTypes[i], values[i]);
+        serializeValue(database, content, valueTypes[i], values[i], applyEncryption);
       }
       break;
     }
@@ -642,7 +648,7 @@ public class BinarySerializer {
       LogManager.instance().log(this, Level.INFO, "Error on serializing value '" + value + "', type not supported");
     }
 
-    if (dataEncryption != null) {
+    if (encrypt) {
       switch (type) {
       case BinaryTypes.TYPE_NULL:
       case BinaryTypes.TYPE_COMPRESSED_RID:
@@ -660,7 +666,7 @@ public class BinarySerializer {
    * and index layout.
    */
   private void serializeListEntries(final Database database, final Binary content, final Iterable<?> entries,
-      final int expectedSize, final String kind) {
+      final int expectedSize, final String kind, final boolean applyEncryption) {
     content.putUnsignedNumber(expectedSize);
     for (final Object entryValue : entries) {
       byte entryType = BinaryTypes.getTypeFromValue(entryValue, null);
@@ -674,13 +680,18 @@ public class BinarySerializer {
         valueToWrite = null;
       }
       content.putByte(entryType);
-      serializeValue(database, content, entryType, valueToWrite);
+      serializeValue(database, content, entryType, valueToWrite, applyEncryption);
     }
   }
 
   public Object deserializeValue(final Database database, final Binary deserialized, final byte type,
       final EmbeddedModifier embeddedModifier) {
-    final Binary content = dataEncryption != null &&
+    return deserializeValue(database, deserialized, type, embeddedModifier, true);
+  }
+
+  public Object deserializeValue(final Database database, final Binary deserialized, final byte type,
+      final EmbeddedModifier embeddedModifier, final boolean applyEncryption) {
+    final Binary content = applyEncryption && dataEncryption != null &&
         type != BinaryTypes.TYPE_NULL &&
         type != BinaryTypes.TYPE_COMPRESSED_RID &&
         type != BinaryTypes.TYPE_RID ? new Binary(dataEncryption.decrypt(deserialized.getBytes())) : deserialized;
@@ -774,7 +785,7 @@ public class BinarySerializer {
       final List<Object> list = new ArrayList<>(count);
       for (int i = 0; i < count; ++i) {
         final byte entryType = content.getByte();
-        list.add(deserializeValue(database, content, entryType, embeddedModifier));
+        list.add(deserializeValue(database, content, entryType, embeddedModifier, applyEncryption));
       }
       value = list;
       break;
@@ -784,10 +795,10 @@ public class BinarySerializer {
       final Map<Object, Object> map = new LinkedHashMap<>(count);
       for (int i = 0; i < count; ++i) {
         final byte entryKeyType = content.getByte();
-        final Object entryKey = deserializeValue(database, content, entryKeyType, embeddedModifier);
+        final Object entryKey = deserializeValue(database, content, entryKeyType, embeddedModifier, applyEncryption);
 
         final byte entryValueType = content.getByte();
-        final Object entryValue = deserializeValue(database, content, entryValueType, embeddedModifier);
+        final Object entryValue = deserializeValue(database, content, entryValueType, embeddedModifier, applyEncryption);
 
         map.put(entryKey, entryValue);
       }

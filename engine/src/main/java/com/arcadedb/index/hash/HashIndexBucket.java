@@ -776,7 +776,9 @@ public class HashIndexBucket extends PaginatedComponent {
       } else {
         buffer.putByte(buffer.position(), (byte) 1); // not null marker
         buffer.position(buffer.position() + 1);
-        serializer.serializeValue(database, buffer, binaryKeyTypes[i], keys[i]);
+        // Index keys must be deterministic: encryption with random IV would yield a different ciphertext
+        // for the same plaintext on every call, breaking hash lookup and key comparison.
+        serializer.serializeValue(database, buffer, binaryKeyTypes[i], keys[i], false);
       }
     }
     final byte[] result = new byte[buffer.position()];
