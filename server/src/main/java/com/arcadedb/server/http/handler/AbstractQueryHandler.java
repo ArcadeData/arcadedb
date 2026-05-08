@@ -451,7 +451,10 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
 
   /** Rounds a numeric value to a signed byte, rejecting fractional or out-of-range inputs. */
   private static byte toInt8(final double v, final int index) {
-    if (v != Math.floor(v) || Double.isNaN(v) || Double.isInfinite(v))
+    // v != Math.floor(v) catches NaN (NaN compared with anything is false, so != returns true)
+    // and any value with a non-zero fractional part. Infinity slips through here but is caught by
+    // the range check below since +/-Infinity exceeds [-128, 127].
+    if (v != Math.floor(v))
       throw new IllegalArgumentException(
           "Parameter '$int8' element at index " + index + " is not an integer value: " + v);
     if (v < -128.0 || v > 127.0)

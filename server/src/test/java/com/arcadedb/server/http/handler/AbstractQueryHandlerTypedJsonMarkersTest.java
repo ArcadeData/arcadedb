@@ -312,6 +312,25 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
   }
 
   @Test
+  void ordinalKeyMapWithMarkersIsDecoded() {
+    // Positional params (JSON array form) get ordinal string keys "0", "1", ... in
+    // PostCommandHandler before reaching the decoder. Pin that the typed markers still resolve
+    // when keyed ordinally so the positional-array call shape at the HTTP layer round-trips too.
+    final byte[] expected = { 1, 2, 3 };
+    final String b64 = Base64.getEncoder().encodeToString(expected);
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("0", Map.of("$bytes", b64));
+    in.put("1", Map.of("$int8", List.of(0, 64, -1)));
+
+    final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
+
+    assertThat(out.get("0")).isInstanceOf(byte[].class);
+    assertThat((byte[]) out.get("0")).containsExactly(expected);
+    assertThat(out.get("1")).isInstanceOf(byte[].class);
+    assertThat((byte[]) out.get("1")).containsExactly((byte) 0, (byte) 64, (byte) -1);
+  }
+
+  @Test
   void scalarValuesPassThrough() {
     final Map<String, Object> in = new LinkedHashMap<>();
     in.put("a", 42);

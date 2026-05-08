@@ -25,6 +25,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;
@@ -36,6 +37,7 @@ import java.util.Base64;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /** End-to-end HTTP test for #4135: int8 query vectors via {@code $bytes} / {@code $int8} markers. */
+@Tag("slow")
 class Int8VectorHttpIT extends BaseGraphServerTest {
   private static final int    DIMENSIONS  = 32;
   private static final int    NUM_VECTORS = 16;
@@ -126,6 +128,13 @@ class Int8VectorHttpIT extends BaseGraphServerTest {
   private record HttpResult(int status, String body) {
   }
 
+  private JSONObject postQuery(final String command, final JSONObject params) throws Exception {
+    final HttpResult res = postQueryRaw(command, params);
+    if (res.status != 200)
+      throw new AssertionError("HTTP " + res.status + ": " + res.body);
+    return new JSONObject(res.body);
+  }
+
   private HttpResult postQueryRaw(final String command, final JSONObject params) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URI(
         "http://127.0.0.1:2480/api/v1/query/" + getDatabaseName()).toURL().openConnection();
@@ -148,45 +157,12 @@ class Int8VectorHttpIT extends BaseGraphServerTest {
     connection.connect();
     try {
       final int status = connection.getResponseCode();
-      final String body = status >= 400 && connection.getErrorStream() != null
-          ? new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8)
-          : status < 400 ? readResponse(connection) : "";
+      final String body = status >= 400
+          ? (connection.getErrorStream() != null
+              ? new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8)
+              : "<no error stream>")
+          : readResponse(connection);
       return new HttpResult(status, body);
-    } finally {
-      connection.disconnect();
-    }
-  }
-
-  private JSONObject postQuery(final String command, final JSONObject params) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URI(
-        "http://127.0.0.1:2480/api/v1/query/" + getDatabaseName()).toURL().openConnection();
-    connection.setRequestMethod("POST");
-    connection.setRequestProperty("Content-Type", "application/json");
-    connection.setRequestProperty("Authorization",
-        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-
-    final JSONObject payload = new JSONObject();
-    payload.put("language", "sql");
-    payload.put("command", command);
-    payload.put("params", params);
-
-    connection.setDoOutput(true);
-    final byte[] data = payload.toString().getBytes(StandardCharsets.UTF_8);
-    connection.setRequestProperty("Content-Length", Integer.toString(data.length));
-    try (final DataOutputStream wr = new DataOutputStream(connection.getOutputStream())) {
-      wr.write(data);
-    }
-    connection.connect();
-    try {
-      final int status = connection.getResponseCode();
-      if (status != 200) {
-        final String err = connection.getErrorStream() != null
-            ? new String(connection.getErrorStream().readAllBytes(), StandardCharsets.UTF_8)
-            : "<no error stream>";
-        throw new AssertionError("HTTP " + status + " from " + connection.getURL() + ": " + err);
-      }
-      final String response = readResponse(connection);
-      return new JSONObject(response);
     } finally {
       connection.disconnect();
     }
