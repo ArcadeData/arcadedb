@@ -110,8 +110,9 @@
         if (!container) return;
 
         var isError = (type === 'danger' || type === 'error');
-        var iconClass = isError ? 'fa-circle-exclamation' : (type === 'warning' ? 'fa-triangle-exclamation' : 'fa-circle-check');
-        var iconColor = isError ? '#dc3545' : (type === 'warning' ? '#ffc107' : '#28a745');
+        var isWarning = (type === 'warning');
+        var iconClass = isError ? 'fa-circle-exclamation' : (isWarning ? 'fa-triangle-exclamation' : 'fa-circle-check');
+        var iconColor = isError ? '#dc3545' : (isWarning ? '#ffc107' : '#28a745');
 
         var toastEl = document.createElement('div');
         toastEl.className = 'toast studio-toast';
@@ -125,7 +126,11 @@
           '<div class="toast-body">' + (message || '') + '</div>';
 
         container.appendChild(toastEl);
-        var toast = new bootstrap.Toast(toastEl, { delay: delay || 3500 });
+        // Errors and warnings stay visible until the user dismisses them; informational toasts auto-hide.
+        var options = (isError || isWarning)
+          ? (delay ? { delay: delay } : { autohide: false })
+          : { delay: delay || 3500 };
+        var toast = new bootstrap.Toast(toastEl, options);
         toast.show();
         toastEl.addEventListener('hidden.bs.toast', function() { toastEl.remove(); });
       }
