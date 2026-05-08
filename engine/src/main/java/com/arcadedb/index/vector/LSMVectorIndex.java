@@ -389,25 +389,16 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   + "'. Either declare the property as ARRAY_OF_FLOATS or set encoding=INT8 to ingest pre-quantized bytes.");
       }
 
-      final LSMVectorIndex index = new LSMVectorIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
-          ComponentFile.MODE.READ_WRITE,
-          builder.getPageSize(), vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(),
-          vectorBuilder.dimensions,
-          vectorBuilder.similarityFunction, vectorBuilder.maxConnections, vectorBuilder.beamWidth,
-          vectorBuilder.idPropertyName,
-          vectorBuilder.quantizationType, vectorBuilder.locationCacheSize, vectorBuilder.graphBuildCacheSize,
+      final LSMVectorIndexConfig config = new LSMVectorIndexConfig(
+          vectorBuilder.getTypeName(), vectorBuilder.getPropertyNames(), vectorBuilder.dimensions,
+          vectorBuilder.similarityFunction, vectorBuilder.encoding, vectorBuilder.quantizationType,
+          vectorBuilder.maxConnections, vectorBuilder.beamWidth, vectorBuilder.idPropertyName,
+          vectorBuilder.locationCacheSize, vectorBuilder.graphBuildCacheSize,
           vectorBuilder.mutationsBeforeRebuild, vectorBuilder.storeVectorsInGraph, vectorBuilder.addHierarchy,
           vectorBuilder.pqSubspaces, vectorBuilder.pqClusters, vectorBuilder.pqCenterGlobally,
           vectorBuilder.pqTrainingLimit);
-      // INT8 ingest encoding is plumbed via the metadata field after construction to avoid
-      // ballooning the already-17-arg primary constructor. The metadata default is FLOAT32; we
-      // overwrite it only when the builder requested a different encoding. The brief window where
-      // the index exists with FLOAT32 encoding before this assignment is unobservable because the
-      // factory hasn't published the reference yet - the new index is returned after the field is
-      // set. Tracked for follow-up under #4134 (consolidate the positional args into a config
-      // record so encoding joins the rest of the metadata at construction time).
-      index.metadata.encoding = vectorBuilder.encoding;
-      return index;
+      return new LSMVectorIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
+          ComponentFile.MODE.READ_WRITE, builder.getPageSize(), config);
     }
   }
 
@@ -426,37 +417,33 @@ public class LSMVectorIndex implements Index, IndexInternal {
   }
 
   /**
-   * Constructor for creating a new index
+   * Constructor for creating a new index. All construction-time settings are bundled into a single
+   * {@link LSMVectorIndexConfig} value object so the metadata is fully populated atomically before
+   * the instance escapes; previously the factory passed 17 positional args and then post-mutated
+   * {@code metadata.encoding} after the constructor returned (issue #4134).
    */
   public LSMVectorIndex(final DatabaseInternal database, final String name, final String filePath,
-      final ComponentFile.MODE mode,
-      final int pageSize, final String typeName, final String[] propertyNames, final int dimensions,
-      final VectorSimilarityFunction similarityFunction, final int maxConnections,
-      final int beamWidth, final String idPropertyName,
-      final VectorQuantizationType quantizationType, final int locationCacheSize,
-      final int graphBuildCacheSize,
-      final int mutationsBeforeRebuild, final boolean storeVectorsInGraph, final boolean addHierarchy,
-      final int pqSubspaces, final int pqClusters, final boolean pqCenterGlobally,
-      final int pqTrainingLimit) {
+      final ComponentFile.MODE mode, final int pageSize, final LSMVectorIndexConfig config) {
     try {
       this.indexName = name;
 
-      this.metadata = new LSMVectorIndexMetadata(typeName, propertyNames, -1);
-      this.metadata.dimensions = dimensions;
-      this.metadata.similarityFunction = similarityFunction;
-      this.metadata.quantizationType = quantizationType;
-      this.metadata.maxConnections = maxConnections;
-      this.metadata.beamWidth = beamWidth;
-      this.metadata.idPropertyName = idPropertyName;
-      this.metadata.locationCacheSize = locationCacheSize;
-      this.metadata.graphBuildCacheSize = graphBuildCacheSize;
-      this.metadata.mutationsBeforeRebuild = mutationsBeforeRebuild;
-      this.metadata.storeVectorsInGraph = storeVectorsInGraph;
-      this.metadata.addHierarchy = addHierarchy;
-      this.metadata.pqSubspaces = pqSubspaces;
-      this.metadata.pqClusters = pqClusters;
-      this.metadata.pqCenterGlobally = pqCenterGlobally;
-      this.metadata.pqTrainingLimit = pqTrainingLimit;
+      this.metadata = new LSMVectorIndexMetadata(config.typeName(), config.propertyNames(), -1);
+      this.metadata.dimensions = config.dimensions();
+      this.metadata.similarityFunction = config.similarityFunction();
+      this.metadata.encoding = config.encoding();
+      this.metadata.quantizationType = config.quantizationType();
+      this.metadata.maxConnections = config.maxConnections();
+      this.metadata.beamWidth = config.beamWidth();
+      this.metadata.idPropertyName = config.idPropertyName();
+      this.metadata.locationCacheSize = config.locationCacheSize();
+      this.metadata.graphBuildCacheSize = config.graphBuildCacheSize();
+      this.metadata.mutationsBeforeRebuild = config.mutationsBeforeRebuild();
+      this.metadata.storeVectorsInGraph = config.storeVectorsInGraph();
+      this.metadata.addHierarchy = config.addHierarchy();
+      this.metadata.pqSubspaces = config.pqSubspaces();
+      this.metadata.pqClusters = config.pqClusters();
+      this.metadata.pqCenterGlobally = config.pqCenterGlobally();
+      this.metadata.pqTrainingLimit = config.pqTrainingLimit();
 
       this.lock = new ReentrantReadWriteLock();
       this.vectorIndex = new VectorLocationIndex(getLocationCacheSize(database));
