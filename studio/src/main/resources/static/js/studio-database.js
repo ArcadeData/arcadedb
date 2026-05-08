@@ -3335,23 +3335,27 @@ function showTypeDetail(typeName) {
     html += "<h6 class='mb-0'><i class='fa fa-bolt'></i> Indexes</h6>";
     html += "<button class='btn btn-sm btn-outline-primary' onclick='createIndex(\"" + row.name.replace(/"/g, "&quot;") + "\"); return false;'><i class='fa fa-plus'></i> Add Index</button>";
     html += "</div>";
-    if (row.indexes && row.indexes.length > 0) {
+    let idxHtml = renderIndexes(row, types);
+    if (idxHtml != "") {
       html += "<div class='table-responsive'>";
       html += "<table class='table table-sm db-detail-table'>";
       html += "<thead><tr><th>Name</th><th>Defined In</th><th>Properties</th><th>Type</th><th>Unique</th><th>Automatic</th><th>Actions</th></tr></thead>";
-      html += "<tbody>" + renderIndexes(row, types) + "</tbody></table></div>";
+      html += "<tbody>" + idxHtml + "</tbody></table></div>";
     } else {
       html += "<p class='text-muted' style='font-size:0.85rem;'>No indexes defined.</p>";
     }
     html += "</div>";
-  } else if (row.indexes && row.indexes.length > 0) {
-    html += "<div class='db-detail-section'>";
-    html += "<h6><i class='fa fa-bolt'></i> Indexes</h6>";
-    html += "<div class='table-responsive'>";
-    html += "<table class='table table-sm db-detail-table'>";
-    html += "<thead><tr><th>Name</th><th>Defined In</th><th>Properties</th><th>Type</th><th>Unique</th><th>Automatic</th><th>Actions</th></tr></thead>";
-    html += "<tbody>" + renderIndexes(row, types) + "</tbody></table></div>";
-    html += "</div>";
+  } else {
+    let idxHtml = renderIndexes(row, types);
+    if (idxHtml != "") {
+      html += "<div class='db-detail-section'>";
+      html += "<h6><i class='fa fa-bolt'></i> Indexes</h6>";
+      html += "<div class='table-responsive'>";
+      html += "<table class='table table-sm db-detail-table'>";
+      html += "<thead><tr><th>Name</th><th>Defined In</th><th>Properties</th><th>Type</th><th>Unique</th><th>Automatic</th><th>Actions</th></tr></thead>";
+      html += "<tbody>" + idxHtml + "</tbody></table></div>";
+      html += "</div>";
+    }
   }
 
   // TimeSeries diagnostics section
@@ -3605,11 +3609,15 @@ function renderProperties(row, results) {
   return panelHtml;
 }
 
-function renderIndexes(row, results) {
+function renderIndexes(row, results, seen) {
   let panelHtml = "";
+
+  if (seen == null) seen = {};
 
   for (let k in row.indexes) {
     let index = row.indexes[k];
+    if (seen[index.name]) continue;
+    seen[index.name] = true;
     panelHtml += "<tr><td>" + index.name + "</td><td>" + index.typeName + "</td>";
     panelHtml += "<td>" + index.properties + "</td>";
     panelHtml += "<td>" + index.type + "</td>";
@@ -3618,6 +3626,21 @@ function renderIndexes(row, results) {
     panelHtml += "<td>" + (index.automatic ? true : false) + "</td>";
     panelHtml += "<td><button class='btn btn-sm db-action-btn db-action-btn-danger' onclick='dropIndex(\"" + index.name + "\", \"" + row.name.replace(/"/g, "&quot;") + "\")'><i class='fa fa-minus'></i> Drop Index</button></td></tr>";
   }
+
+  // Recurse into parent types so inherited indexes appear in the child type detail (issue #4140).
+  // The backend's schema:types serializer uses getAllIndexes(false), which only returns indexes
+  // directly defined on the type; we walk the parent chain client-side to show ancestor indexes.
+  // The "Defined In" column is filled from index.typeName so inherited rows still point at the
+  // owning ancestor. Diamond inheritance is deduplicated by index name via the seen map.
+  if (row.parentTypes && row.parentTypes.length > 0 && row.parentTypes[0] != "") {
+    for (let ptidx in row.parentTypes) {
+      let pt = row.parentTypes[ptidx];
+      let type = findTypeInResult(pt, results);
+      if (type != null)
+        panelHtml += renderIndexes(type, results, seen);
+    }
+  }
+
   return panelHtml;
 }
 
@@ -4811,13 +4834,14 @@ function showMaterializedViewDetail(viewName) {
     }
     html += "</div>";
 
-    if (backingType.indexes && backingType.indexes.length > 0) {
+    let mvIdxHtml = renderIndexes(backingType, window._schemaTypes);
+    if (mvIdxHtml != "") {
       html += "<div class='db-detail-section'>";
       html += "<h6><i class='fa fa-bolt'></i> Indexes</h6>";
       html += "<div class='table-responsive'>";
       html += "<table class='table table-sm db-detail-table'>";
       html += "<thead><tr><th>Name</th><th>Defined In</th><th>Properties</th><th>Type</th><th>Unique</th><th>Automatic</th><th>Actions</th></tr></thead>";
-      html += "<tbody>" + renderIndexes(backingType, window._schemaTypes) + "</tbody></table></div>";
+      html += "<tbody>" + mvIdxHtml + "</tbody></table></div>";
       html += "</div>";
     }
   }
