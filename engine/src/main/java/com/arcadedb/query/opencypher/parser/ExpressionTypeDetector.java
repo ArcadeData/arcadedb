@@ -167,6 +167,9 @@ class ExpressionTypeDetector {
         return builder.parseIsNullExpression((Cypher25Parser.NullComparisonContext) comp);
       if (comp instanceof Cypher25Parser.LabelComparisonContext)
         return builder.parseLabelComparisonExpression(topExpr7);
+      // GQL IS [NOT] TYPED type and :: type (issue #3365 section 3.3)
+      if (comp instanceof Cypher25Parser.TypeComparisonContext)
+        return builder.parseIsTypedExpression((Cypher25Parser.TypeComparisonContext) comp);
     }
     return null;
   }

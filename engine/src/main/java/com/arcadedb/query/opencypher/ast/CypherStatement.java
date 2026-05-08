@@ -210,4 +210,12 @@ public interface CypherStatement {
   default boolean hasWriteBeforeMatch() {
     return false;
   }
+
+  /**
+   * Returns true when the query terminates with a GQL FINISH clause (issue #3365 section 1.3).
+   * A query with FINISH never returns rows, even when MATCH would otherwise produce results.
+   */
+  default boolean hasFinishClause() {
+    return false;
+  }
 }

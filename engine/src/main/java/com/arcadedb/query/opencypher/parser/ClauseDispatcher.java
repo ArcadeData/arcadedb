@@ -45,10 +45,12 @@ class ClauseDispatcher {
     // Register all clause handlers
     register(Cypher25Parser.ClauseContext::matchClause, this::handleMatch);
     register(Cypher25Parser.ClauseContext::createClause, this::handleCreate);
+    register(Cypher25Parser.ClauseContext::insertClause, this::handleInsert);
     register(Cypher25Parser.ClauseContext::setClause, this::handleSet);
     register(Cypher25Parser.ClauseContext::deleteClause, this::handleDelete);
     register(Cypher25Parser.ClauseContext::mergeClause, this::handleMerge);
     register(Cypher25Parser.ClauseContext::unwindClause, this::handleUnwind);
+    register(Cypher25Parser.ClauseContext::forUnwindClause, this::handleForUnwind);
     register(Cypher25Parser.ClauseContext::withClause, this::handleWith);
     register(Cypher25Parser.ClauseContext::returnClause, this::handleReturn);
     register(Cypher25Parser.ClauseContext::orderBySkipLimitClause, this::handleOrderBySkipLimit);
@@ -57,6 +59,7 @@ class ClauseDispatcher {
     register(Cypher25Parser.ClauseContext::foreachClause, this::handleForeach);
     register(Cypher25Parser.ClauseContext::subqueryClause, this::handleSubquery);
     register(Cypher25Parser.ClauseContext::loadCSVClause, this::handleLoadCSV);
+    register(Cypher25Parser.ClauseContext::finishClause, this::handleFinish);
   }
 
   /**
@@ -95,6 +98,13 @@ class ClauseDispatcher {
     builder.setCreate(astBuilder.visitCreateClause(ctx.createClause()));
   }
 
+  private void handleInsert(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
+                            final CypherASTBuilder astBuilder) {
+    // GQL INSERT is synonymous with CREATE (issue #3365 section 1.1).
+    // Routed through visitInsertClause which produces a CreateClause from the stricter insertPattern grammar.
+    builder.setCreate(astBuilder.visitInsertClause(ctx.insertClause()));
+  }
+
   private void handleSet(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
                          final CypherASTBuilder astBuilder) {
     builder.setSet(astBuilder.visitSetClause(ctx.setClause()));
@@ -113,6 +123,12 @@ class ClauseDispatcher {
   private void handleUnwind(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
                             final CypherASTBuilder astBuilder) {
     builder.addUnwind(astBuilder.visitUnwindClause(ctx.unwindClause()));
+  }
+
+  private void handleForUnwind(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
+                               final CypherASTBuilder astBuilder) {
+    // GQL FOR ... IN ... is synonymous with UNWIND (issue #3365 section 1.2).
+    builder.addUnwind(astBuilder.visitForUnwindClause(ctx.forUnwindClause()));
   }
 
   private void handleWith(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
@@ -185,5 +201,13 @@ class ClauseDispatcher {
   private void handleLoadCSV(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
                               final CypherASTBuilder astBuilder) {
     builder.addLoadCSV(astBuilder.visitLoadCSVClause(ctx.loadCSVClause()));
+  }
+
+  private void handleFinish(final Cypher25Parser.ClauseContext ctx, final StatementBuilder builder,
+                            final CypherASTBuilder astBuilder) {
+    // FINISH is a marker; AST visitor returns FinishClause.INSTANCE for symmetry with other
+    // clauses. The builder records its presence and rejects co-occurrence with RETURN.
+    astBuilder.visitFinishClause(ctx.finishClause());
+    builder.addFinish();
   }
 }

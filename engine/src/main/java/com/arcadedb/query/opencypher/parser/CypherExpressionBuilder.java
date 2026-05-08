@@ -323,7 +323,7 @@ class CypherExpressionBuilder {
         return parseExpressionFromText(expr8.expression7().get(0));
     }
 
-    // Handle Expression7 (IS NULL, STARTS WITH, ENDS WITH, CONTAINS, IN, label check)
+    // Handle Expression7 (IS NULL, STARTS WITH, ENDS WITH, CONTAINS, IN, label check, IS TYPED)
     if (node instanceof Cypher25Parser.Expression7Context) {
       final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) node;
       final Cypher25Parser.ComparisonExpression6Context comp = expr7.comparisonExpression6();
@@ -333,6 +333,8 @@ class CypherExpressionBuilder {
         return parseStringComparisonExpression(expr7);
       if (comp instanceof Cypher25Parser.LabelComparisonContext)
         return parseLabelComparisonExpression(expr7);
+      if (comp instanceof Cypher25Parser.TypeComparisonContext)
+        return parseIsTypedExpression((Cypher25Parser.TypeComparisonContext) comp);
       // No comparison, delegate to expression6
       return parseExpressionFromText(expr7.expression6());
     }
@@ -425,6 +427,12 @@ class CypherExpressionBuilder {
     final Cypher25Parser.NullComparisonContext nullCtx = findNullComparisonRecursive(node);
     if (nullCtx != null)
       return parseIsNullExpression(nullCtx);
+
+    // Check for IS [NOT] TYPED / :: type expressions before parenthesized expressions for the
+    // same reason (issue #3365 section 3.3).
+    final Cypher25Parser.TypeComparisonContext typeCtx = findTypeComparisonRecursive(node);
+    if (typeCtx != null)
+      return parseIsTypedExpression(typeCtx);
 
     // Check for parenthesized expressions containing logical operators
     final Cypher25Parser.ParenthesizedExpressionContext parenCtx = findParenthesizedExpressionRecursive(node);
@@ -1343,6 +1351,22 @@ class CypherExpressionBuilder {
   }
 
   /**
+   * Recursively find TypeComparison context (IS [NOT] TYPED type / :: type).
+   */
+  Cypher25Parser.TypeComparisonContext findTypeComparisonRecursive(final ParseTree node) {
+    if (node == null)
+      return null;
+    if (node instanceof Cypher25Parser.TypeComparisonContext)
+      return (Cypher25Parser.TypeComparisonContext) node;
+    for (int i = 0; i < node.getChildCount(); i++) {
+      final Cypher25Parser.TypeComparisonContext found = findTypeComparisonRecursive(node.getChild(i));
+      if (found != null)
+        return found;
+    }
+    return null;
+  }
+
+  /**
    * Recursively find Expression6Context with arithmetic operators (+ - ||)
    */
   Cypher25Parser.Expression6Context findArithmeticExpression6Recursive(
@@ -1947,6 +1971,24 @@ class CypherExpressionBuilder {
     }
 
     // Fallback: parse as text
+    return parseExpressionText(ctx.getText());
+  }
+
+  /**
+   * Parse {@code IS [NOT] TYPED type} or {@code :: type} expression and wrap it for use in
+   * Expression contexts (issue #3365 section 3.3). The type-spec extraction is shared with
+   * {@link CypherASTBuilder#buildIsTypedExpression}.
+   */
+  Expression parseIsTypedExpression(final Cypher25Parser.TypeComparisonContext ctx) {
+    ParseTree parent = ctx.getParent();
+    if (parent instanceof Cypher25Parser.ComparisonExpression6Context)
+      parent = parent.getParent();
+
+    if (parent instanceof Cypher25Parser.Expression7Context) {
+      final Cypher25Parser.Expression7Context expr7 = (Cypher25Parser.Expression7Context) parent;
+      final Expression leftExpr = parseExpressionFromText(expr7.expression6());
+      return new BooleanWrapperExpression(CypherASTBuilder.buildIsTypedExpression(leftExpr, ctx));
+    }
     return parseExpressionText(ctx.getText());
   }
 

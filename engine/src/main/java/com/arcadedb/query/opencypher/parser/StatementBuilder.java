@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.opencypher.ast.*;
 
 import java.util.ArrayList;
@@ -106,7 +107,16 @@ class StatementBuilder {
     clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.LOAD_CSV, loadCSV, clauseOrder++));
   }
 
+  void addFinish() {
+    if (returnClause != null)
+      throw new CommandParsingException("UnexpectedSyntax: FINISH cannot be combined with RETURN in the same query block");
+    clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.FINISH, FinishClause.INSTANCE, clauseOrder++));
+  }
+
   void setReturn(final ReturnClause returnClause) {
+    for (final ClauseEntry entry : clausesInOrder)
+      if (entry.getType() == ClauseEntry.ClauseType.FINISH)
+        throw new CommandParsingException("UnexpectedSyntax: FINISH cannot be combined with RETURN in the same query block");
     this.returnClause = returnClause;
     clausesInOrder.add(new ClauseEntry(ClauseEntry.ClauseType.RETURN, returnClause, clauseOrder++));
   }

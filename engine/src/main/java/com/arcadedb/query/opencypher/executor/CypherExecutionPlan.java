@@ -267,11 +267,19 @@ public class CypherExecutionPlan {
       while (resultSet.hasNext()) {
         materializedResults.add((ResultInternal) resultSet.next());
       }
-      // If no RETURN clause, return empty results (write side effects still happened)
-      if (statement.getReturnClause() == null)
+      // If no RETURN clause (or GQL FINISH was used), return empty results
+      // (write side effects still happened). Issue #3365 section 1.3.
+      if (statement.getReturnClause() == null || statement.hasFinishClause())
         return new IteratorResultSet(Collections.<Result>emptyList().iterator());
       // Return the materialized results
       return new IteratorResultSet(materializedResults.iterator());
+    }
+
+    // Read-only path: GQL FINISH still suppresses any rows the MATCH would have produced.
+    if (statement.hasFinishClause()) {
+      while (resultSet.hasNext())
+        resultSet.next();
+      return new IteratorResultSet(Collections.<Result>emptyList().iterator());
     }
 
     return resultSet;

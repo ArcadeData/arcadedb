@@ -107,6 +107,7 @@ clause
    | withClause
    | filterClause
    | unwindClause
+   | forUnwindClause
    | letClause
    | callClause
    | subqueryClause
@@ -264,6 +265,12 @@ filterClause
 
 unwindClause
    : UNWIND expression AS variable
+   ;
+
+// GQL FOR ... IN ... iteration clause (issue #3365 section 1.2). Synonym of UNWIND per
+// ISO/IEC 39075:2024 (optional feature GQ10). Distinct from the SEARCH-internal `forClause`.
+forUnwindClause
+   : FOR variable IN expression
    ;
 
 letClause
@@ -869,8 +876,15 @@ typeName
    | SIGNED? INTEGER
    | INTEGER64
    | INT64
+   | INTEGER32
+   | INT32
+   | INTEGER16
+   | INT16
+   | INTEGER8
+   | INT8
    | FLOAT
    | FLOAT64
+   | FLOAT32
    | DATE
    | LOCAL (TIME | DATETIME)
    | ZONED (TIME | DATETIME)

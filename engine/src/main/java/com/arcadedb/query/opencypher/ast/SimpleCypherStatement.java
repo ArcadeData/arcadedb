@@ -53,6 +53,7 @@ public class SimpleCypherStatement implements CypherStatement {
   private final boolean            hasWithBeforeMatch;
   private final boolean            hasSubquery;
   private final boolean            hasWriteBeforeMatch;
+  private final boolean            hasFinishClause;
 
   public SimpleCypherStatement(final String originalQuery, final List<MatchClause> matchClauses,
                                final WhereClause whereClause, final ReturnClause returnClause,
@@ -155,6 +156,8 @@ public class SimpleCypherStatement implements CypherStatement {
     this.hasWithBeforeMatch = computeHasClauseBeforeMatch(ClauseEntry.ClauseType.WITH);
     this.hasSubquery = computeHasSubquery();
     this.hasWriteBeforeMatch = computeHasWriteBeforeMatch();
+    this.hasFinishClause = this.clausesInOrder.stream()
+        .anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FINISH);
   }
 
   private boolean computeHasWriteBeforeMatch() {
@@ -341,6 +344,11 @@ public class SimpleCypherStatement implements CypherStatement {
   @Override
   public boolean hasSubquery() {
     return hasSubquery;
+  }
+
+  @Override
+  public boolean hasFinishClause() {
+    return hasFinishClause;
   }
 
   public String getOriginalQuery() {

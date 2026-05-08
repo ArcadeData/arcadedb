@@ -41,7 +41,8 @@ public class ClauseEntry {
     CALL,
     FOREACH,
     SUBQUERY,
-    LOAD_CSV
+    LOAD_CSV,
+    FINISH
   }
 
   private final ClauseType type;

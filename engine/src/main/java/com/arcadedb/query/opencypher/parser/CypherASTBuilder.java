@@ -32,9 +32,11 @@ import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.ExistsExpression;
 import com.arcadedb.query.opencypher.ast.Expression;
+import com.arcadedb.query.opencypher.ast.FinishClause;
 import com.arcadedb.query.opencypher.ast.ForeachClause;
 import com.arcadedb.query.opencypher.ast.InExpression;
 import com.arcadedb.query.opencypher.ast.IsNullExpression;
+import com.arcadedb.query.opencypher.ast.IsTypedExpression;
 import com.arcadedb.query.opencypher.ast.LabelCheckExpression;
 import com.arcadedb.query.opencypher.ast.ListExpression;
 import com.arcadedb.query.opencypher.ast.LiteralExpression;
@@ -361,6 +363,69 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     return sb.toString();
   }
 
+  /**
+   * Builds an {@link IsTypedExpression} from a parsed {@code IS [NOT] TYPED type} or
+   * {@code :: type} comparison (issue #3365 section 3.3). Detects {@code NOT NULL}
+   * nullability and {@code LIST<T>} element-type wrappers. Static so both
+   * {@link CypherASTBuilder} (boolean path) and {@link CypherExpressionBuilder}
+   * (expression path) can share a single implementation.
+   */
+  static IsTypedExpression buildIsTypedExpression(final Expression leftExpr,
+      final Cypher25Parser.TypeComparisonContext typeCtx) {
+    final boolean isNot = typeCtx.NOT() != null;
+    final Cypher25Parser.TypeContext typeContext = typeCtx.type();
+    if (typeContext.typePart().size() != 1)
+      throw new CommandParsingException("UnsupportedFeature: union types are not supported in IS TYPED");
+    final Cypher25Parser.TypePartContext typePart = typeContext.typePart(0);
+
+    final boolean requiresNonNull;
+    final Cypher25Parser.TypeNullabilityContext nullability = typePart.typeNullability();
+    if (nullability != null)
+      requiresNonNull = nullability.NOT() != null || nullability.EXCLAMATION_MARK() != null;
+    else
+      requiresNonNull = false;
+
+    final Cypher25Parser.TypeNameContext nameCtx = typePart.typeName();
+    String normalizedName = normalizeTypeNameTokens(nameCtx);
+    String listElementTypeName = null;
+
+    // LIST<inner> / ARRAY<inner> from the typeName rule itself.
+    if (nameCtx.type() != null) {
+      listElementTypeName = extractInnerTypeName(nameCtx.type());
+      normalizedName = normalizedName.startsWith("ARRAY") ? "ARRAY" : "LIST";
+    } else if (!typePart.typeListSuffix().isEmpty()) {
+      // ANY VALUE LIST / INTEGER LIST suffix form: keep the inner type, switch to LIST envelope.
+      listElementTypeName = normalizedName;
+      normalizedName = "LIST";
+    }
+
+    return new IsTypedExpression(leftExpr, normalizedName, listElementTypeName, requiresNonNull, isNot);
+  }
+
+  private static String normalizeTypeNameTokens(final Cypher25Parser.TypeNameContext typeName) {
+    final StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < typeName.getChildCount(); i++) {
+      final ParseTree child = typeName.getChild(i);
+      if (child instanceof Cypher25Parser.TypeContext)
+        // LIST<inner> form: skip the inner type here, handled by the caller via nameCtx.type().
+        continue;
+      // Skip surrounding angle brackets for LIST<T>.
+      final String text = child.getText();
+      if ("<".equals(text) || ">".equals(text))
+        continue;
+      if (sb.length() > 0)
+        sb.append(' ');
+      sb.append(text.toUpperCase());
+    }
+    return sb.toString();
+  }
+
+  private static String extractInnerTypeName(final Cypher25Parser.TypeContext typeCtx) {
+    if (typeCtx.typePart().size() != 1)
+      throw new CommandParsingException("UnsupportedFeature: union types are not supported in IS TYPED");
+    return normalizeTypeNameTokens(typeCtx.typePart(0).typeName());
+  }
+
   @Override
   public CypherStatement visitQueryWithLocalDefinitions(final Cypher25Parser.QueryWithLocalDefinitionsContext ctx) {
     return (CypherStatement) visit(ctx.nextStatement());
@@ -462,6 +527,89 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   public CreateClause visitCreateClause(final Cypher25Parser.CreateClauseContext ctx) {
     final List<PathPattern> pathPatterns = visitPatternList(ctx.patternList());
     return new CreateClause(pathPatterns);
+  }
+
+  /**
+   * Visits a GQL INSERT clause and produces a {@link CreateClause}.
+   * INSERT is synonymous with CREATE per ISO/IEC 39075:2024 (issue #3365 section 1.1).
+   * The grammar uses stricter sub-rules (no path length, single label per relationship,
+   * map-only properties) which we honor by walking the dedicated insertPattern subtree
+   * rather than reusing the generic CREATE pattern visitor.
+   */
+  public CreateClause visitInsertClause(final Cypher25Parser.InsertClauseContext ctx) {
+    final List<PathPattern> pathPatterns = new ArrayList<>();
+    for (final Cypher25Parser.InsertPatternContext patternCtx : ctx.insertPatternList().insertPattern())
+      pathPatterns.add(visitInsertPattern(patternCtx));
+    return new CreateClause(pathPatterns);
+  }
+
+  public PathPattern visitInsertPattern(final Cypher25Parser.InsertPatternContext ctx) {
+    // Grammar: (symbolicNameString EQ)? insertNodePattern (insertRelationshipPattern insertNodePattern)*
+    final String pathVariable;
+    if (ctx.symbolicNameString() != null)
+      pathVariable = stripBackticks(ctx.symbolicNameString().getText());
+    else
+      pathVariable = null;
+
+    final List<NodePattern> nodes = new ArrayList<>();
+    final List<RelationshipPattern> relationships = new ArrayList<>();
+
+    final List<Cypher25Parser.InsertNodePatternContext> nodeCtxs = ctx.insertNodePattern();
+    final List<Cypher25Parser.InsertRelationshipPatternContext> relCtxs = ctx.insertRelationshipPattern();
+
+    for (int i = 0; i < nodeCtxs.size(); i++) {
+      nodes.add(visitInsertNodePattern(nodeCtxs.get(i)));
+      if (i < relCtxs.size())
+        relationships.add(visitInsertRelationshipPattern(relCtxs.get(i)));
+    }
+
+    return new PathPattern(nodes, relationships, pathVariable);
+  }
+
+  public NodePattern visitInsertNodePattern(final Cypher25Parser.InsertNodePatternContext ctx) {
+    // Grammar: LPAREN WHERE expression RPAREN
+    //        | LPAREN variable? insertNodeLabelExpression? map? RPAREN
+    if (ctx.WHERE() != null)
+      throw new CommandParsingException("UnexpectedSyntax: WHERE is not allowed in INSERT node patterns");
+
+    final String variable = ctx.variable() != null ? stripBackticks(ctx.variable().getText()) : null;
+
+    List<String> labels = null;
+    if (ctx.insertNodeLabelExpression() != null) {
+      labels = new ArrayList<>();
+      for (final Cypher25Parser.SymbolicNameStringContext nameCtx : ctx.insertNodeLabelExpression().symbolicNameString())
+        labels.add(stripBackticks(nameCtx.getText()));
+    }
+
+    final Map<String, Object> properties = ctx.map() != null ? visitMap(ctx.map()) : null;
+
+    return new NodePattern(variable, labels, null, properties, null, false);
+  }
+
+  public RelationshipPattern visitInsertRelationshipPattern(final Cypher25Parser.InsertRelationshipPatternContext ctx) {
+    // Grammar: leftArrow? arrowLine ( LBRACKET WHERE expression RBRACKET | LBRACKET variable? insertRelationshipLabelExpression map? RBRACKET ) arrowLine rightArrow?
+    if (ctx.WHERE() != null)
+      throw new CommandParsingException("UnexpectedSyntax: WHERE is not allowed in INSERT relationship patterns");
+
+    final String variable = ctx.variable() != null ? stripBackticks(ctx.variable().getText()) : null;
+
+    List<String> types = null;
+    if (ctx.insertRelationshipLabelExpression() != null)
+      types = List.of(stripBackticks(ctx.insertRelationshipLabelExpression().symbolicNameString().getText()));
+
+    final Map<String, Object> properties = ctx.map() != null ? visitMap(ctx.map()) : null;
+
+    final Direction direction;
+    if (ctx.leftArrow() != null && ctx.rightArrow() != null)
+      direction = Direction.BOTH;
+    else if (ctx.leftArrow() != null)
+      direction = Direction.IN;
+    else if (ctx.rightArrow() != null)
+      direction = Direction.OUT;
+    else
+      direction = Direction.BOTH;
+
+    return new RelationshipPattern(variable, types, direction, properties, null, null, null, null);
   }
 
   @Override
@@ -744,6 +892,28 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     final Expression listExpression = expressionBuilder.parseExpression(ctx.expression());
     final String variable = stripBackticks(ctx.variable().getText());
     return new UnwindClause(listExpression, variable);
+  }
+
+  /**
+   * Visits a GQL {@code FOR variable IN expression} iteration clause and produces an
+   * {@link UnwindClause}. FOR is synonymous with UNWIND per ISO/IEC 39075:2024 optional
+   * feature GQ10 (issue #3365 section 1.2).
+   */
+  public UnwindClause visitForUnwindClause(final Cypher25Parser.ForUnwindClauseContext ctx) {
+    // Grammar: FOR variable IN expression
+    final String variable = stripBackticks(ctx.variable().getText());
+    final Expression listExpression = expressionBuilder.parseExpression(ctx.expression());
+    return new UnwindClause(listExpression, variable);
+  }
+
+  /**
+   * Visits a GQL FINISH clause (issue #3365 section 1.3). The clause is a marker that
+   * suppresses any rows the planner would otherwise emit; mutual exclusion with RETURN is
+   * enforced in {@link StatementBuilder}.
+   */
+  @Override
+  public FinishClause visitFinishClause(final Cypher25Parser.FinishClauseContext ctx) {
+    return FinishClause.INSTANCE;
   }
 
   public LoadCSVClause visitLoadCSVClause(final Cypher25Parser.LoadCSVClauseContext ctx) {
@@ -1183,7 +1353,12 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
         return parseLabelCheckExpression(leftExpr, labelCtx.labelExpression(), ctx.getText());
       }
 
-      // Other comparison types (TypeComparison, NormalFormComparison)
+      // TypeComparison: <expr> IS [NOT] TYPED <type>  or  <expr> :: <type>  (issue #3365 section 3.3)
+      if (compCtx instanceof Cypher25Parser.TypeComparisonContext) {
+        return buildIsTypedExpression(leftExpr, (Cypher25Parser.TypeComparisonContext) compCtx);
+      }
+
+      // Other comparison types (NormalFormComparison)
       // Fall back to text-based parsing for now
       return createFallbackComparison(ctx);
     }
@@ -1423,7 +1598,8 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
 
     // Walk children in order so that each optional quantifier can be paired with
     // the relationship pattern it follows (grammar: relationshipPattern quantifier? nodePattern).
-    for (int i = 0; i < ctx.getChildCount(); i++) {
+    final int childCount = ctx.getChildCount();
+    for (int i = 0; i < childCount; i++) {
       final ParseTree child = ctx.getChild(i);
       if (child instanceof Cypher25Parser.NodePatternContext) {
         nodes.add(visitNodePattern((Cypher25Parser.NodePatternContext) child));
@@ -1434,6 +1610,13 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
           throw new CommandParsingException("InvalidSyntax: Quantifier has no preceding relationship");
         final int last = relationships.size() - 1;
         relationships.set(last, applyQuantifier(relationships.get(last), (Cypher25Parser.QuantifierContext) child));
+      } else if (child instanceof Cypher25Parser.ParenthesizedPathContext) {
+        // GQL Quantified Path Pattern (issue #3365 sections 1.4 and 1.5).
+        // Phase A: lower a single-relationship grouped pattern to a variable-length
+        // relationship that the existing executor already handles.
+        final boolean nextIsOuterNode = (i + 1) < childCount
+            && ctx.getChild(i + 1) instanceof Cypher25Parser.NodePatternContext;
+        absorbParenthesizedPath((Cypher25Parser.ParenthesizedPathContext) child, nodes, relationships, nextIsOuterNode);
       }
     }
 
@@ -1445,6 +1628,83 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       // Path with relationships
       return new PathPattern(nodes, relationships);
     }
+  }
+
+  /**
+   * Absorbs a GQL Quantified Path Pattern (parenthesized inner pattern + optional quantifier)
+   * into the surrounding node/relationship lists by lowering it to existing variable-length
+   * relationship infrastructure (issue #3365 sections 1.4 and 1.5, Phase A).
+   *
+   * <p>Phase A constraints (rejected with {@link CommandParsingException} when violated):
+   * <ul>
+   *   <li>The inner pattern must be a single triplet {@code (a)-[r]->(b)}; multi-rel inner
+   *       patterns are deferred to Phase B.</li>
+   *   <li>Inner {@code WHERE} predicates are deferred to Phase B.</li>
+   *   <li>Quantifier values must be positive (zero quantifier is meaningless).</li>
+   * </ul>
+   * Inner relationship variables become {@code LIST<EDGE>} (existing var-length behavior).
+   * Intermediate-node variable bindings outside the group are not yet supported.
+   */
+  private void absorbParenthesizedPath(final Cypher25Parser.ParenthesizedPathContext pCtx,
+      final List<NodePattern> outerNodes, final List<RelationshipPattern> outerRels, final boolean nextIsOuterNode) {
+    if (pCtx.WHERE() != null)
+      throw new CommandParsingException(
+          "FeatureNotImplemented: WHERE inside a quantified path pattern is not yet supported (issue #3365 Phase B)");
+
+    final PathPattern inner = visitPattern(pCtx.pattern());
+    if (inner.getRelationshipCount() != 1)
+      throw new CommandParsingException(
+          "FeatureNotImplemented: only single-relationship inner patterns are supported in quantified path patterns (issue #3365 Phase B will add multi-relationship)");
+
+    final NodePattern innerStart = inner.getFirstNode();
+    final NodePattern innerEnd = inner.getLastNode();
+    final RelationshipPattern innerRel = inner.getRelationship(0);
+
+    // Determine quantifier (defaults to 1..1 when absent, which collapses to a plain triplet)
+    final Integer min;
+    final Integer max;
+    if (pCtx.quantifier() != null) {
+      final RelationshipPattern dummy = new RelationshipPattern(null, null, Direction.BOTH, null, null, null);
+      final RelationshipPattern quantified = applyQuantifier(dummy, pCtx.quantifier());
+      min = quantified.getMinHops();
+      max = quantified.getMaxHops();
+      if (max != null && max == 0)
+        throw new CommandParsingException(
+            "InvalidSyntax: quantifier upper bound must be greater than zero in quantified path pattern");
+      if (min != null && min == 0 && max != null && max == 0)
+        throw new CommandParsingException(
+            "InvalidSyntax: zero quantifier is not allowed in quantified path pattern");
+      if (min != null && max != null && min > max)
+        throw new CommandParsingException(
+            "InvalidSyntax: quantifier lower bound exceeds upper bound in quantified path pattern");
+    } else {
+      min = null;
+      max = null;
+    }
+
+    // Splice the inner endpoints into the outer chain. When this is the first child in the
+    // pattern, the inner start becomes the leading boundary; otherwise the previous outer
+    // node already serves that role.
+    if (outerNodes.isEmpty())
+      outerNodes.add(innerStart);
+
+    // Build a new variable-length relationship pattern that subsumes the grouped repetition.
+    final RelationshipPattern lowered = new RelationshipPattern(
+        innerRel.getVariable(),
+        innerRel.getTypes(),
+        innerRel.getDirection(),
+        innerRel.getProperties().isEmpty() ? null : innerRel.getProperties(),
+        innerRel.getPropertiesParameterName(),
+        min,
+        max,
+        innerRel.getWhereExpression());
+    outerRels.add(lowered);
+
+    // Append the inner end node only when no outer nodePattern follows. If an outer
+    // nodePattern comes next, it will play the role of the trailing boundary itself,
+    // keeping the (nodes.size == relationships.size + 1) invariant intact.
+    if (!nextIsOuterNode)
+      outerNodes.add(innerEnd);
   }
 
   /**
