@@ -68,6 +68,54 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
   }
 
   @Test
+  void int8MarkerDecodesLongArrayIntoByteArray() {
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("q", Map.of("$int8", new long[] { 0L, 64L, 127L, -1L, -128L }));
+
+    final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
+
+    assertThat(out.get("q")).isInstanceOf(byte[].class);
+    assertThat((byte[]) out.get("q")).containsExactly((byte) 0, (byte) 64, (byte) 127, (byte) -1, (byte) -128);
+  }
+
+  @Test
+  void int8MarkerAcceptsByteRangeBoundaries() {
+    // Pin the full signed-byte range explicitly: -128 and 127 must round-trip without rejection.
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("q", Map.of("$int8", List.of(-128, 127)));
+
+    final byte[] out = (byte[]) AbstractQueryHandler.decodeTypedJsonMarkers(in).get("q");
+    assertThat(out).containsExactly((byte) -128, (byte) 127);
+  }
+
+  @Test
+  void bytesMarkerAcceptsUrlSafeBase64() {
+    // URL-safe base64 (RFC 4648 section 5) uses '-' and '_' in place of '+' and '/'. Common in
+    // ML tooling that base64-encodes embeddings for transport - must decode transparently.
+    final byte[] expected = { 1, -1, 2, -2, 127, -128 };
+    final String urlSafe = Base64.getUrlEncoder().encodeToString(expected);
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("q", Map.of("$bytes", urlSafe));
+
+    final byte[] out = (byte[]) AbstractQueryHandler.decodeTypedJsonMarkers(in).get("q");
+    assertThat(out).containsExactly(expected);
+  }
+
+  @Test
+  void mapWithNoMarkersReturnsSameReference() {
+    // Performance contract: a parameter map with only scalar / non-marker values must not
+    // allocate a new map - the original reference flows through unchanged.
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("a", 42);
+    in.put("b", "hello");
+    in.put("c", Map.of("status", "active"));
+
+    final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
+
+    assertThat(out).isSameAs(in);
+  }
+
+  @Test
   void int8MarkerDecodesIntArrayIntoByteArray() {
     final Map<String, Object> in = new LinkedHashMap<>();
     in.put("q", Map.of("$int8", new int[] { 0, 64, 127, -1, -128 }));

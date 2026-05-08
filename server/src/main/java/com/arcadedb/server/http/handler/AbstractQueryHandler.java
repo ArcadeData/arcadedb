@@ -299,99 +299,139 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   /**
    * Decodes typed JSON markers ({@code $bytes}, {@code $int8}) in {@code paramMap} into
    * {@code byte[]} so HTTP/JSON clients can route int8 query vectors through the encoding-aware
-   * vector path (#4135). Only allocates a new map if at least one nested Map/List is present.
+   * vector path (#4135). Returns the original map reference when nothing was rewritten.
+   * <p>
+   * {@code $bytes} accepts standard or URL-safe base64 (RFC 4648 sections 4 and 5); {@code $int8}
+   * accepts a {@link List} of {@link Number}, {@code float[]}, {@code double[]}, {@code int[]}, or
+   * {@code long[]} of values in {@code [-128, 127]}.
    */
   protected static Map<String, Object> decodeTypedJsonMarkers(final Map<String, Object> paramMap) {
     if (paramMap == null || paramMap.isEmpty())
       return paramMap;
-    boolean needsRewrite = false;
-    for (final Object v : paramMap.values()) {
-      if (v instanceof Map<?, ?> || v instanceof List<?>) {
-        needsRewrite = true;
-        break;
+    Map<String, Object> result = null;
+    for (final Map.Entry<String, Object> entry : paramMap.entrySet()) {
+      final Object original = entry.getValue();
+      final Object decoded = decodeTypedJsonMarker(original);
+      if (decoded != original && result == null) {
+        result = new LinkedHashMap<>(paramMap);
       }
+      if (result != null)
+        result.put(entry.getKey(), decoded);
     }
-    if (!needsRewrite)
-      return paramMap;
-    final Map<String, Object> result = new LinkedHashMap<>(paramMap.size());
-    for (final Map.Entry<String, Object> entry : paramMap.entrySet())
-      result.put(entry.getKey(), decodeTypedJsonMarker(entry.getValue()));
-    return result;
+    return result != null ? result : paramMap;
   }
 
   private static Object decodeTypedJsonMarker(final Object value) {
     if (value instanceof Map<?, ?> m && m.size() == 1) {
       final Map.Entry<?, ?> only = m.entrySet().iterator().next();
-      if ("$bytes".equals(only.getKey())) {
-        final Object payload = only.getValue();
-        if (payload == null)
-          throw new IllegalArgumentException("Parameter '$bytes' value must be a base64 string, got null");
-        if (!(payload instanceof String b64))
-          throw new IllegalArgumentException(
-              "Parameter '$bytes' value must be a base64 string, found " + payload.getClass().getSimpleName());
-        try {
-          return Base64.getDecoder().decode(b64);
-        } catch (final IllegalArgumentException e) {
-          throw new IllegalArgumentException("Parameter '$bytes' is not valid base64: " + e.getMessage(), e);
-        }
-      }
-      if ("$int8".equals(only.getKey())) {
-        // optimizeNumericArrays=true on the JSON parser may convert a JSON integer array into a
-        // float[] or double[] before the decoder sees it; accept those shapes too.
-        final Object payload = only.getValue();
-        if (payload instanceof List<?> list) {
-          final byte[] out = new byte[list.size()];
-          for (int i = 0; i < list.size(); i++) {
-            final Object elem = list.get(i);
-            if (!(elem instanceof Number n))
-              throw new IllegalArgumentException(
-                  "Parameter '$int8' element at index " + i + " must be a number, found "
-                      + (elem == null ? "null" : elem.getClass().getSimpleName()));
-            out[i] = toInt8(n.doubleValue(), i);
-          }
-          return out;
-        }
-        if (payload instanceof float[] floats) {
-          final byte[] out = new byte[floats.length];
-          for (int i = 0; i < floats.length; i++)
-            out[i] = toInt8(floats[i], i);
-          return out;
-        }
-        if (payload instanceof double[] doubles) {
-          final byte[] out = new byte[doubles.length];
-          for (int i = 0; i < doubles.length; i++)
-            out[i] = toInt8(doubles[i], i);
-          return out;
-        }
-        if (payload instanceof int[] ints) {
-          final byte[] out = new byte[ints.length];
-          for (int i = 0; i < ints.length; i++)
-            out[i] = toInt8(ints[i], i);
-          return out;
-        }
-        throw new IllegalArgumentException(
-            "Parameter '$int8' value must be an array of integers in [-128, 127], found "
-                + (payload == null ? "null" : payload.getClass().getSimpleName()));
-      }
+      if ("$bytes".equals(only.getKey()))
+        return decodeBytesMarker(only.getValue());
+      if ("$int8".equals(only.getKey()))
+        return decodeInt8Marker(only.getValue());
     }
     if (value instanceof Map<?, ?> m) {
-      final Map<String, Object> nested = new LinkedHashMap<>(m.size());
+      Map<String, Object> rewritten = null;
       for (final Map.Entry<?, ?> entry : m.entrySet()) {
         final Object key = entry.getKey();
         if (!(key instanceof String sk))
           throw new IllegalArgumentException(
               "Parameter map keys must be strings, found " + (key == null ? "null" : key.getClass().getSimpleName()));
-        nested.put(sk, decodeTypedJsonMarker(entry.getValue()));
+        final Object original = entry.getValue();
+        final Object decoded = decodeTypedJsonMarker(original);
+        if (decoded != original && rewritten == null) {
+          rewritten = new LinkedHashMap<>(m.size());
+          for (final Map.Entry<?, ?> prior : m.entrySet()) {
+            if (prior.getKey() == sk)
+              break;
+            rewritten.put((String) prior.getKey(), prior.getValue());
+          }
+        }
+        if (rewritten != null)
+          rewritten.put(sk, decoded);
       }
-      return nested;
+      return rewritten != null ? rewritten : value;
     }
     if (value instanceof List<?> list) {
-      final List<Object> nested = new ArrayList<>(list.size());
-      for (final Object e : list)
-        nested.add(decodeTypedJsonMarker(e));
-      return nested;
+      List<Object> rewritten = null;
+      for (int i = 0; i < list.size(); i++) {
+        final Object original = list.get(i);
+        final Object decoded = decodeTypedJsonMarker(original);
+        if (decoded != original && rewritten == null) {
+          rewritten = new ArrayList<>(list.size());
+          for (int j = 0; j < i; j++)
+            rewritten.add(list.get(j));
+        }
+        if (rewritten != null)
+          rewritten.add(decoded);
+      }
+      return rewritten != null ? rewritten : value;
     }
     return value;
+  }
+
+  private static byte[] decodeBytesMarker(final Object payload) {
+    if (payload == null)
+      throw new IllegalArgumentException("Parameter '$bytes' value must be a base64 string, got null");
+    if (!(payload instanceof String b64))
+      throw new IllegalArgumentException(
+          "Parameter '$bytes' value must be a base64 string, found " + payload.getClass().getSimpleName());
+    // Try standard base64 (RFC 4648 section 4) first; on failure retry with URL-safe (section 5)
+    // so clients using - and _ in place of + and / are accepted transparently.
+    try {
+      return Base64.getDecoder().decode(b64);
+    } catch (final IllegalArgumentException standardErr) {
+      try {
+        return Base64.getUrlDecoder().decode(b64);
+      } catch (final IllegalArgumentException urlSafeErr) {
+        throw new IllegalArgumentException(
+            "Parameter '$bytes' is not valid base64 (standard or URL-safe): " + standardErr.getMessage(), standardErr);
+      }
+    }
+  }
+
+  private static byte[] decodeInt8Marker(final Object payload) {
+    // optimizeNumericArrays=true on the JSON parser may convert a JSON integer array into a
+    // float[]/double[]; some callers may also pass int[] or long[]. Accept all four primitive
+    // shapes and the boxed List<Number> form.
+    if (payload instanceof List<?> list) {
+      final byte[] out = new byte[list.size()];
+      for (int i = 0; i < list.size(); i++) {
+        final Object elem = list.get(i);
+        if (!(elem instanceof Number n))
+          throw new IllegalArgumentException(
+              "Parameter '$int8' element at index " + i + " must be a number, found "
+                  + (elem == null ? "null" : elem.getClass().getSimpleName()));
+        out[i] = toInt8(n.doubleValue(), i);
+      }
+      return out;
+    }
+    if (payload instanceof float[] floats) {
+      final byte[] out = new byte[floats.length];
+      for (int i = 0; i < floats.length; i++)
+        out[i] = toInt8(floats[i], i);
+      return out;
+    }
+    if (payload instanceof double[] doubles) {
+      final byte[] out = new byte[doubles.length];
+      for (int i = 0; i < doubles.length; i++)
+        out[i] = toInt8(doubles[i], i);
+      return out;
+    }
+    if (payload instanceof int[] ints) {
+      final byte[] out = new byte[ints.length];
+      for (int i = 0; i < ints.length; i++)
+        out[i] = toInt8(ints[i], i);
+      return out;
+    }
+    if (payload instanceof long[] longs) {
+      final byte[] out = new byte[longs.length];
+      for (int i = 0; i < longs.length; i++)
+        out[i] = toInt8(longs[i], i);
+      return out;
+    }
+    throw new IllegalArgumentException(
+        "Parameter '$int8' value must be an array of integers in [-128, 127], found "
+            + (payload == null ? "null" : payload.getClass().getSimpleName()));
   }
 
   /** Rounds a numeric value to a signed byte, rejecting fractional or out-of-range inputs. */
