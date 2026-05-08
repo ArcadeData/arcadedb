@@ -19,13 +19,22 @@
 package com.arcadedb.database;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import java.time.Clock;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+
+import javax.crypto.KeyGenerator;
+import javax.crypto.SecretKey;
 
 import org.junit.jupiter.api.Test;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.Vertex.DIRECTION;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 
 /**
  * @author Pawel Maslej
@@ -87,5 +96,81 @@ class DataEncryptionTest extends TestHelper {
       assertThat(((String) p2.get("name")).contains("Doe")).isFalse();
       assertThat(p1.getEdges(DIRECTION.OUT, "Knows").iterator().next().get("since").toString().contains("2024")).isFalse();
     }
+  }
+
+  // Regression coverage for issue #4137: encryption uses a fresh random IV per call,
+  // so index keys must be serialized without encryption to remain deterministic.
+  // Without the fix, equality lookups on a HASH-indexed property never resolve when
+  // encryption is enabled.
+
+  @Test
+  void hashIndexedLongLookupWorksWithEncryption() throws Exception {
+    enableRandomEncryption();
+    createEntryTypeWithLongHashIndex();
+
+    database.transaction(() -> {
+      final var doc = database.newDocument("Entry");
+      doc.set("vid", 1L);
+      doc.set("created_at", Clock.systemUTC().instant());
+      doc.set("updated_at", null);
+      doc.save();
+    });
+
+    assertThat(database.countType("Entry", false)).isEqualTo(1);
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Entry WHERE vid = :vid", Map.of("vid", 1L))) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Long>getProperty("vid")).isEqualTo(1L);
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM Entry WHERE vid <> :vid", Map.of("vid", 0L))) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<Long>getProperty("vid")).isEqualTo(1L);
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  @Test
+  void hashIndexedStringLookupWorksWithEncryption() throws Exception {
+    enableRandomEncryption();
+
+    database.transaction(() -> {
+      final DocumentType t = database.getSchema().createDocumentType("EntryStr");
+      t.createProperty("name", Type.STRING).setMandatory(true).setNotNull(true);
+      t.createTypeIndex(Schema.INDEX_TYPE.HASH, true, "name");
+    });
+    database.transaction(() -> {
+      database.newDocument("EntryStr").set("name", "alice").save();
+    });
+
+    database.transaction(() -> {
+      try (final ResultSet rs = database.query("sql", "SELECT FROM EntryStr WHERE name = :name", Map.of("name", "alice"))) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("alice");
+        assertThat(rs.hasNext()).isFalse();
+      }
+    });
+  }
+
+  private void enableRandomEncryption() throws Exception {
+    final KeyGenerator keyGenerator = KeyGenerator.getInstance("AES");
+    keyGenerator.init(256);
+    final SecretKey key = keyGenerator.generateKey();
+    database.setDataEncryption(DefaultDataEncryption.useDefaults(key));
+  }
+
+  private void createEntryTypeWithLongHashIndex() {
+    database.transaction(() -> {
+      final DocumentType entryType = database.getSchema().createDocumentType("Entry");
+      entryType.createProperty("vid", Type.LONG).setMandatory(true).setNotNull(true);
+      entryType.createProperty("created_at", Type.DATETIME_NANOS).setMandatory(true).setNotNull(true);
+      entryType.createProperty("updated_at", Type.DATETIME_NANOS).setMandatory(true).setNotNull(false);
+      entryType.createTypeIndex(Schema.INDEX_TYPE.HASH, true, "vid");
+    });
   }
 }
