@@ -297,30 +297,21 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
   }
 
   /**
-   * Recursively walks {@code paramMap} and replaces typed JSON-marker objects with the
-   * corresponding native Java values. JSON has no native {@code byte[]} type, so HTTP clients that
-   * want an int8 query vector to reach the engine as {@code byte[]} (and trigger the
-   * {@link com.arcadedb.index.vector.VectorEncoding#INT8} dequantization path on
-   * {@code LSM_VECTOR} indexes) wrap the value in one of two forms:
-   * <ul>
-   *   <li>{@code {"$bytes": "<base64>"}} - raw bytes encoded as standard base64. Most compact on
-   *       the wire (1 byte per dim, ~1.33x base64 overhead).</li>
-   *   <li>{@code {"$int8": [v0, v1, ...]}} - array of integers in {@code [-128, 127]}. Easier for
-   *       clients without a base64 utility; values are validated and packed into a
-   *       {@code byte[]}.</li>
-   * </ul>
-   * Any other value passes through unchanged. Closes the HTTP/JSON gap from #4135 so the 4x
-   * payload claim of #4132's INT8 ingest path applies end-to-end.
-   *
-   * @param paramMap the parsed query parameter map (possibly containing typed markers)
-   *
-   * @return the same map shape with typed markers replaced by {@code byte[]} values
-   *
-   * @throws IllegalArgumentException if a marker is malformed (bad base64, non-numeric or
-   *                                  out-of-range int8 element)
+   * Decodes typed JSON markers ({@code $bytes}, {@code $int8}) in {@code paramMap} into
+   * {@code byte[]} so HTTP/JSON clients can route int8 query vectors through the encoding-aware
+   * vector path (#4135). Only allocates a new map if at least one nested Map/List is present.
    */
   protected static Map<String, Object> decodeTypedJsonMarkers(final Map<String, Object> paramMap) {
     if (paramMap == null || paramMap.isEmpty())
+      return paramMap;
+    boolean needsRewrite = false;
+    for (final Object v : paramMap.values()) {
+      if (v instanceof Map<?, ?> || v instanceof List<?>) {
+        needsRewrite = true;
+        break;
+      }
+    }
+    if (!needsRewrite)
       return paramMap;
     final Map<String, Object> result = new LinkedHashMap<>(paramMap.size());
     for (final Map.Entry<String, Object> entry : paramMap.entrySet())
@@ -328,14 +319,16 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     return result;
   }
 
-  @SuppressWarnings("unchecked")
   private static Object decodeTypedJsonMarker(final Object value) {
     if (value instanceof Map<?, ?> m && m.size() == 1) {
-      // Single-key marker discriminator. We only intercept the reserved $bytes / $int8 keys; any
-      // other shape (including multi-key maps that happen to contain a $bytes key) passes through
-      // unchanged so user data with leading-$ keys is not silently transformed.
       final Map.Entry<?, ?> only = m.entrySet().iterator().next();
-      if ("$bytes".equals(only.getKey()) && only.getValue() instanceof String b64) {
+      if ("$bytes".equals(only.getKey())) {
+        final Object payload = only.getValue();
+        if (payload == null)
+          throw new IllegalArgumentException("Parameter '$bytes' value must be a base64 string, got null");
+        if (!(payload instanceof String b64))
+          throw new IllegalArgumentException(
+              "Parameter '$bytes' value must be a base64 string, found " + payload.getClass().getSimpleName());
         try {
           return Base64.getDecoder().decode(b64);
         } catch (final IllegalArgumentException e) {
@@ -343,9 +336,8 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         }
       }
       if ("$int8".equals(only.getKey())) {
-        // PostCommandHandler parses params with toMap(optimizeNumericArrays=true), so a JSON
-        // integer array can arrive here as a List<Number>, a float[], or a double[]. Handle each
-        // shape and validate the byte range; anything else is a marker misuse.
+        // optimizeNumericArrays=true on the JSON parser may convert a JSON integer array into a
+        // float[] or double[] before the decoder sees it; accept those shapes too.
         final Object payload = only.getValue();
         if (payload instanceof List<?> list) {
           final byte[] out = new byte[list.size()];
@@ -371,16 +363,26 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
             out[i] = toInt8(doubles[i], i);
           return out;
         }
+        if (payload instanceof int[] ints) {
+          final byte[] out = new byte[ints.length];
+          for (int i = 0; i < ints.length; i++)
+            out[i] = toInt8(ints[i], i);
+          return out;
+        }
         throw new IllegalArgumentException(
             "Parameter '$int8' value must be an array of integers in [-128, 127], found "
                 + (payload == null ? "null" : payload.getClass().getSimpleName()));
       }
-      // Single-key map but not one of our markers - fall through to recurse below.
     }
     if (value instanceof Map<?, ?> m) {
       final Map<String, Object> nested = new LinkedHashMap<>(m.size());
-      for (final Map.Entry<?, ?> entry : m.entrySet())
-        nested.put((String) entry.getKey(), decodeTypedJsonMarker(entry.getValue()));
+      for (final Map.Entry<?, ?> entry : m.entrySet()) {
+        final Object key = entry.getKey();
+        if (!(key instanceof String sk))
+          throw new IllegalArgumentException(
+              "Parameter map keys must be strings, found " + (key == null ? "null" : key.getClass().getSimpleName()));
+        nested.put(sk, decodeTypedJsonMarker(entry.getValue()));
+      }
       return nested;
     }
     if (value instanceof List<?> list) {
@@ -392,12 +394,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
     return value;
   }
 
-  /**
-   * Range-checks a numeric value to fit in a signed byte and rounds it to the nearest integer.
-   * The HTTP parser may have promoted JSON integers to {@code float}/{@code double}, so we accept
-   * any numeric input but reject values that round outside {@code [-128, 127]} or carry a non-zero
-   * fractional part (which would indicate the caller sent floats by mistake).
-   */
+  /** Rounds a numeric value to a signed byte, rejecting fractional or out-of-range inputs. */
   private static byte toInt8(final double v, final int index) {
     if (v != Math.floor(v) || Double.isNaN(v) || Double.isInfinite(v))
       throw new IllegalArgumentException(

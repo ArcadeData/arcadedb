@@ -35,15 +35,7 @@ import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * End-to-end integration test for #4135: HTTP/JSON clients sending int8 query vectors via the
- * typed-marker convention ({@code $bytes} for base64 strings, {@code $int8} for integer arrays)
- * land in the engine as {@code byte[]}, which the encoding-aware {@code VectorUtils.toFloatArray}
- * dequantizes once for the HNSW search. Pins the wire contract so the 4x payload claim of #4132's
- * INT8 ingest path applies end-to-end (HTTP through to storage, not just storage).
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
- */
+/** End-to-end HTTP test for #4135: int8 query vectors via {@code $bytes} / {@code $int8} markers. */
 class Int8VectorHttpIT extends BaseGraphServerTest {
   private static final int    DIMENSIONS  = 32;
   private static final int    NUM_VECTORS = 16;
@@ -89,9 +81,6 @@ class Int8VectorHttpIT extends BaseGraphServerTest {
 
     final JSONArray hits = body.getJSONArray("result");
     assertThat(hits.length()).isGreaterThan(0);
-    // The seed-0 record was indexed from the same calibration as the query, so it must come back
-    // as the top hit. If the typed-marker decoder dropped to a List/float branch instead of byte[],
-    // the dequantized query would diverge slightly and a different vector could overtake it.
     assertThat(hits.getJSONObject(0).getInt("id")).isEqualTo(0);
   }
 

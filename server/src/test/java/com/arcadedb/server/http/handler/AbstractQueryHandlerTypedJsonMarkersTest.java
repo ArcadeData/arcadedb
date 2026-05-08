@@ -28,13 +28,7 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-/**
- * Unit tests for the {@code $bytes} / {@code $int8} typed-JSON-marker convention added in #4135 to
- * route int8 query vectors from HTTP/JSON clients through to the engine as {@code byte[]} (so
- * INT8-encoded {@code LSM_VECTOR} indexes get the 4x payload savings end-to-end).
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
- */
+/** Unit tests for the {@code $bytes} / {@code $int8} typed-JSON-marker decoder (#4135). */
 class AbstractQueryHandlerTypedJsonMarkersTest {
 
   @Test
@@ -52,9 +46,7 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
 
   @Test
   void int8MarkerDecodesFloatArrayIntoByteArray() {
-    // PostCommandHandler parses params with toMap(optimizeNumericArrays=true), which converts a
-    // JSON integer array into a float[] before decodeTypedJsonMarkers runs. The decoder must
-    // accept that primitive shape too and reject non-integer values to catch float-vs-int mixups.
+    // optimizeNumericArrays=true on the JSON parser hands an integer array as float[].
     final Map<String, Object> in = new LinkedHashMap<>();
     in.put("q", Map.of("$int8", new float[] { 0f, 64f, 127f, -1f, -128f }));
 
@@ -65,9 +57,29 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
   }
 
   @Test
+  void int8MarkerDecodesDoubleArrayIntoByteArray() {
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("q", Map.of("$int8", new double[] { 0.0, 64.0, 127.0, -1.0, -128.0 }));
+
+    final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
+
+    assertThat(out.get("q")).isInstanceOf(byte[].class);
+    assertThat((byte[]) out.get("q")).containsExactly((byte) 0, (byte) 64, (byte) 127, (byte) -1, (byte) -128);
+  }
+
+  @Test
+  void int8MarkerDecodesIntArrayIntoByteArray() {
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("q", Map.of("$int8", new int[] { 0, 64, 127, -1, -128 }));
+
+    final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
+
+    assertThat(out.get("q")).isInstanceOf(byte[].class);
+    assertThat((byte[]) out.get("q")).containsExactly((byte) 0, (byte) 64, (byte) 127, (byte) -1, (byte) -128);
+  }
+
+  @Test
   void int8MarkerRejectsFractionalFloatValue() {
-    // A float[] payload that carries a fractional value indicates the caller sent floats not ints
-    // - reject so the bug surfaces at the wire boundary instead of silently truncating.
     final Map<String, Object> in = new LinkedHashMap<>();
     in.put("q", Map.of("$int8", new float[] { 0.5f, 1f, 2f }));
 
@@ -75,6 +87,56 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("$int8")
         .hasMessageContaining("not an integer value");
+  }
+
+  @Test
+  void int8MarkerEmptyArrayProducesEmptyByteArray() {
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("q", Map.of("$int8", List.of()));
+
+    final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
+
+    assertThat(out.get("q")).isInstanceOf(byte[].class);
+    assertThat((byte[]) out.get("q")).isEmpty();
+  }
+
+  @Test
+  void bytesMarkerEmptyStringProducesEmptyByteArray() {
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("q", Map.of("$bytes", ""));
+
+    final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
+
+    assertThat(out.get("q")).isInstanceOf(byte[].class);
+    assertThat((byte[]) out.get("q")).isEmpty();
+  }
+
+  @Test
+  void bytesMarkerNullValueIsRejected() {
+    // A single-key map with $bytes holding null is almost certainly a client mistake - surface it
+    // as a wire error rather than passing the map through unchanged.
+    final Map<String, Object> in = new LinkedHashMap<>();
+    final Map<String, Object> inner = new LinkedHashMap<>();
+    inner.put("$bytes", null);
+    in.put("q", inner);
+
+    assertThatThrownBy(() -> AbstractQueryHandler.decodeTypedJsonMarkers(in))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("$bytes")
+        .hasMessageContaining("null");
+  }
+
+  @Test
+  void int8MarkerNestedTwoLevelsIsDecoded() {
+    // The decoder recurses through nested maps just as it does through nested lists.
+    final Map<String, Object> in = new LinkedHashMap<>();
+    in.put("outer", Map.of("inner", Map.of("$int8", List.of(1, 2, 3))));
+
+    final Map<String, Object> out = AbstractQueryHandler.decodeTypedJsonMarkers(in);
+
+    @SuppressWarnings("unchecked") final Map<String, Object> outer = (Map<String, Object>) out.get("outer");
+    assertThat(outer.get("inner")).isInstanceOf(byte[].class);
+    assertThat((byte[]) outer.get("inner")).containsExactly((byte) 1, (byte) 2, (byte) 3);
   }
 
   @Test
@@ -124,9 +186,7 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
 
   @Test
   void multiKeyMapWithDollarBytesIsLeftAlone() {
-    // Safety: only single-key maps trigger the decoder. A multi-key map that happens to contain a
-    // "$bytes" key is user data and must pass through unchanged. The handler still recurses into
-    // its values so a nested marker would still be decoded.
+    // Only single-key maps trigger the decoder; user data with leading-$ keys must round-trip.
     final Map<String, Object> in = new LinkedHashMap<>();
     final Map<String, Object> userData = new LinkedHashMap<>();
     userData.put("$bytes", "not-a-marker-because-other-keys");
@@ -143,7 +203,6 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
 
   @Test
   void unrelatedSingleKeyMapPassesThrough() {
-    // A single-key map whose key is NOT one of our markers must be returned as a regular Map.
     final Map<String, Object> in = new LinkedHashMap<>();
     in.put("q", Map.of("name", "Alice"));
 
@@ -156,8 +215,6 @@ class AbstractQueryHandlerTypedJsonMarkersTest {
 
   @Test
   void markersInsideListAreDecoded() {
-    // The decoder recurses into List values, so a list of typed markers (e.g. a batch of int8
-    // vectors as a single parameter) is decoded element by element.
     final Map<String, Object> in = new LinkedHashMap<>();
     in.put("batch", List.of(
         Map.of("$int8", List.of(1, 2, 3)),
