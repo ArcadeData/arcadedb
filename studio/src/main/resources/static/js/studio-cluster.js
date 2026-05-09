@@ -50,8 +50,54 @@ function renderClusterData(data) {
   // Peer management list
   renderPeerManagement(data);
 
+  // Per-database bootstrap baselines (issue #4147 phase 7). Only renders content when at least
+  // one database has a committed bootstrap entry; otherwise the section stays empty so older
+  // clusters look identical to before.
+  renderBootstrapBaselines(data);
+
   // Update metrics summary
   updateMetricsSummary(data);
+}
+
+// Renders one row per database that has a committed bootstrap baseline. Surfaces lastTxId and
+// the abbreviated fingerprint so an operator sees at a glance which databases were locally
+// bootstrapped vs which still need a leader-shipped catch-up. Issue #4147 phase 7.
+function renderBootstrapBaselines(data) {
+  var container = $("#clusterBootstrapBaselines");
+  var card = $("#clusterBootstrapBaselinesCard");
+  if (container.length === 0)
+    return; // Older cluster.html that hasn't been updated yet; degrade silently.
+  container.empty();
+
+  var dbs = (data.databases || []).filter(function(db) {
+    return db.bootstrapLastTxId != null;
+  });
+  if (dbs.length === 0) {
+    card.hide();
+    return;
+  }
+  card.show();
+
+  for (var i = 0; i < dbs.length; i++) {
+    var db = dbs[i];
+    var fpAbbrev = abbreviateFingerprint(db.bootstrapFingerprint);
+    container.append(
+      '<div class="d-flex align-items-center justify-content-between py-1 px-2 mb-1" '
+      + 'style="font-size:0.82rem; background:var(--bg-main); border-radius:6px; border:1px solid var(--border-light);">'
+      + '<div><i class="fa fa-database" style="color:var(--color-brand); margin-right:6px;"></i>'
+      + escapeHtml(db.name)
+      + ' <span class="badge bg-info" style="font-size:0.6rem;">lastTxId=' + db.bootstrapLastTxId + '</span>'
+      + ' <span style="color:var(--text-secondary); font-size:0.75rem; font-family:monospace;">'
+      + escapeHtml(fpAbbrev) + '</span>'
+      + '</div>'
+      + '</div>'
+    );
+  }
+}
+
+function abbreviateFingerprint(fp) {
+  if (!fp || fp.length <= 16) return fp || "";
+  return fp.substring(0, 8) + "..." + fp.substring(fp.length - 8);
 }
 
 // Maps the server-side ClusterMonitor.ReplicaStatus enum to a Bootstrap badge style and a status

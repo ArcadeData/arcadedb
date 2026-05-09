@@ -127,6 +127,23 @@
             </div>
           </div>
 
+          <!-- Bootstrap baselines (issue #4147 phase 7). Hidden when no database has a committed
+               BOOTSTRAP_FINGERPRINT_ENTRY; the studio-cluster.js script toggles visibility. -->
+          <div class="card mb-3" id="clusterBootstrapBaselinesCard" style="display:none; border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-header py-2" style="background: var(--bg-secondary); border-bottom: 1px solid var(--border-light); border-radius: 10px 10px 0 0;">
+              <i class="fas fa-fingerprint" style="color: var(--color-brand);"></i>
+              <span style="font-weight: 600; font-size: 0.88rem; margin-left: 6px;">Bootstrap Baselines</span>
+              <span style="font-size: 0.72rem; color: var(--text-secondary); margin-left: 8px;">
+                — committed at first cluster formation
+              </span>
+            </div>
+            <div class="card-body py-3">
+              <div id="clusterBootstrapBaselines">
+                <!-- Dynamically populated by renderBootstrapBaselines -->
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <!-- Right column: Danger -->

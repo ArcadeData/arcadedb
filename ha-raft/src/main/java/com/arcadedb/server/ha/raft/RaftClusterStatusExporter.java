@@ -103,10 +103,21 @@ class RaftClusterStatusExporter {
 
     // Database list
     final var databases = new JSONArray();
+    final var stateMachineForBaseline = haServer.getStateMachine();
     for (final String dbName : haServer.getServer().getDatabaseNames()) {
       final var databaseJSON = new JSONObject();
       databaseJSON.put("name", dbName);
       databaseJSON.put("quorum", haServer.getQuorum().name());
+
+      // Surface the bootstrap baseline applied via BOOTSTRAP_FINGERPRINT_ENTRY (#4147 phase 7).
+      // Null when no bootstrap entry has been committed for this database yet, which is the
+      // normal case for clusters that pre-date #4147 or that never engaged the bootstrap path.
+      final var baseline = stateMachineForBaseline != null
+          ? stateMachineForBaseline.getBootstrapBaseline(dbName) : null;
+      if (baseline != null) {
+        databaseJSON.put("bootstrapLastTxId", baseline.lastTxId());
+        databaseJSON.put("bootstrapFingerprint", baseline.fingerprint());
+      }
       databases.put(databaseJSON);
     }
     haJSON.put("databases", databases);
@@ -230,7 +241,56 @@ class RaftClusterStatusExporter {
       appendRow(sb, widths, row);
     appendSeparator(sb, widths);
 
+    // Issue #4147 phase 7: bootstrap baselines per database. Only printed when at least one
+    // database has a baseline; otherwise the section is omitted to keep the output uncluttered
+    // for clusters that pre-date the bootstrap feature.
+    appendBootstrapBaselines(sb);
+
     return sb.toString();
+  }
+
+  /**
+   * If any database has a committed bootstrap baseline, print a "BOOTSTRAP BASELINES" section
+   * with one row per database. Skipped silently when there are none, so existing log output
+   * stays unchanged for clusters that never engaged the bootstrap path.
+   */
+  private void appendBootstrapBaselines(final StringBuilder sb) {
+    final var stateMachine = haServer.getStateMachine();
+    if (stateMachine == null)
+      return;
+
+    final List<String[]> rows = new ArrayList<>();
+    for (final String dbName : haServer.getServer().getDatabaseNames()) {
+      final var baseline = stateMachine.getBootstrapBaseline(dbName);
+      if (baseline == null)
+        continue;
+      rows.add(new String[] { dbName, String.valueOf(baseline.lastTxId()), abbreviate(baseline.fingerprint()) });
+    }
+    if (rows.isEmpty())
+      return;
+
+    final String[] headers = { "DATABASE", "BOOTSTRAP_LAST_TX_ID", "BOOTSTRAP_FINGERPRINT" };
+    final int[] widths = new int[headers.length];
+    for (int i = 0; i < headers.length; i++)
+      widths[i] = headers[i].length();
+    for (final String[] row : rows)
+      for (int i = 0; i < row.length; i++)
+        widths[i] = Math.max(widths[i], row[i].length());
+
+    sb.append('\n');
+    appendSeparator(sb, widths);
+    appendRow(sb, widths, headers);
+    appendSeparator(sb, widths);
+    for (final String[] row : rows)
+      appendRow(sb, widths, row);
+    appendSeparator(sb, widths);
+  }
+
+  /** Abbreviate a 64-char SHA-256 hex fingerprint for human-friendly display. */
+  private static String abbreviate(final String fingerprint) {
+    if (fingerprint == null || fingerprint.length() <= 16)
+      return String.valueOf(fingerprint);
+    return fingerprint.substring(0, 8) + "..." + fingerprint.substring(fingerprint.length() - 8);
   }
 
   private static void appendSeparator(final StringBuilder sb, final int[] widths) {
