@@ -32,6 +32,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.sparsevector.LSMSparseVectorIndex;
 import com.arcadedb.index.sparsevector.RidScore;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
@@ -359,65 +360,21 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
   private static int[] sparseToIntArray(final Object o) {
     if (o == null)
       return null;
-    if (o instanceof int[] arr)
-      return arr;
-    if (o instanceof long[] src) {
-      // Issue #4148: integer-only JSON arrays now arrive as long[] from the HTTP path.
-      final int[] out = new int[src.length];
-      for (int i = 0; i < src.length; i++)
-        out[i] = (int) src[i];
-      return out;
+    try {
+      return VectorUtils.toIntArray(o);
+    } catch (final IllegalArgumentException e) {
+      throw new CommandSQLParsingException("Sparse query indices: " + e.getMessage(), e);
     }
-    if (o instanceof Integer[] arr) {
-      final int[] out = new int[arr.length];
-      for (int i = 0; i < arr.length; i++)
-        out[i] = arr[i];
-      return out;
-    }
-    if (o instanceof List<?> list) {
-      final int[] out = new int[list.size()];
-      for (int i = 0; i < out.length; i++) {
-        final Object e = list.get(i);
-        if (!(e instanceof Number n))
-          throw new CommandSQLParsingException("Sparse query indices must be numbers, got: " + e);
-        out[i] = n.intValue();
-      }
-      return out;
-    }
-    throw new CommandSQLParsingException(
-        "Sparse query indices must be int[], Integer[] or List<Number>, got: " + o.getClass().getName());
   }
 
   private static float[] sparseToFloatArray(final Object o) {
     if (o == null)
       return null;
-    if (o instanceof float[] arr)
-      return arr;
-    if (o instanceof long[] src) {
-      // Issue #4148: integer-only JSON arrays now arrive as long[] from the HTTP path.
-      final float[] out = new float[src.length];
-      for (int i = 0; i < src.length; i++)
-        out[i] = src[i];
-      return out;
+    try {
+      return VectorUtils.toFloatArray(o);
+    } catch (final IllegalArgumentException e) {
+      throw new CommandSQLParsingException("Sparse query values: " + e.getMessage(), e);
     }
-    if (o instanceof Float[] arr) {
-      final float[] out = new float[arr.length];
-      for (int i = 0; i < arr.length; i++)
-        out[i] = arr[i];
-      return out;
-    }
-    if (o instanceof List<?> list) {
-      final float[] out = new float[list.size()];
-      for (int i = 0; i < out.length; i++) {
-        final Object e = list.get(i);
-        if (!(e instanceof Number n))
-          throw new CommandSQLParsingException("Sparse query values must be numbers, got: " + e);
-        out[i] = n.floatValue();
-      }
-      return out;
-    }
-    throw new CommandSQLParsingException(
-        "Sparse query values must be float[], Float[] or List<Number>, got: " + o.getClass().getName());
   }
 
   @Override

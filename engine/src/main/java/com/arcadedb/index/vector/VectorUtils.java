@@ -207,6 +207,61 @@ public final class VectorUtils {
   }
 
   /**
+   * Converts various object types to an int array. Handles: {@code int[]}, {@code long[]},
+   * {@code Integer[]}, {@code Object[]} of {@link Number}, and {@code List} of {@link Number}.
+   * Used for sparse-vector dimension indices and any other call site that needs a primitive
+   * {@code int[]} from a heterogeneous JSON / SQL parameter source. Mirrors
+   * {@link #toFloatArray(Object)} and includes the {@code long[]} branch for the issue #4148
+   * HTTP path that now returns integer-only JSON arrays as {@code long[]}.
+   *
+   * @param arrayObj the object to convert
+   *
+   * @return int array representation
+   *
+   * @throws IllegalArgumentException if the input type is not supported or contains non-numeric
+   *                                  elements
+   */
+  public static int[] toIntArray(final Object arrayObj) {
+    if (arrayObj instanceof int[] in)
+      return in;
+    if (arrayObj instanceof long[] src) {
+      final int[] out = new int[src.length];
+      for (int i = 0; i < src.length; i++)
+        out[i] = (int) src[i];
+      return out;
+    }
+    if (arrayObj instanceof Integer[] arr) {
+      final int[] out = new int[arr.length];
+      for (int i = 0; i < arr.length; i++)
+        out[i] = arr[i];
+      return out;
+    }
+    if (arrayObj instanceof Object[] objArray) {
+      final int[] out = new int[objArray.length];
+      for (int i = 0; i < objArray.length; i++) {
+        if (objArray[i] instanceof Number num)
+          out[i] = num.intValue();
+        else
+          throw new IllegalArgumentException("Array elements must be numbers, found: " + objArray[i].getClass().getSimpleName());
+      }
+      return out;
+    }
+    if (arrayObj instanceof List<?> list) {
+      final int[] out = new int[list.size()];
+      for (int i = 0; i < list.size(); i++) {
+        final Object elem = list.get(i);
+        if (elem instanceof Number num)
+          out[i] = num.intValue();
+        else
+          throw new IllegalArgumentException("Array elements must be numbers, found: " + elem.getClass().getSimpleName());
+      }
+      return out;
+    }
+    throw new IllegalArgumentException("Array must be int[], long[], Integer[], Object[] or List<Number>, found: "
+        + arrayObj.getClass().getSimpleName());
+  }
+
+  /**
    * Calculates the magnitude (L2 norm) of a float vector.
    *
    * @param vector the vector
