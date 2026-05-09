@@ -42,6 +42,13 @@ import java.util.stream.*;
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
   private static final int  WRITE_WAL_TIMEOUT = 30_000;
+  /**
+   * On-disk record of the highest assigned transaction id, written on close and read on open. Lets
+   * {@link #getLastTransactionId()} return a meaningful value even after a clean shutdown wiped the
+   * WAL. Used by the HA bootstrap path (issue #4147) so a peer staged from a clean backup can
+   * report its database recency without having to scan WAL files.
+   */
+  static final  String LAST_TX_ID_FILE_NAME = "last-tx-id.bin";
 
   private final DatabaseInternal             database;
   private       WALFile[]                    activeWALFilePool;
@@ -59,6 +66,14 @@ public class TransactionManager {
     this.database = database;
 
     this.logContext = LogManager.instance().getContext();
+
+    // Restore the last assigned transaction id from disk (written on the previous close). Lets
+    // freshly-opened databases that have no pending WAL still report a meaningful recency value to
+    // the HA bootstrap protocol (issue #4147). Falls through to 0 when the file is missing
+    // (legitimate: empty database, or pre-#4147 backup).
+    final long persistedLastTxId = readPersistedLastTransactionId();
+    if (persistedLastTxId >= 0)
+      transactionIds.set(persistedLastTxId + 1);
 
     if (database.getMode() == ComponentFile.MODE.READ_WRITE) {
       createWALFilePool();
@@ -110,6 +125,16 @@ public class TransactionManager {
     }
 
     fileIdsLockManager.close();
+
+    // Persist (or clean up) the lastTxId marker before WAL files are deleted on close, so the
+    // recency signal survives a clean shutdown for the HA bootstrap path (issue #4147).
+    if (drop) {
+      final File f = lastTxIdFile();
+      if (f != null && f.exists())
+        f.delete();
+    } else {
+      writePersistedLastTransactionId();
+    }
 
     if (activeWALFilePool != null) {
       // MOVE ALL WAL FILES AS INACTIVE
@@ -476,6 +501,68 @@ public class TransactionManager {
 
   public long getNextTransactionId() {
     return transactionIds.getAndIncrement();
+  }
+
+  /**
+   * Returns the highest transaction id that has been assigned (and therefore persisted to the WAL when committed).
+   * After WAL recovery on database open this reflects the last persisted transaction; while the database is
+   * actively writing it tracks the next-to-assign counter minus one. Used by the HA bootstrap path
+   * (see {@code arcadedb.ha.bootstrapFromLocalDatabase}, issue #4147) as the recency / freshness signal
+   * when peers compare their local database state at first cluster formation.
+   */
+  public long getLastTransactionId() {
+    return transactionIds.get() - 1;
+  }
+
+  /**
+   * Read the last transaction id persisted by a previous {@link #close(boolean)}.
+   * Returns -1 if the file is missing (empty database) or unreadable.
+   */
+  private long readPersistedLastTransactionId() {
+    final File f = lastTxIdFile();
+    if (f == null || !f.isFile())
+      return -1L;
+    try (final java.io.DataInputStream in = new java.io.DataInputStream(new java.io.FileInputStream(f))) {
+      return in.readLong();
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not read %s, treating database as having no recency info: %s", null, LAST_TX_ID_FILE_NAME, e.getMessage());
+      return -1L;
+    }
+  }
+
+  /**
+   * Persist the current {@code lastTxId} so it survives a clean shutdown (the WAL is purged on
+   * close and would otherwise erase the recency signal we need at startup).
+   */
+  private void writePersistedLastTransactionId() {
+    final File f = lastTxIdFile();
+    if (f == null)
+      return;
+    final long value = getLastTransactionId();
+    if (value < 0)
+      return;
+    final File tmp = new File(f.getParentFile(), f.getName() + ".tmp");
+    try (final java.io.DataOutputStream out = new java.io.DataOutputStream(new java.io.FileOutputStream(tmp))) {
+      out.writeLong(value);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not write %s; HA bootstrap will fall back to leader-shipped snapshot for this database. Cause: %s",
+          null, LAST_TX_ID_FILE_NAME, e.getMessage());
+      tmp.delete();
+      return;
+    }
+    // Atomic rename so a crash mid-write never leaves a half-truncated file.
+    if (!tmp.renameTo(f)) {
+      // On some filesystems renameTo fails when the target exists. Best-effort fallback.
+      f.delete();
+      tmp.renameTo(f);
+    }
+  }
+
+  private File lastTxIdFile() {
+    final String path = database.getDatabasePath();
+    return path == null ? null : new File(path, LAST_TX_ID_FILE_NAME);
   }
 
   /**

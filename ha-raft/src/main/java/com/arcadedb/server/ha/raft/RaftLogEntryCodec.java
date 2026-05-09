@@ -72,7 +72,11 @@ public final class RaftLogEntryCodec {
       List<byte[]> walEntries,
       List<Map<Integer, Integer>> bucketDeltas,
       String usersJson,
-      boolean forceSnapshot
+      boolean forceSnapshot,
+      // BOOTSTRAP_FINGERPRINT_ENTRY fields (issue #4147). Hex-encoded SHA-256 of the bootstrap
+      // source's database files and the corresponding lastTxId. Null/-1 for non-bootstrap entries.
+      String bootstrapFingerprint,
+      long bootstrapLastTxId
   ) {
   }
 
@@ -226,6 +230,39 @@ public final class RaftLogEntryCodec {
   }
 
   /**
+   * Encodes a bootstrap-fingerprint entry into a ByteString. Issue #4147.
+   * <p>
+   * Binary format: type byte, databaseName (UTF), fingerprint (UTF-8 hex), lastTxId (long).
+   * Committed once per database during first cluster formation when
+   * {@code arcadedb.ha.bootstrapFromLocalDatabase} is enabled, naming the peer chosen as the
+   * bootstrap source. Followers verify their local fingerprint against this entry; match means
+   * "bootstrap locally", mismatch means "fall back to leader-shipped snapshot".
+   */
+  public static ByteString encodeBootstrapFingerprintEntry(final String databaseName, final String fingerprint,
+      final long lastTxId) {
+    if (databaseName == null)
+      throw new IllegalArgumentException("databaseName is required");
+    if (fingerprint == null)
+      throw new IllegalArgumentException("fingerprint is required");
+    try {
+      final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+      final DataOutputStream dos = new DataOutputStream(baos);
+
+      dos.writeByte(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY.getId());
+      dos.writeUTF(databaseName);
+      final byte[] fpBytes = fingerprint.getBytes(StandardCharsets.UTF_8);
+      dos.writeInt(fpBytes.length);
+      dos.write(fpBytes);
+      dos.writeLong(lastTxId);
+
+      dos.flush();
+      return ByteString.copyFrom(baos.toByteArray());
+    } catch (final IOException e) {
+      throw new IllegalStateException("Failed to encode BOOTSTRAP_FINGERPRINT entry", e);
+    }
+  }
+
+  /**
    * Encodes a drop-database entry into a ByteString.
    * <p>
    * Binary format: type byte, databaseName (UTF).
@@ -255,7 +292,7 @@ public final class RaftLogEntryCodec {
       final byte typeByte = dis.readByte();
       final RaftLogEntryType type = RaftLogEntryType.fromId(typeByte);
       if (type == null)
-        return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false);
+        return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false, null, -1L);
       final String databaseName = dis.readUTF();
 
       final DecodedEntry result = switch (type) {
@@ -263,8 +300,9 @@ public final class RaftLogEntryCodec {
         case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
         case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
         case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
-            null, null, null, null, null, null, null, null, false);
+            null, null, null, null, null, null, null, null, false, null, -1L);
         case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
+        case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
       };
 
       // Trailing-byte validation: detect truncated or corrupted entries.
@@ -299,7 +337,7 @@ public final class RaftLogEntryCodec {
     }
 
     return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta,
-        null, null, null, null, null, null, false);
+        null, null, null, null, null, null, false, null, -1L);
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -343,7 +381,7 @@ public final class RaftLogEntryCodec {
     }
 
     return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,
-        schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false);
+        schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L);
   }
 
   private static DecodedEntry decodeInstallDatabaseEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -354,7 +392,19 @@ public final class RaftLogEntryCodec {
       forceSnapshot = dis.readBoolean();
     }
     return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
-        null, null, null, null, null, null, null, null, forceSnapshot);
+        null, null, null, null, null, null, null, null, forceSnapshot, null, -1L);
+  }
+
+  private static DecodedEntry decodeBootstrapFingerprintEntry(final DataInputStream dis, final String databaseName)
+      throws IOException {
+    final int fpLen = dis.readInt();
+    checkByteLength(fpLen, "BOOTSTRAP_FINGERPRINT fingerprint");
+    final byte[] fpBytes = new byte[fpLen];
+    dis.readFully(fpBytes);
+    final String fingerprint = new String(fpBytes, StandardCharsets.UTF_8);
+    final long lastTxId = dis.readLong();
+    return new DecodedEntry(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY, databaseName,
+        null, null, null, null, null, null, null, null, false, fingerprint, lastTxId);
   }
 
   private static DecodedEntry decodeSecurityUsersEntry(final DataInputStream dis) throws IOException {
@@ -364,7 +414,7 @@ public final class RaftLogEntryCodec {
     dis.readFully(bytes);
     final String usersJson = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
     return new DecodedEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, "",
-        null, null, null, null, null, null, null, usersJson, false);
+        null, null, null, null, null, null, null, usersJson, false, null, -1L);
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {

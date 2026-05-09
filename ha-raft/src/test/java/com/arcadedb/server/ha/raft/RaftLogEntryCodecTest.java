@@ -353,4 +353,54 @@ class RaftLogEntryCodecTest {
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("trailing");
   }
+
+  @Test
+  void roundTripBootstrapFingerprintEntry() {
+    // Issue #4147: the bootstrap protocol commits this entry once per database at first cluster
+    // formation, naming the peer chosen as the source.
+    final String fp = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    final long lastTxId = 42_000_000L;
+
+    final ByteString encoded = RaftLogEntryCodec.encodeBootstrapFingerprintEntry("testdb", fp, lastTxId);
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY);
+    assertThat(decoded.databaseName()).isEqualTo("testdb");
+    assertThat(decoded.bootstrapFingerprint()).isEqualTo(fp);
+    assertThat(decoded.bootstrapLastTxId()).isEqualTo(lastTxId);
+    // Other fields stay null/-1 to keep the record discriminated-union shaped.
+    assertThat(decoded.walData()).isNull();
+    assertThat(decoded.schemaJson()).isNull();
+    assertThat(decoded.usersJson()).isNull();
+    assertThat(decoded.forceSnapshot()).isFalse();
+  }
+
+  @Test
+  void bootstrapFingerprintEntryRejectsNullArguments() {
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> RaftLogEntryCodec.encodeBootstrapFingerprintEntry(null, "fp", 1L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("databaseName");
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> RaftLogEntryCodec.encodeBootstrapFingerprintEntry("db", null, 1L))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("fingerprint");
+  }
+
+  @Test
+  void decodeBootstrapFingerprintEntryWithTrailingBytesThrows() {
+    final ByteString valid = RaftLogEntryCodec.encodeBootstrapFingerprintEntry("testdb",
+        "0".repeat(64), 7L);
+
+    final byte[] corrupted = new byte[valid.size() + 3];
+    valid.copyTo(corrupted, 0);
+    corrupted[valid.size()] = 99;
+
+    final ByteString corruptedBS = ByteString.copyFrom(corrupted);
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> RaftLogEntryCodec.decode(corruptedBS))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessageContaining("trailing");
+  }
 }

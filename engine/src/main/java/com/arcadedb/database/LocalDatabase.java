@@ -869,6 +869,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     return transactionManager;
   }
 
+  /**
+   * Highest transaction id persisted in this database. Used by the HA bootstrap path
+   * (issue #4147) as the recency signal when peers compare their local database state at
+   * first cluster formation. Returns -1 if no transaction has ever been committed.
+   */
+  public long getLastTransactionId() {
+    return transactionManager == null ? -1L : transactionManager.getLastTransactionId();
+  }
+
   @Override
   public boolean isReadYourWrites() {
     return readYourWrites;

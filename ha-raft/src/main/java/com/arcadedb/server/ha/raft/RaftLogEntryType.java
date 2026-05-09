@@ -23,7 +23,15 @@ public enum RaftLogEntryType {
   SCHEMA_ENTRY((byte) 2),
   INSTALL_DATABASE_ENTRY((byte) 3),
   DROP_DATABASE_ENTRY((byte) 4),
-  SECURITY_USERS_ENTRY((byte) 5);
+  SECURITY_USERS_ENTRY((byte) 5),
+  /**
+   * First entry committed when a Raft cluster forms with {@code arcadedb.ha.bootstrapFromLocalDatabase=true}.
+   * Carries the {@code (dbName, fingerprint, lastTxId)} of the peer chosen as the bootstrap source
+   * (highest {@code lastTxId} among the peers that reported within the bootstrap timeout). Followers
+   * verify their local fingerprint against the entry: match → bootstrap locally, mismatch → fall
+   * back to the existing leader-shipped snapshot path. See issue #4147.
+   */
+  BOOTSTRAP_FINGERPRINT_ENTRY((byte) 6);
 
   private final byte id;
 
