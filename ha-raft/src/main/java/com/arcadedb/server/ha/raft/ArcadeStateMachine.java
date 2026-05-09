@@ -822,9 +822,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       localLastTxId = localDb.getLastTransactionId();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
-          "Could not read local bootstrap state for '%s': %s; falling back to leader-shipped",
+          "Could not read local bootstrap state for '%s': %s; falling back to leader-shipped full snapshot",
           dbName, e.getMessage());
-      installFromLeaderForBootstrap(dbName);
+      // We don't know our own lastTxId so a delta makes no sense; pass -1 so the gap looks
+      // unbounded and BootstrapDeltaInstaller goes straight to the full-snapshot path.
+      installFromLeaderForBootstrap(dbName, -1L, chosenLastTxId);
       return;
     }
 
@@ -852,20 +854,27 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     }
 
-    // Mismatch: leader-shipped snapshot fallback. Phase 6 will try delta resync first.
+    // Mismatch: try the delta endpoint first (issue #4147 phase 6); on 412 or any failure fall
+    // through to the existing leader-shipped full snapshot. Behaviour is identical to today's
+    // legacy path until WAL retention lands; the wrapper just plumbs the wire so a later phase
+    // can flip to delta replay without churning callers.
     LogManager.instance().log(this, Level.INFO,
         "Database '%s' bootstrap mismatch (local lastTxId=%d / fp=%s..., baseline lastTxId=%d / fp=%s...); "
-            + "pulling snapshot from leader",
+            + "attempting delta then full-snapshot fallback",
         dbName, localLastTxId, localFingerprint.substring(0, Math.min(8, localFingerprint.length())),
         chosenLastTxId, chosenFingerprint.substring(0, Math.min(8, chosenFingerprint.length())));
-    installFromLeaderForBootstrap(dbName);
+    installFromLeaderForBootstrap(dbName, localLastTxId, chosenLastTxId);
   }
 
   /**
-   * Close the local database and pull a fresh snapshot from the current leader. Same path the
-   * existing {@code applyInstallDatabaseEntry(forceSnapshot=true)} branch takes.
+   * Close the local database and pull either a WAL delta (when the gap is within
+   * {@code arcadedb.ha.bootstrapDeltaThreshold} and the source has retained WAL) or a full
+   * snapshot from the current leader. Falls back to full snapshot on any delta-path failure.
+   * Same low-level snapshot install machinery as
+   * {@code applyInstallDatabaseEntry(forceSnapshot=true)}.
    */
-  private void installFromLeaderForBootstrap(final String dbName) {
+  private void installFromLeaderForBootstrap(final String dbName, final long localLastTxId,
+      final long sourceLastTxId) {
     if (raftHAServer != null && raftHAServer.isLeader()) {
       // The leader has the chosen baseline by definition (it's the source). No need to install.
       HALog.log(this, HALog.TRACE, "Leader skips bootstrap snapshot install for '%s'", dbName);
@@ -885,9 +894,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       final String leaderHttpAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
       final String clusterToken = raftHAServer != null ? raftHAServer.getClusterToken() : null;
-      SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, clusterToken, server);
+      BootstrapDeltaInstaller.installDeltaOrSnapshot(dbName, databasePath, leaderHttpAddr, clusterToken,
+          server, localLastTxId, sourceLastTxId);
       LogManager.instance().log(this, Level.INFO,
-          "Database '%s' reinstalled via leader-shipped snapshot after bootstrap mismatch", dbName);
+          "Database '%s' reinstalled after bootstrap mismatch", dbName);
     } catch (final IOException e) {
       throw new RuntimeException("Failed to install snapshot for bootstrap-mismatched database '" + dbName + "'", e);
     }

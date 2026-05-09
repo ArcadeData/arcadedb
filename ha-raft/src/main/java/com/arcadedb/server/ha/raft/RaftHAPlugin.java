@@ -131,6 +131,11 @@ public class RaftHAPlugin implements HAServerPlugin {
     LogManager.instance().log(this, Level.INFO, "Raft cluster status endpoint registered at /api/v1/cluster");
     routes.addPrefixPath("/api/v1/ha/snapshot/", new SnapshotHttpHandler(httpServer));
     LogManager.instance().log(this, Level.INFO, "Raft snapshot endpoint registered at /api/v1/ha/snapshot/{database}");
+    // Issue #4147 phase 6: WAL delta endpoint. Returns 412 today (WAL retention is a follow-up);
+    // shipping the route now means installers can attempt delta first and fall back to the
+    // existing full-snapshot path without further wire changes when retention lands.
+    routes.addPrefixPath("/api/v1/ha/delta/", new DeltaHttpHandler(httpServer));
+    LogManager.instance().log(this, Level.INFO, "Raft delta endpoint registered at /api/v1/ha/delta/{database}");
     routes.addExactPath("/api/v1/cluster/peer", new PostAddPeerHandler(httpServer, this));
     routes.addPrefixPath("/api/v1/cluster/peer/", new DeletePeerHandler(httpServer, this));
     routes.addExactPath("/api/v1/cluster/leader", new PostTransferLeaderHandler(httpServer, this));
