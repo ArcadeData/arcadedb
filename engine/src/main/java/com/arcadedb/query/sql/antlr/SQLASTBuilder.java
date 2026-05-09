@@ -6582,6 +6582,37 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
+  /**
+   * Visit FIND REFERENCES statement.
+   */
+  @Override
+  public FindReferencesStatement visitFindReferencesStmt(final SQLParser.FindReferencesStmtContext ctx) {
+    final FindReferencesStatement stmt = new FindReferencesStatement(-1);
+    final SQLParser.FindReferencesBodyContext bodyCtx = ctx.findReferencesBody();
+
+    final SQLParser.FindReferencesTargetContext target = bodyCtx.findReferencesTarget();
+    if (target instanceof SQLParser.FindReferencesRidTargetContext ridTarget) {
+      stmt.setRid((Rid) visit(ridTarget.rid()));
+    } else if (target instanceof SQLParser.FindReferencesSubQueryTargetContext sqTarget) {
+      stmt.setSubQuery((Statement) visit(sqTarget.statement()));
+    }
+
+    if (bodyCtx.findReferencesClassList() != null) {
+      for (final SQLParser.FindReferencesClassItemContext itemCtx : bodyCtx.findReferencesClassList().findReferencesClassItem()) {
+        if (itemCtx instanceof SQLParser.FindReferencesClassNameContext classCtx) {
+          stmt.getClasses().add((Identifier) visit(classCtx.identifier()));
+        } else if (itemCtx instanceof SQLParser.FindReferencesBucketNameContext bucketCtx) {
+          // BUCKET_IDENTIFIER tokenizes as "bucket:<name>" — strip the prefix.
+          final String text = bucketCtx.BUCKET_IDENTIFIER().getText();
+          final String bucketName = text.substring(text.indexOf(':') + 1);
+          stmt.getBuckets().add(new Identifier(bucketName));
+        }
+      }
+    }
+
+    return stmt;
+  }
+
   // CONTROL FLOW STATEMENTS
 
   /**

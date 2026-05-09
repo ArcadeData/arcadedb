@@ -124,6 +124,9 @@ statement
     | TRUNCATE BUCKET truncateBucketBody             # truncateBucketStmt
     | TRUNCATE RECORD truncateRecordBody             # truncateRecordStmt
 
+    // Search Statements
+    | FIND REFERENCES findReferencesBody             # findReferencesStmt
+
     // Materialized View Refresh
     | REFRESH MATERIALIZED VIEW refreshMaterializedViewBody # refreshMaterializedViewStmt
 
@@ -871,6 +874,39 @@ truncateRecordBody
     ;
 
 // ============================================================================
+// SEARCH STATEMENTS
+// ============================================================================
+
+/**
+ * FIND REFERENCES statement (OrientDB-compatible).
+ * Searches the database (or a restricted set of types/buckets) for records that contain
+ * a link to the given RID(s).
+ *
+ * Syntax: FIND REFERENCES <rid|(<sub-query>)> [<class-or-bucket-list>]
+ *   class-or-bucket-list: '[' <classOrBucket> (',' <classOrBucket>)* ']'
+ *   classOrBucket: <className> | bucket:<bucketName>
+ *
+ * Multi-RID lookup is only supported via subquery (matches OrientDB semantics).
+ */
+findReferencesBody
+    : findReferencesTarget findReferencesClassList?
+    ;
+
+findReferencesTarget
+    : rid                                        # findReferencesRidTarget
+    | LPAREN statement RPAREN                    # findReferencesSubQueryTarget
+    ;
+
+findReferencesClassList
+    : LBRACKET findReferencesClassItem (COMMA findReferencesClassItem)* RBRACKET
+    ;
+
+findReferencesClassItem
+    : identifier                                  # findReferencesClassName
+    | BUCKET_IDENTIFIER                           # findReferencesBucketName
+    ;
+
+// ============================================================================
 // INDEX MANAGEMENT
 // ============================================================================
 
@@ -1568,6 +1604,7 @@ identifier
     | ALIGN
     | EXCEPTION
     | FIND
+    | REFERENCES
     | ADDBUCKET
     | REMOVEBUCKET
     | FORCE
