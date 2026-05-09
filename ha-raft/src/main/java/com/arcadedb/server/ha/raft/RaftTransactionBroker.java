@@ -103,6 +103,15 @@ public class RaftTransactionBroker {
   }
 
   /**
+   * Replicates the {@code BOOTSTRAP_FINGERPRINT_ENTRY} that names the peer chosen as the
+   * bootstrap source for {@code dbName} at first cluster formation. Issue #4147 phase 4.
+   */
+  public void replicateBootstrapFingerprint(final String dbName, final String fingerprint, final long lastTxId) {
+    final ByteString entry = RaftLogEntryCodec.encodeBootstrapFingerprintEntry(dbName, fingerprint, lastTxId);
+    groupCommitter.submitAndWait(entry.toByteArray());
+  }
+
+  /**
    * Replicates a security users entry so all nodes update their user files.
    */
   public void replicateSecurityUsers(final String usersJson) {

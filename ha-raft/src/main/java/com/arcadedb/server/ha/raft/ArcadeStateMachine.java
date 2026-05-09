@@ -244,6 +244,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
       case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
       case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
+      // Phase 4 logs the entry; Phase 5 will plug in the actual fingerprint check + per-follower
+      // catch-up decision (locally-bootstrapped vs leader-shipped). Until then, applying this
+      // entry is a no-op on every replica, which is safe: the only side effect today is the
+      // durable record that the bootstrap source was elected.
+      case BOOTSTRAP_FINGERPRINT_ENTRY -> LogManager.instance().log(this, Level.INFO,
+          "BOOTSTRAP_FINGERPRINT_ENTRY applied for '%s' (lastTxId=%d, fingerprint=%s..) - issue #4147 phase 4: log-only",
+          decoded.databaseName(), decoded.bootstrapLastTxId(),
+          decoded.bootstrapFingerprint() != null && decoded.bootstrapFingerprint().length() >= 8
+              ? decoded.bootstrapFingerprint().substring(0, 8) : decoded.bootstrapFingerprint());
       }
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
@@ -374,6 +383,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.INFO, "This node is now LEADER");
       raftHAServer.startLagMonitor();
       raftHAServer.printClusterConfiguration();
+
+      // Issue #4147: drive offline cluster bootstrap if conditions match (commit index still 0,
+      // arcadedb.ha.bootstrapFromLocalDatabase=true). Runs on a background thread to keep the
+      // notifyLeaderChanged callback non-blocking; a slow peer or a bootstrap-state RPC timeout
+      // must not stall Raft's normal leader-change processing on this node.
+      lifecycleExecutor.submit(() -> {
+        try {
+          raftHAServer.runBootstrapIfEligible();
+        } catch (final Throwable t) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Bootstrap election threw on leader-change handler: %s", null, t.getMessage());
+        }
+      });
     } else {
       LogManager.instance().log(this, Level.INFO, "This node is now REPLICA (leader: %s)", leaderName);
       raftHAServer.stopLagMonitor();
