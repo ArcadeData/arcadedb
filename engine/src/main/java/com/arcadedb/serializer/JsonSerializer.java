@@ -81,29 +81,35 @@ public class JsonSerializer {
 
   public JSONObject serializeDocument(final Document document) {
     final Database database = document.getDatabase();
+    final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
     final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateTimeFormat())
-        .setDateTimeFormat(database.getSchema().getDateTimeFormat());
+        .setDateTimeFormat(schemaDateTimeFormat);
 
     if (document.getIdentity() != null)
       object.put(RID_PROPERTY, document.getIdentity().toString());
     object.put(TYPE_PROPERTY, document.getTypeName());
 
+    final DocumentType type = document.getType();
     final Map<String, Object> documentAsMap = document.toMap();
     for (final Map.Entry<String, Object> documentEntry : documentAsMap.entrySet()) {
       final String p = documentEntry.getKey();
       Object value = documentEntry.getValue();
 
-      if (value == null) {
-        value = JSONObject.NULL;
-      } else if (value instanceof Document document1) {
-        value = serializeDocument(document1);
-      } else if (value instanceof Collection<?> collection) {
-        serializeCollection(database, collection, null);
-      } else if (value instanceof Map map) {
-        value = serializeMap(database, (Map<Object, Object>) map);
+      switch (value) {
+        case null -> value = JSONObject.NULL;
+        case Document document1 -> value = serializeDocument(document1);
+        case Collection<?> collection -> serializeCollection(database, collection, null);
+        case Map map -> value = serializeMap(database, (Map<Object, Object>) map);
+        default -> {
+        }
       }
 
       value = convertNonNumbers(value);
+
+      // Issue #4149: format temporals with the column's declared precision so DATETIME_MICROS /
+      // DATETIME_NANOS / DATETIME_SECOND don't all collapse onto the schema-wide format string.
+      if (type != null && type.existsProperty(p))
+        value = formatTemporalForPrecision(value, type.getProperty(p).getType(), schemaDateTimeFormat);
 
       object.put(p, value);
     }
@@ -114,9 +120,9 @@ public class JsonSerializer {
   }
 
   public JSONObject serializeResult(final Database database, final Result result) {
-    final JSONObject object = new JSONObject()
-        .setDateFormat(database.getSchema().getDateFormat())
-        .setDateTimeFormat(database.getSchema().getDateTimeFormat());
+    final String schemaDateTimeFormat = database.getSchema().getDateTimeFormat();
+    final JSONObject object = new JSONObject().setDateFormat(database.getSchema().getDateFormat())
+        .setDateTimeFormat(schemaDateTimeFormat);
 
     DocumentType type = null;
     if (result.isElement()) {
@@ -131,7 +137,11 @@ public class JsonSerializer {
 
       if (result.getMetadata("_projectionName") != null) {
         for (final Map.Entry<String, Object> entry : document.toMap().entrySet()) {
-          object.put(entry.getKey(), serializeObject(database, entry.getValue()));
+          // Issue #4149: keep precision-aware formatting on the projection branch too.
+          Object projValue = serializeObject(database, entry.getValue());
+          if (type != null && type.existsProperty(entry.getKey()))
+            projValue = formatTemporalForPrecision(projValue, type.getProperty(entry.getKey()).getType(), schemaDateTimeFormat);
+          object.put(entry.getKey(), projValue);
         }
         return object;
       }
@@ -151,12 +161,17 @@ public class JsonSerializer {
         propertyType = null;
 
       if (propertyType != null) {
-        if (propertyTypes.length() > 0)
+        if (!propertyTypes.isEmpty())
           propertyTypes.append(",");
         propertyTypes.append(propertyName).append(":").append(propertyType.getId());
       }
 
       value = serializeObject(database, value);
+
+      // Issue #4149: format temporals with the column's declared precision so DATETIME_MICROS /
+      // DATETIME_NANOS / DATETIME_SECOND keep their fractional digits even when the schema-wide
+      // dateTimeFormat would truncate them.
+      value = formatTemporalForPrecision(value, propertyType, schemaDateTimeFormat);
 
       object.put(propertyName, value);
     }
@@ -329,39 +344,42 @@ public class JsonSerializer {
   }
 
   private void setMetadata(final Document document, final JSONObject object) {
-    if (document instanceof DetachedDocument doc) {
-      final DocumentType docType = doc.getType();
-      if (docType instanceof VertexType)
+    switch (document) {
+      case DetachedDocument doc -> {
+        final DocumentType docType = doc.getType();
+        if (docType instanceof VertexType)
+          object.put(CAT_PROPERTY, "v");
+        else if (docType instanceof EdgeType)
+          object.put(CAT_PROPERTY, "e");
+        else
+          object.put(CAT_PROPERTY, "d");
+      }
+      case Vertex vertex -> {
         object.put(CAT_PROPERTY, "v");
-      else if (docType instanceof EdgeType)
-        object.put(CAT_PROPERTY, "e");
-      else
-        object.put(CAT_PROPERTY, "d");
-    } else if (document instanceof Vertex vertex) {
-      object.put(CAT_PROPERTY, "v");
-      if (includeVertexEdges) {
-        if (useVertexEdgeSize) {
+        if (includeVertexEdges) {
+          if (useVertexEdgeSize) {
             object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT));
             object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN));
 
-        } else {
-          final JSONArray outEdges = new JSONArray();
-          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
-            outEdges.put(e.getIdentity().toString());
-          object.put(OUT_PROPERTY, outEdges);
+          } else {
+            final JSONArray outEdges = new JSONArray();
+            for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+              outEdges.put(e.getIdentity().toString());
+            object.put(OUT_PROPERTY, outEdges);
 
-          final JSONArray inEdges = new JSONArray();
-          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
-            inEdges.put(e.getIdentity().toString());
-          object.put(IN_PROPERTY, inEdges);
+            final JSONArray inEdges = new JSONArray();
+            for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+              inEdges.put(e.getIdentity().toString());
+            object.put(IN_PROPERTY, inEdges);
+          }
         }
       }
-    } else if (document instanceof Edge edge) {
-      object.put(CAT_PROPERTY, "e");
-      object.put(IN_PROPERTY, edge.getIn());
-      object.put(OUT_PROPERTY, edge.getOut());
-    } else {
-      object.put(CAT_PROPERTY, "d");
+      case Edge edge -> {
+        object.put(CAT_PROPERTY, "e");
+        object.put(IN_PROPERTY, edge.getIn());
+        object.put(OUT_PROPERTY, edge.getOut());
+      }
+      case null, default -> object.put(CAT_PROPERTY, "d");
     }
 
   }
@@ -470,6 +488,73 @@ public class JsonSerializer {
     value = convertNonNumbers(value);
 
     return value;
+  }
+
+  /**
+   * Issue #4149: pre-format a temporal value with a format string wide enough for the column's
+   * declared precision. Without this, every datetime variant collapses onto whatever fractional
+   * digits the schema-wide {@code arcadedb.dateTimeFormat} provides, dropping micro/nano data
+   * that storage already preserved correctly. Returns {@code value} unchanged when {@code value}
+   * is not a {@link Temporal} or {@code propertyType} is not one of the {@code DATETIME*}
+   * variants (so {@link JSONObject#put(String, Object)}'s existing temporal branch handles it).
+   */
+  private static Object formatTemporalForPrecision(final Object value, final Type propertyType, final String baseDateTimeFormat) {
+    if (!(value instanceof Temporal))
+      return value;
+    if (propertyType == null)
+      return value;
+    final ChronoUnit precision;
+    switch (propertyType) {
+      case DATETIME_SECOND, DATETIME, DATETIME_MICROS, DATETIME_NANOS -> precision = DateUtils.getPrecisionFromType(propertyType);
+      default -> {
+        return value;
+      }
+    }
+    final String format = expandFormatToPrecision(baseDateTimeFormat, precision);
+    if (format.equals(baseDateTimeFormat) && precision == ChronoUnit.SECONDS)
+      // No expansion needed and no fractional digits to render: let JSONObject's existing
+      // temporal path apply the schema-wide format. Avoids unnecessary string allocation.
+      return value;
+    return DateUtils.format(value, format);
+  }
+
+  /**
+   * Returns a format string with at least the number of fractional second digits required by
+   * {@code precision}. Existing trailing {@code S} digits in {@code baseFormat} are honored;
+   * missing digits are appended (with a {@code .} separator inserted when no fractional segment
+   * existed yet). Issue #4149.
+   */
+  private static String expandFormatToPrecision(final String baseFormat, final ChronoUnit precision) {
+    final int needed;
+    if (precision == ChronoUnit.SECONDS)
+      needed = 0;
+    else if (precision == ChronoUnit.MILLIS)
+      needed = 3;
+    else if (precision == ChronoUnit.MICROS)
+      needed = 6;
+    else if (precision == ChronoUnit.NANOS)
+      needed = 9;
+    else
+      needed = 0;
+    if (needed == 0)
+      return baseFormat;
+
+    int existing = 0;
+    int i = baseFormat.length() - 1;
+    while (i >= 0 && baseFormat.charAt(i) == 'S') {
+      existing++;
+      i--;
+    }
+    if (existing >= needed)
+      return baseFormat;
+
+    final StringBuilder b = new StringBuilder(baseFormat.length() + (needed - existing) + 1);
+    b.append(baseFormat);
+    if (existing == 0)
+      b.append('.');
+    for (int j = existing; j < needed; j++)
+      b.append('S');
+    return b.toString();
   }
 
 }
