@@ -45,14 +45,15 @@ class JSONNumericArrayOptimizationTest {
   }
 
   @Test
-  void numericIntegerArrayBecomesPrimitiveFloatArray() {
+  void numericIntegerArrayBecomesPrimitiveLongArray() {
     final JSONObject obj = new JSONObject("{\"ids\":[1, 2, 3, 4]}");
     final Map<String, Object> map = obj.toMap(true);
 
-    // The optimized path always produces float[]; downstream Type.convert handles
-    // float[] -> long[]/int[]/double[] when the property type requires it.
-    assertThat(map.get("ids")).isInstanceOf(float[].class);
-    assertThat((float[]) map.get("ids")).containsExactly(1.0f, 2.0f, 3.0f, 4.0f);
+    // Issue #4148: integer-only arrays are returned as long[] to preserve int64 precision;
+    // downstream Type.convert handles long[] -> int[]/short[]/float[]/double[] when the
+    // property type requires it.
+    assertThat(map.get("ids")).isInstanceOf(long[].class);
+    assertThat((long[]) map.get("ids")).containsExactly(1L, 2L, 3L, 4L);
   }
 
   @Test

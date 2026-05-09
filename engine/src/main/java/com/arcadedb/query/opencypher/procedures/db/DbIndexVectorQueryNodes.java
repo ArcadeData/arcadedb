@@ -199,6 +199,21 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     if (key instanceof float[] floatArray)
       return floatArray;
 
+    if (key instanceof long[] src) {
+      // Issue #4148: integer-only JSON arrays now arrive as long[] from the HTTP path.
+      final float[] queryVector = new float[src.length];
+      for (int i = 0; i < src.length; i++)
+        queryVector[i] = src[i];
+      return queryVector;
+    }
+
+    if (key instanceof double[] src) {
+      final float[] queryVector = new float[src.length];
+      for (int i = 0; i < src.length; i++)
+        queryVector[i] = (float) src[i];
+      return queryVector;
+    }
+
     if (key instanceof Object[] objArray && objArray.length > 0 && objArray[0] instanceof Number) {
       final float[] queryVector = new float[objArray.length];
       for (int i = 0; i < objArray.length; i++)

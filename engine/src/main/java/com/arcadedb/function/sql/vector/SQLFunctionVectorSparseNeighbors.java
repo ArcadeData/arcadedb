@@ -361,6 +361,13 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       return null;
     if (o instanceof int[] arr)
       return arr;
+    if (o instanceof long[] src) {
+      // Issue #4148: integer-only JSON arrays now arrive as long[] from the HTTP path.
+      final int[] out = new int[src.length];
+      for (int i = 0; i < src.length; i++)
+        out[i] = (int) src[i];
+      return out;
+    }
     if (o instanceof Integer[] arr) {
       final int[] out = new int[arr.length];
       for (int i = 0; i < arr.length; i++)
@@ -386,6 +393,13 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
       return null;
     if (o instanceof float[] arr)
       return arr;
+    if (o instanceof long[] src) {
+      // Issue #4148: integer-only JSON arrays now arrive as long[] from the HTTP path.
+      final float[] out = new float[src.length];
+      for (int i = 0; i < src.length; i++)
+        out[i] = src[i];
+      return out;
+    }
     if (o instanceof Float[] arr) {
       final float[] out = new float[arr.length];
       for (int i = 0; i < arr.length; i++)

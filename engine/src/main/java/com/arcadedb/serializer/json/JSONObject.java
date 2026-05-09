@@ -401,7 +401,7 @@ public class JSONObject implements Map<String, Object> {
         value = nObject.toMap(optimizeNumericArrays);
       else if (value instanceof JSONArray array) {
         if (optimizeNumericArrays) {
-          final float[] primitive = array.toPrimitiveNumericArrayOrNull();
+          final Object primitive = array.toPrimitiveNumericArrayOrNull();
           value = (primitive != null) ? primitive : array.toList(true);
         } else
           value = array.toList();

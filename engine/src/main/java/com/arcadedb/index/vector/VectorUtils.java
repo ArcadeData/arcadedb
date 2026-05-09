@@ -135,6 +135,19 @@ public final class VectorUtils {
         result[i] = (float) d[i];
       return result;
     }
+    if (vectorObj instanceof long[] l) {
+      // Issue #4148: integer-only JSON arrays now arrive as long[] from the HTTP path.
+      final float[] result = new float[l.length];
+      for (int i = 0; i < l.length; i++)
+        result[i] = l[i];
+      return result;
+    }
+    if (vectorObj instanceof int[] in) {
+      final float[] result = new float[in.length];
+      for (int i = 0; i < in.length; i++)
+        result[i] = in[i];
+      return result;
+    }
     if (vectorObj instanceof Object[] objArray) {
       final float[] result = new float[objArray.length];
       for (int i = 0; i < objArray.length; i++) {

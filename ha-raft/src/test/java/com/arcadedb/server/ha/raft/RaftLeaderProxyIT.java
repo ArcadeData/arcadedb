@@ -135,8 +135,9 @@ class RaftLeaderProxyIT extends BaseRaftHATest {
 
   /**
    * Regression test for the bug where positional params serialized as a JSON array [110]
-   * were converted to float[]{110.0} by toMap(true) on the leader, causing
-   * ClassCastException: [F cannot be cast to Map when PostCommandHandler tried to cast it.
+   * were converted to a primitive numeric array by toMap(true) on the leader (float[]{110.0}
+   * before the issue #4148 fix, long[]{110L} after it), causing ClassCastException when
+   * PostCommandHandler tried to cast it to Map.
    */
   @Test
   void positionalParamsViaFollowerIsProxiedToLeader() throws Exception {
@@ -177,8 +178,9 @@ class RaftLeaderProxyIT extends BaseRaftHATest {
           .isEqualTo(1L);
     }
 
-    // Also test the float[] code path: an all-numeric JSON array [42] is converted to float[]
-    // by toMap(true) on the leader. This previously caused ClassCastException before the fix.
+    // Also test the primitive-array code path: an all-numeric JSON array [42] is converted by
+    // toMap(true) on the leader to a primitive array (long[] post-#4148, float[] before it).
+    // This previously caused ClassCastException; the regression covers both shapes.
     final JSONObject numericBody = new JSONObject()
         .put("language", "sql")
         .put("command", "SELECT FROM V1 WHERE id = ?")
@@ -186,7 +188,7 @@ class RaftLeaderProxyIT extends BaseRaftHATest {
 
     final HttpResponse<String> numericResponse = postCommandWithBody(followerPort, dbName, numericBody.toString());
     assertThat(numericResponse.statusCode())
-        .as("SELECT with all-numeric positional params (float[] path) should not throw ClassCastException, body: " + numericResponse.body())
+        .as("SELECT with all-numeric positional params (primitive-array path) should not throw ClassCastException, body: " + numericResponse.body())
         .isEqualTo(200);
   }
 

@@ -97,7 +97,7 @@ public class JSONArray implements Iterable<Object> {
         value = object.toMap(optimizeNumericArrays);
       else if (value instanceof JSONArray nArray) {
         if (optimizeNumericArrays) {
-          final float[] primitive = nArray.toPrimitiveNumericArrayOrNull();
+          final Object primitive = nArray.toPrimitiveNumericArrayOrNull();
           value = (primitive != null) ? primitive : nArray.toList(true);
         } else
           value = nArray.toList();
@@ -110,32 +110,61 @@ public class JSONArray implements Iterable<Object> {
   }
 
   /**
-   * If this array contains only numeric primitive elements, returns a primitive {@code float[]}
-   * containing the values. Returns {@code null} if the array is empty or contains a non-numeric
-   * element, so callers can fall back to {@link #toList()}.
+   * If this array contains only numeric primitive elements, returns a primitive numeric array
+   * holding the values: {@code long[]} when every element is integer-valued in textual form
+   * (no decimal point and no exponent), or {@code float[]} otherwise. Returns {@code null} when
+   * the array is empty or contains a non-numeric element so callers can fall back to
+   * {@link #toList()}.
    * <p>
-   * Single-pass: bails out as soon as a non-numeric element is found, avoiding any boxing for
-   * the common case of vector embeddings. Used by {@link JSONObject#toMap(boolean)} when
-   * parsing HTTP {@code params} (issue #3864 follow-up). Returns {@code float[]} (not
-   * {@code double[]}) because the dominant use case is {@code ARRAY_OF_FLOATS} vector
-   * properties; this also halves the memory footprint of large batches. Downstream
-   * {@link com.arcadedb.schema.Type#convert} promotes to {@code double[]} when a
-   * {@code ARRAY_OF_DOUBLES} property is targeted (with the precision loss inherent to JSON
-   * passing through {@code float}).
+   * Used by {@link JSONObject#toMap(boolean)} when parsing HTTP {@code params}.
+   * <p>
+   * Why two shapes: vector-embedding payloads (issue #3864 follow-up) need the {@code float[]}
+   * fast path - the dominant use case is {@code ARRAY_OF_FLOATS} and storing vectors as
+   * {@code float[]} halves memory vs. {@code double[]}. Integer payloads (issue #4148) cannot
+   * go through {@code float[]}: float32 has 23 mantissa bits, so two distinct int64 values
+   * within the same float bucket (~131072 wide near 2^40) collapse onto the same bits and the
+   * {@code (long) f} cast in {@link com.arcadedb.schema.Type#convert} can't recover them.
+   * Choosing {@code long[]} for integer-only arrays preserves int64 precision; downstream
+   * {@code Type.convert} handles {@code long[] -> long[]/int[]/short[]/float[]/double[]}.
    */
-  public float[] toPrimitiveNumericArrayOrNull() {
+  public Object toPrimitiveNumericArrayOrNull() {
     final List<JsonElement> list = array.asList();
     final int size = list.size();
     if (size == 0)
       return null;
 
-    final float[] result = new float[size];
+    // First pass: classify elements. We check the textual form (Gson's LazilyParsedNumber holds
+    // the source string) for any '.', 'e', 'E' character - if found, the JSON author intended
+    // a floating-point value, even when it is integer-valued numerically (e.g. 1e3). This keeps
+    // the integer-vs-float decision deterministic from the JSON text rather than from the parsed
+    // numeric value.
+    boolean allIntegers = true;
     for (int i = 0; i < size; i++) {
       final JsonElement e = list.get(i);
       if (!(e instanceof JsonPrimitive p) || !p.isNumber())
         return null;
-      result[i] = p.getAsFloat();
+      if (allIntegers) {
+        final String s = p.getAsString();
+        for (int c = 0, n = s.length(); c < n; c++) {
+          final char ch = s.charAt(c);
+          if (ch == '.' || ch == 'e' || ch == 'E') {
+            allIntegers = false;
+            break;
+          }
+        }
+      }
     }
+
+    if (allIntegers) {
+      final long[] result = new long[size];
+      for (int i = 0; i < size; i++)
+        result[i] = ((JsonPrimitive) list.get(i)).getAsLong();
+      return result;
+    }
+
+    final float[] result = new float[size];
+    for (int i = 0; i < size; i++)
+      result[i] = ((JsonPrimitive) list.get(i)).getAsFloat();
     return result;
   }
 
