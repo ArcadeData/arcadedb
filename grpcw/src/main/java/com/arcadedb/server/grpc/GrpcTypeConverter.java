@@ -25,6 +25,10 @@ import com.google.protobuf.Timestamp;
 import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.math.BigInteger;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -80,8 +84,14 @@ class GrpcTypeConverter {
       return v.getStringValue();
     case BYTES_VALUE:
       return v.getBytesValue().toByteArray();
-    case TIMESTAMP_VALUE:
-      return new Date(tsToMillis(v.getTimestampValue()));
+    case TIMESTAMP_VALUE: {
+      // Issue #4149: preserve full nanosecond precision so DATETIME_MICROS / DATETIME_NANOS
+      // columns get the precision the proto Timestamp natively carries. Type.convert() will
+      // truncate the resulting Instant to the column's declared precision via
+      // DateUtils.getPrecisionFromType(...) when storing.
+      final Timestamp ts = v.getTimestampValue();
+      return Instant.ofEpochSecond(ts.getSeconds(), ts.getNanos());
+    }
     case LINK_VALUE:
       return new RID(v.getLinkValue().getRid());
     case DECIMAL_VALUE: {
@@ -136,6 +146,24 @@ class GrpcTypeConverter {
 
     if (o instanceof Date v)
       return b.setTimestampValue(msToTimestamp(v.getTime())).setLogicalType("datetime").build();
+
+    // Issue #4149: ArcadeDB stores datetimes natively as java.time temporals, not java.util.Date.
+    // Without these branches the read path falls through to String.valueOf(o), emitting
+    // string_value at LocalDateTime#toString precision rather than timestamp_value at the
+    // column's declared precision.
+    if (o instanceof LocalDateTime ldt) {
+      final Instant instant = ldt.toInstant(ZoneOffset.UTC);
+      return b.setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
+          .setLogicalType("datetime").build();
+    }
+    if (o instanceof Instant instant)
+      return b.setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
+          .setLogicalType("datetime").build();
+    if (o instanceof ZonedDateTime zdt) {
+      final Instant instant = zdt.toInstant();
+      return b.setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
+          .setLogicalType("datetime").build();
+    }
 
     if (o instanceof RID rid)
       return b.setLinkValue(GrpcLink.newBuilder().setRid(rid.toString()).build()).setLogicalType("rid").build();

@@ -115,11 +115,14 @@ class GrpcTypeConverterTest {
 
   @Test
   void fromGrpcValueTimestamp() {
+    // Issue #4149: gRPC TIMESTAMP_VALUE now decodes to java.time.Instant so sub-millisecond
+    // precision is preserved on the way in (Type.convert truncates to the column type).
     final Timestamp ts = Timestamp.newBuilder().setSeconds(1000).setNanos(0).build();
     final GrpcValue v = GrpcValue.newBuilder().setTimestampValue(ts).build();
     final Object result = GrpcTypeConverter.fromGrpcValue(v);
-    assertThat(result).isInstanceOf(Date.class);
-    assertThat(((Date) result).getTime()).isEqualTo(1000_000L);
+    assertThat(result).isInstanceOf(java.time.Instant.class);
+    assertThat(((java.time.Instant) result).getEpochSecond()).isEqualTo(1000L);
+    assertThat(((java.time.Instant) result).getNano()).isEqualTo(0);
   }
 
   @Test

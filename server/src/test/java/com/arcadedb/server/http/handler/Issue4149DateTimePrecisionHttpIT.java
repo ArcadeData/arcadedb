@@ -65,11 +65,24 @@ class Issue4149DateTimePrecisionHttpIT extends BaseGraphServerTest {
   }
 
   @Test
-  void dateTimePrecisionPreservedThroughHttpParams() throws Exception {
+  void selectProjectionPreservesDateTimePrecision() throws Exception {
     final JSONObject params = new JSONObject().put("v", VALUE);
     runCommand("INSERT INTO " + TYPE_NAME + " SET ts1 = :v, tsm = :v, tsn = :v, tss = :v", params);
     final JSONObject record = runQuery("SELECT ts1, tsm, tsn, tss FROM " + TYPE_NAME);
 
+    assertColumnPrecisions(record);
+  }
+
+  @Test
+  void selectStarPreservesDateTimePrecision() throws Exception {
+    final JSONObject params = new JSONObject().put("v", VALUE);
+    runCommand("INSERT INTO " + TYPE_NAME + " SET ts1 = :v, tsm = :v, tsn = :v, tss = :v", params);
+    final JSONObject record = runQuery("SELECT FROM " + TYPE_NAME);
+
+    assertColumnPrecisions(record);
+  }
+
+  private static void assertColumnPrecisions(final JSONObject record) {
     // DATETIME stores millisecond precision: .123 expected.
     assertThat(record.getString("ts1")).as("DATETIME column must keep millisecond precision")
         .startsWith("2026-05-09").contains("12:34:56.123");
@@ -84,7 +97,7 @@ class Issue4149DateTimePrecisionHttpIT extends BaseGraphServerTest {
 
     // DATETIME_SECOND drops fractional digits: just :56 (no fractional).
     assertThat(record.getString("tss")).as("DATETIME_SECOND column must drop fractional seconds")
-        .startsWith("2026-05-09").contains("12:34:56").doesNotContain(".123");
+        .startsWith("2026-05-09").contains("12:34:56").doesNotContain(".");
   }
 
   private void runCommand(final String command, final JSONObject params) throws Exception {

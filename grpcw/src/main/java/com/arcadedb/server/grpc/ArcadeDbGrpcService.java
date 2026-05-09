@@ -67,6 +67,10 @@ import org.jspecify.annotations.NonNull;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -2333,8 +2337,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return dbgDec("fromGrpcValue", v, v.getStringValue(), null);
       case BYTES_VALUE:
         return dbgDec("fromGrpcValue", v, v.getBytesValue().toByteArray(), null);
-      case TIMESTAMP_VALUE:
-        return dbgDec("fromGrpcValue", v, new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue())), null);
+      case TIMESTAMP_VALUE: {
+        // Issue #4149: keep nanosecond precision through parameter binding so DATETIME_MICROS /
+        // DATETIME_NANOS columns receive the precision the proto Timestamp natively carries.
+        final Timestamp ts = v.getTimestampValue();
+        return dbgDec("fromGrpcValue", v, Instant.ofEpochSecond(ts.getSeconds(), ts.getNanos()), null);
+      }
       case LINK_VALUE:
         return dbgDec("fromGrpcValue", v, new RID(v.getLinkValue().getRid()), null);
 
@@ -2407,6 +2415,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       return dbgEnc("toGrpcValue", o,
           GrpcValue.newBuilder().setTimestampValue(GrpcTypeConverter.msToTimestamp(v.getTime())).setLogicalType(
               "datetime").build(), null);
+    }
+
+    // Issue #4149: emit Java time temporals as proto Timestamp instead of falling through to
+    // String.valueOf(o), which silently dropped sub-millisecond precision.
+    if (o instanceof LocalDateTime ldt) {
+      final Instant instant = ldt.toInstant(ZoneOffset.UTC);
+      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
+          .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
+          .setLogicalType("datetime").build(), null);
+    }
+    if (o instanceof Instant instant) {
+      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
+          .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
+          .setLogicalType("datetime").build(), null);
+    }
+    if (o instanceof ZonedDateTime zdt) {
+      final Instant instant = zdt.toInstant();
+      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
+          .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
+          .setLogicalType("datetime").build(), null);
     }
 
     if (o instanceof RID rid) {
