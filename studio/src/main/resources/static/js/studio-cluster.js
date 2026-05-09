@@ -124,6 +124,13 @@ function renderNodeCards(data) {
 function renderPeerManagement(data) {
   var container = $("#peerManagementList");
   container.empty();
+
+  // addPeer / removePeer issue Raft setConfiguration, which only the leader can apply. Hide the
+  // controls on followers and surface a small hint instead, so the buttons never produce a 500.
+  var canManage = data.isLeader === true;
+  $("#btnAddPeer").toggle(canManage);
+  $("#peerManagementHint").toggle(!canManage);
+
   var peers = data.peers || [];
   for (var i = 0; i < peers.length; i++) {
     var peer = peers[i];
@@ -137,15 +144,101 @@ function renderPeerManagement(data) {
       ? ' <span class="badge ' + replicaStatusStyle(peer.replicaStatus).badge + '" style="font-size:0.6rem;">' + escapeHtml(peer.replicaStatus) + '</span>'
       : '';
 
+    // Remove button only when local is leader and target is a follower. The leader cannot remove
+    // itself: it must step down (or use Leave Cluster) so the resulting Raft config is valid.
+    // JSON.stringify + &quot; escaping keeps any characters in peer.id safe inside the attribute.
+    var removeBtn = "";
+    if (canManage && !isLeader) {
+      var idAttr = JSON.stringify(peer.id).replace(/"/g, "&quot;");
+      removeBtn = '<button class="btn btn-sm btn-outline-danger" style="font-size:0.7rem; padding:1px 8px;" '
+        + 'onclick="removePeer(' + idAttr + ')" title="Remove peer from the cluster">'
+        + '<i class="fa fa-trash"></i></button>';
+    }
+
     container.append(
       '<div class="d-flex align-items-center justify-content-between py-1 px-2 mb-1" '
       + 'style="font-size:0.82rem; background:var(--bg-main); border-radius:6px; border:1px solid var(--border-light);">'
       + '<div><i class="fa fa-server" style="color:var(--color-brand); margin-right:6px;"></i>'
       + escapeHtml(peer.id) + ' <span style="color:var(--text-secondary); font-size:0.75rem;">(' + escapeHtml(peer.address || "") + ')</span>'
       + localTag + ' ' + roleBadge + statusBadge + '</div>'
+      + '<div>' + removeBtn + '</div>'
       + '</div>'
     );
   }
+}
+
+function addPeerPrompt() {
+  var html =
+    '<div class="mb-2">'
+    + '<label for="addPeerId" class="form-label" style="font-size:0.85rem;">Peer ID</label>'
+    + '<input type="text" class="form-control" id="addPeerId" placeholder="e.g. ArcadeDB_2" '
+    + 'onkeydown="if (event.which === 13) document.getElementById(\'addPeerAddress\').focus()">'
+    + '</div>'
+    + '<div class="mb-2">'
+    + '<label for="addPeerAddress" class="form-label" style="font-size:0.85rem;">Raft Address</label>'
+    + '<input type="text" class="form-control" id="addPeerAddress" placeholder="host:port (e.g. 192.168.1.2:2434)" '
+    + 'onkeydown="if (event.which === 13) document.getElementById(\'globalModalConfirmBtn\').click()">'
+    + '</div>'
+    + '<div class="mb-2">'
+    + '<label for="addPeerName" class="form-label" style="font-size:0.85rem;">Friendly Name <span class="text-muted">(optional)</span></label>'
+    + '<input type="text" class="form-control" id="addPeerName" placeholder="Optional display name" '
+    + 'onkeydown="if (event.which === 13) document.getElementById(\'globalModalConfirmBtn\').click()">'
+    + '</div>'
+    + '<p class="text-muted" style="font-size:0.75rem; margin-bottom:0;">'
+    + 'The new peer must already be running and reachable on the Raft port.'
+    + '</p>';
+
+  globalPrompt("Add Peer", html, "Add", function(values) {
+    var peerId = (values["addPeerId"] || "").trim();
+    var address = (values["addPeerAddress"] || "").trim();
+    var name = (values["addPeerName"] || "").trim();
+
+    if (!peerId) {
+      globalNotify("Error", "Peer ID is required", "danger");
+      return;
+    }
+    if (!address) {
+      globalNotify("Error", "Raft address is required", "danger");
+      return;
+    }
+
+    var payload = { peerId: peerId, address: address };
+    if (name) payload.name = name;
+
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/cluster/peer",
+      data: JSON.stringify(payload),
+      contentType: "application/json",
+      beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+    })
+    .done(function() {
+      globalNotify("Success", "Peer " + peerId + " added", "success");
+      updateCluster();
+    })
+    .fail(function(jqXHR) { globalNotifyError(jqXHR.responseText); });
+  });
+}
+
+function removePeer(peerId) {
+  globalConfirm("Remove Peer",
+    "Remove peer <b>" + escapeHtml(peerId) + "</b> from the cluster?<br><br>"
+    + "<span style='font-size:0.8rem;color:var(--text-secondary);'>"
+    + "The peer will stop receiving replicated entries. Restarting it will not rejoin the cluster automatically."
+    + "</span>",
+    "warning",
+    function() {
+      jQuery.ajax({
+        type: "DELETE",
+        url: "api/v1/cluster/peer/" + encodeURIComponent(peerId),
+        beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+      })
+      .done(function() {
+        globalNotify("Success", "Peer " + peerId + " removed", "success");
+        updateCluster();
+      })
+      .fail(function(jqXHR) { globalNotifyError(jqXHR.responseText); });
+    });
 }
 
 function updateMetricsSummary(data) {

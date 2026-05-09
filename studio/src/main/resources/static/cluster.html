@@ -108,11 +108,19 @@
 
           <!-- Peer Management Card -->
           <div class="card mb-3" style="border: 1px solid var(--border-light); border-radius: 10px;">
-            <div class="card-header py-2" style="background: var(--bg-hover); border-bottom: 1px solid var(--border-light); border-radius: 10px 10px 0 0;">
-              <i class="fas fa-network-wired" style="color: var(--color-brand);"></i>
-              <span style="font-weight: 600; font-size: 0.88rem; margin-left: 6px;">Cluster Membership</span>
+            <div class="card-header py-2 d-flex align-items-center justify-content-between" style="background: var(--bg-hover); border-bottom: 1px solid var(--border-light); border-radius: 10px 10px 0 0;">
+              <span>
+                <i class="fas fa-network-wired" style="color: var(--color-brand);"></i>
+                <span style="font-weight: 600; font-size: 0.88rem; margin-left: 6px;">Cluster Membership</span>
+              </span>
+              <button id="btnAddPeer" class="btn btn-sm db-action-btn" onclick="addPeerPrompt()" style="display:none;" title="Add a new peer to the cluster (leader only)">
+                <i class="fa fa-plus"></i> Add Peer
+              </button>
             </div>
             <div class="card-body py-3">
+              <div id="peerManagementHint" class="mb-2" style="font-size:0.75rem; color:var(--text-secondary); display:none;">
+                <i class="fa fa-info-circle"></i> Peer add/remove can only be performed on the leader node.
+              </div>
               <div id="peerManagementList" class="mb-3">
                 <!-- Dynamically populated -->
               </div>
