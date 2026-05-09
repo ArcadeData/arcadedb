@@ -1243,7 +1243,10 @@ public class LocalDocumentType implements DocumentType {
         // resolveExternalBucketPath() which returns <override>/<dbName>.
         final int pageSize = schema.getDatabase().getConfiguration()
             .getValueAsInteger(GlobalConfiguration.EXTERNAL_PROPERTY_BUCKET_DEFAULT_PAGE_SIZE);
-        final String overridePath = ((LocalDatabase) schema.getDatabase()).resolveExternalBucketPath();
+        // Unwrap to the embedded LocalDatabase: schema.getDatabase() can be the HA wrapper
+        // (e.g. RaftReplicatedDatabase) when this method runs after HA is enabled. Issue #4144.
+        final LocalDatabase localDb = (LocalDatabase) ((DatabaseInternal) schema.getDatabase()).getEmbedded();
+        final String overridePath = localDb.resolveExternalBucketPath();
         external = schema.createBucket(extName, pageSize, overridePath, LocalBucket.EXTERNAL_BUCKET_VERSION);
       }
       external.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
@@ -1286,7 +1289,9 @@ public class LocalDocumentType implements DocumentType {
     // Use an explicit throw instead of `assert`: production JVMs run without -ea, and a violation here can
     // lose data (we'd drop a bucket that has a queued tx record about to flush into it). Same pattern as
     // the hasExternalProperties() guard two lines above.
-    if (((LocalDatabase) schema.getDatabase()).isTransactionActive())
+    // isTransactionActive() is on the Database interface; calling it directly avoids the
+    // unsafe (LocalDatabase) cast that fails when the database is HA-wrapped. Issue #4144.
+    if (schema.getDatabase().isTransactionActive())
       throw new IllegalStateException(
           "reclaimEmptyExternalBuckets() requires no active transaction but one is open on database '"
               + schema.getDatabase().getName() + "'. Queued record updates have not flushed yet, so the"

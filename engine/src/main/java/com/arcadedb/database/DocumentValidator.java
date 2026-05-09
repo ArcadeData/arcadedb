@@ -77,7 +77,11 @@ public class DocumentValidator {
 
     if (p.isReadonly()) {
       if (document.isDirty() && document.getIdentity() != null) {
-        final Document originalDocument = ((LocalDatabase) document.getDatabase()).getOriginalDocument(document);
+        // document.getDatabase() returns the wrapper instance (e.g. RaftReplicatedDatabase) when
+        // the database is HA-wrapped, so we must unwrap to the embedded LocalDatabase before
+        // calling LocalDatabase-specific APIs. Issue #4144.
+        final LocalDatabase embedded = (LocalDatabase) ((DatabaseInternal) document.getDatabase()).getEmbedded();
+        final Document originalDocument = embedded.getOriginalDocument(document);
         final Object originalFieldValue = originalDocument.get(p.getName());
         if (!Objects.equals(fieldValue, originalFieldValue))
           throwValidationException(document.getType(), p, "is immutable and cannot be altered. Field value is: " + fieldValue);
