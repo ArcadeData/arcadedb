@@ -548,6 +548,8 @@ public enum Type {
       } else if (targetClass.equals(LocalDate.class)) {
         if (value instanceof LocalDateTime time)
           return time.toLocalDate();
+        else if (value instanceof Instant instant)
+          return instant.atOffset(ZoneOffset.UTC).toLocalDate();
         else if (value instanceof Number number)
           return DateUtils.date(database, number.longValue(), LocalDate.class);
         else if (value instanceof Date date)

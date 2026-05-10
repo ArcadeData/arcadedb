@@ -448,6 +448,9 @@ public class BinarySerializer {
         content.putUnsignedNumber(date.getTime() / DateUtils.MS_IN_A_DAY);
       else if (value instanceof LocalDate date)
         content.putUnsignedNumber(date.toEpochDay());
+      else
+        throw new IllegalArgumentException(
+            "Cannot serialize " + value.getClass() + " as DATE; expected java.util.Date or java.time.LocalDate");
       break;
     case BinaryTypes.TYPE_DATETIME_SECOND:
     case BinaryTypes.TYPE_DATETIME:
