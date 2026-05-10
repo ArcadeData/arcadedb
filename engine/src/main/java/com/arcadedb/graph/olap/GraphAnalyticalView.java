@@ -24,6 +24,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
+import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
@@ -43,6 +45,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
 /**
@@ -202,6 +205,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   // Accessed only under synchronized(this), so ArrayList is safe.
   private List<TxDelta>          pendingDeltas;
 
+  // Tracks scheduled-but-not-yet-completed async builds and compactions for this view.
+  // shutdown()/drop() block on this so a closing database does not race the worker virtual thread,
+  // which would otherwise see a closed database or cleared transaction context and log a SEVERE error.
+  private final AtomicInteger    inFlightTasks      = new AtomicInteger();
+  private final Object           inFlightMonitor    = new Object();
+
+  /** Maximum time shutdown() waits for an in-flight async build/compaction to settle. */
+  private static final long      SHUTDOWN_AWAIT_MS  = 30_000L;
+
   /**
    * Creates a builder for configuring the analytical view.
    */
@@ -290,6 +302,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     readyLatch = latch;
     status = Status.BUILDING;
     buildError = null;
+    // Track the queued task synchronously so a concurrent close()/drop() can wait for it
+    // even before the virtual thread has had a chance to mount.
+    inFlightTasks.incrementAndGet();
     try {
       getExecutor().execute(() -> {
         BUILD_PERMITS.acquireUninterruptibly();
@@ -327,11 +342,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             }
             GraphAnalyticalView.this.notifyAll();
           }
-          LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
+          if (isBenignShutdownError(e))
+            LogManager.instance().log(this, Level.FINE,
+                "Async build of GraphAnalyticalView '%s' aborted because the database is closing", name);
+          else
+            LogManager.instance().log(this, Level.SEVERE, "Async build of GraphAnalyticalView '%s' failed", e, name);
         } finally {
           BUILD_PERMITS.release();
           buildQueued.set(false);
           latch.countDown();
+          taskCompleted();
         }
       });
     } catch (final RejectedExecutionException e) {
@@ -340,6 +360,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       this.notifyAll();
       buildQueued.set(false);
       latch.countDown();
+      taskCompleted();
       LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': async build rejected (executor shut down)", name);
     }
   }
@@ -386,12 +407,73 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /**
    * Shuts down this view without removing the schema definition.
    * Called during database close to release resources while preserving persistence.
+   * <p>
+   * Blocks (up to {@link #SHUTDOWN_AWAIT_MS}) for any queued or in-flight async build/compaction
+   * to drain. This prevents a worker virtual thread from racing the database close path: without
+   * this wait the worker can wake up after close() has cleared the per-thread transaction context
+   * (or even closed the database) and crash with a misleading SEVERE log line.
    */
-  public synchronized void shutdown() {
-    unregisterChangeListeners();
-    GraphTraversalProviderRegistry.unregister(database, this);
-    if (name != null)
-      GraphAnalyticalViewRegistry.unregister(database, name);
+  public void shutdown() {
+    awaitInFlightTasks(SHUTDOWN_AWAIT_MS);
+    synchronized (this) {
+      unregisterChangeListeners();
+      GraphTraversalProviderRegistry.unregister(database, this);
+      if (name != null)
+        GraphAnalyticalViewRegistry.unregister(database, name);
+    }
+  }
+
+  /**
+   * Waits up to {@code timeoutMs} for any queued or running async build/compaction to finish.
+   * Counter is incremented synchronously when a task is scheduled, so this wait covers tasks
+   * that have not yet started executing on the shared virtual-thread pool.
+   */
+  private void awaitInFlightTasks(final long timeoutMs) {
+    if (inFlightTasks.get() == 0)
+      return;
+    final long deadlineNanos = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs);
+    synchronized (inFlightMonitor) {
+      while (inFlightTasks.get() > 0) {
+        final long remainingNanos = deadlineNanos - System.nanoTime();
+        if (remainingNanos <= 0) {
+          LogManager.instance().log(this, Level.WARNING,
+              "GraphAnalyticalView '%s': %d in-flight task(s) did not settle within %d ms during shutdown",
+              name, inFlightTasks.get(), timeoutMs);
+          return;
+        }
+        try {
+          final long waitMs = Math.max(1L, TimeUnit.NANOSECONDS.toMillis(remainingNanos));
+          inFlightMonitor.wait(waitMs);
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+          return;
+        }
+      }
+    }
+  }
+
+  private void taskCompleted() {
+    if (inFlightTasks.decrementAndGet() == 0) {
+      synchronized (inFlightMonitor) {
+        inFlightMonitor.notifyAll();
+      }
+    }
+  }
+
+  /**
+   * Returns true when {@code e} (or any cause in its chain) reflects the database closing
+   * out from under an in-flight build or compaction. These races are benign: the user closed
+   * the database while a virtual-thread build was still queued or just dispatched, so the
+   * worker correctly aborts. We log them at FINE instead of SEVERE so they don't pollute logs.
+   */
+  private static boolean isBenignShutdownError(final Throwable e) {
+    Throwable current = e;
+    while (current != null) {
+      if (current instanceof DatabaseIsClosedException || current instanceof TransactionException)
+        return true;
+      current = current.getCause();
+    }
+    return false;
   }
 
   // --- GraphTraversalProvider SPI ---
@@ -1188,6 +1270,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       final CountDownLatch latch = new CountDownLatch(1);
       this.readyLatch = latch;
       this.status = Status.BUILDING;
+      inFlightTasks.incrementAndGet();
       try {
         getExecutor().execute(() -> {
           BUILD_PERMITS.acquireUninterruptibly();
@@ -1217,11 +1300,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
           } catch (final Exception e) {
             this.buildError = e;
             this.status = Status.STALE;
-            LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
+            if (isBenignShutdownError(e))
+              LogManager.instance().log(this, Level.FINE,
+                  "Async rebuild of GraphAnalyticalView '%s' aborted because the database is closing", name);
+            else
+              LogManager.instance().log(this, Level.WARNING, "Failed to rebuild GraphAnalyticalView '%s'", e, name);
           } finally {
             BUILD_PERMITS.release();
             compacting.set(false);
             latch.countDown();
+            taskCompleted();
             // Volatile read outside the monitor is intentional: visibility is guaranteed by the
             // volatile flag, and onRelevantCommit() will acquire the lock when it executes.
             if (asyncRebuildNeeded)
@@ -1232,6 +1320,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         this.status = Status.STALE;
         compacting.set(false);
         latch.countDown();
+        taskCompleted();
         LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': async rebuild rejected (executor shut down)", name);
       }
     } else {
@@ -1283,6 +1372,7 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       // Start buffering raw deltas for re-application after the swap
       pendingDeltas = new ArrayList<>();
 
+      inFlightTasks.incrementAndGet();
       try {
         getExecutor().execute(() -> {
           BUILD_PERMITS.acquireUninterruptibly();
@@ -1330,15 +1420,21 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             synchronized (GraphAnalyticalView.this) {
               pendingDeltas = null;
             }
-            LogManager.instance().log(this, Level.WARNING, "Failed to compact GraphAnalyticalView '%s'", e, name);
+            if (isBenignShutdownError(e))
+              LogManager.instance().log(this, Level.FINE,
+                  "Compaction of GraphAnalyticalView '%s' aborted because the database is closing", name);
+            else
+              LogManager.instance().log(this, Level.WARNING, "Failed to compact GraphAnalyticalView '%s'", e, name);
           } finally {
             BUILD_PERMITS.release();
             compacting.set(false);
+            taskCompleted();
           }
         });
       } catch (final RejectedExecutionException e) {
         pendingDeltas = null;
         compacting.set(false);
+        taskCompleted();
         LogManager.instance().log(this, Level.WARNING, "GraphAnalyticalView '%s': compaction rejected (executor shut down)", name);
       }
     }

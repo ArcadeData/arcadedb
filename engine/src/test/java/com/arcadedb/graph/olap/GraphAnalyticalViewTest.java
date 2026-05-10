@@ -35,6 +35,7 @@ import java.util.*;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.LogRecord;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -2144,6 +2145,82 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     // Reopen database with the original factory for TestHelper cleanup
     database = new DatabaseFactory(dbPath).open();
+  }
+
+  /**
+   * Regression for issue #4180: closing a database with a persisted GAV while the asynchronous
+   * build kicked off by CREATE / restoreAll is still queued or running must not log a SEVERE
+   * "Async build of GraphAnalyticalView failed" line, and reopening must restore the view cleanly.
+   * <p>
+   * The test installs a JUL handler that fails the test if any SEVERE record is emitted by the
+   * GAV machinery during the close+reopen cycle, then runs several open/close iterations to give
+   * the close-during-build race plenty of opportunities to fire.
+   */
+  @Test
+  void issue4180_closeDuringAsyncBuildDoesNotLogSevere() throws Exception {
+    database.getSchema().createVertexType("City");
+    database.getSchema().createEdgeType("ROAD");
+    database.begin();
+    final List<RID> ids = new ArrayList<>();
+    for (int i = 0; i < 200; i++)
+      ids.add(database.newVertex("City").set("name", "C" + i).save().getIdentity());
+    for (int i = 0; i < ids.size() - 1; i++)
+      ids.get(i).asVertex().modify().newEdge("ROAD", ids.get(i + 1).asVertex());
+    database.commit();
+
+    database.command("sql", "CREATE GRAPH ANALYTICAL VIEW cityRoads4180 VERTEX TYPES (City) EDGE TYPES (ROAD)");
+
+    final String dbPath = database.getDatabasePath();
+
+    final List<LogRecord> severe = new ArrayList<>();
+    final java.util.logging.Logger root = java.util.logging.Logger.getLogger("");
+    final java.util.logging.Handler captureHandler = new java.util.logging.Handler() {
+      @Override public void publish(final LogRecord r) {
+        if (r.getLevel().intValue() >= java.util.logging.Level.SEVERE.intValue()) {
+          final String msg = r.getMessage();
+          if (msg != null && msg.contains("GraphAnalyticalView"))
+            synchronized (severe) { severe.add(r); }
+        }
+      }
+      @Override public void flush() { }
+      @Override public void close() { }
+    };
+    root.addHandler(captureHandler);
+    try {
+      // Close immediately after CREATE — the async build typically has not even started.
+      database.close();
+
+      // A few open/close cycles let restoreAll race the close path repeatedly.
+      for (int i = 0; i < 3; i++) {
+        final DatabaseFactory f = new DatabaseFactory(dbPath);
+        final Database db = f.open();
+        try {
+          final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(db, "cityRoads4180");
+          assertThat(restored).isNotNull();
+          // Closing without awaiting ready forces the close-vs-build race in the close path.
+        } finally {
+          db.close();
+        }
+      }
+
+      // Final reopen with TestHelper's tracked database for clean teardown.
+      database = new DatabaseFactory(dbPath).open();
+      final GraphAnalyticalView restored = GraphAnalyticalViewRegistry.get(database, "cityRoads4180");
+      assertThat(restored).isNotNull();
+      assertThat(restored.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+      assertThat(restored.getNodeCount()).isEqualTo(200);
+      assertThat(restored.getEdgeCount()).isEqualTo(199);
+      database.command("sql", "DROP GRAPH ANALYTICAL VIEW cityRoads4180");
+    } finally {
+      root.removeHandler(captureHandler);
+    }
+
+    // No SEVERE log lines from the GAV machinery: shutdown waited for in-flight builds.
+    synchronized (severe) {
+      assertThat(severe)
+          .as("issue #4180: close/reopen cycle should not emit SEVERE GAV log entries; got: " + severe)
+          .isEmpty();
+    }
   }
 
   // --- Incremental update (delta overlay) tests ---
