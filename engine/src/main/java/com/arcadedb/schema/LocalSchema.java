@@ -578,7 +578,7 @@ public class LocalSchema implements Schema {
                 // A TypeIndex with no remaining bucket children must not stay in indexesByProperties:
                 // schema serialization (toJSON) calls TypeIndex.getPropertyNames(), which fails on an
                 // empty wrapper.
-                if (parentTypeIndex != null && parentTypeIndex.getIndexesOnBuckets().length == 0) {
+                if (parentTypeIndex != null && parentTypeIndex.countIndexesOnBuckets() == 0) {
                   type.removeTypeIndexInternal(parentTypeIndex);
                   indexMap.remove(parentTypeIndex.getName());
                 }

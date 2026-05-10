@@ -256,4 +256,30 @@ class DropIndexTest extends TestHelper {
 
     }, false, 0);
   }
+
+  /**
+   * {@link TypeIndex#drop()} called directly outside an active transaction must succeed on a type
+   * that spans multiple buckets, leaving no orphan wrapper in the schema.
+   */
+  @Test
+  void dropTypeIndexOutsideTransactionMultiBucket() {
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
+    type.createProperty("id", Integer.class);
+
+    final TypeIndex typeIndex = database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withPageSize(PAGE_SIZE)
+        .withUnique(true)
+        .create();
+
+    assertThat(typeIndex.countIndexesOnBuckets()).isEqualTo(3);
+
+    typeIndex.drop();
+
+    assertThat(database.getSchema().existsIndex(typeIndex.getName())).isFalse();
+    assertThatThrownBy(() -> database.getSchema().getIndexByName(typeIndex.getName()))
+        .isInstanceOf(SchemaException.class);
+    assertThat(type.getIndexesByProperties("id")).isEmpty();
+  }
 }
