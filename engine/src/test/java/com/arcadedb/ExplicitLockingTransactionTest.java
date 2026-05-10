@@ -37,6 +37,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Fail.fail;
 
 class ExplicitLockingTransactionTest extends TestHelper {
+  // 16 threads serialize through a single type/bucket lock; per-thread wait scales with the
+  // tx commit time, so the default 5 s lock timeout is too tight on a slow host.
+  private static final long LOCK_TIMEOUT_MS = 60_000L;
+
+  @Override
+  protected void beginTest() {
+    database.getConfiguration().setValue(GlobalConfiguration.EXPLICIT_LOCK_TIMEOUT, LOCK_TIMEOUT_MS);
+    database.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, LOCK_TIMEOUT_MS);
+  }
+
   @Test
   void explicitLockType() {
     final Database db = database;
