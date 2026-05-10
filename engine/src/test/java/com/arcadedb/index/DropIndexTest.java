@@ -28,6 +28,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -275,11 +276,20 @@ class DropIndexTest extends TestHelper {
 
     assertThat(typeIndex.countIndexesOnBuckets()).isEqualTo(3);
 
+    final List<String> bucketIndexNames = new ArrayList<>(3);
+    for (final Index sub : typeIndex.getIndexesOnBuckets())
+      bucketIndexNames.add(sub.getName());
+
     typeIndex.drop();
 
     assertThat(database.getSchema().existsIndex(typeIndex.getName())).isFalse();
     assertThatThrownBy(() -> database.getSchema().getIndexByName(typeIndex.getName()))
         .isInstanceOf(SchemaException.class);
     assertThat(type.getIndexesByProperties("id")).isEmpty();
+
+    final List<String> remainingNames = new ArrayList<>();
+    for (final Index idx : database.getSchema().getIndexes())
+      remainingNames.add(idx.getName());
+    assertThat(remainingNames).doesNotContainAnyElementsOf(bucketIndexNames);
   }
 }
