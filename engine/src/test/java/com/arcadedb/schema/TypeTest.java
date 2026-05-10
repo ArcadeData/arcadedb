@@ -1112,4 +1112,26 @@ class TypeTest extends TestHelper {
     final Date now = new Date();
     assertThat(Type.convert(database, now, Long.class)).isEqualTo(now.getTime());
   }
+
+  // ───── convert: Instant -> LocalDate (regression #4181) ─────
+
+  @Test
+  void convertInstantToLocalDate() {
+    // midnight UTC on a known date
+    final LocalDate expected = LocalDate.of(2026, 5, 11);
+    final Instant instant = expected.atStartOfDay(ZoneOffset.UTC).toInstant();
+    final Object result = Type.convert(null, instant, LocalDate.class);
+    assertThat(result).isInstanceOf(LocalDate.class);
+    assertThat((LocalDate) result).isEqualTo(expected);
+  }
+
+  @Test
+  void convertInstantWithTimeComponentToLocalDateTruncates() {
+    // 15:30 UTC on a known date - time part must be discarded
+    final LocalDate expected = LocalDate.of(2026, 5, 11);
+    final Instant instant = expected.atStartOfDay(ZoneOffset.UTC).toInstant().plusSeconds(55800L); // +15h30m
+    final Object result = Type.convert(null, instant, LocalDate.class);
+    assertThat(result).isInstanceOf(LocalDate.class);
+    assertThat((LocalDate) result).isEqualTo(expected);
+  }
 }
