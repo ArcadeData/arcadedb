@@ -35,6 +35,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -59,6 +61,9 @@ public class Issue4181GrpcDateCorruptionIT extends BaseGraphServerTest {
       Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
   private static final Metadata.Key<String> DATABASE_HEADER =
       Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
+
+  private static final LocalDate TEST_DATE          = LocalDate.of(2026, 5, 9);
+  private static final long      TEST_DATE_EPOCH_S  = TEST_DATE.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
 
   private ManagedChannel channel;
   private ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub authenticatedStub;
@@ -123,8 +128,8 @@ public class Issue4181GrpcDateCorruptionIT extends BaseGraphServerTest {
     executeCommand("CREATE DOCUMENT TYPE DateTest4181 IF NOT EXISTS");
     executeCommand("CREATE PROPERTY DateTest4181.d IF NOT EXISTS DATE");
 
-    // 2026-05-09T00:00:00Z - midnight UTC, so date part is unambiguous
-    final Timestamp ts = Timestamp.newBuilder().setSeconds(1778457600L).setNanos(0).build();
+    // Midnight UTC on a known date - unambiguous, no zone-edge case
+    final Timestamp ts = Timestamp.newBuilder().setSeconds(TEST_DATE_EPOCH_S).setNanos(0).build();
 
     // Insert via gRPC parameter binding (the path that was producing corrupt records)
     authenticatedStub.executeCommand(
@@ -150,8 +155,7 @@ public class Issue4181GrpcDateCorruptionIT extends BaseGraphServerTest {
     assertThat(record.getPropertiesMap()).as("'d' property must be present (not missing due to corruption)").containsKey("d");
     final GrpcValue dValue = record.getPropertiesMap().get("d");
     assertThat(dValue.hasTimestampValue()).as("DATE property must come back as a Timestamp").isTrue();
-    // seconds for 2026-05-09 must match the input date (allow +/- 1 day tolerance for timezone edge cases)
-    assertThat(dValue.getTimestampValue().getSeconds()).isBetween(1778457600L - 86400L, 1778457600L + 86400L);
+    assertThat(dValue.getTimestampValue().getSeconds()).isEqualTo(TEST_DATE_EPOCH_S);
   }
 
   @Test
@@ -162,7 +166,7 @@ public class Issue4181GrpcDateCorruptionIT extends BaseGraphServerTest {
     executeCommand("CREATE PROPERTY DateCorrupt4181.d IF NOT EXISTS DATE");
     executeCommand("CREATE PROPERTY DateCorrupt4181.name IF NOT EXISTS STRING");
 
-    final Timestamp ts = Timestamp.newBuilder().setSeconds(1778457600L).setNanos(0).build();
+    final Timestamp ts = Timestamp.newBuilder().setSeconds(TEST_DATE_EPOCH_S).setNanos(0).build();
     authenticatedStub.executeCommand(
         ExecuteCommandRequest.newBuilder()
             .setDatabase(getDatabaseName())

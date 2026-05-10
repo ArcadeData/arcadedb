@@ -1119,7 +1119,7 @@ class TypeTest extends TestHelper {
   void convertInstantToLocalDate() {
     // midnight UTC on a known date
     final LocalDate expected = LocalDate.of(2026, 5, 11);
-    final Instant instant = expected.atStartOfDay(java.time.ZoneOffset.UTC).toInstant();
+    final Instant instant = expected.atStartOfDay(ZoneOffset.UTC).toInstant();
     final Object result = Type.convert(null, instant, LocalDate.class);
     assertThat(result).isInstanceOf(LocalDate.class);
     assertThat((LocalDate) result).isEqualTo(expected);
@@ -1129,7 +1129,7 @@ class TypeTest extends TestHelper {
   void convertInstantWithTimeComponentToLocalDateTruncates() {
     // 15:30 UTC on a known date - time part must be discarded
     final LocalDate expected = LocalDate.of(2026, 5, 11);
-    final Instant instant = expected.atStartOfDay(java.time.ZoneOffset.UTC).toInstant().plusSeconds(55800L); // +15h30m
+    final Instant instant = expected.atStartOfDay(ZoneOffset.UTC).toInstant().plusSeconds(55800L); // +15h30m
     final Object result = Type.convert(null, instant, LocalDate.class);
     assertThat(result).isInstanceOf(LocalDate.class);
     assertThat((LocalDate) result).isEqualTo(expected);

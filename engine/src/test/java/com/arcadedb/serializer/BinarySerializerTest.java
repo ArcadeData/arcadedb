@@ -35,6 +35,7 @@ import org.junit.jupiter.api.Test;
 
 import java.math.*;
 import java.nio.*;
+import java.time.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -575,6 +576,21 @@ class BinarySerializerTest extends TestHelper {
     assertThatThrownBy(() -> serializer.deserializeValue(database, empty, (byte) 101, null))
         .isInstanceOf(SerializationException.class)
         .hasMessageContaining("101");
+  }
+
+  /**
+   * Pins the defensive contract added with #4181: TYPE_DATE must reject value classes it
+   * cannot encode rather than silently writing the type marker with no content bytes (which
+   * mis-aligns the varint reader on every subsequent property in the record).
+   */
+  @Test
+  void serializeDateWithUnsupportedTypeThrows() throws Exception {
+    final BinarySerializer serializer = new BinarySerializer(database.getConfiguration());
+    final Binary buffer = new Binary();
+    assertThatThrownBy(() -> serializer.serializeValue(database, buffer, BinaryTypes.TYPE_DATE, Instant.now()))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("DATE")
+        .hasMessageContaining("Instant");
   }
 
   /**
