@@ -562,8 +562,9 @@ public class LocalSchema implements Schema {
 
         try {
           database.executeLockingFiles(index.getFileIds(), () -> {
-            if (index.getTypeIndex() != null)
-              index.getTypeIndex().removeIndexOnBucket(index);
+            final TypeIndex parentTypeIndex = index.getTypeIndex();
+            if (parentTypeIndex != null)
+              parentTypeIndex.removeIndexOnBucket(index);
 
             index.drop();
             indexMap.remove(indexName);
@@ -572,8 +573,16 @@ public class LocalSchema implements Schema {
               final LocalDocumentType type = getType(index.getTypeName());
               if (index instanceof TypeIndex typeIndex)
                 type.removeTypeIndexInternal(typeIndex);
-              else
+              else {
                 type.removeBucketIndexInternal(index);
+                // A TypeIndex with no remaining bucket children must not stay in indexesByProperties:
+                // schema serialization (toJSON) calls TypeIndex.getPropertyNames(), which fails on an
+                // empty wrapper.
+                if (parentTypeIndex != null && parentTypeIndex.countIndexesOnBuckets() == 0) {
+                  type.removeTypeIndexInternal(parentTypeIndex);
+                  indexMap.remove(parentTypeIndex.getName());
+                }
+              }
             }
             return null;
           });

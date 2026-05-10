@@ -57,9 +57,11 @@ class LSMSparseVectorIndexConcurrencyTest extends TestHelper {
   private static final String IDX_NAME        = "ConcurrentSparseDoc[tokens,weights]";
   private static final int    DIMENSIONS      = 200;
   private static final int    NNZ_PER_DOC     = 6;
-  private static final int    WRITER_THREADS  = 4;
+  // Scale to the host. The minimum of 2 keeps the writer/reader race exercised on every box.
+  private static final int    CONCURRENCY     = Math.max(2, Runtime.getRuntime().availableProcessors() / 2);
+  private static final int    WRITER_THREADS  = CONCURRENCY;
+  private static final int    READER_THREADS  = CONCURRENCY;
   private static final int    DOCS_PER_WRITER = 50;
-  private static final int    READER_THREADS  = 4;
   private static final int    QUERIES_PER_READER = 30;
 
   @Test

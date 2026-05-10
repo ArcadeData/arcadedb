@@ -141,9 +141,6 @@ class LSMVectorIndexTest extends TestHelper {
       TypeLSMVectorIndexBuilder builder = database.getSchema()
           .buildTypeIndex("VectorDoc", new String[] { "embedding" }).withLSMVectorType();
 
-      // Set common index properties
-      builder.withIndexName("VectorDoc_embedding_idx");
-
       // Cast to LSMVectorIndexBuilder to access vector-specific methods
       builder.withDimensions(3);
       builder.withSimilarity("EUCLIDEAN");

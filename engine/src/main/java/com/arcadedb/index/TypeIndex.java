@@ -533,6 +533,10 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     return indexesOnBuckets.toArray(new IndexInternal[indexesOnBuckets.size()]);
   }
 
+  public int countIndexesOnBuckets() {
+    return indexesOnBuckets.size();
+  }
+
   public List<? extends Index> getIndexesByKeys(final Object[] keys) {
     // For full-text indexes, always search all buckets regardless of bucket selection strategy.
     // Full-text queries contain search terms/phrases, not document property values, so bucket

@@ -28,6 +28,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -255,5 +256,40 @@ class DropIndexTest extends TestHelper {
       database.getSchema().dropIndex(typeIndex3.getName());
 
     }, false, 0);
+  }
+
+  /**
+   * {@link TypeIndex#drop()} called directly outside an active transaction must succeed on a type
+   * that spans multiple buckets, leaving no orphan wrapper in the schema.
+   */
+  @Test
+  void dropTypeIndexOutsideTransactionMultiBucket() {
+    final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(3).create();
+    type.createProperty("id", Integer.class);
+
+    final TypeIndex typeIndex = database.getSchema()
+        .buildTypeIndex(TYPE_NAME, new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withPageSize(PAGE_SIZE)
+        .withUnique(true)
+        .create();
+
+    assertThat(typeIndex.countIndexesOnBuckets()).isEqualTo(3);
+
+    final List<String> bucketIndexNames = new ArrayList<>(3);
+    for (final Index sub : typeIndex.getIndexesOnBuckets())
+      bucketIndexNames.add(sub.getName());
+
+    typeIndex.drop();
+
+    assertThat(database.getSchema().existsIndex(typeIndex.getName())).isFalse();
+    assertThatThrownBy(() -> database.getSchema().getIndexByName(typeIndex.getName()))
+        .isInstanceOf(SchemaException.class);
+    assertThat(type.getIndexesByProperties("id")).isEmpty();
+
+    final List<String> remainingNames = new ArrayList<>();
+    for (final Index idx : database.getSchema().getIndexes())
+      remainingNames.add(idx.getName());
+    assertThat(remainingNames).doesNotContainAnyElementsOf(bucketIndexNames);
   }
 }
