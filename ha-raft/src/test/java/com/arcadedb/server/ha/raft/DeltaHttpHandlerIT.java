@@ -27,13 +27,13 @@ import java.nio.charset.StandardCharsets;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * IT for the WAL delta resync endpoint ({@code GET /api/v1/ha/delta/{database}}, issue #4147 phase
- * 6). Confirms the wire shape and error semantics that {@link BootstrapDeltaInstaller} relies on
- * for the "try delta, fall back to full" decision.
+ * IT for the transaction-delta resync endpoint ({@code GET /api/v1/ha/delta/{database}}, issue
+ * #4147 phase 6). Confirms the wire shape and error semantics that {@link BootstrapDeltaInstaller}
+ * relies on for the "try delta, fall back to full" decision.
  * <p>
- * In phase 6a the endpoint always returns 412 (no WAL retention yet); these tests pin that
- * behaviour AND the response-body prefix the installer parses, so phase 6b can switch to real
- * delta serving without breaking the contract clients depend on.
+ * In phase 6a the endpoint always returns 412 (Ratis-log delta serving not implemented yet); these
+ * tests pin that behaviour AND the response-body prefix the installer parses, so phase 6b can
+ * switch to real delta serving without breaking the contract clients depend on.
  */
 class DeltaHttpHandlerIT extends BaseRaftHATest {
 
@@ -54,7 +54,7 @@ class DeltaHttpHandlerIT extends BaseRaftHATest {
       assertThat(conn.getResponseCode()).isEqualTo(412);
       // Body MUST start with "no-delta:" so BootstrapDeltaInstaller can log a structured reason
       // and fall back without parsing English. Phase 6b's real delta serving will keep this
-      // prefix for the same gap-too-big / no-WAL-retained sub-cases.
+      // prefix for the same gap-too-big / Ratis-log-not-covering sub-cases.
       final String body = new String(conn.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
       assertThat(body).startsWith("no-delta:");
     } finally {

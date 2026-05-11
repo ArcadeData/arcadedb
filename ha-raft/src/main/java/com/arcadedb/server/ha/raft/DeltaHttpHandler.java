@@ -30,30 +30,30 @@ import java.util.Deque;
 import java.util.logging.Level;
 
 /**
- * {@code GET /api/v1/ha/delta/{database}?fromTxId=N} — peer-to-peer WAL delta resync endpoint.
+ * {@code GET /api/v1/ha/delta/{database}?fromTxId=N} — peer-to-peer transaction-delta resync endpoint.
  * <p>
  * Issue #4147 phase 6. The bootstrap mismatch path (and the runtime catch-up path) calls this on
- * the source peer to pull only the WAL transactions for {@code (fromTxId+1 .. currentLastTxId)}
+ * the source peer to pull only the transactions for {@code (fromTxId+1 .. currentLastTxId)}
  * instead of a full database snapshot. The follower's installer applies the records via the
  * existing {@code TransactionManager.applyChanges} path.
  * <p>
- * <b>Status (phase 6a, scaffolding).</b> WAL retention is not yet implemented (tracked as a
- * follow-up issue). This handler always returns {@code 412 Precondition Failed} with a clear body
- * explaining the gap, so the caller falls through to the existing leader-shipped full-snapshot
- * path. The wire format is forward-compatible: when WAL retention lands, this handler starts
- * returning {@code 200} with the streamed transactions and the caller benefits without any
- * client-side change.
+ * <b>Status (phase 6a, scaffolding).</b> Ratis-log delta serving is not yet implemented. This
+ * handler always returns {@code 412 Precondition Failed} with a clear body explaining the gap, so
+ * the caller falls through to the existing leader-shipped full-snapshot path. The wire format is
+ * forward-compatible: when Ratis-log delta serving lands, this handler starts returning
+ * {@code 200} with the streamed transactions and the caller benefits without any client-side
+ * change.
  * <p>
  * Error semantics (locked in now so the caller's fallback logic is correct):
  * <ul>
- *   <li>{@code 412 Precondition Failed} — gap exceeds the retained WAL window, or no WAL has
- *       been retained at all (this peer can't serve a delta starting at {@code fromTxId}).
+ *   <li>{@code 412 Precondition Failed} — the Ratis log no longer covers {@code fromTxId}
+ *       (gap too big), or delta serving has not landed on this peer.
  *       Body is plain text, single line, prefixed {@code "no-delta:"} for machine inspection.</li>
  *   <li>{@code 204 No Content} — caller is already at or past the source's lastTxId; nothing to
  *       ship.</li>
  *   <li>{@code 401 Unauthorized} — missing or invalid {@code X-ArcadeDB-Cluster-Token}.</li>
  *   <li>{@code 404 Not Found} — HA not enabled, or the database doesn't exist on this peer.</li>
- *   <li>{@code 200 OK} — body is a stream of WAL transactions (only when WAL retention ships).</li>
+ *   <li>{@code 200 OK} — body is a stream of replicated transactions (only when Ratis-log delta serving ships).</li>
  * </ul>
  * Authentication is the same cluster-token check as {@link SnapshotHttpHandler}; we deliberately
  * do not accept end-user Basic auth on this endpoint because the response format is intended for
@@ -111,15 +111,15 @@ public class DeltaHttpHandler implements HttpHandler {
       return;
     }
 
-    // Phase 6a scaffolding: WAL retention is not yet implemented. We always answer 412 so the
-    // caller falls back to the full-snapshot path. The body is intentionally machine-readable
-    // ("no-delta:" prefix) so the caller can log a clear reason without parsing English.
+    // Phase 6a scaffolding: Ratis-log delta serving is not yet implemented. We always answer 412
+    // so the caller falls back to the full-snapshot path. The body is intentionally machine-
+    // readable ("no-delta:" prefix) so the caller can log a clear reason without parsing English.
     exchange.setStatusCode(412);
     exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "text/plain");
     exchange.getResponseSender().send(
-        "no-delta: WAL retention not yet implemented (issue #4147 phase 6a scaffolding); fromTxId=" + fromTxId);
+        "no-delta: Ratis-log delta serving not yet implemented (issue #4147 phase 6a scaffolding); fromTxId=" + fromTxId);
     LogManager.instance().log(this, Level.FINE,
-        "Delta endpoint returned 412 (WAL retention not implemented) for '%s' fromTxId=%d", dbName, fromTxId);
+        "Delta endpoint returned 412 (Ratis-log delta serving not implemented) for '%s' fromTxId=%d", dbName, fromTxId);
   }
 
   /**

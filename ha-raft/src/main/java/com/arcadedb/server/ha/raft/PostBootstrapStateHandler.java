@@ -48,7 +48,7 @@ import java.util.logging.Level;
  *         "name": "heimdall",
  *         "fingerprint": "&lt;sha256-hex&gt;",
  *         "lastTxId": 123456,
- *         "oldestRetainedTxId": 100000     // -1 means "no WAL retained, only full-snapshot can satisfy"
+ *         "oldestRetainedTxId": 100000     // -1 means "this peer cannot serve a delta; only full-snapshot can satisfy"
  *       },
  *       ...
  *     ]
@@ -66,10 +66,10 @@ import java.util.logging.Level;
 public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
 
   /**
-   * Sentinel value for {@code oldestRetainedTxId} meaning "this peer has not retained any WAL
-   * history, so a delta resync is not possible against it; only a full snapshot satisfies the
-   * follower". Read by both the encode and decode sides; do not change without bumping the
-   * Phase-3 wire format.
+   * Sentinel value for {@code oldestRetainedTxId} meaning "this peer cannot serve a delta resync
+   * (the Ratis log no longer covers the gap, or delta serving is not implemented on this peer);
+   * only a full snapshot satisfies the follower". Read by both the encode and decode sides; do
+   * not change without bumping the Phase-3 wire format.
    */
   public static final long NO_DELTA_AVAILABLE = -1L;
 
@@ -107,10 +107,10 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
         final File dbDir = new File(localDb.getDatabasePath());
         final String fingerprint = BootstrapFingerprint.compute(dbDir);
         final long lastTxId = localDb.getLastTransactionId();
-        // Phase 3 placeholder: WAL retention lands in Phase 6, so until then no peer can serve a
-        // delta. Followers will fall back to the full-snapshot path, identical to today's
-        // behaviour. The wire field is forward-compatible: when Phase 6 ships, this returns the
-        // real oldest retained txId without any client-side change.
+        // Phase 3 placeholder: Ratis-log delta serving lands in Phase 6, so until then no peer
+        // can serve a delta. Followers will fall back to the full-snapshot path, identical to
+        // today's behaviour. The wire field is forward-compatible: when Phase 6 ships, this
+        // returns the oldest txId still covered by the Ratis log without any client-side change.
         final long oldestRetainedTxId = NO_DELTA_AVAILABLE;
 
         final JSONObject dbJson = new JSONObject();
