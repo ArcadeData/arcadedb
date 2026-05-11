@@ -146,6 +146,12 @@ public abstract class GraphTraverser {
 
   /**
    * Checks if a vertex matches the relationship type filter.
+   * <p>
+   * Polymorphic: an edge of type {@code SUB} matches the filter for {@code BASE} when
+   * {@code SUB} extends {@code BASE}. This mirrors the polymorphic semantics of the
+   * native Java traversal API (which already returns sub-type edges via
+   * {@code getBucketIds(true)}) and avoids dropping sub-type edges in variable-length
+   * patterns like {@code [:BASE*1..3]}.
    *
    * @param edge edge to check
    * @return true if edge matches type filter
@@ -155,9 +161,9 @@ public abstract class GraphTraverser {
       return true;
     }
 
-    final String edgeType = edge.getTypeName();
+    final var edgeType = edge.getType();
     for (final String type : relationshipTypes) {
-      if (type.equals(edgeType)) {
+      if (edgeType.instanceOf(type)) {
         return true;
       }
     }

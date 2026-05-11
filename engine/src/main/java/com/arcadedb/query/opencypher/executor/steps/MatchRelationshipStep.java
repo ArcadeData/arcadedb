@@ -650,6 +650,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
    * has exactly one type, so if the current hop only matches type A and the existing edges in the
    * result are all type B, there is no uniqueness conflict. This allows hops with disjoint types
    * to use the fast path (and GAV/CSR) even when prior hops in the same pattern needed edge tracking.
+   * <p>
+   * Polymorphic: an existing edge of type {@code T} overlaps with the current hop's types
+   * {@code {T1, T2, ...}} when {@code T.instanceOf(Ti)} for any {@code Ti} (i.e., the current
+   * pattern can still produce that same edge through sub-type matching).
    */
   @SuppressWarnings("unchecked")
   private boolean resultContainsOverlappingEdges(final Result result) {
@@ -665,7 +669,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
         continue;
       final Object val = result.getProperty(prop);
       if (val instanceof Edge) {
-        if (currentTypes == null || currentTypes.contains(((Edge) val).getTypeName()))
+        if (currentTypes == null || edgeTypeMatchesAny((Edge) val, currentTypes))
           return true;
       }
       if (val instanceof TraversalPath)
@@ -673,11 +677,19 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
       if (val instanceof List) {
         for (final Object item : (List<Object>) val)
           if (item instanceof Edge) {
-            if (currentTypes == null || currentTypes.contains(((Edge) item).getTypeName()))
+            if (currentTypes == null || edgeTypeMatchesAny((Edge) item, currentTypes))
               return true;
           }
       }
     }
+    return false;
+  }
+
+  private static boolean edgeTypeMatchesAny(final Edge edge, final List<String> types) {
+    final var edgeType = edge.getType();
+    for (final String t : types)
+      if (edgeType.instanceOf(t))
+        return true;
     return false;
   }
 
@@ -949,14 +961,19 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
   /**
    * Checks if an edge matches the type filter.
+   * <p>
+   * Polymorphic: an edge of type {@code SUB} matches pattern {@code [:BASE]} when
+   * {@code SUB} extends {@code BASE} (mirrors the behavior of the native Java
+   * traversal API, which uses {@code getBucketIds(true)} for sub-type buckets,
+   * and of SQL {@code out('BASE')}).
    */
   private boolean matchesEdgeType(final Edge edge) {
     if (!pattern.hasTypes())
       return true;
 
-    final String edgeType = edge.getTypeName();
+    final var edgeType = edge.getType();
     for (final String type : pattern.getTypes())
-      if (type.equals(edgeType))
+      if (edgeType.instanceOf(type))
         return true;
     return false;
   }
