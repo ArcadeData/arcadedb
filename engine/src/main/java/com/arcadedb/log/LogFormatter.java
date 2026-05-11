@@ -43,26 +43,22 @@ public class LogFormatter extends Formatter {
 
   @Override
   public String format(final LogRecord record) {
-    if (record.getThrown() == null)
-      return customFormatMessage(record);
-
-    // FORMAT THE STACK TRACE
-    final StringBuilder buffer = new StringBuilder(512);
-    buffer.append(record.getMessage());
+    final String formatted = customFormatMessage(record);
 
     final Throwable current = record.getThrown();
-    if (current != null) {
-      buffer.append(EOL);
+    if (current == null)
+      return formatted;
 
-      final StringWriter writer = new StringWriter();
-      final PrintWriter printWriter = new PrintWriter(writer);
+    final StringBuilder buffer = new StringBuilder(512);
+    buffer.append(formatted);
+    buffer.append(EOL);
 
-      current.printStackTrace(printWriter);
-      printWriter.flush();
-
-      buffer.append(writer.getBuffer());
-      printWriter.close();
-    }
+    final StringWriter writer = new StringWriter();
+    final PrintWriter printWriter = new PrintWriter(writer);
+    current.printStackTrace(printWriter);
+    printWriter.flush();
+    buffer.append(writer.getBuffer());
+    printWriter.close();
 
     return buffer.toString();
   }

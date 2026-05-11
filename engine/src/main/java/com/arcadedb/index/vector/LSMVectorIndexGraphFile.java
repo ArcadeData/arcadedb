@@ -192,11 +192,18 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       }
 
       // Add FusedPQ feature when PQ data is available — stores PQ codes inline with graph nodes
-      // for cache-friendly approximate scoring during search traversal
-      final boolean hasFusedPQ = pq != null && pqVectors != null;
+      // for cache-friendly approximate scoring during search traversal.
+      // FusedPQ requires a 256-cluster PQ; with a custom pqClusters configuration (issue #3160)
+      // we skip the FusedPQ optimization and persist topology + inline vectors only, otherwise
+      // the JVector constructor throws and prevents the graph from being persisted.
+      final boolean hasFusedPQ = pq != null && pqVectors != null && pq.getClusterCount() == 256;
       if (hasFusedPQ) {
         LogManager.instance().log(this, Level.INFO,
             "Writing graph WITH FusedPQ: PQ codes stored inline with graph nodes for cache-friendly search");
+      } else if (pq != null && pqVectors != null) {
+        LogManager.instance().log(this, Level.INFO,
+            "Skipping FusedPQ inline storage: PQ has %d clusters (FusedPQ requires 256); graph persistence will store topology + inline vectors only",
+            pq.getClusterCount());
       }
 
       // Build writer with InlineVectors (always) and FusedPQ (when PQ available)
@@ -247,8 +254,7 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
       }
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error writing graph to pages: %s", e.getMessage());
-      e.printStackTrace();
+      LogManager.instance().log(this, Level.SEVERE, "Error writing graph to pages: %s", e, e.getMessage());
       throw new IndexException("Error writing graph to pages", e);
     }
   }
