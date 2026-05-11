@@ -25,6 +25,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -155,6 +156,14 @@ public class DeleteStep extends AbstractExecutionStep {
   }
 
   /**
+   * Context variable name used by ForeachStep to enable deferred deletion within a single
+   * FOREACH iteration. When the variable holds a {@link List}, DeleteStep appends its
+   * targets to that list instead of deleting immediately; ForeachStep then applies the
+   * batched deletes with proper edges-first ordering at end of iteration.
+   */
+  public static final String DEFERRED_DELETE_BATCH_VAR = "__cypherDeferredDelete__";
+
+  /**
    * Applies all DELETE operations to a result.
    *
    * @param result the result containing variables to delete
@@ -163,10 +172,13 @@ public class DeleteStep extends AbstractExecutionStep {
     if (deleteClause == null || deleteClause.isEmpty())
       return;
 
+    @SuppressWarnings("unchecked")
+    final List<Object[]> deferredBatch = (List<Object[]>) context.getVariable(DEFERRED_DELETE_BATCH_VAR);
+
     final boolean wasInTransaction = context.getDatabase().isTransactionActive();
 
     try {
-      if (!wasInTransaction)
+      if (deferredBatch == null && !wasInTransaction)
         context.getDatabase().begin();
 
       // Collect all delete targets first, then delete edges before vertices
@@ -174,13 +186,35 @@ public class DeleteStep extends AbstractExecutionStep {
       final List<Object> allEdges = new ArrayList<>();
       final List<Object> allOther = new ArrayList<>();
 
-      for (final String variable : deleteClause.getVariables()) {
-        final Object obj = resolveDeleteTarget(variable, result);
+      final List<String> variables = deleteClause.getVariables();
+      final List<Expression> expressions = deleteClause.getExpressions();
+      for (int i = 0; i < variables.size(); i++) {
+        final String variable = variables.get(i);
+        // Prefer the parsed Expression form when available so function-call targets such as
+        // endNode(r), startNode(r), head(list) are evaluated against the current row rather
+        // than parsed as a chained property access.
+        final Object obj;
+        if (expressions != null && i < expressions.size() && expressions.get(i) != null
+            && isFunctionLikeTarget(variable)) {
+          obj = expressions.get(i).evaluate(result, context);
+        } else {
+          obj = resolveDeleteTarget(variable, result);
+        }
         if (obj == null)
           continue;
         collectDeleteTargets(obj, allEdges, allOther);
-        if (!variable.contains(".") && !variable.contains("["))
+        if (!variable.contains(".") && !variable.contains("[") && !variable.contains("("))
           deletedVars.add(variable);
+      }
+
+      if (deferredBatch != null) {
+        // Cypher semantics within a FOREACH iteration: queue both edges and vertices and let the
+        // iteration end flush them with the correct ordering.
+        for (final Object edge : allEdges)
+          deferredBatch.add(new Object[] { edge, Boolean.valueOf(deleteClause.isDetach()) });
+        for (final Object other : allOther)
+          deferredBatch.add(new Object[] { other, Boolean.valueOf(deleteClause.isDetach()) });
+        return;
       }
 
       // Delete all edges first, then all other objects (vertices, documents)
@@ -193,9 +227,71 @@ public class DeleteStep extends AbstractExecutionStep {
       if (!wasInTransaction)
         context.getDatabase().commit();
     } catch (final Exception e) {
-      if (!wasInTransaction && context.getDatabase().isTransactionActive())
+      if (deferredBatch == null && !wasInTransaction && context.getDatabase().isTransactionActive())
         context.getDatabase().rollback();
       throw e;
+    }
+  }
+
+  /**
+   * Flushes a deferred DELETE batch built up by FOREACH iterations. Edges are deleted first,
+   * then vertices and other objects, so that vertex deletes never fail due to still-connected
+   * edges that are themselves about to be removed within the same iteration.
+   */
+  public static void flushDeferredDeletes(final CommandContext context, final List<Object[]> batch) {
+    if (batch == null || batch.isEmpty())
+      return;
+    final List<Object> edges = new ArrayList<>();
+    final List<Object[]> others = new ArrayList<>();
+    for (final Object[] entry : batch) {
+      final Object target = entry[0];
+      if (target instanceof Edge)
+        edges.add(target);
+      else
+        others.add(entry);
+    }
+    final Set<Object> deleted = new HashSet<>();
+    for (final Object edge : edges)
+      deleteObjectStatic(edge, deleted);
+    for (final Object[] entry : others) {
+      final Object target = entry[0];
+      final boolean detach = ((Boolean) entry[1]).booleanValue();
+      if (target instanceof Vertex v && !deleted.contains(v)) {
+        if (detach || hasOnlyDetachedEdges(v)) {
+          // Already deleted by edges pass or no edges left; safe to delete.
+          v.delete();
+          deleted.add(v);
+        } else {
+          // Connected edges still present and DETACH not requested -> raise standard error.
+          throw new com.arcadedb.exception.CommandExecutionException("DeleteConnectedNode: Cannot delete node "
+              + v.getIdentity() + " because it still has relationships. To delete this node, you must first delete"
+              + " its relationships, or use DETACH DELETE");
+        }
+      } else {
+        deleteObjectStatic(target, deleted);
+      }
+    }
+    batch.clear();
+  }
+
+  private static boolean hasOnlyDetachedEdges(final Vertex v) {
+    return !v.getEdges(Vertex.DIRECTION.OUT).iterator().hasNext()
+        && !v.getEdges(Vertex.DIRECTION.IN).iterator().hasNext();
+  }
+
+  private static void deleteObjectStatic(final Object obj, final Set<Object> deleted) {
+    if (obj == null || deleted.contains(obj))
+      return;
+    try {
+      if (obj instanceof Edge)
+        ((Edge) obj).delete();
+      else if (obj instanceof Vertex)
+        ((Vertex) obj).delete();
+      else if (obj instanceof Document)
+        ((Document) obj).delete();
+      deleted.add(obj);
+    } catch (final RecordNotFoundException ignored) {
+      deleted.add(obj);
     }
   }
 
@@ -217,6 +313,25 @@ public class DeleteStep extends AbstractExecutionStep {
         collectDeleteTargets(value, edges, other);
     } else
       other.add(obj);
+  }
+
+  /**
+   * Returns true when the textual target requires expression evaluation - in particular,
+   * function invocations such as {@code endNode(r)} that the legacy chained-access resolver
+   * cannot handle.
+   */
+  private static boolean isFunctionLikeTarget(final String variable) {
+    final int paren = variable.indexOf('(');
+    if (paren <= 0)
+      return false;
+    // Ensure the parenthesis is not preceded by a dot (e.g. a.b() would still be unusual).
+    // A leading identifier followed by '(' is the marker we care about.
+    for (int i = 0; i < paren; i++) {
+      final char c = variable.charAt(i);
+      if (!Character.isJavaIdentifierPart(c))
+        return false;
+    }
+    return true;
   }
 
   private Object resolveDeleteTarget(final String variable, final Result result) {

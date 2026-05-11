@@ -69,7 +69,7 @@ public class ReduceExpression implements Expression {
     final Object listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listExpression, result, context);
 
     if (listValue == null)
-      return accumulator;
+      return null;
 
     // Convert to iterable
     final Iterable<?> iterable;

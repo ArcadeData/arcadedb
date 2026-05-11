@@ -29,18 +29,33 @@ import java.util.List;
  * - DELETE r
  * - DETACH DELETE n (deletes node and all its relationships)
  * - DELETE n, r (deletes multiple elements)
+ * <p>
+ * The {@code variables} list holds the original textual form of each target (used for
+ * validation messages and for the legacy chained-access resolver). The {@code expressions}
+ * list, when populated, holds the parsed expression for each target so that function
+ * invocations such as {@code endNode(r)} can be evaluated against the current row.
  */
 public class DeleteClause {
-  private final List<String> variables;
-  private final boolean detach;
+  private final List<String>     variables;
+  private final List<Expression> expressions;
+  private final boolean          detach;
 
   public DeleteClause(final List<String> variables, final boolean detach) {
+    this(variables, null, detach);
+  }
+
+  public DeleteClause(final List<String> variables, final List<Expression> expressions, final boolean detach) {
     this.variables = variables;
+    this.expressions = expressions;
     this.detach = detach;
   }
 
   public List<String> getVariables() {
     return variables;
+  }
+
+  public List<Expression> getExpressions() {
+    return expressions;
   }
 
   public boolean isDetach() {

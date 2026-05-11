@@ -459,6 +459,46 @@ class OpenCypherExpressionTest {
     assertThat(resultSet.hasNext()).isFalse();
   }
 
+  /**
+   * Issue #4184: A map projection with a function-call computed field must materialize the full map.
+   * Previously {@code n{.name, upperName: toUpper(n.name)}} returned only the function value
+   * because the parser preferred the inner function invocation over the surrounding map projection.
+   */
+  @Test
+  void mapProjectionWithFunctionCallField() {
+    final ResultSet resultSet = database.query("opencypher",
+        "MATCH (n:Person) WHERE n.name = 'Alice' RETURN n{.name, upperName: toUpper(n.name)} AS proj");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    final Object projObj = result.getProperty("proj");
+    assertThat(projObj).isInstanceOf(Map.class);
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> proj = (Map<String, Object>) projObj;
+    assertThat(proj.get("name")).isEqualTo("Alice");
+    assertThat(proj.get("upperName")).isEqualTo("ALICE");
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  /**
+   * Issue #4184 variant: same bug surfaced with size() over an in-scope list variable.
+   */
+  @Test
+  void mapProjectionWithSizeFunctionField() {
+    final ResultSet resultSet = database.query("opencypher",
+        "MATCH (n:Person) WHERE n.name = 'Alice' WITH n, [] AS friends RETURN n{.name, friendCount: size(friends)} AS proj");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    final Object projObj = result.getProperty("proj");
+    assertThat(projObj).isInstanceOf(Map.class);
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> proj = (Map<String, Object>) projObj;
+    assertThat(proj.get("name")).isEqualTo("Alice");
+    assertThat(proj.get("friendCount")).isEqualTo(0L);
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
   @Test
   void mapProjectionAllProperties() {
     final ResultSet resultSet = database.query("opencypher",

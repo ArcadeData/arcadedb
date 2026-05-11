@@ -161,9 +161,32 @@ public class ForeachStep extends AbstractExecutionStep {
       // Bind the iteration variable
       iterationRow.setProperty(variable, element);
 
-      // Execute each inner clause
-      for (final ClauseEntry clauseEntry : foreachClause.getInnerClauses())
-        executeInnerClause(clauseEntry, iterationRow, context);
+      // Defer DELETE within this iteration so multiple DELETE clauses (e.g. DELETE endNode(r)
+      // followed by DELETE r) execute as if Cypher's end-of-statement delete batching applied.
+      // Edges are flushed before vertices to avoid spurious DeleteConnectedNode errors.
+      final Object previousBatch = context.getVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR);
+      final List<Object[]> deleteBatch = new ArrayList<>();
+      context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, deleteBatch);
+      final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+      try {
+        if (!wasInTransaction)
+          context.getDatabase().begin();
+
+        // Execute each inner clause
+        for (final ClauseEntry clauseEntry : foreachClause.getInnerClauses())
+          executeInnerClause(clauseEntry, iterationRow, context);
+
+        DeleteStep.flushDeferredDeletes(context, deleteBatch);
+
+        if (!wasInTransaction)
+          context.getDatabase().commit();
+      } catch (final RuntimeException e) {
+        if (!wasInTransaction && context.getDatabase().isTransactionActive())
+          context.getDatabase().rollback();
+        throw e;
+      } finally {
+        context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, previousBatch);
+      }
     }
   }
 

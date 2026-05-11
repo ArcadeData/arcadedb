@@ -121,14 +121,26 @@ public class ProjectReturnStep extends AbstractExecutionStep {
 
             final ResultInternal projectedResult = projectResult(inputResult);
 
-            // Apply DISTINCT deduplication based on projected output columns only
+            // Apply DISTINCT deduplication based on projected output columns only.
+            // For RETURN DISTINCT *, the single return item is the unexpanded "*" which never
+            // appears as a property on the projected result, so dedup against the full set of
+            // in-scope properties instead (sorted for stable hashing across rows).
             if (distinct) {
               final StringBuilder keyBuilder = new StringBuilder();
-              for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
-                final String outputName = item.getOutputName();
-                keyBuilder.append(outputName).append('=');
-                final Object val = projectedResult.getProperty(outputName);
-                keyBuilder.append(val).append('|');
+              if (returnClause.isReturnAll()) {
+                final List<String> propNames = new ArrayList<>(projectedResult.getPropertyNames());
+                java.util.Collections.sort(propNames);
+                for (final String name : propNames) {
+                  final Object val = projectedResult.getProperty(name);
+                  keyBuilder.append(name).append('=').append(val).append('|');
+                }
+              } else {
+                for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+                  final String outputName = item.getOutputName();
+                  keyBuilder.append(outputName).append('=');
+                  final Object val = projectedResult.getProperty(outputName);
+                  keyBuilder.append(val).append('|');
+                }
               }
               if (!seenResults.add(keyBuilder.toString()))
                 continue;
