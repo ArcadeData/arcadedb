@@ -44,7 +44,16 @@ public class DefaultLogger implements Logger {
   private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
   private static final String FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
 
-  private volatile boolean initialized = false;
+  /**
+   * Static so that a second {@link DefaultLogger} instance installed via
+   * {@link com.arcadedb.log.LogManager#setLogger(Logger)} (typically by a test that swaps in a
+   * capturing logger and restores a fresh DefaultLogger in a finally block) does not re-run
+   * {@link #installCustomFormatter()} and {@code LogManager.getLogManager().readConfiguration()}.
+   * That re-read resets every JUL logger's level back to the file defaults, silently undoing
+   * any level overrides installed by other code (e.g. tests capturing WARNING records on a
+   * logger whose effective level is otherwise SEVERE per arcadedb-log.properties).
+   */
+  private static volatile boolean initialized = false;
 
   /**
    * Flag to indicate the JVM is shutting down. When true, log messages are written
