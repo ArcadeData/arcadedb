@@ -27,6 +27,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintWriter;
+import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
@@ -64,6 +65,7 @@ class LoggerTest extends TestHelper {
       final File defaultLogDir = new File("./log");
       final boolean existedBefore = defaultLogDir.exists();
 
+      resetDefaultLoggerInitialized();
       final DefaultLogger logger = new DefaultLogger();
       logger.init();
 
@@ -106,6 +108,7 @@ class LoggerTest extends TestHelper {
     System.setProperty("java.util.logging.config.file", customProps.getAbsolutePath());
 
     try {
+      resetDefaultLoggerInitialized();
       final DefaultLogger logger = new DefaultLogger();
       logger.init();
 
@@ -147,6 +150,7 @@ class LoggerTest extends TestHelper {
     System.setProperty("java.util.logging.config.file", customProps.getAbsolutePath());
 
     try {
+      resetDefaultLoggerInitialized();
       final DefaultLogger logger = new DefaultLogger();
       logger.init();
 
@@ -159,6 +163,18 @@ class LoggerTest extends TestHelper {
       if (customLogDir.exists())
         deleteTree(customLogDir.toPath());
     }
+  }
+
+  /**
+   * Reset DefaultLogger.initialized so init() actually runs in tests that exercise the
+   * directory-creation logic. The static flag exists to prevent a second DefaultLogger
+   * (typically installed by tests that swap in a capturing logger) from re-reading the
+   * JUL configuration and clobbering logger levels - production behavior must stay as-is.
+   */
+  private static void resetDefaultLoggerInitialized() throws ReflectiveOperationException {
+    final Field f = DefaultLogger.class.getDeclaredField("initialized");
+    f.setAccessible(true);
+    f.setBoolean(null, false);
   }
 
   private void restoreLogConfig(final String prevProp) throws IOException {
