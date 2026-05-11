@@ -31,18 +31,18 @@ import java.time.Duration;
 import java.util.logging.Level;
 
 /**
- * Tries the WAL delta endpoint first; falls back to the existing full-snapshot path on
- * {@code 412 Precondition Failed} (no WAL retained, gap too big), {@code 5xx}, or any I/O failure.
+ * Tries the transaction-delta endpoint first; falls back to the existing full-snapshot path on
+ * {@code 412 Precondition Failed} (Ratis log doesn't cover the gap), {@code 5xx}, or any I/O failure.
  * <p>
  * Issue #4147 phase 6. Used by the bootstrap mismatch path
  * ({@code ArcadeStateMachine.applyBootstrapFingerprintEntry}) and, in time, the runtime catch-up
  * path ({@code SnapshotInstaller}'s callers). The wrapper deliberately does not change the
  * full-snapshot install machinery in any way - all behaviour preserved on the fallback - so this
- * code can ship before WAL retention lands.
+ * code can ship before Ratis-log delta serving lands.
  * <p>
  * <b>Status:</b> the delta endpoint is currently a 412-only stub (phase 6a scaffolding). Real
- * WAL retention + delta serving is the follow-up issue. When that ships, the same wrapper picks
- * up delta success automatically; no caller-side change.
+ * Ratis-log delta serving is the follow-up. When that ships, the same wrapper picks up delta
+ * success automatically; no caller-side change.
  */
 final class BootstrapDeltaInstaller {
 
@@ -75,8 +75,8 @@ final class BootstrapDeltaInstaller {
     final long gap = sourceLastTxId - localLastTxId;
     if (deltaThreshold > 0 && gap > 0 && gap <= deltaThreshold && sourceHttpAddr != null) {
       // Gap is within the threshold; ask the source to ship just the delta. On failure (most
-      // commonly 412 because WAL retention isn't implemented yet) fall through to the full
-      // snapshot path.
+      // commonly 412 because Ratis-log delta serving isn't implemented yet) fall through to the
+      // full snapshot path.
       if (tryDelta(dbName, sourceHttpAddr, clusterToken, localLastTxId, gap))
         return;
     } else if (gap > deltaThreshold) {
@@ -86,14 +86,14 @@ final class BootstrapDeltaInstaller {
     }
 
     // Fallback: full leader-shipped snapshot, identical to the legacy path. This is the
-    // pre-#4147 behaviour and stays the only safe choice until WAL retention lands.
+    // pre-#4147 behaviour and stays the only safe choice until Ratis-log delta serving lands.
     SnapshotInstaller.install(dbName, databasePath, sourceHttpAddr, clusterToken, server);
   }
 
   /**
    * Attempt the delta endpoint. Returns {@code true} if the local database was successfully
-   * brought up to date via WAL replay; {@code false} on 412 / 5xx / I/O failure (caller falls
-   * back to full snapshot).
+   * brought up to date via transaction-delta replay; {@code false} on 412 / 5xx / I/O failure
+   * (caller falls back to full snapshot).
    */
   private static boolean tryDelta(final String dbName, final String sourceHttpAddr, final String clusterToken,
       final long fromTxId, final long expectedGap) {

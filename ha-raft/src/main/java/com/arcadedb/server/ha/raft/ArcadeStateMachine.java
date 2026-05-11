@@ -856,8 +856,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     // Mismatch: try the delta endpoint first (issue #4147 phase 6); on 412 or any failure fall
     // through to the existing leader-shipped full snapshot. Behaviour is identical to today's
-    // legacy path until WAL retention lands; the wrapper just plumbs the wire so a later phase
-    // can flip to delta replay without churning callers.
+    // legacy path until Ratis-log delta serving lands; the wrapper just plumbs the wire so a
+    // later phase can flip to delta replay without churning callers.
     LogManager.instance().log(this, Level.INFO,
         "Database '%s' bootstrap mismatch (local lastTxId=%d / fp=%s..., baseline lastTxId=%d / fp=%s...); "
             + "attempting delta then full-snapshot fallback",
@@ -867,10 +867,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Close the local database and pull either a WAL delta (when the gap is within
-   * {@code arcadedb.ha.bootstrapDeltaThreshold} and the source has retained WAL) or a full
-   * snapshot from the current leader. Falls back to full snapshot on any delta-path failure.
-   * Same low-level snapshot install machinery as
+   * Close the local database and pull either a transaction delta (when the gap is within
+   * {@code arcadedb.ha.bootstrapDeltaThreshold} and the source's Ratis log still covers the
+   * fromTxId) or a full snapshot from the current leader. Falls back to full snapshot on any
+   * delta-path failure. Same low-level snapshot install machinery as
    * {@code applyInstallDatabaseEntry(forceSnapshot=true)}.
    */
   private void installFromLeaderForBootstrap(final String dbName, final long localLastTxId,
