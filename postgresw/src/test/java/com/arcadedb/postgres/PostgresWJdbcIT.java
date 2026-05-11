@@ -797,7 +797,13 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
       // Inline the ids in a Cypher list literal - what client-side parameter substitution
       // produces. The query mirrors the failing python test, ending in 0 rows pre-fix.
-      final String inList = "[" + ids[0] + "," + ids[1] + "," + ids[2] + "]";
+      final StringBuilder inList = new StringBuilder("[");
+      for (int i = 0; i < ids.length; i++) {
+        if (i > 0)
+          inList.append(",");
+        inList.append(ids[i]);
+      }
+      inList.append("]");
       try (var st = conn.createStatement()) {
         try (var rs = st.executeQuery(
             "{opencypher} MATCH (n:CHUNK) WHERE ID(n) IN " + inList + " RETURN n.text AS text ORDER BY n.text")) {

@@ -150,7 +150,7 @@ public class InExpression implements BooleanExpression {
     // ["#1:0"]} keeps matching the records whose id() now reports {@code 4294967296}. See the same
     // coercion in {@link ComparisonExpression#compareValuesTernary} for the equality path. Only the
     // RID-string form is coerced - numeric strings are ambiguous and treating them as ids would
-    // break the Cypher TCK invariant that {@code 5 IN ["5"]} returns false.
+    // break the Cypher TCK invariant that 5 IN ["5"] returns false.
     if (a instanceof Number leftNum && b instanceof String rightStr && RID.is(rightStr))
       return leftNum.longValue() == IdFunction.encodeRidAsLong(new RID(rightStr));
     if (a instanceof String leftStr && b instanceof Number rightNum && RID.is(leftStr))

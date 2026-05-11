@@ -112,7 +112,7 @@ public class ComparisonExpression implements BooleanExpression {
     // working without forcing callers to migrate. Both equality and ordering use the encoded long so
     // ordering stays consistent with id() / RID natural order. Only the RID-string form is coerced -
     // numeric strings are ambiguous and treating them as ids would break the Cypher TCK invariant
-    // that {@code 5 = "5"} returns false.
+    // that 5 = "5" returns false.
     if (left instanceof Number leftNum && right instanceof String rightStr && RID.is(rightStr)) {
       final long leftEncoded = leftNum.longValue();
       final long rightEncoded = IdFunction.encodeRidAsLong(new RID(rightStr));

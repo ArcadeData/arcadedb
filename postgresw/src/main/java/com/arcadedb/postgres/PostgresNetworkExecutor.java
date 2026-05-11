@@ -755,10 +755,8 @@ public class PostgresNetworkExecutor extends Thread {
           // and a {@code WHERE id(n) IN $array} parameter loop silently mismatches Long vs. String.
           final Object value = row.getProperty(p);
           final PostgresType pgType = PostgresType.getTypeForValue(value);
-          if (pgType.isArrayType())
+          if (pgType.isArrayType() || pgType == PostgresType.LONG)
             columns.put(p, pgType);
-          else if (pgType == PostgresType.LONG)
-            columns.put(p, PostgresType.LONG);
           else
             columns.put(p, PostgresType.VARCHAR);
         }
