@@ -405,6 +405,8 @@ server/backups
 # Ignore Vim Swap/Cache files
 *~
 .java-version
+.superpowers/
+.worktrees/
 .run/
 integration/server-users.jsonl
 server/replication/
