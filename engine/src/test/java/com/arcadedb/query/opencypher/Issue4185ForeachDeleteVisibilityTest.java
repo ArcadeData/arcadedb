@@ -165,6 +165,33 @@ class Issue4185ForeachDeleteVisibilityTest {
   }
 
   /**
+   * FOREACH+DELETE inside an already-active outer transaction must reuse that transaction:
+   * the outer transaction owns commit/rollback, the FOREACH neither begins nor commits.
+   */
+  @Test
+  void foreachDeleteInsideOuterTransaction() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})");
+    });
+
+    database.transaction(() -> {
+      database.command("opencypher",
+          """
+              MATCH p = ()-[*]->()
+              WITH relationships(p) AS rels
+              FOREACH (r IN rels | DELETE endNode(r) DELETE r)""");
+    });
+
+    final ResultSet verify = database.query("opencypher", "MATCH (n:Node) RETURN n.name AS name ORDER BY name");
+    final List<String> names = new ArrayList<>();
+    while (verify.hasNext()) {
+      names.add(verify.next().getProperty("name"));
+    }
+    assertThat(names).containsExactly("A");
+  }
+
+  /**
    * Control: when there is no later MATCH, deletion must still work.
    */
   @Test

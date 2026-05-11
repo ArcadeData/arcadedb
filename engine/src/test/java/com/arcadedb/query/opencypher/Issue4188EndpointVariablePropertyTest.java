@@ -109,6 +109,20 @@ class Issue4188EndpointVariablePropertyTest {
   }
 
   /**
+   * Variant: the bound value can also come from a query parameter ($name). This exercises
+   * ParameterReference resolution adjacent to the new Expression evaluation path.
+   */
+  @Test
+  void endpointPropertyBoundFromParameter() {
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (p:Person)-[:FRIEND]->(:Person {name: $fName}) RETURN p.name AS person",
+        java.util.Map.of("fName", "Bob"));
+
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<String>getProperty("person")).isEqualTo("Alice");
+  }
+
+  /**
    * Variant: the bound variable can also come from an UNWIND.
    */
   @Test

@@ -883,11 +883,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     return true;
   }
 
-  /**
-   * Checks if a target vertex matches the inline property constraints from the target node pattern.
-   * When a property map value is an Expression (e.g., a variable from a preceding WITH clause),
-   * it is evaluated against the current input row before comparison.
-   */
+  /** Checks if the target vertex satisfies the inline property map; Expression values are evaluated against currentResult. */
   private boolean matchesTargetProperties(final Vertex vertex, final Result currentResult) {
     if (targetNodePattern == null || !targetNodePattern.hasProperties())
       return true;

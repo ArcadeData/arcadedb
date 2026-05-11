@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CreateClause;
@@ -150,11 +151,7 @@ public class ForeachStep extends AbstractExecutionStep {
 
     final String variable = foreachClause.getVariable();
 
-    // Defer DELETE within each FOREACH iteration so multiple DELETE clauses (e.g.
-    // DELETE endNode(r) followed by DELETE r) execute as if Cypher's end-of-statement
-    // delete batching applied. Edges are flushed before vertices to avoid spurious
-    // DeleteConnectedNode errors. The save/restore around DEFERRED_DELETE_BATCH_VAR keeps
-    // nested FOREACH iterations independent.
+    // Per-iteration deferred-delete batching: see DeleteStep.DEFERRED_DELETE_BATCH_VAR.
     final Object previousBatch = context.getVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR);
     final boolean wasInTransaction = context.getDatabase().isTransactionActive();
     try {
@@ -162,20 +159,14 @@ public class ForeachStep extends AbstractExecutionStep {
         context.getDatabase().begin();
 
       for (final Object element : iterable) {
-        // Create a new result row with the iteration variable bound
         final ResultInternal iterationRow = new ResultInternal();
-
-        // Copy all properties from input row
         for (final String prop : inputRow.getPropertyNames())
           iterationRow.setProperty(prop, inputRow.getProperty(prop));
-
-        // Bind the iteration variable
         iterationRow.setProperty(variable, element);
 
         final List<DeleteStep.DeferredDeleteTarget> deleteBatch = new ArrayList<>();
         context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, deleteBatch);
         try {
-          // Execute each inner clause
           for (final ClauseEntry clauseEntry : foreachClause.getInnerClauses())
             executeInnerClause(clauseEntry, iterationRow, context);
 
@@ -187,10 +178,12 @@ public class ForeachStep extends AbstractExecutionStep {
 
       if (!wasInTransaction)
         context.getDatabase().commit();
-    } catch (final RuntimeException e) {
+    } catch (final Exception e) {
       if (!wasInTransaction && context.getDatabase().isTransactionActive())
         context.getDatabase().rollback();
-      throw e;
+      if (e instanceof RuntimeException re)
+        throw re;
+      throw new CommandExecutionException("FOREACH execution failed", e);
     }
   }
 

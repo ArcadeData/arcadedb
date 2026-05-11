@@ -78,12 +78,13 @@ class Issue4189ReturnDistinctStarTest {
   void returnDistinctStarAfterTrivialWith() {
     final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WITH p RETURN DISTINCT *");
 
-    int count = 0;
+    final List<String> names = new ArrayList<>();
     while (rs.hasNext()) {
-      rs.next();
-      count++;
+      final Vertex p = rs.next().<Vertex>getProperty("p");
+      assertThat(p).isNotNull();
+      names.add(p.getString("name"));
     }
-    assertThat(count).isEqualTo(2);
+    assertThat(names).hasSize(2).containsExactlyInAnyOrder("Alice", "Bob");
   }
 
   /**

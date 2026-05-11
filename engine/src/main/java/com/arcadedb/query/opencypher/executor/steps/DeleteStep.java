@@ -155,20 +155,10 @@ public class DeleteStep extends AbstractExecutionStep {
     };
   }
 
-  /**
-   * Context variable name used by ForeachStep to enable deferred deletion within a single
-   * FOREACH iteration. When the variable holds a list of {@link DeferredDeleteTarget},
-   * DeleteStep appends its targets to that list instead of deleting immediately; ForeachStep
-   * then applies the batched deletes with proper edges-first ordering at end of iteration.
-   */
+  /** CommandContext variable holding the deferred-delete batch within a FOREACH iteration. */
   public static final String DEFERRED_DELETE_BATCH_VAR = "__cypherDeferredDelete__";
 
-  /**
-   * Entry queued by DeleteStep when running inside a FOREACH iteration. {@code target} is the
-   * graph object whose deletion is deferred; {@code detach} preserves whether the originating
-   * DELETE clause was a {@code DETACH DELETE} so the flush phase can route vertex deletion
-   * correctly.
-   */
+  /** Target queued by DeleteStep while running inside a FOREACH iteration. */
   public record DeferredDeleteTarget(Object target, boolean detach) {
   }
 
@@ -200,9 +190,6 @@ public class DeleteStep extends AbstractExecutionStep {
       final List<Expression> expressions = deleteClause.getExpressions();
       for (int i = 0; i < variables.size(); i++) {
         final String variable = variables.get(i);
-        // Prefer the parsed Expression form when available so function-call targets such as
-        // endNode(r), startNode(r), head(list) are evaluated against the current row rather
-        // than parsed as a chained property access.
         final Object obj;
         if (expressions != null && i < expressions.size() && expressions.get(i) != null
             && isFunctionLikeTarget(variable)) {
@@ -218,8 +205,6 @@ public class DeleteStep extends AbstractExecutionStep {
       }
 
       if (deferredBatch != null) {
-        // Cypher semantics within a FOREACH iteration: queue both edges and vertices and let the
-        // iteration end flush them with the correct ordering.
         final boolean detach = deleteClause.isDetach();
         for (final Object edge : allEdges)
           deferredBatch.add(new DeferredDeleteTarget(edge, detach));
@@ -244,11 +229,7 @@ public class DeleteStep extends AbstractExecutionStep {
     }
   }
 
-  /**
-   * Flushes a deferred DELETE batch built up by FOREACH iterations. Edges are deleted first,
-   * then vertices and other objects, so that vertex deletes never fail due to still-connected
-   * edges that are themselves about to be removed within the same iteration.
-   */
+  /** Flush deferred DELETE batch built up by a FOREACH iteration: edges first, then vertices. */
   public static void flushDeferredDeletes(final CommandContext context, final List<DeferredDeleteTarget> batch) {
     if (batch == null || batch.isEmpty())
       return;
@@ -266,12 +247,10 @@ public class DeleteStep extends AbstractExecutionStep {
     for (final DeferredDeleteTarget entry : others) {
       final Object target = entry.target();
       if (target instanceof Vertex v && !deleted.contains(v)) {
-        if (entry.detach() || hasOnlyDetachedEdges(v)) {
-          // Already deleted by edges pass or no edges left; safe to delete.
+        if (entry.detach() || hasNoEdges(v)) {
           v.delete();
           deleted.add(v);
         } else {
-          // Connected edges still present and DETACH not requested -> raise standard error.
           throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node "
               + v.getIdentity() + " because it still has relationships. To delete this node, you must first delete"
               + " its relationships, or use DETACH DELETE");
@@ -283,46 +262,12 @@ public class DeleteStep extends AbstractExecutionStep {
     batch.clear();
   }
 
-  private static boolean hasOnlyDetachedEdges(final Vertex v) {
-    // Materialize so we don't leak the underlying cursor when the iterator is closeable.
-    try (final var outIter = closeableOf(v.getEdges(Vertex.DIRECTION.OUT).iterator())) {
-      if (outIter.delegate().hasNext())
-        return false;
-    } catch (final Exception ignored) {
-      // ignore - we only care about iteration state
-    }
-    try (final var inIter = closeableOf(v.getEdges(Vertex.DIRECTION.IN).iterator())) {
-      if (inIter.delegate().hasNext())
-        return false;
-    } catch (final Exception ignored) {
-      // ignore
-    }
-    return true;
-  }
-
-  /**
-   * Wraps an iterator in an AutoCloseable so try-with-resources can release it when the
-   * underlying iterator owns a cursor or other resource.
-   */
-  private static <T> CloseableIteratorRef<T> closeableOf(final Iterator<T> it) {
-    return new CloseableIteratorRef<>(it);
-  }
-
-  private static final class CloseableIteratorRef<T> implements AutoCloseable {
-    private final Iterator<T> it;
-
-    CloseableIteratorRef(final Iterator<T> it) {
-      this.it = it;
-    }
-
-    Iterator<T> delegate() {
-      return it;
-    }
-
-    @Override
-    public void close() throws Exception {
-      if (it instanceof AutoCloseable ac)
-        ac.close();
+  private static boolean hasNoEdges(final Vertex v) {
+    try {
+      return v.countEdges(Vertex.DIRECTION.BOTH) == 0L;
+    } catch (final RecordNotFoundException ignored) {
+      // vertex was already removed by the batch flush - treat as isolated
+      return true;
     }
   }
 
@@ -362,11 +307,7 @@ public class DeleteStep extends AbstractExecutionStep {
       other.add(obj);
   }
 
-  /**
-   * Returns true when the textual target requires expression evaluation - in particular,
-   * function invocations such as {@code endNode(r)} that the legacy chained-access resolver
-   * cannot handle.
-   */
+  /** True when the textual target looks like a function call - needs Expression-based evaluation. */
   private static boolean isFunctionLikeTarget(final String variable) {
     final int paren = variable.indexOf('(');
     if (paren <= 0)

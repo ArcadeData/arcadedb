@@ -35,6 +35,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -121,16 +122,12 @@ public class ProjectReturnStep extends AbstractExecutionStep {
 
             final ResultInternal projectedResult = projectResult(inputResult);
 
-            // Apply DISTINCT deduplication based on projected output columns only.
-            // For RETURN DISTINCT *, the single return item is the unexpanded "*" which never
-            // appears as a property on the projected result, so dedup against the full set of
-            // in-scope properties instead (sorted for stable hashing across rows).
+            // DISTINCT: for RETURN * the single return item is the unexpanded "*", so hash on
+            // the projected row's properties (sorted for stable ordering across rows) instead.
             if (distinct) {
               final StringBuilder keyBuilder = new StringBuilder();
               if (returnClause.isReturnAll()) {
-                final List<String> propNames = new ArrayList<>(projectedResult.getPropertyNames());
-                propNames.sort(null);
-                for (final String name : propNames) {
+                for (final String name : new TreeSet<>(projectedResult.getPropertyNames())) {
                   final Object val = projectedResult.getProperty(name);
                   keyBuilder.append(name).append('=').append(val).append('|');
                 }
