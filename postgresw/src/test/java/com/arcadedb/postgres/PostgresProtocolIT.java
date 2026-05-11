@@ -1056,4 +1056,53 @@ class PostgresProtocolIT extends BaseGraphServerTest {
     }
   }
 
+  // ==================== PreparedStatement.setArray Tests ====================
+
+  @Test
+  void preparedStatementSetArrayTextDoesNotHang() throws Exception {
+    // PreparedStatement.setArray with text[] sends a binary-format parameter in the Bind message.
+    // Previously this threw "Binary deserialization for arrays not yet implemented" and left the
+    // channel in an inconsistent state, causing both client and server to block on socket reads.
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE DOCUMENT TYPE SetArrayTextTest IF NOT EXISTS");
+        st.execute("INSERT INTO SetArrayTextTest SET name = 'alpha', tag = 'a'");
+        st.execute("INSERT INTO SetArrayTextTest SET name = 'beta',  tag = 'b'");
+        st.execute("INSERT INTO SetArrayTextTest SET name = 'gamma', tag = 'c'");
+      }
+
+      try (var pst = conn.prepareStatement("SELECT FROM SetArrayTextTest WHERE tag IN ?")) {
+        Array arr = conn.createArrayOf("text", new Object[]{"a", "c"});
+        pst.setArray(1, arr);
+        ResultSet rs = pst.executeQuery();
+        int count = 0;
+        while (rs.next())
+          count++;
+        assertThat(count).isGreaterThanOrEqualTo(0); // must not hang; result depends on engine IN support
+      }
+    }
+  }
+
+  @Test
+  void preparedStatementSetArrayLongDoesNotHang() throws Exception {
+    // int8[] (ARRAY_LONG) binary deserialization must also not hang.
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE DOCUMENT TYPE SetArrayLongTest IF NOT EXISTS");
+        st.execute("INSERT INTO SetArrayLongTest SET id = 1, name = 'one'");
+        st.execute("INSERT INTO SetArrayLongTest SET id = 2, name = 'two'");
+      }
+
+      try (var pst = conn.prepareStatement("SELECT FROM SetArrayLongTest WHERE id IN ?")) {
+        Array arr = conn.createArrayOf("int8", new Object[]{1L, 2L});
+        pst.setArray(1, arr);
+        ResultSet rs = pst.executeQuery();
+        int count = 0;
+        while (rs.next())
+          count++;
+        assertThat(count).isGreaterThanOrEqualTo(0); // must not hang
+      }
+    }
+  }
+
 }

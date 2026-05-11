@@ -698,11 +698,108 @@ class PostgresTypeTest {
   }
 
   @Test
-  void deserializeBinaryArrayNotSupported() {
-    byte[] data = new byte[10];
-    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.ARRAY_INT.code, 1, data))
-        .isInstanceOf(PostgresProtocolException.class)
-        .hasMessageContaining("not yet implemented");
+  void deserializeBinaryArrayText() {
+    // PostgreSQL binary format for text[] {'foo','bar'}:
+    // ndim=1, hasnull=0, elemOid=25 (text), dim=2, lb=1, then two elements
+    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);        // ndim
+    buf.putInt(0);        // hasnull
+    buf.putInt(25);       // elemOid: text
+    buf.putInt(2);        // dim size
+    buf.putInt(1);        // lower bound
+    byte[] foo = "foo".getBytes();
+    buf.putInt(foo.length);
+    buf.put(foo);
+    byte[] bar = "bar".getBytes();
+    buf.putInt(bar.length);
+    buf.put(bar);
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    Object result = PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, data);
+    assertThat(result).isInstanceOf(ArrayList.class);
+    @SuppressWarnings("unchecked")
+    ArrayList<String> list = (ArrayList<String>) result;
+    assertThat(list).containsExactly("foo", "bar");
+  }
+
+  @Test
+  void deserializeBinaryArrayLong() {
+    // PostgreSQL binary format for int8[] {100, 200, 300}
+    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);        // ndim
+    buf.putInt(0);        // hasnull
+    buf.putInt(20);       // elemOid: int8
+    buf.putInt(3);        // dim size
+    buf.putInt(1);        // lower bound
+    for (long v : new long[]{100L, 200L, 300L}) {
+      buf.putInt(8);
+      buf.putLong(v);
+    }
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    Object result = PostgresType.deserialize(PostgresType.ARRAY_LONG.code, 1, data);
+    assertThat(result).isInstanceOf(ArrayList.class);
+    @SuppressWarnings("unchecked")
+    ArrayList<Long> list = (ArrayList<Long>) result;
+    assertThat(list).containsExactly(100L, 200L, 300L);
+  }
+
+  @Test
+  void deserializeBinaryArrayInt() {
+    // PostgreSQL binary format for int4[] {1, 2, 3}
+    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);        // ndim
+    buf.putInt(0);        // hasnull
+    buf.putInt(23);       // elemOid: int4
+    buf.putInt(3);        // dim size
+    buf.putInt(1);        // lower bound
+    for (int v : new int[]{1, 2, 3}) {
+      buf.putInt(4);
+      buf.putInt(v);
+    }
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    Object result = PostgresType.deserialize(PostgresType.ARRAY_INT.code, 1, data);
+    assertThat(result).isInstanceOf(ArrayList.class);
+    @SuppressWarnings("unchecked")
+    ArrayList<Integer> list = (ArrayList<Integer>) result;
+    assertThat(list).containsExactly(1, 2, 3);
+  }
+
+  @Test
+  void deserializeBinaryArrayEmpty() {
+    // ndim=0 should return an empty list
+    ByteBuffer buf = ByteBuffer.allocate(12).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(0);   // ndim
+    buf.putInt(0);   // hasnull
+    buf.putInt(25);  // elemOid: text
+    Object result = PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, buf.array());
+    assertThat(result).isInstanceOf(ArrayList.class);
+    assertThat((ArrayList<?>) result).isEmpty();
+  }
+
+  @Test
+  void deserializeBinaryArrayWithNullElement() {
+    // text[] {'foo', NULL, 'baz'} - null elements have elemLen == -1
+    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);   // ndim
+    buf.putInt(1);   // hasnull
+    buf.putInt(25);  // elemOid: text
+    buf.putInt(3);   // dim size
+    buf.putInt(1);   // lower bound
+    byte[] foo = "foo".getBytes();
+    buf.putInt(foo.length);
+    buf.put(foo);
+    buf.putInt(-1);  // null element
+    byte[] baz = "baz".getBytes();
+    buf.putInt(baz.length);
+    buf.put(baz);
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    Object result = PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, data);
+    assertThat(result).isInstanceOf(ArrayList.class);
+    @SuppressWarnings("unchecked")
+    ArrayList<String> list = (ArrayList<String>) result;
+    assertThat(list).hasSize(3);
+    assertThat(list.get(0)).isEqualTo("foo");
+    assertThat(list.get(1)).isNull();
+    assertThat(list.get(2)).isEqualTo("baz");
   }
 
   @Test

@@ -509,12 +509,49 @@ public enum PostgresType {
         buffer.get(bytes);
         yield new JSONObject(new String(bytes));
       }
-      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON -> {
-        // For binary format, would need to implement proper array binary deserialization
-        // This is a simplified placeholder - proper implementation would need to handle
-        // array dimensions and element deserialization according to PostgreSQL protocol
-        throw new PostgresProtocolException("Binary deserialization for arrays not yet implemented");
+      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON ->
+          deserializeBinaryArray(buffer);
+    };
+  }
+
+  private static ArrayList<Object> deserializeBinaryArray(ByteBuffer buffer) {
+    final int ndim = buffer.getInt();    // number of dimensions
+    buffer.getInt();                      // hasnull flag (unused)
+    final int elemOid = buffer.getInt(); // element type OID
+
+    if (ndim == 0)
+      return new ArrayList<>();
+
+    int totalElements = 1;
+    for (int d = 0; d < ndim; d++) {
+      totalElements *= buffer.getInt();  // dim size
+      buffer.getInt();                   // lower bound (unused)
+    }
+
+    final ArrayList<Object> result = new ArrayList<>(totalElements);
+    for (int i = 0; i < totalElements; i++) {
+      final int elemLen = buffer.getInt();
+      if (elemLen == -1) {
+        result.add(null);
+      } else {
+        final byte[] elemBytes = new byte[elemLen];
+        buffer.get(elemBytes);
+        result.add(deserializeBinaryElement(elemOid, elemBytes));
       }
+    }
+    return result;
+  }
+
+  private static Object deserializeBinaryElement(final int elemOid, final byte[] bytes) {
+    final ByteBuffer buf = ByteBuffer.wrap(bytes);
+    return switch (elemOid) {
+      case 16 -> buf.get() != 0;                                              // bool
+      case 20 -> buf.getLong();                                               // int8
+      case 21 -> buf.getShort();                                              // int2
+      case 23 -> buf.getInt();                                                // int4
+      case 700 -> buf.getFloat();                                             // float4
+      case 701 -> buf.getDouble();                                            // float8
+      default -> new String(bytes, DatabaseFactory.getDefaultCharset());      // text/varchar/bpchar/json/unknown
     };
   }
 
