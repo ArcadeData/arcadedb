@@ -19,19 +19,17 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.IOException;
-import java.util.ArrayList;
+import java.lang.reflect.Field;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
-import java.util.logging.Handler;
 import java.util.logging.Level;
-import java.util.logging.LogRecord;
-import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -52,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
 
   @Test
-  void unrelinkableOrphanIndexReferenceIsScrubbedFromSchemaJsonOnLoad() throws IOException {
+  void unrelinkableOrphanIndexReferenceIsScrubbedFromSchemaJsonOnLoad() throws Exception {
     database.transaction(() -> {
       final VertexType type = database.getSchema().createVertexType("Widget");
       type.createProperty("code", Type.STRING);
@@ -92,39 +90,25 @@ class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
       w.write(schemaJson.toString());
     }
 
-    // Attach the capturing handler to BOTH the LocalSchema logger and the root logger so we
-    // receive WARNING records regardless of test-ordering effects on JUL state. Some earlier test
-    // can leave the LocalSchema logger configured in a way (custom filter, useParentHandlers
-    // flipped, level overridden) that suppresses the warning at one level; attaching to both the
-    // origin logger and its common ancestor makes the capture insensitive to that residue.
-    final CapturingHandler firstHandler = new CapturingHandler();
-    firstHandler.setLevel(Level.WARNING);
-    final Logger logger = Logger.getLogger(LocalSchema.class.getName());
-    final Logger rootLogger = Logger.getLogger("");
-    logger.addHandler(firstHandler);
-    rootLogger.addHandler(firstHandler);
-    final Level prev = logger.getLevel();
-    logger.setLevel(Level.ALL);
-    // Also force the parent loggers to ALL so JUL's effective-level check does not filter out
-    // WARNING records before they reach our handler. The arcadedb-log.properties test config sets
-    // {@code com.arcadedb.level=SEVERE} which propagates by inheritance to any descendant whose
-    // own level is null; explicitly overriding com.arcadedb here makes the assertion robust
-    // against earlier tests that may have reset LocalSchema's level back to null.
-    final Logger arcadeLogger = Logger.getLogger("com.arcadedb");
-    final Level prevArcade = arcadeLogger.getLevel();
-    arcadeLogger.setLevel(Level.ALL);
+    // Capture warnings by swapping the active LogManager logger for the duration of the test.
+    // This bypasses JUL entirely, so the assertion does not depend on JUL configuration state
+    // left over by earlier tests in the same JVM (logger levels, filters, handler chains).
+    // The pattern mirrors QueryEngineManagerPoolTest.saturationLogsThrottledWarning.
+    final List<String> warnings = new CopyOnWriteArrayList<>();
+    final Logger originalLogger = readField(LogManager.instance(), "logger");
+    LogManager.instance().setLogger(new CapturingLogger(warnings, originalLogger));
 
     try {
       // First reopen: the warning fires, but the new self-heal path marks the schema dirty so
       // saveConfiguration() rewrites schema.json without the dangling reference.
       database = factory.open();
 
-      final List<String> firstWarnings = firstHandler.snapshot().stream()
+      final List<String> firstWarnings = warnings.stream()
           .filter(m -> m.contains("Cannot find indexes") || m.contains("Cannot find index"))
           .toList();
       assertThat(firstWarnings)
           .as("first load must surface the 'Cannot find indexes' warning so the operator notices the divergence (captured=%s)",
-              firstHandler.snapshot())
+              warnings)
           .isNotEmpty();
 
       // The on-disk schema must no longer contain the dangling reference - that is the whole
@@ -139,29 +123,18 @@ class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
           .as("the dangling index reference must be scrubbed from schema.json after the warning fires")
           .isFalse();
 
-      // Second reopen with a fresh handler: the dangling reference is gone, so no warning at all.
-      logger.removeHandler(firstHandler);
-      rootLogger.removeHandler(firstHandler);
-      final CapturingHandler secondHandler = new CapturingHandler();
-      secondHandler.setLevel(Level.WARNING);
-      logger.addHandler(secondHandler);
-      rootLogger.addHandler(secondHandler);
-      try {
-        database = factory.open();
+      // Second reopen: the dangling reference is gone, so no warning at all.
+      warnings.clear();
+      database = factory.open();
 
-        final List<String> secondWarnings = secondHandler.snapshot().stream()
-            .filter(m -> m.contains("Cannot find indexes") || m.contains("Cannot find index"))
-            .toList();
-        assertThat(secondWarnings)
-            .as("second load must NOT repeat the warning - the self-heal pass already removed the dangling reference")
-            .isEmpty();
-      } finally {
-        logger.removeHandler(secondHandler);
-        rootLogger.removeHandler(secondHandler);
-      }
+      final List<String> secondWarnings = warnings.stream()
+          .filter(m -> m.contains("Cannot find indexes") || m.contains("Cannot find index"))
+          .toList();
+      assertThat(secondWarnings)
+          .as("second load must NOT repeat the warning - the self-heal pass already removed the dangling reference")
+          .isEmpty();
     } finally {
-      logger.setLevel(prev);
-      arcadeLogger.setLevel(prevArcade);
+      LogManager.instance().setLogger(originalLogger);
     }
   }
 
@@ -170,34 +143,61 @@ class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
     return "target/databases/LocalSchemaOrphanIndexSelfHealTest";
   }
 
-  private static final class CapturingHandler extends Handler {
-    private final List<String> records = new CopyOnWriteArrayList<>();
+  @SuppressWarnings("unchecked")
+  private static <T> T readField(final Object target, final String name) throws Exception {
+    final Field f = target.getClass().getDeclaredField(name);
+    f.setAccessible(true);
+    return (T) f.get(target);
+  }
 
-    @Override
-    public void publish(final LogRecord record) {
-      if (record == null || record.getLevel().intValue() < Level.WARNING.intValue())
+  /**
+   * Captures WARNING-and-above messages into a list while forwarding every record to the
+   * production logger so the test output still shows what fired.
+   */
+  private static final class CapturingLogger implements Logger {
+    private final List<String> warnings;
+    private final Logger       delegate;
+
+    CapturingLogger(final List<String> warnings, final Logger delegate) {
+      this.warnings = warnings;
+      this.delegate = delegate;
+    }
+
+    private void capture(final Level level, final String message, final Object... args) {
+      if (message == null || level.intValue() < Level.WARNING.intValue())
         return;
-      String msg = record.getMessage();
-      if (msg != null && record.getParameters() != null && record.getParameters().length > 0) {
+      String formatted = message;
+      if (args != null && args.length > 0) {
         try {
-          msg = msg.formatted(record.getParameters());
+          formatted = message.formatted(args);
         } catch (final Exception ignored) {
+          // Fall back to the raw template - good enough for our substring matching below.
         }
       }
-      if (msg != null)
-        records.add(msg);
+      warnings.add(formatted);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object arg1, final Object arg2, final Object arg3, final Object arg4, final Object arg5,
+        final Object arg6, final Object arg7, final Object arg8, final Object arg9, final Object arg10, final Object arg11,
+        final Object arg12, final Object arg13, final Object arg14, final Object arg15, final Object arg16, final Object arg17) {
+      capture(level, message, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10, arg11, arg12, arg13, arg14, arg15,
+          arg16, arg17);
+      delegate.log(requester, level, message, exception, context, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10,
+          arg11, arg12, arg13, arg14, arg15, arg16, arg17);
+    }
+
+    @Override
+    public void log(final Object requester, final Level level, final String message, final Throwable exception,
+        final String context, final Object... args) {
+      capture(level, message, args);
+      delegate.log(requester, level, message, exception, context, args);
     }
 
     @Override
     public void flush() {
-    }
-
-    @Override
-    public void close() throws SecurityException {
-    }
-
-    List<String> snapshot() {
-      return new ArrayList<>(records);
+      delegate.flush();
     }
   }
 }
