@@ -1074,11 +1074,20 @@ class PostgresProtocolIT extends BaseGraphServerTest {
       try (var pst = conn.prepareStatement("SELECT FROM SetArrayTextTest WHERE tag IN ?")) {
         Array arr = conn.createArrayOf("text", new Object[]{"a", "c"});
         pst.setArray(1, arr);
-        ResultSet rs = pst.executeQuery();
-        int count = 0;
-        while (rs.next())
-          count++;
-        assertThat(count).isGreaterThanOrEqualTo(0); // must not hang; result depends on engine IN support
+        try (ResultSet rs = pst.executeQuery()) {
+          // Iterating must complete without blocking. We do not assert row count because the
+          // engine's handling of an array-typed IN parameter is orthogonal to the protocol fix.
+          while (rs.next()) {
+            // drain
+          }
+        }
+      }
+
+      // Connection state must remain intact: a subsequent statement on the same connection
+      // succeeds, proving the wire protocol is still aligned after the binary-array bind.
+      try (var st = conn.createStatement(); var rs = st.executeQuery("SELECT count(*) AS c FROM SetArrayTextTest")) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getInt("c")).isEqualTo(3);
       }
     }
   }
@@ -1096,11 +1105,17 @@ class PostgresProtocolIT extends BaseGraphServerTest {
       try (var pst = conn.prepareStatement("SELECT FROM SetArrayLongTest WHERE id IN ?")) {
         Array arr = conn.createArrayOf("int8", new Object[]{1L, 2L});
         pst.setArray(1, arr);
-        ResultSet rs = pst.executeQuery();
-        int count = 0;
-        while (rs.next())
-          count++;
-        assertThat(count).isGreaterThanOrEqualTo(0); // must not hang
+        try (ResultSet rs = pst.executeQuery()) {
+          while (rs.next()) {
+            // drain
+          }
+        }
+      }
+
+      // Subsequent query on the same connection proves channel alignment is intact.
+      try (var st = conn.createStatement(); var rs = st.executeQuery("SELECT count(*) AS c FROM SetArrayLongTest")) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getInt("c")).isEqualTo(2);
       }
     }
   }

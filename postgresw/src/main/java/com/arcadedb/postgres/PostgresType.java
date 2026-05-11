@@ -514,6 +514,9 @@ public enum PostgresType {
     };
   }
 
+  // PostgreSQL caps array dimensions at 6 (MAXDIM in pg_config_manual.h).
+  private static final int MAX_ARRAY_DIMENSIONS = 6;
+
   private static ArrayList<Object> deserializeBinaryArray(ByteBuffer buffer) {
     final int ndim = buffer.getInt();    // number of dimensions
     buffer.getInt();                      // hasnull flag (unused)
@@ -522,14 +525,28 @@ public enum PostgresType {
     if (ndim == 0)
       return new ArrayList<>();
 
-    int totalElements = 1;
+    if (ndim < 0 || ndim > MAX_ARRAY_DIMENSIONS)
+      throw new PostgresProtocolException("Invalid array dimension count: " + ndim);
+
+    long totalElements = 1L;
     for (int d = 0; d < ndim; d++) {
-      totalElements *= buffer.getInt();  // dim size
+      final int dimSize = buffer.getInt();
       buffer.getInt();                   // lower bound (unused)
+      if (dimSize < 0)
+        throw new PostgresProtocolException("Negative array dimension size: " + dimSize);
+      totalElements *= dimSize;
+      if (totalElements > Integer.MAX_VALUE)
+        throw new PostgresProtocolException("Array element count exceeds Integer.MAX_VALUE");
     }
 
-    final ArrayList<Object> result = new ArrayList<>(totalElements);
-    for (int i = 0; i < totalElements; i++) {
+    // Each element occupies at least 4 bytes (the length prefix), so an element count
+    // exceeding remaining/4 cannot fit and signals a malformed or malicious payload.
+    if (totalElements > buffer.remaining() / 4L)
+      throw new PostgresProtocolException("Array element count exceeds remaining buffer bytes");
+
+    final int count = (int) totalElements;
+    final ArrayList<Object> result = new ArrayList<>(count);
+    for (int i = 0; i < count; i++) {
       final int elemLen = buffer.getInt();
       if (elemLen == -1) {
         result.add(null);
@@ -544,15 +561,20 @@ public enum PostgresType {
 
   private static Object deserializeBinaryElement(final int elemOid, final byte[] bytes) {
     final ByteBuffer buf = ByteBuffer.wrap(bytes);
-    return switch (elemOid) {
-      case 16 -> buf.get() != 0;                                              // bool
-      case 20 -> buf.getLong();                                               // int8
-      case 21 -> buf.getShort();                                              // int2
-      case 23 -> buf.getInt();                                                // int4
-      case 700 -> buf.getFloat();                                             // float4
-      case 701 -> buf.getDouble();                                            // float8
-      default -> new String(bytes, DatabaseFactory.getDefaultCharset());      // text/varchar/bpchar/json/unknown
-    };
+    if (elemOid == BOOLEAN.code)
+      return buf.get() != 0;
+    if (elemOid == LONG.code)
+      return buf.getLong();
+    if (elemOid == SMALLINT.code)
+      return buf.getShort();
+    if (elemOid == INTEGER.code)
+      return buf.getInt();
+    if (elemOid == REAL.code)
+      return buf.getFloat();
+    if (elemOid == DOUBLE.code)
+      return buf.getDouble();
+    // text/varchar/bpchar/json/unknown - raw bytes are already the UTF-8 string content.
+    return new String(bytes, DatabaseFactory.getDefaultCharset());
   }
 
   /**
