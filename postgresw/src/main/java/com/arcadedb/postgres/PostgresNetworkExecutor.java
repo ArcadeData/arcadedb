@@ -759,19 +759,18 @@ public class PostgresNetworkExecutor extends Thread {
       final Set<String> propertyNames = row.getPropertyNames();
       for (final String p : propertyNames) {
         if (!columns.containsKey(p)) {
-          // Determine the PostgreSQL type based on the actual value
-          // For arrays/collections, use proper array type codes so JDBC drivers can parse them
-          // For scalar values, use VARCHAR since we serialize everything as text
+          // Determine the PostgreSQL type based on the actual value.
+          // Arrays/collections use proper array type codes so clients can parse them. Scalars
+          // default to VARCHAR for consistent text serialization, with one exception: Long values
+          // are advertised as INT8 so Postgres clients (psycopg, JDBC, ...) deserialize them as
+          // native integers. Without this, numeric scalars round-trip through clients as strings
+          // and a {@code WHERE id(n) IN $array} parameter loop silently mismatches Long vs. String.
           final Object value = row.getProperty(p);
           final PostgresType pgType = PostgresType.getTypeForValue(value);
-
-          // For array types, use the detected array type so clients can properly parse arrays
-          // For non-array types, use VARCHAR to ensure consistent text serialization
-          if (pgType.isArrayType()) {
+          if (pgType.isArrayType() || pgType == PostgresType.LONG)
             columns.put(p, pgType);
-          } else {
+          else
             columns.put(p, PostgresType.VARCHAR);
-          }
         }
       }
     }

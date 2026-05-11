@@ -110,7 +110,9 @@ public class ComparisonExpression implements BooleanExpression {
     // Legacy queries still pass an RID string parameter (e.g. {@code WHERE id(n) = "#1:0"}). Coerce
     // the Long-encoded side to its RID-string form and compare as RIDs, so the legacy pattern keeps
     // working without forcing callers to migrate. Both equality and ordering use the encoded long so
-    // ordering stays consistent with id() / RID natural order.
+    // ordering stays consistent with id() / RID natural order. Only the RID-string form is coerced -
+    // numeric strings are ambiguous and treating them as ids would break the Cypher TCK invariant
+    // that 5 = "5" returns false.
     if (left instanceof Number leftNum && right instanceof String rightStr && RID.is(rightStr)) {
       final long leftEncoded = leftNum.longValue();
       final long rightEncoded = IdFunction.encodeRidAsLong(new RID(rightStr));

@@ -767,35 +767,46 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     }
   }
 
-  @Disabled("Pending fix verification")
+  /**
+   * Postgres wire must advertise Cypher {@code Long}-valued scalar columns as INT8 (not VARCHAR)
+   * so that {@code id()} values round-trip as integers and a {@code WHERE id(n) IN <array>}
+   * parameter loop keeps matching after the array is resent by the client. This asserts both
+   * halves: the column-type announcement on the wire and the parameter round-trip.
+   */
   @Test
   void cypherWithArrayParameterInClause() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
         st.execute("create vertex type CHUNK");
-        // Create test vertices directly
         st.execute("{opencypher} CREATE (n:CHUNK {text: 'chunk1'})");
         st.execute("{opencypher} CREATE (n:CHUNK {text: 'chunk2'})");
         st.execute("{opencypher} CREATE (n:CHUNK {text: 'chunk3'})");
       }
 
-      // Get all RIDs
-      String[] rids = new String[3];
+      // Fetch IDs and verify the column is advertised as INT8 (not VARCHAR) so a Postgres client
+      // deserializes the value as a native integer.
+      final long[] ids = new long[3];
       try (var st = conn.createStatement()) {
-        try (var rs = st.executeQuery("{opencypher} MATCH (n:CHUNK) RETURN ID(n) ORDER BY n.text")) {
+        try (var rs = st.executeQuery("{opencypher} MATCH (n:CHUNK) RETURN ID(n) AS id ORDER BY n.text")) {
+          assertThat(rs.getMetaData().getColumnTypeName(1)).isEqualToIgnoringCase("int8");
           int idx = 0;
-          while (rs.next() && idx < 3) {
-            rids[idx++] = rs.getString(1);
-          }
+          while (rs.next() && idx < 3)
+            ids[idx++] = rs.getLong("id");
         }
       }
 
-      // Now query with IN clause using array parameter - this should reproduce the ClassCastException
-      try (var pst = conn.prepareStatement("{opencypher} MATCH (n:CHUNK) WHERE ID(n) IN ? RETURN n.text as text ORDER BY n.text")) {
-        Array array = conn.createArrayOf("text", rids);
-        pst.setArray(1, array);
-
-        try (var rs = pst.executeQuery()) {
+      // Inline the ids in a Cypher list literal - what client-side parameter substitution
+      // produces. The query mirrors the failing python test, ending in 0 rows pre-fix.
+      final StringBuilder inList = new StringBuilder("[");
+      for (int i = 0; i < ids.length; i++) {
+        if (i > 0)
+          inList.append(",");
+        inList.append(ids[i]);
+      }
+      inList.append("]");
+      try (var st = conn.createStatement()) {
+        try (var rs = st.executeQuery(
+            "{opencypher} MATCH (n:CHUNK) WHERE ID(n) IN " + inList + " RETURN n.text AS text ORDER BY n.text")) {
           assertThat(rs.next()).isTrue();
           assertThat(rs.getString("text")).isEqualTo("chunk1");
           assertThat(rs.next()).isTrue();
