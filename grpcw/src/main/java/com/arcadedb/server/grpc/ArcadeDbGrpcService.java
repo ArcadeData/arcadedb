@@ -1640,7 +1640,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             return;
           }
 
-          ctx.flushCommit(true); // commit if not validate-only
+          // Issue #4198: PER_STREAM / PER_REQUEST defer the commit to here. A commit-time constraint
+          // violation (e.g. DuplicatedKeyException) used to bubble up to the outer catch and become
+          // Status.INTERNAL, leaving the client without an InsertSummary. Instead, surface those as
+          // structured errors in totals.errors and still deliver the summary.
+          try {
+            ctx.flushCommit(true); // commit if not validate-only
+          } catch (Exception commitEx) {
+            recordCommitException(totals, commitEx);
+          }
 
           if (!cancelled.get()) {
             resp.onNext(ctx.summary(totals, startedAt));
@@ -1655,6 +1663,30 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
     };
+  }
+
+  /**
+   * Issue #4198: maps a commit-time exception (DuplicatedKeyException, ValidationException, etc.) into
+   * the running {@link Counts} so the client receives a structured {@link InsertSummary} instead of a
+   * stream-level {@code Status.INTERNAL}. The engine auto-rolls back on commit failure, so any rows
+   * that were optimistically counted as inserted/updated did not persist - reclassify them as failed.
+   */
+  private static void recordCommitException(final Counts totals, final Exception e) {
+    final long rolledBack = totals.inserted + totals.updated;
+    totals.inserted = 0;
+    totals.updated = 0;
+    totals.failed += rolledBack;
+    if (rolledBack == 0)
+      totals.failed++;
+
+    final String code = e instanceof DuplicatedKeyException ? "CONFLICT" : "COMMIT_FAILED";
+    final String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+    totals.errors.add(InsertError.newBuilder()
+        .setRowIndex(-1)
+        .setCode(code)
+        .setMessage(message)
+        .setField("")
+        .build());
   }
 
   // --- 3) Client-streaming graph batch load ---
