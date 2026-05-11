@@ -1056,4 +1056,68 @@ class PostgresProtocolIT extends BaseGraphServerTest {
     }
   }
 
+  // ==================== PreparedStatement.setArray Tests ====================
+
+  @Test
+  void preparedStatementSetArrayTextDoesNotHang() throws Exception {
+    // PreparedStatement.setArray with text[] sends a binary-format parameter in the Bind message.
+    // Previously this threw "Binary deserialization for arrays not yet implemented" and left the
+    // channel in an inconsistent state, causing both client and server to block on socket reads.
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE DOCUMENT TYPE SetArrayTextTest IF NOT EXISTS");
+        st.execute("INSERT INTO SetArrayTextTest SET name = 'alpha', tag = 'a'");
+        st.execute("INSERT INTO SetArrayTextTest SET name = 'beta',  tag = 'b'");
+        st.execute("INSERT INTO SetArrayTextTest SET name = 'gamma', tag = 'c'");
+      }
+
+      try (var pst = conn.prepareStatement("SELECT FROM SetArrayTextTest WHERE tag IN ?")) {
+        Array arr = conn.createArrayOf("text", new Object[]{"a", "c"});
+        pst.setArray(1, arr);
+        try (ResultSet rs = pst.executeQuery()) {
+          // Iterating must complete without blocking. We do not assert row count because the
+          // engine's handling of an array-typed IN parameter is orthogonal to the protocol fix.
+          while (rs.next()) {
+            // drain
+          }
+        }
+      }
+
+      // Connection state must remain intact: a subsequent statement on the same connection
+      // succeeds, proving the wire protocol is still aligned after the binary-array bind.
+      try (var st = conn.createStatement(); var rs = st.executeQuery("SELECT count(*) AS c FROM SetArrayTextTest")) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getInt("c")).isEqualTo(3);
+      }
+    }
+  }
+
+  @Test
+  void preparedStatementSetArrayLongDoesNotHang() throws Exception {
+    // int8[] (ARRAY_LONG) binary deserialization must also not hang.
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE DOCUMENT TYPE SetArrayLongTest IF NOT EXISTS");
+        st.execute("INSERT INTO SetArrayLongTest SET id = 1, name = 'one'");
+        st.execute("INSERT INTO SetArrayLongTest SET id = 2, name = 'two'");
+      }
+
+      try (var pst = conn.prepareStatement("SELECT FROM SetArrayLongTest WHERE id IN ?")) {
+        Array arr = conn.createArrayOf("int8", new Object[]{1L, 2L});
+        pst.setArray(1, arr);
+        try (ResultSet rs = pst.executeQuery()) {
+          while (rs.next()) {
+            // drain
+          }
+        }
+      }
+
+      // Subsequent query on the same connection proves channel alignment is intact.
+      try (var st = conn.createStatement(); var rs = st.executeQuery("SELECT count(*) AS c FROM SetArrayLongTest")) {
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getInt("c")).isEqualTo(2);
+      }
+    }
+  }
+
 }

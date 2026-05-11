@@ -698,11 +698,270 @@ class PostgresTypeTest {
   }
 
   @Test
-  void deserializeBinaryArrayNotSupported() {
-    byte[] data = new byte[10];
+  void deserializeBinaryArrayText() {
+    // PostgreSQL binary format for text[] {'foo','bar'}:
+    // ndim=1, hasnull=0, elemOid=25 (text), dim=2, lb=1, then two elements
+    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);        // ndim
+    buf.putInt(0);        // hasnull
+    buf.putInt(25);       // elemOid: text
+    buf.putInt(2);        // dim size
+    buf.putInt(1);        // lower bound
+    byte[] foo = "foo".getBytes();
+    buf.putInt(foo.length);
+    buf.put(foo);
+    byte[] bar = "bar".getBytes();
+    buf.putInt(bar.length);
+    buf.put(bar);
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    Object result = PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, data);
+    assertThat(result).isInstanceOf(ArrayList.class);
+    @SuppressWarnings("unchecked")
+    ArrayList<String> list = (ArrayList<String>) result;
+    assertThat(list).containsExactly("foo", "bar");
+  }
+
+  @Test
+  void deserializeBinaryArrayLong() {
+    // PostgreSQL binary format for int8[] {100, 200, 300}
+    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);        // ndim
+    buf.putInt(0);        // hasnull
+    buf.putInt(20);       // elemOid: int8
+    buf.putInt(3);        // dim size
+    buf.putInt(1);        // lower bound
+    for (long v : new long[]{100L, 200L, 300L}) {
+      buf.putInt(8);
+      buf.putLong(v);
+    }
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    Object result = PostgresType.deserialize(PostgresType.ARRAY_LONG.code, 1, data);
+    assertThat(result).isInstanceOf(ArrayList.class);
+    @SuppressWarnings("unchecked")
+    ArrayList<Long> list = (ArrayList<Long>) result;
+    assertThat(list).containsExactly(100L, 200L, 300L);
+  }
+
+  @Test
+  void deserializeBinaryArrayInt() {
+    // PostgreSQL binary format for int4[] {1, 2, 3}
+    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);        // ndim
+    buf.putInt(0);        // hasnull
+    buf.putInt(23);       // elemOid: int4
+    buf.putInt(3);        // dim size
+    buf.putInt(1);        // lower bound
+    for (int v : new int[]{1, 2, 3}) {
+      buf.putInt(4);
+      buf.putInt(v);
+    }
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    Object result = PostgresType.deserialize(PostgresType.ARRAY_INT.code, 1, data);
+    assertThat(result).isInstanceOf(ArrayList.class);
+    @SuppressWarnings("unchecked")
+    ArrayList<Integer> list = (ArrayList<Integer>) result;
+    assertThat(list).containsExactly(1, 2, 3);
+  }
+
+  @Test
+  void deserializeBinaryArrayEmpty() {
+    // ndim=0 should return an empty list
+    ByteBuffer buf = ByteBuffer.allocate(12).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(0);   // ndim
+    buf.putInt(0);   // hasnull
+    buf.putInt(25);  // elemOid: text
+    Object result = PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, buf.array());
+    assertThat(result).isInstanceOf(ArrayList.class);
+    assertThat((ArrayList<?>) result).isEmpty();
+  }
+
+  @Test
+  void deserializeBinaryArrayBool() {
+    // bool[] {true, false, true}
+    ByteBuffer buf = ByteBuffer.allocate(64).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);   // ndim
+    buf.putInt(0);   // hasnull
+    buf.putInt(16);  // elemOid: bool
+    buf.putInt(3);   // dim size
+    buf.putInt(1);   // lower bound
+    for (boolean v : new boolean[]{true, false, true}) {
+      buf.putInt(1);
+      buf.put((byte) (v ? 1 : 0));
+    }
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    @SuppressWarnings("unchecked")
+    ArrayList<Boolean> list = (ArrayList<Boolean>) PostgresType.deserialize(PostgresType.ARRAY_BOOLEAN.code, 1, data);
+    assertThat(list).containsExactly(true, false, true);
+  }
+
+  @Test
+  void deserializeBinaryArrayInt2() {
+    // int2[] (smallint) {10, 20, 30}
+    ByteBuffer buf = ByteBuffer.allocate(64).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);   // ndim
+    buf.putInt(0);   // hasnull
+    buf.putInt(21);  // elemOid: int2
+    buf.putInt(3);   // dim size
+    buf.putInt(1);   // lower bound
+    for (short v : new short[]{10, 20, 30}) {
+      buf.putInt(2);
+      buf.putShort(v);
+    }
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    @SuppressWarnings("unchecked")
+    ArrayList<Short> list = (ArrayList<Short>) PostgresType.deserialize(PostgresType.ARRAY_INT.code, 1, data);
+    assertThat(list).containsExactly((short) 10, (short) 20, (short) 30);
+  }
+
+  @Test
+  void deserializeBinaryArrayFloat4() {
+    // float4[] {1.5, 2.5, 3.5}
+    ByteBuffer buf = ByteBuffer.allocate(64).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);   // ndim
+    buf.putInt(0);   // hasnull
+    buf.putInt(700); // elemOid: float4
+    buf.putInt(3);   // dim size
+    buf.putInt(1);   // lower bound
+    for (float v : new float[]{1.5f, 2.5f, 3.5f}) {
+      buf.putInt(4);
+      buf.putFloat(v);
+    }
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    @SuppressWarnings("unchecked")
+    ArrayList<Float> list = (ArrayList<Float>) PostgresType.deserialize(PostgresType.ARRAY_REAL.code, 1, data);
+    assertThat(list).containsExactly(1.5f, 2.5f, 3.5f);
+  }
+
+  @Test
+  void deserializeBinaryArrayFloat8() {
+    // float8[] {1.1, 2.2, 3.3}
+    ByteBuffer buf = ByteBuffer.allocate(96).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);   // ndim
+    buf.putInt(0);   // hasnull
+    buf.putInt(701); // elemOid: float8
+    buf.putInt(3);   // dim size
+    buf.putInt(1);   // lower bound
+    for (double v : new double[]{1.1, 2.2, 3.3}) {
+      buf.putInt(8);
+      buf.putDouble(v);
+    }
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    @SuppressWarnings("unchecked")
+    ArrayList<Double> list = (ArrayList<Double>) PostgresType.deserialize(PostgresType.ARRAY_DOUBLE.code, 1, data);
+    assertThat(list).containsExactly(1.1, 2.2, 3.3);
+  }
+
+  @Test
+  void deserializeBinaryArray2D() {
+    // int4[][] {{1, 2}, {3, 4}}: ndim=2, dims 2x2, four elements row-major.
+    // Multi-dimensional arrays are flattened into a single List - the query engine consumes
+    // the result as a flat collection for IN-parameter binding, so the dimensionality is
+    // intentionally not preserved.
+    ByteBuffer buf = ByteBuffer.allocate(96).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(2);   // ndim
+    buf.putInt(0);   // hasnull
+    buf.putInt(23);  // elemOid: int4
+    buf.putInt(2);   // dim1 size
+    buf.putInt(1);   // dim1 lb
+    buf.putInt(2);   // dim2 size
+    buf.putInt(1);   // dim2 lb
+    for (int v : new int[]{1, 2, 3, 4}) {
+      buf.putInt(4);
+      buf.putInt(v);
+    }
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    @SuppressWarnings("unchecked")
+    ArrayList<Integer> list = (ArrayList<Integer>) PostgresType.deserialize(PostgresType.ARRAY_INT.code, 1, data);
+    assertThat(list).containsExactly(1, 2, 3, 4);
+  }
+
+  @Test
+  void deserializeBinaryArrayRejectsNegativeDimension() {
+    // ndim header with a negative dimension size must be rejected, not silently mis-read.
+    ByteBuffer buf = ByteBuffer.allocate(32).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);    // ndim
+    buf.putInt(0);    // hasnull
+    buf.putInt(25);   // elemOid: text
+    buf.putInt(-1);   // negative dim size
+    buf.putInt(1);    // lb
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, data))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("Negative array dimension");
+  }
+
+  @Test
+  void deserializeBinaryArrayRejectsTooManyDimensions() {
+    // PostgreSQL caps ndim at 6 (MAXDIM). Anything larger is rejected without allocating.
+    ByteBuffer buf = ByteBuffer.allocate(16).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(7);    // ndim > MAXDIM
+    buf.putInt(0);    // hasnull
+    buf.putInt(25);   // elemOid: text
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, data))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("Invalid array dimension count");
+  }
+
+  @Test
+  void deserializeBinaryArrayRejectsOversizedElementCount() {
+    // dim_size large enough that totalElements*4 exceeds remaining buffer bytes - rejected
+    // before the result ArrayList is over-allocated.
+    ByteBuffer buf = ByteBuffer.allocate(32).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);                 // ndim
+    buf.putInt(0);                 // hasnull
+    buf.putInt(25);                // elemOid: text
+    buf.putInt(Integer.MAX_VALUE); // absurd dim size
+    buf.putInt(1);                 // lb
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, data))
+        .isInstanceOf(PostgresProtocolException.class)
+        .hasMessageContaining("exceeds remaining buffer");
+  }
+
+  @Test
+  void deserializeBinaryArrayRejectsOverflowAcrossDimensions() {
+    // Two dimensions of ~65000 each: product overflows Integer.MAX_VALUE. Must be rejected
+    // instead of silently wrapping to a small loop count (the original bug class).
+    ByteBuffer buf = ByteBuffer.allocate(40).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(2);      // ndim
+    buf.putInt(0);      // hasnull
+    buf.putInt(23);     // elemOid: int4
+    buf.putInt(65000);  // dim1 size
+    buf.putInt(1);      // dim1 lb
+    buf.putInt(65000);  // dim2 size: 65000 * 65000 = 4.225e9 > Integer.MAX_VALUE
+    buf.putInt(1);      // dim2 lb
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
     assertThatThrownBy(() -> PostgresType.deserialize(PostgresType.ARRAY_INT.code, 1, data))
         .isInstanceOf(PostgresProtocolException.class)
-        .hasMessageContaining("not yet implemented");
+        .hasMessageContaining("exceeds Integer.MAX_VALUE");
+  }
+
+  @Test
+  void deserializeBinaryArrayWithNullElement() {
+    // text[] {'foo', NULL, 'baz'} - null elements have elemLen == -1
+    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    buf.putInt(1);   // ndim
+    buf.putInt(1);   // hasnull
+    buf.putInt(25);  // elemOid: text
+    buf.putInt(3);   // dim size
+    buf.putInt(1);   // lower bound
+    byte[] foo = "foo".getBytes();
+    buf.putInt(foo.length);
+    buf.put(foo);
+    buf.putInt(-1);  // null element
+    byte[] baz = "baz".getBytes();
+    buf.putInt(baz.length);
+    buf.put(baz);
+    byte[] data = Arrays.copyOf(buf.array(), buf.position());
+    Object result = PostgresType.deserialize(PostgresType.ARRAY_TEXT.code, 1, data);
+    assertThat(result).isInstanceOf(ArrayList.class);
+    @SuppressWarnings("unchecked")
+    ArrayList<String> list = (ArrayList<String>) result;
+    assertThat(list).hasSize(3);
+    assertThat(list.get(0)).isEqualTo("foo");
+    assertThat(list.get(1)).isNull();
+    assertThat(list.get(2)).isEqualTo("baz");
   }
 
   @Test

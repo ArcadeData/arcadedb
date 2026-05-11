@@ -74,6 +74,8 @@ public enum PostgresType {
   // PostgreSQL-compatible datetime format (ISO 8601 without 'T' separator)
   private static final String POSTGRES_TIMESTAMP_FORMAT = "yyyy-MM-dd HH:mm:ss.SSSSSS";
   private static final DateTimeFormatter POSTGRES_DATETIME_FORMATTER = DateTimeFormatter.ofPattern(POSTGRES_TIMESTAMP_FORMAT);
+  // PostgreSQL caps array dimensions at 6 (MAXDIM in pg_config_manual.h).
+  private static final int MAX_ARRAY_DIMENSIONS = 6;
 
   public final  int                      code;
   public final  Class<?>                 cls;
@@ -509,13 +511,71 @@ public enum PostgresType {
         buffer.get(bytes);
         yield new JSONObject(new String(bytes));
       }
-      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON -> {
-        // For binary format, would need to implement proper array binary deserialization
-        // This is a simplified placeholder - proper implementation would need to handle
-        // array dimensions and element deserialization according to PostgreSQL protocol
-        throw new PostgresProtocolException("Binary deserialization for arrays not yet implemented");
-      }
+      case ARRAY_INT, ARRAY_LONG, ARRAY_DOUBLE, ARRAY_REAL, ARRAY_TEXT, ARRAY_BOOLEAN, ARRAY_CHAR, ARRAY_JSON ->
+          deserializeBinaryArray(buffer);
     };
+  }
+
+  private static List<Object> deserializeBinaryArray(ByteBuffer buffer) {
+    final int ndim = buffer.getInt();    // number of dimensions
+    buffer.getInt();                      // hasnull flag (unused)
+    final int elemOid = buffer.getInt(); // element type OID
+
+    if (ndim == 0)
+      return new ArrayList<>();
+
+    if (ndim < 0 || ndim > MAX_ARRAY_DIMENSIONS)
+      throw new PostgresProtocolException("Invalid array dimension count: " + ndim);
+
+    long totalElements = 1L;
+    for (int d = 0; d < ndim; d++) {
+      final int dimSize = buffer.getInt();
+      buffer.getInt();                   // lower bound (unused)
+      if (dimSize < 0)
+        throw new PostgresProtocolException("Negative array dimension size: " + dimSize);
+      totalElements *= dimSize;
+      if (totalElements > Integer.MAX_VALUE)
+        throw new PostgresProtocolException("Array element count exceeds Integer.MAX_VALUE");
+    }
+
+    // Each element occupies at least 4 bytes (the length prefix), so an element count
+    // exceeding remaining/4 cannot fit and signals a malformed or malicious payload.
+    if (totalElements > buffer.remaining() / 4L)
+      throw new PostgresProtocolException("Array element count exceeds remaining buffer bytes");
+
+    final int count = (int) totalElements;
+    final ArrayList<Object> result = new ArrayList<>(count);
+    for (int i = 0; i < count; i++) {
+      final int elemLen = buffer.getInt();
+      if (elemLen == -1) {
+        result.add(null);
+      } else {
+        final byte[] elemBytes = new byte[elemLen];
+        buffer.get(elemBytes);
+        result.add(deserializeBinaryElement(elemOid, elemBytes));
+      }
+    }
+    return result;
+  }
+
+  private static Object deserializeBinaryElement(final int elemOid, final byte[] bytes) {
+    final ByteBuffer buf = ByteBuffer.wrap(bytes);
+    if (elemOid == BOOLEAN.code)
+      return buf.get() != 0;
+    if (elemOid == LONG.code)
+      return buf.getLong();
+    // int2[] (OID 1005) is not in the ARRAY_* enum, but int2 elements can appear inside
+    // any array (e.g. composite types), so we still decode them as Short here.
+    if (elemOid == SMALLINT.code)
+      return buf.getShort();
+    if (elemOid == INTEGER.code)
+      return buf.getInt();
+    if (elemOid == REAL.code)
+      return buf.getFloat();
+    if (elemOid == DOUBLE.code)
+      return buf.getDouble();
+    // text/varchar/bpchar/json/unknown - raw bytes are already the UTF-8 string content.
+    return new String(bytes, DatabaseFactory.getDefaultCharset());
   }
 
   /**
