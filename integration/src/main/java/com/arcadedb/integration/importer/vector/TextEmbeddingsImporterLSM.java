@@ -120,16 +120,16 @@ public class TextEmbeddingsImporterLSM {
       // Create vertex type and LSM_VECTOR index
       // Check if type exists first
       if (!database.getSchema().existsType(settings.vertexTypeName)) {
-        database.command("sql", "CREATE VERTEX TYPE " + settings.vertexTypeName);
+        database.command("sql", "CREATE VERTEX TYPE " + settings.vertexTypeName).close();
       }
 
       // Create properties
       final var type = database.getSchema().getType(settings.vertexTypeName);
       if (!type.existsProperty(idPropertyName)) {
-        database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + idPropertyName + " STRING");
+        database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + idPropertyName + " STRING").close();
       }
       if (!type.existsProperty(vectorPropertyName)) {
-        database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + vectorPropertyName + " ARRAY_OF_FLOATS");
+        database.command("sql", "CREATE PROPERTY " + settings.vertexTypeName + "." + vectorPropertyName + " ARRAY_OF_FLOATS").close();
       }
 
       // Create LSM_VECTOR index
@@ -141,7 +141,7 @@ public class TextEmbeddingsImporterLSM {
         // Index doesn't exist, create it
         database.command("sql", "CREATE INDEX ON " + settings.vertexTypeName + " (" + vectorPropertyName + ") LSM_VECTOR " +
             "METADATA {dimensions: " + dimensions + ", similarity: '" + normalizedSimilarity + "', " +
-            "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + ", idPropertyName: '" + idPropertyName + "'}");
+            "maxConnections: " + maxConnections + ", beamWidth: " + beamWidth + ", idPropertyName: '" + idPropertyName + "'}").close();
       }
 
       logger.logLine(2, "- Created schema and LSM_VECTOR index");

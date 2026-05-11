@@ -89,6 +89,8 @@ public class GetQueryHandler extends AbstractQueryHandler {
         Metrics.timer("http.query.engine").record(profile.getEngineNanos(), TimeUnit.NANOSECONDS);
         Metrics.timer("http.query.serialization").record(profile.getSerializationNanos(), TimeUnit.NANOSECONDS);
         recordServerProfile(database.getName(), language, text, profile, qResult);
+        if (qResult != null)
+          qResult.close();
       }
 
       return new ExecutionResponse(200, response.toString());

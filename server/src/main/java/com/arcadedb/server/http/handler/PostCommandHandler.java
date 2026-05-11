@@ -156,54 +156,60 @@ public class PostCommandHandler extends AbstractQueryHandler {
       final long engineStart = System.nanoTime();
       ResultSet qResult = executeCommand(database, language, command, paramMap);
 
-      final JSONObject response = new JSONObject();
-      response.put("user", user != null ? user.getName() : null);
+      try {
+        final JSONObject response = new JSONObject();
+        response.put("user", user != null ? user.getName() : null);
 
-      if (qResult instanceof ExplainResultSet) {
-        // EXPLAIN (or SQL PROFILE): extract plan, then drain the single record
-        // so serializeResultSet produces an empty result structure
-        final var executionPlan = qResult.getExecutionPlan().get();
-        final String explainText = executionPlan.prettyPrint(0, 2);
-        while (qResult.hasNext()) {
-          qResult.next();
-        }
-        profile.addEngineNanos(System.nanoTime() - engineStart);
-
-        final long serializationStart = System.nanoTime();
-        serializeResultSet(database, serializer, limit, response, qResult);
-        response.put("explain", explainText);
-        response.put("explainPlan", executionPlan.toResult().toJSON());
-        profile.addSerializationNanos(System.nanoTime() - serializationStart);
-      } else {
-        if (detailedProfile && qResult != null) {
-          // Materialize the ResultSet inside the engine timer so the serialization
-          // timer captures only the wire-format conversion and not query work.
-          qResult = materializeResultSet(qResult);
-        }
-        profile.addEngineNanos(System.nanoTime() - engineStart);
-
-        final long serializationStart = System.nanoTime();
-        serializeResultSet(database, serializer, limit, response, qResult);
-
-        if (qResult != null && qResult.getExecutionPlan().isPresent() &&
-            (profileExecution != null ||
-                command.toUpperCase(Locale.ENGLISH).startsWith("PROFILE "))) {
+        if (qResult instanceof ExplainResultSet) {
+          // EXPLAIN (or SQL PROFILE): extract plan, then drain the single record
+          // so serializeResultSet produces an empty result structure
           final var executionPlan = qResult.getExecutionPlan().get();
-          response.put("explain", executionPlan.prettyPrint(0, 2));
+          final String explainText = executionPlan.prettyPrint(0, 2);
+          while (qResult.hasNext()) {
+            qResult.next();
+          }
+          profile.addEngineNanos(System.nanoTime() - engineStart);
+
+          final long serializationStart = System.nanoTime();
+          serializeResultSet(database, serializer, limit, response, qResult);
+          response.put("explain", explainText);
           response.put("explainPlan", executionPlan.toResult().toJSON());
+          profile.addSerializationNanos(System.nanoTime() - serializationStart);
+        } else {
+          if (detailedProfile && qResult != null) {
+            // Materialize the ResultSet inside the engine timer so the serialization
+            // timer captures only the wire-format conversion and not query work.
+            // materializeResultSet closes the source and returns a fresh in-memory ResultSet.
+            qResult = materializeResultSet(qResult);
+          }
+          profile.addEngineNanos(System.nanoTime() - engineStart);
+
+          final long serializationStart = System.nanoTime();
+          serializeResultSet(database, serializer, limit, response, qResult);
+
+          if (qResult != null && qResult.getExecutionPlan().isPresent() &&
+              (profileExecution != null ||
+                  command.toUpperCase(Locale.ENGLISH).startsWith("PROFILE "))) {
+            final var executionPlan = qResult.getExecutionPlan().get();
+            response.put("explain", executionPlan.prettyPrint(0, 2));
+            response.put("explainPlan", executionPlan.toResult().toJSON());
+          }
+          profile.addSerializationNanos(System.nanoTime() - serializationStart);
         }
-        profile.addSerializationNanos(System.nanoTime() - serializationStart);
+
+        if (detailedProfile)
+          response.put("profile", profile.toJSON());
+
+        Metrics.counter("http.command").increment();
+        recordProfilerMetrics("http.command", profile);
+
+        recordServerProfile(database.getName(), language, command, profile, qResult);
+
+        return new ExecutionResponse(200, response.toString());
+      } finally {
+        if (qResult != null)
+          qResult.close();
       }
-
-      if (detailedProfile)
-        response.put("profile", profile.toJSON());
-
-      Metrics.counter("http.command").increment();
-      recordProfilerMetrics("http.command", profile);
-
-      recordServerProfile(database.getName(), language, command, profile, qResult);
-
-      return new ExecutionResponse(200, response.toString());
     }
 
     } finally {

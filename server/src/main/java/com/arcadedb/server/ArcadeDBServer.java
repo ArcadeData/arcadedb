@@ -785,7 +785,10 @@ public class ArcadeDBServer {
                 LogManager.instance().log(this, Level.INFO, "Creating default database '%s'...", null, dbName);
                 database = createDatabase(dbName, defaultDbMode);
               }
-              database.command("sql", "import database " + commandParams);
+              try (final var rs = database.command("sql", "import database " + commandParams)) {
+                // drain not needed: the import command produces no rows we consume here.
+                // try-with-resources ensures the result set / execution plan is released.
+              }
               break;
 
             default:

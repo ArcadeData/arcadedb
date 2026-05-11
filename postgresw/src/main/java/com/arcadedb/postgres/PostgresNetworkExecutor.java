@@ -584,21 +584,26 @@ public class PostgresNetworkExecutor extends Thread {
    *                            should not send protocol messages.
    */
   private List<Result> browseAndCacheResultSet(final ResultSet resultSet, final int limit, final boolean sendSuspendedOnLimit) {
-    final List<Result> cachedResultSet = new ArrayList<>();
-    while (resultSet.hasNext()) {
-      final Result row = resultSet.next();
-      if (row == null)
-        continue;
+    // Take ownership of the ResultSet: caching always fully consumes it (or breaks on limit), so
+    // close it here to release the underlying execution-plan state. Leaving it open accumulates
+    // per-request state on the shared Database and degrades throughput (issue #4197 audit).
+    try (resultSet) {
+      final List<Result> cachedResultSet = new ArrayList<>();
+      while (resultSet.hasNext()) {
+        final Result row = resultSet.next();
+        if (row == null)
+          continue;
 
-      cachedResultSet.add(row);
+        cachedResultSet.add(row);
 
-      if (limit > 0 && cachedResultSet.size() >= limit) {
-        if (sendSuspendedOnLimit)
-          portalSuspendedResponse();
-        break;
+        if (limit > 0 && cachedResultSet.size() >= limit) {
+          if (sendSuspendedOnLimit)
+            portalSuspendedResponse();
+          break;
+        }
       }
+      return cachedResultSet;
     }
-    return cachedResultSet;
   }
 
   private Object[] getParams(PostgresPortal portal) {

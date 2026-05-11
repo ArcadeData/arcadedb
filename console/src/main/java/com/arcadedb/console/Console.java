@@ -860,9 +860,10 @@ public class Console {
       final TableFormatter table = new TableFormatter((text, args) -> output(0, text, args));
       table.setMaxWidthSize(maxWidth);
 
-      final ResultSet typeResult = databaseProxy.command("sql", "select from schema:types where name = \"" + typeName + "\"");
-      if (!typeResult.hasNext())
-        return;
+      try (final ResultSet typeResult = databaseProxy.command("sql",
+          "select from schema:types where name = \"" + typeName + "\"")) {
+        if (!typeResult.hasNext())
+          return;
 
       final Result result = typeResult.next();
 
@@ -907,6 +908,7 @@ public class Console {
           rows.add(row);
         }
         table.writeRows(rows, -1);
+      }
       }
 
     } else

@@ -45,8 +45,8 @@ public class MaterializedViewRefresher {
       // would otherwise defer the commit indefinitely.
       // See: https://github.com/ArcadeData/arcadedb/issues/3941
       database.transaction(() -> {
-        // Truncate existing data — faster than DELETE FROM (no per-record WAL entries)
-        database.command("sql", "TRUNCATE TYPE `" + backingTypeName + "` UNSAFE");
+        // Truncate existing data, faster than DELETE FROM (no per-record WAL entries).
+        database.command("sql", "TRUNCATE TYPE `" + backingTypeName + "` UNSAFE").close();
 
         // Execute the defining query and insert results
         try (final ResultSet rs = database.query("sql", view.getQuery())) {

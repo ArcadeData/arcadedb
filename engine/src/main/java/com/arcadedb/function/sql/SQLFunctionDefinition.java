@@ -64,22 +64,23 @@ public class SQLFunctionDefinition implements FunctionDefinition {
       }
     }
 
-    final ResultSet result = database.command("sqlscript", implementation, paramMap);
-    Object first = null;
-    if (result.hasNext()) {
-      first = result.next();
-      first = extractResult(first);
-
+    try (final ResultSet result = database.command("sqlscript", implementation, paramMap)) {
+      Object first = null;
       if (result.hasNext()) {
-        final List list = new ArrayList<>();
-        list.add(first);
-        while (result.hasNext())
-          list.add(extractResult(result.next()));
+        first = result.next();
+        first = extractResult(first);
 
-        return list;
+        if (result.hasNext()) {
+          final List list = new ArrayList<>();
+          list.add(first);
+          while (result.hasNext())
+            list.add(extractResult(result.next()));
+
+          return list;
+        }
       }
+      return first;
     }
-    return first;
   }
 
   private static Object extractResult(Object first) {

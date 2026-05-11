@@ -416,7 +416,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     }
 
     // Synchronous fallback
-    database.command("sql", "import database " + url);
+    try (final var rs = database.command("sql", "import database " + url)) {
+      // try-with-resources releases the execution-plan state held by the import ResultSet.
+    }
     return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
   }
 
@@ -638,7 +640,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     Metrics.counter("http.align-database").increment();
 
-    database.command("sql", "align database");
+    try (final var rs = database.command("sql", "align database")) {
+      // align database is fire-and-forget here; close releases the ResultSet's plan state.
+    }
   }
 
   private ExecutionResponse getBackupConfig() {
@@ -870,20 +874,21 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     // Fallback: use SQL command (uses GlobalConfiguration.SERVER_BACKUP_DIRECTORY)
     try {
       final Database database = server.getDatabase(databaseName);
-      final Object result = database.command("sql", "backup database");
+      try (final var result = database.command("sql", "backup database")) {
 
-      final JSONObject response = new JSONObject();
-      response.put("result", "ok");
-      if (result instanceof Iterable) {
-        for (final Object r : (Iterable<?>) result) {
-          if (r instanceof Map) {
-            final Map<?, ?> map = (Map<?, ?>) r;
-            if (map.containsKey("backupFile"))
-              response.put("backupFile", map.get("backupFile").toString());
+        final JSONObject response = new JSONObject();
+        response.put("result", "ok");
+        if (result instanceof Iterable) {
+          for (final Object r : (Iterable<?>) result) {
+            if (r instanceof Map) {
+              final Map<?, ?> map = (Map<?, ?>) r;
+              if (map.containsKey("backupFile"))
+                response.put("backupFile", map.get("backupFile").toString());
+            }
           }
         }
+        return new ExecutionResponse(200, response.toString());
       }
-      return new ExecutionResponse(200, response.toString());
     } catch (final Exception e) {
       throw new RuntimeException("Error triggering backup for database '" + databaseName + "': " + e.getMessage(), e);
     }

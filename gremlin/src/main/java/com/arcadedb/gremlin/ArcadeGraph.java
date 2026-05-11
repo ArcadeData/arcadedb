@@ -277,8 +277,11 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultset = this.database.query("sql", query.toString());
-      return resultset.stream().filter((a) -> a.getIdentity().isEmpty() || database.existsRecord(a.getIdentity().get()))
-          .map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement()))).iterator();
+      final Iterator<Vertex> base = resultset.stream()
+          .filter((a) -> a.getIdentity().isEmpty() || database.existsRecord(a.getIdentity().get()))
+          .map(result -> (Vertex) new ArcadeVertex(this, (com.arcadedb.graph.Vertex) (result.toElement())))
+          .iterator();
+      return closingIterator(base, resultset);
     }
 
     final List<Vertex> resultSet = new ArrayList<>(vertexIds.length);
@@ -342,8 +345,11 @@ public class ArcadeGraph implements Graph, Closeable {
       query.append("]");
 
       final ResultSet resultSet = this.database.query("sql", query.toString());
-      return resultSet.stream().filter((a) -> a.getIdentity().isEmpty() || database.existsRecord(a.getIdentity().get()))
-          .map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement())).iterator();
+      final Iterator<Edge> base = resultSet.stream()
+          .filter((a) -> a.getIdentity().isEmpty() || database.existsRecord(a.getIdentity().get()))
+          .map(result -> (Edge) new ArcadeEdge(this, (com.arcadedb.graph.Edge) result.toElement()))
+          .iterator();
+      return closingIterator(base, resultSet);
 
     }
 
@@ -616,5 +622,32 @@ public class ArcadeGraph implements Graph, Closeable {
 
     // Return secured engine
     return new GremlinGroovyScriptEngine(allCustomizers);
+  }
+
+  /**
+   * Wraps a delegate iterator so the backing {@link ResultSet} is closed when the iterator is
+   * exhausted. Without this, full-graph {@code g.V()} / {@code g.E()} scans would leak the
+   * underlying execution plan and accumulate state on the shared Database (issue #4197 audit).
+   */
+  private static <T> Iterator<T> closingIterator(final Iterator<T> delegate, final ResultSet resultSet) {
+    return new Iterator<T>() {
+      private boolean closed = false;
+
+      @Override
+      public boolean hasNext() {
+        if (closed)
+          return false;
+        if (delegate.hasNext())
+          return true;
+        closed = true;
+        resultSet.close();
+        return false;
+      }
+
+      @Override
+      public T next() {
+        return delegate.next();
+      }
+    };
   }
 }

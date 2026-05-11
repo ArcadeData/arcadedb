@@ -322,15 +322,14 @@ public class SQLFunctionVectorNeighbors extends SQLFunctionVectorAbstract {
       final String vectorProperty = lsmIndex.getPropertyNames().getFirst();
       final String idProperty = lsmIndex.getIdPropertyName();
 
-      final ResultSet rs = context.getDatabase().query("sql",
-          "SELECT " + vectorProperty + " FROM " + typeName + " WHERE " + idProperty + " = ? LIMIT 1", keyStr);
-
       Object stored = null;
-      if (rs.hasNext()) {
-        final var result = rs.next();
-        stored = result.getProperty(vectorProperty);
+      try (final ResultSet rs = context.getDatabase().query("sql",
+          "SELECT " + vectorProperty + " FROM " + typeName + " WHERE " + idProperty + " = ? LIMIT 1", keyStr)) {
+        if (rs.hasNext()) {
+          final var result = rs.next();
+          stored = result.getProperty(vectorProperty);
+        }
       }
-      rs.close();
 
       if (stored == null)
         throw new CommandSQLParsingException("Could not find vertex with key '" + keyStr + "' or extract vector");
