@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.database.RID;
+import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -142,6 +144,15 @@ public class InExpression implements BooleanExpression {
         return ((Number) a).longValue() == ((Number) b).longValue();
       return ((Number) a).doubleValue() == ((Number) b).doubleValue();
     }
+
+    // id()/elementId() interop (issue #4183): id() now returns a Long-encoded RID, but legacy queries
+    // still pass an RID string. Coerce the Long side to its encoded form so {@code id(n) IN
+    // ["#1:0"]} keeps matching the records whose id() now reports {@code 4294967296}. See the same
+    // coercion in {@link ComparisonExpression#compareValuesTernary} for the equality path.
+    if (a instanceof Number leftNum && b instanceof String rightStr && RID.is(rightStr))
+      return leftNum.longValue() == IdFunction.encodeRidAsLong(new RID(rightStr));
+    if (a instanceof String leftStr && b instanceof Number rightNum && RID.is(leftStr))
+      return IdFunction.encodeRidAsLong(new RID(leftStr)) == rightNum.longValue();
 
     // Different types that aren't both numbers
     return false;

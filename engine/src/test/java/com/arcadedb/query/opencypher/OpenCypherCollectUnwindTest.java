@@ -587,12 +587,12 @@ class OpenCypherCollectUnwindTest {
             RETURN ID(n) AS id""",
             Map.of("batch", batch));
 
-        final Set<String> rids = new HashSet<>();
+        final Set<Number> rids = new HashSet<>();
         int count = 0;
 
         while (rs.hasNext()) {
           final Result r = rs.next();
-          final String id = (String) r.getProperty("id");
+          final Number id = (Number) r.getProperty("id");
 
           assertThat(id).isNotNull();
           rids.add(id);
@@ -635,12 +635,12 @@ class OpenCypherCollectUnwindTest {
             RETURN ID(n) AS id""",
             Map.of("batch", batch));
 
-        final List<String> rids = new ArrayList<>();
+        final List<Number> rids = new ArrayList<>();
         int count = 0;
 
         while (rs.hasNext()) {
           final Result r = rs.next();
-          final String id = (String) r.getProperty("id");
+          final Number id = (Number) r.getProperty("id");
           rids.add(id);
           count++;
         }
@@ -1151,7 +1151,7 @@ class OpenCypherCollectUnwindTest {
 
     @Test
     void unwindWithCreateAndMatch() {
-      final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN ID(c) as rid");
+      final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN elementId(c) as rid");
       assertThat(createResult.hasNext()).isTrue();
       final String chunkRid = createResult.next().getProperty("rid").toString();
 
@@ -1182,7 +1182,7 @@ class OpenCypherCollectUnwindTest {
 
     @Test
     void unwindWithCreateVectorProperty() {
-      final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN ID(c) as rid");
+      final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN elementId(c) as rid");
       assertThat(createResult.hasNext()).isTrue();
       final String chunkRid = createResult.next().getProperty("rid").toString();
 
@@ -1224,7 +1224,7 @@ class OpenCypherCollectUnwindTest {
 
     @Test
     void originalIssue3154Scenario() {
-      final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN ID(c) as rid");
+      final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN elementId(c) as rid");
       assertThat(createResult.hasNext()).isTrue();
       final String chunkRid = createResult.next().getProperty("rid").toString();
 
@@ -1263,7 +1263,7 @@ class OpenCypherCollectUnwindTest {
 
     @Test
     void issue3211Scenario() {
-      final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN ID(c) as rid");
+      final ResultSet createResult = database.command("opencypher", "CREATE (c:CHUNK {id: 1}) RETURN elementId(c) as rid");
       assertThat(createResult.hasNext()).isTrue();
       final String chunkRid = createResult.next().getProperty("rid").toString();
 

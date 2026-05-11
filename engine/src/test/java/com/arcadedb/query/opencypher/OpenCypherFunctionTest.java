@@ -95,8 +95,9 @@ class OpenCypherFunctionTest {
     int count = 0;
     while (resultSet.hasNext()) {
       final Result result = resultSet.next();
-      assertThat(result.<String>getProperty("personId")).isNotNull();
-      assertThat(result.<String>getProperty("personId").contains("#")).isTrue();
+      // id(n) is the Neo4j-compatible Long-encoded RID since issue #4183.
+      assertThat(result.<Object>getProperty("personId")).isInstanceOf(Number.class);
+      assertThat(result.<Number>getProperty("personId").longValue()).isGreaterThanOrEqualTo(0L);
       count++;
     }
 

@@ -181,17 +181,20 @@ class Issue3864CypherBatchMatchByIdPerformanceTest extends TestHelper {
           params);
     });
 
-    // Verify each edge connects CHUNK_EMBEDDING to the correct CHUNK
+    // Verify each edge connects CHUNK_EMBEDDING to the correct CHUNK.
+    // Use elementId() (Neo4j-compatible string identifier) to compare with the RID strings captured
+    // above; id() now returns the Neo4j-compatible Long encoding (issue #4183) which would not
+    // match the RID-formatted strings.
     database.transaction(() -> {
       try (final ResultSet rs = database.query("opencypher",
-          "MATCH (p:CHUNK_EMBEDDING)-[:embb]->(b:CHUNK) RETURN ID(p) AS pid, ID(b) AS bid")) {
+          "MATCH (p:CHUNK_EMBEDDING)-[:embb]->(b:CHUNK) RETURN elementId(p) AS pid, elementId(b) AS bid")) {
         int count = 0;
         while (rs.hasNext()) {
           final var result = rs.next();
           assertThat((Object) result.getProperty("pid")).isNotNull();
           assertThat((Object) result.getProperty("bid")).isNotNull();
           // bid should be one of the original CHUNK RIDs
-          assertThat(chunkRids).contains(result.getProperty("bid").toString());
+          assertThat(chunkRids).contains(result.<String>getProperty("bid"));
           count++;
         }
         assertThat(count).isEqualTo(chunkRids.size());

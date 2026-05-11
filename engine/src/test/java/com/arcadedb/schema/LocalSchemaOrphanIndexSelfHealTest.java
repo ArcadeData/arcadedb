@@ -64,10 +64,17 @@ class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
         database.newVertex("Widget").set("code", "code-" + i).save();
     });
 
+    // Resolve the schema file location while the database is still open, then close it. The
+    // schema.json must be edited AFTER close() because {@link LocalSchema#close()} will rewrite
+    // the file when {@code dirtyGeneration > savedGeneration} - in some test orderings the
+    // schema is left dirty by the just-finished writes and the in-memory state (without the
+    // injected dangling reference) would otherwise overwrite our edit before the next open().
+    final File schemaFile = ((LocalSchema) database.getSchema().getEmbedded()).getConfigurationFile();
+    database.close();
+
     // Inject a schema reference whose bucket prefix does not match any bucket on disk - the
     // orphan-relinker walks bucketMap by prefix, so a synthetic prefix that cannot be resolved
     // is exactly the case that produces "Cannot find indexes [...]" on a real follower.
-    final File schemaFile = ((LocalSchema) database.getSchema().getEmbedded()).getConfigurationFile();
     final String original = FileUtils.readFileAsString(schemaFile);
     final JSONObject schemaJson = new JSONObject(original);
     final JSONObject typeJson = schemaJson.getJSONObject("types").getJSONObject("Widget");
@@ -85,24 +92,39 @@ class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
       w.write(schemaJson.toString());
     }
 
+    // Attach the capturing handler to BOTH the LocalSchema logger and the root logger so we
+    // receive WARNING records regardless of test-ordering effects on JUL state. Some earlier test
+    // can leave the LocalSchema logger configured in a way (custom filter, useParentHandlers
+    // flipped, level overridden) that suppresses the warning at one level; attaching to both the
+    // origin logger and its common ancestor makes the capture insensitive to that residue.
     final CapturingHandler firstHandler = new CapturingHandler();
     firstHandler.setLevel(Level.WARNING);
     final Logger logger = Logger.getLogger(LocalSchema.class.getName());
+    final Logger rootLogger = Logger.getLogger("");
     logger.addHandler(firstHandler);
+    rootLogger.addHandler(firstHandler);
     final Level prev = logger.getLevel();
     logger.setLevel(Level.ALL);
+    // Also force the parent loggers to ALL so JUL's effective-level check does not filter out
+    // WARNING records before they reach our handler. The arcadedb-log.properties test config sets
+    // {@code com.arcadedb.level=SEVERE} which propagates by inheritance to any descendant whose
+    // own level is null; explicitly overriding com.arcadedb here makes the assertion robust
+    // against earlier tests that may have reset LocalSchema's level back to null.
+    final Logger arcadeLogger = Logger.getLogger("com.arcadedb");
+    final Level prevArcade = arcadeLogger.getLevel();
+    arcadeLogger.setLevel(Level.ALL);
 
     try {
       // First reopen: the warning fires, but the new self-heal path marks the schema dirty so
       // saveConfiguration() rewrites schema.json without the dangling reference.
-      database.close();
       database = factory.open();
 
       final List<String> firstWarnings = firstHandler.snapshot().stream()
           .filter(m -> m.contains("Cannot find indexes") || m.contains("Cannot find index"))
           .toList();
       assertThat(firstWarnings)
-          .as("first load must surface the 'Cannot find indexes' warning so the operator notices the divergence")
+          .as("first load must surface the 'Cannot find indexes' warning so the operator notices the divergence (captured=%s)",
+              firstHandler.snapshot())
           .isNotEmpty();
 
       // The on-disk schema must no longer contain the dangling reference - that is the whole
@@ -119,9 +141,11 @@ class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
 
       // Second reopen with a fresh handler: the dangling reference is gone, so no warning at all.
       logger.removeHandler(firstHandler);
+      rootLogger.removeHandler(firstHandler);
       final CapturingHandler secondHandler = new CapturingHandler();
       secondHandler.setLevel(Level.WARNING);
       logger.addHandler(secondHandler);
+      rootLogger.addHandler(secondHandler);
       try {
         database = factory.open();
 
@@ -133,9 +157,11 @@ class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
             .isEmpty();
       } finally {
         logger.removeHandler(secondHandler);
+        rootLogger.removeHandler(secondHandler);
       }
     } finally {
       logger.setLevel(prev);
+      arcadeLogger.setLevel(prevArcade);
     }
   }
 

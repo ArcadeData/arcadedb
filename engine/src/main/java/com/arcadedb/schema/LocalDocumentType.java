@@ -1081,6 +1081,17 @@ public class LocalDocumentType implements DocumentType {
     if (propIndex == null) {
       final List<String> propertyList = Arrays.asList(propertyNames);
       propIndex = indexesByProperties.get(propertyList);
+      // A wrapper found here can be "invalidated" if a prior {@link TypeIndex#drop()} (e.g.
+      // existingTypeIndex.drop() in {@link TypeIndexBuilder#create()}) ran on it but the schema's
+      // own auto-removal hook (LocalSchema#dropIndex, #4179) failed to dislodge it - this is the
+      // observable symptom of the "is not valid" failures during REBUILD INDEX / index recreation.
+      // Treat a stale entry as if it weren't there: mint a fresh wrapper so the new bucket index
+      // can attach.
+      if (propIndex != null && !propIndex.isValid()) {
+        indexesByProperties.remove(propertyList);
+        schema.indexMap.remove(propIndex.getName());
+        propIndex = null;
+      }
       if (propIndex == null) {
         // CREATE THE TYPE-INDEX FOR THE 1ST TIME. Honour any user-supplied name carried on the
         // bucket-level index metadata (issue #4139): {@code CREATE INDEX <manual_name> ON ...}

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.database.RID;
+import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -103,6 +105,22 @@ public class ComparisonExpression implements BooleanExpression {
     // In OpenCypher, any comparison involving null returns null
     if (left == null || right == null)
       return null;
+
+    // id()/elementId() interop: id() now returns a Long-encoded RID (Neo4j-compatible, issue #4183).
+    // Legacy queries still pass an RID string parameter (e.g. {@code WHERE id(n) = "#1:0"}). Coerce
+    // the Long-encoded side to its RID-string form and compare as RIDs, so the legacy pattern keeps
+    // working without forcing callers to migrate. Both equality and ordering use the encoded long so
+    // ordering stays consistent with id() / RID natural order.
+    if (left instanceof Number leftNum && right instanceof String rightStr && RID.is(rightStr)) {
+      final long leftEncoded = leftNum.longValue();
+      final long rightEncoded = IdFunction.encodeRidAsLong(new RID(rightStr));
+      return numericCompare(leftEncoded, rightEncoded);
+    }
+    if (left instanceof String leftStr && right instanceof Number rightNum && RID.is(leftStr)) {
+      final long leftEncoded = IdFunction.encodeRidAsLong(new RID(leftStr));
+      final long rightEncoded = rightNum.longValue();
+      return numericCompare(leftEncoded, rightEncoded);
+    }
 
     // Temporal comparison
     if (left instanceof CypherTemporalValue && right instanceof CypherTemporalValue) {
@@ -300,5 +318,16 @@ public class ComparisonExpression implements BooleanExpression {
 
   public Expression getRight() {
     return right;
+  }
+
+  private Boolean numericCompare(final long leftNum, final long rightNum) {
+    return switch (operator) {
+      case EQUALS -> leftNum == rightNum;
+      case NOT_EQUALS -> leftNum != rightNum;
+      case LESS_THAN -> leftNum < rightNum;
+      case GREATER_THAN -> leftNum > rightNum;
+      case LESS_THAN_OR_EQUAL -> leftNum <= rightNum;
+      case GREATER_THAN_OR_EQUAL -> leftNum >= rightNum;
+    };
   }
 }

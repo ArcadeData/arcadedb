@@ -398,10 +398,10 @@ public class OpenCypherWhereClauseTest {
       });
 
       ResultSet result = database.query("opencypher", "MATCH (n:Node) WHERE n.name = 'Node1' RETURN ID(n) AS id");
-      String node1Id = (String) result.next().getProperty("id");
+      Number node1Id = (Number) result.next().getProperty("id");
 
       result = database.query("opencypher", "MATCH (n:Node) WHERE n.name = 'Node2' RETURN ID(n) AS id");
-      String node2Id = (String) result.next().getProperty("id");
+      Number node2Id = (Number) result.next().getProperty("id");
 
       result = database.query("opencypher",
           "MATCH (a) WHERE ID(a) = $sourceId RETURN a",
@@ -438,10 +438,10 @@ public class OpenCypherWhereClauseTest {
       });
 
       ResultSet result = database.query("opencypher", "MATCH (n:Node) WHERE n.name = 'Source' RETURN ID(n) AS id");
-      String sourceId = (String) result.next().getProperty("id");
+      Number sourceId = (Number) result.next().getProperty("id");
 
       result = database.query("opencypher", "MATCH (n:Node) WHERE n.name = 'Target' RETURN ID(n) AS id");
-      String targetId = (String) result.next().getProperty("id");
+      Number targetId = (Number) result.next().getProperty("id");
 
       result = database.query("opencypher",
           """
@@ -492,7 +492,7 @@ public class OpenCypherWhereClauseTest {
       int count = 0;
       while (result.hasNext()) {
         Result r = result.next();
-        String id = (String) r.getProperty("id");
+        Number id = (Number) r.getProperty("id");
         String text = (String) r.getProperty("text");
         assertThat(id).isNotNull();
         assertThat(text).isNotNull();
@@ -505,25 +505,25 @@ public class OpenCypherWhereClauseTest {
     @Test
     void idFunctionInWhereClauseWithInOperator() {
       ResultSet result = database.query("opencypher", "MATCH (n:CHUNK) RETURN ID(n) AS id");
-      List<String> allIds = new ArrayList<>();
+      List<Number> allIds = new ArrayList<>();
       while (result.hasNext()) {
-        String id = (String) result.next().getProperty("id");
+        Number id = (Number) result.next().getProperty("id");
         allIds.add(id);
       }
 
       assertThat(allIds).hasSize(5);
 
-      List<String> queryIds = List.of(allIds.get(0), allIds.get(2), allIds.get(4));
+      List<Number> queryIds = List.of(allIds.get(0), allIds.get(2), allIds.get(4));
 
       result = database.query("opencypher",
           "MATCH (n:CHUNK) WHERE ID(n) IN $ids RETURN n.text as text, ID(n) as id",
           Map.of("ids", queryIds));
 
-      List<String> returnedIds = new ArrayList<>();
+      List<Number> returnedIds = new ArrayList<>();
       List<String> texts = new ArrayList<>();
       while (result.hasNext()) {
         Result r = result.next();
-        String id = (String) r.getProperty("id");
+        Number id = (Number) r.getProperty("id");
         String text = (String) r.getProperty("text");
         returnedIds.add(id);
         texts.add(text);
@@ -537,22 +537,22 @@ public class OpenCypherWhereClauseTest {
     @Test
     void idFunctionWithAllIds() {
       ResultSet result = database.query("opencypher", "MATCH (n:CHUNK) RETURN ID(n) AS id");
-      List<String> allIds = new ArrayList<>();
+      List<Number> allIds = new ArrayList<>();
       while (result.hasNext()) {
-        String id = (String) result.next().getProperty("id");
+        Number id = (Number) result.next().getProperty("id");
         allIds.add(id);
       }
 
-      List<String> queryIds = List.of(allIds.get(2), allIds.get(1), allIds.get(0), allIds.get(4), allIds.get(3));
+      List<Number> queryIds = List.of(allIds.get(2), allIds.get(1), allIds.get(0), allIds.get(4), allIds.get(3));
 
       result = database.query("opencypher",
           "MATCH (n:CHUNK) WHERE ID(n) IN $ids RETURN n.text as text, ID(n) as id",
           Map.of("ids", queryIds));
 
-      List<String> returnedIds = new ArrayList<>();
+      List<Number> returnedIds = new ArrayList<>();
       while (result.hasNext()) {
         Result r = result.next();
-        String id = (String) r.getProperty("id");
+        Number id = (Number) r.getProperty("id");
         returnedIds.add(id);
       }
 
@@ -563,22 +563,22 @@ public class OpenCypherWhereClauseTest {
     @Test
     void idFunctionWithTwoIds() {
       ResultSet result = database.query("opencypher", "MATCH (n:CHUNK) RETURN ID(n) AS id ORDER BY id");
-      List<String> allIds = new ArrayList<>();
+      List<Number> allIds = new ArrayList<>();
       while (result.hasNext()) {
-        String id = (String) result.next().getProperty("id");
+        Number id = (Number) result.next().getProperty("id");
         allIds.add(id);
       }
 
-      List<String> queryIds = List.of(allIds.get(1), allIds.get(3));
+      List<Number> queryIds = List.of(allIds.get(1), allIds.get(3));
 
       result = database.query("opencypher",
           "MATCH (n:CHUNK) WHERE ID(n) IN $ids RETURN n.text as text, ID(n) as id",
           Map.of("ids", queryIds));
 
-      List<String> returnedIds = new ArrayList<>();
+      List<Number> returnedIds = new ArrayList<>();
       while (result.hasNext()) {
         Result r = result.next();
-        String id = (String) r.getProperty("id");
+        Number id = (Number) r.getProperty("id");
         returnedIds.add(id);
       }
 

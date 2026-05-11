@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.function.StatelessFunction;
+import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.opencypher.ast.CallClause;
@@ -3314,7 +3315,7 @@ public class CypherExecutionPlan {
    * @param matchVariables variables bound earlier in the current MATCH clause
    * @return the extractable predicate, or null if none qualifies
    */
-  private static BooleanExpression extractPushdownFilter(final WhereClause whereClause, final String currentVar,
+  private BooleanExpression extractPushdownFilter(final WhereClause whereClause, final String currentVar,
       final Set<String> boundVariables, final Set<String> matchVariables) {
     if (whereClause == null || whereClause.getConditionExpression() == null)
       return null;
@@ -3325,7 +3326,58 @@ public class CypherExecutionPlan {
     available.addAll(matchVariables);
     available.add(currentVar);
 
-    return WhereClause.extractForVariables(whereClause.getConditionExpression(), available);
+    final BooleanExpression extracted = WhereClause.extractForVariables(whereClause.getConditionExpression(), available);
+    // Strip {@code id(var) = X} / {@code elementId(var) = X} predicates whose RHS is statically
+    // resolvable (literal or parameter): the static idFilter optimisation already enforces them via
+    // direct RID lookup, so re-evaluating them in the row-by-row pushdown filter is wasted work and
+    // would also drop the row after id() was made Neo4j-compatible (returns Long instead of an RID
+    // string, issue #4183) because the cross-type comparison Long vs. String fails. Predicates with
+    // dynamic RHS (e.g. {@code id(a) = b.id}) are left alone because extractIdFilter does not consume
+    // them.
+    return stripStaticIdEqualities(extracted);
+  }
+
+  /**
+   * Removes every top-level {@code id(var) = X} / {@code elementId(var) = X} equality (in either argument order) whose RHS resolves to a constant at plan time
+   * (literal or parameter). Walks AND chains; leaves OR / NOT subtrees untouched because the static idFilter optimisation only consumes AND-chained equalities.
+   */
+  private BooleanExpression stripStaticIdEqualities(final BooleanExpression expr) {
+    if (expr == null)
+      return null;
+
+    if (expr instanceof ComparisonExpression comp
+        && comp.getOperator() == ComparisonExpression.Operator.EQUALS) {
+      if (isStaticIdEquality(comp.getLeft(), comp.getRight())
+          || isStaticIdEquality(comp.getRight(), comp.getLeft()))
+        return null;
+    }
+
+    if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      final BooleanExpression left = stripStaticIdEqualities(logical.getLeft());
+      final BooleanExpression right = stripStaticIdEqualities(logical.getRight());
+      if (left != null && right != null)
+        return new LogicalExpression(LogicalExpression.Operator.AND, left, right);
+      if (left != null)
+        return left;
+      return right;
+    }
+
+    return expr;
+  }
+
+  private boolean isStaticIdEquality(final Expression idSide, final Expression valueSide) {
+    if (!(idSide instanceof FunctionCallExpression func))
+      return false;
+    final String name = func.getFunctionName();
+    if (!("id".equalsIgnoreCase(name) || "elementid".equalsIgnoreCase(name)) || func.getArguments().size() != 1)
+      return false;
+    if (!(func.getArguments().get(0) instanceof VariableExpression))
+      return false;
+    if (valueSide instanceof LiteralExpression)
+      return true;
+    if (valueSide instanceof ParameterExpression paramExpr)
+      return parameters != null && parameters.containsKey(paramExpr.getParameterName());
+    return false;
   }
 
   /**
@@ -4673,11 +4725,13 @@ public class CypherExecutionPlan {
     if (expr == null)
       return null;
 
-    // Handle literal string values
+    // Handle literal values: strings already have the RID format; numeric literals come from id()
+    // (Long-encoded RID, issue #4183) and must be decoded back to a #bucketId:offset string so the
+    // downstream MatchNodeStep can resolve the record via newRID.
     if (expr instanceof LiteralExpression) {
       final LiteralExpression litExpr = (LiteralExpression) expr;
       final Object value = litExpr.getValue();
-      return value != null ? value.toString() : null;
+      return toRidString(value);
     }
 
     // Handle parameter references
@@ -4686,7 +4740,7 @@ public class CypherExecutionPlan {
       final String paramName = paramExpr.getParameterName();
       if (parameters != null && parameters.containsKey(paramName)) {
         final Object value = parameters.get(paramName);
-        return value != null ? value.toString() : null;
+        return toRidString(value);
       }
     }
 
@@ -4698,5 +4752,13 @@ public class CypherExecutionPlan {
     }
 
     return null;
+  }
+
+  private static String toRidString(final Object value) {
+    if (value == null)
+      return null;
+    if (value instanceof Number number)
+      return IdFunction.decodeLongToRidString(number.longValue());
+    return value.toString();
   }
 }

@@ -485,9 +485,10 @@ class CollectDistinctTest {
           final List<?> idList = (List<?>) collectedIds;
           assertThat(idList).isNotEmpty();
 
-          // Each item should be a RID (string representation)
+          // Each item should be a Neo4j-compatible Long-encoded RID (issue #4183).
           for (final Object item : idList) {
-            assertThat(item.toString()).matches("#\\d+:\\d+");
+            assertThat(item).isInstanceOf(Number.class);
+            assertThat(((Number) item).longValue()).isGreaterThanOrEqualTo(0L);
           }
         }
       }

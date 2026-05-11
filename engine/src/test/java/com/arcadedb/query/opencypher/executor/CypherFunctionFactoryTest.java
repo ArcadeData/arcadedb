@@ -240,7 +240,8 @@ class CypherFunctionFactoryTest {
 
     assertThat(resultSet.hasNext()).isTrue();
     final Result result = resultSet.next();
-    assertThat(result.<String>getProperty("result")).isNotNull();
+    // id(n) returns Neo4j-compatible Long-encoded RID since issue #4183.
+    assertThat(result.<Object>getProperty("result")).isInstanceOf(Number.class);
   }
 
   @Test

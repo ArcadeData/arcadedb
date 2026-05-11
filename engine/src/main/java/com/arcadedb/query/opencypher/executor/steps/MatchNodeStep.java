@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
@@ -121,9 +122,55 @@ public class MatchNodeStep extends AbstractExecutionStep {
     this.variable = variable;
     this.pattern = pattern;
     this.idFilter = idFilter;
-    this.whereFilter = whereFilter;
     this.evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
     this.dynamicIdExpression = (whereFilter != null) ? findIdValueExpression(whereFilter) : null;
+    // When the dynamic ID expression handles {@code id(variable) = X} via runtime RID lookup, the
+    // same predicate is still present in the WHERE pushdown filter. Re-evaluating it row-by-row
+    // would be wasted work, and after id() became Neo4j-compatible (returns Long instead of an RID
+    // string, issue #4183) the cross-type comparison Long vs. String/Identifiable would drop the
+    // row entirely. Strip the predicate here so the pushdown only carries predicates that the
+    // dynamic ID lookup does not already cover. The static idFilter case is handled upstream in
+    // {@code CypherExecutionPlan.extractPushdownFilter}.
+    this.whereFilter = (dynamicIdExpression != null)
+        ? stripIdEqualityForVariable(whereFilter, variable)
+        : whereFilter;
+  }
+
+  /**
+   * Removes every top-level {@code id(variable) = X} or {@code elementId(variable) = X} equality predicate (in either argument order) from an AND chain.
+   * Returns {@code null} when the entire expression was the stripped predicate. Used together with the dynamic ID lookup so the same predicate is not
+   * re-evaluated in the row-by-row WHERE filter.
+   */
+  private static BooleanExpression stripIdEqualityForVariable(final BooleanExpression expr, final String variable) {
+    if (expr == null)
+      return null;
+
+    if (expr instanceof ComparisonExpression comp
+        && comp.getOperator() == ComparisonExpression.Operator.EQUALS
+        && (isIdFunctionOn(comp.getLeft(), variable) || isIdFunctionOn(comp.getRight(), variable)))
+      return null;
+
+    if (expr instanceof LogicalExpression logical && logical.getOperator() == LogicalExpression.Operator.AND) {
+      final BooleanExpression leftStripped = stripIdEqualityForVariable(logical.getLeft(), variable);
+      final BooleanExpression rightStripped = stripIdEqualityForVariable(logical.getRight(), variable);
+      if (leftStripped != null && rightStripped != null)
+        return new LogicalExpression(LogicalExpression.Operator.AND, leftStripped, rightStripped);
+      if (leftStripped != null)
+        return leftStripped;
+      return rightStripped;
+    }
+
+    return expr;
+  }
+
+  private static boolean isIdFunctionOn(final Expression expr, final String variable) {
+    if (!(expr instanceof FunctionCallExpression func))
+      return false;
+    final String name = func.getFunctionName();
+    if (!("id".equalsIgnoreCase(name) || "elementid".equalsIgnoreCase(name)) || func.getArguments().size() != 1)
+      return false;
+    final Expression arg = func.getArguments().get(0);
+    return arg instanceof VariableExpression varExpr && variable.equals(varExpr.getVariableName());
   }
 
   @Override
@@ -311,10 +358,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
     if ((effectiveIdFilter == null || effectiveIdFilter.isEmpty())
         && dynamicIdExpression != null && currentInputResult != null) {
       final Object resolved = evaluator.evaluate(dynamicIdExpression, currentInputResult, context);
-      if (resolved != null)
-        effectiveIdFilter = resolved instanceof Identifiable
-            ? ((Identifiable) resolved).getIdentity().toString()
-            : resolved.toString();
+      if (resolved != null) {
+        if (resolved instanceof Identifiable identifiable)
+          effectiveIdFilter = identifiable.getIdentity().toString();
+        else if (resolved instanceof Number number)
+          effectiveIdFilter = IdFunction.decodeLongToRidString(number.longValue());
+        else
+          effectiveIdFilter = resolved.toString();
+      }
     }
 
     // If ID filter is present, look up the specific vertex by ID.

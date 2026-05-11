@@ -189,7 +189,8 @@ class OpenCypherCustomFunctionTest {
     // Create test graph
     final ResultSet createResult = database.command("opencypher", "CREATE (a:Person)-[:KNOWS]->(b:Person) RETURN id(a) as aid");
     assertThat(createResult.hasNext()).isTrue();
-    final String nodeId = createResult.next().getProperty("aid");
+    // id() returns a Neo4j-compatible Long-encoded RID since issue #4183.
+    final Number nodeId = createResult.next().getProperty("aid");
 
     // Call function that queries graph data
     final ResultSet rs = database.query("opencypher", "RETURN graph.countNeighbors($nodeId) as neighbors", "nodeId", nodeId);
@@ -258,7 +259,8 @@ class OpenCypherCustomFunctionTest {
     // Create node
     final ResultSet createResult = database.command("opencypher", "CREATE (n:TestNode) RETURN id(n) as nid");
     assertThat(createResult.hasNext()).isTrue();
-    final String nodeId = createResult.next().getProperty("nid");
+    // id() returns a Neo4j-compatible Long-encoded RID since issue #4183.
+    final Number nodeId = createResult.next().getProperty("nid");
 
     final ResultSet rs = database.query("opencypher", "RETURN cypher.getLabel($nodeId) as label", "nodeId", nodeId);
     assertThat(rs.hasNext()).isTrue();

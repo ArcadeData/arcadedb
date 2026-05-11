@@ -292,7 +292,13 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
   @Override
   public void drop() {
-    checkIsValid();
+    if (!valid)
+      // Already dropped. The schema's leaf-drop path (LocalSchema#dropIndex) auto-removes a wrapper
+      // whose last bucket child has just been removed (#4179). When a caller still holds a reference
+      // to a wrapper that has since been auto-removed and explicitly calls drop(), there is nothing
+      // left to clean up - the underlying bucket indexes were already dropped through the leaf path.
+      // Throwing here would surface a confusing "is not valid" error for an idempotent operation.
+      return;
 
     final List<IndexInternal> acquired = new ArrayList<>(indexesOnBuckets.size());
     for (final IndexInternal index : new ArrayList<>(indexesOnBuckets))
