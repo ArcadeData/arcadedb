@@ -20,6 +20,7 @@ package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.query.sql.executor.ResultSet;
 import de.bwaldvogel.mongo.MongoCollection;
 import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.backend.ArrayFilters;
@@ -319,11 +320,9 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
   private Iterable<Document> queryDocuments(final Document query, final Document orderBy, final int numberToSkip, final int numberToReturn) {
     final List<Document> result = new ArrayList<>();
 
-    final Iterator it;
-
     if (query == null || query.isEmpty()) {
       // SCAN
-      it = database.iterateType(collectionName, false);
+      MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, database.iterateType(collectionName, false));
     } else {
       // EXECUTE A SQL QUERY
       final StringBuilder sql = new StringBuilder("select from " + collectionName + " where ");
@@ -343,10 +342,10 @@ public class MongoDBCollectionWrapper implements MongoCollection<Long> {
         }
       }
 
-      it = database.query("SQL", sql.toString());
+      try (final ResultSet rs = database.query("SQL", sql.toString())) {
+        MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, rs);
+      }
     }
-
-    MongoDBToSqlTranslator.fillResultSet(numberToSkip, numberToReturn, result, it);
 
     return result;
   }

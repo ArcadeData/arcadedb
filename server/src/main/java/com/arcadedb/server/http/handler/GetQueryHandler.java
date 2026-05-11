@@ -84,11 +84,18 @@ public class GetQueryHandler extends AbstractQueryHandler {
         profile.addSerializationNanos(System.nanoTime() - serializationStart);
 
       } finally {
-        Metrics.counter("http.query").increment();
-        Metrics.timer("http.query.deserialization").record(profile.getDeserializationNanos(), TimeUnit.NANOSECONDS);
-        Metrics.timer("http.query.engine").record(profile.getEngineNanos(), TimeUnit.NANOSECONDS);
-        Metrics.timer("http.query.serialization").record(profile.getSerializationNanos(), TimeUnit.NANOSECONDS);
-        recordServerProfile(database.getName(), language, text, profile, qResult);
+        try {
+          Metrics.counter("http.query").increment();
+          Metrics.timer("http.query.deserialization").record(profile.getDeserializationNanos(), TimeUnit.NANOSECONDS);
+          Metrics.timer("http.query.engine").record(profile.getEngineNanos(), TimeUnit.NANOSECONDS);
+          Metrics.timer("http.query.serialization").record(profile.getSerializationNanos(), TimeUnit.NANOSECONDS);
+          recordServerProfile(database.getName(), language, text, profile, qResult);
+        } finally {
+          // Nested finally so that an unchecked exception from profile recording does not
+          // skip the close and leak the ResultSet (caught in #4197 audit follow-up review).
+          if (qResult != null)
+            qResult.close();
+        }
       }
 
       return new ExecutionResponse(200, response.toString());

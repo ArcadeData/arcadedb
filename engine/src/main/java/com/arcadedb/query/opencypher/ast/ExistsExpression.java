@@ -91,10 +91,9 @@ public class ExistsExpression implements Expression {
           modifiedSubquery = "WITH " + String.join(", ", withItems) + " " + modifiedSubquery;
       }
 
-      final var resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params);
-      final boolean exists = resultSet.hasNext();
-      resultSet.close();
-      return exists;
+      try (final var resultSet = context.getDatabase().query("opencypher", modifiedSubquery, params)) {
+        return resultSet.hasNext();
+      }
     } catch (final Exception e) {
       return false;
     }

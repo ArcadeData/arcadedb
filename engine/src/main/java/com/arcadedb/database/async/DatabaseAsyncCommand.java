@@ -59,14 +59,13 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
 
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
-    try {
-      final ResultSet resultset = idempotent ?
-          parametersMap != null ?
-              database.query(language, command, configuration, parametersMap) :
-              database.query(language, command, configuration, parameters) :
-          parametersMap != null ?
-              database.command(language, command, configuration, parametersMap) :
-              database.command(language, command, configuration, parameters);
+    try (final ResultSet resultset = idempotent ?
+        parametersMap != null ?
+            database.query(language, command, configuration, parametersMap) :
+            database.query(language, command, configuration, parameters) :
+        parametersMap != null ?
+            database.command(language, command, configuration, parametersMap) :
+            database.command(language, command, configuration, parameters)) {
 
       if (userCallback != null)
         userCallback.onComplete(resultset);

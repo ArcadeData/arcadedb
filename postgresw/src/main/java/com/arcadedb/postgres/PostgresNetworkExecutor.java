@@ -575,30 +575,42 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   /**
-   * Browse a result set and cache results up to the limit.
+   * Browse a result set and cache results up to the limit, then close the source ResultSet.
+   * <p>
+   * <b>Ownership:</b> this method takes ownership of the supplied ResultSet and closes it
+   * before returning, in both the natural-exhaustion and the limit-hit paths. The portal
+   * keeps only the materialized {@code List<Result>} (see {@code PostgresPortal#cachedResultSet}),
+   * never a reference to the underlying ResultSet. Multi-batch portal-suspension fetching
+   * from a partially-consumed ResultSet is therefore not supported by this implementation -
+   * a follow-up Execute on the same portal re-uses the cached list rather than pulling the
+   * next chunk from the source. This is unchanged behaviour from before the #4197 audit; the
+   * audit only made the close explicit, releasing the execution plan and unblocking parallel-scan
+   * worker threads that would otherwise stay parked on a full bounded queue.
    *
-   * @param resultSet           The result set to browse
+   * @param resultSet           The result set to browse (this method closes it)
    * @param limit               Maximum number of results to cache (0 = unlimited)
    * @param sendSuspendedOnLimit If true and limit is reached, sends PortalSuspended message.
    *                            Set to false for internal queries (like schema discovery) that
    *                            should not send protocol messages.
    */
   private List<Result> browseAndCacheResultSet(final ResultSet resultSet, final int limit, final boolean sendSuspendedOnLimit) {
-    final List<Result> cachedResultSet = new ArrayList<>();
-    while (resultSet.hasNext()) {
-      final Result row = resultSet.next();
-      if (row == null)
-        continue;
+    try (resultSet) {
+      final List<Result> cachedResultSet = new ArrayList<>();
+      while (resultSet.hasNext()) {
+        final Result row = resultSet.next();
+        if (row == null)
+          continue;
 
-      cachedResultSet.add(row);
+        cachedResultSet.add(row);
 
-      if (limit > 0 && cachedResultSet.size() >= limit) {
-        if (sendSuspendedOnLimit)
-          portalSuspendedResponse();
-        break;
+        if (limit > 0 && cachedResultSet.size() >= limit) {
+          if (sendSuspendedOnLimit)
+            portalSuspendedResponse();
+          break;
+        }
       }
+      return cachedResultSet;
     }
-    return cachedResultSet;
   }
 
   private Object[] getParams(PostgresPortal portal) {

@@ -52,8 +52,9 @@ public class SQLTriggerExecutor implements TriggerExecutor {
         params.put("$oldRecord", oldRecord);
       }
 
-      // Execute SQL with context parameters
-      database.command("sql", sql, params);
+      // Execute SQL with context parameters. Triggers run on every matching record; closing the
+      // ResultSet releases the per-call execution plan and avoids per-record state accumulation.
+      database.command("sql", sql, params).close();
       return true;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing SQL trigger '%s': %s", e, triggerName, e.getMessage());

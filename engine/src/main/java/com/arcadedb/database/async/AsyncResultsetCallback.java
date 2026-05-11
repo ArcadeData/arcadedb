@@ -31,8 +31,25 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 public interface AsyncResultsetCallback {
   /**
    * Invoked as soon as the command has been executed.
+   * <p>
+   * <b>Ownership contract:</b> the supplied {@link ResultSet} is owned by the async executor
+   * and is closed by the framework <i>immediately after this method returns</i>. Implementations
+   * MUST consume (iterate / drain / materialize via {@code stream().toList()}, etc.) the result
+   * set synchronously inside this callback. The reference must not be stored on a field or
+   * handed off to another thread for deferred iteration.
+   * <p>
+   * <b>Failure mode if violated:</b> any post-close access to the underlying execution-plan
+   * iterators (hasNext / next) will observe drained/closed state and may either return false
+   * silently, throw {@code IllegalStateException}, or surface as a downstream
+   * {@code NullPointerException} depending on the engine path. There is no defensive open-state
+   * check on the {@code ResultSet} interface, so misuse is not explicit - treat this Javadoc as
+   * the contract.
+   * <p>
+   * The framework-level close was added in the #4197 audit to avoid leaking the execution plan
+   * (and the parallel-scan worker threads it pins) when the callback is fire-and-forget, such as
+   * a logging-only completion handler.
    *
-   * @param resultset result set to fetch
+   * @param resultset result set to fetch, valid only for the duration of this call
    */
   void onComplete(final ResultSet resultset);
 
