@@ -127,6 +127,44 @@ class CypherReduceAndShortestPathTest {
     assertThat(resultSet.hasNext()).isFalse();
   }
 
+  /**
+   * Issue #4186: reduce() over a null list must return null, not the initial accumulator.
+   * Cypher semantics distinguish an empty list (returns the initial accumulator) from a null
+   * list (the whole reduce expression is null).
+   */
+  @Test
+  void reduceWithNullList() {
+    final ResultSet resultSet = database.query("opencypher",
+        "WITH null AS xs RETURN reduce(s = 0, x IN xs | s + x) AS total");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    assertThat(result.<Object>getProperty("total")).isNull();
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
+  /**
+   * Issue #4186 (optional-path variant): a null list flowing in from an unmatched OPTIONAL MATCH
+   * path must still produce null from reduce(), not the initial accumulator.
+   */
+  @Test
+  void reduceWithNullListFromOptionalMatch() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person {name: 'IsolatedB', id: 99})");
+    });
+
+    final ResultSet resultSet = database.query("opencypher",
+        """
+            OPTIONAL MATCH p = (:Person {name: 'IsolatedA'})-[*1..3]->(end:Person)
+            WITH nodes(p) AS ns
+            RETURN reduce(s = 0, n IN ns | s + n.id) AS total""");
+
+    assertThat(resultSet.hasNext()).isTrue();
+    final Result result = resultSet.next();
+    assertThat(result.<Object>getProperty("total")).isNull();
+    assertThat(resultSet.hasNext()).isFalse();
+  }
+
   @Test
   void reduceWithSingleElement() {
     final ResultSet resultSet = database.query("opencypher",

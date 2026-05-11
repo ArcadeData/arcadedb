@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.steps;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CreateClause;
@@ -150,20 +151,39 @@ public class ForeachStep extends AbstractExecutionStep {
 
     final String variable = foreachClause.getVariable();
 
-    for (final Object element : iterable) {
-      // Create a new result row with the iteration variable bound
-      final ResultInternal iterationRow = new ResultInternal();
+    // Per-iteration deferred-delete batching: see DeleteStep.DEFERRED_DELETE_BATCH_VAR.
+    final Object previousBatch = context.getVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR);
+    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+    try {
+      if (!wasInTransaction)
+        context.getDatabase().begin();
 
-      // Copy all properties from input row
-      for (final String prop : inputRow.getPropertyNames())
-        iterationRow.setProperty(prop, inputRow.getProperty(prop));
+      for (final Object element : iterable) {
+        final ResultInternal iterationRow = new ResultInternal();
+        for (final String prop : inputRow.getPropertyNames())
+          iterationRow.setProperty(prop, inputRow.getProperty(prop));
+        iterationRow.setProperty(variable, element);
 
-      // Bind the iteration variable
-      iterationRow.setProperty(variable, element);
+        final List<DeleteStep.DeferredDeleteTarget> deleteBatch = new ArrayList<>();
+        context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, deleteBatch);
+        try {
+          for (final ClauseEntry clauseEntry : foreachClause.getInnerClauses())
+            executeInnerClause(clauseEntry, iterationRow, context);
 
-      // Execute each inner clause
-      for (final ClauseEntry clauseEntry : foreachClause.getInnerClauses())
-        executeInnerClause(clauseEntry, iterationRow, context);
+          DeleteStep.flushDeferredDeletes(context, deleteBatch);
+        } finally {
+          context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, previousBatch);
+        }
+      }
+
+      if (!wasInTransaction)
+        context.getDatabase().commit();
+    } catch (final Exception e) {
+      if (!wasInTransaction && context.getDatabase().isTransactionActive())
+        context.getDatabase().rollback();
+      if (e instanceof RuntimeException re)
+        throw re;
+      throw new CommandExecutionException("FOREACH execution failed", e);
     }
   }
 

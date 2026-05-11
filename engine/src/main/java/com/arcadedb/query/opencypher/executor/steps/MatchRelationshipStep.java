@@ -27,6 +27,7 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
+import com.arcadedb.query.opencypher.ast.Expression;
 import com.arcadedb.query.opencypher.ast.NodePattern;
 import com.arcadedb.query.opencypher.ast.RelationshipPattern;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
@@ -429,7 +430,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             // Filter by target node properties if specified in the pattern
             if (targetNodePattern != null && targetNodePattern.hasProperties()) {
-              if (!matchesTargetProperties(targetVertex))
+              if (!matchesTargetProperties(targetVertex, lastResult))
                 continue;
             }
 
@@ -516,7 +517,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
 
             // Filter by target node properties if specified in the pattern
             if (targetNodePattern != null && targetNodePattern.hasProperties()) {
-              if (!matchesTargetProperties(targetVertex))
+              if (!matchesTargetProperties(targetVertex, lastResult))
                 continue;
             }
 
@@ -882,16 +883,18 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
     return true;
   }
 
-  /**
-   * Checks if a target vertex matches the inline property constraints from the target node pattern.
-   */
-  private boolean matchesTargetProperties(final Vertex vertex) {
+  /** Checks if the target vertex satisfies the inline property map; Expression values are evaluated against currentResult. */
+  private boolean matchesTargetProperties(final Vertex vertex, final Result currentResult) {
     if (targetNodePattern == null || !targetNodePattern.hasProperties())
       return true;
 
     for (final Map.Entry<String, Object> entry : targetNodePattern.getProperties().entrySet()) {
       final Object actual = vertex.get(entry.getKey());
       Object expected = entry.getValue();
+
+      // Evaluate Expression-based property values (e.g., variable references from a prior WITH)
+      if (expected instanceof Expression && currentResult != null)
+        expected = ((Expression) expected).evaluate(currentResult, context);
 
       // Resolve parameter references (e.g., $param -> actual value from context)
       if (expected instanceof CypherASTBuilder.ParameterReference) {

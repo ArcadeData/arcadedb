@@ -35,6 +35,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.NoSuchElementException;
 import java.util.Set;
+import java.util.TreeSet;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -121,14 +122,22 @@ public class ProjectReturnStep extends AbstractExecutionStep {
 
             final ResultInternal projectedResult = projectResult(inputResult);
 
-            // Apply DISTINCT deduplication based on projected output columns only
+            // DISTINCT: for RETURN * the single return item is the unexpanded "*", so hash on
+            // the projected row's properties (sorted for stable ordering across rows) instead.
             if (distinct) {
               final StringBuilder keyBuilder = new StringBuilder();
-              for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
-                final String outputName = item.getOutputName();
-                keyBuilder.append(outputName).append('=');
-                final Object val = projectedResult.getProperty(outputName);
-                keyBuilder.append(val).append('|');
+              if (returnClause.isReturnAll()) {
+                for (final String name : new TreeSet<>(projectedResult.getPropertyNames())) {
+                  final Object val = projectedResult.getProperty(name);
+                  keyBuilder.append(name).append('=').append(val).append('|');
+                }
+              } else {
+                for (final ReturnClause.ReturnItem item : returnClause.getReturnItems()) {
+                  final String outputName = item.getOutputName();
+                  keyBuilder.append(outputName).append('=');
+                  final Object val = projectedResult.getProperty(outputName);
+                  keyBuilder.append(val).append('|');
+                }
               }
               if (!seenResults.add(keyBuilder.toString()))
                 continue;

@@ -84,7 +84,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
  * ANTLR4 visitor that builds our internal AST from the Cypher parse tree.
@@ -691,11 +690,14 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
   @Override
   public DeleteClause visitDeleteClause(final Cypher25Parser.DeleteClauseContext ctx) {
     final boolean detach = ctx.DETACH() != null;
-    final List<String> variables = ctx.expression().stream()
-        .map(expr -> expr.getText())
-        .collect(Collectors.toList());
+    final List<String> variables = new ArrayList<>(ctx.expression().size());
+    final List<Expression> expressions = new ArrayList<>(ctx.expression().size());
+    for (final Cypher25Parser.ExpressionContext exprCtx : ctx.expression()) {
+      variables.add(exprCtx.getText());
+      expressions.add(expressionBuilder.parseExpression(exprCtx));
+    }
 
-    return new DeleteClause(variables, detach);
+    return new DeleteClause(variables, expressions, detach);
   }
 
   public RemoveClause visitRemoveClause(final Cypher25Parser.RemoveClauseContext ctx) {

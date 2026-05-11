@@ -806,9 +806,12 @@ class CypherExpressionBuilder {
       return (Cypher25Parser.FunctionInvocationContext) node;
     }
 
-    // Do NOT recurse into map literals - they should be recognized separately
-    // and their internal expressions (including function calls) parsed later
-    if (node instanceof Cypher25Parser.MapContext) {
+    // Do NOT recurse into map literals or map projections - they should be recognized
+    // separately and their internal expressions (including function calls) parsed later.
+    // Otherwise a computed field like {upperName: toUpper(p.name)} would be parsed as
+    // a bare function call and the surrounding projection would be lost.
+    if (node instanceof Cypher25Parser.MapContext
+        || node instanceof Cypher25Parser.MapProjectionContext) {
       return null;
     }
 
