@@ -878,61 +878,62 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       final long engineStart = System.nanoTime();
       long serializationAccum = 0L;
-      ResultSet resultSet = database.query(language, request.getQuery(), queryParams);
+      try (final ResultSet resultSet = database.query(language, request.getQuery(), queryParams)) {
 
-      LogManager.instance()
-          .log(this, Level.FINE, "executeQuery(): to get resultSet = %s", (System.currentTimeMillis() - startTime));
+        LogManager.instance()
+            .log(this, Level.FINE, "executeQuery(): to get resultSet = %s", (System.currentTimeMillis() - startTime));
 
-      // Build response
-      QueryResult.Builder resultBuilder = QueryResult.newBuilder();
+        // Build response
+        QueryResult.Builder resultBuilder = QueryResult.newBuilder();
 
-      // Process results
-      int count = 0;
+        // Process results
+        int count = 0;
 
-      LogManager.instance().log(this, Level.FINE, "executeQuery(): resultSet.size = %s",
-          resultSet.getExactSizeIfKnown());
+        LogManager.instance().log(this, Level.FINE, "executeQuery(): resultSet.size = %s",
+            resultSet.getExactSizeIfKnown());
 
-      while (resultSet.hasNext()) {
+        while (resultSet.hasNext()) {
 
-        Result result = resultSet.next();
+          Result result = resultSet.next();
 
-        LogManager.instance().log(this, Level.FINE, "executeQuery(): result = %s", result);
+          LogManager.instance().log(this, Level.FINE, "executeQuery(): result = %s", result);
 
-        final long serRowStart = System.nanoTime();
-        // Convert Result to GrpcRecord, preserving aliases and all properties
-        GrpcRecord grpcRecord = convertResultToGrpcRecord(result, database, projectionConfig);
+          final long serRowStart = System.nanoTime();
+          // Convert Result to GrpcRecord, preserving aliases and all properties
+          GrpcRecord grpcRecord = convertResultToGrpcRecord(result, database, projectionConfig);
 
-        LogManager.instance().log(this, Level.FINE, "executeQuery(): grpcRecord -> @rid = %s", grpcRecord.getRid());
+          LogManager.instance().log(this, Level.FINE, "executeQuery(): grpcRecord -> @rid = %s", grpcRecord.getRid());
 
-        resultBuilder.addRecords(grpcRecord);
-        serializationAccum += System.nanoTime() - serRowStart;
+          resultBuilder.addRecords(grpcRecord);
+          serializationAccum += System.nanoTime() - serRowStart;
 
-        count++;
+          count++;
 
-        // Apply limit if specified
-        if (request.getLimit() > 0 && count >= request.getLimit()) {
-          break;
+          // Apply limit if specified
+          if (request.getLimit() > 0 && count >= request.getLimit()) {
+            break;
+          }
         }
+        profile.addEngineNanos(System.nanoTime() - engineStart - serializationAccum);
+
+        LogManager.instance().log(this, Level.FINE, "executeQuery(): count = %s", count);
+
+        final long serBuildStart = System.nanoTime();
+        resultBuilder.setTotalRecordsInBatch(count);
+
+        long executionTime = System.currentTimeMillis() - startTime;
+
+        ExecuteQueryResponse response = ExecuteQueryResponse.newBuilder().addResults(resultBuilder.build())
+            .setExecutionTimeMs(executionTime)
+            .build();
+        profile.addSerializationNanos(serializationAccum + (System.nanoTime() - serBuildStart));
+
+        LogManager.instance().log(this, Level.FINE, "executeQuery(): executionTime + response generation = %s",
+            executionTime);
+
+        responseObserver.onNext(response);
+        responseObserver.onCompleted();
       }
-      profile.addEngineNanos(System.nanoTime() - engineStart - serializationAccum);
-
-      LogManager.instance().log(this, Level.FINE, "executeQuery(): count = %s", count);
-
-      final long serBuildStart = System.nanoTime();
-      resultBuilder.setTotalRecordsInBatch(count);
-
-      long executionTime = System.currentTimeMillis() - startTime;
-
-      ExecuteQueryResponse response = ExecuteQueryResponse.newBuilder().addResults(resultBuilder.build())
-          .setExecutionTimeMs(executionTime)
-          .build();
-      profile.addSerializationNanos(serializationAccum + (System.nanoTime() - serBuildStart));
-
-      LogManager.instance().log(this, Level.FINE, "executeQuery(): executionTime + response generation = %s",
-          executionTime);
-
-      responseObserver.onNext(response);
-      responseObserver.onCompleted();
 
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
