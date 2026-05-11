@@ -32,9 +32,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * IT for the pre-bootstrap RPC ({@code POST /api/v1/cluster/bootstrap-state}, issue #4147 phase 3).
  * Confirms the wire shape every peer must produce so the bootstrap leader can collect state and
- * pick a source. Phase 6 will populate {@code oldestRetainedTxId} from the Ratis log; until then
- * it is always {@code -1} (NO_DELTA_AVAILABLE), which makes followers fall through to the
- * existing leader-shipped snapshot path.
+ * pick a source.
  */
 class PostBootstrapStateHandlerIT extends BaseRaftHATest {
 
@@ -62,8 +60,6 @@ class PostBootstrapStateHandlerIT extends BaseRaftHATest {
       assertThat(db.getString("name")).doesNotStartWith(".");
       assertThat(db.getString("fingerprint")).hasSize(64); // SHA-256 hex
       assertThat(db.getLong("lastTxId")).isGreaterThanOrEqualTo(-1L);
-      // Phase 3 always reports NO_DELTA_AVAILABLE (-1). Phase 6 will fill this in from the Ratis log.
-      assertThat(db.getLong("oldestRetainedTxId")).isEqualTo(PostBootstrapStateHandler.NO_DELTA_AVAILABLE);
     }
   }
 

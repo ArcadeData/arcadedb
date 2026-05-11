@@ -774,10 +774,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *   <li><b>Late newer joiner</b> (local lastTxId &gt; committed lastTxId) - this peer's data
    *       is fresher than the cluster's chosen baseline. We refuse to silently overwrite it and
    *       log a SEVERE pointing the operator at the recovery procedure.</li>
-   *   <li><b>Mismatch</b> (any other case) - fall back to the existing leader-shipped snapshot
-   *       path. Phase 6 will replace this with a "try delta first, fall back to full" flow when
-   *       the gap is below {@code arcadedb.ha.bootstrapDeltaThreshold} and the source has retained
-   *       WAL.</li>
+   *   <li><b>Mismatch</b> (any other case) - reinstall from the leader-shipped full snapshot.
+   *       Subsequent transactions are picked up by native Ratis AppendEntries; no special
+   *       transaction-delta path is needed because at first formation the Ratis log is empty.</li>
    * </ul>
    * The committed baseline is recorded in {@link #bootstrapBaselines} for status export and tests.
    */
@@ -824,9 +823,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.WARNING,
           "Could not read local bootstrap state for '%s': %s; falling back to leader-shipped full snapshot",
           dbName, e.getMessage());
-      // We don't know our own lastTxId so a delta makes no sense; pass -1 so the gap looks
-      // unbounded and BootstrapDeltaInstaller goes straight to the full-snapshot path.
-      installFromLeaderForBootstrap(dbName, -1L, chosenLastTxId);
+      installFromLeaderForBootstrap(dbName);
       return;
     }
 
@@ -854,27 +851,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     }
 
-    // Mismatch: try the delta endpoint first (issue #4147 phase 6); on 412 or any failure fall
-    // through to the existing leader-shipped full snapshot. Behaviour is identical to today's
-    // legacy path until Ratis-log delta serving lands; the wrapper just plumbs the wire so a
-    // later phase can flip to delta replay without churning callers.
+    // Mismatch: install the leader-shipped full snapshot. Runtime delta catch-up of the gap
+    // beyond the baseline is handled natively by Ratis AppendEntries once the snapshot is in
+    // place; at bootstrap time the Ratis log is empty on every peer so a transaction-level
+    // delta cannot be served from it.
     LogManager.instance().log(this, Level.INFO,
         "Database '%s' bootstrap mismatch (local lastTxId=%d / fp=%s..., baseline lastTxId=%d / fp=%s...); "
-            + "attempting delta then full-snapshot fallback",
+            + "reinstalling from leader-shipped full snapshot",
         dbName, localLastTxId, localFingerprint.substring(0, Math.min(8, localFingerprint.length())),
         chosenLastTxId, chosenFingerprint.substring(0, Math.min(8, chosenFingerprint.length())));
-    installFromLeaderForBootstrap(dbName, localLastTxId, chosenLastTxId);
+    installFromLeaderForBootstrap(dbName);
   }
 
   /**
-   * Close the local database and pull either a transaction delta (when the gap is within
-   * {@code arcadedb.ha.bootstrapDeltaThreshold} and the source's Ratis log still covers the
-   * fromTxId) or a full snapshot from the current leader. Falls back to full snapshot on any
-   * delta-path failure. Same low-level snapshot install machinery as
-   * {@code applyInstallDatabaseEntry(forceSnapshot=true)}.
+   * Close the local database and pull a full snapshot from the current leader. Same low-level
+   * snapshot install machinery as {@code applyInstallDatabaseEntry(forceSnapshot=true)}.
    */
-  private void installFromLeaderForBootstrap(final String dbName, final long localLastTxId,
-      final long sourceLastTxId) {
+  private void installFromLeaderForBootstrap(final String dbName) {
     if (raftHAServer != null && raftHAServer.isLeader()) {
       // The leader has the chosen baseline by definition (it's the source). No need to install.
       HALog.log(this, HALog.TRACE, "Leader skips bootstrap snapshot install for '%s'", dbName);
@@ -894,8 +887,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       final String leaderHttpAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
       final String clusterToken = raftHAServer != null ? raftHAServer.getClusterToken() : null;
-      BootstrapDeltaInstaller.installDeltaOrSnapshot(dbName, databasePath, leaderHttpAddr, clusterToken,
-          server, localLastTxId, sourceLastTxId);
+      SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, clusterToken, server);
       LogManager.instance().log(this, Level.INFO,
           "Database '%s' reinstalled after bootstrap mismatch", dbName);
     } catch (final IOException e) {

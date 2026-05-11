@@ -750,13 +750,6 @@ public enum GlobalConfiguration {
       knows which peer was unreachable.""",
       Long.class, 120_000L),
 
-  HA_BOOTSTRAP_DELTA_THRESHOLD("arcadedb.ha.bootstrapDeltaThreshold", SCOPE.SERVER,
-      """
-      Maximum lastTxId gap (number of transactions) for which a follower can be brought up to date by replaying \
-      a transaction delta from the source peer's Ratis log instead of downloading a full snapshot. Above this gap \
-      the leader-shipped full-snapshot path is used. Set to 0 to disable delta resync entirely.""",
-      Long.class, 100_000L),
-
   HA_SNAPSHOT_MAX_CONCURRENT("arcadedb.ha.snapshotMaxConcurrent", SCOPE.SERVER,
       "Maximum number of concurrent snapshot downloads served by the leader. Requests over this limit receive HTTP 503.",
       Integer.class, 2),

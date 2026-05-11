@@ -159,8 +159,8 @@ class BootstrapElection {
   }
 
   /**
-   * For each pending database, query every peer for its (fingerprint, lastTxId, oldestRetainedTxId)
-   * via the Phase-3 RPC. Self is queried locally without HTTP. Peers that don't respond within
+   * For each pending database, query every peer for its (fingerprint, lastTxId) via the Phase-3
+   * RPC. Self is queried locally without HTTP. Peers that don't respond within
    * {@code bootstrapTimeoutMs} are simply absent from the result; the leader proceeds with what it
    * has and a SEVERE log explains who was missed.
    */
@@ -258,7 +258,7 @@ class BootstrapElection {
               if (!dbFilter.contains(name))
                 continue;
               result.put(name, new PeerState(peerId, name, db.getString("fingerprint"),
-                  db.getLong("lastTxId"), db.getLong("oldestRetainedTxId")));
+                  db.getLong("lastTxId")));
             }
             return Map.of(peerId, result);
           } catch (final Exception e) {
@@ -285,8 +285,7 @@ class BootstrapElection {
         if (!(embedded instanceof LocalDatabase localDb))
           continue;
         final String fp = BootstrapFingerprint.compute(new File(localDb.getDatabasePath()));
-        result.put(dbName, new PeerState(localId, dbName, fp, localDb.getLastTransactionId(),
-            PostBootstrapStateHandler.NO_DELTA_AVAILABLE));
+        result.put(dbName, new PeerState(localId, dbName, fp, localDb.getLastTransactionId()));
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.WARNING,
             "Bootstrap: cannot compute local state for '%s': %s", dbName, e.getMessage());
@@ -400,6 +399,6 @@ class BootstrapElection {
   }
 
   /** Per-peer per-database state collected during bootstrap. */
-  record PeerState(RaftPeerId peerId, String dbName, String fingerprint, long lastTxId, long oldestRetainedTxId) {
+  record PeerState(RaftPeerId peerId, String dbName, String fingerprint, long lastTxId) {
   }
 }
