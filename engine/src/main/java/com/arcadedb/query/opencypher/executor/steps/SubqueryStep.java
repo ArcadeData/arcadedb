@@ -19,7 +19,11 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.opencypher.ast.ClauseEntry;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
@@ -404,6 +408,12 @@ public class SubqueryStep extends AbstractExecutionStep {
    * For unit subqueries (no RETURN clause), the inner query is consumed entirely
    * for side effects (e.g. CREATE, DELETE) and a single empty result is returned
    * so the outer row count is preserved exactly once per input row.
+   * <p>
+   * After the inner query has fully executed, any {@link Document} bindings in the
+   * outer row are refreshed against the transaction cache so that mutations applied
+   * inside the subquery (e.g. {@code SET n.score = 2}) are visible through the outer
+   * variable. This matches Neo4j semantics where node references expose the current
+   * record state rather than the snapshot captured at MATCH time. See issue #4182.
    */
   private List<Result> executeInnerQuery(final Result outerRow, final CommandContext context) {
     final CypherStatement innerStatement = subqueryClause.getInnerStatement();
@@ -413,19 +423,66 @@ public class SubqueryStep extends AbstractExecutionStep {
 
     final ResultSet resultSet = innerPlan.executeWithSeedRow(filterSeedRow(outerRow));
 
-    // Unit subquery: no RETURN clause — consume all inner rows for side effects only.
-    // The outer row count must be preserved (one output row per outer row).
-    if (innerStatement.getReturnClause() == null) {
+    try {
+      // Unit subquery: no RETURN clause — consume all inner rows for side effects only.
+      // The outer row count must be preserved (one output row per outer row).
+      if (innerStatement.getReturnClause() == null) {
+        while (resultSet.hasNext())
+          resultSet.next();
+        return List.of(new ResultInternal());
+      }
+
+      final List<Result> results = new ArrayList<>();
       while (resultSet.hasNext())
-        resultSet.next();
-      return List.of(new ResultInternal());
+        results.add(resultSet.next());
+
+      return results;
+    } finally {
+      refreshDocumentBindings(outerRow);
+    }
+  }
+
+  /**
+   * Refreshes every {@link Document} binding on the row by re-reading the record
+   * through the database. {@code lookupByRID} consults the transaction cache first,
+   * so a {@link com.arcadedb.database.MutableDocument} saved by the inner subquery
+   * (via {@code SET}/{@code REMOVE}) replaces the pre-mutation snapshot.
+   * Deleted records are left as-is: the user will hit the normal "deleted record"
+   * error path on access rather than seeing a silent {@code null}.
+   */
+  private void refreshDocumentBindings(final Result row) {
+    if (!(row instanceof ResultInternal mutable))
+      return;
+
+    List<String> propsToRefresh = null;
+    for (final String name : row.getPropertyNames()) {
+      final Object value = row.getProperty(name);
+      if (!(value instanceof Document doc))
+        continue;
+      final RID rid = doc.getIdentity();
+      if (rid == null)
+        continue;
+      if (propsToRefresh == null)
+        propsToRefresh = new ArrayList<>();
+      propsToRefresh.add(name);
     }
 
-    final List<Result> results = new ArrayList<>();
-    while (resultSet.hasNext())
-      results.add(resultSet.next());
+    if (propsToRefresh == null)
+      return;
 
-    return results;
+    for (final String name : propsToRefresh) {
+      final Document current = (Document) row.getProperty(name);
+      final RID rid = current.getIdentity();
+      try {
+        final Record refreshed = database.lookupByRID(rid, false);
+        if (refreshed instanceof Document refreshedDoc && refreshedDoc != current)
+          mutable.setProperty(name, refreshedDoc);
+      } catch (final RecordNotFoundException ignored) {
+        // Record was deleted inside the subquery. Keep the stale binding so callers
+        // can observe a non-null (now logically dangling) reference, matching the
+        // pre-fix behaviour for DELETE on imported variables.
+      }
+    }
   }
 
   /**

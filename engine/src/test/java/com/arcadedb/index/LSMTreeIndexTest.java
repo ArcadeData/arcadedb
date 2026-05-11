@@ -1231,6 +1231,7 @@ class LSMTreeIndexTest extends TestHelper {
     // Test that the build method logs progress messages
     final List<String> logMessages = new ArrayList<>();
 
+    final Logger previousLogger = getCurrentLogManagerLogger();
     try {
       // Set custom logger to capture log messages
       LogManager.instance().setLogger(new Logger() {
@@ -1303,8 +1304,29 @@ class LSMTreeIndexTest extends TestHelper {
       assertThat(hasCompletionMessage).isTrue();
 
     } finally {
-      // Restore default logger
-      LogManager.instance().setLogger(new DefaultLogger());
+      // Restore the previously installed Logger rather than creating a new {@link DefaultLogger}.
+      // A fresh {@code DefaultLogger} would call {@code init()} on its next log call, which
+      // re-reads {@code arcadedb-log.properties} via {@code LogManager#readConfiguration} and
+      // wipes any level overrides that other tests installed on JUL loggers. The follow-on test
+      // {@code LocalSchemaOrphanIndexSelfHealTest} relies on its own level overrides to capture
+      // a WARNING record and breaks if this finally resets the JUL configuration.
+      LogManager.instance().setLogger(previousLogger != null ? previousLogger : new DefaultLogger());
+    }
+  }
+
+  /**
+   * Returns the {@link Logger} currently registered on {@link LogManager}, or {@code null} if
+   * none could be obtained. Reflection is the only entry because {@link LogManager} does not
+   * expose a getter; this is acceptable for a test helper that runs once at the boundary of a
+   * single test method.
+   */
+  private static Logger getCurrentLogManagerLogger() {
+    try {
+      final java.lang.reflect.Field f = LogManager.class.getDeclaredField("logger");
+      f.setAccessible(true);
+      return (Logger) f.get(LogManager.instance());
+    } catch (final Throwable ignored) {
+      return null;
     }
   }
 }
