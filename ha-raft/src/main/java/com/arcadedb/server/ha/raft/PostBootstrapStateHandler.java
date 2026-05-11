@@ -47,31 +47,21 @@ import java.util.logging.Level;
  *       {
  *         "name": "heimdall",
  *         "fingerprint": "&lt;sha256-hex&gt;",
- *         "lastTxId": 123456,
- *         "oldestRetainedTxId": 100000     // -1 means "this peer cannot serve a delta; only full-snapshot can satisfy"
+ *         "lastTxId": 123456
  *       },
  *       ...
  *     ]
  *   }
  * </pre>
- * The leader picks the peer with the highest {@code lastTxId} as the bootstrap source. Each follower
- * later uses {@code oldestRetainedTxId} (combined with the local gap and
- * {@code arcadedb.ha.bootstrapDeltaThreshold}) to decide whether it can catch up via the delta
- * endpoint or has to fall back to the full-snapshot install.
+ * The leader picks the peer with the highest {@code lastTxId} as the bootstrap source. Mismatched
+ * followers reinstall from the leader-shipped full snapshot; subsequent transactions are
+ * replicated entry-by-entry by Ratis AppendEntries.
  * <p>
  * Authentication is inherited from {@link AbstractServerHttpHandler}: the standard
  * {@code X-ArcadeDB-Cluster-Token} + {@code X-ArcadeDB-Forwarded-User} pair used by every other
  * peer-to-peer cluster RPC.
  */
 public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
-
-  /**
-   * Sentinel value for {@code oldestRetainedTxId} meaning "this peer cannot serve a delta resync
-   * (the Ratis log no longer covers the gap, or delta serving is not implemented on this peer);
-   * only a full snapshot satisfies the follower". Read by both the encode and decode sides; do
-   * not change without bumping the Phase-3 wire format.
-   */
-  public static final long NO_DELTA_AVAILABLE = -1L;
 
   private final RaftHAPlugin plugin;
 
@@ -107,20 +97,14 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
         final File dbDir = new File(localDb.getDatabasePath());
         final String fingerprint = BootstrapFingerprint.compute(dbDir);
         final long lastTxId = localDb.getLastTransactionId();
-        // Phase 3 placeholder: Ratis-log delta serving lands in Phase 6, so until then no peer
-        // can serve a delta. Followers will fall back to the full-snapshot path, identical to
-        // today's behaviour. The wire field is forward-compatible: when Phase 6 ships, this
-        // returns the oldest txId still covered by the Ratis log without any client-side change.
-        final long oldestRetainedTxId = NO_DELTA_AVAILABLE;
 
         final JSONObject dbJson = new JSONObject();
         dbJson.put("name", dbName);
         dbJson.put("fingerprint", fingerprint);
         dbJson.put("lastTxId", lastTxId);
-        dbJson.put("oldestRetainedTxId", oldestRetainedTxId);
         dbs.put(dbJson);
       } catch (final Exception e) {
-        // A single broken database must not poison the whole RPC: report it with -1/-1 so the
+        // A single broken database must not poison the whole RPC: report it with -1 so the
         // bootstrap leader treats this peer as "no usable state for this db" and falls through to
         // the full-snapshot path.
         LogManager.instance().log(this, Level.WARNING,
@@ -129,7 +113,6 @@ public class PostBootstrapStateHandler extends AbstractServerHttpHandler {
         dbJson.put("name", dbName);
         dbJson.put("fingerprint", "");
         dbJson.put("lastTxId", -1L);
-        dbJson.put("oldestRetainedTxId", NO_DELTA_AVAILABLE);
         dbJson.put("error", e.getMessage());
         dbs.put(dbJson);
       }

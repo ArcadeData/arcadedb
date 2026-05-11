@@ -23,6 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
@@ -147,6 +148,9 @@ public class EdgeLinkedList {
    * Counts the items in the linked list.
    *
    * @param edgeTypes Types of edges to filter for the counting. If null or empty, any type is counted.
+   *                  Non-existent edge type names are skipped (matching the behaviour of
+   *                  {@link IteratorFilterBase}), so callers - e.g. range evaluation through
+   *                  {@code MultiValue.getSize} - do not see a {@code SchemaException}.
    */
   public long count(final String... edgeTypes) {
     long total = 0;
@@ -154,8 +158,14 @@ public class EdgeLinkedList {
     final Set<Integer> fileIdToFilter;
     if (edgeTypes != null && edgeTypes.length > 0) {
       fileIdToFilter = new HashSet<>();
-      for (final String edgeType : edgeTypes)
-        fileIdToFilter.addAll(vertex.getDatabase().getSchema().getType(edgeType).getBucketIds(true));
+      final Schema schema = vertex.getDatabase().getSchema();
+      for (final String edgeType : edgeTypes) {
+        if (!schema.existsType(edgeType))
+          continue;
+        fileIdToFilter.addAll(schema.getType(edgeType).getBucketIds(true));
+      }
+      if (fileIdToFilter.isEmpty())
+        return 0;
     } else
       fileIdToFilter = null;
 
