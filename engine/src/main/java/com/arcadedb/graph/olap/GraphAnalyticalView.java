@@ -373,17 +373,28 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   public boolean awaitReady(final long timeout, final TimeUnit unit) {
     final long deadlineNanos = System.nanoTime() + unit.toNanos(timeout);
     try {
-      // Loop to handle follow-up rebuilds triggered by asyncRebuildNeeded.
-      // Each rebuild creates a new latch, so we re-read the field after each wait.
-      while (status != Status.READY || asyncRebuildNeeded) {
-        if (status == Status.STALE)
+      while (true) {
+        // Snapshot the three fields under the monitor: onRelevantCommit() resets
+        // asyncRebuildNeeded=false and flips status=BUILDING in separate volatile
+        // writes, so an unsynchronized reader can observe status=READY together
+        // with asyncRebuildNeeded=false and return early on a stale snapshot.
+        final Status currentStatus;
+        final boolean rebuildPending;
+        final CountDownLatch latch;
+        synchronized (this) {
+          currentStatus = status;
+          rebuildPending = asyncRebuildNeeded;
+          latch = readyLatch;
+        }
+        if (currentStatus == Status.READY && !rebuildPending)
+          return true;
+        if (currentStatus == Status.STALE)
           return false;
         final long remainingNanos = deadlineNanos - System.nanoTime();
         if (remainingNanos <= 0)
           return false;
-        final CountDownLatch latch = readyLatch;
         if (latch == null)
-          return status == Status.READY && !asyncRebuildNeeded;
+          return false;
         if (!latch.await(remainingNanos, TimeUnit.NANOSECONDS))
           return false;
       }
@@ -391,7 +402,6 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       Thread.currentThread().interrupt();
       return false;
     }
-    return true;
   }
 
   /**

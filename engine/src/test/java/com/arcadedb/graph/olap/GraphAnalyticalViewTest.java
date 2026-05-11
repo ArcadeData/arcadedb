@@ -4085,6 +4085,51 @@ class GraphAnalyticalViewTest extends TestHelper {
     gav.drop();
   }
 
+  /**
+   * Regression stress test for the awaitReady race: between rebuilds, the worker resets
+   * asyncRebuildNeeded=false a moment before flipping status to BUILDING. A reader doing
+   * the two volatile reads non-atomically can see status=READY together with
+   * asyncRebuildNeeded=false and return early on a stale snapshot. Many iterations of
+   * rapid-fire commits widen the window enough to fail consistently.
+   */
+  @Test
+  void asynchronousUpdateModeAwaitReadyConvergesAfterRapidCommits() throws Exception {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("async-stress")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.ASYNCHRONOUS)
+        .build();
+
+    final int iterations = 50;
+    final int commitsPerIteration = 5;
+    int expectedNodeCount = 1; // Alice
+    int expectedEdgeCount = 0;
+    for (int it = 0; it < iterations; it++) {
+      for (int i = 0; i < commitsPerIteration; i++) {
+        database.begin();
+        final MutableVertex v = database.newVertex("Person").set("name", "P" + it + "_" + i).save();
+        alice.newEdge("FOLLOWS", v);
+        database.commit();
+        expectedNodeCount++;
+        expectedEdgeCount++;
+      }
+
+      assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).as("iteration %d", it).isTrue();
+      assertThat(gav.getNodeCount()).as("nodeCount after iteration %d", it).isEqualTo(expectedNodeCount);
+      assertThat(gav.getEdgeCount()).as("edgeCount after iteration %d", it).isEqualTo(expectedEdgeCount);
+    }
+
+    gav.drop();
+  }
+
   // ---- GAVExpandInto tests ----
 
   @Test
