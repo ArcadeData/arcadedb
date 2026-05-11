@@ -53,7 +53,8 @@ public enum PostgresType {
   DOUBLE(701, Double.class, 8, value -> Double.parseDouble(value)),
   CHAR(18, Character.class, 1, value -> value.charAt(0)),
   BOOLEAN(16, Boolean.class, 1, value -> value.equalsIgnoreCase("true")),
-  DATE(1082, Date.class, 8, value -> new Date(Long.parseLong(value))),
+  DATE(1082, Date.class, 4, value -> new Date(Long.parseLong(value))),
+  TIMESTAMP(1114, LocalDateTime.class, 8, value -> LocalDateTime.parse(value.replace(' ', 'T'))),
   VARCHAR(1043, String.class, -1, value -> value),
   TEXT(25, String.class, -1, value -> value),
   BPCHAR(1042, String.class, -1, value -> value),
@@ -206,7 +207,7 @@ public enum PostgresType {
     } else if (val instanceof Date) {
       return PostgresType.DATE;
     } else if (val instanceof LocalDateTime) {
-      return PostgresType.DATE;
+      return PostgresType.TIMESTAMP;
     }
 
     return PostgresType.VARCHAR;
@@ -233,7 +234,8 @@ public enum PostgresType {
       case DOUBLE -> PostgresType.DOUBLE;
       case BYTE -> PostgresType.SMALLINT;
       case STRING -> PostgresType.VARCHAR;
-      case DATETIME, DATE -> PostgresType.DATE;
+      case DATETIME -> PostgresType.TIMESTAMP;
+      case DATE -> PostgresType.DATE;
       case BINARY -> PostgresType.VARCHAR; // No direct binary type, use VARCHAR
       case LIST -> PostgresType.ARRAY_TEXT;
       case MAP, EMBEDDED -> PostgresType.JSON;
@@ -262,12 +264,14 @@ public enum PostgresType {
       // Handle primitive arrays by converting them to Collections
       Collection<?> collection = convertPrimitiveArrayToCollection(value);
       serializedValue = serializeArrayToString(collection, pgType);
+    } else if (value instanceof Boolean b) {
+      // PostgreSQL BOOL text format is "t"/"f"
+      serializedValue = b ? "t" : "f";
     } else if (value instanceof Date date) {
-      // Format Date as PostgreSQL-compatible timestamp
-      LocalDateTime ldt = LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC);
-      serializedValue = ldt.format(POSTGRES_DATETIME_FORMATTER);
+      // DATE (OID 1082) expects "YYYY-MM-DD" in text format
+      serializedValue = date.toInstant().atZone(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE);
     } else if (value instanceof LocalDateTime ldt) {
-      // Format LocalDateTime as PostgreSQL-compatible timestamp
+      // TIMESTAMP (OID 1114) expects "YYYY-MM-DD HH:MM:SS.ffffff" in text format
       serializedValue = ldt.format(POSTGRES_DATETIME_FORMATTER);
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
@@ -503,6 +507,18 @@ public enum PostgresType {
       case REAL -> buffer.getFloat();
       case DOUBLE -> buffer.getDouble();
       case DATE -> new Date(buffer.getLong());
+      case TIMESTAMP -> {
+        // PostgreSQL binary timestamp: int64 microseconds since 2000-01-01T00:00:00Z
+        final long microseconds = buffer.getLong();
+        final long POSTGRES_EPOCH_SECONDS = 946684800L;
+        long secs = POSTGRES_EPOCH_SECONDS + microseconds / 1_000_000L;
+        int nanos = (int) (microseconds % 1_000_000L) * 1000;
+        if (nanos < 0) {
+          secs -= 1;
+          nanos += 1_000_000_000;
+        }
+        yield LocalDateTime.ofEpochSecond(secs, nanos, ZoneOffset.UTC);
+      }
       case CHAR -> buffer.getChar();
       case BOOLEAN -> buffer.get() == 1;
       case JSON -> {
@@ -590,5 +606,17 @@ public enum PostgresType {
         this == ARRAY_TEXT ||
         this == ARRAY_JSON ||
         this == ARRAY_BOOLEAN;
+  }
+
+  /**
+   * Returns true for scalar types that should be advertised with their native Postgres OID rather
+   * than collapsing to VARCHAR. Clients use the announced OID to choose a deserializer, so
+   * advertising VARCHAR for numeric/boolean/temporal columns causes values to round-trip as
+   * strings and breaks typed parameter comparisons.
+   */
+  public boolean isNativeScalarType() {
+    return this == SMALLINT || this == INTEGER || this == LONG ||
+        this == REAL || this == DOUBLE || this == CHAR ||
+        this == BOOLEAN || this == DATE || this == TIMESTAMP;
   }
 }

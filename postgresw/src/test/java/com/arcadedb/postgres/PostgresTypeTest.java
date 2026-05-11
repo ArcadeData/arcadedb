@@ -128,7 +128,7 @@ class PostgresTypeTest {
 
   @Test
   void getTypeForValueLocalDateTime() {
-    assertThat(PostgresType.getTypeForValue(LocalDateTime.now())).isEqualTo(PostgresType.DATE);
+    assertThat(PostgresType.getTypeForValue(LocalDateTime.now())).isEqualTo(PostgresType.TIMESTAMP);
   }
 
   // ==================== Collection Type Detection Tests ====================
@@ -354,7 +354,7 @@ class PostgresTypeTest {
 
   @Test
   void getTypeFromArcadeDatetime() {
-    assertThat(PostgresType.getTypeFromArcade(Type.DATETIME)).isEqualTo(PostgresType.DATE);
+    assertThat(PostgresType.getTypeFromArcade(Type.DATETIME)).isEqualTo(PostgresType.TIMESTAMP);
   }
 
   @Test
@@ -1073,7 +1073,9 @@ class PostgresTypeTest {
     byte[] data = new byte[length];
     buffer.getByteBuffer().get(data);
     String result = new String(data);
-    assertThat(result).matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d+");
+    // DATE (OID 1082) must be serialized as "YYYY-MM-DD" only
+    assertThat(result).matches("\\d{4}-\\d{2}-\\d{2}");
+    assertThat(result).isEqualTo("2024-05-19");
   }
 
   @Test
@@ -1519,7 +1521,8 @@ class PostgresTypeTest {
     assertThat(PostgresType.DOUBLE.size).isEqualTo(8);
     assertThat(PostgresType.CHAR.size).isEqualTo(1);
     assertThat(PostgresType.BOOLEAN.size).isEqualTo(1);
-    assertThat(PostgresType.DATE.size).isEqualTo(8);
+    assertThat(PostgresType.DATE.size).isEqualTo(4);
+    assertThat(PostgresType.TIMESTAMP.size).isEqualTo(8);
     assertThat(PostgresType.VARCHAR.size).isEqualTo(-1); // variable
     assertThat(PostgresType.TEXT.size).isEqualTo(-1); // variable
     assertThat(PostgresType.JSON.size).isEqualTo(-1); // variable
