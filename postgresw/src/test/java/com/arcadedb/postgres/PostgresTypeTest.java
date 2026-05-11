@@ -448,9 +448,38 @@ class PostgresTypeTest {
 
   @Test
   void deserializeTextBoolean() {
+    // Canonical Postgres text format
+    assertThat(PostgresType.deserialize(PostgresType.BOOLEAN.code, 0, "t".getBytes())).isEqualTo(true);
+    assertThat(PostgresType.deserialize(PostgresType.BOOLEAN.code, 0, "f".getBytes())).isEqualTo(false);
+    // Legacy / verbose forms also accepted
     assertThat(PostgresType.deserialize(PostgresType.BOOLEAN.code, 0, "true".getBytes())).isEqualTo(true);
     assertThat(PostgresType.deserialize(PostgresType.BOOLEAN.code, 0, "TRUE".getBytes())).isEqualTo(true);
     assertThat(PostgresType.deserialize(PostgresType.BOOLEAN.code, 0, "false".getBytes())).isEqualTo(false);
+    assertThat(PostgresType.deserialize(PostgresType.BOOLEAN.code, 0, "1".getBytes())).isEqualTo(true);
+    assertThat(PostgresType.deserialize(PostgresType.BOOLEAN.code, 0, "0".getBytes())).isEqualTo(false);
+    assertThat(PostgresType.deserialize(PostgresType.BOOLEAN.code, 0, "yes".getBytes())).isEqualTo(true);
+    assertThat(PostgresType.deserialize(PostgresType.BOOLEAN.code, 0, "no".getBytes())).isEqualTo(false);
+  }
+
+  @Test
+  void deserializeTextDateIsoFormat() {
+    // After advertising DATE columns natively, clients send dates as "YYYY-MM-DD" text
+    Object result = PostgresType.deserialize(PostgresType.DATE.code, 0, "2024-08-22".getBytes());
+    assertThat(result).isInstanceOf(Date.class);
+    final long expectedMillis = java.time.LocalDate.of(2024, 8, 22)
+        .atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+    assertThat(((Date) result).getTime()).isEqualTo(expectedMillis);
+  }
+
+  @Test
+  void deserializeBinaryTimestamp() {
+    // PostgreSQL binary TIMESTAMP: int64 microseconds since 2000-01-01T00:00:00Z
+    final long microsSince2000 = 777600000000L; // 2000-01-01 + 9 days
+    ByteBuffer buffer = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
+    buffer.putLong(microsSince2000);
+    Object result = PostgresType.deserialize(PostgresType.TIMESTAMP.code, 1, buffer.array());
+    assertThat(result).isInstanceOf(java.time.LocalDateTime.class);
+    assertThat((java.time.LocalDateTime) result).isEqualTo(java.time.LocalDateTime.of(2000, 1, 10, 0, 0, 0));
   }
 
   @Test
@@ -679,12 +708,15 @@ class PostgresTypeTest {
 
   @Test
   void deserializeBinaryDate() {
-    long timestamp = System.currentTimeMillis();
-    ByteBuffer buffer = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
-    buffer.putLong(timestamp);
+    // PostgreSQL binary DATE: int32 days since 2000-01-01 UTC
+    final int daysSince2000 = 9000; // 2000-01-01 + 9000 days = 2024-08-22
+    ByteBuffer buffer = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN);
+    buffer.putInt(daysSince2000);
     Object result = PostgresType.deserialize(PostgresType.DATE.code, 1, buffer.array());
     assertThat(result).isInstanceOf(Date.class);
-    assertThat(((Date) result).getTime()).isEqualTo(timestamp);
+    final long expectedMillis = java.time.LocalDate.of(2000, 1, 1).plusDays(daysSince2000)
+        .atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+    assertThat(((Date) result).getTime()).isEqualTo(expectedMillis);
   }
 
   @Test
@@ -1076,6 +1108,88 @@ class PostgresTypeTest {
     // DATE (OID 1082) must be serialized as "YYYY-MM-DD" only
     assertThat(result).matches("\\d{4}-\\d{2}-\\d{2}");
     assertThat(result).isEqualTo("2024-05-19");
+  }
+
+  @Test
+  void serializeAsTextBoolean() {
+    final Binary t = new Binary();
+    PostgresType.BOOLEAN.serializeAsText(PostgresType.BOOLEAN, t, Boolean.TRUE);
+    t.flip();
+    final byte[] tData = new byte[t.getInt()];
+    t.getByteBuffer().get(tData);
+    assertThat(new String(tData)).isEqualTo("t");
+
+    final Binary f = new Binary();
+    PostgresType.BOOLEAN.serializeAsText(PostgresType.BOOLEAN, f, Boolean.FALSE);
+    f.flip();
+    final byte[] fData = new byte[f.getInt()];
+    f.getByteBuffer().get(fData);
+    assertThat(new String(fData)).isEqualTo("f");
+  }
+
+  @Test
+  void serializeAsBinaryInteger() {
+    Binary buffer = new Binary();
+    PostgresType.INTEGER.serializeAsBinary(PostgresType.INTEGER, buffer, 12345);
+    buffer.flip();
+    assertThat(buffer.getInt()).isEqualTo(4);
+    assertThat(buffer.getInt()).isEqualTo(12345);
+  }
+
+  @Test
+  void serializeAsBinaryDouble() {
+    Binary buffer = new Binary();
+    PostgresType.DOUBLE.serializeAsBinary(PostgresType.DOUBLE, buffer, 3.14159d);
+    buffer.flip();
+    assertThat(buffer.getInt()).isEqualTo(8);
+    assertThat(Double.longBitsToDouble(buffer.getLong())).isEqualTo(3.14159d);
+  }
+
+  @Test
+  void serializeAsBinaryBoolean() {
+    final Binary t = new Binary();
+    PostgresType.BOOLEAN.serializeAsBinary(PostgresType.BOOLEAN, t, Boolean.TRUE);
+    t.flip();
+    assertThat(t.getInt()).isEqualTo(1);
+    assertThat(t.getByte()).isEqualTo((byte) 1);
+
+    final Binary f = new Binary();
+    PostgresType.BOOLEAN.serializeAsBinary(PostgresType.BOOLEAN, f, Boolean.FALSE);
+    f.flip();
+    assertThat(f.getInt()).isEqualTo(1);
+    assertThat(f.getByte()).isEqualTo((byte) 0);
+  }
+
+  @Test
+  void serializeAsBinaryDateRoundTrip() {
+    // Round-trip: binary serialize -> binary deserialize must preserve the date portion
+    final java.time.LocalDate ld = java.time.LocalDate.of(2024, 8, 22);
+    final Date input = Date.from(ld.atStartOfDay(java.time.ZoneOffset.UTC).toInstant());
+
+    final Binary buffer = new Binary();
+    PostgresType.DATE.serializeAsBinary(PostgresType.DATE, buffer, input);
+    buffer.flip();
+    assertThat(buffer.getInt()).isEqualTo(4);
+
+    final byte[] bytes = new byte[4];
+    buffer.getByteBuffer().get(bytes);
+    final Object decoded = PostgresType.deserialize(PostgresType.DATE.code, 1, bytes);
+    assertThat(decoded).isInstanceOf(Date.class);
+    assertThat(((Date) decoded).toInstant().atZone(java.time.ZoneOffset.UTC).toLocalDate()).isEqualTo(ld);
+  }
+
+  @Test
+  void serializeAsBinaryTimestampRoundTrip() {
+    final java.time.LocalDateTime ldt = java.time.LocalDateTime.of(2024, 8, 22, 14, 30, 45, 123_456_000);
+    final Binary buffer = new Binary();
+    PostgresType.TIMESTAMP.serializeAsBinary(PostgresType.TIMESTAMP, buffer, ldt);
+    buffer.flip();
+    assertThat(buffer.getInt()).isEqualTo(8);
+
+    final byte[] bytes = new byte[8];
+    buffer.getByteBuffer().get(bytes);
+    final Object decoded = PostgresType.deserialize(PostgresType.TIMESTAMP.code, 1, bytes);
+    assertThat(decoded).isEqualTo(ldt);
   }
 
   @Test
