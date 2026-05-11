@@ -31,8 +31,15 @@ import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 public interface AsyncResultsetCallback {
   /**
    * Invoked as soon as the command has been executed.
+   * <p>
+   * The supplied {@link ResultSet} is owned by the async executor and is closed as soon as this
+   * method returns. Implementations must therefore consume (iterate / drain / materialize) the
+   * result set synchronously inside this callback. Holding the reference for later use will
+   * surface a closed result set on the next access. Closing the underlying ResultSet from inside
+   * the callback path was added in the #4197 audit to avoid leaking the execution plan when the
+   * callback is fire-and-forget (e.g. a logging-only completion handler).
    *
-   * @param resultset result set to fetch
+   * @param resultset result set to fetch, valid only for the duration of this call
    */
   void onComplete(final ResultSet resultset);
 

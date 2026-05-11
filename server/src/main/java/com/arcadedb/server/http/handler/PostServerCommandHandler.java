@@ -878,13 +878,15 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
         final JSONObject response = new JSONObject();
         response.put("result", "ok");
-        if (result instanceof Iterable) {
-          for (final Object r : (Iterable<?>) result) {
-            if (r instanceof Map) {
-              final Map<?, ?> map = (Map<?, ?>) r;
-              if (map.containsKey("backupFile"))
-                response.put("backupFile", map.get("backupFile").toString());
-            }
+        // The SQL "backup database" command sets backupFile as a property on a Result row
+        // (see BackupDatabaseStatement). Read it via Result.getProperty rather than the
+        // pre-existing dead instanceof Map check, which never matched.
+        while (result.hasNext()) {
+          final var row = result.next();
+          final Object backupFile = row.getProperty("backupFile");
+          if (backupFile != null) {
+            response.put("backupFile", backupFile.toString());
+            break;
           }
         }
         return new ExecutionResponse(200, response.toString());

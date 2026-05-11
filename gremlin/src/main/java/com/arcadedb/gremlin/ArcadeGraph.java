@@ -52,6 +52,7 @@ import org.apache.tinkerpop.gremlin.structure.Transaction;
 import org.apache.tinkerpop.gremlin.structure.io.Io;
 import org.apache.tinkerpop.gremlin.structure.io.binary.TypeSerializerRegistry;
 import org.apache.tinkerpop.gremlin.structure.service.ServiceRegistry;
+import org.apache.tinkerpop.gremlin.structure.util.CloseableIterator;
 import org.apache.tinkerpop.gremlin.structure.util.ElementHelper;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
@@ -625,12 +626,16 @@ public class ArcadeGraph implements Graph, Closeable {
   }
 
   /**
-   * Wraps a delegate iterator so the backing {@link ResultSet} is closed when the iterator is
-   * exhausted. Without this, full-graph {@code g.V()} / {@code g.E()} scans would leak the
-   * underlying execution plan and accumulate state on the shared Database (issue #4197 audit).
+   * Wraps a delegate iterator so the backing {@link ResultSet} is closed either when the iterator
+   * is fully drained OR when TinkerPop's traversal machinery closes the iterator early
+   * (e.g. {@code g.V().limit(10)}, filtered traversals, or any short-circuited step). Implements
+   * TinkerPop's {@link CloseableIterator} so {@code GraphStep.close()} -&gt;
+   * {@code CloseableIterator.closeIterator()} can find it via {@code instanceof AutoCloseable}.
+   * Plain {@code Iterator<T>} returns are silently skipped by that path, which would leak the
+   * underlying execution plan on every bounded traversal (issue #4197 audit follow-up).
    */
-  private static <T> Iterator<T> closingIterator(final Iterator<T> delegate, final ResultSet resultSet) {
-    return new Iterator<T>() {
+  private static <T> CloseableIterator<T> closingIterator(final Iterator<T> delegate, final ResultSet resultSet) {
+    return new CloseableIterator<T>() {
       private boolean closed = false;
 
       @Override
@@ -639,14 +644,21 @@ public class ArcadeGraph implements Graph, Closeable {
           return false;
         if (delegate.hasNext())
           return true;
-        closed = true;
-        resultSet.close();
+        close();
         return false;
       }
 
       @Override
       public T next() {
         return delegate.next();
+      }
+
+      @Override
+      public void close() {
+        if (closed)
+          return;
+        closed = true;
+        resultSet.close();
       }
     };
   }
