@@ -854,6 +854,9 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArray2D() {
     // int4[][] {{1, 2}, {3, 4}}: ndim=2, dims 2x2, four elements row-major.
+    // Multi-dimensional arrays are flattened into a single List - the query engine consumes
+    // the result as a flat collection for IN-parameter binding, so the dimensionality is
+    // intentionally not preserved.
     ByteBuffer buf = ByteBuffer.allocate(96).order(java.nio.ByteOrder.BIG_ENDIAN);
     buf.putInt(2);   // ndim
     buf.putInt(0);   // hasnull

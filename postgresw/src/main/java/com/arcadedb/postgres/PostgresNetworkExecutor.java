@@ -1012,6 +1012,11 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void bindCommand() {
+    // Track read progress so a mid-message exception can drain the remaining Bind bytes
+    // and keep the channel aligned for the next message.
+    int totalParamValues = 0;
+    int paramsConsumed = 0;
+    boolean resultFormatSectionRead = false;
     try {
       // BIND
       final String portalName = readString();
@@ -1047,6 +1052,7 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
       final int paramValuesCount = channel.readShort();
+      totalParamValues = paramValuesCount;
       if (DEBUG)
         LogManager.instance().log(this, Level.INFO, "PSQL: bind paramValuesCount=%d (thread=%s)",
             paramValuesCount, Thread.currentThread().threadId());
@@ -1085,6 +1091,7 @@ public class PostgresNetworkExecutor extends Thread {
             LogManager.instance().log(this, Level.INFO, "PSQL: bind deserializing param %d typeCode=%d formatCode=%d (thread=%s)",
                 i, typeCode, formatCode, Thread.currentThread().threadId());
           portal.parameterValues.add(PostgresType.deserialize(typeCode, formatCode, paramValue));
+          paramsConsumed = i + 1;
           if (DEBUG)
             LogManager.instance().log(this, Level.INFO, "PSQL: bind param %d deserialized (thread=%s)", i, Thread.currentThread().threadId());
         }
@@ -1103,6 +1110,7 @@ public class PostgresNetworkExecutor extends Thread {
           LogManager.instance().log(this, Level.INFO, "PSQL: bind resultFormats=%s (0=text, 1=binary) (thread=%s)",
               portal.resultFormats, Thread.currentThread().threadId());
       }
+      resultFormatSectionRead = true;
 
       if (errorInTransaction)
         return;
@@ -1120,6 +1128,23 @@ public class PostgresNetworkExecutor extends Thread {
       writeMessage("bind complete", null, '2', 4);
 
     } catch (final Exception e) {
+      // Best-effort drain of the remaining Bind message so the channel stays aligned
+      // for the next message in the pipelined client request (Describe, Execute, Sync).
+      try {
+        for (int i = paramsConsumed; i < totalParamValues; i++) {
+          final long sz = channel.readUnsignedInt();
+          if (sz > 0)
+            channel.readBytes(new byte[(int) sz]);
+        }
+        if (!resultFormatSectionRead) {
+          final int resultFormatCount = channel.readShort();
+          for (int i = 0; i < resultFormatCount; i++)
+            channel.readUnsignedShort();
+        }
+      } catch (final Exception ignored) {
+        // If even the drain fails the channel is unrecoverable; the error response below
+        // still goes out and the client will see the failure.
+      }
       setErrorInTx();
       writeError(ERROR_SEVERITY.ERROR, "Error on parsing bind message: " + e.getMessage(), "XX000");
     }

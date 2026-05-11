@@ -74,6 +74,8 @@ public enum PostgresType {
   // PostgreSQL-compatible datetime format (ISO 8601 without 'T' separator)
   private static final String POSTGRES_TIMESTAMP_FORMAT = "yyyy-MM-dd HH:mm:ss.SSSSSS";
   private static final DateTimeFormatter POSTGRES_DATETIME_FORMATTER = DateTimeFormatter.ofPattern(POSTGRES_TIMESTAMP_FORMAT);
+  // PostgreSQL caps array dimensions at 6 (MAXDIM in pg_config_manual.h).
+  private static final int MAX_ARRAY_DIMENSIONS = 6;
 
   public final  int                      code;
   public final  Class<?>                 cls;
@@ -514,10 +516,7 @@ public enum PostgresType {
     };
   }
 
-  // PostgreSQL caps array dimensions at 6 (MAXDIM in pg_config_manual.h).
-  private static final int MAX_ARRAY_DIMENSIONS = 6;
-
-  private static ArrayList<Object> deserializeBinaryArray(ByteBuffer buffer) {
+  private static List<Object> deserializeBinaryArray(ByteBuffer buffer) {
     final int ndim = buffer.getInt();    // number of dimensions
     buffer.getInt();                      // hasnull flag (unused)
     final int elemOid = buffer.getInt(); // element type OID
@@ -565,6 +564,8 @@ public enum PostgresType {
       return buf.get() != 0;
     if (elemOid == LONG.code)
       return buf.getLong();
+    // int2[] (OID 1005) is not in the ARRAY_* enum, but int2 elements can appear inside
+    // any array (e.g. composite types), so we still decode them as Short here.
     if (elemOid == SMALLINT.code)
       return buf.getShort();
     if (elemOid == INTEGER.code)
