@@ -157,11 +157,20 @@ public class DeleteStep extends AbstractExecutionStep {
 
   /**
    * Context variable name used by ForeachStep to enable deferred deletion within a single
-   * FOREACH iteration. When the variable holds a {@link List}, DeleteStep appends its
-   * targets to that list instead of deleting immediately; ForeachStep then applies the
-   * batched deletes with proper edges-first ordering at end of iteration.
+   * FOREACH iteration. When the variable holds a list of {@link DeferredDeleteTarget},
+   * DeleteStep appends its targets to that list instead of deleting immediately; ForeachStep
+   * then applies the batched deletes with proper edges-first ordering at end of iteration.
    */
   public static final String DEFERRED_DELETE_BATCH_VAR = "__cypherDeferredDelete__";
+
+  /**
+   * Entry queued by DeleteStep when running inside a FOREACH iteration. {@code target} is the
+   * graph object whose deletion is deferred; {@code detach} preserves whether the originating
+   * DELETE clause was a {@code DETACH DELETE} so the flush phase can route vertex deletion
+   * correctly.
+   */
+  public record DeferredDeleteTarget(Object target, boolean detach) {
+  }
 
   /**
    * Applies all DELETE operations to a result.
@@ -173,7 +182,8 @@ public class DeleteStep extends AbstractExecutionStep {
       return;
 
     @SuppressWarnings("unchecked")
-    final List<Object[]> deferredBatch = (List<Object[]>) context.getVariable(DEFERRED_DELETE_BATCH_VAR);
+    final List<DeferredDeleteTarget> deferredBatch =
+        (List<DeferredDeleteTarget>) context.getVariable(DEFERRED_DELETE_BATCH_VAR);
 
     final boolean wasInTransaction = context.getDatabase().isTransactionActive();
 
@@ -210,10 +220,11 @@ public class DeleteStep extends AbstractExecutionStep {
       if (deferredBatch != null) {
         // Cypher semantics within a FOREACH iteration: queue both edges and vertices and let the
         // iteration end flush them with the correct ordering.
+        final boolean detach = deleteClause.isDetach();
         for (final Object edge : allEdges)
-          deferredBatch.add(new Object[] { edge, Boolean.valueOf(deleteClause.isDetach()) });
+          deferredBatch.add(new DeferredDeleteTarget(edge, detach));
         for (final Object other : allOther)
-          deferredBatch.add(new Object[] { other, Boolean.valueOf(deleteClause.isDetach()) });
+          deferredBatch.add(new DeferredDeleteTarget(other, detach));
         return;
       }
 
@@ -238,32 +249,30 @@ public class DeleteStep extends AbstractExecutionStep {
    * then vertices and other objects, so that vertex deletes never fail due to still-connected
    * edges that are themselves about to be removed within the same iteration.
    */
-  public static void flushDeferredDeletes(final CommandContext context, final List<Object[]> batch) {
+  public static void flushDeferredDeletes(final CommandContext context, final List<DeferredDeleteTarget> batch) {
     if (batch == null || batch.isEmpty())
       return;
     final List<Object> edges = new ArrayList<>();
-    final List<Object[]> others = new ArrayList<>();
-    for (final Object[] entry : batch) {
-      final Object target = entry[0];
-      if (target instanceof Edge)
-        edges.add(target);
+    final List<DeferredDeleteTarget> others = new ArrayList<>();
+    for (final DeferredDeleteTarget entry : batch) {
+      if (entry.target() instanceof Edge)
+        edges.add(entry.target());
       else
         others.add(entry);
     }
     final Set<Object> deleted = new HashSet<>();
     for (final Object edge : edges)
       deleteObjectStatic(edge, deleted);
-    for (final Object[] entry : others) {
-      final Object target = entry[0];
-      final boolean detach = ((Boolean) entry[1]).booleanValue();
+    for (final DeferredDeleteTarget entry : others) {
+      final Object target = entry.target();
       if (target instanceof Vertex v && !deleted.contains(v)) {
-        if (detach || hasOnlyDetachedEdges(v)) {
+        if (entry.detach() || hasOnlyDetachedEdges(v)) {
           // Already deleted by edges pass or no edges left; safe to delete.
           v.delete();
           deleted.add(v);
         } else {
           // Connected edges still present and DETACH not requested -> raise standard error.
-          throw new com.arcadedb.exception.CommandExecutionException("DeleteConnectedNode: Cannot delete node "
+          throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node "
               + v.getIdentity() + " because it still has relationships. To delete this node, you must first delete"
               + " its relationships, or use DETACH DELETE");
         }
@@ -275,8 +284,46 @@ public class DeleteStep extends AbstractExecutionStep {
   }
 
   private static boolean hasOnlyDetachedEdges(final Vertex v) {
-    return !v.getEdges(Vertex.DIRECTION.OUT).iterator().hasNext()
-        && !v.getEdges(Vertex.DIRECTION.IN).iterator().hasNext();
+    // Materialize so we don't leak the underlying cursor when the iterator is closeable.
+    try (final var outIter = closeableOf(v.getEdges(Vertex.DIRECTION.OUT).iterator())) {
+      if (outIter.delegate().hasNext())
+        return false;
+    } catch (final Exception ignored) {
+      // ignore - we only care about iteration state
+    }
+    try (final var inIter = closeableOf(v.getEdges(Vertex.DIRECTION.IN).iterator())) {
+      if (inIter.delegate().hasNext())
+        return false;
+    } catch (final Exception ignored) {
+      // ignore
+    }
+    return true;
+  }
+
+  /**
+   * Wraps an iterator in an AutoCloseable so try-with-resources can release it when the
+   * underlying iterator owns a cursor or other resource.
+   */
+  private static <T> CloseableIteratorRef<T> closeableOf(final Iterator<T> it) {
+    return new CloseableIteratorRef<>(it);
+  }
+
+  private static final class CloseableIteratorRef<T> implements AutoCloseable {
+    private final Iterator<T> it;
+
+    CloseableIteratorRef(final Iterator<T> it) {
+      this.it = it;
+    }
+
+    Iterator<T> delegate() {
+      return it;
+    }
+
+    @Override
+    public void close() throws Exception {
+      if (it instanceof AutoCloseable ac)
+        ac.close();
+    }
   }
 
   private static void deleteObjectStatic(final Object obj, final Set<Object> deleted) {

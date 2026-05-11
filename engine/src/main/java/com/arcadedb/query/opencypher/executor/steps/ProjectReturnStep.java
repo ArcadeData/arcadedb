@@ -129,7 +129,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
               final StringBuilder keyBuilder = new StringBuilder();
               if (returnClause.isReturnAll()) {
                 final List<String> propNames = new ArrayList<>(projectedResult.getPropertyNames());
-                java.util.Collections.sort(propNames);
+                propNames.sort(null);
                 for (final String name : propNames) {
                   final Object val = projectedResult.getProperty(name);
                   keyBuilder.append(name).append('=').append(val).append('|');

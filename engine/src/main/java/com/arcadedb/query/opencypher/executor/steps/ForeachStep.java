@@ -150,43 +150,47 @@ public class ForeachStep extends AbstractExecutionStep {
 
     final String variable = foreachClause.getVariable();
 
-    for (final Object element : iterable) {
-      // Create a new result row with the iteration variable bound
-      final ResultInternal iterationRow = new ResultInternal();
+    // Defer DELETE within each FOREACH iteration so multiple DELETE clauses (e.g.
+    // DELETE endNode(r) followed by DELETE r) execute as if Cypher's end-of-statement
+    // delete batching applied. Edges are flushed before vertices to avoid spurious
+    // DeleteConnectedNode errors. The save/restore around DEFERRED_DELETE_BATCH_VAR keeps
+    // nested FOREACH iterations independent.
+    final Object previousBatch = context.getVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR);
+    final boolean wasInTransaction = context.getDatabase().isTransactionActive();
+    try {
+      if (!wasInTransaction)
+        context.getDatabase().begin();
 
-      // Copy all properties from input row
-      for (final String prop : inputRow.getPropertyNames())
-        iterationRow.setProperty(prop, inputRow.getProperty(prop));
+      for (final Object element : iterable) {
+        // Create a new result row with the iteration variable bound
+        final ResultInternal iterationRow = new ResultInternal();
 
-      // Bind the iteration variable
-      iterationRow.setProperty(variable, element);
+        // Copy all properties from input row
+        for (final String prop : inputRow.getPropertyNames())
+          iterationRow.setProperty(prop, inputRow.getProperty(prop));
 
-      // Defer DELETE within this iteration so multiple DELETE clauses (e.g. DELETE endNode(r)
-      // followed by DELETE r) execute as if Cypher's end-of-statement delete batching applied.
-      // Edges are flushed before vertices to avoid spurious DeleteConnectedNode errors.
-      final Object previousBatch = context.getVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR);
-      final List<Object[]> deleteBatch = new ArrayList<>();
-      context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, deleteBatch);
-      final boolean wasInTransaction = context.getDatabase().isTransactionActive();
-      try {
-        if (!wasInTransaction)
-          context.getDatabase().begin();
+        // Bind the iteration variable
+        iterationRow.setProperty(variable, element);
 
-        // Execute each inner clause
-        for (final ClauseEntry clauseEntry : foreachClause.getInnerClauses())
-          executeInnerClause(clauseEntry, iterationRow, context);
+        final List<DeleteStep.DeferredDeleteTarget> deleteBatch = new ArrayList<>();
+        context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, deleteBatch);
+        try {
+          // Execute each inner clause
+          for (final ClauseEntry clauseEntry : foreachClause.getInnerClauses())
+            executeInnerClause(clauseEntry, iterationRow, context);
 
-        DeleteStep.flushDeferredDeletes(context, deleteBatch);
-
-        if (!wasInTransaction)
-          context.getDatabase().commit();
-      } catch (final RuntimeException e) {
-        if (!wasInTransaction && context.getDatabase().isTransactionActive())
-          context.getDatabase().rollback();
-        throw e;
-      } finally {
-        context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, previousBatch);
+          DeleteStep.flushDeferredDeletes(context, deleteBatch);
+        } finally {
+          context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, previousBatch);
+        }
       }
+
+      if (!wasInTransaction)
+        context.getDatabase().commit();
+    } catch (final RuntimeException e) {
+      if (!wasInTransaction && context.getDatabase().isTransactionActive())
+        context.getDatabase().rollback();
+      throw e;
     }
   }
 

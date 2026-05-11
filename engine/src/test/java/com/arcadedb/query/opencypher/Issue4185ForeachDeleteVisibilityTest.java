@@ -82,6 +82,89 @@ class Issue4185ForeachDeleteVisibilityTest {
   }
 
   /**
+   * DETACH DELETE inside FOREACH still routes through the deferred batch and removes both
+   * the vertex and its connected edges in one iteration.
+   */
+  @Test
+  void detachDeleteInsideForeachClearsBothEndsAndEdge() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})");
+    });
+
+    database.command("opencypher",
+        """
+            MATCH p = ()-[*]->()
+            WITH relationships(p) AS rels
+            FOREACH (r IN rels | DETACH DELETE endNode(r))
+            RETURN 1 AS x""");
+
+    final ResultSet verify = database.query("opencypher", "MATCH (n:Node) RETURN n.name AS name ORDER BY name");
+    final List<String> names = new ArrayList<>();
+    while (verify.hasNext()) {
+      names.add(verify.next().getProperty("name"));
+    }
+    assertThat(names).containsExactly("A");
+  }
+
+  /**
+   * Nested FOREACH with DELETE inside the inner loop. Confirms the deferred-batch
+   * save/restore around DEFERRED_DELETE_BATCH_VAR isolates iterations correctly.
+   */
+  @Test
+  void nestedForeachDeleteWorks() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (:Node {name:'X'}), (:Node {name:'Y'}), (:Node {name:'Z'})");
+    });
+
+    database.command("opencypher",
+        """
+            MATCH (n:Node)
+            WITH collect(n) AS allNodes
+            FOREACH (group IN [allNodes] |
+              FOREACH (node IN group | DELETE node)
+            )
+            RETURN 1 AS x""");
+
+    final ResultSet verify = database.query("opencypher", "MATCH (n:Node) RETURN count(n) AS total");
+    assertThat(verify.hasNext()).isTrue();
+    assertThat(verify.next().<Number>getProperty("total").longValue()).isZero();
+  }
+
+  /**
+   * Mixed SET and DELETE inside a single FOREACH iteration. SET on the survivor must run
+   * before the iteration's deletes flush, so the surviving node carries the updated property.
+   */
+  @Test
+  void mixedSetAndDeleteInsideForeach() {
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})");
+    });
+
+    database.command("opencypher",
+        """
+            MATCH (a:Node {name:'A'})-[r:REL]->(b:Node {name:'B'})
+            WITH a, r, b
+            FOREACH (x IN [1] |
+              SET a.tagged = true
+              DELETE r
+              DELETE b
+            )
+            RETURN 1 AS x""");
+
+    final ResultSet verify = database.query("opencypher",
+        "MATCH (n:Node) RETURN n.name AS name, n.tagged AS tagged ORDER BY name");
+    final List<String> rows = new ArrayList<>();
+    while (verify.hasNext()) {
+      final Result r = verify.next();
+      rows.add(r.<String>getProperty("name") + ":" + r.<Boolean>getProperty("tagged"));
+    }
+    assertThat(rows).containsExactly("A:true");
+  }
+
+  /**
    * Control: when there is no later MATCH, deletion must still work.
    */
   @Test

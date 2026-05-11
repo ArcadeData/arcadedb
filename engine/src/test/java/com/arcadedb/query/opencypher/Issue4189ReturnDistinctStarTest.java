@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -66,9 +67,9 @@ class Issue4189ReturnDistinctStarTest {
     final List<String> names = new ArrayList<>();
     while (rs.hasNext()) {
       final Result r = rs.next();
-      final Object p = r.getProperty("p");
+      final Vertex p = r.<Vertex>getProperty("p");
       assertThat(p).isNotNull();
-      names.add(extractName(p));
+      names.add(p.getString("name"));
     }
     assertThat(names).hasSize(2).containsExactlyInAnyOrder("Alice", "Bob");
   }
@@ -116,19 +117,4 @@ class Issue4189ReturnDistinctStarTest {
     assertThat(values).hasSize(2).containsExactlyInAnyOrder(1L, 2L);
   }
 
-  private static String extractName(final Object node) {
-    try {
-      final var m = node.getClass().getMethod("getString", String.class);
-      return (String) m.invoke(node, "name");
-    } catch (final NoSuchMethodException ignored) {
-      try {
-        final var m = node.getClass().getMethod("getProperty", String.class);
-        return (String) m.invoke(node, "name");
-      } catch (final ReflectiveOperationException e) {
-        throw new IllegalStateException(e);
-      }
-    } catch (final ReflectiveOperationException e) {
-      throw new IllegalStateException(e);
-    }
-  }
 }
