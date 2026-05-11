@@ -148,7 +148,9 @@ public class SimpleCypherStatement implements CypherStatement {
     this.hasDelete = hasDelete;
     this.hasRemove = hasRemove;
     final boolean hasForeach = this.clausesInOrder.stream().anyMatch(c -> c.getType() == ClauseEntry.ClauseType.FOREACH);
-    this.readOnly = !hasCreate && !hasMerge && !hasDelete && !hasRemove && !hasForeach && (setClause == null || setClause.isEmpty());
+    final boolean writeSubquery = anyWriteSubquery(this.clausesInOrder);
+    this.readOnly = !hasCreate && !hasMerge && !hasDelete && !hasRemove && !hasForeach
+        && (setClause == null || setClause.isEmpty()) && !writeSubquery;
 
     // Pre-compute flags used by CypherExecutionPlan.execute() to avoid repeated clause scanning
     this.hasVariableLengthPath = computeHasVariableLengthPath();
@@ -219,6 +221,27 @@ public class SimpleCypherStatement implements CypherStatement {
     for (final ClauseEntry entry : clausesInOrder)
       if (entry.getType() == ClauseEntry.ClauseType.SUBQUERY)
         return true;
+    return false;
+  }
+
+  /**
+   * Returns {@code true} when any {@code CALL { ... }} subquery in this statement contains write
+   * operations. Writes happening inside a CALL must mark the outer statement as non-read-only so
+   * that {@link com.arcadedb.query.opencypher.executor.CypherExecutionPlan#execute} eagerly drains
+   * the result set (forcing the side effects to commit) and suppresses output when the outer query
+   * has no RETURN clause, matching Neo4j semantics. See issue #4191.
+   */
+  private static boolean anyWriteSubquery(final List<ClauseEntry> entries) {
+    if (entries == null || entries.isEmpty())
+      return false;
+    for (final ClauseEntry entry : entries) {
+      if (entry.getType() != ClauseEntry.ClauseType.SUBQUERY)
+        continue;
+      final SubqueryClause sub = entry.getTypedClause();
+      final CypherStatement inner = sub.getInnerStatement();
+      if (inner != null && !inner.isReadOnly())
+        return true;
+    }
     return false;
   }
 
