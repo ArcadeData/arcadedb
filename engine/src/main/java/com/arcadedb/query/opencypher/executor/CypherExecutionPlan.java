@@ -1514,6 +1514,8 @@ public class CypherExecutionPlan {
             sourceStep.setPrevious(currentStep);
           }
           currentStep = sourceStep;
+          if (isOptional && matchChainStart == null)
+            matchChainStart = sourceStep;
           matchVariables.add(sourceVar); // Track as bound for subsequent patterns
         }
 
@@ -1528,6 +1530,8 @@ public class CypherExecutionPlan {
             targetStep.setPrevious(currentStep);
           }
           currentStep = targetStep;
+          if (isOptional && matchChainStart == null)
+            matchChainStart = targetStep;
           matchVariables.add(targetVar); // Track as bound for subsequent patterns
         }
 
@@ -1875,6 +1879,8 @@ public class CypherExecutionPlan {
                   sourceStep.setPrevious(currentStep);
                 }
                 currentStep = sourceStep;
+                if (isOptional && matchChainStart == null)
+                  matchChainStart = sourceStep;
                 matchVariables.add(sourceVar);
               }
 
@@ -1891,6 +1897,8 @@ public class CypherExecutionPlan {
                   targetStep.setPrevious(currentStep);
                 }
                 currentStep = targetStep;
+                if (isOptional && matchChainStart == null)
+                  matchChainStart = targetStep;
                 matchVariables.add(targetVar);
               }
 

@@ -451,4 +451,105 @@ class CypherReduceAndShortestPathTest {
     assertThat((Long) result.getProperty("filteredSum")).isEqualTo(Long.valueOf(12L));
     assertThat(resultSet.hasNext()).isFalse();
   }
+
+  // ============================================================================
+  // Regression: issue #4190 - shortestPath/allShortestPaths with
+  // variable-length relationship type alternation may match no rows
+  // ============================================================================
+
+  @Test
+  void shortestPathVariableLengthTypeAlternation() {
+    // https://github.com/ArcadeData/arcadedb/issues/4190
+    // Build a graph with mixed edge types: Person -R1-> Mid -R2-> City
+    database.getSchema().createVertexType("Issue4190_Person");
+    database.getSchema().createVertexType("Issue4190_Mid");
+    database.getSchema().createVertexType("Issue4190_City");
+    database.getSchema().createEdgeType("R1");
+    database.getSchema().createEdgeType("R2");
+
+    database.transaction(() -> {
+      final MutableVertex person = database.newVertex("Issue4190_Person").set("name", "Alice").save();
+      final MutableVertex mid = database.newVertex("Issue4190_Mid").set("name", "M").save();
+      final MutableVertex city = database.newVertex("Issue4190_City").set("name", "X").save();
+      person.newEdge("R1", mid, true, (Object[]) null).save();
+      mid.newEdge("R2", city, true, (Object[]) null).save();
+    });
+
+    // Variable-length path with type alternation must traverse R1 then R2.
+    final ResultSet allShortestRs = database.query("opencypher",
+        """
+            MATCH p = allShortestPaths((:Issue4190_Person)-[:R1|R2*]->(:Issue4190_City))
+            RETURN size(nodes(p)) AS pathLen""");
+    assertThat(allShortestRs.hasNext()).as("allShortestPaths with [:R1|R2*] should return a row").isTrue();
+    final Result allShortestResult = allShortestRs.next();
+    assertThat(allShortestResult.<Number>getProperty("pathLen").longValue()).isEqualTo(3L);
+    assertThat(allShortestRs.hasNext()).isFalse();
+
+    // Same issue with shortestPath().
+    final ResultSet shortestRs = database.query("opencypher",
+        """
+            MATCH p = shortestPath((:Issue4190_Person)-[:R1|R2*]->(:Issue4190_City))
+            RETURN size(nodes(p)) AS pathLen""");
+    assertThat(shortestRs.hasNext()).as("shortestPath with [:R1|R2*] should return a row").isTrue();
+    final Result shortestResult = shortestRs.next();
+    assertThat(shortestResult.<Number>getProperty("pathLen").longValue()).isEqualTo(3L);
+    assertThat(shortestRs.hasNext()).isFalse();
+  }
+
+  @Test
+  void shortestPathSingleTypeStillWorks() {
+    // Control case from issue #4190: single relationship type must keep working.
+    database.getSchema().createVertexType("Issue4190b_Person");
+    database.getSchema().createVertexType("Issue4190b_Mid");
+    database.getSchema().createEdgeType("R1B");
+
+    database.transaction(() -> {
+      final MutableVertex person = database.newVertex("Issue4190b_Person").set("name", "Alice").save();
+      final MutableVertex mid = database.newVertex("Issue4190b_Mid").set("name", "M").save();
+      person.newEdge("R1B", mid, true, (Object[]) null).save();
+    });
+
+    final ResultSet rs = database.query("opencypher",
+        """
+            MATCH p = allShortestPaths((:Issue4190b_Person)-[:R1B*]->(:Issue4190b_Mid))
+            RETURN size(nodes(p)) AS pathLen""");
+    assertThat(rs.hasNext()).isTrue();
+    final Result r = rs.next();
+    assertThat(r.<Number>getProperty("pathLen").longValue()).isEqualTo(2L);
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  @Test
+  void shortestPathOptionalMatchVariableLengthTypeAlternation() {
+    // Stronger variant from issue #4190 with OPTIONAL MATCH and mixed types.
+    database.getSchema().createVertexType("Issue4190c_Person");
+    database.getSchema().createVertexType("Issue4190c_City");
+    database.getSchema().createEdgeType("KNOWS_4190");
+    database.getSchema().createEdgeType("LIVES_IN_4190");
+
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("Issue4190c_Person").set("name", "Alice").set("active", true).save();
+      final MutableVertex b = database.newVertex("Issue4190c_Person").set("name", "Bob").set("active", false).save();
+      final MutableVertex c = database.newVertex("Issue4190c_City").set("name", "New York").save();
+      final MutableVertex d = database.newVertex("Issue4190c_City").set("name", "London").save();
+      a.newEdge("KNOWS_4190", b, true, (Object[]) null).save();
+      a.newEdge("LIVES_IN_4190", c, true, (Object[]) null).save();
+      b.newEdge("LIVES_IN_4190", d, true, (Object[]) null).save();
+    });
+
+    final ResultSet rs = database.query("opencypher",
+        """
+            MATCH (p:Issue4190c_Person)
+            WHERE p.active = true
+            WITH p
+            OPTIONAL MATCH path = allShortestPaths((p)-[:KNOWS_4190|LIVES_IN_4190*]-(:Issue4190c_City))
+            RETURN p.name AS name, size(nodes(path)) AS pathLen
+            ORDER BY pathLen""");
+
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+    assertThat(row.<String>getProperty("name")).isEqualTo("Alice");
+    // Alice has a direct LIVES_IN_4190 edge to New York: 2 nodes.
+    assertThat(row.<Number>getProperty("pathLen").longValue()).isEqualTo(2L);
+  }
 }

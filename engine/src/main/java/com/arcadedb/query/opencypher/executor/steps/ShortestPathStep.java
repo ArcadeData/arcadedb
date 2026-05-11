@@ -33,6 +33,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.NoSuchElementException;
 
@@ -175,11 +176,15 @@ public class ShortestPathStep extends AbstractExecutionStep {
    * Returns a list of alternating Vertex and Edge objects representing the path.
    */
   private List<Object> computeShortestPath(final Vertex source, final Vertex target, final CommandContext context) {
-    // Get edge type from pattern
-    String edgeType = null;
-    if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes()) {
-      edgeType = pattern.getRelationship(0).getTypes().get(0);
-    }
+    // Collect every relationship type declared in the pattern. Variable-length type alternation
+    // (e.g. [:R1|R2*]) is expressed as a single relationship with multiple types - all of them
+    // must reach SQLFunctionShortestPath, otherwise paths that walk across more than one type
+    // are silently dropped (issue #4190).
+    final List<String> edgeTypes;
+    if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes())
+      edgeTypes = pattern.getRelationship(0).getTypes();
+    else
+      edgeTypes = null;
 
     // Get direction from pattern
     Vertex.DIRECTION vertexDirection = Vertex.DIRECTION.BOTH;
@@ -200,10 +205,19 @@ public class ShortestPathStep extends AbstractExecutionStep {
       }
     }
 
-    // Use SQLFunctionShortestPath to compute the path (returns vertex RIDs only)
+    // Use SQLFunctionShortestPath to compute the path (returns vertex RIDs only).
+    // When multiple edge types are present pass them as a List so the function honours all of them.
     final SQLFunctionShortestPath shortestPathFunction = new SQLFunctionShortestPath();
-    final Object[] params = edgeType != null ?
-        new Object[] { source, target, direction, edgeType } :
+    final Object edgeTypeParam;
+    if (edgeTypes == null || edgeTypes.isEmpty())
+      edgeTypeParam = null;
+    else if (edgeTypes.size() == 1)
+      edgeTypeParam = edgeTypes.get(0);
+    else
+      edgeTypeParam = edgeTypes;
+
+    final Object[] params = edgeTypeParam != null ?
+        new Object[] { source, target, direction, edgeTypeParam } :
         new Object[] { source, target, direction };
 
     final List<RID> pathRids = shortestPathFunction.execute(null, null, null, params, context);
@@ -211,14 +225,16 @@ public class ShortestPathStep extends AbstractExecutionStep {
       return null;
 
     // Build a proper path with alternating Vertex and Edge objects
-    return resolvePathWithEdges(pathRids, vertexDirection, edgeType, context.getDatabase());
+    return resolvePathWithEdges(pathRids, vertexDirection, edgeTypes, context.getDatabase());
   }
 
   /**
    * Resolves a list of vertex RIDs into a proper path with alternating Vertex and Edge objects.
+   *
+   * @param edgeTypes restrict edges to these types, or null/empty to allow any type
    */
   public static List<Object> resolvePathWithEdges(final List<RID> vertexRids, final Vertex.DIRECTION direction,
-      final String edgeType, final Database database) {
+      final List<String> edgeTypes, final Database database) {
     final List<Object> result = new ArrayList<>(vertexRids.size() * 2 - 1);
 
     Vertex prev = null;
@@ -227,7 +243,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
       if (prev != null) {
         // Find the edge connecting prev to current
-        final Edge edge = findConnectingEdge(prev, current, direction, edgeType);
+        final Edge edge = findConnectingEdge(prev, current, direction, edgeTypes);
         if (edge != null)
           result.add(edge);
       }
@@ -240,17 +256,29 @@ public class ShortestPathStep extends AbstractExecutionStep {
   }
 
   /**
+   * Backward-compatible overload that accepts a single edge type.
+   */
+  public static List<Object> resolvePathWithEdges(final List<RID> vertexRids, final Vertex.DIRECTION direction,
+      final String edgeType, final Database database) {
+    return resolvePathWithEdges(vertexRids, direction,
+        edgeType == null ? null : Collections.singletonList(edgeType), database);
+  }
+
+  /**
    * Finds the edge connecting two vertices.
    */
   private static Edge findConnectingEdge(final Vertex from, final Vertex to, final Vertex.DIRECTION direction,
-      final String edgeType) {
+      final List<String> edgeTypes) {
     final Vertex.DIRECTION[] directions = direction == Vertex.DIRECTION.BOTH ?
         new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
         new Vertex.DIRECTION[] { direction };
 
+    final String[] typesArray = (edgeTypes == null || edgeTypes.isEmpty()) ? null :
+        edgeTypes.toArray(new String[0]);
+
     for (final Vertex.DIRECTION dir : directions) {
-      final Iterable<Edge> edges = edgeType != null ?
-          from.getEdges(dir, edgeType) :
+      final Iterable<Edge> edges = typesArray != null ?
+          from.getEdges(dir, typesArray) :
           from.getEdges(dir);
 
       for (final Edge edge : edges) {

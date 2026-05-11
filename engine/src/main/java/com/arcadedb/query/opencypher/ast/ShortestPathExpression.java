@@ -84,13 +84,14 @@ public class ShortestPathExpression implements Expression {
     final Vertex startVertex = (Vertex) startValue;
     final Vertex endVertex = (Vertex) endValue;
 
-    // Get relationship type if specified
-    String edgeType = null;
+    // Collect every relationship type declared in the pattern. With [:R1|R2*] all of them
+    // must reach SQLFunctionShortestPath, otherwise paths that walk across more than one type
+    // are silently dropped (issue #4190).
+    List<String> edgeTypes = null;
     if (pathPattern.getRelationships().size() == 1) {
       final RelationshipPattern rel = pathPattern.getRelationships().get(0);
-      if (rel.getTypes() != null && !rel.getTypes().isEmpty()) {
-        edgeType = rel.getTypes().get(0);
-      }
+      if (rel.getTypes() != null && !rel.getTypes().isEmpty())
+        edgeTypes = rel.getTypes();
     }
 
     // Get direction
@@ -109,10 +110,19 @@ public class ShortestPathExpression implements Expression {
       }
     }
 
-    // Use SQLFunctionShortestPath to compute the path (returns vertex RIDs only)
+    // Use SQLFunctionShortestPath to compute the path (returns vertex RIDs only).
+    // Pass the type list as-is so multi-type alternation is preserved.
     final SQLFunctionShortestPath shortestPathFunction = new SQLFunctionShortestPath();
-    final Object[] params = edgeType != null ?
-        new Object[] { startVertex, endVertex, direction, edgeType } :
+    final Object edgeTypeParam;
+    if (edgeTypes == null || edgeTypes.isEmpty())
+      edgeTypeParam = null;
+    else if (edgeTypes.size() == 1)
+      edgeTypeParam = edgeTypes.get(0);
+    else
+      edgeTypeParam = edgeTypes;
+
+    final Object[] params = edgeTypeParam != null ?
+        new Object[] { startVertex, endVertex, direction, edgeTypeParam } :
         new Object[] { startVertex, endVertex, direction };
 
     final List<RID> pathRids = shortestPathFunction.execute(null, null, null, params, context);
@@ -133,7 +143,7 @@ public class ShortestPathExpression implements Expression {
         vertexDirection = Vertex.DIRECTION.BOTH;
     }
 
-    final List<Object> resolved = ShortestPathStep.resolvePathWithEdges(pathRids, vertexDirection, edgeType,
+    final List<Object> resolved = ShortestPathStep.resolvePathWithEdges(pathRids, vertexDirection, edgeTypes,
         context.getDatabase());
 
     if (allPaths) {
