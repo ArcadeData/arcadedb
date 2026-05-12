@@ -111,7 +111,11 @@ public class Expression extends SimpleNode {
   }
 
   public boolean isEarlyCalculated(final CommandContext context) {
-    if (this.mathExpression != null)
+    if (isNull)
+      return true;
+    else if (rid != null)
+      return rid.legacy || (rid.expression != null && rid.expression.isEarlyCalculated(context));
+    else if (this.mathExpression != null)
       return this.mathExpression.isEarlyCalculated(context);
     else if (this.whereCondition != null)
       return false;
