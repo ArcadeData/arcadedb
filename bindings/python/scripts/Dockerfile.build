@@ -11,7 +11,8 @@
 ARG PYTHON_VERSION=3.12
 ARG PACKAGE_NAME=arcadedb-embedded
 ARG PACKAGE_DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
-ARG ARCADEDB_TAG=latest
+# Deterministic placeholder. The wrapper build script must pass the real ArcadeDB tag.
+ARG ARCADEDB_TAG=build-arg-required
 ARG TARGET_PLATFORM=linux-x64
 # When set to 1, prefer jars provided in bindings/python/local-jars/lib from the build context.
 # If no local jars are present, the build fails fast to avoid silently falling back.

@@ -539,7 +539,7 @@ def test_opencypher_edge_typed_constraint_command(temp_db_path):
 
 
 def test_opencypher_is_typed_value_predicate(temp_db_path):
-    """OpenCypher should expose the GQL IS TYPED value predicate."""
+    """Verify that OpenCypher exposes the GQL IS TYPED value predicate."""
     with arcadedb.create_database(temp_db_path) as db:
         _ensure_opencypher(db)
 

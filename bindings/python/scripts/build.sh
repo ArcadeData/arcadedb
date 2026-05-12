@@ -292,6 +292,13 @@ else
     # Determine Docker build platform (always Linux for cross-compilation)
     # We build ON linux/amd64 or linux/arm64, but FOR any target platform
     DOCKER_PLATFORM="${PLATFORM}"
+
+    if [[ -z "$DOCKER_TAG" ]]; then
+        echo -e "${RED}❌ Missing ArcadeDB Docker tag${NC}"
+        echo -e "${YELLOW}💡 Pass a version so Docker builds remain reproducible${NC}"
+        exit 1
+    fi
+
     # Build Docker image
     echo -e "${CYAN}📦 Building Docker image...${NC}"
 

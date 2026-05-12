@@ -37,7 +37,7 @@ def to_java_float_array(vector):
         import numpy as np
 
         if isinstance(vector, np.ndarray):
-            vector = vector.tolist()
+            return jtypes.JArray(jtypes.JFloat)(vector)
     except ImportError:
         pass
 
@@ -69,12 +69,14 @@ def to_java_byte_array(vector):
         import numpy as np
 
         if isinstance(vector, np.ndarray):
+            if vector.dtype in (np.int8, np.uint8):
+                return jtypes.JArray(jtypes.JByte)(vector.tobytes())
             vector = vector.tolist()
     except ImportError:
         pass
 
     if isinstance(vector, (bytes, bytearray)):
-        vector = list(vector)
+        return jtypes.JArray(jtypes.JByte)(vector)
     elif not isinstance(vector, list):
         vector = list(vector)
 

@@ -370,7 +370,7 @@ class TestVectorSQL:
         assert str(metadata.quantizationType) == "NONE"
 
     def test_vector_neighbors_on_native_int8_storage_sql(self, test_db):
-        """vectorNeighbors should work against native INT8-encoded storage."""
+        """Verify that vectorNeighbors works against native INT8-encoded storage."""
         test_db.command("sql", "CREATE VERTEX TYPE SqlNativeInt8SearchDoc")
         test_db.command("sql", "CREATE PROPERTY SqlNativeInt8SearchDoc.id STRING")
         test_db.command("sql", "CREATE PROPERTY SqlNativeInt8SearchDoc.vec BINARY")
@@ -619,7 +619,6 @@ class TestVectorSQL:
 
     def test_vector_neighbors_group_by_sql(self, test_db):
         """SQL vector.neighbors should support groupBy/groupSize options."""
-
         test_db.command("sql", "CREATE DOCUMENT TYPE GroupedDoc")
         test_db.command("sql", "CREATE PROPERTY GroupedDoc.source_file STRING")
         test_db.command("sql", "CREATE PROPERTY GroupedDoc.embedding ARRAY_OF_FLOATS")
