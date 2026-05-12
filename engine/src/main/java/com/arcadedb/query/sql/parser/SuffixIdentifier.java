@@ -329,12 +329,16 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public void setValue(final Object target, final Object value, final CommandContext context) {
-    if (target instanceof Result)
-      setValue((Result) target, value, context);
-    else if (target instanceof Identifiable)
-      setValue((Identifiable) target, value, context);
-    else if (target instanceof Map)
-      setValue((Map) target, value, context);
+    if (target instanceof Result result)
+      setValueAsResult(result, value, context);
+    else if (target instanceof Identifiable identifiable)
+      setValueAsIdentifiable(identifiable, value, context);
+    else if (target instanceof JSONObject json)
+      setValueAsMap(json.toMap(), value, context);
+    else if (target instanceof Map map)
+      setValueAsMap(map, value, context);
+    else
+      throw new IllegalStateException("Unexpected value: " + target);
   }
 
   public void setValueAsIdentifiable(final Identifiable target, final Object value, final CommandContext context) {
