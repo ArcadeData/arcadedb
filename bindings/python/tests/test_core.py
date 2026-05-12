@@ -254,6 +254,30 @@ def test_fulltext_search_with_score(temp_db_path):
         assert first.get("$score") is not None
 
 
+def test_fulltext_search_preserves_wildcards(temp_db_path):
+    """Full-text wildcard queries should reach the index unchanged."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Article")
+        db.command("sql", "CREATE PROPERTY Article.content STRING")
+        db.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT")
+
+        with db.transaction():
+            db.command(
+                "sql", "INSERT INTO Article SET content = 'Hello database world'"
+            )
+            db.command("sql", "INSERT INTO Article SET content = 'Help me search'")
+
+        result = db.query(
+            "sql",
+            "SELECT content FROM Article "
+            "WHERE SEARCH_INDEX('Article[content]', 'Hel*') = true "
+            "ORDER BY content",
+        )
+        contents = [record.get("content") for record in result]
+
+        assert contents == ["Hello database world", "Help me search"]
+
+
 def test_sqlscript_returns_last_command_result(temp_db_path):
     """SQLScript returns the last command result when no explicit RETURN is used."""
     with arcadedb.create_database(temp_db_path) as db:
@@ -421,7 +445,7 @@ def test_transactions(temp_db_path):
                 db.command("sql", "INSERT INTO TransactionTest SET id = 3")
                 raise Exception("Intentional error")
         except Exception:
-            pass  # nosec B110 - intentional rollback test, exception is expected
+            pass  # nosec B110
 
         # Verify rollback worked
         result = db.query("sql", "SELECT count(*) as count FROM TransactionTest")
@@ -462,6 +486,59 @@ def test_graph_operations(temp_db_path):
 
         names = [record.get("value") for record in result]
         assert "Bob" in names
+
+
+def test_create_edge_with_content_object_preserves_properties(temp_db_path):
+    """CREATE EDGE ... CONTENT {...} should keep object-form properties."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE VERTEX TYPE Person")
+        db.command("sql", "CREATE EDGE TYPE Knows")
+
+        with db.transaction():
+            db.command("sql", "INSERT INTO Person SET name = 'Alice'")
+            db.command("sql", "INSERT INTO Person SET name = 'Bob'")
+            db.command(
+                "sql",
+                "CREATE EDGE Knows "
+                "FROM (SELECT FROM Person WHERE name = 'Alice') "
+                "TO (SELECT FROM Person WHERE name = 'Bob') "
+                "CONTENT {since: 2024, note: 'met at summit'}",
+            )
+
+        row = db.query("sql", "SELECT since, note FROM Knows").one()
+
+        assert row.get("since") == 2024
+        assert row.get("note") == "met at summit"
+
+
+def test_find_references_returns_referring_record(temp_db_path):
+    """SQL FIND REFERENCES should return the record that points to the target RID."""
+    with arcadedb.create_database(temp_db_path) as db:
+        db.command("sql", "CREATE DOCUMENT TYPE Car")
+        db.command("sql", "CREATE DOCUMENT TYPE Owner")
+
+        with db.transaction():
+            db.command("sql", "INSERT INTO Car SET model = 'Spider'")
+
+        car = db.query(
+            "sql", "SELECT @rid AS rid FROM Car WHERE model = 'Spider'"
+        ).one()
+
+        with db.transaction():
+            db.command(
+                "sql",
+                "INSERT INTO Owner SET name = ?, car = ?",
+                "Jack",
+                car.get("rid"),
+            )
+
+        row = db.query("sql", f"FIND REFERENCES {car.get('rid')}").one()
+
+        assert row.get("rid") == car.get("rid")
+        assert row.get("referredBy") is not None
+        fields = row.get("fields")
+        assert fields is not None
+        assert "car." in list(fields)
 
 
 def test_error_handling():

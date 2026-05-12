@@ -10,6 +10,8 @@ Key Concepts:
 - Creating HNSW (JVector) indexes for fast nearest-neighbor search
 - Finding semantically similar documents using cosine similarity
 - Understanding vector search parameters (dimensions, distance functions)
+- INT8-encoded dense-vector storage for smaller payloads and bucket footprint
+- Sparse-vector indexing for token/weight retrieval workloads
 - Index population strategies and performance characteristics
 
 Implementation Status:
@@ -45,6 +47,7 @@ import shutil
 import time
 
 import arcadedb_embedded as arcadedb
+import jpype.types as jtypes
 import numpy as np
 
 # Parse command line arguments
@@ -138,6 +141,11 @@ with arcadedb.create_database(db_path) as db:
         embedding /= np.linalg.norm(embedding)
 
         return embedding.astype(np.float32)
+
+    def quantize_to_int8_bytes(vector: np.ndarray):
+        """Quantize a normalized float vector to signed int8 bytes."""
+        scaled = np.clip(np.rint(vector * 127.0), -127, 127).astype(np.int8)
+        return scaled.tolist()
 
     # Generate documents
     documents = []
@@ -310,6 +318,129 @@ with arcadedb.create_database(db_path) as db:
         print()
 
     print(f"   ⏱️  All queries time: {time.time() - step_start:.3f}s")
+    print()
+
+    # -----------------------------------------------------------------------------
+    # Step 7: INT8-Encoded Dense Vectors
+    # -----------------------------------------------------------------------------
+    print("Step 7: Demonstrating INT8-encoded dense-vector storage...")
+    step_start = time.time()
+
+    try:
+        db.command("sql", "CREATE VERTEX TYPE Int8Article")
+        db.command("sql", "CREATE PROPERTY Int8Article.id STRING")
+        db.command("sql", "CREATE PROPERTY Int8Article.category STRING")
+        db.command("sql", "CREATE PROPERTY Int8Article.embedding BINARY")
+
+        db.command(
+            "sql",
+            """
+            CREATE INDEX ON Int8Article (embedding)
+            LSM_VECTOR
+            METADATA {
+                "dimensions": 4,
+                "similarity": "COSINE",
+                "quantization": "NONE",
+                "encoding": "INT8"
+            }
+            """,
+        )
+
+        int8_docs = [
+            ("int8_doc_1", "technology", [1.0, 0.0, 0.0, 0.0]),
+            ("int8_doc_2", "technology", [0.95, 0.05, 0.0, 0.0]),
+            ("int8_doc_3", "sports", [0.0, 1.0, 0.0, 0.0]),
+        ]
+
+        with db.transaction():
+            for doc_id, category, vector in int8_docs:
+                db.command(
+                    "sql",
+                    "INSERT INTO Int8Article SET id = ?, category = ?, embedding = ?",
+                    doc_id,
+                    category,
+                    arcadedb.to_java_byte_array(
+                        quantize_to_int8_bytes(np.array(vector))
+                    ),
+                )
+
+        int8_hits = db.query(
+            "sql",
+            (
+                "SELECT id, category, distance FROM "
+                "(SELECT expand(vectorNeighbors('Int8Article[embedding]', ?, 2))) "
+                "ORDER BY distance"
+            ),
+            arcadedb.to_java_float_array([1.0, 0.0, 0.0, 0.0]),
+        ).to_list()
+    except arcadedb.ArcadeDBError as exc:
+        print("   ⚠️  Skipping INT8-encoded dense-vector demo in this runtime")
+        print(f"   💡 Reason: {exc}")
+    else:
+        print("   ✅ Created INT8-encoded dense index on a BINARY property")
+        print("   💡 Use this when your embeddings are already stored as int8 bytes")
+        print("   Top matches for [1, 0, 0, 0]:")
+        for hit in int8_hits:
+            print(
+                f"      • {hit.get('id')} ({hit.get('category')}), "
+                f"distance={hit.get('distance'):.4f}"
+            )
+    print(f"   ⏱️  Time: {time.time() - step_start:.3f}s")
+    print()
+
+    # -----------------------------------------------------------------------------
+    # Step 8: Sparse Vectors
+    # -----------------------------------------------------------------------------
+    print("Step 8: Demonstrating sparse-vector retrieval...")
+    step_start = time.time()
+
+    try:
+        db.command("sql", "CREATE DOCUMENT TYPE SparseArticle")
+        db.command("sql", "CREATE PROPERTY SparseArticle.id STRING")
+        db.command("sql", "CREATE PROPERTY SparseArticle.tokens ARRAY_OF_INTEGERS")
+        db.command("sql", "CREATE PROPERTY SparseArticle.weights ARRAY_OF_FLOATS")
+
+        db.command(
+            "sql",
+            """
+            CREATE INDEX ON SparseArticle (tokens, weights)
+            LSM_SPARSE_VECTOR
+            METADATA {
+                "dimensions": 128
+            }
+            """,
+        )
+
+        with db.transaction():
+            db.command(
+                "sql",
+                "INSERT INTO SparseArticle SET id = 'sparse_doc_1', tokens = [1, 5, 10], weights = [0.5, 0.3, 0.2]",
+            )
+            db.command(
+                "sql",
+                "INSERT INTO SparseArticle SET id = 'sparse_doc_2', tokens = [2, 5, 11], weights = [0.4, 0.6, 0.1]",
+            )
+
+        sparse_hits = db.query(
+            "sql",
+            (
+                "SELECT id, score FROM "
+                "(SELECT expand(`vector.sparseNeighbors`('SparseArticle[tokens,weights]', ?, ?, 5))) "
+                "ORDER BY score DESC"
+            ),
+            jtypes.JArray(jtypes.JInt)([5]),
+            arcadedb.to_java_float_array([1.0]),
+        ).to_list()
+    except arcadedb.ArcadeDBError as exc:
+        print("   ⚠️  Skipping sparse-vector demo in this runtime")
+        print(f"   💡 Reason: {exc}")
+    else:
+        print("   ✅ Created sparse-vector index on token/weight arrays")
+        print("   💡 Use this for BM25-style or learned sparse retrieval")
+        print("   Top matches for sparse query {(5): 1.0}:")
+        for hit in sparse_hits:
+            print(f"      • {hit.get('id')}, score={hit.get('score'):.4f}")
+    print(f"   ⏱️  Time: {time.time() - step_start:.3f}s")
     print()
 
     # -----------------------------------------------------------------------------

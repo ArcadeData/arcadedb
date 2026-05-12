@@ -201,9 +201,7 @@ def _download_with_python(
         )
 
     request = urllib.request.Request(_require_https(url), headers=headers)
-    with urllib.request.urlopen(
-        request, timeout=60
-    ) as response:  # nosec B310 - https-only
+    with urllib.request.urlopen(request, timeout=60) as response:  # nosec B310
         status = getattr(response, "status", response.getcode())
 
         if resume_from > 0 and status != 206:
@@ -665,7 +663,7 @@ def download_movielens(size="large", inject_nulls=True):
 
         urllib.request.urlretrieve(
             _require_https(url), zip_path, reporthook=report_progress
-        )  # nosec B310 - https-only
+        )  # nosec B310
         print()  # New line after progress
         download_elapsed = time.time() - download_start
         print(f"[OK] Downloaded to: {zip_path} " f"({download_elapsed:.2f}s)")
@@ -1101,11 +1099,9 @@ def create_stackoverflow_large(
 
 
 def _iter_stackoverflow_rows(xml_path: Path, fields: list[str]):
-    import xml.etree.ElementTree as ET  # nosec B405 - parsing files we just downloaded over HTTPS and verified
+    import xml.etree.ElementTree as ET  # nosec B405
 
-    context = ET.iterparse(
-        xml_path, events=("start", "end")
-    )  # nosec B314 - input is a downloaded, checksum-verified file
+    context = ET.iterparse(xml_path, events=("start", "end"))  # nosec B314
     _, root = next(context)
     for event, elem in context:
         if event == "end" and elem.tag == "row":
@@ -1638,7 +1634,7 @@ def download_tpch(scale_factor: int = 10) -> Path:
 
         urllib.request.urlretrieve(
             _require_https(url), dbgen_zip, reporthook=report_progress
-        )  # nosec B310 - https-only
+        )  # nosec B310
         print()
 
         extract_dir = data_dir / "tpch-dbgen-extract"
@@ -1722,9 +1718,7 @@ def download_ldbc_snb(scale_factor: int = 1) -> Path:
         )
         print("[DOWNLOAD] LDBC SNB params template")
         template = (
-            urllib.request.urlopen(  # nosec B310 - https-only
-                _require_https(template_url)
-            )
+            urllib.request.urlopen(_require_https(template_url))  # nosec B310
             .read()
             .decode("utf-8")
         )
@@ -2165,7 +2159,7 @@ def verify_xml_nulls(extract_dir, sample_size=None):
     Returns:
         dict: Verification results
     """
-    import xml.etree.ElementTree as ET  # nosec B405 - parsing files we just downloaded over HTTPS and verified
+    import xml.etree.ElementTree as ET  # nosec B405
 
     verification_start = time.time()
     results = {}
@@ -2189,9 +2183,7 @@ def verify_xml_nulls(extract_dir, sample_size=None):
         file_start = time.time()
 
         # Parse XML iteratively for large files
-        context = ET.iterparse(
-            xml_path, events=("start", "end")
-        )  # nosec B314 - input is a downloaded, checksum-verified file
+        context = ET.iterparse(xml_path, events=("start", "end"))  # nosec B314
         _, root = next(context)  # Get root element
 
         all_attrs = set()

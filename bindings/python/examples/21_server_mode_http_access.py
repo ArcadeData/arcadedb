@@ -169,9 +169,7 @@ def http_json_request(
     ):
         raise ValueError(f"Refusing to call unexpected URL: {request.full_url!r}")
     try:
-        with urlopen(
-            request, timeout=timeout
-        ) as response:  # nosec B310 - localhost or https
+        with urlopen(request, timeout=timeout) as response:  # nosec B310
             body = response.read().decode("utf-8")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")

@@ -285,7 +285,7 @@ def insert_seed_data(db) -> None:
             db.command(
                 "sql",
                 # route['edge_type'] is a constant from the demo schema.
-                f"CREATE EDGE {route['edge_type']} "  # nosec B608
+                f"CREATE EDGE {route['edge_type']} "
                 "FROM (SELECT FROM City WHERE code = ? LIMIT 1) "
                 "TO (SELECT FROM City WHERE code = ? LIMIT 1) "
                 "SET distance = ?, duration = ?, risk = ?, lane = ?",
@@ -758,7 +758,7 @@ def run_reopen_phase(db_path: Path) -> None:
         route_count = sum(
             reopened_db.query(
                 "sql",
-                f"SELECT count(*) AS count FROM {edge_type}",  # nosec B608 - edge_type is a script constant
+                f"SELECT count(*) AS count FROM {edge_type}",
             )
             .first()
             .get("count")

@@ -882,7 +882,7 @@ class TestAllDataTypes:
                 if db:
                     db.close()
             except Exception:
-                pass  # nosec B110 - best-effort teardown after JVM may be down
+                pass  # nosec B110
 
 
 if __name__ == "__main__":

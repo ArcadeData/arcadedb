@@ -58,7 +58,12 @@ from .transactions import TransactionContext
 from .type_conversion import convert_java_to_python, convert_python_to_java
 
 # Import vector utilities and index
-from .vector import VectorIndex, to_java_float_array, to_python_array
+from .vector import (
+    VectorIndex,
+    to_java_byte_array,
+    to_java_float_array,
+    to_python_array,
+)
 
 __all__ = [
     "__version__",
@@ -91,6 +96,7 @@ __all__ = [
     "convert_python_to_java",
     # Vector search
     "VectorIndex",
+    "to_java_byte_array",
     "to_java_float_array",
     "to_python_array",
     # Data export

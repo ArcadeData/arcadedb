@@ -278,6 +278,7 @@ class Database:
         max_connections: int = 16,
         beam_width: int = 100,
         quantization: str = "INT8",
+        encoding: Optional[str] = None,
         location_cache_size: Optional[int] = None,
         graph_build_cache_size: Optional[int] = None,
         mutations_before_rebuild: Optional[int] = None,
@@ -317,6 +318,10 @@ class Database:
                 In current ArcadeDB engine builds, PRODUCT also requires enough indexed
                 vectors per bucket for PQ training; for tiny corpora, set `pq_clusters`
                 explicitly to a small value or prefer INT8/BINARY/NONE.
+            encoding: Optional storage encoding for the underlying vector property.
+                Use "INT8" when the document property stores pre-quantized bytes in a
+                `BINARY` property. When using INT8 encoding, set quantization to "NONE"
+                to avoid double quantization.
             location_cache_size: Per-index override for vector location cache size
                 (maps to Java metadata key "locationCacheSize"; uses
                 GlobalConfiguration default if None). Typical ranges by corpus size
@@ -401,6 +406,27 @@ class Database:
 
             if quantization:
                 builder.withQuantization(quantization)
+
+            if encoding:
+                if (
+                    encoding.upper() == "INT8"
+                    and quantization
+                    and quantization.upper() == "INT8"
+                ):
+                    raise ValueError(
+                        "encoding='INT8' cannot be combined with "
+                        "quantization='INT8'; use quantization='NONE' for native "
+                        "INT8 storage"
+                    )
+
+                encoding_setter = getattr(builder, "withEncoding", None)
+                if encoding_setter is None:
+                    raise ValueError(
+                        "This ArcadeDB engine build does not support vector encoding; "
+                        "update the embedded engine artifacts"
+                    )
+
+                encoding_setter(encoding)
 
             if pq_subspaces is not None:
                 builder.withPQSubspaces(int(pq_subspaces))
@@ -907,14 +933,15 @@ class Database:
         interpreter is shutting down and logging may already be unavailable,
         so we narrow the catch to AttributeError/RuntimeError that JPype can
         raise when the JVM has been torn down before this finalizer runs.
+        Server-managed databases raise UnsupportedOperationException on close,
+        which is handled by close() itself and also suppressed here.
         """
         try:
-            if not self._closed and self._java_db is not None:
-                self._close_async_executors()
-                self._java_db.close()
-                self._closed = True
+            self.close()
         except (AttributeError, RuntimeError):
             # JVM or referenced attributes already gone; nothing to do.
+            return
+        except Exception:
             return
 
 

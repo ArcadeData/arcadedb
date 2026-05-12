@@ -49,6 +49,50 @@ def to_java_float_array(vector):
     return jtypes.JArray(jtypes.JFloat)(vector)
 
 
+def to_java_byte_array(vector):
+    """
+    Convert a Python byte-like or integer array-like object to a Java byte array.
+
+    Accepts:
+    - Python lists of integers: [127, -12, 0]
+    - Python bytes / bytearray
+    - NumPy arrays
+    - Any array-like object with __iter__
+
+    Args:
+        vector: Array-like object containing byte values
+
+    Returns:
+        Java byte array compatible with INT8-encoded ArcadeDB vector indexes
+    """
+    try:
+        import numpy as np
+
+        if isinstance(vector, np.ndarray):
+            vector = vector.tolist()
+    except ImportError:
+        pass
+
+    if isinstance(vector, (bytes, bytearray)):
+        vector = list(vector)
+    elif not isinstance(vector, list):
+        vector = list(vector)
+
+    normalized = []
+    for value in vector:
+        byte_value = int(value)
+        if byte_value < -128 or byte_value > 255:
+            raise ArcadeDBError(
+                "Byte vectors must contain values in the signed byte range "
+                "[-128, 127] or unsigned byte range [0, 255]"
+            )
+        if byte_value > 127:
+            byte_value -= 256
+        normalized.append(byte_value)
+
+    return jtypes.JArray(jtypes.JByte)(normalized)
+
+
 def to_python_array(java_vector, use_numpy=True):
     """
     Convert a Java array or ArrayList to a Python array.

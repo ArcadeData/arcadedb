@@ -20,6 +20,7 @@ NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY_BINDINGS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 DIST_DIR="$PY_BINDINGS_DIR/dist"
+JAR_EXCLUSIONS_FILE="$SCRIPT_DIR/jar_exclusions.txt"
 
 # Parameters
 PLATFORM="${1:-}"
@@ -36,6 +37,83 @@ fi
 echo -e "${CYAN}🔨 Native build for platform: ${YELLOW}${PLATFORM}${NC}"
 echo -e "${CYAN}📦 Package: ${YELLOW}${PACKAGE_NAME}${NC}"
 echo -e "${CYAN}📌 ArcadeDB tag: ${YELLOW}${ARCADEDB_TAG}${NC}"
+
+count_jars() {
+    find "$1" -maxdepth 1 -name "*.jar" -type f | wc -l | awk '{print $1}'
+}
+
+apply_jar_exclusions() {
+    local jars_dir="$1"
+    local exclusions_file="$2"
+    local pattern
+    local jar_path
+
+    if [[ ! -f "$exclusions_file" ]]; then
+        echo -e "${RED}❌ JAR exclusion file not found: ${exclusions_file}${NC}"
+        exit 1
+    fi
+
+    echo -e "${CYAN}🗑️  Removing excluded JARs...${NC}"
+    echo -e "${CYAN}📋 JAR count before exclusion: ${YELLOW}$(count_jars "$jars_dir")${NC}"
+
+    while IFS= read -r pattern; do
+        pattern="${pattern%$'\r'}"
+
+        if [[ -z "$pattern" ]] || [[ "${pattern#\#}" != "$pattern" ]]; then
+            continue
+        fi
+
+        while IFS= read -r jar_path; do
+            [[ -n "$jar_path" ]] || continue
+            echo -e "   - Removing: ${jar_path}"
+            rm -f "$jar_path"
+        done < <(find "$jars_dir" -maxdepth 1 -name "$pattern" -type f)
+    done < "$exclusions_file"
+
+    echo -e "${CYAN}📋 JAR count after exclusion: ${YELLOW}$(count_jars "$jars_dir")${NC}"
+}
+
+prune_windows_jre_artifacts() {
+    local jre_dir="$1"
+    local removed_count=0
+    local artifact_path
+
+    if [[ ! -d "$jre_dir" ]]; then
+        echo -e "${RED}❌ JRE directory not found for Windows cleanup: ${jre_dir}${NC}"
+        exit 1
+    fi
+
+    echo -e "${CYAN}🧹 Pruning Windows-only non-runtime JRE artifacts...${NC}"
+
+    while IFS= read -r artifact_path; do
+        [[ -n "$artifact_path" ]] || continue
+        echo -e "   - Removing: ${artifact_path}"
+        rm -f "$artifact_path"
+        removed_count=$((removed_count + 1))
+    done < <(find "$jre_dir" -type f \( -iname "*.pdb" -o -iname "*.lib" -o -iname "*.map" \))
+
+    echo -e "${CYAN}📋 Removed Windows JRE artifacts: ${YELLOW}${removed_count}${NC}"
+}
+
+copy_tree_with_symlinks() {
+    local src_dir="$1"
+    local dest_dir="$2"
+    local python_bin="$3"
+
+    "$python_bin" - "$src_dir" "$dest_dir" << 'PY'
+import shutil
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1])
+dest = Path(sys.argv[2])
+
+if dest.exists():
+    shutil.rmtree(dest)
+
+shutil.copytree(src, dest, symlinks=True)
+PY
+}
 
 # Check for Java (needed for jlink and JPype build)
 if ! command -v java &> /dev/null; then
@@ -122,6 +200,9 @@ else
     echo -e "${GREEN}✅ JARs downloaded to: $JARS_DIR${NC}"
 fi
 
+# Always filter excluded jars, even when reusing an existing jars directory from a prior build.
+apply_jar_exclusions "$JARS_DIR" "$JAR_EXCLUSIONS_FILE"
+
 # Step 2: Build minimal JRE with jlink
 echo -e "${CYAN}🔨 Building minimal JRE with jlink...${NC}"
 
@@ -182,13 +263,17 @@ echo -e "${GREEN}✅ JRE built${NC}"
 JRE_SIZE=$(du -sh "$PY_BINDINGS_DIR/temp_jre" | cut -f1)
 echo -e "${CYAN}📊 JRE size: ${YELLOW}${JRE_SIZE}${NC}"
 
-# Step 3: Copy JRE to package (JARs already filtered and in place from artifact)
+if [[ "$PLATFORM" == windows/* ]]; then
+    prune_windows_jre_artifacts "$PY_BINDINGS_DIR/temp_jre"
+    JRE_SIZE=$(du -sh "$PY_BINDINGS_DIR/temp_jre" | cut -f1)
+    echo -e "${CYAN}📊 JRE size after Windows cleanup: ${YELLOW}${JRE_SIZE}${NC}"
+fi
+
+# Step 3: Copy JRE to package (JARs already filtered in place)
 echo -e "${CYAN}📦 Preparing package...${NC}"
 
 # Build and copy JRE
-rm -rf "$PY_BINDINGS_DIR/src/arcadedb_embedded/jre"
-mkdir -p "$PY_BINDINGS_DIR/src/arcadedb_embedded/jre"
-cp -R "$PY_BINDINGS_DIR/temp_jre"/* "$PY_BINDINGS_DIR/src/arcadedb_embedded/jre/"
+copy_tree_with_symlinks "$PY_BINDINGS_DIR/temp_jre" "$PY_BINDINGS_DIR/src/arcadedb_embedded/jre" "$PYTHON_WITH_BUILD"
 
 JAR_COUNT=$(ls -1 "$JARS_DIR"/*.jar | wc -l)
 echo -e "${GREEN}✅ Package prepared (${JAR_COUNT} JARs + JRE)${NC}"

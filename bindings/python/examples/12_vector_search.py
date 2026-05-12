@@ -103,7 +103,7 @@ def fetch_json(url: str) -> dict:
     if not url.startswith("https://"):
         raise ValueError(f"Refusing to open non-HTTPS URL: {url!r}")
     req = Request(url, headers={"User-Agent": "arcadedb-bench"})
-    with urlopen(req, timeout=30) as response:  # nosec B310 - https-only
+    with urlopen(req, timeout=30) as response:  # nosec B310
         payload = json.load(response)
     if not isinstance(payload, dict):
         raise RuntimeError(f"Expected JSON object from {url}")
@@ -1008,9 +1008,7 @@ def wait_for_qdrant_ready(host: str, port: int, timeout_sec: int = 120) -> None:
     while True:
         for url in urls:
             try:
-                with urlopen(
-                    url, timeout=3
-                ) as response:  # nosec B310 - localhost health-check URL
+                with urlopen(url, timeout=3) as response:  # nosec B310
                     if 200 <= int(response.status) < 500:
                         return
             except Exception:
@@ -1247,9 +1245,7 @@ def ensure_milvus_compose_file(compose_file: Path, release_tag: str) -> None:
             "https://github.com/milvus-io/milvus/releases/download/"
             f"{release_tag}/milvus-standalone-docker-compose.yml"
         )
-        urlretrieve(
-            url, str(compose_file)
-        )  # nosec B310 - url is a hardcoded https://github.com URL
+        urlretrieve(url, str(compose_file))  # nosec B310
         raw = compose_file.read_text(encoding="utf-8")
 
     sanitized = re.sub(r"(?m)^\s*version\s*:\s*.*\n", "", raw)
@@ -1558,16 +1554,29 @@ def get_milvus_version(host: str, port: int) -> str | None:
 
 def load_existing_build_config(db_path: Path) -> dict:
     config: dict = {}
+    candidates = []
+
     results_json = db_path / "results.json"
-    if not results_json.exists():
+    if results_json.exists():
+        candidates.append(results_json)
+
+    candidates.extend(sorted(db_path.glob("results_*.json")))
+    if not candidates:
         return config
 
-    try:
-        payload = json.loads(results_json.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return config
+    for candidate in candidates:
+        try:
+            payload = json.loads(candidate.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
 
-    return payload.get("config", {}) if isinstance(payload, dict) else {}
+        candidate_config = (
+            payload.get("config", {}) if isinstance(payload, dict) else {}
+        )
+        if isinstance(candidate_config, dict) and candidate_config:
+            return candidate_config
+
+    return config
 
 
 def find_binary(name: str) -> str:
@@ -2091,6 +2100,7 @@ def run_in_docker(args) -> bool:
 def collect_runtime_metadata(
     args,
     quantization: str,
+    encoding: str,
     runtime_versions: dict[str, str | None],
     effective_heap_size: str | None,
 ) -> dict:
@@ -2113,6 +2123,7 @@ def collect_runtime_metadata(
         "runtime_versions": runtime_versions,
         "is_running_in_docker": is_running_in_docker(),
         "quantization": quantization,
+        "encoding": encoding,
     }
 
 
@@ -2265,6 +2276,7 @@ def main() -> None:
 
     build_config = load_existing_build_config(db_path)
     quantization = str(build_config.get("quantization", "NONE")).upper()
+    encoding = str(build_config.get("encoding", "NONE")).upper()
 
     sweeps: List[dict] = []
 
@@ -2887,6 +2899,7 @@ def main() -> None:
         "environment": collect_runtime_metadata(
             args,
             quantization,
+            encoding,
             runtime_versions,
             effective_heap_size=(
                 arcadedb_heap_size if args.backend == "arcadedb_sql" else None
@@ -2907,6 +2920,7 @@ def main() -> None:
             "path": str(db_path),
             "backend": args.backend,
             "quantization": quantization,
+            "encoding": encoding,
             "pg_shared_buffers_effective": (
                 pg_shared_buffers if args.backend == "pgvector" else None
             ),

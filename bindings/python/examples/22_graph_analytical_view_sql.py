@@ -551,7 +551,7 @@ def query_two_hop_summary(db, origin_code: str) -> dict:
                   {{type: City, as: dst}}
             RETURN DISTINCT dst.code AS code
         )
-        """,  # nosec B608 - demo-data constants only
+        """,
     )
     row = result.first()
     require(row is not None, "Expected a two-hop summary row")
@@ -568,7 +568,7 @@ def query_hub_inbound_count(db, hub_code: str) -> int:
                   {{type: City, as: hub, where: (code = '{hub_code}')}}
             RETURN src.code AS code
         )
-        """,  # nosec B608 - demo-data constants only
+        """,
     )
     row = result.first()
     require(row is not None, "Expected an inbound count row")
@@ -584,7 +584,7 @@ def query_region_sample(db, sample_limit: int) -> list[dict]:
         GROUP BY region
         ORDER BY region
         LIMIT {sample_limit}
-        """,  # nosec B608 - sample_limit is a script integer constant
+        """,
     )
     return rows_to_dicts(result, ["region", "city_count", "avg_demand"])
 

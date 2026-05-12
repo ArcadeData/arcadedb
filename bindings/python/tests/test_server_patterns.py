@@ -45,7 +45,7 @@ def cleanup_test_dirs():
             if server.is_started():
                 server.stop()
         except Exception:
-            pass  # nosec B110 - best-effort teardown after JVM may be down
+            pass  # nosec B110
 
     # Give servers time to release locks
     time.sleep(0.5)
@@ -55,7 +55,7 @@ def cleanup_test_dirs():
             try:
                 shutil.rmtree(path, ignore_errors=True)
             except Exception:
-                pass  # nosec B110 - best-effort temp cleanup
+                pass  # nosec B110
 
 
 def test_server_pattern_recommended(cleanup_test_dirs):
@@ -347,7 +347,7 @@ def test_embedded_performance_comparison(cleanup_test_dirs):
 
     # Insert complex data with various data types
     categories = ["Electronics", "Books", "Clothing", "Home", "Sports"]
-    import random  # nosec B311 - benchmark uses random for synthetic test data, not security
+    import random  # nosec B311
     from datetime import datetime, timedelta
 
     with db_standalone.transaction():
@@ -587,7 +587,7 @@ def test_http_api_access_pattern(cleanup_test_dirs):
 
     # Benchmark parameters
     num_operations = 100  # Reduced from 1000 for more realistic mixed operations
-    import random  # nosec B311 - benchmark uses random for synthetic test data, not security
+    import random  # nosec B311
 
     # --- HTTP API Full CRUD Benchmark ---
     print("\n   6a. HTTP API - Full CRUD operations...")
@@ -612,7 +612,7 @@ def test_http_api_access_pattern(cleanup_test_dirs):
                     "language": "sql",
                     "command": (
                         f"INSERT INTO BenchItem SET id = {i}, "
-                        f"value = {random.randint(1, 1000)}, name = 'Item {i}'"  # nosec B311 B608
+                        f"value = {random.randint(1, 1000)}, name = 'Item {i}'"  # nosec B311
                     ),
                 },
                 timeout=30,
@@ -685,7 +685,7 @@ def test_http_api_access_pattern(cleanup_test_dirs):
     try:
         db.command("sql", "CREATE DOCUMENT TYPE BenchItem")
     except Exception:
-        pass  # nosec B110 - type may already exist
+        pass  # nosec B110
 
     # Same mixed operations
     for i in range(num_operations):
@@ -696,7 +696,7 @@ def test_http_api_access_pattern(cleanup_test_dirs):
                 db.command(
                     "sql",
                     f"INSERT INTO BenchItem SET id = {i}, "
-                    f"value = {random.randint(1, 1000)}, name = 'Item {i}'",  # nosec B311 B608
+                    f"value = {random.randint(1, 1000)}, name = 'Item {i}'",  # nosec B311
                 )
         elif op_type == 1:  # Query with filter
             result = db.query(

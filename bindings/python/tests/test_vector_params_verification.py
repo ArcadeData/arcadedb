@@ -14,6 +14,14 @@ def test_db(tmp_path):
 class TestVectorParams:
     """Verify that vector index parameters are correctly passed to Java."""
 
+    @staticmethod
+    def _get_primary_metadata(index):
+        java_index = index._java_index
+        idx_to_check = java_index
+        if "TypeIndex" in java_index.getClass().getName():
+            idx_to_check = java_index.getSubIndexes().get(0)
+        return idx_to_check.getMetadata()
+
     def test_quantization_param(self, test_db):
         """Test sending quantization parameter."""
         test_db.command("sql", "CREATE VERTEX TYPE QuantDoc")
@@ -79,7 +87,7 @@ class TestVectorParams:
                 # Try getter
                 val = metadata.isStoreVectorsInGraph()
             except Exception:
-                pass  # nosec B110 - best-effort introspection of Java metadata object
+                pass  # nosec B110
 
         if val is None:
             # Try inspecting the string representation as a fallback for verification
@@ -89,6 +97,48 @@ class TestVectorParams:
             )
         else:
             assert val is True
+
+    def test_encoding_param(self, test_db):
+        """Test sending encoding parameter for native INT8 storage."""
+        test_db.command("sql", "CREATE VERTEX TYPE EncodingDoc")
+        test_db.command("sql", "CREATE PROPERTY EncodingDoc.embedding BINARY")
+
+        try:
+            index = test_db.create_vector_index(
+                "EncodingDoc",
+                "embedding",
+                dimensions=4,
+                quantization="NONE",
+                encoding="INT8",
+            )
+        except arcadedb.ArcadeDBError as exc:
+            if "does not support vector encoding" in str(exc):
+                pytest.skip("Current embedded engine build does not support encoding")
+            raise
+
+        metadata = self._get_primary_metadata(index)
+        if not hasattr(metadata, "encoding"):
+            pytest.skip(
+                "Current embedded engine build does not expose encoding metadata"
+            )
+        assert str(metadata.encoding) == "INT8"
+        assert str(metadata.quantizationType) == "NONE"
+
+    def test_encoding_int8_rejects_default_int8_quantization(self, test_db):
+        """encoding=INT8 should reject the default INT8 quantization combination."""
+        test_db.command("sql", "CREATE VERTEX TYPE EncodingGuardDoc")
+        test_db.command("sql", "CREATE PROPERTY EncodingGuardDoc.embedding BINARY")
+
+        with pytest.raises(
+            arcadedb.ArcadeDBError,
+            match="encoding='INT8'.*quantization='INT8'",
+        ):
+            test_db.create_vector_index(
+                "EncodingGuardDoc",
+                "embedding",
+                dimensions=4,
+                encoding="INT8",
+            )
 
     def test_add_hierarchy_param(self, test_db):
         """Test sending add_hierarchy parameter."""

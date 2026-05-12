@@ -685,7 +685,7 @@ class TestLSMVectorIndex:
     )
     def test_lsm_vector_delete_and_search_others(self, test_db):
         """Test deleting vertices in a larger dataset and ensuring others are still found."""
-        import random  # nosec B311 - synthetic vector data, not security
+        import random  # nosec B311
 
         # Create schema
         test_db.command("sql", "CREATE VERTEX TYPE Doc")

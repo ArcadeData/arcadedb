@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-import subprocess  # nosec B404 - launching Python interpreter to run example scripts
+import subprocess  # nosec B404
 import sys
 import textwrap
 from pathlib import Path
@@ -64,7 +64,7 @@ def _run_snippet_subprocess(
     if snippet.strip():
         parts.extend(["", textwrap.dedent(snippet).strip()])
     code = "\n".join(parts) + "\n"
-    result = subprocess.run(  # nosec B603 - argv built from script paths and constants, not user input
+    result = subprocess.run(  # nosec B603
         [sys.executable, "-c", code],
         cwd=workdir,
         check=False,

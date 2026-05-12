@@ -10,7 +10,7 @@ import pytest
 
 # Shared test password used by server-mode tests. ArcadeDB requires >= 8 chars.
 # Hardcoded test fixture, not a real credential.
-TEST_PASSWORD = "test12345"  # nosec B105 - test fixture
+TEST_PASSWORD = "test12345"  # nosec B105
 
 
 @pytest.fixture
@@ -57,7 +57,7 @@ def temp_db():
         if not db.is_closed():
             db.close()
     except Exception:
-        pass  # nosec B110 - best-effort teardown after JVM may be down
+        pass  # nosec B110
 
     # Force garbage collection to release file handles (Windows fix)
     import gc

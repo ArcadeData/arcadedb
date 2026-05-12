@@ -197,7 +197,7 @@ def test_oltp_mixed_workload_threads(cleanup_db):
     )
 
     def worker(worker_id):
-        import random  # nosec B311 - synthetic benchmark data, not security
+        import random  # nosec B311
 
         rng = random.Random(42 + worker_id)  # nosec B311
         latencies_ms = []
