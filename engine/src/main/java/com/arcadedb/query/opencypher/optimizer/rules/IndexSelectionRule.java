@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.optimizer.rules;
 
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.ComparisonExpression;
+import com.arcadedb.query.opencypher.executor.operators.NodeByLabelDisjunctionScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeByLabelScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexRangeScan;
 import com.arcadedb.query.opencypher.executor.operators.NodeIndexSeek;
@@ -102,14 +103,25 @@ public class IndexSelectionRule implements OptimizationRule {
    * @return physical operator (NodeIndexSeek, NodeIndexRangeScan, or NodeByLabelScan)
    */
   public PhysicalOperator createAnchorOperator(final AnchorSelection anchor) {
-    // Determine the label/type to use for iteration
-    // For multi-label nodes, use the composite type name
     final List<String> labels = anchor.getNode().getLabels();
+
+    // Label disjunction (n:A|B) requires scanning each label type separately — a composite
+    // type A~B would not exist in the schema, so NodeByLabelScan would return 0 rows.
+    // Index seeks are also not applicable for disjunctions.
+    if (anchor.getNode().isLabelDisjunction() && labels.size() > 1) {
+      return new NodeByLabelDisjunctionScan(
+          anchor.getVariable(),
+          labels,
+          anchor.getEstimatedCost(),
+          anchor.getEstimatedCardinality()
+      );
+    }
+
+    // For conjunction labels (n:A:B) use the composite type name
     final String labelToUse = Labels.getCompositeTypeName(labels);
 
     if (anchor.useIndex()) {
       if (anchor.isRangeScan()) {
-        // RANGE SCAN - pass predicates for runtime parameter resolution
         return new NodeIndexRangeScan(
             anchor.getVariable(),
             labelToUse,
@@ -120,7 +132,6 @@ public class IndexSelectionRule implements OptimizationRule {
             anchor.getEstimatedCardinality()
         );
       } else {
-        // INDEX SEEK (equality)
         final Object propertyValue = anchor.getPropertyValue();
         return new NodeIndexSeek(
             anchor.getVariable(),
@@ -133,7 +144,6 @@ public class IndexSelectionRule implements OptimizationRule {
         );
       }
     } else {
-      // FULL SCAN
       return new NodeByLabelScan(
           anchor.getVariable(),
           labelToUse,

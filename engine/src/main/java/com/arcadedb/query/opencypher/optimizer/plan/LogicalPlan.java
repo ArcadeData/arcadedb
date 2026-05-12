@@ -143,7 +143,7 @@ public class LogicalPlan {
       if (variable != null) {
         nodeVars[i] = variable;
         if (!nodes.containsKey(variable)) {
-          nodes.put(variable, new LogicalNode(variable, np.getLabels(), np.getProperties()));
+          nodes.put(variable, new LogicalNode(variable, np.getLabels(), np.getProperties(), np.isLabelDisjunction()));
         }
       } else {
         nodeVars[i] = "  __anon" + anonNodeCounter++;
