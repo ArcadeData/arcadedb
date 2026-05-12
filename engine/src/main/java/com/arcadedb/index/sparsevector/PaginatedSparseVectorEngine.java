@@ -1123,7 +1123,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
         updated.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
         segments.set(updated.toArray(new PaginatedSegmentReader[0]));
         if (!updated.isEmpty()) {
-          final long highest = updated.getLast().segmentId();
+          final long highest = updated.get(updated.size() - 1).segmentId();
           if (nextSegmentId.get() <= highest)
             nextSegmentId.set(highest + 1L);
         }
@@ -1240,7 +1240,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
     readers.sort(Comparator.comparingLong(PaginatedSegmentReader::segmentId));
     if (!readers.isEmpty()) {
       segments.set(readers.toArray(new PaginatedSegmentReader[0]));
-      nextSegmentId.set(readers.getLast().segmentId() + 1L);
+      nextSegmentId.set(readers.get(readers.size() - 1).segmentId() + 1L);
     }
   }
 

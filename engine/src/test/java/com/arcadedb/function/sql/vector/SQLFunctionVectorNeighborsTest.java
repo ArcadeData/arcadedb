@@ -427,7 +427,7 @@ class SQLFunctionVectorNeighborsTest extends TestHelper {
         .next().getProperty("neighbors");
 
     assertThat(neighbors).isNotEmpty().hasSize(1);
-    assertThat((RID) neighbors.getFirst().get("@rid")).isEqualTo(allowed.getFirst());
+    assertThat((RID) neighbors.get(0).get("@rid")).isEqualTo(allowed.get(0));
   }
 
   private List<RID> collectRIDs(final String... names) {

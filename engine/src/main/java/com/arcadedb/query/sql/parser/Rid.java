@@ -82,7 +82,7 @@ public class Rid extends SimpleNode {
           throw new CommandExecutionException("Cannot convert to RID: " + result);
 
         try {
-          return context.getDatabase().newRID(Integer.parseInt(parts.getFirst()), Integer.parseInt(parts.get(1)));
+          return context.getDatabase().newRID(Integer.parseInt(parts.get(0)), Integer.parseInt(parts.get(1)));
         } catch (final Exception e) {
           throw new CommandExecutionException("Cannot convert to RID: " + result);
         }

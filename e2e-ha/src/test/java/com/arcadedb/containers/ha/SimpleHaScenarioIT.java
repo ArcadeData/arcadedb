@@ -43,7 +43,7 @@ class SimpleHaScenarioIT extends ContainersTestTemplate {
     logger.info("Starting the containers");
     final List<ServerWrapper> servers = startCluster();
 
-    final DatabaseWrapper db1 = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier);
+    final DatabaseWrapper db1 = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier);
     final DatabaseWrapper db2 = new DatabaseWrapper(servers.get(1), idSupplier, wordSupplier);
 
     logger.info("Creating database and schema on server 1");

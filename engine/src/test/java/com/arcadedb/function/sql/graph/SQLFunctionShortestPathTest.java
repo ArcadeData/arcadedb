@@ -198,7 +198,7 @@ class SQLFunctionShortestPathTest {
           new Object[] { vertices.get(1), vertices.get(4), options }, new BasicCommandContext());
 
       assertThat(result).hasSize(3);
-      assertThat(result.getFirst()).isEqualTo(vertices.get(1).getIdentity());
+      assertThat(result.get(0)).isEqualTo(vertices.get(1).getIdentity());
       assertThat(result.get(2)).isEqualTo(vertices.get(4).getIdentity());
     });
   }

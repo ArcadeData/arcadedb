@@ -485,16 +485,18 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_LIST: {
-      switch (value) {
-      case Collection<?> list -> serializeListEntries(database, content, list, list.size(), "list", applyEncryption);
-      case Object[] array -> serializeListEntries(database, content, Arrays.asList(array), array.length, "array", applyEncryption);
-      case Iterable<?> iter -> {
+      if (value instanceof Collection<?>) {
+        final Collection<?> list = (Collection<?>) value;
+        serializeListEntries(database, content, list, list.size(), "list", applyEncryption);
+      } else if (value instanceof Object[]) {
+        final Object[] array = (Object[]) value;
+        serializeListEntries(database, content, Arrays.asList(array), array.length, "array", applyEncryption);
+      } else if (value instanceof Iterable<?>) {
         final List<Object> list = new ArrayList<>();
-        for (Object o : iter)
+        for (Object o : (Iterable<?>) value)
           list.add(o);
         serializeListEntries(database, content, list, list.size(), "iterable", applyEncryption);
-      }
-      default -> {
+      } else {
         // PRIMITIVE ARRAY (component type not matched by the cases above)
         final int length = Array.getLength(value);
         content.putUnsignedNumber(length);
@@ -520,7 +522,6 @@ public class BinarySerializer {
                 "Error on serializing array value for element " + i + " = '" + entryValue + "'");
           }
         }
-      }
       }
       break;
     }

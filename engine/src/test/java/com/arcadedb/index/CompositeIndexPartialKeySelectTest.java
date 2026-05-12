@@ -221,7 +221,7 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
     // This only manifests when the index has a compacted sub-index.
 
     final TypeIndex typeIndex = database.getSchema().getType("InteliVertex")
-        .getIndexesByProperties("Name", "ModifiedOn").getFirst();
+        .getIndexesByProperties("Name", "ModifiedOn").get(0);
 
     // Insert enough data across many transactions to create multiple mutable index pages.
     // Each tx commit creates a new page; need 2+ pages per bucket for compaction.

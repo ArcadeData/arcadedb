@@ -1193,7 +1193,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
           // Scan all documents in the associated bucket to find vectors missing from the page-parsed set
           final String vectorProp =
-              metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() :
+              metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) :
                   "vector";
           database.scanBucket(bucket.getName(), record -> {
             final Document doc = (Document) record;
@@ -1869,7 +1869,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     try {
       final String vectorProp = metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ?
-          metadata.propertyNames.getFirst() : "vector";
+          metadata.propertyNames.get(0) : "vector";
 
       // Create GrowableVectorValues with lazy disk fallback — vectors are loaded from
       // ArcadeDB pages/documents on first access and cached in the ConcurrentHashMap.
@@ -3089,7 +3089,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
         final String vectorProp =
-            metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.getFirst() : "vector";
+            metadata.propertyNames != null && !metadata.propertyNames.isEmpty() ? metadata.propertyNames.get(0) : "vector";
         final RandomAccessVectorValues vectors;
         if (liveVectorValues != null && liveBuilder != null && graphIndex == liveBuilder.getGraph()) {
           vectors = liveVectorValues;

@@ -197,7 +197,7 @@ class MSMARCOBenchmark {
             .getPolymorphicIndexByProperties("embedding").getIndexesOnBuckets()[0];
 
         // First query triggers graph build
-        final float[] firstQuery = readFirstVector(shardFiles.getFirst(), dimensions);
+        final float[] firstQuery = readFirstVector(shardFiles.get(0), dimensions);
         final long buildStart = System.nanoTime();
         index.findNeighborsFromVector(firstQuery, K, EF_SEARCH);
         final double buildSec = (System.nanoTime() - buildStart) / 1e9;
@@ -490,7 +490,7 @@ class MSMARCOBenchmark {
       }
 
       System.out.printf("  Loaded ground truth: %d queries, top-%d neighbors from %s%n",
-          queries.size(), neighbors.isEmpty() ? 0 : neighbors.getFirst().length, gtFile.getFileName());
+          queries.size(), neighbors.isEmpty() ? 0 : neighbors.get(0).length, gtFile.getFileName());
 
       return new GroundTruth(
           queries.toArray(new float[0][]),

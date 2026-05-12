@@ -273,8 +273,8 @@ public class PatternComprehensionExpression implements Expression {
             nextVertex, edgeDirection, relTypeArray, endNodePattern, relPattern, nextHop, minHops, maxHops, visitedEdges);
 
       if (trackPath) {
-        pathElements.removeLast();
-        pathElements.removeLast();
+        pathElements.remove(pathElements.size() - 1);
+        pathElements.remove(pathElements.size() - 1);
       }
       visitedEdges.remove(edgeRid);
     }

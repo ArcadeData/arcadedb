@@ -102,7 +102,7 @@ public class SQLFunctionDijkstraTest {
           new Object[] { v1, v4, "'weight'", options }, new BasicCommandContext());
 
       assertThat(result).hasSize(4);
-      assertThat(result.getFirst()).isEqualTo(v1.getIdentity());
+      assertThat(result.get(0)).isEqualTo(v1.getIdentity());
       assertThat(result.get(3)).isEqualTo(v4.getIdentity());
     });
   }

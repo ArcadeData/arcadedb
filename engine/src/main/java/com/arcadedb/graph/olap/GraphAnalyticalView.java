@@ -96,7 +96,16 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       synchronized (GraphAnalyticalView.class) {
         exec = EXECUTOR;
         if (exec == null || exec.isShutdown())
-          EXECUTOR = exec = Executors.newThreadPerTaskExecutor(Thread.ofVirtual().name("gav-worker-", 0).factory());
+          EXECUTOR = exec = Executors.newCachedThreadPool(new ThreadFactory() {
+            private final AtomicInteger counter = new AtomicInteger(0);
+
+            @Override
+            public Thread newThread(final Runnable r) {
+              final Thread t = new Thread(r, "gav-worker-" + counter.getAndIncrement());
+              t.setDaemon(true);
+              return t;
+            }
+          });
       }
     }
     return exec;

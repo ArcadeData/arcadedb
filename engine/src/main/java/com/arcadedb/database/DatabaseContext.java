@@ -76,7 +76,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     }
 
     // ALWAYS ENSURE THE MAP IS REGISTERED IN CONTEXTS (may have been removed by removeAllContexts)
-    CONTEXTS.put(Thread.currentThread().threadId(), map);
+    CONTEXTS.put(Thread.currentThread().getId(), map);
 
     if (current.transactions.isEmpty())
       current.transactions.add(
@@ -104,7 +104,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       if (map.isEmpty()) {
         // REMOVE THE THREAD LOCAL WHEN THE MAP IS EMPTY
         super.remove();
-        CONTEXTS.remove(Thread.currentThread().threadId());
+        CONTEXTS.remove(Thread.currentThread().getId());
       }
       return tl;
     }
@@ -180,7 +180,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    */
   public void removeCurrentThreadContexts() {
     super.remove();
-    CONTEXTS.remove(Thread.currentThread().threadId());
+    CONTEXTS.remove(Thread.currentThread().getId());
   }
 
   /**
@@ -189,7 +189,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
   private static void cleanupDeadThreads() {
     final Set<Long> liveThreadIds = new HashSet<>();
     for (final Thread t : Thread.getAllStackTraces().keySet())
-      liveThreadIds.add(t.threadId());
+      liveThreadIds.add(t.getId());
     CONTEXTS.keySet().removeIf(id -> !liveThreadIds.contains(id));
   }
 
@@ -230,7 +230,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     public TransactionContext getLastTransaction() {
       if (transactions.isEmpty())
         return null;
-      return transactions.getLast();
+      return transactions.get(transactions.size() - 1);
     }
 
     public void pushTransaction(final TransactionContext tx) {
@@ -246,9 +246,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
         return null;
 
       if (transactions.size() > 1)
-        return transactions.removeLast();
+        return transactions.remove(transactions.size() - 1);
 
-      return transactions.getFirst();
+      return transactions.get(0);
     }
 
     public int getMaxNested() {

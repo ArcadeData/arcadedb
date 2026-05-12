@@ -84,8 +84,8 @@ class BmwScorerCorrectnessTest extends TestHelper {
     inTx(() -> {
       final List<RidScore> bmw = runBmw(readers, new int[] { 0 }, new float[] { 1.0f }, 5);
       assertThat(bmw).isNotEmpty();
-      assertThat(bmw.getFirst().rid()).isEqualTo(new RID(0, 1));
-      assertThat(bmw.getFirst().score()).isCloseTo(0.99f, Offset.offset(SCORE_TOL));
+      assertThat(bmw.get(0).rid()).isEqualTo(new RID(0, 1));
+      assertThat(bmw.get(0).score()).isCloseTo(0.99f, Offset.offset(SCORE_TOL));
 
       final List<RidScore> bf = BruteForceScorer.topK(new int[] { 0 }, new float[] { 1.0f },
           readers.toArray(new PaginatedSegmentReader[0]), 5);
@@ -117,7 +117,7 @@ class BmwScorerCorrectnessTest extends TestHelper {
       final List<RidScore> bmw = runBmw(readers, new int[] { 0 }, new float[] { 1.0f }, 10);
       // (0,1) is tombstoned by the newer segment, so only (0,2) survives.
       assertThat(bmw).hasSize(1);
-      assertThat(bmw.getFirst().rid()).isEqualTo(new RID(0, 2));
+      assertThat(bmw.get(0).rid()).isEqualTo(new RID(0, 2));
 
       final List<RidScore> bf = BruteForceScorer.topK(new int[] { 0 }, new float[] { 1.0f },
           readers.toArray(new PaginatedSegmentReader[0]), 10);
@@ -256,7 +256,7 @@ class BmwScorerCorrectnessTest extends TestHelper {
 
     if (bmwScores.isEmpty())
       return;
-    final float kthScore = bmwScores.getLast();
+    final float kthScore = bmwScores.get(bmwScores.size() - 1);
     final HashSet<RID> bmwStrict = new HashSet<>();
     for (final RidScore r : bmw)
       if (r.score() > kthScore + SCORE_TOL)

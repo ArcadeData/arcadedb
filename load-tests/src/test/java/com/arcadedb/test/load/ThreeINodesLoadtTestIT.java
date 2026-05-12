@@ -92,20 +92,20 @@ class ThreeINodesLoadtTestIT extends ContainersTestTemplate {
     for (int i = 0; i < numOfThreads; i++) {
       // Each thread will create users and photos
       executor.submit(() -> {
-        DatabaseWrapper db = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier, protocol);
+        DatabaseWrapper db = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier, protocol);
         db.addUserAndPhotos(numOfUsers, numOfPhotos);
         db.close();
       });
     }
     // Each thread will create friendships
     executor.submit(() -> {
-      DatabaseWrapper db = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier, protocol);
+      DatabaseWrapper db = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier, protocol);
       db.createFriendships(numOfFriendship);
       db.close();
     });
     // Each thread will create friendships
     executor.submit(() -> {
-      DatabaseWrapper db = new DatabaseWrapper(servers.getFirst(), idSupplier, wordSupplier, protocol);
+      DatabaseWrapper db = new DatabaseWrapper(servers.get(0), idSupplier, wordSupplier, protocol);
       db.createLike(numOfLike);
       db.close();
     });

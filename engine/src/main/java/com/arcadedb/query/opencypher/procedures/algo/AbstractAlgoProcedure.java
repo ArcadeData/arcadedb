@@ -103,13 +103,14 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   protected Vertex extractVertex(final Object arg, final String paramName) {
-    return switch (arg) {
-      case null -> throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
-      case Vertex vertex -> vertex;
-      case Document doc when doc instanceof Vertex v -> v;
-      default -> throw new IllegalArgumentException(
-          getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
-    };
+    if (arg == null)
+      throw new IllegalArgumentException(getName() + "(): " + paramName + " cannot be null");
+    if (arg instanceof Vertex)
+      return (Vertex) arg;
+    if (arg instanceof Document && arg instanceof Vertex)
+      return (Vertex) arg;
+    throw new IllegalArgumentException(
+        getName() + "(): " + paramName + " must be a node, got " + arg.getClass().getSimpleName());
   }
 
   protected String extractString(final Object arg, final String paramName) {
@@ -120,12 +121,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
 
   @SuppressWarnings("unchecked")
   protected String[] extractRelTypes(final Object arg) {
-    return switch (arg) {
-      case null -> null;
-      case String s -> new String[]{s};
-      case Collection<?> coll -> coll.stream().map(Object::toString).toArray(String[]::new);
-      default -> new String[]{arg.toString()};
-    };
+    if (arg == null)
+      return null;
+    if (arg instanceof String)
+      return new String[]{(String) arg};
+    if (arg instanceof Collection<?>)
+      return ((Collection<?>) arg).stream().map(Object::toString).toArray(String[]::new);
+    return new String[]{arg.toString()};
   }
 
   @SuppressWarnings("unchecked")

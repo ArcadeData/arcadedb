@@ -130,10 +130,7 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   public void close() {
-    if (httpClient != null) {
-      httpClient.shutdownNow();
-      httpClient.close();
-    }
+    // HttpClient.shutdownNow()/close() is Java 21+. Under Java 17 the client is GC-managed.
   }
 
   private HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {

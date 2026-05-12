@@ -304,7 +304,7 @@ public class SQLFunctionVectorSparseNeighbors extends SQLFunctionVectorAbstract 
         }
       }
       if (!errors.isEmpty()) {
-        final Throwable first = errors.getFirst();
+        final Throwable first = errors.get(0);
         final RuntimeException toThrow = first instanceof RuntimeException re ? re
             : new RuntimeException("Sparse-vector top-K fan-out failed", first);
         for (int i = 1; i < errors.size(); i++)

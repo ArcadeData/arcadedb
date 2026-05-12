@@ -54,8 +54,8 @@ class QueryEngineManagerPoolTest {
   @Test
   void submittedTasksRunOnPoolThread() throws Exception {
     final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
-    final long callerThreadId = Thread.currentThread().threadId();
-    final Future<Long> f = executor.submit(() -> Thread.currentThread().threadId());
+    final long callerThreadId = Thread.currentThread().getId();
+    final Future<Long> f = executor.submit(() -> Thread.currentThread().getId());
     final long workerThreadId = f.get(5, TimeUnit.SECONDS);
     assertThat(workerThreadId).as("a normal submit should not run on the caller's thread")
         .isNotEqualTo(callerThreadId);
@@ -100,9 +100,9 @@ class QueryEngineManagerPoolTest {
     try {
       // The next submit must trigger caller-runs. Use a sentinel that records its execution
       // thread so we can assert it ran on this thread.
-      final long callerThreadId = Thread.currentThread().threadId();
+      final long callerThreadId = Thread.currentThread().getId();
       final long[] runOn = new long[] { -1L };
-      executor.execute(() -> runOn[0] = Thread.currentThread().threadId());
+      executor.execute(() -> runOn[0] = Thread.currentThread().getId());
       assertThat(runOn[0]).as("caller-runs fallback must execute the task on the submitter's thread")
           .isEqualTo(callerThreadId);
 

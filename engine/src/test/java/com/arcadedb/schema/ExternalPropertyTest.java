@@ -226,7 +226,7 @@ class ExternalPropertyTest extends TestHelper {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("blob", Type.STRING).setExternal(true);
 
-    final var primaryBucket = type.getBuckets(false).getFirst();
+    final var primaryBucket = type.getBuckets(false).get(0);
     final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(primaryBucket.getFileId());
     final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
 
@@ -323,7 +323,7 @@ class ExternalPropertyTest extends TestHelper {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("blob", Type.STRING).setExternal(true);
 
-    final var primary = type.getBuckets(false).getFirst();
+    final var primary = type.getBuckets(false).get(0);
     final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
 
@@ -377,7 +377,7 @@ class ExternalPropertyTest extends TestHelper {
     });
 
     // After rebuild, the external bucket should hold one record per Doc record.
-    final var primary = type.getBuckets(false).getFirst();
+    final var primary = type.getBuckets(false).get(0);
     final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
     assertThat(external.count()).isEqualTo((long) n);
@@ -404,7 +404,7 @@ class ExternalPropertyTest extends TestHelper {
         database.newDocument("Doc").set("blob", "ext-" + i).save();
     });
 
-    final var primary = type.getBuckets(false).getFirst();
+    final var primary = type.getBuckets(false).get(0);
     final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
     final String externalBucketName = external.getName();
@@ -490,9 +490,9 @@ class ExternalPropertyTest extends TestHelper {
     });
 
     // Both Parent and Child external buckets should now hold their respective records.
-    final var parentBucket = parent.getBuckets(false).getFirst();
+    final var parentBucket = parent.getBuckets(false).get(0);
     final Integer parentExtId = ((LocalDocumentType) parent).getExternalBucketIdFor(parentBucket.getFileId());
-    final var childBucket = child.getBuckets(false).getFirst();
+    final var childBucket = child.getBuckets(false).get(0);
     final Integer childExtId = ((LocalDocumentType) child).getExternalBucketIdFor(childBucket.getFileId());
     final var localSchema = (LocalSchema) database.getSchema().getEmbedded();
     assertThat(localSchema.getBucketById(parentExtId).count()).isEqualTo(1L);
@@ -532,7 +532,7 @@ class ExternalPropertyTest extends TestHelper {
     @SuppressWarnings("unchecked")
     final java.util.Map<String, String> extMap = (java.util.Map<String, String>) row.getProperty("externalBuckets");
     assertThat(extMap).isNotNull().isNotEmpty();
-    final String primaryName = type.getBuckets(false).getFirst().getName();
+    final String primaryName = type.getBuckets(false).get(0).getName();
     assertThat(extMap).containsKey(primaryName);
     assertThat(extMap.get(primaryName)).endsWith("_ext");
   }
@@ -544,7 +544,7 @@ class ExternalPropertyTest extends TestHelper {
 
     // Primary bucket uses the standard 64KB page; external bucket uses the heavier 256KB page so multi-KB
     // payloads (vectors, big strings) fit in a single page rather than overflowing into the chunk-chain path.
-    final LocalBucket primary = (LocalBucket) type.getBuckets(false).getFirst();
+    final LocalBucket primary = (LocalBucket) type.getBuckets(false).get(0);
     final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
 
@@ -580,7 +580,7 @@ class ExternalPropertyTest extends TestHelper {
 
       // External bucket file lives in the override directory, not the database directory. Use prefix filters
       // (not hardcoded suffixes) so the assertions stay valid if the bucket file-naming convention evolves.
-      final var primary = type.getBuckets(false).getFirst();
+      final var primary = type.getBuckets(false).get(0);
       final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
       final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
 
@@ -613,7 +613,7 @@ class ExternalPropertyTest extends TestHelper {
 
     database.transaction(() -> database.newDocument("Doc").set("blob", "referenced").save());
 
-    final var primary = type.getBuckets(false).getFirst();
+    final var primary = type.getBuckets(false).get(0);
     final Integer extBucketId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extBucketId);
     final long extCountBefore = externalBucket.count();
@@ -676,7 +676,7 @@ class ExternalPropertyTest extends TestHelper {
     assertThat(loaded.getString("text")).isEqualTo(value);
 
     // External bucket should hold less than half the raw text bytes (typical LZ4 ratio on repeated prose).
-    final var primary = type.getBuckets(false).getFirst();
+    final var primary = type.getBuckets(false).get(0);
     final Integer extId = ((LocalDocumentType) database.getSchema().getType("Doc")).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket externalBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
     assertThat(externalBucket.getTotalPages()).as("only one page expected for one ~9KB text record").isEqualTo(1);
@@ -750,7 +750,7 @@ class ExternalPropertyTest extends TestHelper {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("blob", Type.STRING).setExternal(true);
 
-    final var primary = type.getBuckets(false).getFirst();
+    final var primary = type.getBuckets(false).get(0);
     final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
 
@@ -932,7 +932,7 @@ class ExternalPropertyTest extends TestHelper {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("blob", Type.STRING).setExternal(true);
 
-    final var primary = type.getBuckets(false).getFirst();
+    final var primary = type.getBuckets(false).get(0);
     final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
 
@@ -971,7 +971,7 @@ class ExternalPropertyTest extends TestHelper {
     // Reopen and confirm the on-disk state is consistent with what the in-memory bucket showed.
     database.close();
     database = factory.open();
-    final var primary2 = database.getSchema().getType("Doc").getBuckets(false).getFirst();
+    final var primary2 = database.getSchema().getType("Doc").getBuckets(false).get(0);
     final Integer extId2 = ((LocalDocumentType) database.getSchema().getType("Doc")).getExternalBucketIdFor(
         primary2.getFileId());
     final LocalBucket external2 = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId2);
@@ -1026,7 +1026,7 @@ class ExternalPropertyTest extends TestHelper {
     type.createProperty("blob", Type.STRING).setExternal(true);
     database.transaction(() -> database.newDocument("Doc").set("blob", "v").save());
 
-    final var primary = type.getBuckets(false).getFirst();
+    final var primary = type.getBuckets(false).get(0);
     final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket extBucket = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
     final String extBucketName = extBucket.getName();

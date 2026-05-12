@@ -77,7 +77,7 @@ class RaftHTTPGraphConcurrentIT extends BaseRaftHATest {
 
               if (responseAsJson == null) {
                 LogManager.instance()
-                    .log(this, Level.SEVERE, "Error on execution from thread %d", Thread.currentThread().threadId());
+                    .log(this, Level.SEVERE, "Error on execution from thread %d", Thread.currentThread().getId());
                 continue;
               }
 

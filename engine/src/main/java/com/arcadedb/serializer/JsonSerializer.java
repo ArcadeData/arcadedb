@@ -95,14 +95,14 @@ public class JsonSerializer {
       final String p = documentEntry.getKey();
       Object value = documentEntry.getValue();
 
-      switch (value) {
-        case null -> value = JSONObject.NULL;
-        case Document document1 -> value = serializeDocument(document1);
-        case Collection<?> collection -> serializeCollection(database, collection, null);
-        case Map map -> value = serializeMap(database, (Map<Object, Object>) map);
-        default -> {
-        }
-      }
+      if (value == null)
+        value = JSONObject.NULL;
+      else if (value instanceof Document)
+        value = serializeDocument((Document) value);
+      else if (value instanceof Collection<?>)
+        serializeCollection(database, (Collection<?>) value, null);
+      else if (value instanceof Map)
+        value = serializeMap(database, (Map<Object, Object>) value);
 
       value = convertNonNumbers(value);
 
@@ -350,44 +350,42 @@ public class JsonSerializer {
   }
 
   private void setMetadata(final Document document, final JSONObject object) {
-    switch (document) {
-      case DetachedDocument doc -> {
-        final DocumentType docType = doc.getType();
-        if (docType instanceof VertexType)
-          object.put(CAT_PROPERTY, "v");
-        else if (docType instanceof EdgeType)
-          object.put(CAT_PROPERTY, "e");
-        else
-          object.put(CAT_PROPERTY, "d");
-      }
-      case Vertex vertex -> {
+    if (document instanceof DetachedDocument) {
+      final DocumentType docType = ((DetachedDocument) document).getType();
+      if (docType instanceof VertexType)
         object.put(CAT_PROPERTY, "v");
-        if (includeVertexEdges) {
-          if (useVertexEdgeSize) {
-            object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT));
-            object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN));
+      else if (docType instanceof EdgeType)
+        object.put(CAT_PROPERTY, "e");
+      else
+        object.put(CAT_PROPERTY, "d");
+    } else if (document instanceof Vertex) {
+      final Vertex vertex = (Vertex) document;
+      object.put(CAT_PROPERTY, "v");
+      if (includeVertexEdges) {
+        if (useVertexEdgeSize) {
+          object.put(OUT_PROPERTY, vertex.countEdges(Vertex.DIRECTION.OUT));
+          object.put(IN_PROPERTY, vertex.countEdges(Vertex.DIRECTION.IN));
 
-          } else {
-            final JSONArray outEdges = new JSONArray();
-            for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
-              outEdges.put(e.getIdentity().toString());
-            object.put(OUT_PROPERTY, outEdges);
+        } else {
+          final JSONArray outEdges = new JSONArray();
+          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.OUT))
+            outEdges.put(e.getIdentity().toString());
+          object.put(OUT_PROPERTY, outEdges);
 
-            final JSONArray inEdges = new JSONArray();
-            for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
-              inEdges.put(e.getIdentity().toString());
-            object.put(IN_PROPERTY, inEdges);
-          }
+          final JSONArray inEdges = new JSONArray();
+          for (final Edge e : vertex.getEdges(Vertex.DIRECTION.IN))
+            inEdges.put(e.getIdentity().toString());
+          object.put(IN_PROPERTY, inEdges);
         }
       }
-      case Edge edge -> {
-        object.put(CAT_PROPERTY, "e");
-        object.put(IN_PROPERTY, edge.getIn());
-        object.put(OUT_PROPERTY, edge.getOut());
-      }
-      case null, default -> object.put(CAT_PROPERTY, "d");
+    } else if (document instanceof Edge) {
+      final Edge edge = (Edge) document;
+      object.put(CAT_PROPERTY, "e");
+      object.put(IN_PROPERTY, edge.getIn());
+      object.put(OUT_PROPERTY, edge.getOut());
+    } else {
+      object.put(CAT_PROPERTY, "d");
     }
-
   }
 
   /**

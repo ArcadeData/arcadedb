@@ -347,13 +347,15 @@ class RaftGroupCommitter {
       LogManager.instance().log(this, Level.WARNING,
           "Detected permanently CLOSED Raft client during group commit; requesting client refresh");
       final Runnable cb = onClientClosed;
-      Thread.ofVirtual().name("arcadedb-raft-client-refresh").start(() -> {
+      final Thread refreshThread = new Thread(() -> {
         try {
           cb.run();
         } catch (final Throwable t) {
           LogManager.instance().log(this, Level.WARNING, "RaftClient refresh callback failed: %s", t.getMessage());
         }
-      });
+      }, "arcadedb-raft-client-refresh");
+      refreshThread.setDaemon(true);
+      refreshThread.start();
     }
   }
 

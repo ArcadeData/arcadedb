@@ -136,7 +136,7 @@ class FullTextAnalyzerConfigTest extends TestHelper {
         results.add(result.next());
       }
       assertThat(results).hasSize(1);
-      assertThat(results.getFirst().<String>getProperty("content")).isEqualTo("database management system");
+      assertThat(results.get(0).<String>getProperty("content")).isEqualTo("database management system");
     });
   }
 

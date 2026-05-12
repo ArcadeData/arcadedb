@@ -329,7 +329,7 @@ public final class RaftLogEntryCodec {
 
     final int deltaCount = dis.readInt();
     checkCollectionSize(deltaCount, "TX_ENTRY bucket deltas");
-    final Map<Integer, Integer> bucketRecordDelta = HashMap.newHashMap(deltaCount);
+    final Map<Integer, Integer> bucketRecordDelta = new HashMap<>(deltaCount);
     for (int i = 0; i < deltaCount; i++) {
       final int bucketId = dis.readInt();
       final int delta = dis.readInt();
@@ -370,7 +370,7 @@ public final class RaftLogEntryCodec {
 
           final int deltaCount = dis.readInt();
           checkCollectionSize(deltaCount, "SCHEMA_ENTRY bucket deltas");
-          final Map<Integer, Integer> delta = HashMap.newHashMap(deltaCount);
+          final Map<Integer, Integer> delta = new HashMap<>(deltaCount);
           for (int j = 0; j < deltaCount; j++)
             delta.put(dis.readInt(), dis.readInt());
           bucketDeltas.add(delta);
@@ -436,7 +436,7 @@ public final class RaftLogEntryCodec {
   private static Map<Integer, String> readFileMap(final DataInputStream dis) throws IOException {
     final int count = dis.readInt();
     checkCollectionSize(count, "file map");
-    final Map<Integer, String> map = HashMap.newHashMap(count);
+    final Map<Integer, String> map = new HashMap<>(count);
     for (int i = 0; i < count; i++) {
       final int fileId = dis.readInt();
       final boolean hasValue = dis.readBoolean();

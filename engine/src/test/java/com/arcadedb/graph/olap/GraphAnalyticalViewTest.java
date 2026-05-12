@@ -1571,7 +1571,7 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(names).hasSize(3);
     // C has most incoming links (from A and B), should rank highest
-    assertThat(names.getFirst()).isEqualTo("C");
+    assertThat(names.get(0)).isEqualTo("C");
     // Scores should sum to ~1.0
     assertThat(totalScore).isBetween(0.9, 1.1);
 
@@ -1615,7 +1615,7 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(names).hasSize(3);
     // C has most incoming links, should rank highest (same topology as PageRank)
-    assertThat(names.getFirst()).isEqualTo("C");
+    assertThat(names.get(0)).isEqualTo("C");
 
     gav.drop();
   }
@@ -1649,7 +1649,7 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(scores).hasSize(3);
     // Source node should have highest PPR score
-    assertThat(scores.getFirst()).isGreaterThan(scores.get(1));
+    assertThat(scores.get(0)).isGreaterThan(scores.get(1));
 
     gav.drop();
   }
@@ -1767,7 +1767,7 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     assertThat(scores).hasSize(4);
     // Center node should have highest betweenness (it mediates all paths)
-    assertThat(scores.getFirst()).isGreaterThan(scores.get(1));
+    assertThat(scores.get(0)).isGreaterThan(scores.get(1));
 
     gav.drop();
   }

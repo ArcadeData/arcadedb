@@ -44,24 +44,25 @@ public class SQLMethodSize extends AbstractSQLMethod {
 
     final int size;
     if (value != null) {
-      switch (value) {
-      case CSRVertexIterable csr -> size = csr.size(); // O(1) via CSR array length
-      case Result result -> size = result.getRecord().isPresent() ? result.getRecord().get().size() : -1;
-      case Identifiable rid -> {
+      if (value instanceof CSRVertexIterable)
+        size = ((CSRVertexIterable) value).size(); // O(1) via CSR array length
+      else if (value instanceof Result) {
+        final Result result = (Result) value;
+        size = result.getRecord().isPresent() ? result.getRecord().get().size() : -1;
+      } else if (value instanceof Identifiable) {
         int s = 0;
         try {
-          final Record record = rid.getRecord(true);
+          final Record record = ((Identifiable) value).getRecord(true);
           if (record != null)
             s = record.size();
         } catch (final Exception e) {
           // NO DATABASE CONTEXT AVAILABLE
         }
         size = s;
-      }
-      case String s -> size = s.length();
-      default -> size = MultiValue.getSize(value);
-      }
-
+      } else if (value instanceof String)
+        size = ((String) value).length();
+      else
+        size = MultiValue.getSize(value);
     } else {
       size = 0;
     }

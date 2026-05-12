@@ -109,7 +109,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     final List<LSMVectorIndex> vectorIndexes = resolveVectorIndexes(indexSpec, context);
 
     // Get the query vector
-    final float[] queryVector = extractQueryVector(key, vectorIndexes.getFirst(), context);
+    final float[] queryVector = extractQueryVector(key, vectorIndexes.get(0), context);
 
     // Search across all indexes and collect results
     final List<Pair<RID, Float>> allNeighbors = new ArrayList<>();
@@ -224,7 +224,7 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     // Key is a vertex identifier - fetch the vertex and get its vector
     final String keyStr = key.toString();
     final String typeName = lsmIndex.getTypeName();
-    final String vectorProperty = lsmIndex.getPropertyNames().getFirst();
+    final String vectorProperty = lsmIndex.getPropertyNames().get(0);
     final String idProperty = lsmIndex.getIdPropertyName();
 
     try (final var rs = context.getDatabase().query("sql",

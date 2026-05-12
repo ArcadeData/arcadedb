@@ -67,7 +67,7 @@ class MemtableTest {
 
     final List<MemtablePosting> got = drain(m.iterateDim(7));
     assertThat(got).hasSize(1);
-    assertThat(got.getFirst().weight()).isEqualTo(0.9f);
+    assertThat(got.get(0).weight()).isEqualTo(0.9f);
     assertThat(m.totalPostings()).isEqualTo(1L);
   }
 
@@ -101,8 +101,8 @@ class MemtableTest {
 
     final List<MemtablePosting> got = drain(m.iterateDim(0));
     assertThat(got).hasSize(1);
-    assertThat(got.getFirst().tombstone()).isFalse();
-    assertThat(got.getFirst().weight()).isEqualTo(0.7f);
+    assertThat(got.get(0).tombstone()).isFalse();
+    assertThat(got.get(0).weight()).isEqualTo(0.7f);
     assertThat(m.tombstoneCount()).isZero();
   }
 

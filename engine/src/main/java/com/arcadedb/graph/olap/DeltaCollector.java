@@ -148,7 +148,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
           frozen.deletedEdges.addAll(delta.deletedEdges);
           frozen.updatedProperties.putAll(delta.updatedProperties);
           delta.clear();
-          perThreadDeltas.remove(Thread.currentThread().threadId());
+          perThreadDeltas.remove(Thread.currentThread().getId());
           if (!frozen.isEmpty())
             view.applyDelta(frozen);
         });
@@ -173,7 +173,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
   }
 
   private TxDelta getOrCreateDelta() {
-    final long tid = Thread.currentThread().threadId();
+    final long tid = Thread.currentThread().getId();
     final TxDelta existing = perThreadDeltas.get(tid);
     if (existing != null) {
       // If there's an existing delta but the commit callback is no longer registered

@@ -49,17 +49,18 @@ public class ArcadeIoRegistry extends AbstractIoRegistry {
   }
 
   public static RID newRID(final BasicDatabase database, final Object obj) {
-    return switch (obj) {
-      case null -> null;
-      case RID rid -> rid;
-      case String s -> RID.create(database, s);
-      case Map map -> {
-        final Map<String, Number> map2 = map;
-        yield RID.create(database, map2.get(BUCKET_ID).intValue(), map2.get(BUCKET_POSITION).longValue());
-      }
-      default -> throw new IllegalArgumentException("Unable to convert unknown (" + obj.getClass() + ") type to RID");
-    };
-
+    if (obj == null)
+      return null;
+    if (obj instanceof RID)
+      return (RID) obj;
+    if (obj instanceof String)
+      return RID.create(database, (String) obj);
+    if (obj instanceof Map) {
+      @SuppressWarnings("unchecked")
+      final Map<String, Number> map2 = (Map<String, Number>) obj;
+      return RID.create(database, map2.get(BUCKET_ID).intValue(), map2.get(BUCKET_POSITION).longValue());
+    }
+    throw new IllegalArgumentException("Unable to convert unknown (" + obj.getClass() + ") type to RID");
   }
 
   public static boolean isRID(final Object result) {

@@ -99,7 +99,7 @@ class GremlinMergeVConcurrentTest extends AbstractGremlinServerIT {
           Exception lastException = null;
 
           LogManager.instance().log(this, Level.INFO, "%s (id=%d) Importing %d entries",
-              Thread.currentThread().getName(), Thread.currentThread().threadId(), batchSize);
+              Thread.currentThread().getName(), Thread.currentThread().getId(), batchSize);
 
           for (int attempt = 1; attempt <= maxRetries; attempt++) {
             try {

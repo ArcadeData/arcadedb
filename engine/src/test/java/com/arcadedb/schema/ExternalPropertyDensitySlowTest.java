@@ -57,7 +57,7 @@ class ExternalPropertyDensitySlowTest extends TestHelper {
       }
     });
 
-    final LocalBucket primary = (LocalBucket) type.getBuckets(false).getFirst();
+    final LocalBucket primary = (LocalBucket) type.getBuckets(false).get(0);
     final Integer extId = ((LocalDocumentType) type).getExternalBucketIdFor(primary.getFileId());
     final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
 

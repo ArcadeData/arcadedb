@@ -158,7 +158,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     if (currentDimId != -1)
       throw new IllegalStateException("dim " + currentDimId + " is open; call endDim() first");
     if (!dimIndex.isEmpty()) {
-      final int lastDim = dimIndex.getLast()[0];
+      final int lastDim = dimIndex.get(dimIndex.size() - 1)[0];
       if (dimId <= lastDim)
         throw new IllegalArgumentException("dims must arrive in strictly ascending order: got " + dimId + " after " + lastDim);
     }
@@ -196,7 +196,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
         throw new IllegalArgumentException(
             "RIDs must arrive in strictly ascending order within a dim: got " + rid + " after " + prev);
     } else if (!currentDimBlockHeaders.isEmpty()) {
-      final RID prev = currentDimBlockHeaders.getLast().lastRid();
+      final RID prev = currentDimBlockHeaders.get(currentDimBlockHeaders.size() - 1).lastRid();
       if (compareRid(rid, prev) <= 0)
         throw new IllegalArgumentException(
             "RIDs must arrive in strictly ascending order within a dim: got " + rid + " after " + prev);
@@ -253,7 +253,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
     writeManifest(manifestPage);
 
     // Back-patch page 0 header now that all pointers are known.
-    writeHeader(pages.getFirst(), manifestPage, dimIndexPage);
+    writeHeader(pages.get(0), manifestPage, dimIndexPage);
     finished = true;
   }
 
