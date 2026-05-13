@@ -40,6 +40,17 @@ import java.util.NoSuchElementException;
  * at least one of the given labels. Types are iterated once (no duplicates).
  * <p>
  * Cost: O(N) where N is the total number of vertices matching any of the given labels.
+ * <p>
+ * Design notes:
+ * <ul>
+ *   <li>No inline WHERE pushdown (unlike {@link NodeByLabelScan#whereFilter}). Filters are
+ *       applied as a separate step; pushdown is a perf optimization tracked separately.</li>
+ *   <li>Type iterators are constructed eagerly in {@link #buildMatchingIterators}. Each call
+ *       to {@code iterateType} wraps the bucket iterators in a {@code MultiIterator} under
+ *       a read lock — the wrapper is cheap and page reads stay lazy inside the bucket
+ *       iterators, so eager construction has negligible cost for the typical small label
+ *       sets seen in practice.</li>
+ * </ul>
  */
 public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
   private final String       variable;
@@ -155,6 +166,9 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
     return variable;
   }
 
+  /**
+   * Returns the disjunction labels. Internal-only consumer API; not defensively copied.
+   */
   public List<String> getLabels() {
     return labels;
   }
