@@ -56,7 +56,7 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
   public ResultSet execute(final CommandContext context, final int nRecords) {
     return new ResultSet() {
       private Iterator<Identifiable> currentIterator = null;
-      private Iterator<Iterator<Identifiable>> iteratorQueue = null;
+      private Iterator<Iterator<Identifiable>> typeIteratorCursor = null;
       private final List<Result> buffer = new ArrayList<>();
       private int bufferIndex = 0;
       private boolean finished = false;
@@ -82,16 +82,16 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
         buffer.clear();
         bufferIndex = 0;
 
-        if (iteratorQueue == null)
-          iteratorQueue = buildMatchingIterators(context).iterator();
+        if (typeIteratorCursor == null)
+          typeIteratorCursor = buildMatchingIterators(context).iterator();
 
         while (buffer.size() < n) {
           if (currentIterator == null || !currentIterator.hasNext()) {
-            if (!iteratorQueue.hasNext()) {
+            if (!typeIteratorCursor.hasNext()) {
               finished = true;
               return;
             }
-            currentIterator = iteratorQueue.next();
+            currentIterator = typeIteratorCursor.next();
           }
           while (buffer.size() < n && currentIterator.hasNext()) {
             final Identifiable identifiable = currentIterator.next();

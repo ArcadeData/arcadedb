@@ -238,11 +238,19 @@ public class CypherExecutionPlanner {
             if (!node.hasLabels() && (node.getVariable() == null || !labeledVariables.contains(node.getVariable())))
               return false;
 
-            // Multi-label nodes not yet supported in optimizer
-            // NodeByLabelScan uses composite type name which doesn't match
-            // superset labels (e.g., A~B~C doesn't extend A~B)
-            if (node.getLabels().size() > 1)
-              return false;
+            // Multi-label nodes: conjunction (n:A:B) is unsupported in the optimizer
+            // (NodeByLabelScan uses a composite type name that does not match supersets,
+            // e.g. A~B~C does not extend A~B). Disjunction (n:A|B) is routed to
+            // NodeByLabelDisjunctionScan, but only when the node has no incident
+            // relationships — ExpandAll/ExpandInto carry a single targetLabel and
+            // cannot represent OR semantics, so target-side disjunction falls back to
+            // the legacy path.
+            if (node.getLabels().size() > 1) {
+              if (!node.isLabelDisjunction())
+                return false;
+              if (path.getRelationshipCount() > 0)
+                return false;
+            }
 
             // Phase 4: Property constraints without indexes not yet supported
             // The optimizer doesn't apply property filters when using NodeByLabelScan

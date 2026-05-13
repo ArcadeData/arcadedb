@@ -125,6 +125,19 @@ class CypherLabelDisjunctionTest {
     assertThat(ids).containsExactly(2);
   }
 
+  @Test
+  void labelDisjunctionMatchesSubtypeInstances() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Animal:Dog {id: 10})");
+      database.command("opencypher", "CREATE (:Pet {id: 20})");
+    });
+
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (n:Animal|Pet) RETURN n.id AS id ORDER BY id");
+    final List<Integer> ids = collectIds(rs);
+    assertThat(ids).containsExactly(10, 20);
+  }
+
   private List<Integer> collectIds(final ResultSet rs) {
     final List<Integer> ids = new ArrayList<>();
     while (rs.hasNext()) {
