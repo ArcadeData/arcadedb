@@ -30,11 +30,18 @@ public class LogicalNode {
   private final String variable;
   private final List<String> labels;
   private final Map<String, Object> properties;
+  private final boolean labelDisjunction;
 
   public LogicalNode(final String variable, final List<String> labels, final Map<String, Object> properties) {
+    this(variable, labels, properties, false);
+  }
+
+  public LogicalNode(final String variable, final List<String> labels, final Map<String, Object> properties,
+      final boolean labelDisjunction) {
     this.variable = variable;
     this.labels = labels != null ? labels : Collections.emptyList();
     this.properties = properties != null ? properties : Collections.emptyMap();
+    this.labelDisjunction = labelDisjunction;
   }
 
   public String getVariable() {
@@ -55,6 +62,10 @@ public class LogicalNode {
 
   public boolean hasProperties() {
     return !properties.isEmpty();
+  }
+
+  public boolean isLabelDisjunction() {
+    return labelDisjunction;
   }
 
   public String getFirstLabel() {
