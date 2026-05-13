@@ -698,6 +698,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       LogManager.instance().log(this, Level.FINE, "Searching FileManager for compacted files with prefix: %s", null, namePrefix);
 
       for (final ComponentFile file : database.getFileManager().getFiles()) {
+        // FileManager.getFiles() is a sparse list: dropped slots are null. Skip them
+        // (same defensive pattern used in discoverAndLoadGraphFile() below).
+        if (file == null)
+          continue;
+
         final String fileName = file.getComponentName();
         final String fileExt = file.getFileExtension();
 
@@ -751,8 +756,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
       return compactedIndex;
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error discovering compacted sub-index for %s: %s", indexName,
-          e.getMessage());
+      // A failure here orphans an existing compacted file on disk for the lifetime of the process,
+      // silently degrading kNN performance. Log at SEVERE with the stack trace so it is not missed.
+      LogManager.instance().log(this, Level.SEVERE, "Error discovering compacted sub-index for %s", e, indexName);
       return null;
     }
   }
