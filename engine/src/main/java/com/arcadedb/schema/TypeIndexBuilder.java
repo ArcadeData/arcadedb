@@ -39,10 +39,27 @@ import java.util.*;
  */
 public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
   public IndexMetadata metadata;
+  // When set, lets {@link #create()} accept properties that aren't declared on the type yet:
+  // the index is materialised with this Type as the key serialisation, while the property
+  // stays "free-form" on the document type so writes don't get coerced. Used by the OpenCypher
+  // engine, where {@code CREATE INDEX} can run on an empty/typeless property (issue #4222).
+  private Type[] defaultKeyTypesForUndeclaredProperties;
 
   protected TypeIndexBuilder(final DatabaseInternal database, final String typeName, final String[] propertyNames) {
     super(database, TypeIndex.class);
     this.metadata = new IndexMetadata(typeName, propertyNames, -1);
+  }
+
+  /**
+   * Tells the builder to fall back to {@code defaultKeyType} (one entry per property) when a
+   * property is not yet declared on the document type, instead of throwing
+   * {@link SchemaException}. The property remains undeclared on the schema: this avoids the
+   * silent value coercion that breaks Cypher's strict-typed equality when integers are stored
+   * against a {@code STRING}-typed property.
+   */
+  public TypeIndexBuilder withDefaultKeyTypesForUndeclaredProperties(final Type[] defaultKeyTypes) {
+    this.defaultKeyTypesForUndeclaredProperties = defaultKeyTypes;
+    return this;
   }
 
   /**
@@ -195,6 +212,15 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
         // If we still don't have a property, it doesn't exist
         if (property == null) {
+          if (defaultKeyTypesForUndeclaredProperties != null && i < defaultKeyTypesForUndeclaredProperties.length
+              && defaultKeyTypesForUndeclaredProperties[i] != null) {
+            // Caller (e.g. OpenCypher CREATE INDEX) opted into keeping the property undeclared so
+            // writes preserve their original Java type. The index keys are serialised using this
+            // fall-back Type via the usual Type.convert path.
+            keyTypes[i] = defaultKeyTypesForUndeclaredProperties[i];
+            i++;
+            continue;
+          }
           throw new SchemaException(
               "Cannot create the index on type '" + metadata.typeName + "." + actualPropertyName
                   + "' because the property does not exist");

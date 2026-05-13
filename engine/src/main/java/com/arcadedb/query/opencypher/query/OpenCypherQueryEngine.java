@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryNotIdempotentException;
@@ -38,15 +40,18 @@ import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.schema.TypeIndexBuilder;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
 import java.util.EnumSet;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 
@@ -289,44 +294,74 @@ public class OpenCypherQueryEngine implements QueryEngine {
     }
 
     // For TYPED constraints, resolve the target type first so properties are created with the correct type
-    final Type propertyType = ddl.getConstraintKind() == CypherDDLStatement.ConstraintKind.TYPED
-        ? mapCypherType(ddl.getTypedName()) : Type.STRING;
+    final boolean isTyped = ddl.getConstraintKind() == CypherDDLStatement.ConstraintKind.TYPED;
+    final Type explicitPropertyType = isTyped ? mapCypherType(ddl.getTypedName()) : null;
 
-    // Ensure all properties exist before creating indexes (ArcadeDB requires this)
-    for (final String propName : propertyNames) {
+    // Track properties whose type stays undeclared so the index can fall back to STRING keys
+    // without coercing future writes (see issue #4222).
+    final Type[] defaultKeyTypes = new Type[propertyNames.length];
+    boolean anyUndeclared = false;
+    for (int i = 0; i < propertyNames.length; i++) {
+      final String propName = propertyNames[i];
       final Property existing = schema.getType(typeName).getPropertyIfExists(propName);
-      if (existing == null)
-        schema.getType(typeName).createProperty(propName, propertyType);
-      else if (ddl.getConstraintKind() == CypherDDLStatement.ConstraintKind.TYPED && existing.getType() != propertyType) {
-        schema.getType(typeName).dropProperty(propName);
-        schema.getType(typeName).createProperty(propName, propertyType);
+      if (isTyped) {
+        if (existing == null)
+          schema.getType(typeName).createProperty(propName, explicitPropertyType);
+        else if (existing.getType() != explicitPropertyType) {
+          schema.getType(typeName).dropProperty(propName);
+          schema.getType(typeName).createProperty(propName, explicitPropertyType);
+        }
+      } else if (existing == null) {
+        final Type inferred = inferPropertyTypeFromExistingData(typeName, propName);
+        if (inferred != null) {
+          schema.getType(typeName).createProperty(propName, inferred);
+        } else {
+          defaultKeyTypes[i] = Type.STRING;
+          anyUndeclared = true;
+        }
       }
     }
 
     switch (ddl.getConstraintKind()) {
-    case UNIQUE:
-      schema.buildTypeIndex(typeName, propertyNames)
-          .withType(Schema.INDEX_TYPE.LSM_TREE)
-          .withUnique(true)
-          .withIgnoreIfExists(ddl.isIfNotExists())
-          .create();
+    case UNIQUE: {
+      final TypeIndexBuilder b = schema.buildTypeIndex(typeName, propertyNames);
+      b.withType(Schema.INDEX_TYPE.LSM_TREE);
+      b.withUnique(true);
+      b.withIgnoreIfExists(ddl.isIfNotExists());
+      if (anyUndeclared)
+        b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
+      b.create();
       break;
+    }
 
     case NOT_NULL:
-      for (final String propName : propertyNames)
-        schema.getType(typeName).getPropertyIfExists(propName).setMandatory(true);
+      for (final String propName : propertyNames) {
+        Property prop = schema.getType(typeName).getPropertyIfExists(propName);
+        if (prop == null)
+          // NOT NULL implies the property must be tracked, declare it with a generic STRING
+          // since we have no value yet to infer from.
+          prop = schema.getType(typeName).createProperty(propName, Type.STRING);
+        prop.setMandatory(true);
+      }
       break;
 
-    case KEY:
+    case KEY: {
       // NODE KEY = unique index + mandatory properties
-      schema.buildTypeIndex(typeName, propertyNames)
-          .withType(Schema.INDEX_TYPE.LSM_TREE)
-          .withUnique(true)
-          .withIgnoreIfExists(ddl.isIfNotExists())
-          .create();
-      for (final String propName : propertyNames)
-        schema.getType(typeName).getPropertyIfExists(propName).setMandatory(true);
+      final TypeIndexBuilder b = schema.buildTypeIndex(typeName, propertyNames);
+      b.withType(Schema.INDEX_TYPE.LSM_TREE);
+      b.withUnique(true);
+      b.withIgnoreIfExists(ddl.isIfNotExists());
+      if (anyUndeclared)
+        b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
+      b.create();
+      for (final String propName : propertyNames) {
+        Property prop = schema.getType(typeName).getPropertyIfExists(propName);
+        if (prop == null)
+          prop = schema.getType(typeName).createProperty(propName, Type.STRING);
+        prop.setMandatory(true);
+      }
       break;
+    }
 
     case TYPED:
       // Property type already set above; for IF NOT EXISTS, silently succeed if property already has the correct type
@@ -472,17 +507,74 @@ public class OpenCypherQueryEngine implements QueryEngine {
         schema.getOrCreateVertexType(typeName);
     }
 
-    // Ensure all properties exist before creating indexes (ArcadeDB requires this)
-    for (final String propName : propertyNames) {
-      if (schema.getType(typeName).getPropertyIfExists(propName) == null)
-        schema.getType(typeName).createProperty(propName, Type.STRING);
+    // Cypher properties are dynamically typed and travel over Bolt with their actual Java type
+    // (e.g. {@code Long} for numeric literals). Hard-coding {@link Type#STRING} when the property
+    // is missing from the schema used to coerce every future write to a {@link String}, which
+    // breaks Cypher's strict-typed equality on follow-up MATCH (issue #4222). We instead:
+    //   1. Try to infer the property type from any existing record on the type, so that the
+    //      common pattern "CREATE node; CREATE INDEX" preserves the existing data's type.
+    //   2. If no record carries the property, keep the property undeclared and tell the index
+    //      builder to fall back to STRING serialisation for its keys. Writes then preserve the
+    //      original Java type and downstream Cypher comparisons work correctly.
+    final DocumentType type = schema.getType(typeName);
+    final Type[] defaultKeyTypes = new Type[propertyNames.length];
+    boolean anyUndeclared = false;
+    for (int i = 0; i < propertyNames.length; i++) {
+      final String propName = propertyNames[i];
+      if (type.getPolymorphicPropertyIfExists(propName) != null)
+        continue;
+      final Type inferred = inferPropertyTypeFromExistingData(typeName, propName);
+      if (inferred != null) {
+        type.createProperty(propName, inferred);
+      } else {
+        defaultKeyTypes[i] = Type.STRING;
+        anyUndeclared = true;
+      }
     }
 
-    schema.buildTypeIndex(typeName, propertyNames)
-        .withType(Schema.INDEX_TYPE.LSM_TREE)
-        .withUnique(false)
-        .withIgnoreIfExists(ddl.isIfNotExists())
-        .create();
+    final TypeIndexBuilder builder = schema.buildTypeIndex(typeName, propertyNames);
+    builder.withType(Schema.INDEX_TYPE.LSM_TREE);
+    builder.withUnique(false);
+    builder.withIgnoreIfExists(ddl.isIfNotExists());
+    if (anyUndeclared)
+      builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
+    builder.create();
+  }
+
+  /**
+   * Walks the type's records (polymorphic, capped) until it finds a non-null value for
+   * {@code propertyName} and returns the {@link Type} that matches its Java class. Returns
+   * {@code null} if no record sets the property. Used by Cypher DDL to preserve numeric
+   * properties across {@code CREATE INDEX} on an already-populated type (issue #4222).
+   */
+  private Type inferPropertyTypeFromExistingData(final String typeName, final String propertyName) {
+    try {
+      final Iterator<Record> it = database.iterateType(typeName, true);
+      int scanned = 0;
+      // 256 is enough to spot the dominant value type without doing a full table scan; users
+      // hitting heterogeneous-typed properties can declare the property explicitly via SQL.
+      while (it.hasNext() && scanned < 256) {
+        final Record record = it.next();
+        scanned++;
+        if (!(record instanceof Document doc))
+          continue;
+        if (!doc.has(propertyName))
+          continue;
+        final Object value = doc.get(propertyName);
+        if (value == null)
+          continue;
+        try {
+          return Type.getTypeByClass(value.getClass());
+        } catch (final IllegalArgumentException ignored) {
+          // Unknown Java class for the value; leave the property undeclared and let the index
+          // fall back to STRING serialisation.
+          return null;
+        }
+      }
+    } catch (final Exception ignored) {
+      // If iteration fails for any reason (e.g. schema in transient state) just skip inference.
+    }
+    return null;
   }
 
   private void executeDropIndex(final CypherDDLStatement ddl, final Schema schema) {
