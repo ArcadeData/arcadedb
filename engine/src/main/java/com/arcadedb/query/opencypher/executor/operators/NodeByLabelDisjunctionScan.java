@@ -112,7 +112,9 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
 
   /**
    * Builds one iterator per VertexType that is an instance of at least one disjunction label.
-   * Each type is visited at most once, so no deduplication is needed at the record level.
+   * The outer loop already enumerates every subtype in the schema, so {@code iterateType} is
+   * called with {@code polymorphic=false} — using {@code true} would duplicate records of
+   * subtypes that match through both the parent type and their own type entry.
    */
   private List<Iterator<Identifiable>> buildMatchingIterators(final CommandContext context) {
     final List<Iterator<Identifiable>> iterators = new ArrayList<>();
@@ -125,7 +127,7 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
           final Iterator<Identifiable> iter =
               (Iterator<Identifiable>) (Object) context.getDatabase().iterateType(type.getName(), false);
           iterators.add(iter);
-          break; // matched — add this type once and move on
+          break;
         }
       }
     }

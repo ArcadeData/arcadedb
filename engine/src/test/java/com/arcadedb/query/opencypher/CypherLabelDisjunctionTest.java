@@ -126,6 +126,22 @@ class CypherLabelDisjunctionTest {
   }
 
   @Test
+  void labelDisjunctionAnchorWithRelationshipFallsBackToLegacy() {
+    // Anchor-side disjunction with a relationship — planner falls back to MatchNodeStep
+    // (ExpandAll cannot represent OR semantics on the target side). Must still return rows.
+    database.transaction(() -> {
+      database.command("opencypher",
+          "MATCH (a:A {id: 1}), (b:B {id: 2}), (c:C {id: 3}) "
+              + "CREATE (a)-[:REL]->(c), (b)-[:REL]->(c)");
+    });
+
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (n:A|B)-[:REL]->(m) RETURN n.id AS id ORDER BY id");
+    final List<Integer> ids = collectIds(rs);
+    assertThat(ids).containsExactly(1, 2);
+  }
+
+  @Test
   void labelDisjunctionMatchesSubtypeInstances() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (:Animal:Dog {id: 10})");
