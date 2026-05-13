@@ -154,6 +154,24 @@ class CypherLabelDisjunctionTest {
     assertThat(ids).containsExactly(10, 20);
   }
 
+  @Test
+  void labelDisjunctionMatchesSchemaSubtype() {
+    // Real schema inheritance: Dog extends Animal as a parent type, not via multi-label.
+    // The scan must include Dog records when querying MATCH (n:Animal|X) — verifies the
+    // type.instanceOf(label) path that walks the schema parent chain.
+    database.transaction(() -> {
+      database.getSchema().createVertexType("Animal");
+      database.getSchema().getOrCreateVertexType("Dog").addSuperType("Animal");
+      database.command("opencypher", "CREATE (:Dog {id: 100})");
+      database.command("opencypher", "CREATE (:Pet {id: 200})");
+    });
+
+    final ResultSet rs = database.query("opencypher",
+        "MATCH (n:Animal|Pet) RETURN n.id AS id ORDER BY id");
+    final List<Integer> ids = collectIds(rs);
+    assertThat(ids).containsExactly(100, 200);
+  }
+
   private List<Integer> collectIds(final ResultSet rs) {
     final List<Integer> ids = new ArrayList<>();
     while (rs.hasNext()) {

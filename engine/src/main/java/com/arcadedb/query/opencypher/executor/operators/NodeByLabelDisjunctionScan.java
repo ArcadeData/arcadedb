@@ -50,6 +50,11 @@ import java.util.NoSuchElementException;
  *       a read lock — the wrapper is cheap and page reads stay lazy inside the bucket
  *       iterators, so eager construction has negligible cost for the typical small label
  *       sets seen in practice.</li>
+ *   <li>{@code estimatedCardinality} is inherited from the anchor selector and reflects a
+ *       single-label scan (the first label only). The true upper bound for a disjunction
+ *       is the sum across all matching types; under-estimation here may bias join-order
+ *       choices when a disjunction node competes with other anchor candidates. Tracked as
+ *       a follow-up rather than fixed in this PR.</li>
  * </ul>
  */
 public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
@@ -112,6 +117,12 @@ public class NodeByLabelDisjunctionScan extends AbstractPhysicalOperator {
             buffer.add(result);
           }
         }
+
+        // Mark exhausted eagerly when both the current iterator and the type queue are drained,
+        // avoiding one redundant fetchMore round-trip when a query reads to the end (matching
+        // NodeByLabelScan's pattern).
+        if ((currentIterator == null || !currentIterator.hasNext()) && !typeIteratorCursor.hasNext())
+          finished = true;
       }
 
       @Override
