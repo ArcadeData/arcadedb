@@ -291,11 +291,189 @@ public class MergeStep extends AbstractExecutionStep {
    * Traversal starts from any already-bound anchor node and follows edges to
    * discover the remaining pattern; unbound intermediate and endpoint nodes are
    * matched by label/property only after being reached via a qualifying edge.
+   * <p>
+   * If a bound anchor exists at any position other than index 0 (e.g.
+   * {@code MERGE (n)-[:in]->(parent)} where {@code parent} is already bound by
+   * a preceding MATCH), traversal starts at that anchor and walks the path
+   * outward via the anchor's incident edges (O(degree)) instead of doing a
+   * full edge-type scan (O(total edges of type)) - fix for issue #4226.
    */
   private List<Result> findAllMatchingPaths(final PathPattern pathPattern, final ResultInternal baseResult) {
     final List<Result> results = new ArrayList<>();
-    traverseFromNode(pathPattern, 0, null, copyResult(baseResult), results);
+
+    final int anchorIdx = findBoundAnchorIndex(pathPattern, baseResult);
+    if (anchorIdx <= 0) {
+      // No bound anchor, or anchor at index 0: the existing forward walker
+      // already picks up the index-0 binding from currentResult.
+      traverseFromNode(pathPattern, 0, null, copyResult(baseResult), results);
+      return results;
+    }
+
+    final Vertex anchorVertex = (Vertex) baseResult.getProperty(pathPattern.getNode(anchorIdx).getVariable());
+    traverseFromAnchor(pathPattern, anchorIdx, anchorVertex, copyResult(baseResult), results);
     return results;
+  }
+
+  /**
+   * Returns the index of the first node in {@code pathPattern} whose variable
+   * is already bound to a {@link Vertex} in {@code baseResult}, or -1 if none.
+   */
+  private int findBoundAnchorIndex(final PathPattern pathPattern, final ResultInternal baseResult) {
+    for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
+      final NodePattern node = pathPattern.getNode(i);
+      if (node.getVariable() == null)
+        continue;
+      final Object bound = baseResult.getProperty(node.getVariable());
+      if (bound instanceof Vertex)
+        return i;
+    }
+    return -1;
+  }
+
+  /**
+   * Walks the path starting from a known anchor at position {@code anchorIdx}.
+   * The right side ({@code anchorIdx..lastIdx}) is enumerated first by walking
+   * the anchor's outgoing edges (O(degree)); for each right-side completion,
+   * the left side ({@code 0..anchorIdx}) is enumerated by walking the anchor's
+   * incoming edges of the previous relationship in reverse.
+   */
+  private void traverseFromAnchor(final PathPattern pathPattern, final int anchorIdx, final Vertex anchorVertex,
+      final ResultInternal baseResult, final List<Result> results) {
+    final NodePattern anchorPattern = pathPattern.getNode(anchorIdx);
+    if (!matchesNodePattern(anchorVertex, anchorPattern, baseResult))
+      return;
+
+    final ResultInternal anchored = copyResult(baseResult);
+    if (anchorPattern.getVariable() != null)
+      anchored.setProperty(anchorPattern.getVariable(), anchorVertex);
+
+    final int lastIdx = pathPattern.getRelationshipCount();
+
+    if (anchorIdx == lastIdx) {
+      walkLeft(pathPattern, anchorIdx, anchorVertex, anchored, results);
+      return;
+    }
+
+    final List<Result> rightResults = new ArrayList<>();
+    walkRight(pathPattern, anchorIdx, anchorVertex, anchored, rightResults);
+    for (final Result rr : rightResults)
+      walkLeft(pathPattern, anchorIdx, anchorVertex, (ResultInternal) rr, results);
+  }
+
+  /**
+   * Recursively extends the path forward from {@code nodeIdx} (which is bound
+   * to {@code currentVertex}) toward the terminal node, accumulating bindings
+   * in {@code rightResults} when {@code nodeIdx} reaches the last node.
+   */
+  private void walkRight(final PathPattern pathPattern, final int nodeIdx, final Vertex currentVertex,
+      final ResultInternal current, final List<Result> rightResults) {
+    if (nodeIdx == pathPattern.getRelationshipCount()) {
+      rightResults.add(current);
+      return;
+    }
+
+    final RelationshipPattern relPattern = pathPattern.getRelationship(nodeIdx);
+    if (!relPattern.hasTypes())
+      return;
+
+    final String relType = relPattern.getFirstType();
+    final Map<String, Object> relProps = relPattern.hasProperties()
+        ? evaluateProperties(relPattern.getProperties(), current) : null;
+    final NodePattern nextPattern = pathPattern.getNode(nodeIdx + 1);
+    final Direction dir = relPattern.getDirection();
+
+    if (dir == Direction.OUT || dir == Direction.BOTH)
+      walkRightDir(pathPattern, nodeIdx, currentVertex, relPattern, relType, relProps, nextPattern,
+          Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN, current, rightResults);
+    if (dir == Direction.IN || dir == Direction.BOTH)
+      walkRightDir(pathPattern, nodeIdx, currentVertex, relPattern, relType, relProps, nextPattern,
+          Vertex.DIRECTION.IN, Vertex.DIRECTION.OUT, current, rightResults);
+  }
+
+  private void walkRightDir(final PathPattern pathPattern, final int nodeIdx, final Vertex currentVertex,
+      final RelationshipPattern relPattern, final String relType, final Map<String, Object> relProps,
+      final NodePattern nextPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
+      final ResultInternal current, final List<Result> rightResults) {
+    for (final Edge edge : currentVertex.getEdges(edgeDir, relType)) {
+      if (relProps != null && !matchesProperties(edge, relProps))
+        continue;
+      final Vertex nextV = edge.getVertex(otherEnd);
+      if (!matchesNodePattern(nextV, nextPattern, current))
+        continue;
+      if (nextPattern.getVariable() != null) {
+        final Object preBound = current.getProperty(nextPattern.getVariable());
+        if (preBound instanceof Vertex pb && !pb.equals(nextV))
+          continue;
+      }
+      final ResultInternal next = copyResult(current);
+      if (nextPattern.getVariable() != null)
+        next.setProperty(nextPattern.getVariable(), nextV);
+      if (relPattern.getVariable() != null)
+        next.setProperty(relPattern.getVariable(), edge);
+      walkRight(pathPattern, nodeIdx + 1, nextV, next, rightResults);
+    }
+  }
+
+  /**
+   * Recursively extends the path backward from {@code nodeIdx} (which is
+   * bound to {@code currentVertex}) toward index 0, emitting a final result
+   * into {@code results} when index 0 is reached.
+   */
+  private void walkLeft(final PathPattern pathPattern, final int nodeIdx, final Vertex currentVertex,
+      final ResultInternal current, final List<Result> results) {
+    if (nodeIdx == 0) {
+      final ResultInternal r = copyResult(current);
+      r.setProperty("  wasCreated", false);
+      addPathBinding(r, pathPattern);
+      results.add(r);
+      return;
+    }
+
+    final RelationshipPattern relPattern = pathPattern.getRelationship(nodeIdx - 1);
+    if (!relPattern.hasTypes())
+      return;
+
+    final String relType = relPattern.getFirstType();
+    final Map<String, Object> relProps = relPattern.hasProperties()
+        ? evaluateProperties(relPattern.getProperties(), current) : null;
+    final NodePattern prevPattern = pathPattern.getNode(nodeIdx - 1);
+    final Direction dir = relPattern.getDirection();
+
+    // The edge at index (nodeIdx-1) goes prev -[dir]-> current.  Walking
+    // backward means following current's edges in the opposite direction:
+    // dir == OUT  → current.IN edges,  prev = edge.OUT
+    // dir == IN   → current.OUT edges, prev = edge.IN
+    // dir == BOTH → walk both
+    if (dir == Direction.OUT || dir == Direction.BOTH)
+      walkLeftDir(pathPattern, nodeIdx, currentVertex, relPattern, relType, relProps, prevPattern,
+          Vertex.DIRECTION.IN, Vertex.DIRECTION.OUT, current, results);
+    if (dir == Direction.IN || dir == Direction.BOTH)
+      walkLeftDir(pathPattern, nodeIdx, currentVertex, relPattern, relType, relProps, prevPattern,
+          Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN, current, results);
+  }
+
+  private void walkLeftDir(final PathPattern pathPattern, final int nodeIdx, final Vertex currentVertex,
+      final RelationshipPattern relPattern, final String relType, final Map<String, Object> relProps,
+      final NodePattern prevPattern, final Vertex.DIRECTION edgeDir, final Vertex.DIRECTION otherEnd,
+      final ResultInternal current, final List<Result> results) {
+    for (final Edge edge : currentVertex.getEdges(edgeDir, relType)) {
+      if (relProps != null && !matchesProperties(edge, relProps))
+        continue;
+      final Vertex prevV = edge.getVertex(otherEnd);
+      if (!matchesNodePattern(prevV, prevPattern, current))
+        continue;
+      if (prevPattern.getVariable() != null) {
+        final Object preBound = current.getProperty(prevPattern.getVariable());
+        if (preBound instanceof Vertex pb && !pb.equals(prevV))
+          continue;
+      }
+      final ResultInternal next = copyResult(current);
+      if (prevPattern.getVariable() != null)
+        next.setProperty(prevPattern.getVariable(), prevV);
+      if (relPattern.getVariable() != null)
+        next.setProperty(relPattern.getVariable(), edge);
+      walkLeft(pathPattern, nodeIdx - 1, prevV, next, results);
+    }
   }
 
   /**
