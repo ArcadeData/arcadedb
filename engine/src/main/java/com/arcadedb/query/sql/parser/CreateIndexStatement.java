@@ -63,6 +63,9 @@ public class CreateIndexStatement extends DDLStatement {
 
   @Override
   public void validate() throws CommandSQLParsingException {
+    if (type == null)
+      throw new CommandSQLParsingException(
+          "Index type is required (UNIQUE | NOTUNIQUE | FULL_TEXT | LSM_VECTOR | LSM_SPARSE_VECTOR | GEOSPATIAL | UNIQUE_HASH | NOTUNIQUE_HASH)");
     final String typeAsString = type.getStringValue().toUpperCase();
     switch (typeAsString) {
     case "FULL_TEXT" -> {
@@ -111,6 +114,10 @@ public class CreateIndexStatement extends DDLStatement {
 
     final Schema.INDEX_TYPE indexType;
     boolean unique = false;
+
+    if (type == null)
+      throw new CommandSQLParsingException(
+          "Index type is required (UNIQUE | NOTUNIQUE | FULL_TEXT | LSM_VECTOR | LSM_SPARSE_VECTOR | GEOSPATIAL | UNIQUE_HASH | NOTUNIQUE_HASH)");
 
     final String typeAsString = type.getStringValue();
     if (typeAsString.equalsIgnoreCase("FULL_TEXT"))
