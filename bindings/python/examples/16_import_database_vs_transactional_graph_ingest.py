@@ -56,6 +56,7 @@ server-side gRPC GraphBatchLoad transport.
 """
 
 import argparse
+import re
 import shutil
 import time
 from pathlib import Path
@@ -66,6 +67,17 @@ import arcadedb_embedded as arcadedb
 ColumnDef = Tuple[str, str]
 
 NUMERIC_COLUMN_TYPES = {"INTEGER", "LONG"}
+SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validated_identifier(identifier: str) -> str:
+    if not SAFE_IDENTIFIER_RE.fullmatch(identifier):
+        raise ValueError(f"Unsafe SQL identifier: {identifier!r}")
+    return identifier
+
+
+def _quote_identifier(identifier: str) -> str:
+    return f"`{_validated_identifier(identifier)}`"
 
 
 def result_int(row, *keys: str) -> int:
@@ -131,9 +143,10 @@ def edge_endpoints(edge_id: int, vertex_count: int) -> Tuple[int, int]:
 
 
 def build_rid_lookup_for_vertex_type(db, vertex_type: str) -> Dict[int, str]:
+    safe_vertex_type = _quote_identifier(vertex_type)
     rows = db.query(
         "sql",
-        f"SELECT Id, @rid as rid FROM {vertex_type}",  # nosec B608 - vertex_type is a script constant
+        f"SELECT Id, @rid as rid FROM {safe_vertex_type}",  # nosec B608 - validated identifier
     ).to_list()
     rid_lookup: Dict[int, str] = {}
     for row in rows:
@@ -167,11 +180,11 @@ def query_one_or_none(result_set):
 def collect_vertex_sample(
     db, vertex_type: str, vertex_id: int, props: List[ColumnDef]
 ) -> dict:
+    safe_vertex_type = _quote_identifier(vertex_type)
     row = query_one_or_none(
         db.query(
             "sql",
-            # vertex_type is a constant from this script; vertex_id is bound as parameter.
-            f"SELECT FROM {vertex_type} WHERE Id = ?",  # nosec B608
+            f"SELECT FROM {safe_vertex_type} WHERE Id = ?",  # nosec B608 - validated identifier
             vertex_id,
         )
     )
@@ -230,6 +243,7 @@ def collect_graph_signature(
         str(db_path),
         jvm_kwargs={"heap_size": heap_size} if heap_size else None,
     ) as db:
+        safe_vertex_type = _quote_identifier(vertex_type)
         vertex_int_props = [
             name for name, kind in vertex_props if kind in NUMERIC_COLUMN_TYPES
         ]
@@ -242,7 +256,10 @@ def collect_graph_signature(
             "sum(Id) AS sum_id",
             "min(Id) AS min_id",
             "max(Id) AS max_id",
-        ] + [f"sum({name}) AS sum_{name}" for name in vertex_int_props]
+        ] + [
+            f"sum({_quote_identifier(name)}) AS sum_{_validated_identifier(name)}"
+            for name in vertex_int_props
+        ]
 
         edge_match_aggregate_fields = [
             "count(r) AS count",
@@ -254,8 +271,7 @@ def collect_graph_signature(
         vertex_aggregate = query_one_or_none(
             db.query(
                 "sql",
-                # vertex_aggregate_fields and vertex_type are script-local constants.
-                f"SELECT {', '.join(vertex_aggregate_fields)} FROM {vertex_type}",  # nosec B608
+                f"SELECT {', '.join(vertex_aggregate_fields)} FROM {safe_vertex_type}",  # nosec B608 - validated identifier
             )
         )
         edge_aggregate = query_one_or_none(

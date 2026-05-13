@@ -36,6 +36,7 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 import time
 from pathlib import Path
@@ -51,6 +52,20 @@ LANE_CLASSES = {
     "hub": "regional",
     "bridge": "interchange",
 }
+SAFE_GRAPH_LITERAL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _sql_string_literal(value: str) -> str:
+    if not SAFE_GRAPH_LITERAL_RE.fullmatch(value):
+        raise ValueError(f"Unsafe SQL literal: {value!r}")
+    return f"'{value}'"
+
+
+def _validated_limit(value: int) -> int:
+    limit = int(value)
+    if limit <= 0:
+        raise ValueError(f"SQL limit must be positive: {value!r}")
+    return limit
 
 
 def parse_args() -> argparse.Namespace:
@@ -539,19 +554,19 @@ def query_direct_neighbor_sample(
 
 
 def query_two_hop_summary(db, origin_code: str) -> dict:
-    # origin_code is a script-local constant from the demo dataset.
+    safe_origin_code = _sql_string_literal(origin_code)
     result = db.query(
         "sql",
         f"""
         SELECT count(*) AS destination_count FROM (
-            MATCH {{type: City, as: src, where: (code = '{origin_code}')}}
+            MATCH {{type: City, as: src, where: (code = {safe_origin_code})}}
                   -ROAD->
                   {{type: City, as: mid}}
                   -ROAD->
                   {{type: City, as: dst}}
             RETURN DISTINCT dst.code AS code
         )
-        """,  # nosec B608 - demo-data constants only
+        """,  # nosec B608 - value validated via _sql_string_literal
     )
     row = result.first()
     require(row is not None, "Expected a two-hop summary row")
@@ -559,16 +574,17 @@ def query_two_hop_summary(db, origin_code: str) -> dict:
 
 
 def query_hub_inbound_count(db, hub_code: str) -> int:
+    safe_hub_code = _sql_string_literal(hub_code)
     result = db.query(
         "sql",
         f"""
         SELECT count(*) AS inbound_count FROM (
             MATCH {{type: City, as: src}}
                   -ROAD->
-                  {{type: City, as: hub, where: (code = '{hub_code}')}}
+                  {{type: City, as: hub, where: (code = {safe_hub_code})}}
             RETURN src.code AS code
         )
-        """,  # nosec B608 - demo-data constants only
+        """,  # nosec B608 - value validated via _sql_string_literal
     )
     row = result.first()
     require(row is not None, "Expected an inbound count row")
@@ -576,6 +592,7 @@ def query_hub_inbound_count(db, hub_code: str) -> int:
 
 
 def query_region_sample(db, sample_limit: int) -> list[dict]:
+    safe_sample_limit = _validated_limit(sample_limit)
     result = db.query(
         "sql",
         f"""
@@ -583,8 +600,8 @@ def query_region_sample(db, sample_limit: int) -> list[dict]:
         FROM City
         GROUP BY region
         ORDER BY region
-        LIMIT {sample_limit}
-        """,  # nosec B608 - sample_limit is a script integer constant
+        LIMIT {safe_sample_limit}
+        """,  # nosec B608 - value validated via _validated_limit
     )
     return rows_to_dicts(result, ["region", "city_count", "avg_demand"])
 

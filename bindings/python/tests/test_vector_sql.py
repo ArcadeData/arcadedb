@@ -6,6 +6,7 @@ Tests cover:
 """
 
 import arcadedb_embedded as arcadedb
+import jpype.types as jtypes
 import pytest
 from arcadedb_embedded import create_database
 
@@ -338,6 +339,145 @@ class TestVectorSQL:
         # Just ensure we found something
         assert vertex is not None
 
+    def test_create_index_with_native_int8_encoding_sql(self, test_db):
+        """SQL should support native INT8-encoded dense vectors on BINARY properties."""
+        test_db.command("sql", "CREATE VERTEX TYPE SqlNativeInt8Doc")
+        test_db.command("sql", "CREATE PROPERTY SqlNativeInt8Doc.id STRING")
+        test_db.command("sql", "CREATE PROPERTY SqlNativeInt8Doc.vec BINARY")
+
+        test_db.command(
+            "sql",
+            """
+            CREATE INDEX ON SqlNativeInt8Doc (vec)
+            LSM_VECTOR
+            METADATA {
+                "dimensions": 4,
+                "similarity": "COSINE",
+                "quantization": "NONE",
+                "encoding": "INT8"
+            }
+            """,
+        )
+
+        metadata = self._get_primary_sql_vector_index(
+            test_db, "SqlNativeInt8Doc[vec]"
+        ).getMetadata()
+        if not hasattr(metadata, "encoding"):
+            pytest.skip(
+                "Current embedded engine build does not expose encoding metadata"
+            )
+        assert str(metadata.encoding) == "INT8"
+        assert str(metadata.quantizationType) == "NONE"
+
+    def test_vector_neighbors_on_native_int8_storage_sql(self, test_db):
+        """Verify that vectorNeighbors works against native INT8-encoded storage."""
+        test_db.command("sql", "CREATE VERTEX TYPE SqlNativeInt8SearchDoc")
+        test_db.command("sql", "CREATE PROPERTY SqlNativeInt8SearchDoc.id STRING")
+        test_db.command("sql", "CREATE PROPERTY SqlNativeInt8SearchDoc.vec BINARY")
+        test_db.command(
+            "sql",
+            """
+            CREATE INDEX ON SqlNativeInt8SearchDoc (vec)
+            LSM_VECTOR
+            METADATA {
+                "dimensions": 4,
+                "similarity": "COSINE",
+                "quantization": "NONE",
+                "encoding": "INT8"
+            }
+            """,
+        )
+
+        try:
+            with test_db.transaction():
+                test_db.command(
+                    "sql",
+                    "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
+                    "doc_a",
+                    arcadedb.to_java_byte_array([127, 0, 0, 0]),
+                )
+                test_db.command(
+                    "sql",
+                    "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
+                    "doc_b",
+                    arcadedb.to_java_byte_array([120, 10, 0, 0]),
+                )
+                test_db.command(
+                    "sql",
+                    "INSERT INTO SqlNativeInt8SearchDoc SET id = ?, vec = ?",
+                    "doc_c",
+                    arcadedb.to_java_byte_array([0, 127, 0, 0]),
+                )
+        except arcadedb.ArcadeDBError as exc:
+            if "Expected float array or ComparableVector as key" in str(exc):
+                pytest.skip(
+                    "Current embedded engine build does not support byte[] ingest "
+                    "for INT8-encoded vectors"
+                )
+            raise
+
+        rows = test_db.query(
+            "sql",
+            (
+                "SELECT id, distance FROM "
+                "(SELECT expand(vectorNeighbors('SqlNativeInt8SearchDoc[vec]', ?, 2))) "
+                "ORDER BY distance"
+            ),
+            arcadedb.to_java_float_array([1.0, 0.0, 0.0, 0.0]),
+        ).to_list()
+
+        assert [row.get("id") for row in rows] == ["doc_a", "doc_b"]
+        assert rows[0].get("distance") <= rows[1].get("distance")
+
+    def test_sparse_vector_neighbors_sql(self, test_db):
+        """SQL should support sparse-vector top-K retrieval."""
+        test_db.command("sql", "CREATE DOCUMENT TYPE SparseDoc")
+        test_db.command("sql", "CREATE PROPERTY SparseDoc.id STRING")
+        test_db.command("sql", "CREATE PROPERTY SparseDoc.tokens ARRAY_OF_INTEGERS")
+        test_db.command("sql", "CREATE PROPERTY SparseDoc.weights ARRAY_OF_FLOATS")
+        try:
+            test_db.command(
+                "sql",
+                """
+                CREATE INDEX ON SparseDoc (tokens, weights)
+                LSM_SPARSE_VECTOR
+                METADATA {
+                    "dimensions": 128
+                }
+                """,
+            )
+        except arcadedb.ArcadeDBError as exc:
+            if "LSM_SPARSE_VECTOR' is not supported" in str(exc):
+                pytest.skip(
+                    "Current embedded engine build does not support LSM_SPARSE_VECTOR"
+                )
+            raise
+
+        with test_db.transaction():
+            test_db.command(
+                "sql",
+                "INSERT INTO SparseDoc SET id = 'sparse_doc_1', tokens = [1, 5, 10], weights = [0.5, 0.3, 0.2]",
+            )
+            test_db.command(
+                "sql",
+                "INSERT INTO SparseDoc SET id = 'sparse_doc_2', tokens = [2, 5, 11], weights = [0.4, 0.6, 0.1]",
+            )
+
+        rows = test_db.query(
+            "sql",
+            (
+                "SELECT id, score FROM "
+                "(SELECT expand(`vector.sparseNeighbors`('SparseDoc[tokens,weights]', ?, ?, ?))) "
+                "ORDER BY score DESC"
+            ),
+            jtypes.JArray(jtypes.JInt)([5]),
+            arcadedb.to_java_float_array([1.0]),
+            5,
+        ).to_list()
+
+        assert [row.get("id") for row in rows] == ["sparse_doc_2", "sparse_doc_1"]
+        assert rows[0].get("score") > rows[1].get("score")
+
     def test_create_index_with_rich_metadata_sql(self, test_db):
         """SQL vector index creation should support high-value build metadata."""
 
@@ -477,6 +617,60 @@ class TestVectorSQL:
         assert rows[0].get("name") == "docA"
         assert rows[0].get("score") > 0.9
 
+    def test_vector_neighbors_group_by_sql(self, test_db):
+        """SQL vector.neighbors should support groupBy/groupSize options."""
+        test_db.command("sql", "CREATE DOCUMENT TYPE GroupedDoc")
+        test_db.command("sql", "CREATE PROPERTY GroupedDoc.source_file STRING")
+        test_db.command("sql", "CREATE PROPERTY GroupedDoc.embedding ARRAY_OF_FLOATS")
+        test_db.command(
+            "sql",
+            """
+            CREATE INDEX ON GroupedDoc (embedding)
+            LSM_VECTOR
+            METADATA {
+                "dimensions": 4,
+                "similarity": "COSINE"
+            }
+            """,
+        )
+
+        rows_to_insert = [
+            ("file_a", [1.00, 0.00, 0.00, 0.00]),
+            ("file_a", [0.99, 0.01, 0.00, 0.00]),
+            ("file_b", [0.98, 0.02, 0.00, 0.00]),
+            ("file_b", [0.97, 0.03, 0.00, 0.00]),
+            ("file_c", [0.96, 0.04, 0.00, 0.00]),
+            ("file_c", [0.95, 0.05, 0.00, 0.00]),
+        ]
+
+        with test_db.transaction():
+            for source_file, embedding in rows_to_insert:
+                test_db.command(
+                    "sql",
+                    "INSERT INTO GroupedDoc SET source_file = ?, embedding = ?",
+                    source_file,
+                    arcadedb.to_java_float_array(embedding),
+                )
+
+        rows = test_db.query(
+            "sql",
+            (
+                "SELECT source_file, distance FROM "
+                "(SELECT expand(`vector.neighbors`(?, ?, ?, { groupBy: 'source_file', groupSize: 1 }))) "
+                "ORDER BY distance"
+            ),
+            "GroupedDoc[embedding]",
+            arcadedb.to_java_float_array([1.0, 0.0, 0.0, 0.0]),
+            3,
+        ).to_list()
+
+        assert len(rows) == 3
+        assert {row.get("source_file") for row in rows} == {
+            "file_a",
+            "file_b",
+            "file_c",
+        }
+
     def test_vector_neighbors(self, test_db):
         """Test vectorNeighbors function."""
         # Create schema and index
@@ -517,7 +711,7 @@ class TestVectorSQL:
             # Should return list of RIDs or similar
             assert len(res) > 0
         except Exception:
-            pass  # nosec B110 - best-effort probe; index API may expect type name instead
+            pass  # nosec B110
 
     def test_vector_neighbors_accepts_parameterized_index_and_vector(self, test_db):
         """SQL vectorNeighbors should accept bound index and vector parameters."""
@@ -547,7 +741,7 @@ class TestVectorSQL:
 
     def test_vector_delete_and_search_others_sql(self, test_db):
         """Test deleting vertices in a larger dataset using SQL."""
-        import random  # nosec B311 - synthetic vector data
+        import random  # nosec B311
 
         # Create schema
         test_db.command("sql", "CREATE VERTEX TYPE DocSql")
@@ -587,7 +781,7 @@ class TestVectorSQL:
                 # command(str, str, int, list) which has no Java overload.
                 test_db.command(
                     "sql",
-                    f"INSERT INTO DocSql SET id = {i}, embedding = {vec}",  # nosec B608
+                    f"INSERT INTO DocSql SET id = {i}, embedding = {vec}",
                 )
 
         # Delete every 10th vector

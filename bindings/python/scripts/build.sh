@@ -33,7 +33,7 @@ JAR_LIB_DIR="${3:-}"
 
 print_header() {
     echo -e "${BLUE}╔════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${BLUE}║  🎮 ArcadeDB Python Package - Docker Build Script          ║${NC}"
+    echo -e "${BLUE}║  🎮 ArcadeDB Python Package - Build Script                 ║${NC}"
     echo -e "${BLUE}╚════════════════════════════════════════════════════════════╝${NC}"
     echo ""
 }
@@ -60,7 +60,7 @@ print_usage() {
     echo "  If omitted, JARs are pulled from arcadedata/arcadedb:<version>"
     echo ""
     echo "Build Methods:"
-    echo "  Native: macOS builds natively on its platform"
+    echo "  Native: macOS/Windows build on matching native host architecture"
     echo "  Docker: Linux uses Docker for manylinux compliance"
     echo ""
     echo "Examples:"
@@ -74,8 +74,22 @@ print_usage() {
     echo "  ✅ Bundled platform-specific JRE (no Java required)"
     echo "  ✅ Optimized JAR selection (see scripts/jar_exclusions.txt)"
     echo "  ✅ Multi-platform support (4 platforms)"
-    echo "  📦 Size: ~215MB (compressed), ~289MB (installed)"
+    echo "  📦 Size varies by platform/version; see CI summaries for current numbers"
     echo ""
+}
+
+normalize_arch() {
+    case "$1" in
+        x86_64 | amd64)
+            echo "amd64"
+            ;;
+        aarch64 | arm64)
+            echo "arm64"
+            ;;
+        *)
+            echo "$1"
+            ;;
+    esac
 }
 
 # Check for help flag
@@ -176,15 +190,35 @@ fi
 # Use native build if we're already on the target platform
 CURRENT_OS="$(uname -s)"
 CURRENT_ARCH="$(uname -m)"
+CURRENT_ARCH_NORMALIZED="$(normalize_arch "$CURRENT_ARCH")"
+TARGET_OS="${PLATFORM%%/*}"
+TARGET_ARCH="${PLATFORM##*/}"
 
 USE_NATIVE=false
-if [[ "$PLATFORM" == "darwin/"* ]] && [[ "$CURRENT_OS" == "Darwin" ]]; then
+if [[ "$TARGET_OS" == "darwin" ]]; then
+    if [[ "$CURRENT_OS" != "Darwin" ]]; then
+        echo -e "${RED}❌ ${PLATFORM} builds require a native macOS host${NC}"
+        echo -e "${YELLOW}💡 jlink can only create a macOS JRE when run on macOS${NC}"
+        exit 1
+    fi
+    if [[ "$CURRENT_ARCH_NORMALIZED" != "$TARGET_ARCH" ]]; then
+        echo -e "${RED}❌ ${PLATFORM} builds require a matching native macOS architecture${NC}"
+        echo -e "${YELLOW}💡 Host architecture: ${CURRENT_ARCH_NORMALIZED}; target architecture: ${TARGET_ARCH}${NC}"
+        exit 1
+    fi
     USE_NATIVE=true
-elif [[ "$PLATFORM" == "windows/"* ]] && [[ "$CURRENT_OS" == MINGW* || "$CURRENT_OS" == MSYS* || "$CURRENT_OS" == CYGWIN* ]]; then
+elif [[ "$TARGET_OS" == "windows" ]]; then
+    if [[ "$CURRENT_OS" != MINGW* && "$CURRENT_OS" != MSYS* && "$CURRENT_OS" != CYGWIN* ]]; then
+        echo -e "${RED}❌ ${PLATFORM} builds require a native Windows host${NC}"
+        echo -e "${YELLOW}💡 jlink can only create a Windows JRE when run on Windows${NC}"
+        exit 1
+    fi
+    if [[ "$CURRENT_ARCH_NORMALIZED" != "$TARGET_ARCH" ]]; then
+        echo -e "${RED}❌ ${PLATFORM} builds require a matching native Windows architecture${NC}"
+        echo -e "${YELLOW}💡 Host architecture: ${CURRENT_ARCH_NORMALIZED}; target architecture: ${TARGET_ARCH}${NC}"
+        exit 1
+    fi
     USE_NATIVE=true
-elif [[ "$PLATFORM" == "linux/amd64" ]] && [[ "$CURRENT_OS" == "Linux" ]] && [[ "$CURRENT_ARCH" == "x86_64" ]]; then
-    # For Linux, still use Docker for reproducibility (manylinux compliance)
-    USE_NATIVE=false
 fi
 
 BUILD_METHOD="Docker"
@@ -258,11 +292,11 @@ else
     # Determine Docker build platform (always Linux for cross-compilation)
     # We build ON linux/amd64 or linux/arm64, but FOR any target platform
     DOCKER_PLATFORM="${PLATFORM}"
-    if [[ "$PLATFORM" == darwin/* ]] || [[ "$PLATFORM" == windows/* ]]; then
-        # Cross-compiling for macOS/Windows - build on Linux
-        DOCKER_PLATFORM="linux/amd64"
-        echo -e "${CYAN}🔧 Cross-compiling: Building on linux/amd64 for ${YELLOW}${PLATFORM}${NC}"
-        echo ""
+
+    if [[ -z "$DOCKER_TAG" ]]; then
+        echo -e "${RED}❌ Missing ArcadeDB Docker tag${NC}"
+        echo -e "${YELLOW}💡 Pass a version so Docker builds remain reproducible${NC}"
+        exit 1
     fi
 
     # Build Docker image

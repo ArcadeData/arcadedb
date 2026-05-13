@@ -19,6 +19,35 @@ def test_db(tmp_path):
     db.drop()
 
 
+def test_to_java_byte_array_accepts_bytes_like_fast_paths():
+    """to_java_byte_array should preserve signed byte semantics for bytes-like
+    inputs."""
+    np = pytest.importorskip("numpy")
+
+    assert list(arcadedb.to_java_byte_array(bytes([0, 127, 255]))) == [0, 127, -1]
+    assert list(arcadedb.to_java_byte_array(bytearray([1, 2, 255]))) == [1, 2, -1]
+    assert list(arcadedb.to_java_byte_array(np.array([0, 127, -1], dtype=np.int8))) == [
+        0,
+        127,
+        -1,
+    ]
+    assert list(
+        arcadedb.to_java_byte_array(np.array([0, 127, 255], dtype=np.uint8))
+    ) == [0, 127, -1]
+
+
+def test_to_java_float_array_accepts_numpy_directly():
+    """to_java_float_array should accept NumPy arrays without Python-list copies."""
+    np = pytest.importorskip("numpy")
+
+    assert list(
+        arcadedb.to_java_float_array(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+    ) == pytest.approx([1.0, 2.0, 3.0])
+    assert list(
+        arcadedb.to_java_float_array(np.array([1.0, 2.0, 3.0], dtype=np.float64))
+    ) == pytest.approx([1.0, 2.0, 3.0])
+
+
 class TestLSMVectorIndex:
     """Test LSM Vector Index functionality."""
 
@@ -685,7 +714,7 @@ class TestLSMVectorIndex:
     )
     def test_lsm_vector_delete_and_search_others(self, test_db):
         """Test deleting vertices in a larger dataset and ensuring others are still found."""
-        import random  # nosec B311 - synthetic vector data, not security
+        import random  # nosec B311
 
         # Create schema
         test_db.command("sql", "CREATE VERTEX TYPE Doc")

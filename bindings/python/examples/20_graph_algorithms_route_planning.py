@@ -29,10 +29,20 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import re
 import shutil
 from pathlib import Path
 
 import arcadedb_embedded as arcadedb
+
+SAFE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _quote_identifier(identifier: str) -> str:
+    if not SAFE_IDENTIFIER_RE.fullmatch(identifier):
+        raise ValueError(f"Unsafe SQL identifier: {identifier!r}")
+    return f"`{identifier}`"
+
 
 CITIES = [
     {"code": "ALPHA", "name": "Alpha Hub", "lat": 0.0, "lon": 0.0},
@@ -284,8 +294,7 @@ def insert_seed_data(db) -> None:
         for route in ROUTES:
             db.command(
                 "sql",
-                # route['edge_type'] is a constant from the demo schema.
-                f"CREATE EDGE {route['edge_type']} "  # nosec B608
+                f"CREATE EDGE {_quote_identifier(route['edge_type'])} "  # nosec B608 - validated identifier
                 "FROM (SELECT FROM City WHERE code = ? LIMIT 1) "
                 "TO (SELECT FROM City WHERE code = ? LIMIT 1) "
                 "SET distance = ?, duration = ?, risk = ?, lane = ?",
@@ -758,7 +767,7 @@ def run_reopen_phase(db_path: Path) -> None:
         route_count = sum(
             reopened_db.query(
                 "sql",
-                f"SELECT count(*) AS count FROM {edge_type}",  # nosec B608 - edge_type is a script constant
+                f"SELECT count(*) AS count FROM {_quote_identifier(edge_type)}",  # nosec B608 - validated identifier
             )
             .first()
             .get("count")

@@ -6,12 +6,13 @@
 #   PYTHON_VERSION - Python version for wheel (e.g., 3.11, 3.12, 3.13, 3.14)
 #   PACKAGE_NAME - always: arcadedb-embedded
 #   PACKAGE_DESCRIPTION - package description
-#   TARGET_PLATFORM - target platform for JRE (e.g., linux-x64, linux-arm64, darwin-x64)
+#   TARGET_PLATFORM - Linux target platform for bundled JRE (linux-x64, linux-arm64)
 
 ARG PYTHON_VERSION=3.12
 ARG PACKAGE_NAME=arcadedb-embedded
 ARG PACKAGE_DESCRIPTION="ArcadeDB embedded multi-model database with bundled JRE - no Java installation required"
-ARG ARCADEDB_TAG
+# Deterministic placeholder. The wrapper build script must pass the real ArcadeDB tag.
+ARG ARCADEDB_TAG=build-arg-required
 ARG TARGET_PLATFORM=linux-x64
 # When set to 1, prefer jars provided in bindings/python/local-jars/lib from the build context.
 # If no local jars are present, the build fails fast to avoid silently falling back.
@@ -25,6 +26,7 @@ FROM arcadedata/arcadedb:${ARCADEDB_TAG} AS java-builder
 # nothing to do here; jars will be copied from /home/arcadedb/lib in the python-builder stage
 
 # Stage 2: Build minimal JRE with jlink
+# Docker builds are Linux-only. macOS/Windows JREs must be created on matching native hosts.
 FROM amazoncorretto:25 AS jre-builder
 
 # Install required tooling (findutils for jar exclusion, binutils for jlink)
@@ -33,6 +35,11 @@ RUN yum -y install findutils binutils && yum clean all
 ARG TARGET_PLATFORM
 ARG USE_LOCAL_JARS
 ARG LOCAL_JARS_HASH
+
+RUN case "$TARGET_PLATFORM" in \
+        linux-x64|linux-arm64) ;; \
+        *) echo "❌ Dockerfile.build only supports Linux TARGET_PLATFORM values (got: $TARGET_PLATFORM)" && exit 1 ;; \
+    esac
 
 WORKDIR /build
 
@@ -145,8 +152,6 @@ FROM python:${PYTHON_VERSION}-slim AS python-builder
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
-    file \
-    patchelf \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv for faster, deterministic installs
@@ -156,7 +161,6 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | sh && uv --version
 WORKDIR /build
 
 # Copy filtered JARs from jre-builder (already has exclusions applied)
-RUN mkdir -p /build/jars
 COPY --from=jre-builder /build/jars /build/jars/
 
 # Copy JRE from jre-builder stage
@@ -170,7 +174,6 @@ COPY bindings/python/scripts/setup_jars.py ./scripts/
 COPY bindings/python/scripts/extract_version.py ./scripts/
 COPY bindings/python/scripts/write_version.py ./scripts/
 COPY bindings/python/scripts/verify_wheel_platform_tag.py ./scripts/
-COPY bindings/python/scripts/jar_exclusions.txt .
 COPY bindings/python/pyproject.toml ./
 COPY bindings/python/README.md ./
 
@@ -178,7 +181,7 @@ COPY bindings/python/README.md ./
 COPY ../../pom.xml /arcadedb/pom.xml
 
 # Install Python build dependencies
-RUN uv pip install --system build wheel setuptools jpype1 auditwheel
+RUN uv pip install --system build wheel setuptools jpype1
 
 # Re-declare build args for this stage (required after FROM)
 ARG PACKAGE_NAME

@@ -223,7 +223,7 @@ def test_opencypher_id_filter(temp_db_path):
 
         result = db.query(
             "opencypher",
-            f"MATCH (n) WHERE ID(n) = '{alice_id}' RETURN n.name as name",
+            f"MATCH (n) WHERE ID(n) = {alice_id} RETURN n.name as name",
         )
         names = [record.get("name") for record in result]
 
@@ -536,6 +536,107 @@ def test_opencypher_edge_typed_constraint_command(temp_db_path):
         row = db.query("sql", "SELECT since FROM KNOWS").one()
 
         assert row.get("since") is not None
+
+
+def test_opencypher_is_typed_value_predicate(temp_db_path):
+    """Verify that OpenCypher exposes the GQL IS TYPED value predicate."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+
+        row = db.query(
+            "opencypher",
+            "RETURN 42 IS TYPED INTEGER AS int_ok, "
+            "'hello' IS TYPED STRING AS str_ok, "
+            "'hello' IS TYPED INTEGER AS bad_int",
+        ).one()
+
+        assert row.get("int_ok") is True
+        assert row.get("str_ok") is True
+        assert row.get("bad_int") is False
+
+
+def test_opencypher_temporal_component_access_on_date_and_datetime(temp_db_path):
+    """Date and datetime component access should return concrete values."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+
+        with db.transaction():
+            db.command(
+                "opencypher",
+                "CREATE (:Event {"
+                "startsAt: datetime('2026-04-07T10:15:30Z'), "
+                "dueOn: date('2026-04-07')"
+                "})",
+            )
+
+        row = db.query(
+            "opencypher",
+            "MATCH (e:Event) "
+            "RETURN e.startsAt.year AS starts_year, e.startsAt.month AS starts_month, "
+            "e.dueOn.year AS due_year, e.dueOn.day AS due_day",
+        ).one()
+
+        assert row.get("starts_year") == 2026
+        assert row.get("starts_month") == 4
+        assert row.get("due_year") == 2026
+        assert row.get("due_day") == 7
+
+
+def test_opencypher_with_carried_node_survives_anonymous_create_and_merge(temp_db_path):
+    """WITH-carried variables should remain bound after anonymous CREATE and MERGE."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+
+        with db.transaction():
+            db.command("opencypher", "CREATE (:Person {name: 'Alice'})")
+
+        create_row = db.command(
+            "opencypher",
+            "MATCH (p:Person {name: 'Alice'}) "
+            "WITH p "
+            "CREATE (:Audit {kind: 'create'}) "
+            "RETURN p.name AS name",
+        ).one()
+        merge_row = db.command(
+            "opencypher",
+            "MATCH (p:Person {name: 'Alice'}) "
+            "WITH p "
+            "MERGE (:Audit {kind: 'merge'}) "
+            "RETURN p.name AS name",
+        ).one()
+
+        assert create_row.get("name") == "Alice"
+        assert merge_row.get("name") == "Alice"
+
+
+def test_opencypher_set_label_is_idempotent_across_row_fanout(temp_db_path):
+    """SET n:Label should be safe when the same node appears in multiple rows."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+
+        with db.transaction():
+            db.command(
+                "opencypher",
+                "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(:Person {name: 'Bob'}), "
+                "(a)-[:KNOWS]->(:Person {name: 'Charlie'})",
+            )
+
+        rows = list(
+            db.command(
+                "opencypher",
+                "MATCH (a:Person {name: 'Alice'})-[:KNOWS]->(other:Person) "
+                "SET a:Leader "
+                "RETURN labels(a) AS labels, other.name AS other_name ORDER BY other_name",
+            )
+        )
+        leader_count = db.query(
+            "opencypher",
+            "MATCH (a:Leader {name: 'Alice'}) RETURN count(a) AS c",
+        ).one()
+
+        assert [row.get("other_name") for row in rows] == ["Bob", "Charlie"]
+        assert all("Leader" in list(row.get("labels")) for row in rows)
+        assert leader_count.get("c") == 1
 
 
 def test_opencypher_projection_property_order_is_preserved(temp_db_path):

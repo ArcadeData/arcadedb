@@ -98,7 +98,7 @@ def fetch_json(url: str) -> dict:
     if not url.startswith("https://"):
         raise ValueError(f"Refusing to open non-HTTPS URL: {url!r}")
     req = Request(url, headers={"User-Agent": "arcadedb-bench"})
-    with urlopen(req, timeout=30) as response:  # nosec B310 - https-only
+    with urlopen(req, timeout=30) as response:  # nosec B310
         payload = json.load(response)
     if not isinstance(payload, dict):
         raise RuntimeError(f"Expected JSON object from {url}")
@@ -495,6 +495,14 @@ def stream_shards(
         remaining -= take_total
 
 
+def quantize_to_int8_bytes(vector: np.ndarray) -> list[int]:
+    array = np.asarray(vector, dtype=np.float32)
+    if not np.all(np.isfinite(array)):
+        raise ValueError("Cannot INT8-encode vectors with NaN or infinite values")
+    scaled = np.clip(np.rint(array * 127.0), -127, 127).astype(np.int8)
+    return scaled.tolist()
+
+
 def ingest_vectors_arcadedb(
     db,
     sources: List[dict],
@@ -502,16 +510,30 @@ def ingest_vectors_arcadedb(
     count: int,
     batch_size: int,
     to_java_float_array,
+    to_java_byte_array,
+    encoding: str,
 ) -> int:
+    use_int8_encoding = encoding.upper() == "INT8"
+
     for command in (
         "CREATE VERTEX TYPE VectorData",
         "CREATE PROPERTY VectorData.id INTEGER",
-        "CREATE PROPERTY VectorData.vector ARRAY_OF_FLOATS",
+        (
+            "CREATE PROPERTY VectorData.vector BINARY"
+            if use_int8_encoding
+            else "CREATE PROPERTY VectorData.vector ARRAY_OF_FLOATS"
+        ),
     ):
         try:
             db.command("sql", command)
         except Exception:
             pass
+
+    if use_int8_encoding and to_java_byte_array is None:
+        raise RuntimeError(
+            "arcadedb_embedded does not expose to_java_byte_array; update the "
+            "local wheel before using --encoding INT8"
+        )
 
     ingested = 0
     for base_id, batch in stream_shards(
@@ -522,7 +544,14 @@ def ingest_vectors_arcadedb(
     ):
         with db.transaction():
             for idx, vec in enumerate(batch, start=base_id):
-                jvec = to_java_float_array(vec) if to_java_float_array else vec.tolist()
+                if use_int8_encoding:
+                    jvec = to_java_byte_array(quantize_to_int8_bytes(vec))
+                else:
+                    jvec = (
+                        to_java_float_array(vec)
+                        if to_java_float_array
+                        else vec.tolist()
+                    )
                 db.command(
                     "sql",
                     "INSERT INTO VectorData SET id = ?, vector = ?",
@@ -540,10 +569,19 @@ def create_index_arcadedb(
     max_connections: int,
     beam_width: int,
     quantization: str,
+    encoding: str,
     store_vectors_in_graph: bool,
     add_hierarchy: bool,
 ):
     quant = None if quantization.upper() == "NONE" else quantization.upper()
+    enc = None if encoding.upper() == "NONE" else encoding.upper()
+
+    if enc == "INT8" and quant == "INT8":
+        raise ValueError(
+            "--encoding INT8 cannot be combined with --quantization INT8; "
+            "use --quantization NONE for native INT8 storage"
+        )
+
     metadata_lines = [
         f'"dimensions": {int(dim)}',
         '"similarity": "COSINE"',
@@ -554,6 +592,8 @@ def create_index_arcadedb(
     ]
     if quant is not None:
         metadata_lines.insert(4, f'"quantization": "{quant}"')
+    if enc is not None:
+        metadata_lines.insert(5, f'"encoding": "{enc}"')
 
     metadata_body = ",\n            ".join(metadata_lines)
 
@@ -964,9 +1004,7 @@ def wait_for_qdrant_ready(host: str, port: int, timeout_sec: int = 120) -> None:
     while True:
         for url in urls:
             try:
-                with urlopen(
-                    url, timeout=3
-                ) as response:  # nosec B310 - localhost health-check URL
+                with urlopen(url, timeout=3) as response:  # nosec B310
                     if 200 <= int(response.status) < 500:
                         return
             except Exception:
@@ -1016,9 +1054,7 @@ def ensure_milvus_compose_file(compose_file: Path, release_tag: str) -> None:
             "https://github.com/milvus-io/milvus/releases/download/"
             f"{release_tag}/milvus-standalone-docker-compose.yml"
         )
-        urlretrieve(
-            url, str(compose_file)
-        )  # nosec B310 - url is a hardcoded https://github.com URL
+        urlretrieve(url, str(compose_file))  # nosec B310
         raw = compose_file.read_text(encoding="utf-8")
 
     sanitized = re.sub(r"(?m)^\s*container_name:\s*.*\n", "", raw)
@@ -1864,6 +1900,12 @@ def main() -> None:
         help="ArcadeDB quantization mode (ignored by pgvector)",
     )
     parser.add_argument(
+        "--encoding",
+        choices=["NONE", "INT8"],
+        default="NONE",
+        help="ArcadeDB storage encoding for the vector property (default: NONE)",
+    )
+    parser.add_argument(
         "--store-vectors-in-graph",
         action="store_true",
         help="ArcadeDB/JVector-specific option",
@@ -1958,6 +2000,12 @@ def main() -> None:
         args.milvus_compose_version = resolve_milvus_compose_version(
             args.milvus_compose_version
         )
+    if args.encoding != "NONE" and args.backend != "arcadedb_sql":
+        parser.error("--encoding is supported only for backend=arcadedb_sql")
+    if args.encoding == "INT8" and args.quantization != "NONE":
+        parser.error(
+            "--encoding INT8 requires --quantization NONE to avoid double quantization"
+        )
     if args.backend == "pgvector" and args.docker_image == "python:3.12-slim":
         args.docker_image = resolve_latest_pgvector_image()
     configure_reproducibility(args.seed)
@@ -2001,6 +2049,7 @@ def main() -> None:
             f"maxconn={args.max_connections}",
             f"beam={args.beam_width}",
             f"quant={args.quantization.lower()}",
+            f"enc={args.encoding.lower()}",
             f"store={'on' if args.store_vectors_in_graph else 'off'}",
             f"hier={'on' if args.add_hierarchy else 'off'}",
             f"batch={args.batch_size}",
@@ -2028,6 +2077,8 @@ def main() -> None:
     print(f"Dimensions: {dim}")
     print(f"Max connections: {args.max_connections}")
     print(f"Beam width: {args.beam_width}")
+    print(f"Quantization: {args.quantization}")
+    print(f"Encoding: {args.encoding}")
     if args.backend == "pgvector":
         print(f"Postgres shared_buffers: {pg_shared_buffers}")
     print(f"DB path: {db_path}")
@@ -2067,6 +2118,7 @@ def main() -> None:
 
         try:
             to_java_float_array = getattr(arcadedb, "to_java_float_array", None)
+            to_java_byte_array = getattr(arcadedb, "to_java_byte_array", None)
             ingest_started_at = datetime.now(timezone.utc).isoformat()
             print(f"Ingest start (arcadedb, UTC): {ingest_started_at}")
             ingested, dur, r0, r1 = timed_section(
@@ -2078,6 +2130,8 @@ def main() -> None:
                     count=count,
                     batch_size=args.batch_size,
                     to_java_float_array=to_java_float_array,
+                    to_java_byte_array=to_java_byte_array,
+                    encoding=args.encoding,
                 ),
             )
             ingest_ended_at = datetime.now(timezone.utc).isoformat()
@@ -2095,6 +2149,7 @@ def main() -> None:
                     max_connections=args.max_connections,
                     beam_width=args.beam_width,
                     quantization=args.quantization,
+                    encoding=args.encoding,
                     store_vectors_in_graph=args.store_vectors_in_graph,
                     add_hierarchy=args.add_hierarchy,
                 ),
@@ -2557,6 +2612,7 @@ def main() -> None:
             "max_connections": args.max_connections,
             "beam_width": args.beam_width,
             "quantization": args.quantization,
+            "encoding": args.encoding,
             "store_vectors_in_graph": args.store_vectors_in_graph,
             "add_hierarchy": args.add_hierarchy,
             "batch_size": args.batch_size,

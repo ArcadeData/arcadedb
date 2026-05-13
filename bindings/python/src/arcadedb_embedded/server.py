@@ -171,7 +171,7 @@ class ArcadeDBServer:
     def get_studio_url(self) -> str:
         """Get the URL for the Studio web interface."""
         host = self._config.get("host", "localhost")
-        if host in ("0.0.0.0", "::"):  # nosec B104 - equality comparison, not a bind
+        if host in ("0.0.0.0", "::"):  # nosec B104
             host = "localhost"
         port = self.get_http_port()
         return f"http://{host}:{port}/"
