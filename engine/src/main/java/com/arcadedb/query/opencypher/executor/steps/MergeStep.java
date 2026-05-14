@@ -177,6 +177,13 @@ public class MergeStep extends AbstractExecutionStep {
   private List<Result> executeMerge(final Result inputResult) {
     final PathPattern pathPattern = mergeClause.getPathPattern();
 
+    // Cypher null-propagation: a named path variable that was explicitly bound
+    // to null by a prior step (e.g. an unmatched OPTIONAL MATCH) is not an
+    // unbound free variable - it is a concrete null.  Merging a pattern that
+    // references a null endpoint or relationship is undefined, so drop the row.
+    if (inputResult != null && hasNullBoundPathVariable(pathPattern, inputResult))
+      return List.of();
+
     // Check if we're already in a transaction
     final boolean wasInTransaction = context.getDatabase().isTransactionActive();
 
@@ -328,6 +335,26 @@ public class MergeStep extends AbstractExecutionStep {
         return i;
     }
     return -1;
+  }
+
+  /**
+   * A variable explicitly bound to null by an upstream step (typically an
+   * unmatched OPTIONAL MATCH) differs from one that is absent: the former
+   * triggers Cypher null-propagation, the latter is an unbound free variable.
+   * {@link Result#hasProperty(String)} disambiguates the two cases.
+   */
+  private boolean hasNullBoundPathVariable(final PathPattern pathPattern, final Result inputResult) {
+    for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
+      final String nodeVar = pathPattern.getNode(i).getVariable();
+      if (nodeVar != null && inputResult.hasProperty(nodeVar) && inputResult.getProperty(nodeVar) == null)
+        return true;
+    }
+    for (int i = 0; i < pathPattern.getRelationshipCount(); i++) {
+      final String relVar = pathPattern.getRelationship(i).getVariable();
+      if (relVar != null && inputResult.hasProperty(relVar) && inputResult.getProperty(relVar) == null)
+        return true;
+    }
+    return false;
   }
 
   /**
