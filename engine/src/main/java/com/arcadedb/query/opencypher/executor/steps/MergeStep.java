@@ -906,16 +906,7 @@ public class MergeStep extends AbstractExecutionStep {
   private boolean matchesProperties(final Document doc, final Map<String, Object> properties) {
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       final String key = entry.getKey();
-      Object expectedValue = entry.getValue();
-
-      // Handle string literals: remove quotes
-      if (expectedValue instanceof String) {
-        final String strValue = (String) expectedValue;
-        if (strValue.startsWith("'") && strValue.endsWith("'"))
-          expectedValue = strValue.substring(1, strValue.length() - 1);
-        else if (strValue.startsWith("\"") && strValue.endsWith("\""))
-          expectedValue = strValue.substring(1, strValue.length() - 1);
-      }
+      final Object expectedValue = entry.getValue();
 
       final Object actualValue = doc.get(key);
       if (actualValue == null)
@@ -997,22 +988,8 @@ public class MergeStep extends AbstractExecutionStep {
    * Sets properties on a document from a property map.
    */
   private void setProperties(final MutableDocument document, final Map<String, Object> properties) {
-    for (final Map.Entry<String, Object> entry : properties.entrySet()) {
-      final String key = entry.getKey();
-      Object value = entry.getValue();
-
-      // Handle string literals: remove quotes
-      if (value instanceof String) {
-        final String strValue = (String) value;
-        if (strValue.startsWith("'") && strValue.endsWith("'")) {
-          value = strValue.substring(1, strValue.length() - 1);
-        } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
-          value = strValue.substring(1, strValue.length() - 1);
-        }
-      }
-
-      document.set(key, TemporalUtil.toCoreJavaType(value));
-    }
+    for (final Map.Entry<String, Object> entry : properties.entrySet())
+      document.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
   }
 
   /**
