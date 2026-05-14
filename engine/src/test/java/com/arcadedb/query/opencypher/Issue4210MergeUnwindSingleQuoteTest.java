@@ -96,25 +96,27 @@ class Issue4210MergeUnwindSingleQuoteTest {
     params.put("batch", batch);
 
     database.transaction(() -> {
-      final ResultSet rs = database.command("opencypher", query, params);
-      int count = 0;
-      while (rs.hasNext()) {
-        rs.next();
-        count++;
+      try (final ResultSet rs = database.command("opencypher", query, params)) {
+        int count = 0;
+        while (rs.hasNext()) {
+          rs.next();
+          count++;
+        }
+        assertThat(count).isEqualTo(4);
       }
-      assertThat(count).isEqualTo(4);
     });
 
     // Second run - all must match (ON MATCH path)
     database.transaction(() -> {
-      final ResultSet rs = database.command("opencypher", query, params);
-      int count = 0;
-      while (rs.hasNext()) {
-        final var row = rs.next();
-        assertThat(row.<Boolean>getProperty("created")).isFalse();
-        count++;
+      try (final ResultSet rs = database.command("opencypher", query, params)) {
+        int count = 0;
+        while (rs.hasNext()) {
+          final var row = rs.next();
+          assertThat(row.<Boolean>getProperty("created")).isFalse();
+          count++;
+        }
+        assertThat(count).isEqualTo(4);
       }
-      assertThat(count).isEqualTo(4);
     });
   }
 
@@ -135,8 +137,9 @@ class Issue4210MergeUnwindSingleQuoteTest {
 
     database.transaction(() -> database.command("opencypher", query, params).close());
 
-    final ResultSet rs = database.query("opencypher", "MATCH (n:Token) RETURN n.value AS val");
-    assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<String>getProperty("val")).isEqualTo("'");
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:Token) RETURN n.value AS val")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("val")).isEqualTo("'");
+    }
   }
 }
