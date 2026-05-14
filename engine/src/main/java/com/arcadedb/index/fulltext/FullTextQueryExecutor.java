@@ -153,9 +153,11 @@ public class FullTextQueryExecutor {
     if (query instanceof BooleanQuery) {
       final BooleanQuery bq = (BooleanQuery) query;
 
-      // First pass: collect MUST_NOT terms
+      // First pass: collect MUST_NOT terms and track whether any exist
+      boolean hasMustNotClauses = false;
       for (final BooleanClause clause : bq.clauses()) {
         if (clause.occur() == BooleanClause.Occur.MUST_NOT) {
+          hasMustNotClauses = true;
           collectTermsForExclusion(clause.query(), excluded);
         }
       }
@@ -198,12 +200,16 @@ public class FullTextQueryExecutor {
           }
           scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).addAndGet(totalScore);
         }
-      } else {
+      } else if (!shouldResults.isEmpty()) {
         // No MUST clauses: SHOULD results are returned (standard OR behavior)
         for (final Map.Entry<RID, AtomicInteger> entry : shouldResults.entrySet()) {
           scoreMap.computeIfAbsent(entry.getKey(), k -> new AtomicInteger(0))
               .addAndGet(entry.getValue().get());
         }
+      } else if (hasMustNotClauses) {
+        // Pure negative query (only MUST_NOT, no positive clauses): seed with every indexed
+        // record so executeQuery() can subtract the excluded set to form the complement.
+        collectAllIndexedRids(scoreMap);
       }
 
     } else if (query instanceof TermQuery) {
@@ -229,10 +235,26 @@ public class FullTextQueryExecutor {
       while (cursor.hasNext()) {
         excluded.add(cursor.next().getIdentity());
       }
+    } else if (query instanceof PrefixQuery) {
+      final Map<RID, AtomicInteger> tempMap = new HashMap<>();
+      collectPrefixMatches((PrefixQuery) query, tempMap);
+      excluded.addAll(tempMap.keySet());
+    } else if (query instanceof WildcardQuery) {
+      final Map<RID, AtomicInteger> tempMap = new HashMap<>();
+      collectWildcardMatches((WildcardQuery) query, tempMap);
+      excluded.addAll(tempMap.keySet());
     } else if (query instanceof BooleanQuery) {
       for (final BooleanClause clause : ((BooleanQuery) query).clauses()) {
         collectTermsForExclusion(clause.query(), excluded);
       }
+    }
+  }
+
+  private void collectAllIndexedRids(final Map<RID, AtomicInteger> scoreMap) {
+    final IndexCursor cursor = index.iterateUnderlying(true, null, true);
+    while (cursor.hasNext()) {
+      final RID rid = cursor.next().getIdentity();
+      scoreMap.putIfAbsent(rid, new AtomicInteger(1));
     }
   }
 

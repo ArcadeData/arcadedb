@@ -213,6 +213,121 @@ class FullTextQueryExecutorTest extends TestHelper {
   }
 
   @Test
+  void pureNegativeQuery() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article SET content = 'database tutorial'");
+      database.command("sql", "INSERT INTO Article SET content = 'python legacy'");
+      database.command("sql", "INSERT INTO Article SET content = 'java programming'");
+      database.command("sql", "INSERT INTO Article SET content = 'java python migration'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[content]");
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+
+      // -python should return all documents that do NOT contain "python"
+      final IndexCursor cursor = executor.search("-python", -1);
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
+    });
+  }
+
+  @Test
+  void pureNegativeWildcardQuery() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article SET content = 'database tutorial'");
+      database.command("sql", "INSERT INTO Article SET content = 'python legacy'");
+      database.command("sql", "INSERT INTO Article SET content = 'java programming'");
+      database.command("sql", "INSERT INTO Article SET content = 'java python migration'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[content]");
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+
+      // -pyth* should return all documents that do NOT contain any term starting with "pyth"
+      final IndexCursor cursor = executor.search("-pyth*", -1);
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
+    });
+  }
+
+  @Test
+  void positiveWithNegativeWildcardQuery() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article SET content = 'database tutorial'");
+      database.command("sql", "INSERT INTO Article SET content = 'python legacy'");
+      database.command("sql", "INSERT INTO Article SET content = 'java programming'");
+      database.command("sql", "INSERT INTO Article SET content = 'java python migration'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[content]");
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+
+      // +java -pyth* should return only "java programming", not "java python migration"
+      final IndexCursor cursor = executor.search("+java -pyth*", -1);
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void positiveWithNegativePrefixQuery() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article SET content = 'java programming'");
+      database.command("sql", "INSERT INTO Article SET content = 'java python migration'");
+      database.command("sql", "INSERT INTO Article SET content = 'java database'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[content]");
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+
+      // +java -python should match "java programming" and "java database" but not "java python migration"
+      final IndexCursor cursor = executor.search("+java -python", -1);
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
+    });
+  }
+
+  @Test
   void mustWithShouldQuery() {
     // Tests that MUST clauses are required, while SHOULD only adds bonus score
     // This is the fix for: documents matching only SHOULD should NOT be returned
