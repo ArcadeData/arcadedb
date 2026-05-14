@@ -19,9 +19,13 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -232,12 +236,11 @@ class FullTextQueryExecutorTest extends TestHelper {
 
       // -python should return all documents that do NOT contain "python"
       final IndexCursor cursor = executor.search("-python", -1);
-      int count = 0;
+      final List<String> contents = new ArrayList<>();
       while (cursor.hasNext()) {
-        cursor.next();
-        count++;
+        contents.add((String) ((Document) cursor.next().getRecord()).get("content"));
       }
-      assertThat(count).isEqualTo(2);
+      assertThat(contents).containsExactlyInAnyOrder("database tutorial", "java programming");
     });
   }
 
@@ -318,6 +321,62 @@ class FullTextQueryExecutorTest extends TestHelper {
 
       // +java -python should match "java programming" and "java database" but not "java python migration"
       final IndexCursor cursor = executor.search("+java -python", -1);
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
+    });
+  }
+
+  @Test
+  void positiveWithNegativeFuzzyQuery() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article SET content = 'java programming'");
+      database.command("sql", "INSERT INTO Article SET content = 'java python migration'");
+      database.command("sql", "INSERT INTO Article SET content = 'java database'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[content]");
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+
+      // +java -pythn~ should exclude "java python migration" via fuzzy match against "python"
+      final IndexCursor cursor = executor.search("+java -pythn~", -1);
+      int count = 0;
+      while (cursor.hasNext()) {
+        cursor.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
+    });
+  }
+
+  @Test
+  void positiveWithNegativeRegexpQuery() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Article");
+      database.command("sql", "CREATE PROPERTY Article.content STRING");
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Article SET content = 'java programming'");
+      database.command("sql", "INSERT INTO Article SET content = 'java python migration'");
+      database.command("sql", "INSERT INTO Article SET content = 'java database'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article[content]");
+      final LSMTreeFullTextIndex ftIndex = (LSMTreeFullTextIndex) index.getIndexesOnBuckets()[0];
+      final FullTextQueryExecutor executor = new FullTextQueryExecutor(ftIndex);
+
+      // +java -/py.*/ should exclude "java python migration" via regexp match
+      final IndexCursor cursor = executor.search("+java -/py.*/", -1);
       int count = 0;
       while (cursor.hasNext()) {
         cursor.next();

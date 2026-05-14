@@ -243,6 +243,18 @@ public class FullTextQueryExecutor {
       final Map<RID, AtomicInteger> tempMap = new HashMap<>();
       collectWildcardMatches((WildcardQuery) query, tempMap);
       excluded.addAll(tempMap.keySet());
+    } else if (query instanceof PhraseQuery) {
+      final Map<RID, AtomicInteger> tempMap = new HashMap<>();
+      collectPhraseMatches((PhraseQuery) query, tempMap);
+      excluded.addAll(tempMap.keySet());
+    } else if (query instanceof FuzzyQuery) {
+      final Map<RID, AtomicInteger> tempMap = new HashMap<>();
+      collectFuzzyMatches((FuzzyQuery) query, tempMap);
+      excluded.addAll(tempMap.keySet());
+    } else if (query instanceof RegexpQuery) {
+      final Map<RID, AtomicInteger> tempMap = new HashMap<>();
+      collectRegexpMatches((RegexpQuery) query, tempMap);
+      excluded.addAll(tempMap.keySet());
     } else if (query instanceof BooleanQuery) {
       for (final BooleanClause clause : ((BooleanQuery) query).clauses()) {
         collectTermsForExclusion(clause.query(), excluded);
@@ -250,11 +262,17 @@ public class FullTextQueryExecutor {
     }
   }
 
+  /**
+   * Seeds the score map with every record reachable through the underlying index. Used as the
+   * candidate universe for pure negative queries so that subtracting the excluded set yields the
+   * correct complement. Runs in O(N) over the index entries; each RID is assigned a constant score
+   * of 1 because no positive clause contributed to its presence in the result set.
+   */
   private void collectAllIndexedRids(final Map<RID, AtomicInteger> scoreMap) {
     final IndexCursor cursor = index.iterateUnderlying(true, null, true);
     while (cursor.hasNext()) {
       final RID rid = cursor.next().getIdentity();
-      scoreMap.putIfAbsent(rid, new AtomicInteger(1));
+      scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(1));
     }
   }
 
