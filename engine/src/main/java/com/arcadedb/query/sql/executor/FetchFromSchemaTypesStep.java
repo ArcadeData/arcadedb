@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.timeseries.ColumnDefinition;
@@ -32,6 +34,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
 import java.util.stream.*;
@@ -60,10 +63,19 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
       try {
         final Schema schema = context.getDatabase().getSchema();
 
+        final SecurityDatabaseUser currentUser = currentUser(context);
+
         final List<String> orderedTypes = schema.getTypes().stream().map(x -> x.getName()).sorted(String::compareToIgnoreCase)
             .collect(Collectors.toList());
         for (final String typeName : orderedTypes) {
           final DocumentType type = schema.getType(typeName);
+
+          // Issue #4238: hide types the current user cannot read at all instead of throwing.
+          // RemoteSchema.reload() lists every type on its first command and aborted the whole
+          // listing the first time it hit a restricted type, locking the remote driver out
+          // even from types the user was allowed to read.
+          if (!canReadAnyBucket(currentUser, type))
+            continue;
 
           final ResultInternal r = new ResultInternal(context.getDatabase());
           result.add(r);
@@ -87,7 +99,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
           if (isTimeSeries)
             populateTimeSeriesMetadata(r, (LocalTimeSeriesType) type);
           else
-            r.setProperty("records", context.getDatabase().countType(typeName, false));
+            r.setProperty("records", safeCountType(context, typeName));
           r.setProperty("buckets", type.getBuckets(false).stream().map((b) -> b.getName()).collect(Collectors.toList()));
           r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
           // Expose the partition-mapping-stale flag (issue #4087). Set unconditionally via the
@@ -203,6 +215,44 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
         cursor = 0;
       }
     };
+  }
+
+  private static SecurityDatabaseUser currentUser(final CommandContext context) {
+    final DatabaseInternal database = (DatabaseInternal) context.getDatabase();
+    final DatabaseContext.DatabaseContextTL dbContext = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    return dbContext != null ? dbContext.getCurrentUser() : null;
+  }
+
+  /**
+   * Returns true when the type is visible to the current user (issue #4238). With no security
+   * context (embedded usage or root) every type is visible. Otherwise, the type is visible when
+   * the user has READ_RECORD on at least one of its buckets - matching the principle that a user
+   * with partial access should still see the resource in catalog listings.
+   */
+  private static boolean canReadAnyBucket(final SecurityDatabaseUser user, final DocumentType type) {
+    if (user == null)
+      return true;
+    final List<Bucket> buckets = type.getBuckets(false);
+    if (buckets.isEmpty())
+      return true;
+    for (final Bucket b : buckets)
+      if (user.requestAccessOnFile(b.getFileId(), SecurityDatabaseUser.ACCESS.READ_RECORD))
+        return true;
+    return false;
+  }
+
+  /**
+   * countType walks every bucket and throws SecurityException on the first one the current user
+   * cannot read. Issue #4238: in the rare case where a user has READ_RECORD on some but not all
+   * buckets of the type, swallow that exception and report zero rather than aborting the whole
+   * schema listing.
+   */
+  private static long safeCountType(final CommandContext context, final String typeName) {
+    try {
+      return context.getDatabase().countType(typeName, false);
+    } catch (final SecurityException e) {
+      return 0L;
+    }
   }
 
   private void populateTimeSeriesMetadata(final ResultInternal r, final LocalTimeSeriesType tsType) {
