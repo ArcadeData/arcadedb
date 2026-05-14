@@ -154,9 +154,11 @@ public class FullTextQueryExecutor {
     if (query instanceof BooleanQuery) {
       final BooleanQuery bq = (BooleanQuery) query;
 
-      // First pass: collect MUST_NOT terms
+      // First pass: collect MUST_NOT terms and track whether any exist
+      boolean hasMustNotClauses = false;
       for (final BooleanClause clause : bq.clauses()) {
         if (clause.getOccur() == BooleanClause.Occur.MUST_NOT) {
+          hasMustNotClauses = true;
           collectTermsForExclusion(clause.getQuery(), excluded);
         }
       }
@@ -199,12 +201,16 @@ public class FullTextQueryExecutor {
           }
           scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).addAndGet(totalScore);
         }
-      } else {
+      } else if (!shouldResults.isEmpty()) {
         // No MUST clauses: SHOULD results are returned (standard OR behavior)
         for (final Map.Entry<RID, AtomicInteger> entry : shouldResults.entrySet()) {
           scoreMap.computeIfAbsent(entry.getKey(), k -> new AtomicInteger(0))
               .addAndGet(entry.getValue().get());
         }
+      } else if (hasMustNotClauses) {
+        // Pure negative query (only MUST_NOT, no positive clauses): seed with every indexed
+        // record so executeQuery() can subtract the excluded set to form the complement.
+        collectAllIndexedRids(scoreMap);
       }
 
     } else if (query instanceof TermQuery) {
@@ -224,16 +230,33 @@ public class FullTextQueryExecutor {
   }
 
   private void collectTermsForExclusion(final Query query, final Set<RID> excluded) {
-    if (query instanceof TermQuery) {
-      final String term = ((TermQuery) query).getTerm().text();
-      final IndexCursor cursor = index.get(new Object[] { term });
-      while (cursor.hasNext()) {
-        excluded.add(cursor.next().getIdentity());
-      }
-    } else if (query instanceof BooleanQuery) {
+    if (query instanceof BooleanQuery) {
       for (final BooleanClause clause : ((BooleanQuery) query).clauses()) {
         collectTermsForExclusion(clause.getQuery(), excluded);
       }
+      return;
+    }
+    // Delegate every other leaf query type to collectMatches so any positive collector
+    // automatically has matching exclusion support; the empty excluded set isolates this scratch
+    // collection from the caller's accumulator.
+    final Map<RID, AtomicInteger> tempMap = new HashMap<>();
+    collectMatches(query, tempMap, new HashSet<>());
+    excluded.addAll(tempMap.keySet());
+  }
+
+  /**
+   * Seeds the score map with every record reachable through the underlying index. Used as the
+   * candidate universe for pure negative queries so that subtracting the excluded set yields the
+   * correct complement. Runs in O(index entries) where one entry exists per (token, RID) pair, not
+   * per unique document, so a document indexed under N tokens is visited N times and deduplicated
+   * via computeIfAbsent. Each RID is assigned a constant score of 1 because no positive clause
+   * contributed to its presence in the result set.
+   */
+  private void collectAllIndexedRids(final Map<RID, AtomicInteger> scoreMap) {
+    final IndexCursor cursor = index.iterateUnderlying(true, null, true);
+    while (cursor.hasNext()) {
+      final RID rid = cursor.next().getIdentity();
+      scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(1));
     }
   }
 
