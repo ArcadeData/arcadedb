@@ -164,6 +164,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
   /**
    * Called at load time.
+   * <p>
+   * Free-space statistics are NOT pre-warmed here. {@link #findAvailableSpace} already calls
+   * {@link #gatherPageStatistics()} lazily on the first allocation that needs it, so a leader
+   * still gets reuse for free; a follower that only applies leader-shipped pages via the state
+   * machine never triggers it at all. Pre-warming here would scan up to all pages of every
+   * bucket during {@link com.arcadedb.schema.LocalSchema#load} - which on a follower under
+   * heavy bulk-load fires repeatedly per LSM compaction SCHEMA_ENTRY and exhausts the heap
+   * (issue #4219).
    */
   public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final int id,
                      final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
@@ -178,8 +186,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     // by default and bypassed the user-DML guard. Schema JSON still maps primary->external by name (which is
     // an orthogonal concern), but the write guard now no longer depends on schema-load ordering.
     this.purpose = purposeForVersion(version);
-    if (this.reuseSpaceMode.ordinal() >= REUSE_SPACE_MODE.HIGH.ordinal())
-      gatherPageStatistics();
   }
 
   private static Purpose purposeForVersion(final int version) {

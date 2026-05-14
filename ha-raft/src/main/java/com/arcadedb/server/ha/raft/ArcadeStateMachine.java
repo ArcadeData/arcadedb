@@ -126,6 +126,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   private final AtomicBoolean needsSnapshotDownload = new AtomicBoolean(false);
   private final AtomicBoolean catchingUp            = new AtomicBoolean(false);
+  // Set to true after applyTransaction catches an unexpected Throwable (OOM, NPE, etc.). The
+  // state machine's in-memory schema/page state can be inconsistent at that point (issue #4219:
+  // mid-load OOM leaves bucketMap cleared but not repopulated), so any subsequent apply
+  // attempt would surface as a cascade of "Bucket with id X was not found" errors before the
+  // async server.stop() completes. Once tripped, applyTransaction fails fast without touching
+  // database state and the recovery path is the asynchronous server shutdown plus a snapshot
+  // resync on the next start.
+  private final AtomicBoolean haltedAfterCriticalError = new AtomicBoolean(false);
 
 
   public void setServer(final ArcadeDBServer server) {
@@ -235,6 +243,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final TermIndex termIndex = TermIndex.valueOf(entry);
     final long index = termIndex.getIndex();
 
+    // Refuse to apply once a prior entry tripped the critical-error halt. Continuing would
+    // operate on the inconsistent in-memory state left behind by the failed apply and cascade
+    // into additional SEVERE errors before the async server.stop() completes (#4219).
+    if (haltedAfterCriticalError.get())
+      return CompletableFuture.failedFuture(new ReplicationException(
+          "State machine halted after critical error at earlier index; refusing to apply index " + index));
+
     try {
       final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(data);
 
@@ -299,6 +314,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
           """
           CRITICAL: Unexpected error applying Raft log entry at index %d. \
           Shutting down to prevent state divergence.""", e, index);
+      // Trip the halt flag BEFORE starting the async server.stop() so the StateMachineUpdater's
+      // next applyTransaction call short-circuits instead of cascading on inconsistent state.
+      haltedAfterCriticalError.set(true);
       final Thread stopThread = new Thread(() -> {
         try {
           if (server != null)
