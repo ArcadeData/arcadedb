@@ -180,4 +180,30 @@ class Issue4213OptionalMatchNullEndpointMergeTest {
         .as("No KNOWS relationship must be created when endpoint is null")
         .isEqualTo(0L);
   }
+
+  /**
+   * Multi-hop MERGE pattern with a null intermediate node from OPTIONAL MATCH:
+   * the null at index 1 must drop the row even though the endpoints at index 0
+   * and index 2 are bound.
+   */
+  @Test
+  void mergeMultiHopPatternWithNullIntermediateProducesNoRows() {
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (a:Node {id: 1}) "
+            + "OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 99}) "
+            + "WITH a, b "
+            + "MATCH (c:Node {id: 2}) "
+            + "MERGE (a)-[:KNOWS]->(b)-[:KNOWS]->(c) "
+            + "RETURN a.id AS aid, b.id AS bid, c.id AS cid");
+
+    assertThat(rs.hasNext())
+        .as("MERGE with null intermediate node must produce no rows")
+        .isFalse();
+
+    final ResultSet relCount = database.query("opencypher", "MATCH ()-[r:KNOWS]->() RETURN count(r) AS cnt");
+    assertThat(relCount.next().<Number>getProperty("cnt").longValue())
+        .as("No KNOWS relationship must be created when an intermediate node is null")
+        .isEqualTo(0L);
+  }
+
 }
