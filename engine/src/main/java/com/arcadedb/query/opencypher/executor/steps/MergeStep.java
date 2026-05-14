@@ -54,6 +54,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Execution step for MERGE clause.
@@ -176,6 +177,13 @@ public class MergeStep extends AbstractExecutionStep {
    */
   private List<Result> executeMerge(final Result inputResult) {
     final PathPattern pathPattern = mergeClause.getPathPattern();
+
+    // Cypher null-propagation: a named node variable that was explicitly bound to
+    // null by a prior step (e.g. an unmatched OPTIONAL MATCH) is not an unbound
+    // free variable - it is a concrete null.  Merging a relationship to a null
+    // endpoint is undefined, so drop the row entirely.
+    if (inputResult != null && hasNullNodeEndpoint(pathPattern, inputResult))
+      return List.of();
 
     // Check if we're already in a transaction
     final boolean wasInTransaction = context.getDatabase().isTransactionActive();
@@ -328,6 +336,23 @@ public class MergeStep extends AbstractExecutionStep {
         return i;
     }
     return -1;
+  }
+
+  /**
+   * Returns true if any named node variable in {@code pathPattern} is present
+   * in the input row with a null value.  A variable that is absent from the
+   * result entirely is "unbound" and does not trigger this guard; only a value
+   * that was explicitly set to null (e.g. by an unmatched OPTIONAL MATCH)
+   * causes the method to return true.
+   */
+  private boolean hasNullNodeEndpoint(final PathPattern pathPattern, final Result inputResult) {
+    final Set<String> propNames = inputResult.getPropertyNames();
+    for (int i = 0; i <= pathPattern.getRelationshipCount(); i++) {
+      final String var = pathPattern.getNode(i).getVariable();
+      if (var != null && propNames.contains(var) && inputResult.getProperty(var) == null)
+        return true;
+    }
+    return false;
   }
 
   /**
