@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.temporal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.time.ZoneOffset;
 import java.time.temporal.IsoFields;
 import java.time.temporal.WeekFields;
 import java.util.Map;
@@ -163,8 +164,11 @@ public class CypherLocalDateTime implements CypherTemporalValue {
 
   @Override
   public int compareTo(final CypherTemporalValue other) {
-    if (other instanceof CypherLocalDateTime)
-      return value.compareTo(((CypherLocalDateTime) other).value);
+    if (other instanceof CypherLocalDateTime cld)
+      return value.compareTo(cld.value);
+    // Cross-type with zoned DateTime: treat LocalDateTime as UTC, mirroring datetime(localDatetimeValue).
+    if (other instanceof CypherDateTime cdt)
+      return value.toInstant(ZoneOffset.UTC).compareTo(cdt.getValue().toInstant());
     throw new IllegalArgumentException("Cannot compare LocalDateTime with " + other.getClass().getSimpleName());
   }
 
