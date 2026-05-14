@@ -278,8 +278,10 @@ public class CypherDateTime implements CypherTemporalValue {
 
   @Override
   public int compareTo(final CypherTemporalValue other) {
-    if (other instanceof CypherDateTime)
-      return value.toInstant().compareTo(((CypherDateTime) other).value.toInstant());
+    if (other instanceof CypherDateTime cdt)
+      return value.toInstant().compareTo(cdt.value.toInstant());
+    if (other instanceof CypherLocalDateTime cld)
+      return value.toInstant().compareTo(cld.getValue().atOffset(ZoneOffset.UTC).toInstant());
     throw new IllegalArgumentException("Cannot compare DateTime with " + other.getClass().getSimpleName());
   }
 
