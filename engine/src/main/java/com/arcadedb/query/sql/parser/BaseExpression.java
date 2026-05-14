@@ -24,6 +24,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.FunctionRegistry;
+import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.AggregationContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -118,9 +120,19 @@ public class BaseExpression extends MathExpression {
       result = null;
     else if (number != null)
       result = number.getValue();
-    else if (identifier != null)
+    else if (identifier != null) {
+      // Dotted SQL function call written without back-ticks, e.g. `vector.fuse(...)`. The grammar
+      // parses it as identifier + .method(...) but the user intended a namespaced function. Issue
+      // #4233.
+      final FunctionCall namespaced = asNamespacedFunctionCall(context);
+      if (namespaced != null) {
+        Object fnResult = namespaced.execute(currentRecord, context);
+        if (modifier != null && modifier.next != null)
+          fnResult = modifier.next.execute(currentRecord, fnResult, context);
+        return fnResult;
+      }
       result = identifier.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
-    else if (expression != null)
+    } else if (expression != null)
       result = expression.execute(currentRecord != null ? currentRecord.getRecord() : null, context);
     else if (string != null && string.length() > 1)
       result = decode(string.substring(1, string.length() - 1));
@@ -145,6 +157,16 @@ public class BaseExpression extends MathExpression {
       final Map<String, Object> params = context != null ? context.getInputParameters() : null;
 
       if (identifier != null) {
+        // Dotted SQL function call written without back-ticks, e.g. `vector.fuse(...)`. The grammar
+        // parses it as identifier + .method(...) but the user intended a namespaced function. Issue
+        // #4233.
+        final FunctionCall namespaced = asNamespacedFunctionCall(context);
+        if (namespaced != null) {
+          Object fnResult = namespaced.execute(currentRecord, context);
+          if (modifier != null && modifier.next != null)
+            fnResult = modifier.next.execute(currentRecord, fnResult, context);
+          return fnResult;
+        }
         // CHECK FOR SPECIAL CASE FOR POSTGRES DRIVER THAT TRANSLATES POSITIONAL PARAMETERS (?) WITH $N
         // THIS IS DIFFERENT FROM ORIENTDB CODE BASE
         // @author Luca Garulli
@@ -177,6 +199,61 @@ public class BaseExpression extends MathExpression {
 
     return result;
   }
+
+  /**
+   * Recognises the namespaced-function pattern <code>&lt;identifier&gt;.&lt;methodCall&gt;(...)</code>
+   * when the combined <code>&lt;identifier&gt;.&lt;methodName&gt;</code> is a registered SQL function
+   * (e.g. <code>vector.fuse</code>, <code>vector.neighbors</code>). Returns a {@link FunctionCall} ready
+   * to execute, or {@code null} when the shape or name does not match.
+   * <p>
+   * The synthesised {@code FunctionCall} is cached on the node so the registry lookup happens at
+   * most once per parsed expression. Returning {@code null} leaves the existing identifier +
+   * method-call path untouched.
+   */
+  private FunctionCall asNamespacedFunctionCall(final CommandContext context) {
+    if (cachedNamespacedCall != null)
+      return cachedNamespacedCall == NAMESPACED_CALL_NONE ? null : cachedNamespacedCall;
+
+    cachedNamespacedCall = NAMESPACED_CALL_NONE;
+
+    if (identifier == null || modifier == null || modifier.methodCall == null)
+      return null;
+    if (identifier.levelZero != null || identifier.suffix == null || identifier.suffix.identifier == null
+        || identifier.suffix.recordAttribute != null || identifier.suffix.star)
+      return null;
+
+    final String namespace = identifier.suffix.identifier.getValue();
+    if (namespace == null || namespace.isEmpty() || namespace.charAt(0) == '$')
+      return null;
+
+    final MethodCall mc = modifier.methodCall;
+    if (mc.methodName == null)
+      return null;
+    final String combined = namespace + "." + mc.methodName.getStringValue();
+
+    if (context == null || context.getDatabase() == null)
+      return null;
+
+    final SQLQueryEngine engine = (SQLQueryEngine) context.getDatabase().getQueryEngine("sql");
+    if (engine == null)
+      return null;
+
+    final boolean registered =
+        engine.getFunctionFactory().getFunctionInstance(combined) != null
+        || FunctionRegistry.getStateless(combined) != null;
+    if (!registered)
+      return null;
+
+    final FunctionCall fc = new FunctionCall(-1);
+    final Identifier name = new Identifier(combined);
+    fc.name = name;
+    fc.params = mc.params;
+    cachedNamespacedCall = fc;
+    return fc;
+  }
+
+  private transient FunctionCall cachedNamespacedCall;
+  private static final FunctionCall NAMESPACED_CALL_NONE = new FunctionCall(-1);
 
   @Override
   public boolean isIndexedFunctionCall(final CommandContext context) {
