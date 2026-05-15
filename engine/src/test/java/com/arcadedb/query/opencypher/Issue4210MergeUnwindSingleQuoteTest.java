@@ -175,6 +175,50 @@ class Issue4210MergeUnwindSingleQuoteTest {
   }
 
   @Test
+  void variableLengthPathEndpointWithSingleQuotePropertyDoesNotCrash() {
+    // ExpandPathStep.matchesTargetProperties: VLP endpoint with a quote-containing literal.
+    // Pre-fix, quote-stripping would have transformed the literal "'" into the empty string,
+    // causing zero matches; post-fix, the literal is compared as-is.
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Node {tag: 'start'})");
+      database.command("opencypher", "CREATE (:Node {tag: \"'\"})");
+      database.command("opencypher",
+          "MATCH (a:Node {tag: 'start'}), (b:Node {tag: \"'\"}) CREATE (a)-[:LINK]->(b)");
+    });
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (:Node {tag: 'start'})-[:LINK*1..3]->(m:Node {tag: \"'\"}) RETURN m.tag AS tag")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("tag")).isEqualTo("'");
+    }
+  }
+
+  @Test
+  void matchRelationshipWithQuoteLiteralEdgePropertyDoesNotCrash() {
+    // MatchRelationshipStep.matchesEdgeProperties: inline edge property filter with a literal
+    // value that starts and ends with a quote character. Pre-fix this would have been stripped
+    // to the empty string; post-fix it round-trips correctly.
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person {name: 'Alice'})");
+      database.command("opencypher", "CREATE (:Person {name: 'Bob'})");
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) CREATE (a)-[:KNOWS {note: \"'\"}]->(b)");
+    });
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH ()-[r:KNOWS {note: \"'\"}]->() RETURN r.note AS note")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("note")).isEqualTo("'");
+    }
+  }
+
+  @Test
   void matchRelationshipEndpointWithSingleQuotePropertyViaUnwindDoesNotCrash() {
     // Creates edges and MATCHes them using UNWIND-supplied endpoint node property filters.
     // MatchRelationshipStep.matchesTargetProperties evaluates expression values and must not

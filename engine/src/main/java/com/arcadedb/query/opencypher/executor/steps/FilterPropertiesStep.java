@@ -154,7 +154,7 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
       // Remove quotes from string-literal source text (regex match is on raw WHERE text)
       if (value.length() >= 2
           && ((value.charAt(0) == '\'' && value.charAt(value.length() - 1) == '\'')
-          || (value.charAt(0) == '"' && value.charAt(value.length() - 1) == '"')))
+              || (value.charAt(0) == '"' && value.charAt(value.length() - 1) == '"')))
         value = value.substring(1, value.length() - 1);
 
       // Get the object from result
