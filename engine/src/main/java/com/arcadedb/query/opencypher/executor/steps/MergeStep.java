@@ -304,14 +304,34 @@ public class MergeStep extends AbstractExecutionStep {
    * a preceding MATCH), traversal starts at that anchor and walks the path
    * outward via the anchor's incident edges (O(degree)) instead of doing a
    * full edge-type scan (O(total edges of type)) - fix for issue #4226.
+   * <p>
+   * When the pattern is a single-relationship path and the unbound endpoint has
+   * properties covered by an index, the walker switches to an index seek over
+   * the unbound side and verifies the edge to the anchor. This keeps the per-
+   * MERGE cost independent of the anchor's degree (reopened follow-up for
+   * issue #4226: the production scenario has parents that accumulate thousands
+   * of children over time and the anchor walk became O(parent.degree) per
+   * MERGE).
    */
   private List<Result> findAllMatchingPaths(final PathPattern pathPattern, final ResultInternal baseResult) {
     final List<Result> results = new ArrayList<>();
 
     final int anchorIdx = findBoundAnchorIndex(pathPattern, baseResult);
-    if (anchorIdx <= 0) {
-      // No bound anchor, or anchor at index 0: the existing forward walker
-      // already picks up the index-0 binding from currentResult.
+    if (anchorIdx < 0) {
+      // No bound anchor: the existing forward walker scans the relevant edge
+      // type. The optimizer's MATCH-path is responsible for index-based seeds.
+      traverseFromNode(pathPattern, 0, null, copyResult(baseResult), results);
+      return results;
+    }
+
+    // Prefer an index seek over the unbound endpoint when the schema offers
+    // one; falls back to the anchor walk when no usable index exists.
+    if (tryFindPathByIndexSeek(pathPattern, anchorIdx, baseResult, results))
+      return results;
+
+    if (anchorIdx == 0) {
+      // Anchor is at the start: the forward walker already picks up the
+      // binding from currentResult and walks the anchor's outgoing edges.
       traverseFromNode(pathPattern, 0, null, copyResult(baseResult), results);
       return results;
     }
@@ -319,6 +339,142 @@ public class MergeStep extends AbstractExecutionStep {
     final Vertex anchorVertex = (Vertex) baseResult.getProperty(pathPattern.getNode(anchorIdx).getVariable());
     traverseFromAnchor(pathPattern, anchorIdx, anchorVertex, copyResult(baseResult), results);
     return results;
+  }
+
+  /**
+   * Single-edge MERGE optimization: if the unbound endpoint exposes properties
+   * covered by an index, seek the candidates via the index and verify the edge
+   * to the bound anchor instead of walking every incident edge of the anchor.
+   * <p>
+   * Returns {@code true} when the index path was applied (regardless of how
+   * many matches it produced; an empty result means no matching path exists
+   * and {@link #mergePathAll(PathPattern, ResultInternal)} should create the
+   * pattern). Returns {@code false} when no usable index was found, so the
+   * caller falls back to the anchor walk.
+   */
+  private boolean tryFindPathByIndexSeek(final PathPattern pathPattern, final int anchorIdx,
+      final ResultInternal baseResult, final List<Result> results) {
+    if (pathPattern.getRelationshipCount() != 1)
+      return false; // longer paths fall back to anchor walk
+
+    final int unboundIdx = (anchorIdx == 0) ? 1 : 0;
+    final NodePattern unboundPattern = pathPattern.getNode(unboundIdx);
+
+    // The candidate side must carry exactly one label so we know which type to
+    // look up; multi-label patterns and label-less nodes can't drive an index.
+    if (!unboundPattern.hasLabels() || unboundPattern.getLabels().size() != 1)
+      return false;
+    if (!unboundPattern.hasProperties())
+      return false;
+
+    // If the user pre-bound the candidate variable to a vertex, both ends are
+    // known: let the anchor walk verify the edge connecting them.
+    if (unboundPattern.getVariable() != null) {
+      final Object existing = baseResult.getProperty(unboundPattern.getVariable());
+      if (existing instanceof Vertex)
+        return false;
+    }
+
+    final RelationshipPattern relPattern = pathPattern.getRelationship(0);
+    if (!relPattern.hasTypes())
+      return false; // can't filter candidate's edges without a relationship type
+
+    final String label = unboundPattern.getLabels().get(0);
+    if (!context.getDatabase().getSchema().existsType(label))
+      return false;
+
+    final DocumentType type = context.getDatabase().getSchema().getType(label);
+    if (type == null)
+      return false;
+
+    final Map<String, Object> unboundProps = evaluateProperties(unboundPattern.getProperties(), baseResult);
+    final Iterator<Identifiable> indexIter = tryFindByIndex(type, label, unboundProps);
+    if (indexIter == null)
+      return false; // no usable index, fall back to anchor walk
+
+    final NodePattern anchorPattern = pathPattern.getNode(anchorIdx);
+    final Vertex anchorVertex = (Vertex) baseResult.getProperty(anchorPattern.getVariable());
+    if (!matchesNodePattern(anchorVertex, anchorPattern, baseResult))
+      return true; // anchor doesn't satisfy its own constraints: no paths exist
+
+    final String relType = relPattern.getFirstType();
+    final Map<String, Object> relProps = relPattern.hasProperties()
+        ? evaluateProperties(relPattern.getProperties(), baseResult) : null;
+    final Direction dir = relPattern.getDirection();
+
+    while (indexIter.hasNext()) {
+      final Identifiable identifiable = indexIter.next();
+      if (identifiable == null)
+        continue;
+      final Vertex candidate = resolveVertex(identifiable);
+      if (candidate == null)
+        continue;
+
+      // tryFindByIndex enforces leftmost-prefix coverage; the query may carry
+      // extra properties or labels not in the index, so re-verify the node.
+      if (!matchesNodePattern(candidate, unboundPattern, baseResult))
+        continue;
+
+      final Edge matchingEdge = findEdgeBetweenForMerge(candidate, anchorVertex, unboundIdx, dir, relType, relProps);
+      if (matchingEdge == null)
+        continue;
+
+      final ResultInternal r = copyResult(baseResult);
+      if (anchorPattern.getVariable() != null)
+        r.setProperty(anchorPattern.getVariable(), anchorVertex);
+      if (unboundPattern.getVariable() != null)
+        r.setProperty(unboundPattern.getVariable(), candidate);
+      if (relPattern.getVariable() != null)
+        r.setProperty(relPattern.getVariable(), matchingEdge);
+      r.setProperty("  wasCreated", false);
+      addPathBinding(r, pathPattern);
+      results.add(r);
+    }
+
+    return true;
+  }
+
+  /**
+   * Returns an edge between {@code candidate} and {@code anchor} satisfying the
+   * pattern direction and properties, walking {@code candidate}'s edges (which
+   * are expected to be few - the index point-lookup typically returns a small
+   * set). Returns {@code null} when no such edge exists.
+   *
+   * @param unboundIdx position of {@code candidate} in the pattern: 0 means the
+   *                   candidate is on the left of the edge, 1 means on the right.
+   */
+  private Edge findEdgeBetweenForMerge(final Vertex candidate, final Vertex anchor, final int unboundIdx,
+      final Direction dir, final String relType, final Map<String, Object> relProps) {
+    if (dir == Direction.OUT || dir == Direction.BOTH) {
+      // Pattern: node0 -OUT-> node1.  Candidate side dictates the lookup direction.
+      final Vertex.DIRECTION candDir = (unboundIdx == 0) ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
+      final Vertex.DIRECTION otherEnd = (unboundIdx == 0) ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+      final Edge e = findFirstEdgeTo(candidate, anchor, candDir, otherEnd, relType, relProps);
+      if (e != null)
+        return e;
+    }
+    if (dir == Direction.IN || dir == Direction.BOTH) {
+      // Pattern: node0 <-IN- node1.  Mirror of the OUT case.
+      final Vertex.DIRECTION candDir = (unboundIdx == 0) ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+      final Vertex.DIRECTION otherEnd = (unboundIdx == 0) ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
+      final Edge e = findFirstEdgeTo(candidate, anchor, candDir, otherEnd, relType, relProps);
+      if (e != null)
+        return e;
+    }
+    return null;
+  }
+
+  private Edge findFirstEdgeTo(final Vertex from, final Vertex target,
+      final Vertex.DIRECTION fromDir, final Vertex.DIRECTION otherEnd,
+      final String relType, final Map<String, Object> relProps) {
+    for (final Edge edge : from.getEdges(fromDir, relType)) {
+      if (!target.equals(edge.getVertex(otherEnd)))
+        continue;
+      if (relProps != null && !matchesProperties(edge, relProps))
+        continue;
+      return edge;
+    }
+    return null;
   }
 
   /**
