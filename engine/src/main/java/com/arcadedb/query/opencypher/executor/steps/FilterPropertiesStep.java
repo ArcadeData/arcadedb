@@ -151,12 +151,11 @@ public class FilterPropertiesStep extends AbstractExecutionStep {
       final String operator = matcher.group(3);
       String value = matcher.group(4);
 
-      // Remove quotes from string values
-      if (value.startsWith("'") && value.endsWith("'")) {
+      // Remove quotes from string-literal source text (regex match is on raw WHERE text)
+      if (value.length() >= 2
+          && ((value.charAt(0) == '\'' && value.charAt(value.length() - 1) == '\'')
+              || (value.charAt(0) == '"' && value.charAt(value.length() - 1) == '"')))
         value = value.substring(1, value.length() - 1);
-      } else if (value.startsWith("\"") && value.endsWith("\"")) {
-        value = value.substring(1, value.length() - 1);
-      }
 
       // Get the object from result
       final Object obj = result.getProperty(variable);

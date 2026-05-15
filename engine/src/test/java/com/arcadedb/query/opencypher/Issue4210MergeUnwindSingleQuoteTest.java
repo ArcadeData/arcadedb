@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -140,6 +141,117 @@ class Issue4210MergeUnwindSingleQuoteTest {
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Token) RETURN n.value AS val")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("val")).isEqualTo("'");
+    }
+  }
+
+  @Test
+  void matchNodeWithSingleQuotePropertyViaUnwindDoesNotCrash() {
+    // Creates nodes and then MATCHes them using UNWIND-supplied property values.
+    // MatchNodeStep.matchesProperties must not strip quotes from evaluated values.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Tag {name: \"'\"})");
+      database.command("opencypher", "CREATE (:Tag {name: \"'wrapped'\"})");
+      database.command("opencypher", "CREATE (:Tag {name: 'plain'})");
+    });
+
+    final List<Map<String, Object>> batch = List.of(
+        Map.of("name", "'"),
+        Map.of("name", "'wrapped'"),
+        Map.of("name", "plain")
+    );
+    final Map<String, Object> params = new HashMap<>();
+    params.put("batch", batch);
+
+    try (final ResultSet rs = database.query("opencypher",
+        "UNWIND $batch AS item MATCH (n:Tag {name: item.name}) RETURN n.name AS name", params)) {
+      int count = 0;
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat(row.<String>getProperty("name")).isNotNull();
+        count++;
+      }
+      assertThat(count).isEqualTo(3);
+    }
+  }
+
+  @Test
+  void variableLengthPathEndpointWithSingleQuotePropertyDoesNotCrash() {
+    // ExpandPathStep.matchesTargetProperties: VLP endpoint with a quote-containing literal.
+    // Pre-fix, quote-stripping would have transformed the literal "'" into the empty string,
+    // causing zero matches; post-fix, the literal is compared as-is.
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Node {tag: 'start'})");
+      database.command("opencypher", "CREATE (:Node {tag: \"'\"})");
+      database.command("opencypher",
+          "MATCH (a:Node {tag: 'start'}), (b:Node {tag: \"'\"}) CREATE (a)-[:LINK]->(b)");
+    });
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (:Node {tag: 'start'})-[:LINK*1..3]->(m:Node {tag: \"'\"}) RETURN m.tag AS tag")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("tag")).isEqualTo("'");
+    }
+  }
+
+  @Test
+  void matchRelationshipWithQuoteLiteralEdgePropertyDoesNotCrash() {
+    // MatchRelationshipStep.matchesEdgeProperties: inline edge property filter with a literal
+    // value that starts and ends with a quote character. Pre-fix this would have been stripped
+    // to the empty string; post-fix it round-trips correctly.
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person {name: 'Alice'})");
+      database.command("opencypher", "CREATE (:Person {name: 'Bob'})");
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'}) CREATE (a)-[:KNOWS {note: \"'\"}]->(b)");
+    });
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH ()-[r:KNOWS {note: \"'\"}]->() RETURN r.note AS note")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("note")).isEqualTo("'");
+    }
+  }
+
+  @Test
+  void matchRelationshipEndpointWithSingleQuotePropertyViaUnwindDoesNotCrash() {
+    // Creates edges and MATCHes them using UNWIND-supplied endpoint node property filters.
+    // MatchRelationshipStep.matchesTargetProperties evaluates expression values and must not
+    // strip quotes when the evaluated value starts and ends with a quote character.
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("KNOWS");
+
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Person {name: 'Alice'})");
+      database.command("opencypher", "CREATE (:Person {name: \"'\"})");
+      database.command("opencypher", "CREATE (:Person {name: 'plain'})");
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}), (b:Person {name: \"'\"}) CREATE (a)-[:KNOWS]->(b)");
+      database.command("opencypher",
+          "MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'plain'}) CREATE (a)-[:KNOWS]->(b)");
+    });
+
+    final List<Map<String, Object>> batch = List.of(
+        Map.of("name", "'"),
+        Map.of("name", "plain")
+    );
+    final Map<String, Object> params = new HashMap<>();
+    params.put("batch", batch);
+
+    try (final ResultSet rs = database.query("opencypher",
+        "UNWIND $batch AS item MATCH (:Person)-[:KNOWS]->(m:Person {name: item.name}) RETURN m.name AS name", params)) {
+      int count = 0;
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        assertThat(row.<String>getProperty("name")).isNotNull();
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
     }
   }
 }
