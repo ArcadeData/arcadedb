@@ -3,6 +3,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
@@ -164,5 +165,67 @@ class OpenCypherIndexTest {
 
     final Collection<TypeIndex> indexes = database.getSchema().getType("Snapshot").getAllIndexes(false);
     assertThat(indexes).anyMatch(idx -> idx.getPropertyNames().contains("id") && !idx.isUnique());
+  }
+
+  // Issue #4222: integer property values must be preserved (not coerced to STRING) after CREATE INDEX inserts an implicit property declaration.
+  @Test
+  void integerPropertyValueIsPreservedAfterCreateIndex() {
+    // PART 1 (control): no index. Integer round-trips correctly.
+    database.command("opencypher", "MATCH (n) DETACH DELETE n");
+    database.command("opencypher", "CREATE (a:Person {uuid: 1})");
+    database.command("opencypher", "MATCH (n) DETACH DELETE n");
+    database.command("opencypher", "CREATE (a:Person {uuid: 1})");
+
+    assertIntegerLookupsAllReturnOne("Part 1 (no index)");
+
+    // PART 2 (broken before the fix): same sequence, but a CREATE INDEX inserted in the middle.
+    database.command("opencypher", "MATCH (n) DETACH DELETE n");
+    database.command("opencypher", "CREATE (a:Person {uuid: 1})");
+    database.command("opencypher", "CREATE INDEX IF NOT EXISTS FOR (n:Person) ON (n.uuid)");
+    database.command("opencypher", "MATCH (n) DETACH DELETE n");
+    database.command("opencypher", "CREATE (a:Person {uuid: 1})");
+
+    assertIntegerLookupsAllReturnOne("Part 2 (with CREATE INDEX)");
+  }
+
+  // Issue #4222: CREATE INDEX on an empty type must pick a value type that does not coerce subsequent numeric inserts.
+  @Test
+  void integerPropertyValueIsPreservedWhenIndexIsCreatedOnEmptyType() {
+    // No data when the index is created => fall back to a type that does not coerce numbers.
+    database.command("opencypher", "CREATE INDEX IF NOT EXISTS FOR (n:Account) ON (n.id)");
+    database.command("opencypher", "CREATE (a:Account {id: 42})");
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:Account {id: 42}) RETURN n.id AS u");
+    assertThat(rs.hasNext()).isTrue();
+    final Result r = rs.next();
+    final Object value = r.getProperty("u");
+    assertThat(value).isInstanceOf(Number.class);
+    assertThat(((Number) value).longValue()).isEqualTo(42L);
+  }
+
+  private void assertIntegerLookupsAllReturnOne(final String description) {
+    // 1. plain label match: returned uuid must still be a number (not "1").
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:Person) RETURN n.uuid AS u")) {
+      assertThat(rs.hasNext()).as(description + " - label match has row").isTrue();
+      final Object value = rs.next().getProperty("u");
+      assertThat(value).as(description + " - uuid retains numeric type").isInstanceOf(Number.class);
+      assertThat(((Number) value).longValue()).as(description + " - uuid value preserved").isEqualTo(1L);
+    }
+
+    // 2. inline property filter: must find the node by integer literal.
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:Person {uuid: 1}) RETURN n.uuid AS u")) {
+      assertThat(rs.hasNext()).as(description + " - inline property filter finds node").isTrue();
+      final Object value = rs.next().getProperty("u");
+      assertThat(value).as(description + " - inline lookup uuid numeric").isInstanceOf(Number.class);
+      assertThat(((Number) value).longValue()).isEqualTo(1L);
+    }
+
+    // 3. WHERE equality with integer literal: must find the node.
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:Person) WHERE n.uuid = 1 RETURN n.uuid AS u")) {
+      assertThat(rs.hasNext()).as(description + " - WHERE filter finds node").isTrue();
+      final Object value = rs.next().getProperty("u");
+      assertThat(value).as(description + " - WHERE lookup uuid numeric").isInstanceOf(Number.class);
+      assertThat(((Number) value).longValue()).isEqualTo(1L);
+    }
   }
 }

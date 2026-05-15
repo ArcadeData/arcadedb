@@ -279,4 +279,135 @@ public class OpenCypherOrderBySkipLimitTest {
     }
     return results;
   }
+
+  // Issue #3950: standalone ORDER BY ... DESC LIMIT before a following MATCH applies in place
+  @Test
+  void standaloneOrderByDescLimitBeforeFollowingMatch() {
+    final Database db = newIssue3950Database("desc-limit");
+    try {
+      final ResultSet result = db.query("opencypher",
+          """
+          MATCH (o:Order3950) \
+          ORDER BY o.orderDate DESC \
+          LIMIT 1 \
+          MATCH (o)-[:CONTAINS3950]->(i:Item3950) \
+          RETURN o.id AS orderId, collect(i.name) AS items""");
+
+      final List<Result> rows = collectResults(result);
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("orderId")).isEqualTo("ORD-003");
+      assertThat((List<Object>) rows.get(0).getProperty("items")).containsExactly("ItemC");
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Issue #3950: standalone ORDER BY ... ASC LIMIT before a following MATCH applies in place
+  @Test
+  void standaloneOrderByAscLimitBeforeFollowingMatch() {
+    final Database db = newIssue3950Database("asc-limit");
+    try {
+      final ResultSet result = db.query("opencypher",
+          """
+          MATCH (o:Order3950) \
+          ORDER BY o.orderDate ASC \
+          LIMIT 1 \
+          MATCH (o)-[:CONTAINS3950]->(i:Item3950) \
+          RETURN o.id AS orderId, collect(i.name) AS items""");
+
+      final List<Result> rows = collectResults(result);
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("orderId")).isEqualTo("ORD-001");
+      assertThat((List<Object>) rows.get(0).getProperty("items")).containsExactly("ItemA");
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Issue #3950: standalone SKIP/LIMIT pair before a following MATCH applies in place
+  @Test
+  void standaloneLimitOnlyBeforeFollowingMatch() {
+    final Database db = newIssue3950Database("skip-limit");
+    try {
+      final ResultSet result = db.query("opencypher",
+          """
+          MATCH (o:Order3950) \
+          ORDER BY o.orderDate ASC \
+          SKIP 1 \
+          LIMIT 1 \
+          MATCH (o)-[:CONTAINS3950]->(i:Item3950) \
+          RETURN o.id AS orderId, collect(i.name) AS items""");
+
+      final List<Result> rows = collectResults(result);
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("orderId")).isEqualTo("ORD-002");
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Issue #3950: standalone ORDER BY ... LIMIT before plain RETURN (control)
+  @Test
+  void standaloneOrderByLimitBeforeReturnStillWorks() {
+    final Database db = newIssue3950Database("before-return");
+    try {
+      final ResultSet result = db.query("opencypher",
+          """
+          MATCH (o:Order3950) \
+          ORDER BY o.orderDate DESC \
+          LIMIT 1 \
+          RETURN o.id AS orderId""");
+
+      final List<Result> rows = collectResults(result);
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("orderId")).isEqualTo("ORD-003");
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Issue #3950: explicit WITH ... ORDER BY ... LIMIT still works (control)
+  @Test
+  void explicitWithOrderByLimitStillWorks() {
+    final Database db = newIssue3950Database("explicit-with");
+    try {
+      final ResultSet result = db.query("opencypher",
+          """
+          MATCH (o:Order3950) \
+          WITH o \
+          ORDER BY o.orderDate DESC \
+          LIMIT 1 \
+          MATCH (o)-[:CONTAINS3950]->(i:Item3950) \
+          RETURN o.id AS orderId, collect(i.name) AS items""");
+
+      final List<Result> rows = collectResults(result);
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("orderId")).isEqualTo("ORD-003");
+      assertThat((List<Object>) rows.get(0).getProperty("items")).containsExactly("ItemC");
+    } finally {
+      db.drop();
+    }
+  }
+
+  private static Database newIssue3950Database(final String tag) {
+    final Database db = new DatabaseFactory("./target/databases/testopencypher-3950-" + tag).create();
+    db.getSchema().createVertexType("Order3950");
+    db.getSchema().createVertexType("Item3950");
+    db.getSchema().createEdgeType("CONTAINS3950");
+    db.transaction(() -> {
+      db.command("opencypher", "CREATE (:Order3950 {id: 'ORD-001', orderDate: 20230101})");
+      db.command("opencypher", "CREATE (:Order3950 {id: 'ORD-002', orderDate: 20230102})");
+      db.command("opencypher", "CREATE (:Order3950 {id: 'ORD-003', orderDate: 20230103})");
+      db.command("opencypher", "CREATE (:Item3950 {name: 'ItemA'})");
+      db.command("opencypher", "CREATE (:Item3950 {name: 'ItemB'})");
+      db.command("opencypher", "CREATE (:Item3950 {name: 'ItemC'})");
+      db.command("opencypher",
+          "MATCH (o:Order3950 {id:'ORD-001'}), (i:Item3950 {name:'ItemA'}) CREATE (o)-[:CONTAINS3950]->(i)");
+      db.command("opencypher",
+          "MATCH (o:Order3950 {id:'ORD-002'}), (i:Item3950 {name:'ItemB'}) CREATE (o)-[:CONTAINS3950]->(i)");
+      db.command("opencypher",
+          "MATCH (o:Order3950 {id:'ORD-003'}), (i:Item3950 {name:'ItemC'}) CREATE (o)-[:CONTAINS3950]->(i)");
+    });
+    return db;
+  }
 }

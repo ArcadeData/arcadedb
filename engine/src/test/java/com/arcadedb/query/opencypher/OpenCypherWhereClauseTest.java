@@ -994,4 +994,218 @@ public class OpenCypherWhereClauseTest {
       assertThat(names).containsExactly("Alice");
     }
   }
+
+  /** See issue #4108 */
+  @Nested
+  class WhereRelLabelRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      database = new DatabaseFactory("./target/databases/issue-4108-where-rel-label").create();
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE (n1:Person {name:'Alice'}), (n2:Person {name:'Bob'}), (n3:Person {name:'Charlie'})");
+        database.command("opencypher",
+            "MATCH (n1:Person {name:'Alice'}), (n2:Person {name:'Bob'}) CREATE (n1)-[:KNOWS]->(n2)");
+        database.command("opencypher",
+            "MATCH (n2:Person {name:'Bob'}), (n3:Person {name:'Charlie'}) CREATE (n2)-[:KNOWS]->(n3)");
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    // Issue #4108: WHERE r:Label on a bound relationship variable matches by relationship type
+    @Test
+    void whereRelTypeOnBoundRelMatchesAll() {
+      final ResultSet rs = database.query("opencypher", "MATCH (a)-[b]->(c) WHERE b:KNOWS RETURN count(b) AS cnt");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(2L);
+    }
+
+    // Issue #4108: WHERE r:Label rejects rows when the bound relationship type does not match
+    @Test
+    void whereRelTypeMismatchOnBoundRelReturnsZero() {
+      final ResultSet rs = database.query("opencypher", "MATCH (a)-[b]->(c) WHERE b:NONEXISTENT RETURN count(b) AS cnt");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(0L);
+    }
+
+    // Issue #4108: WHERE r:A|B union matches relationships of any listed type
+    @Test
+    void whereRelTypeUnionOnBoundRelMatchesAny() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (a)-[b]->(c) WHERE b:KNOWS|LIKES RETURN count(b) AS cnt");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(2L);
+    }
+
+    // Issue #4108: NOT r:Label inverts the bound-relationship type test correctly
+    @Test
+    void whereNotRelTypeOnBoundRelMatchesNone() {
+      final ResultSet rs = database.query("opencypher", "MATCH (a)-[b]->(c) WHERE NOT b:KNOWS RETURN count(b) AS cnt");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(0L);
+    }
+  }
+
+  /** See issue #4110 */
+  @Nested
+  class WhereBarePatternRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      database = new DatabaseFactory("./target/databases/issue-4110-where-bare-pattern").create();
+      database.transaction(() -> {
+        database.command("opencypher", "CREATE (:Person {name:'Alice'}), (:Person {name:'Bob'})");
+        database.command("opencypher",
+            "MATCH (a:Person {name:'Alice'}), (b:Person {name:'Bob'}) CREATE (a)-[:KNOWS]->(b)");
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    // Issue #4110: bare uncorrelated pattern predicate in WHERE is true for all outer rows when any relationship exists
+    @Test
+    void barePatternPredicateMatchesAllWhenRelationshipExists() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (p:Person) WHERE ()-[]->() RETURN p.name AS name ORDER BY name");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("Bob");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4110: NOT bare-pattern existence predicate rejects all rows when relationships exist
+    @Test
+    void notBarePatternPredicateRejectsAllWhenRelationshipExists() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (p:Person) WHERE NOT ()-[]->() RETURN p.name AS name ORDER BY name");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4110: bare-pattern existence predicate yields false for all rows when no relationship exists
+    @Test
+    void barePatternPredicateRejectsAllWhenNoRelationshipExists() {
+      database.transaction(() -> database.command("opencypher", "MATCH ()-[r:KNOWS]->() DELETE r"));
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (p:Person) WHERE ()-[]->() RETURN p.name AS name");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4110: bare-pattern existence predicate honors relationship type filters
+    @Test
+    void barePatternPredicateMatchesByRelationshipType() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (p:Person) WHERE ()-[:KNOWS]->() RETURN p.name AS name ORDER BY name");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("Bob");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4110: bare-pattern existence predicate with a missing relationship type yields no rows
+    @Test
+    void barePatternPredicateRejectsByMissingRelationshipType() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (p:Person) WHERE ()-[:NONEXISTENT]->() RETURN p.name AS name");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /** See issue #4112 */
+  @Nested
+  class WhereFalseRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      database = new DatabaseFactory("./target/databases/issue-4112-where-false").create();
+      database.transaction(() -> database.command("opencypher", "CREATE (:Person {name:'Alice'})"));
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    // Issue #4112: WHERE false rejects all rows
+    @Test
+    void whereFalseReturnsZeroRows() {
+      final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE false RETURN p.name AS name");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4112: WHERE true returns all rows unchanged
+    @Test
+    void whereTrueReturnsAllRows() {
+      final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE true RETURN p.name AS name");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4112: short-circuit AND with literal false rejects all rows
+    @Test
+    void whereFalseAndPredicateReturnsZeroRows() {
+      final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE false AND p.name = 'Alice' RETURN p.name AS name");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4112: predicate AND literal false rejects all rows
+    @Test
+    void wherePredicateAndFalseReturnsZeroRows() {
+      final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE p.name = 'Alice' AND false RETURN p.name AS name");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4112: false OR predicate returns only rows matching the predicate
+    @Test
+    void whereFalseOrPredicateReturnsMatchingRows() {
+      final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE false OR p.name = 'Alice' RETURN p.name AS name");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4112: boolean comparison true = false yields false and rejects all rows
+    @Test
+    void whereTrueEqualsFalseReturnsZeroRows() {
+      final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE true = false RETURN p.name AS name");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4112: NOT true is false and rejects all rows
+    @Test
+    void whereNotTrueReturnsZeroRows() {
+      final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE NOT true RETURN p.name AS name");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #4112: NOT false is true and returns all rows
+    @Test
+    void whereNotFalseReturnsAllRows() {
+      final ResultSet rs = database.query("opencypher", "MATCH (p:Person) WHERE NOT false RETURN p.name AS name");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("Alice");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
 }

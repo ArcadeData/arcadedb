@@ -30,19 +30,10 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for GitHub issue #3867: Error with index rebuilding.
- * <p>
- * The bug was in ContiguousPageWriter: after a chunk-commit callback committed the
- * transaction and started a new one, the writer's currentPage/currentPageNum were not
- * invalidated. If the next write targeted the same page number, ensurePageLoaded()
- * reused the stale MutablePage from the old (committed) transaction. This caused the
- * writer to mutate the byte array of a page already in the async-flush queue, leading
- * to corrupted on-disk page metadata ("Cannot resize the buffer" during loadMetadata).
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * LSM vector chunked-write regression tests: mid-page boundary, mixed-type chunks, and corrupted content-size clamping.
  */
-class Issue3867ChunkedGraphPersistenceTest {
-  private static final String DB_PATH = "databases/test-issue-3867-chunked-persistence";
+class LSMVectorIndexChunkedWriteTest {
+  private static final String DB_PATH = "databases/test-lsm-vector-chunked-write";
 
   @AfterEach
   void cleanup() {
@@ -50,16 +41,7 @@ class Issue3867ChunkedGraphPersistenceTest {
       new DatabaseFactory(DB_PATH).open().drop();
   }
 
-  /**
-   * Reproduces the scenario from issue #3867: writes data through ContiguousPageWriter
-   * with a very small chunk size so that the chunk-commit callback fires mid-page.
-   * After the commit the writer must reload the page in the new transaction instead of
-   * reusing the stale reference.
-   * <p>
-   * Without the fix, this test would either throw "Cannot resize the buffer" during
-   * commit, or silently corrupt page data (writes going to the stale page would be lost
-   * or cause inconsistent metadata).
-   */
+  // Issue #3867: chunked write with mid-page chunk boundary must not corrupt page data after commit/begin.
   @Test
   void chunkedWriteWithMidPageBoundaryShouldNotCorrupt() throws Exception {
     DatabaseFactory factory = new DatabaseFactory(DB_PATH);
@@ -132,10 +114,7 @@ class Issue3867ChunkedGraphPersistenceTest {
     }
   }
 
-  /**
-   * Tests that the defensive content-size validation in CachedPage.loadMetadata()
-   * handles corrupted pages gracefully instead of throwing an exception.
-   */
+  // Issue #3867: corrupted on-disk content-size header must be clamped on reload instead of throwing.
   @Test
   void corruptedPageContentSizeShouldBeClamped() throws Exception {
     DatabaseFactory factory = new DatabaseFactory(DB_PATH);
@@ -196,6 +175,73 @@ class Issue3867ChunkedGraphPersistenceTest {
       // If we reach here, the defensive clamping worked
       assertThat(reloadedPage).isNotNull();
       database.rollback();
+    }
+  }
+
+  // Issue #3869: mixed-type chunked writes (int/long/float) across many chunk boundaries must round-trip without BufferOverflowException.
+  @Test
+  void mixedTypeChunkedWriteShouldNotCorruptOrOverflow() throws Exception {
+    DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    Database database = factory.create();
+
+    try (database) {
+      final DatabaseInternal dbInternal = (DatabaseInternal) database;
+      final int pageSize = 65536;
+
+      final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(
+          dbInternal, "test-overflow-graph",
+          dbInternal.getDatabasePath(),
+          ComponentFile.MODE.READ_WRITE, pageSize);
+
+      dbInternal.getSchema().getEmbedded().registerFile(graphFile);
+
+      database.begin();
+      dbInternal.getTransaction().setUseWAL(false);
+
+      final ChunkCommitCallback chunkCallback = (bytesWritten) -> {
+        database.commit();
+        database.begin();
+        dbInternal.getTransaction().setUseWAL(false);
+      };
+
+      // Use 1 MB chunks - same as the test for #3867 but with mixed types
+      final ContiguousPageWriter writer = new ContiguousPageWriter(
+          dbInternal, graphFile.getFileId(), pageSize,
+          1, // 1 MB chunks
+          chunkCallback);
+
+      // Write a pattern of mixed types (int, long, float) to stress different write sizes
+      // and alignment. Each iteration writes 16 bytes (4+8+4).
+      // Total: 200,000 * 16 = 3,200,000 bytes (~3 MB) -> triggers 3 chunk commits at 1 MB each
+      final int iterations = 200_000;
+      for (int i = 0; i < iterations; i++) {
+        writer.writeInt(i);           // 4 bytes
+        writer.writeLong(i * 100L);   // 8 bytes
+        writer.writeFloat(i * 0.5f);  // 4 bytes
+      }
+
+      final long totalBytes = writer.position();
+      writer.close();
+      database.commit();
+
+      // Read back and verify all values
+      final ContiguousPageReader reader = new ContiguousPageReader(
+          dbInternal, graphFile.getFileId(), pageSize, totalBytes, 0L);
+
+      reader.seek(0);
+      for (int i = 0; i < iterations; i++) {
+        assertThat(reader.readInt())
+            .as("int at iteration %d", i).isEqualTo(i);
+        assertThat(reader.readLong())
+            .as("long at iteration %d", i).isEqualTo(i * 100L);
+        assertThat(reader.readFloat())
+            .as("float at iteration %d", i).isEqualTo(i * 0.5f);
+      }
+
+      reader.close();
     }
   }
 }

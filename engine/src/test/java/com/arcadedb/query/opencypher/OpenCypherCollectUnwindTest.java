@@ -541,6 +541,183 @@ class OpenCypherCollectUnwindTest {
     assertThat(result.hasNext()).isFalse();
   }
 
+  /** See issue #3758: tag co-occurrence via two MATCH clauses and via collect/UNWIND. */
+  @Nested
+  class Issue3758TagCooccurrence {
+    private Database tagDatabase;
+
+    @BeforeEach
+    void setUp() {
+      tagDatabase = new DatabaseFactory("./target/databases/testopencypher-issue3758").create();
+
+      tagDatabase.getSchema().createVertexType("Question");
+      tagDatabase.getSchema().createVertexType("Tag");
+      tagDatabase.getSchema().createEdgeType("TAGGED_WITH");
+
+      tagDatabase.transaction(() -> {
+        // Create 3 questions and 4 tags
+        tagDatabase.command("opencypher", "CREATE (q1:Question {Id: 1, Title: 'Q1'})");
+        tagDatabase.command("opencypher", "CREATE (q2:Question {Id: 2, Title: 'Q2'})");
+        tagDatabase.command("opencypher", "CREATE (q3:Question {Id: 3, Title: 'Q3'})");
+        tagDatabase.command("opencypher", "CREATE (t1:Tag {Id: 1, TagName: 'java'})");
+        tagDatabase.command("opencypher", "CREATE (t2:Tag {Id: 2, TagName: 'python'})");
+        tagDatabase.command("opencypher", "CREATE (t3:Tag {Id: 3, TagName: 'sql'})");
+        tagDatabase.command("opencypher", "CREATE (t4:Tag {Id: 4, TagName: 'graph'})");
+
+        // Q1 tagged with java, python, sql (3 tags -> 3 co-occurrence pairs)
+        tagDatabase.command("opencypher",
+            "MATCH (q:Question {Id: 1}), (t:Tag {Id: 1}) CREATE (q)-[:TAGGED_WITH]->(t)");
+        tagDatabase.command("opencypher",
+            "MATCH (q:Question {Id: 1}), (t:Tag {Id: 2}) CREATE (q)-[:TAGGED_WITH]->(t)");
+        tagDatabase.command("opencypher",
+            "MATCH (q:Question {Id: 1}), (t:Tag {Id: 3}) CREATE (q)-[:TAGGED_WITH]->(t)");
+
+        // Q2 tagged with java, python (2 tags -> 1 co-occurrence pair)
+        tagDatabase.command("opencypher",
+            "MATCH (q:Question {Id: 2}), (t:Tag {Id: 1}) CREATE (q)-[:TAGGED_WITH]->(t)");
+        tagDatabase.command("opencypher",
+            "MATCH (q:Question {Id: 2}), (t:Tag {Id: 2}) CREATE (q)-[:TAGGED_WITH]->(t)");
+
+        // Q3 tagged with sql, graph (2 tags -> 1 co-occurrence pair)
+        tagDatabase.command("opencypher",
+            "MATCH (q:Question {Id: 3}), (t:Tag {Id: 3}) CREATE (q)-[:TAGGED_WITH]->(t)");
+        tagDatabase.command("opencypher",
+            "MATCH (q:Question {Id: 3}), (t:Tag {Id: 4}) CREATE (q)-[:TAGGED_WITH]->(t)");
+      });
+    }
+
+    @AfterEach
+    void cleanup() {
+      if (tagDatabase != null) {
+        tagDatabase.drop();
+        tagDatabase = null;
+      }
+    }
+
+    // Issue #3758: two MATCH clauses sharing variable q must produce all co-occurrence pairs (4 rows).
+    @Test
+    void tagCooccurrenceWithTwoMatchClauses() {
+      tagDatabase.transaction(() -> {
+        try (final ResultSet rs = tagDatabase.query("opencypher", """
+            MATCH (q:Question)-[:TAGGED_WITH]->(t1:Tag)
+            MATCH (q)-[:TAGGED_WITH]->(t2:Tag)
+            WHERE t1.Id < t2.Id
+            RETURN t1.TagName AS tag1, t2.TagName AS tag2, count(*) AS cooccurs
+            ORDER BY cooccurs DESC, tag1 ASC, tag2 ASC
+            """)) {
+
+          final List<Result> results = new ArrayList<>();
+          while (rs.hasNext())
+            results.add(rs.next());
+
+          assertThat(results).hasSize(4);
+
+          assertThat(results.get(0).<String>getProperty("tag1")).isEqualTo("java");
+          assertThat(results.get(0).<String>getProperty("tag2")).isEqualTo("python");
+          assertThat(results.get(0).<Long>getProperty("cooccurs")).isEqualTo(2L);
+
+          assertThat(results.get(1).<String>getProperty("tag1")).isEqualTo("java");
+          assertThat(results.get(1).<String>getProperty("tag2")).isEqualTo("sql");
+          assertThat(results.get(1).<Long>getProperty("cooccurs")).isEqualTo(1L);
+
+          assertThat(results.get(2).<String>getProperty("tag1")).isEqualTo("python");
+          assertThat(results.get(2).<String>getProperty("tag2")).isEqualTo("sql");
+          assertThat(results.get(2).<Long>getProperty("cooccurs")).isEqualTo(1L);
+
+          assertThat(results.get(3).<String>getProperty("tag1")).isEqualTo("sql");
+          assertThat(results.get(3).<String>getProperty("tag2")).isEqualTo("graph");
+          assertThat(results.get(3).<Long>getProperty("cooccurs")).isEqualTo(1L);
+        }
+      });
+    }
+
+    // Issue #3758: collect + double UNWIND variant must enforce WITH ordering and bypass count-return optimization.
+    @Test
+    void tagCooccurrenceWithCollectUnwind() {
+      tagDatabase.transaction(() -> {
+        try (final ResultSet rs = tagDatabase.query("opencypher", """
+            MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag)
+            WITH q, collect(t) AS tags
+            UNWIND tags AS t1
+            UNWIND tags AS t2
+            WITH t1, t2
+            WHERE t1.Id < t2.Id
+            RETURN t1.TagName AS tag1, t2.TagName AS tag2, count(*) AS cooccurs
+            ORDER BY cooccurs DESC, tag1 ASC, tag2 ASC
+            """)) {
+
+          final List<Result> results = new ArrayList<>();
+          while (rs.hasNext())
+            results.add(rs.next());
+
+          assertThat(results).hasSize(4);
+
+          assertThat(results.get(0).<String>getProperty("tag1")).isEqualTo("java");
+          assertThat(results.get(0).<String>getProperty("tag2")).isEqualTo("python");
+          assertThat(results.get(0).<Long>getProperty("cooccurs")).isEqualTo(2L);
+
+          assertThat(results.get(1).<String>getProperty("tag1")).isEqualTo("java");
+          assertThat(results.get(1).<String>getProperty("tag2")).isEqualTo("sql");
+          assertThat(results.get(1).<Long>getProperty("cooccurs")).isEqualTo(1L);
+
+          assertThat(results.get(2).<String>getProperty("tag1")).isEqualTo("python");
+          assertThat(results.get(2).<String>getProperty("tag2")).isEqualTo("sql");
+          assertThat(results.get(2).<Long>getProperty("cooccurs")).isEqualTo(1L);
+
+          assertThat(results.get(3).<String>getProperty("tag1")).isEqualTo("sql");
+          assertThat(results.get(3).<String>getProperty("tag2")).isEqualTo("graph");
+          assertThat(results.get(3).<Long>getProperty("cooccurs")).isEqualTo(1L);
+        }
+      });
+    }
+
+    // Issue #3758: collect/UNWIND must preserve vertex properties through the pipeline.
+    @Test
+    void collectUnwindPreservesProperties() {
+      tagDatabase.transaction(() -> {
+        try (final ResultSet rs = tagDatabase.query("opencypher", """
+            MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag)
+            WITH q, collect(t) AS tags
+            UNWIND tags AS t1
+            RETURN t1.TagName AS name, t1.Id AS tid
+            ORDER BY tid
+            """)) {
+
+          final List<Result> results = new ArrayList<>();
+          while (rs.hasNext())
+            results.add(rs.next());
+
+          assertThat(results).hasSize(7);
+          for (final Result r : results)
+            assertThat(r.<String>getProperty("name")).as("TagName should not be null after UNWIND").isNotNull();
+        }
+      });
+    }
+
+    // Issue #3758: single MATCH baseline must aggregate questions per tag correctly.
+    @Test
+    void singleMatchTagCountBaseline() {
+      tagDatabase.transaction(() -> {
+        try (final ResultSet rs = tagDatabase.query("opencypher", """
+            MATCH (q:Question)-[:TAGGED_WITH]->(t:Tag)
+            RETURN t.TagName AS tag, count(q) AS questions
+            ORDER BY questions DESC, tag ASC
+            """)) {
+
+          final List<Result> results = new ArrayList<>();
+          while (rs.hasNext())
+            results.add(rs.next());
+
+          assertThat(results).hasSize(4);
+          assertThat(results.get(0).<String>getProperty("tag")).isEqualTo("java");
+          assertThat(results.get(0).<Long>getProperty("questions")).isEqualTo(2L);
+          assertThat(results.get(1).<String>getProperty("tag")).isEqualTo("python");
+          assertThat(results.get(1).<Long>getProperty("questions")).isEqualTo(2L);
+        }
+      });
+    }
+  }
+
   /** See issue #3129 */
   @Nested
   class UnwindMergeUniqueRidsRegression {

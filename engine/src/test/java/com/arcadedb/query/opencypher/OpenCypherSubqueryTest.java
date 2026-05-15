@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -457,5 +458,214 @@ class OpenCypherSubqueryTest {
     assertThat((String) rows.get(0).getProperty("location")).isEqualTo("Berlin");
     assertThat((String) rows.get(1).getProperty("location")).isEqualTo("London");
     assertThat((String) rows.get(2).getProperty("location")).isEqualTo("Paris");
+  }
+
+  // Issue #4182: outer variable reflects mutation from CALL subquery with separate RETURN
+  @Test
+  void outerVariableReflectsMutationFromCallSubqueryWithSeparateReturn() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Node {score: 1})"));
+
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher",
+          "MATCH (n:Node) CALL { WITH n SET n.score = 2 RETURN 1 AS ok } RETURN n.score AS score");
+
+      final List<Result> rows = drainResults(rs);
+      assertThat(rows).hasSize(1);
+      assertThat(((Number) rows.get(0).getProperty("score")).longValue()).isEqualTo(2L);
+    });
+  }
+
+  // Issue #4182: outer node binding reflects mutation from CALL subquery when whole node is returned
+  @Test
+  void outerNodeBindingReflectsMutationFromCallSubquery() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Node {score: 1})"));
+
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher",
+          "MATCH (n:Node) CALL { WITH n SET n.score = 2 RETURN 1 AS ok } RETURN n");
+
+      final List<Result> rows = drainResults(rs);
+      assertThat(rows).hasSize(1);
+      final Vertex n = (Vertex) rows.get(0).getElement().get();
+      assertThat(((Number) n.get("score")).longValue()).isEqualTo(2L);
+    });
+  }
+
+  // Issue #4182: outer variable reflects mutation in IN TRANSACTIONS unit subquery
+  @Test
+  void outerVariableReflectsMutationInTransactionsUnitSubquery() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:TestNode {id: 1, vector: [1.0, 2.0, 3.0]})"));
+
+    final ResultSet rs = database.command("opencypher",
+        "MATCH (n:TestNode) CALL { WITH n SET n.vector = [4.0, 5.0, 6.0] } IN TRANSACTIONS OF 1000 ROWS RETURN n");
+
+    final List<Result> rows = drainResults(rs);
+    assertThat(rows).hasSize(1);
+    final Vertex n = (Vertex) rows.get(0).getElement().get();
+    final Object vector = n.get("vector");
+    assertThat(vector).isNotNull();
+    final List<?> values = (List<?>) vector;
+    assertThat(values).hasSize(3);
+    assertThat(((Number) values.get(0)).doubleValue()).isEqualTo(4.0d);
+    assertThat(((Number) values.get(1)).doubleValue()).isEqualTo(5.0d);
+    assertThat(((Number) values.get(2)).doubleValue()).isEqualTo(6.0d);
+  }
+
+  // Issue #4182: aliased return from subquery already reflects mutation (control)
+  @Test
+  void aliasedReturnFromSubqueryAlreadyReflectsMutation() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Node {score: 1})"));
+
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher",
+          "MATCH (n:Node) CALL { WITH n SET n.score = 2 RETURN n AS updated } RETURN updated.score AS score");
+
+      final List<Result> rows = drainResults(rs);
+      assertThat(rows).hasSize(1);
+      assertThat(((Number) rows.get(0).getProperty("score")).longValue()).isEqualTo(2L);
+    });
+  }
+
+  // Issue #4182: scalar outer variable is preserved across CALL subquery
+  @Test
+  void scalarOuterVariableIsPreservedAcrossCallSubquery() {
+    database.transaction(() -> database.command("opencypher", "CREATE (:Node {score: 1})"));
+
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher",
+          "MATCH (n:Node) WITH n, 42 AS k CALL { WITH n SET n.score = 7 RETURN 1 AS ok } "
+              + "RETURN k, n.score AS score");
+
+      final List<Result> rows = drainResults(rs);
+      assertThat(rows).hasSize(1);
+      assertThat(((Number) rows.get(0).getProperty("k")).longValue()).isEqualTo(42L);
+      assertThat(((Number) rows.get(0).getProperty("score")).longValue()).isEqualTo(7L);
+    });
+  }
+
+  // Issue #4182: multiple outer rows each reflect their own mutation
+  @Test
+  void multipleOuterRowsEachReflectOwnMutation() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (:Node {id: 1, score: 10}), (:Node {id: 2, score: 20}), (:Node {id: 3, score: 30})"));
+
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher",
+          "MATCH (n:Node) CALL { WITH n SET n.score = n.score + 100 RETURN 1 AS ok } "
+              + "RETURN n.id AS id, n.score AS score ORDER BY id");
+
+      final List<Result> rows = drainResults(rs);
+      assertThat(rows).hasSize(3);
+      assertThat(((Number) rows.get(0).getProperty("score")).longValue()).isEqualTo(110L);
+      assertThat(((Number) rows.get(1).getProperty("score")).longValue()).isEqualTo(120L);
+      assertThat(((Number) rows.get(2).getProperty("score")).longValue()).isEqualTo(130L);
+    });
+  }
+
+  // Issue #4191: top-level write-only CALL body returns zero rows but performs the write
+  @Test
+  void topLevelWriteOnlyCallReturnsZeroRows() {
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher", "CALL { CREATE (:N) }");
+      assertThat(drainResults(rs)).isEmpty();
+
+      final ResultSet count = database.query("opencypher", "MATCH (n:N) RETURN count(n) AS c");
+      assertThat(count.hasNext()).isTrue();
+      assertThat(((Number) count.next().getProperty("c")).longValue()).isEqualTo(1L);
+    });
+  }
+
+  // Issue #4191: top-level write-only CALL with chained creates returns zero rows
+  @Test
+  void topLevelWriteOnlyCallWithChainedCreatesReturnsZeroRows() {
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher",
+          "CALL { CREATE (a) WITH a SKIP 0 CREATE (a)-[:KNOWS]->(b) }");
+      assertThat(drainResults(rs)).isEmpty();
+
+      final ResultSet edges = database.query("opencypher", "MATCH ()-[r:KNOWS]->() RETURN count(r) AS c");
+      assertThat(edges.hasNext()).isTrue();
+      assertThat(((Number) edges.next().getProperty("c")).longValue()).isEqualTo(1L);
+    });
+  }
+
+  // Issue #4191: top-level CREATE without CALL also returns zero rows (control)
+  @Test
+  void topLevelCreateReturnsZeroRows() {
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher", "CREATE (:N)");
+      assertThat(drainResults(rs)).isEmpty();
+    });
+  }
+
+  // Issue #4191: CALL body with explicit RETURN emits rows (control)
+  @Test
+  void callSubqueryWithExplicitReturnEmitsRows() {
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher",
+          "CALL { CREATE (a) RETURN 1 AS x } RETURN x");
+
+      final List<Result> rows = drainResults(rs);
+      assertThat(rows).hasSize(1);
+      assertThat(((Number) rows.get(0).getProperty("x")).longValue()).isEqualTo(1L);
+    });
+  }
+
+  // Issue #4191: write-only CALL preserves outer cardinality when outer RETURN exists
+  @Test
+  void writeOnlyCallPreservesOuterCardinalityWhenOuterReturnExists() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (:Node {id: 1}), (:Node {id: 2}), (:Node {id: 3})"));
+
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher",
+          "MATCH (n:Node) CALL { CREATE (:Side) } RETURN n.id AS id ORDER BY id");
+
+      final List<Result> rows = drainResults(rs);
+      assertThat(rows).hasSize(3);
+      assertThat(((Number) rows.get(0).getProperty("id")).longValue()).isEqualTo(1L);
+      assertThat(((Number) rows.get(1).getProperty("id")).longValue()).isEqualTo(2L);
+      assertThat(((Number) rows.get(2).getProperty("id")).longValue()).isEqualTo(3L);
+
+      final ResultSet sideCount = database.query("opencypher", "MATCH (s:Side) RETURN count(s) AS c");
+      assertThat(sideCount.hasNext()).isTrue();
+      assertThat(((Number) sideCount.next().getProperty("c")).longValue()).isEqualTo(3L);
+    });
+  }
+
+  // Issue #4191: write-only CALL with no outer RETURN returns zero rows but performs writes
+  @Test
+  void writeOnlyCallWithNoOuterReturnReturnsZeroRowsButPerformsWrites() {
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (:Node {id: 1}), (:Node {id: 2})"));
+
+    database.transaction(() -> {
+      final ResultSet rs = database.command("opencypher",
+          "MATCH (n:Node) CALL { CREATE (:Side) }");
+      assertThat(drainResults(rs)).isEmpty();
+
+      final ResultSet sideCount = database.query("opencypher", "MATCH (s:Side) RETURN count(s) AS c");
+      assertThat(sideCount.hasNext()).isTrue();
+      assertThat(((Number) sideCount.next().getProperty("c")).longValue()).isEqualTo(2L);
+    });
+  }
+
+  // Issue #4191: IN TRANSACTIONS variant of write-only top-level CALL returns zero rows
+  @Test
+  void topLevelWriteOnlyCallInTransactionsReturnsZeroRows() {
+    final ResultSet rs = database.command("opencypher",
+        "CALL { CREATE (:N) } IN TRANSACTIONS OF 1000 ROWS");
+    assertThat(drainResults(rs)).isEmpty();
+
+    final ResultSet count = database.query("opencypher", "MATCH (n:N) RETURN count(n) AS c");
+    assertThat(count.hasNext()).isTrue();
+    assertThat(((Number) count.next().getProperty("c")).longValue()).isEqualTo(1L);
+  }
+
+  private static List<Result> drainResults(final ResultSet rs) {
+    final List<Result> rows = new ArrayList<>();
+    while (rs.hasNext())
+      rows.add(rs.next());
+    return rows;
   }
 }

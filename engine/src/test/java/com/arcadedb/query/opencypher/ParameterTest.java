@@ -18,14 +18,21 @@
  */
 package com.arcadedb.query.opencypher;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -33,6 +40,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -238,6 +246,229 @@ class ParameterTest {
       database.drop();
       FileUtils.deleteRecursively(new File("./target/testparams3"));
     }
+  }
+
+  // Issue #3864: JSON params arriving over HTTP must parse vector arrays as primitive float[] and flow through OpenCypher into ARRAY_OF_FLOATS properties.
+  @Test
+  @Tag("slow")
+  void httpStyleJsonRequestProducesPrimitiveDoubleArrays() {
+    final int    chunkCount   = 500;
+    final int    batchSize    = 500;
+    final int    vectorDim    = 1_024;
+    final long   maxElapsedMs = 5_000L;
+    final Random random       = new Random(42);
+
+    final String databasePath = "./target/databases/issue-3864-json-params-http-path";
+    FileUtils.deleteRecursively(new File(databasePath));
+    final Database database = new DatabaseFactory(databasePath).create();
+    try {
+      database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 500);
+
+      database.transaction(() -> {
+        final VertexType chunkType = database.getSchema().getOrCreateVertexType("CHUNK");
+        chunkType.getOrCreateProperty("name", Type.STRING);
+
+        final VertexType embType = database.getSchema().getOrCreateVertexType("CHUNK_EMBEDDING");
+        embType.getOrCreateProperty("vector", Type.ARRAY_OF_FLOATS);
+
+        database.getSchema().getOrCreateEdgeType("embb");
+      });
+
+      final List<String> chunkRids = new ArrayList<>(chunkCount);
+      database.transaction(() -> {
+        for (int i = 0; i < chunkCount; i++) {
+          final MutableVertex v = database.newVertex("CHUNK");
+          v.set("name", "chunk_" + i);
+          v.save();
+          chunkRids.add(v.getIdentity().toString());
+        }
+      });
+
+      final JSONObject root = new JSONObject();
+      root.put("language", "opencypher");
+      root.put("command",
+          """
+          UNWIND $batch AS BatchEntry \
+          MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+          CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+          CREATE (p)-[:embb]->(b)""");
+      final JSONArray batchJson = new JSONArray();
+      for (int i = 0; i < batchSize; i++) {
+        final JSONObject entry = new JSONObject();
+        entry.put("destRID", chunkRids.get(i));
+        final JSONArray vec = new JSONArray();
+        for (int d = 0; d < vectorDim; d++)
+          vec.put(random.nextDouble());
+        entry.put("vector", vec);
+        batchJson.put(entry);
+      }
+      final JSONObject paramsJson = new JSONObject();
+      paramsJson.put("batch", batchJson);
+      root.put("params", paramsJson);
+
+      final String httpBody = root.toString();
+      assertThat(httpBody.length()).isGreaterThan(1024 * 1024); // sanity: large payload
+
+      // Mimic the PostCommandHandler entry path.
+      final JSONObject parsed = new JSONObject(httpBody);
+      final Map<String, Object> requestMap = parsed.toMap(true);
+      @SuppressWarnings("unchecked")
+      final Map<String, Object> params = (Map<String, Object>) requestMap.get("params");
+
+      @SuppressWarnings("unchecked")
+      final List<Map<String, Object>> batch = (List<Map<String, Object>>) params.get("batch");
+      assertThat(batch).hasSize(batchSize);
+      assertThat(batch.get(0).get("vector"))
+          .as("the optimization must yield primitive float[] for the vector field")
+          .isInstanceOf(float[].class);
+
+      final long start = System.currentTimeMillis();
+      database.transaction(() -> database.command("opencypher",
+          """
+          UNWIND $batch AS BatchEntry \
+          MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
+          CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
+          CREATE (p)-[:embb]->(b)""",
+          params));
+      final long elapsed = System.currentTimeMillis() - start;
+
+      database.transaction(() -> {
+        try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM CHUNK_EMBEDDING")) {
+          assertThat(rs.hasNext()).isTrue();
+          assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(batchSize);
+        }
+        try (final ResultSet rs = database.query("sql", "SELECT count(*) AS cnt FROM embb")) {
+          assertThat(rs.hasNext()).isTrue();
+          assertThat(((Number) rs.next().getProperty("cnt")).longValue()).isEqualTo(batchSize);
+        }
+
+        // Spot-check that the stored vector is a float[] and matches the source values
+        // (within float precision since the source was double).
+        try (final ResultSet rs = database.query("sql", "SELECT vector FROM CHUNK_EMBEDDING LIMIT 1")) {
+          assertThat(rs.hasNext()).isTrue();
+          final Object stored = rs.next().getProperty("vector");
+          assertThat(stored).isInstanceOf(float[].class);
+          assertThat(((float[]) stored).length).isEqualTo(vectorDim);
+        }
+      });
+
+      assertThat(elapsed)
+          .as("HTTP-path Cypher batch (%d entries x dim %d) took %d ms", batchSize, vectorDim, elapsed)
+          .isLessThan(maxElapsedMs);
+    } finally {
+      database.drop();
+      FileUtils.deleteRecursively(new File(databasePath));
+    }
+  }
+
+  // Issue #3765: literal values on both sides match (baseline)
+  @Test
+  void matchWithLiteralValuesOnBothSides() {
+    final Database database = newIssue3765Database("literals");
+    try {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (a:A {f: 'a'})-[:LINK]->(b:B {f: 'x'}) RETURN a.f, b.f")) {
+        final List<Result> results = new ArrayList<>();
+        while (rs.hasNext())
+          results.add(rs.next());
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).<String>getProperty("a.f")).isEqualTo("a");
+        assertThat(results.get(0).<String>getProperty("b.f")).isEqualTo("x");
+      }
+    } finally {
+      database.drop();
+    }
+  }
+
+  // Issue #3765: parameter on the left-hand side node works
+  @Test
+  void matchWithParameterOnLeftSideNode() {
+    final Database database = newIssue3765Database("left");
+    try {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (a:A {f: $param})-[:LINK]->(b:B {f: 'x'}) RETURN a.f, b.f",
+          Map.of("param", "a"))) {
+        final List<Result> results = new ArrayList<>();
+        while (rs.hasNext())
+          results.add(rs.next());
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).<String>getProperty("a.f")).isEqualTo("a");
+        assertThat(results.get(0).<String>getProperty("b.f")).isEqualTo("x");
+      }
+    } finally {
+      database.drop();
+    }
+  }
+
+  // Issue #3765: parameter on the right-hand side node (originally returned empty)
+  @Test
+  void matchWithParameterOnRightSideNode() {
+    final Database database = newIssue3765Database("right");
+    try {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (a:A {f: 'a'})-[:LINK]->(b:B {f: $param}) RETURN a.f, b.f",
+          Map.of("param", "x"))) {
+        final List<Result> results = new ArrayList<>();
+        while (rs.hasNext())
+          results.add(rs.next());
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).<String>getProperty("a.f")).isEqualTo("a");
+        assertThat(results.get(0).<String>getProperty("b.f")).isEqualTo("x");
+      }
+    } finally {
+      database.drop();
+    }
+  }
+
+  // Issue #3765: parameters on both sides of the relationship
+  @Test
+  void matchWithParametersOnBothSides() {
+    final Database database = newIssue3765Database("both");
+    try {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (a:A {f: $p1})-[:LINK]->(b:B {f: $p2}) RETURN a.f, b.f",
+          Map.of("p1", "a", "p2", "x"))) {
+        final List<Result> results = new ArrayList<>();
+        while (rs.hasNext())
+          results.add(rs.next());
+
+        assertThat(results).hasSize(1);
+        assertThat(results.get(0).<String>getProperty("a.f")).isEqualTo("a");
+        assertThat(results.get(0).<String>getProperty("b.f")).isEqualTo("x");
+      }
+    } finally {
+      database.drop();
+    }
+  }
+
+  // Issue #3765: parameter on right-hand side that does not match returns empty
+  @Test
+  void matchWithParameterOnRightSideNoMatch() {
+    final Database database = newIssue3765Database("right-nomatch");
+    try {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (a:A {f: 'a'})-[:LINK]->(b:B {f: $param}) RETURN a.f, b.f",
+          Map.of("param", "nonexistent"))) {
+        assertThat(rs.hasNext()).isFalse();
+      }
+    } finally {
+      database.drop();
+    }
+  }
+
+  private static Database newIssue3765Database(final String tag) {
+    final Database database = new DatabaseFactory("./target/databases/testopencypher-issue3765-" + tag).create();
+    database.getSchema().createVertexType("A");
+    database.getSchema().createVertexType("B");
+    database.getSchema().createEdgeType("LINK");
+    database.transaction(() -> {
+      database.command("opencypher",
+          "CREATE (a:A {f: 'a'}), (b:B {f: 'x'}), (a)-[:LINK]->(b)");
+    });
+    return database;
   }
 
   @BeforeEach
