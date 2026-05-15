@@ -25,7 +25,6 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -48,7 +47,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class LocalSchemaOrphanIndexLoadTest extends TestHelper {
 
   @Test
-  void renamedIndexFileGetsReattachedSilently() throws IOException {
+  void renamedIndexFileGetsReattachedSilently() throws Exception {
     database.transaction(() -> {
       final VertexType type = database.getSchema().createVertexType("Item");
       type.createProperty("code", Type.STRING);

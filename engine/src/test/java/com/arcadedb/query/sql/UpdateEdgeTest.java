@@ -10,7 +10,7 @@ import java.util.Iterator;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-public class UpdateEdgeTest extends TestHelper {
+class UpdateEdgeTest extends TestHelper {
   @Override
   protected void beginTest() {
     database.transaction(() -> {
@@ -20,7 +20,7 @@ public class UpdateEdgeTest extends TestHelper {
   }
 
   @Test
-  void testUpdateEdgeIn() {
+  void updateEdgeIn() {
     final RID[] rids = new RID[3];
 
     database.transaction(() -> {
@@ -39,7 +39,7 @@ public class UpdateEdgeTest extends TestHelper {
   }
 
   @Test
-  void testUpdateEdgeOut() {
+  void updateEdgeOut() {
     final RID[] rids = new RID[3];
 
     database.transaction(() -> {
@@ -58,7 +58,7 @@ public class UpdateEdgeTest extends TestHelper {
   }
 
   @Test
-  void testUpdateEdgePreservesProperties() {
+  void updateEdgePreservesProperties() {
     final RID[] rids = new RID[3];
 
     database.transaction(() -> {
@@ -76,7 +76,7 @@ public class UpdateEdgeTest extends TestHelper {
   }
 
   @Test
-  void testUpdateEdgeInReflectedInTraversal() {
+  void updateEdgeInReflectedInTraversal() {
     final RID[] rids = new RID[3];
 
     database.transaction(() -> {
