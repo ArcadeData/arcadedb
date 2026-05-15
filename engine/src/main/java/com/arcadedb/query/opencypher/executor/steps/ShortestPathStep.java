@@ -32,10 +32,16 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Deque;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Execution step for shortestPath() and allShortestPaths() patterns in MATCH clauses.
@@ -137,10 +143,21 @@ public class ShortestPathStep extends AbstractExecutionStep {
             final Vertex sourceVertex = (Vertex) sourceObj;
             final Vertex targetVertex = (Vertex) targetObj;
 
-            // Compute the shortest path and resolve RIDs to actual Vertex/Edge objects
-            final List<Object> path = computeShortestPath(sourceVertex, targetVertex, context);
+            // For allShortestPaths(), enumerate every path sharing the minimal length; for shortestPath()
+            // (singular), keep returning just one. Reuse the same compute method for the single-path case
+            // so existing behaviour and CSR-accelerated lookups in SQLFunctionShortestPath stay in play.
+            final List<List<Object>> paths;
+            if (pattern.isAllPaths()) {
+              paths = computeAllShortestPaths(sourceVertex, targetVertex, context);
+            } else {
+              final List<Object> single = computeShortestPath(sourceVertex, targetVertex, context);
+              paths = (single == null || single.isEmpty()) ? Collections.emptyList() : Collections.singletonList(single);
+            }
 
-            if (path != null && !path.isEmpty()) {
+            for (final List<Object> path : paths) {
+              if (path == null || path.isEmpty())
+                continue;
+
               // Create result with the path
               final ResultInternal result = new ResultInternal();
 
@@ -226,6 +243,133 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     // Build a proper path with alternating Vertex and Edge objects
     return resolvePathWithEdges(pathRids, vertexDirection, edgeTypes, context.getDatabase());
+  }
+
+  /**
+   * Enumerates every simple path between {@code source} and {@code target} sharing the minimum length.
+   * <p>
+   * Implementation: layered BFS that records, for each visited vertex, the full set of predecessors that
+   * reached it on the same BFS layer. Once {@code target} is discovered, BFS halts at the end of that
+   * layer (any further expansion would only find longer paths) and all paths are reconstructed by
+   * back-tracking through the predecessor multimap. Respects relationship direction and the type filter
+   * declared in the pattern.
+   * <p>
+   * For issue #4239: {@code allShortestPaths()} must return every path of the minimal length, not just
+   * one. The legacy implementation returned the single path that {@link SQLFunctionShortestPath} happened
+   * to find first, violating the OpenCypher contract.
+   */
+  private List<List<Object>> computeAllShortestPaths(final Vertex source, final Vertex target, final CommandContext context) {
+    final List<String> edgeTypes;
+    if (pattern.getRelationshipCount() > 0 && pattern.getRelationship(0).hasTypes())
+      edgeTypes = pattern.getRelationship(0).getTypes();
+    else
+      edgeTypes = null;
+
+    Vertex.DIRECTION direction = Vertex.DIRECTION.BOTH;
+    if (pattern.getRelationshipCount() > 0) {
+      final Direction dir = pattern.getRelationship(0).getDirection();
+      switch (dir) {
+        case OUT:
+          direction = Vertex.DIRECTION.OUT;
+          break;
+        case IN:
+          direction = Vertex.DIRECTION.IN;
+          break;
+        default:
+          direction = Vertex.DIRECTION.BOTH;
+      }
+    }
+
+    final Database database = context.getDatabase();
+    final RID sourceRid = source.getIdentity();
+    final RID targetRid = target.getIdentity();
+
+    if (sourceRid.equals(targetRid)) {
+      final List<Object> singleNode = new ArrayList<>(1);
+      singleNode.add(source);
+      return Collections.singletonList(singleNode);
+    }
+
+    final String[] typesArray = (edgeTypes == null || edgeTypes.isEmpty()) ? null : edgeTypes.toArray(new String[0]);
+
+    // distance from source. Acts as visited-set too.
+    final Map<RID, Integer> distance = new HashMap<>();
+    // For each vertex, the set of parents that reached it at the same BFS depth (= co-shortest predecessors).
+    final Map<RID, List<RID>> predecessors = new HashMap<>();
+    distance.put(sourceRid, 0);
+
+    Deque<Vertex> currentLayer = new ArrayDeque<>();
+    currentLayer.add(source);
+    int currentDepth = 0;
+    int foundDepth = -1;
+
+    while (!currentLayer.isEmpty()) {
+      if (Thread.interrupted())
+        throw new com.arcadedb.exception.CommandExecutionException("The allShortestPaths() function has been interrupted");
+
+      // Stop expanding once we've completed the layer where target was first discovered: any further hop
+      // would only produce strictly longer (non co-shortest) paths.
+      if (foundDepth >= 0 && currentDepth >= foundDepth)
+        break;
+
+      final Deque<Vertex> nextLayer = new ArrayDeque<>();
+      final Set<RID> nextLayerSeen = new HashSet<>();
+
+      for (final Vertex v : currentLayer) {
+        final Iterable<Vertex> neighbors = typesArray != null ? v.getVertices(direction, typesArray) : v.getVertices(direction);
+        for (final Vertex neighbor : neighbors) {
+          final RID neighborRid = neighbor.getIdentity();
+          final Integer existing = distance.get(neighborRid);
+          if (existing == null) {
+            distance.put(neighborRid, currentDepth + 1);
+            final List<RID> parents = new ArrayList<>(1);
+            parents.add(v.getIdentity());
+            predecessors.put(neighborRid, parents);
+            if (neighborRid.equals(targetRid))
+              foundDepth = currentDepth + 1;
+            else if (nextLayerSeen.add(neighborRid))
+              nextLayer.add(neighbor);
+          } else if (existing == currentDepth + 1) {
+            // Another co-shortest predecessor at the same BFS depth.
+            predecessors.get(neighborRid).add(v.getIdentity());
+          }
+        }
+      }
+
+      currentLayer = nextLayer;
+      currentDepth++;
+    }
+
+    if (foundDepth < 0)
+      return Collections.emptyList();
+
+    // Backtrack from target through every predecessor chain to produce every path of length foundDepth.
+    final List<List<RID>> ridPaths = new ArrayList<>();
+    final Deque<RID> stack = new ArrayDeque<>();
+    stack.push(targetRid);
+    buildAllPaths(targetRid, sourceRid, predecessors, stack, ridPaths);
+
+    final List<List<Object>> result = new ArrayList<>(ridPaths.size());
+    for (final List<RID> ridPath : ridPaths)
+      result.add(resolvePathWithEdges(ridPath, direction, edgeTypes, database));
+    return result;
+  }
+
+  private static void buildAllPaths(final RID current, final RID sourceRid, final Map<RID, List<RID>> predecessors,
+      final Deque<RID> stack, final List<List<RID>> out) {
+    if (current.equals(sourceRid)) {
+      // stack pushes from target down to source, so iterating head-to-tail yields source-to-target.
+      out.add(new ArrayList<>(stack));
+      return;
+    }
+    final List<RID> parents = predecessors.get(current);
+    if (parents == null)
+      return;
+    for (final RID parent : parents) {
+      stack.push(parent);
+      buildAllPaths(parent, sourceRid, predecessors, stack, out);
+      stack.pop();
+    }
   }
 
   /**

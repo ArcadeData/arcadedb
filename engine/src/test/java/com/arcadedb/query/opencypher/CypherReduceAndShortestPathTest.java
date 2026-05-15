@@ -362,6 +362,77 @@ class CypherReduceAndShortestPathTest {
     assertThat(path).isNotNull();
   }
 
+  /**
+   * Regression test for https://github.com/ArcadeData/arcadedb/issues/4239
+   * allShortestPaths() must return EVERY path of minimal length, not just one.
+   * Graph: A->M1->B and A->M2->B (two distinct 2-hop paths between A and B).
+   */
+  @Test
+  void allShortestPathsReturnsAllCoShortestPaths() {
+    database.getSchema().createVertexType("Issue4239_Node");
+    database.getSchema().createEdgeType("Issue4239_R");
+
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("Issue4239_Node").set("name", "A").save();
+      final MutableVertex b = database.newVertex("Issue4239_Node").set("name", "B").save();
+      final MutableVertex m1 = database.newVertex("Issue4239_Node").set("name", "M1").save();
+      final MutableVertex m2 = database.newVertex("Issue4239_Node").set("name", "M2").save();
+      a.newEdge("Issue4239_R", m1, true, (Object[]) null).save();
+      m1.newEdge("Issue4239_R", b, true, (Object[]) null).save();
+      a.newEdge("Issue4239_R", m2, true, (Object[]) null).save();
+      m2.newEdge("Issue4239_R", b, true, (Object[]) null).save();
+    });
+
+    final ResultSet rs = database.query("opencypher",
+        """
+            MATCH path = allShortestPaths((a:Issue4239_Node {name: 'A'})-[:Issue4239_R*..3]->(b:Issue4239_Node {name: 'B'}))
+            RETURN [n IN nodes(path) | n.name] AS path_nodes, length(path) AS hops""");
+
+    final java.util.Set<List<String>> observed = new java.util.HashSet<>();
+    int rows = 0;
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      assertThat(row.<Number>getProperty("hops").longValue()).isEqualTo(2L);
+      @SuppressWarnings("unchecked")
+      final List<String> nodes = (List<String>) row.<Object>getProperty("path_nodes");
+      observed.add(nodes);
+      rows++;
+    }
+
+    assertThat(rows).as("allShortestPaths should return 2 rows for two co-shortest paths").isEqualTo(2);
+    assertThat(observed).contains(List.of("A", "M1", "B"), List.of("A", "M2", "B"));
+  }
+
+  /**
+   * Companion check for issue #4239: shortestPath() (singular) must still return EXACTLY one row
+   * even when multiple co-shortest paths exist.
+   */
+  @Test
+  void shortestPathReturnsSinglePathWhenMultipleCoShortestExist() {
+    database.getSchema().createVertexType("Issue4239b_Node");
+    database.getSchema().createEdgeType("Issue4239b_R");
+
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("Issue4239b_Node").set("name", "A").save();
+      final MutableVertex b = database.newVertex("Issue4239b_Node").set("name", "B").save();
+      final MutableVertex m1 = database.newVertex("Issue4239b_Node").set("name", "M1").save();
+      final MutableVertex m2 = database.newVertex("Issue4239b_Node").set("name", "M2").save();
+      a.newEdge("Issue4239b_R", m1, true, (Object[]) null).save();
+      m1.newEdge("Issue4239b_R", b, true, (Object[]) null).save();
+      a.newEdge("Issue4239b_R", m2, true, (Object[]) null).save();
+      m2.newEdge("Issue4239b_R", b, true, (Object[]) null).save();
+    });
+
+    final ResultSet rs = database.query("opencypher",
+        """
+            MATCH path = shortestPath((a:Issue4239b_Node {name: 'A'})-[:Issue4239b_R*..3]->(b:Issue4239b_Node {name: 'B'}))
+            RETURN length(path) AS hops""");
+
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<Number>getProperty("hops").longValue()).isEqualTo(2L);
+    assertThat(rs.hasNext()).as("shortestPath should return exactly one row").isFalse();
+  }
+
   @Test
   void shortestPathWithPathVariable() {
     // Test that path variable is properly bound and length() works correctly
