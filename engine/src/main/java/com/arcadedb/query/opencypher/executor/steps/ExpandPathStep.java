@@ -344,13 +344,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
   private boolean matchesTargetProperties(final Vertex vertex) {
     for (final Map.Entry<String, Object> entry : targetNodePattern.getProperties().entrySet()) {
       final Object actual = vertex.get(entry.getKey());
-      Object expected = entry.getValue();
-      // Handle string literals: remove quotes
-      if (expected instanceof String) {
-        final String s = (String) expected;
-        if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith("\"") && s.endsWith("\"")))
-          expected = s.substring(1, s.length() - 1);
-      }
+      final Object expected = entry.getValue();
       if (actual == null || !actual.equals(expected))
         return false;
     }

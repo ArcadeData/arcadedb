@@ -931,20 +931,14 @@ public class MatchNodeStep extends AbstractExecutionStep {
       } else if (expectedValue instanceof String) {
         final String strValue = (String) expectedValue;
 
-        // Check if it's a parameter reference
-        if (strValue.startsWith("$")) {
+        // Legacy parameter reference encoded as "$name"
+        if (strValue.startsWith("$") && strValue.length() > 1) {
           final String paramName = strValue.substring(1);
           if (context.getInputParameters() != null) {
             final Object paramValue = context.getInputParameters().get(paramName);
             if (paramValue != null)
               expectedValue = paramValue;
           }
-        }
-        // Handle string literals: remove quotes
-        else if (strValue.startsWith("'") && strValue.endsWith("'")) {
-          expectedValue = strValue.substring(1, strValue.length() - 1);
-        } else if (strValue.startsWith("\"") && strValue.endsWith("\"")) {
-          expectedValue = strValue.substring(1, strValue.length() - 1);
         }
       }
 
