@@ -27,6 +27,7 @@ import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
@@ -41,6 +42,7 @@ import java.time.format.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -902,6 +904,216 @@ public class UpdateStatementExecutionTest extends TestHelper {
           assertThat(resultSet.next().<String>getProperty("name")).isEqualTo("bob");
       });
     }
+  }
+
+  // Issue #3813: UPDATE resolves an INSERT subquery returning @rid as the update target
+  @Test
+  void updateSubqueryInsertReturnRid() {
+    database.command("sql", "CREATE DOCUMENT TYPE Doc");
+
+    final ResultSet result = database.command("sql", "UPDATE (INSERT INTO Doc RETURN @rid) SET b = 3");
+    assertThat(result.hasNext()).isTrue();
+    assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
+
+    final ResultSet check = database.query("sql", "SELECT FROM Doc WHERE b = 3");
+    assertThat(check.hasNext()).isTrue();
+    assertThat((int) check.next().getProperty("b")).isEqualTo(3);
+    assertThat(check.hasNext()).isFalse();
+  }
+
+  // Issue #3813: UPDATE resolves an INSERT subquery returning the full element as the update target
+  @Test
+  void updateSubqueryInsertNoReturn() {
+    database.command("sql", "CREATE DOCUMENT TYPE Doc");
+
+    final ResultSet result = database.command("sql", "UPDATE (INSERT INTO Doc) SET b = 3");
+    assertThat(result.hasNext()).isTrue();
+    assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
+
+    final ResultSet check = database.query("sql", "SELECT FROM Doc WHERE b = 3");
+    assertThat(check.hasNext()).isTrue();
+    assertThat((int) check.next().getProperty("b")).isEqualTo(3);
+    assertThat(check.hasNext()).isFalse();
+  }
+
+  // Issue #3813: SQLScript LET + UPDATE Doc SET ... WHERE @rid = $x.@rid[0] resolves the LET variable
+  @Test
+  void sqlScriptLetUpdateWhereRid() {
+    database.command("sql", "CREATE DOCUMENT TYPE Doc");
+
+    final ResultSet result = database.command("sqlscript",
+        """
+        LET $x = INSERT INTO Doc RETURN @rid;
+        UPDATE Doc SET b = 3 WHERE @rid = $x.@rid[0];\
+        """);
+    assertThat(result.hasNext()).isTrue();
+    assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
+
+    final ResultSet check = database.query("sql", "SELECT FROM Doc WHERE b = 3");
+    assertThat(check.hasNext()).isTrue();
+    assertThat((int) check.next().getProperty("b")).isEqualTo(3);
+    assertThat(check.hasNext()).isFalse();
+  }
+
+  // Issue #3813: SQLScript LET + UPDATE $x.@rid[0] SET ... uses the LET variable directly as the UPDATE target
+  @Test
+  void sqlScriptLetUpdateTarget() {
+    database.command("sql", "CREATE DOCUMENT TYPE Doc");
+
+    final ResultSet result = database.command("sqlscript",
+        """
+        LET $x = INSERT INTO Doc RETURN @rid;
+        UPDATE $x.@rid[0] SET b = 3;\
+        """);
+    assertThat(result.hasNext()).isTrue();
+    assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
+
+    final ResultSet check = database.query("sql", "SELECT FROM Doc WHERE b = 3");
+    assertThat(check.hasNext()).isTrue();
+    assertThat((int) check.next().getProperty("b")).isEqualTo(3);
+    assertThat(check.hasNext()).isFalse();
+  }
+
+  // Issue #3813: UPDATE WHERE @rid = (INSERT INTO Doc RETURN @rid).@rid[0] resolves the INSERT subquery to a RID for comparison
+  @Test
+  void updateWhereRidEqualsSubqueryExpression() {
+    database.command("sql", "CREATE DOCUMENT TYPE Doc");
+
+    final ResultSet result = database.command("sql",
+        "UPDATE Doc SET b = 3 WHERE @rid = (INSERT INTO Doc RETURN @rid).@rid[0]");
+    assertThat(result.hasNext()).isTrue();
+    assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
+
+    final ResultSet check = database.query("sql", "SELECT FROM Doc WHERE b = 3");
+    assertThat(check.hasNext()).isTrue();
+    assertThat((int) check.next().getProperty("b")).isEqualTo(3);
+    assertThat(check.hasNext()).isFalse();
+  }
+
+  // Issue #1814: UPDATE CONTENT without the mandatory property fails when APPLY DEFAULTS is not used
+  @Test
+  void updateContentWithoutMandatoryPropertyFails() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.prop STRING (mandatory true, notnull true, default 'Hi')");
+      database.command("sql", "CREATE PROPERTY doc.other STRING");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO doc CONTENT { \"prop\": \"Ho\", \"other\": \"value\" }");
+
+      ResultSet result = database.query("sql", "SELECT FROM doc WHERE prop = 'Ho'");
+      assertThat(result.hasNext()).isTrue();
+    });
+
+    assertThatThrownBy(() -> {
+      database.transaction(() -> {
+        database.command("sql", "UPDATE doc CONTENT { \"other\": \"new\" } WHERE prop = 'Ho'");
+      });
+    }).isInstanceOf(ValidationException.class)
+        .hasMessageContaining("mandatory");
+  }
+
+  // Issue #1814: UPDATE CONTENT with APPLY DEFAULTS triggers default value for missing mandatory property
+  @Test
+  void updateContentWithApplyDefaultsSucceeds() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.prop STRING (mandatory true, notnull true, default 'Hi')");
+      database.command("sql", "CREATE PROPERTY doc.other STRING");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO doc CONTENT { \"prop\": \"Ho\", \"other\": \"value\" }");
+
+      ResultSet result = database.query("sql", "SELECT FROM doc WHERE prop = 'Ho'");
+      assertThat(result.hasNext()).isTrue();
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "UPDATE doc CONTENT { \"other\": \"new\" } APPLY DEFAULTS WHERE prop = 'Ho'");
+
+      ResultSet result = database.query("sql", "SELECT FROM doc WHERE other = 'new'");
+      assertThat(result.hasNext()).isTrue();
+      var record = result.next();
+      assertThat((String) record.getProperty("prop")).isEqualTo("Hi");
+      assertThat((String) record.getProperty("other")).isEqualTo("new");
+    });
+  }
+
+  // Issue #1814: UPDATE SET prop = null APPLY DEFAULTS resets the property to its schema default value
+  @Test
+  void updateSetWithApplyDefaultsSucceeds() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.prop STRING (mandatory true, notnull true, default 'Hi')");
+      database.command("sql", "CREATE PROPERTY doc.other STRING");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO doc CONTENT { \"prop\": \"Ho\", \"other\": \"value\" }");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "UPDATE doc SET prop = null, other = 'changed' APPLY DEFAULTS WHERE prop = 'Ho'");
+
+      ResultSet result = database.query("sql", "SELECT FROM doc WHERE other = 'changed'");
+      assertThat(result.hasNext()).isTrue();
+      var record = result.next();
+      assertThat((String) record.getProperty("prop")).isEqualTo("Hi");
+    });
+  }
+
+  // Issue #1814: UPDATE without APPLY DEFAULTS does NOT trigger default values - preserves existing property value
+  @Test
+  void updateWithoutApplyDefaultsPreservesOriginalBehavior() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.prop STRING (mandatory true, notnull true, default 'Hi')");
+      database.command("sql", "CREATE PROPERTY doc.other STRING");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO doc CONTENT { \"prop\": \"Original\", \"other\": \"value\" }");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "UPDATE doc SET other = 'changed' WHERE prop = 'Original'");
+
+      ResultSet result = database.query("sql", "SELECT FROM doc WHERE other = 'changed'");
+      assertThat(result.hasNext()).isTrue();
+      var record = result.next();
+      assertThat((String) record.getProperty("prop")).isEqualTo("Original");
+    });
+  }
+
+  // Issue #1814: APPLY DEFAULTS evaluates dynamic default expressions (e.g. sysdate) on UPDATE
+  @Test
+  void updateWithApplyDefaultsAndDynamicDefault() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE timestamped");
+      database.command("sql", "CREATE PROPERTY timestamped.name STRING");
+      database.command("sql", "CREATE PROPERTY timestamped.updated STRING (default \"sysdate('YYYY-MM-DD')\")");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO timestamped SET name = 'test'");
+
+      ResultSet result = database.query("sql", "SELECT FROM timestamped WHERE name = 'test'");
+      assertThat(result.hasNext()).isTrue();
+      var record = result.next();
+      String initialUpdated = record.getProperty("updated");
+      assertThat((Object) initialUpdated).isNotNull();
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "UPDATE timestamped SET updated = null APPLY DEFAULTS WHERE name = 'test'");
+
+      ResultSet result = database.query("sql", "SELECT FROM timestamped WHERE name = 'test'");
+      assertThat(result.hasNext()).isTrue();
+      var record = result.next();
+      assertThat((Object) record.getProperty("updated")).isNotNull();
+    });
   }
 
 }

@@ -19,8 +19,10 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -272,5 +274,223 @@ class UnwindExpandStepTest extends TestHelper {
 
     assertThat(result.hasNext()).isFalse();
     result.close();
+  }
+
+  // Issue #1582: SELECT FROM doc UNWIND lst (no projection) returns one record per list element
+  @Test
+  void unwindWithoutProjection() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.lst LIST");
+      database.command("sql", "INSERT INTO doc SET lst = [1,2,3]");
+    });
+
+    database.transaction(() -> {
+      final ResultSet result = database.query("sql", "SELECT FROM doc UNWIND lst");
+
+      final List<Result> results = new ArrayList<>();
+      while (result.hasNext())
+        results.add(result.next());
+
+      assertThat(results).hasSize(3);
+      assertThat(results.get(0).<Integer>getProperty("lst")).isEqualTo(1);
+      assertThat(results.get(1).<Integer>getProperty("lst")).isEqualTo(2);
+      assertThat(results.get(2).<Integer>getProperty("lst")).isEqualTo(3);
+    });
+  }
+
+  // Issue #1582: SELECT @rid FROM doc UNWIND lst returns one record per list element with the @rid projection preserved
+  @Test
+  void unwindWithRidProjection() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.lst LIST");
+      database.command("sql", "INSERT INTO doc SET lst = [1,2,3]");
+    });
+
+    database.transaction(() -> {
+      final ResultSet ridResult = database.query("sql", "SELECT @rid FROM doc");
+      assertThat(ridResult.hasNext()).isTrue();
+      final RID expectedRid = ridResult.next().getProperty("@rid");
+
+      final ResultSet result = database.query("sql", "SELECT @rid FROM doc UNWIND lst");
+
+      final List<Result> results = new ArrayList<>();
+      while (result.hasNext())
+        results.add(result.next());
+
+      assertThat(results).hasSize(3);
+
+      for (final Result row : results) {
+        assertThat(row.<RID>getProperty("@rid")).isEqualTo(expectedRid);
+      }
+    });
+  }
+
+  // Issue #1582: SELECT name FROM doc WHERE ... UNWIND lst returns one record per list element with a projection that does not include the unwind field
+  @Test
+  void unwindWithCustomProjection() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.lst LIST");
+      database.command("sql", "INSERT INTO doc SET lst = [1,2,3]");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO doc SET name = 'test', lst = ['a','b','c']");
+
+      final ResultSet result = database.query("sql", "SELECT name FROM doc WHERE name = 'test' UNWIND lst");
+
+      final List<Result> results = new ArrayList<>();
+      while (result.hasNext())
+        results.add(result.next());
+
+      assertThat(results).hasSize(3);
+
+      for (final Result row : results) {
+        assertThat(row.<String>getProperty("name")).isEqualTo("test");
+      }
+    });
+  }
+
+  // Issue #1582: SELECT lst FROM doc UNWIND lst returns one record per list element where the projection includes the unwind field
+  @Test
+  void unwindWithUnwindFieldInProjection() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.lst LIST");
+      database.command("sql", "INSERT INTO doc SET lst = [1,2,3]");
+    });
+
+    database.transaction(() -> {
+      final ResultSet result = database.query("sql", "SELECT lst FROM doc UNWIND lst");
+
+      final List<Result> results = new ArrayList<>();
+      while (result.hasNext())
+        results.add(result.next());
+
+      assertThat(results).hasSize(3);
+      assertThat(results.get(0).<Integer>getProperty("lst")).isEqualTo(1);
+      assertThat(results.get(1).<Integer>getProperty("lst")).isEqualTo(2);
+      assertThat(results.get(2).<Integer>getProperty("lst")).isEqualTo(3);
+    });
+  }
+
+  // Issue #1582: SELECT name, count FROM doc ... UNWIND tags returns one record per tag with multiple projections preserved
+  @Test
+  void unwindWithMultipleProjections() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE doc");
+      database.command("sql", "CREATE PROPERTY doc.lst LIST");
+      database.command("sql", "INSERT INTO doc SET lst = [1,2,3]");
+    });
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO doc SET name = 'multi', tags = ['x','y','z'], count = 10");
+
+      final ResultSet result = database.query("sql", "SELECT name, count FROM doc WHERE name = 'multi' UNWIND tags");
+
+      final List<Result> results = new ArrayList<>();
+      while (result.hasNext())
+        results.add(result.next());
+
+      assertThat(results).hasSize(3);
+
+      for (final Result row : results) {
+        assertThat(row.<String>getProperty("name")).isEqualTo("multi");
+        assertThat(row.<Integer>getProperty("count")).isEqualTo(10);
+      }
+    });
+  }
+
+  // Issue #2776: SELECT $nrid FROM (SELECT expand(...) FROM Tag LET $nrid = @rid WHERE id = '1') keeps the LET-bound RID stable across all expanded rows
+  @Test
+  void expandWithLetVariable() {
+    setupNewsTagsGraph();
+
+    database.transaction(() -> {
+      final ResultSet tagResult = database.query("sql", "SELECT @rid FROM Tag WHERE id = '1'");
+      assertThat(tagResult.hasNext()).isTrue();
+      final RID expectedRid = tagResult.next().getProperty("@rid");
+      assertThat(expectedRid).isNotNull();
+
+      final String query = "SELECT $nrid FROM (SELECT expand(out('HasTag').inE('HasTag')) FROM Tag LET $nrid = @rid WHERE id = '1')";
+      final ResultSet result = database.query("sql", query);
+
+      final List<RID> nridValues = new ArrayList<>();
+      while (result.hasNext()) {
+        final Result row = result.next();
+        final Object nridValue = row.getProperty("$nrid");
+        assertThat(nridValue).isInstanceOf(RID.class);
+        nridValues.add((RID) nridValue);
+      }
+
+      assertThat(nridValues).hasSize(7);
+
+      for (int i = 0; i < nridValues.size(); i++) {
+        assertThat(nridValues.get(i))
+            .as("Row %d should have $nrid = %s but was %s", i, expectedRid, nridValues.get(i))
+            .isEqualTo(expectedRid);
+      }
+    });
+  }
+
+  // Issue #2776: SELECT $nrid FROM (SELECT ... AS tags FROM Tag LET $nrid = @rid WHERE id = '1' UNWIND tags) keeps the LET-bound RID stable across all unwound rows
+  @Test
+  void unwindWithLetVariable() {
+    setupNewsTagsGraph();
+
+    database.transaction(() -> {
+      final ResultSet tagResult = database.query("sql", "SELECT @rid FROM Tag WHERE id = '1'");
+      assertThat(tagResult.hasNext()).isTrue();
+      final RID expectedRid = tagResult.next().getProperty("@rid");
+      assertThat(expectedRid).isNotNull();
+
+      final String query = "SELECT $nrid FROM (SELECT out('HasTag').inE('HasTag') AS tags FROM Tag LET $nrid = @rid WHERE id = '1' UNWIND tags)";
+      final ResultSet result = database.query("sql", query);
+
+      final List<RID> nridValues = new ArrayList<>();
+      while (result.hasNext()) {
+        final Result row = result.next();
+        final Object nridValue = row.getProperty("$nrid");
+        assertThat(nridValue).isInstanceOf(RID.class);
+        nridValues.add((RID) nridValue);
+      }
+
+      assertThat(nridValues).hasSize(7);
+
+      for (int i = 0; i < nridValues.size(); i++) {
+        assertThat(nridValues.get(i))
+            .as("Row %d should have $nrid = %s but was %s", i, expectedRid, nridValues.get(i))
+            .isEqualTo(expectedRid);
+      }
+    });
+  }
+
+  private void setupNewsTagsGraph() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE News");
+      database.command("sql", "CREATE VERTEX TYPE Tag");
+      database.command("sql", "CREATE EDGE TYPE HasTag");
+
+      for (int i = 1; i <= 10; i++) {
+        database.command("sql", "INSERT INTO News CONTENT { \"id\": \"" + i + "\", \"title\": \"News " + i + "\", \"content\": \"Content " + i + "\" }");
+      }
+
+      for (int i = 1; i <= 10; i++) {
+        database.command("sql", "INSERT INTO Tag CONTENT { \"id\": \"" + i + "\", \"name\": \"Tag " + i + "\" }");
+      }
+
+      database.command("sql", "CREATE EDGE HasTag FROM (SELECT FROM Tag WHERE id = '1') TO (SELECT FROM News WHERE id = '1')");
+      database.command("sql", "CREATE EDGE HasTag FROM (SELECT FROM Tag WHERE id = '2') TO (SELECT FROM News WHERE id = '1')");
+      database.command("sql", "CREATE EDGE HasTag FROM (SELECT FROM Tag WHERE id = '3') TO (SELECT FROM News WHERE id = '1')");
+      database.command("sql", "CREATE EDGE HasTag FROM (SELECT FROM Tag WHERE id = '4') TO (SELECT FROM News WHERE id = '1')");
+      database.command("sql", "CREATE EDGE HasTag FROM (SELECT FROM Tag WHERE id = '5') TO (SELECT FROM News WHERE id = '1')");
+      database.command("sql", "CREATE EDGE HasTag FROM (SELECT FROM Tag WHERE id = '1') TO (SELECT FROM News WHERE id = '2')");
+      database.command("sql", "CREATE EDGE HasTag FROM (SELECT FROM Tag WHERE id = '2') TO (SELECT FROM News WHERE id = '2')");
+      database.command("sql", "CREATE EDGE HasTag FROM (SELECT FROM Tag WHERE id = '6') TO (SELECT FROM News WHERE id = '10')");
+      database.command("sql", "CREATE EDGE HasTag FROM (SELECT FROM Tag WHERE id = '9') TO (SELECT FROM News WHERE id = '10')");
+      database.command("sql", "CREATE EDGE HasTag FROM (SELECT FROM Tag WHERE id = '10') TO (SELECT FROM News WHERE id = '10')");
+    });
   }
 }
