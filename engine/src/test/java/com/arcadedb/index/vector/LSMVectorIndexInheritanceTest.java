@@ -76,12 +76,7 @@ class LSMVectorIndexInheritanceTest extends TestHelper {
         testVector[i] = (float) Math.random();
       }
 
-      try {
-        database.command("sql", "INSERT INTO CHUNK_EMBEDDING SET vector = ?", (Object) testVector);
-      } catch (final Exception e) {
-        e.printStackTrace();
-        throw e;
-      }
+      database.command("sql", "INSERT INTO CHUNK_EMBEDDING SET vector = ?", (Object) testVector);
     });
 
     // Step 5: Verify both records exist

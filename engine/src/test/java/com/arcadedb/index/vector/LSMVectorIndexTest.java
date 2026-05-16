@@ -56,6 +56,7 @@ import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for LSMVectorIndex using JVector.
@@ -2284,26 +2285,17 @@ class LSMVectorIndexTest extends TestHelper {
     database.transaction(() -> {
       final float[] queryVector2 = new float[] { 0.0f, 0.0f, 0.0f, 0.0f };
 
-      // This should throw IllegalArgumentException with clear message
-      boolean exceptionThrown = false;
-      try {
+      assertThatThrownBy(() -> {
         final ResultSet rs = database.query("sql",
             "SELECT `vector.neighbors`('EmbeddingNode[vector]', ?, 10) as neighbors FROM EmbeddingNode LIMIT 1",
             queryVector2);
         // Trigger lazy evaluation by calling next()
-        if (rs.hasNext()) {
+        if (rs.hasNext())
           rs.next();
-        }
-      } catch (final IllegalArgumentException e) {
-        exceptionThrown = true;
-        assertThat(e.getMessage())
-            .contains("zero vector")
-            .contains("COSINE")
-            .withFailMessage("Exception should mention zero vector and COSINE similarity");
-      }
-      assertThat(exceptionThrown)
-          .withFailMessage("Expected IllegalArgumentException for zero vector with COSINE similarity")
-          .isTrue();
+      })
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("zero vector")
+          .hasMessageContaining("COSINE");
     });
 
     // Test 3: Query with another vector should work fine
