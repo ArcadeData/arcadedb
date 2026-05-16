@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -40,6 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Isolated in a dedicated class because it intentionally exercises corruption-detection paths
  * and therefore disables the post-test database integrity check.
  */
+@Tag("slow")
 class LSMVectorIndexConcurrentMultiPageUpdateTest extends TestHelper {
 
   private static final int NUM_RECORDS         = 2000;

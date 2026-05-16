@@ -191,7 +191,10 @@ class CypherLabelDisjunctionTest {
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/testopencypher-dynamic-label-3923").create();
+      final DatabaseFactory factory = new DatabaseFactory("./target/databases/testopencypher-dynamic-label-3923");
+      if (factory.exists())
+        factory.open().drop();
+      database = factory.create();
     }
 
     @AfterEach
@@ -265,7 +268,10 @@ class CypherLabelDisjunctionTest {
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/issue-4105-label-union").create();
+      final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue-4105-label-union");
+      if (factory.exists())
+        factory.open().drop();
+      database = factory.create();
       database.transaction(() -> database.command("opencypher",
           "CREATE (:Person {name:'Alice'}), (:Company {name:'TechCorp'})"));
     }

@@ -43,7 +43,10 @@ class CypherExistsTest {
 
   @BeforeEach
   void setup() {
-    database = new DatabaseFactory("./target/databases/cypherexists").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/cypherexists");
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
 
     database.transaction(() -> {
       // Create schema
@@ -151,7 +154,10 @@ class CypherExistsTest {
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/issue-4097-exists-outer-var").create();
+      final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue-4097-exists-outer-var");
+      if (factory.exists())
+        factory.open().drop();
+      database = factory.create();
       database.transaction(() -> database.command("opencypher",
           "CREATE (:Node {id:1, name:'test'}), (:Node {id:2, name:'other'})"));
     }
@@ -217,7 +223,10 @@ class CypherExistsTest {
 
     @BeforeEach
     void setUp() {
-      database = new DatabaseFactory("./target/databases/issue-4126-exists-and-not-exists").create();
+      final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue-4126-exists-and-not-exists");
+      if (factory.exists())
+        factory.open().drop();
+      database = factory.create();
       database.transaction(() -> {
         database.command("sql", "CREATE VERTEX TYPE Owner");
         database.command("sql", "CREATE PROPERTY Owner.id STRING");
