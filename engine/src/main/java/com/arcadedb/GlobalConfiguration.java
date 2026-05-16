@@ -42,20 +42,19 @@ public enum GlobalConfiguration {
   // ENVIRONMENT
   DUMP_CONFIG_AT_STARTUP("arcadedb.dumpConfigAtStartup", SCOPE.JVM, "Dumps the configuration at startup", Boolean.class, false,
       value -> {
-        //dumpConfiguration(System.out);
+        if (Boolean.TRUE.equals(value))
+          try {
+            final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+            dumpConfiguration(new PrintStream(buffer));
+            if (LogManager.instance() != null)
+              LogManager.instance().log(buffer, Level.WARNING, new String(buffer.toByteArray()));
+            else
+              System.out.println(new String(buffer.toByteArray()));
 
-        try {
-          final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
-          dumpConfiguration(new PrintStream(buffer));
-          if (LogManager.instance() != null)
-            LogManager.instance().log(buffer, Level.WARNING, new String(buffer.toByteArray()));
-          else
-            System.out.println(new String(buffer.toByteArray()));
-
-          buffer.close();
-        } catch (IOException e) {
-          System.out.println("Error on printing initial configuration to log (error=" + e + ")");
-        }
+            buffer.close();
+          } catch (IOException e) {
+            System.out.println("Error on printing initial configuration to log (error=" + e + ")");
+          }
 
         return value;
       }),

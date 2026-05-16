@@ -39,7 +39,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_pointInsidePolygon_returnsTrue() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.within('POINT (5 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isTrue();
@@ -48,7 +48,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_pointOutsidePolygon_returnsFalse() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.within('POINT (15 15)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isFalse();
@@ -69,7 +69,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.within(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         final Object val = r.next().getProperty("v");
@@ -97,7 +97,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_overlappingPolygons_returnsTrue() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.intersects('POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))', 'POLYGON ((3 3, 9 3, 9 9, 3 9, 3 3))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isTrue();
@@ -106,7 +106,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_disjointPolygons_returnsFalse() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.intersects('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isFalse();
@@ -131,7 +131,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.intersects(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         final Object val = r.next().getProperty("v");
@@ -153,7 +153,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_polygonContainsPoint_returnsTrue() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.contains('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))', 'POINT (5 5)') as v");
         assertThat((Boolean) r.next().getProperty("v")).isTrue();
@@ -162,7 +162,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_polygonDoesNotContainOutsidePoint_returnsFalse() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.contains('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))', 'POINT (15 15)') as v");
         assertThat((Boolean) r.next().getProperty("v")).isFalse();
@@ -183,7 +183,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.contains(null, 'POINT (5 5)') as v");
         final Object val = r.next().getProperty("v");
@@ -205,7 +205,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_nearbyPoints_returnsTrue() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.dWithin('POINT (0 0)', 'POINT (1 1)', 2.0) as v");
         assertThat((Boolean) r.next().getProperty("v")).isTrue();
@@ -214,7 +214,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_farPoints_returnsFalse() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.dWithin('POINT (0 0)', 'POINT (10 10)', 1.0) as v");
         assertThat((Boolean) r.next().getProperty("v")).isFalse();
@@ -235,7 +235,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.dWithin(null, 'POINT (1 1)', 2.0) as v");
         final Object val = r.next().getProperty("v");
@@ -270,7 +270,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_farApartShapes_returnsTrue() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.disjoint('POINT (50 50)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isTrue();
@@ -279,7 +279,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_intersectingShapes_returnsFalse() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.disjoint('POINT (5 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isFalse();
@@ -300,7 +300,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.disjoint(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         final Object val = r.next().getProperty("v");
@@ -322,7 +322,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_identicalPoints_returnsTrue() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.equals('POINT (5 5)', 'POINT (5 5)') as v");
         assertThat((Boolean) r.next().getProperty("v")).isTrue();
@@ -331,7 +331,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_differentPoints_returnsFalse() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.equals('POINT (5 5)', 'POINT (6 6)') as v");
         assertThat((Boolean) r.next().getProperty("v")).isFalse();
@@ -352,7 +352,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.equals(null, 'POINT (5 5)') as v");
         final Object val = r.next().getProperty("v");
@@ -374,7 +374,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_lineCrossesPolygon_returnsTrue() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.crosses('LINESTRING (-1 5, 11 5)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isTrue();
@@ -383,7 +383,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_disjointLine_returnsFalse() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.crosses('LINESTRING (20 20, 30 30)', 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isFalse();
@@ -408,7 +408,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.crosses(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         final Object val = r.next().getProperty("v");
@@ -430,7 +430,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_partiallyOverlapping_returnsTrue() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.overlaps('POLYGON ((0 0, 6 0, 6 6, 0 6, 0 0))', 'POLYGON ((3 3, 9 3, 9 9, 3 9, 3 3))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isTrue();
@@ -439,7 +439,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_disjointPolygons_returnsFalse() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.overlaps('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isFalse();
@@ -464,7 +464,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.overlaps(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         final Object val = r.next().getProperty("v");
@@ -486,7 +486,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_adjacentPolygons_returnsTrue() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.touches('POLYGON ((0 0, 5 0, 5 5, 0 5, 0 0))', 'POLYGON ((5 0, 10 0, 10 5, 5 5, 5 0))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isTrue();
@@ -495,7 +495,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void sql_disjointPolygons_returnsFalse() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.touches('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))', 'POLYGON ((5 5, 9 5, 9 9, 5 9, 5 5))') as v");
         assertThat((Boolean) r.next().getProperty("v")).isFalse();
@@ -520,7 +520,7 @@ class GeoPredicateFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet r = db.query("sql",
             "select geo.touches(null, 'POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as v");
         final Object val = r.next().getProperty("v");

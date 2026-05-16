@@ -39,7 +39,7 @@ class GeoConstructionFunctionsTest {
 
     @Test
     void sqlHappyPath() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.geomFromText('POINT (10 20)') as geom");
         assertThat(result.hasNext()).isTrue();
         final Object geom = result.next().getProperty("geom");
@@ -58,7 +58,7 @@ class GeoConstructionFunctionsTest {
 
     @Test
     void nullInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.geomFromText(null) as geom");
         assertThat(result.hasNext()).isTrue();
         final Object geom = result.next().getProperty("geom");
@@ -100,7 +100,7 @@ class GeoConstructionFunctionsTest {
 
     @Test
     void sqlHappyPath() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.point(10, 20) as wkt");
         assertThat(result.hasNext()).isTrue();
         final String wkt = result.next().getProperty("wkt");
@@ -124,7 +124,7 @@ class GeoConstructionFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.point(null, 20) as wkt");
         assertThat(result.hasNext()).isTrue();
         final Object wkt = result.next().getProperty("wkt");
@@ -164,7 +164,7 @@ class GeoConstructionFunctionsTest {
 
     @Test
     void sqlHappyPath() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.lineString([[0,0],[10,10],[20,0]]) as wkt");
         assertThat(result.hasNext()).isTrue();
         final String wkt = result.next().getProperty("wkt");
@@ -193,7 +193,7 @@ class GeoConstructionFunctionsTest {
 
     @Test
     void nullInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.lineString(null) as wkt");
         assertThat(result.hasNext()).isTrue();
         final Object wkt = result.next().getProperty("wkt");
@@ -239,7 +239,7 @@ class GeoConstructionFunctionsTest {
 
     @Test
     void sqlHappyPath() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.polygon([[0,0],[10,0],[10,10],[0,10],[0,0]]) as wkt");
         assertThat(result.hasNext()).isTrue();
         final String wkt = result.next().getProperty("wkt");
@@ -265,7 +265,7 @@ class GeoConstructionFunctionsTest {
 
     @Test
     void nullInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.polygon(null) as wkt");
         assertThat(result.hasNext()).isTrue();
         final Object wkt = result.next().getProperty("wkt");
@@ -281,7 +281,7 @@ class GeoConstructionFunctionsTest {
 
     @Test
     void openRing_sql_autoClose() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.polygon([[0,0],[10,0],[10,10],[0,10]]) as wkt");
         assertThat(result.hasNext()).isTrue();
         final String wkt = result.next().getProperty("wkt");

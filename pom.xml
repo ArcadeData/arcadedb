@@ -214,7 +214,8 @@
                     </properties>
                     <!--                            cucumber.filter.name="not .*IT.*"-->
                     <forkedProcessExitTimeoutInSeconds>60</forkedProcessExitTimeoutInSeconds>
-                    <forkCount>1</forkCount>
+                    <forkCount>0.5C</forkCount>
+                    <reuseForks>true</reuseForks>
                     <systemPropertyVariables>
                         <polyglot.engine.WarnInterpreterOnly>false</polyglot.engine.WarnInterpreterOnly>
                     </systemPropertyVariables>

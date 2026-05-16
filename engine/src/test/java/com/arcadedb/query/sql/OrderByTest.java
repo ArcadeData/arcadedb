@@ -36,10 +36,12 @@ import java.time.*;
 import java.time.format.*;
 
 import static org.assertj.core.api.Assertions.*;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 /**
  * From Issue https://github.com/ArcadeData/arcadedb/issues/839
  */
+@ResourceLock("GlobalConfiguration")
 class OrderByTest {
 
   @BeforeEach

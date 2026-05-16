@@ -27,8 +27,6 @@ import org.junit.jupiter.api.Test;
 import static org.assertj.core.api.Assertions.assertThat;
 
 class TxGraphTest extends TestHelper {
-  protected static final String DB_PATH = "target/databases/graph";
-
   @Test
   void edgeChunkIsLoadedFromCurrentTx() {
     database.setReadYourWrites(false);

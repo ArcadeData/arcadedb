@@ -34,6 +34,8 @@ import org.junit.jupiter.api.BeforeEach;
 
 import java.io.File;
 import java.util.Collection;
+import java.util.EnumMap;
+import java.util.Map;
 import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -43,10 +45,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
 public abstract class TestHelper {
-  protected static final int             PARALLEL_LEVEL = 4;
+  protected static final int             PARALLEL_LEVEL    = 4;
   protected final        DatabaseFactory factory;
   protected              Database        database;
-  protected              boolean         autoStartTx    = false;
+  protected              boolean         autoStartTx       = false;
+
+  private static final Object                     ACTIVE_DB_LOCK = new Object();
+  private              Map<GlobalConfiguration, Object> configSnapshot;
 
   public interface DatabaseTest<PAR> {
     void call(PAR iArgument) throws Exception;
@@ -158,6 +163,7 @@ public abstract class TestHelper {
 
   @BeforeEach
   public void beforeTest() {
+    configSnapshot = captureConfigSnapshot();
     GlobalConfiguration.SERVER_ROOT_PATH.setValue("./target");
     if (autoStartTx && !database.isTransactionActive())
       database.begin();
@@ -184,12 +190,26 @@ public abstract class TestHelper {
 
     checkActiveDatabases();
     FileUtils.deleteRecursively(new File(getDatabasePath()));
-    GlobalConfiguration.resetAll();
+    restoreConfigSnapshot(configSnapshot);
   }
 
   @AfterAll
   public static void endAllTests() {
     GlobalConfiguration.resetAll();
+  }
+
+  private static Map<GlobalConfiguration, Object> captureConfigSnapshot() {
+    final Map<GlobalConfiguration, Object> snapshot = new EnumMap<>(GlobalConfiguration.class);
+    for (final GlobalConfiguration v : GlobalConfiguration.values())
+      snapshot.put(v, v.getValue());
+    return snapshot;
+  }
+
+  private static void restoreConfigSnapshot(final Map<GlobalConfiguration, Object> snapshot) {
+    if (snapshot == null)
+      return;
+    for (final Map.Entry<GlobalConfiguration, Object> e : snapshot.entrySet())
+      e.getKey().setValue(e.getValue());
   }
 
   protected String getPerformanceProfile() {
@@ -227,15 +247,17 @@ public abstract class TestHelper {
   }
 
   public static void checkActiveDatabases() {
-    final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
+    synchronized (ACTIVE_DB_LOCK) {
+      final Collection<Database> activeDatabases = DatabaseFactory.getActiveDatabaseInstances();
 
-    if (!activeDatabases.isEmpty())
-      LogManager.instance()
-          .log(TestHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
+      if (!activeDatabases.isEmpty())
+        LogManager.instance()
+            .log(TestHelper.class, Level.SEVERE, "Found active databases: " + activeDatabases + ". Forced closing...");
 
-    for (final Database db : activeDatabases)
-      db.close();
+      for (final Database db : activeDatabases)
+        db.close();
 
-    assertThat(activeDatabases.isEmpty()).as("Found active databases: " + activeDatabases).isTrue();
+      assertThat(activeDatabases.isEmpty()).as("Found active databases: " + activeDatabases).isTrue();
+    }
   }
 }

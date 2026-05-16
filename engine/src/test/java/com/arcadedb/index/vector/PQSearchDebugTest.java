@@ -32,6 +32,7 @@ import java.util.List;
 import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 /**
  * Regression test for PRODUCT quantization search returning too few results after database reopen.
@@ -41,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ResourceLock("GlobalConfiguration")
 class PQSearchDebugTest {
   private static final String DB_PATH = "target/test-databases/PQSearchDebugTest";
   private static final int NUM_VECTORS = 10_000;

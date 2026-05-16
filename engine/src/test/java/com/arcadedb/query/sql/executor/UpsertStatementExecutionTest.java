@@ -38,11 +38,13 @@ import java.time.format.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
+@ResourceLock("GlobalConfiguration")
 public class UpsertStatementExecutionTest extends TestHelper {
   private String className;
 

@@ -18,15 +18,9 @@
  */
 package com.arcadedb.graph;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
-import com.arcadedb.utility.FileUtils;
-import org.assertj.core.api.Assertions;
-
-
-import java.io.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -38,15 +32,10 @@ public abstract class BaseGraphTest extends TestHelper {
   protected static final String EDGE1_TYPE_NAME   = "E1";
   protected static final String EDGE2_TYPE_NAME   = "E2";
   protected static final String EDGE3_TYPE_NAME   = "E3";
-  protected static final String DB_PATH           = "target/databases/graph";
-
   protected static RID root;
 
   @Override
   public void beginTest() {
-    GlobalConfiguration.resetAll();
-    FileUtils.deleteRecursively(new File(DB_PATH));
-
     database.transaction(() -> {
       assertThat(database.getSchema().existsType(VERTEX1_TYPE_NAME)).isFalse();
       database.getSchema().buildVertexType().withName(VERTEX1_TYPE_NAME).withTotalBuckets(3).create();

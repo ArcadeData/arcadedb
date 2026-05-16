@@ -101,7 +101,10 @@ cd package
 ### Testing Commands
 - **Run specific test class**: `mvn test -Dtest=ClassName`
 - **Run tests with specific pattern**: `mvn test -Dtest="*Pattern*"`
+- **Run without slow/benchmark tests**: `mvn test -pl engine -DskipITs -Dgroups='!slow,!benchmark'`
+- **Override fork count** (e.g. all cores): `mvn test -Dforkcount=1C`
 - **Performance tests**: Located in `src/test/java/performance/` packages
+- **Parallel execution**: enabled by default - classes run concurrently across JVM forks; methods within a class run sequentially. Tests that mutate `GlobalConfiguration` are annotated `@ResourceLock("GlobalConfiguration")` to serialize with each other.
 
 ## Codebase Navigation Map
 

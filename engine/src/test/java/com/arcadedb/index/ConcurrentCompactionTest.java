@@ -28,12 +28,14 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 /**
  * Regression test for #3615: concurrent index compaction causes IndexOutOfBoundsException
  * because LocalSchema.files (ArrayList) was accessed without synchronization from multiple
  * async compaction threads calling registerFile()/removeFile() simultaneously.
  */
+@ResourceLock("GlobalConfiguration")
 class ConcurrentCompactionTest extends TestHelper {
   private static final int TYPES_COUNT = 8;
   private static final int RECORDS_PER_TYPE = 5_000;

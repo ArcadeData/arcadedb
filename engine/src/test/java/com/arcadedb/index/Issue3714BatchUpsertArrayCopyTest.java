@@ -32,6 +32,7 @@ import java.util.concurrent.*;
 import java.util.concurrent.atomic.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 /**
  * Regression test for #3714: "arraycopy: length is negative" error during batch
@@ -41,6 +42,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@ResourceLock("GlobalConfiguration")
 class Issue3714BatchUpsertArrayCopyTest {
   private static final String DB_PATH = "target/databases/Issue3714BatchUpsertArrayCopyTest";
 

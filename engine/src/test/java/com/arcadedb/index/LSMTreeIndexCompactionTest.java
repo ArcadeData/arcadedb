@@ -38,12 +38,14 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 /**
  * This test stresses the index compaction by forcing using only 1MB of RAM for compaction causing multiple page compacted index.
  *
  * @author Luca
  */
+@ResourceLock("GlobalConfiguration")
 class LSMTreeIndexCompactionTest extends TestHelper {
   private static final int    TOT               = 50_000;
   private static final int    INDEX_PAGE_SIZE   = 64 * 1024; // 64K

@@ -34,7 +34,9 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
+@ResourceLock("GlobalConfiguration")
 class TestInsertAndSelectWithThreadBucketSelectionStrategy {
 
   @BeforeEach

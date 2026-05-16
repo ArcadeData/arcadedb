@@ -41,10 +41,12 @@ import java.time.format.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
  */
+@ResourceLock("GlobalConfiguration")
 public class UpdateStatementExecutionTest extends TestHelper {
   private String className;
 

@@ -54,7 +54,9 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
+@ResourceLock("GlobalConfiguration")
 public class SelectStatementExecutionTest extends TestHelper {
 
   @Test

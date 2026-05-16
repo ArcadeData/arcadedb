@@ -48,8 +48,12 @@ import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import org.junit.jupiter.api.parallel.Isolated;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 @Tag("slow")
+@Isolated
+@ResourceLock("GlobalConfiguration")
 class ACIDTransactionTest extends TestHelper {
   @Test
   void asyncTX() {

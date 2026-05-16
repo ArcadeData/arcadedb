@@ -35,7 +35,9 @@ import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
+@ResourceLock("GlobalConfiguration")
 class PolyglotQueryTest extends TestHelper {
   @Test
   void sum() {

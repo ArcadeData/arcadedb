@@ -42,7 +42,9 @@ import java.util.concurrent.atomic.*;
 import java.util.logging.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
+@ResourceLock("GlobalConfiguration")
 class RandomTestMultiThreadsTest extends TestHelper {
   private static final int CYCLES           = 10000;
   private static final int STARTING_ACCOUNT = 10000;

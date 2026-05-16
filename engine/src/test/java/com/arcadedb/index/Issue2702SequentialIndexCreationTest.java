@@ -33,6 +33,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 /**
  * Tests sequential index creation on large datasets to ensure it doesn't fail with NeedRetryException
@@ -48,6 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author ArcadeDB Team
  */
+@ResourceLock("GlobalConfiguration")
 class Issue2702SequentialIndexCreationTest extends TestHelper {
   private static final int    TOT               = 100_000; // Large enough to trigger compaction
   private static final int    INDEX_PAGE_SIZE   = 64 * 1024;

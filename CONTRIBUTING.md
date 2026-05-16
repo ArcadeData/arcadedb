@@ -115,6 +115,26 @@ Build and run default tests:
 $ mvn clean install
 ```
 
+Tests run in parallel by default: classes execute concurrently across multiple JVM forks (`forkCount=0.5C`, i.e. half the available CPU cores). No extra flags needed.
+
+Run only unit tests for the engine module, skipping slow/benchmark tests:
+
+```shell
+$ mvn test -pl engine -DskipITs -Dgroups='!slow,!benchmark'
+```
+
+Override the number of parallel JVM forks (e.g. use all cores):
+
+```shell
+$ mvn test -pl engine -DskipITs -Dforkcount=1C
+```
+
+Run a single test class:
+
+```shell
+$ mvn test -pl engine -Dtest=MyTestClass -DskipITs
+```
+
 To run additional integration test locally use:
 
 ```shell

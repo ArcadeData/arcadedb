@@ -42,8 +42,10 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 @Tag("slow")
+@ResourceLock("GlobalConfiguration")
 class TypeLSMTreeIndexTest extends TestHelper {
   private static final int    TOT       = 100000;
   private static final String TYPE_NAME = "V";

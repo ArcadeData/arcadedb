@@ -37,7 +37,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void sqlStringInput_returnedAsIs() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.asText('POINT (10 20)') as wkt");
         assertThat(result.hasNext()).isTrue();
         assertThat(result.next().<String>getProperty("wkt")).isEqualTo("POINT (10 20)");
@@ -46,7 +46,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void sqlShapeInput_returnsWkt() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql",
             "select geo.asText(geo.geomFromText('POINT (10 20)')) as wkt");
         assertThat(result.hasNext()).isTrue();
@@ -77,7 +77,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void nullInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.asText(null) as wkt");
         assertThat(result.hasNext()).isTrue();
         final Object val = result.next().getProperty("wkt");
@@ -99,7 +99,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void sqlPoint_containsPointType() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.asGeoJson('POINT (10 20)') as json");
         assertThat(result.hasNext()).isTrue();
         final String json = result.next().getProperty("json");
@@ -113,7 +113,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void sqlPolygon_containsPolygonType() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql",
             "select geo.asGeoJson('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as json");
         assertThat(result.hasNext()).isTrue();
@@ -144,7 +144,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void nullInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.asGeoJson(null) as json");
         assertThat(result.hasNext()).isTrue();
         final Object val = result.next().getProperty("json");
@@ -166,7 +166,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void sqlHappyPath() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.x('POINT (10 20)') as x");
         assertThat(result.hasNext()).isTrue();
         final Double x = result.next().getProperty("x");
@@ -195,7 +195,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void nullInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.x(null) as x");
         assertThat(result.hasNext()).isTrue();
         final Object val = result.next().getProperty("x");
@@ -211,7 +211,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void polygonInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql",
             "select geo.x('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as x");
         assertThat(result.hasNext()).isTrue();
@@ -252,7 +252,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void sqlHappyPath() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.y('POINT (10 20)') as y");
         assertThat(result.hasNext()).isTrue();
         final Double y = result.next().getProperty("y");
@@ -281,7 +281,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void nullInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql", "select geo.y(null) as y");
         assertThat(result.hasNext()).isTrue();
         final Object val = result.next().getProperty("y");
@@ -297,7 +297,7 @@ class GeoConversionFunctionsTest {
 
     @Test
     void polygonInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase((db) -> {
         final ResultSet result = db.query("sql",
             "select geo.y('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as y");
         assertThat(result.hasNext()).isTrue();

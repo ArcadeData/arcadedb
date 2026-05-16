@@ -34,8 +34,10 @@ import java.util.Collection;
 
 import static com.arcadedb.schema.LocalSchema.STATISTICS_FILE_NAME;
 import static org.assertj.core.api.Assertions.assertThat;
+import org.junit.jupiter.api.parallel.ResourceLock;
 
 @Tag("slow")
+@ResourceLock("GlobalConfiguration")
 class RecordRecyclingTest {
   private final static int    TOT_RECORDS  = 100_000;
   private final static String VERTEX_TYPE  = "Product";
