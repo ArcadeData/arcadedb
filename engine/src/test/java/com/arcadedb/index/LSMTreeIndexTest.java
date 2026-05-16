@@ -39,8 +39,18 @@ import org.assertj.core.api.Assertions;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import org.awaitility.Awaitility;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+
+import java.io.File;
+import java.util.concurrent.TimeUnit;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.utility.FileUtils;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
@@ -1305,6 +1315,689 @@ class LSMTreeIndexTest extends TestHelper {
     } finally {
       // Restore default logger
       LogManager.instance().setLogger(new DefaultLogger());
+    }
+  }
+
+  /**
+   * Regression tests for #2757: NOTUNIQUE string indexes created over an already-large dataset must keep
+   * the `=` operator working after hierarchical compaction.
+   */
+  @Nested
+  class Issue2757NotUniqueIndexEqualsOperator {
+    private static final int LARGE_DATASET_SIZE = 90000;
+    private static final String MOVIE_TYPE = "Movie";
+    private static final int MOVIE_PAGE_SIZE = 262144;
+    private static final String DB_PATH = "target/databases/Issue2757NotUniqueIndexEqualsOperator";
+
+    private Database database;
+
+    private final String[] TEST_TITLES = {
+        "Toy Story (1995)",
+        "Jumanji (1995)",
+        "Grumpier Old Men (1995)",
+        "Waiting to Exhale (1995)",
+        "Father of the Bride Part II (1995)"
+    };
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      database = new DatabaseFactory(DB_PATH).create();
+      database.transaction(() -> {
+        assertThat(database.getSchema().existsType(MOVIE_TYPE)).isFalse();
+
+        final DocumentType type = database.getSchema().buildDocumentType()
+            .withName(MOVIE_TYPE)
+            .withTotalBuckets(8)
+            .create();
+
+        type.createProperty("movieId", Integer.class);
+        type.createProperty("title", String.class);
+
+        for (int i = 0; i < TEST_TITLES.length; i++) {
+          final MutableDocument movie = database.newDocument(MOVIE_TYPE);
+          movie.set("movieId", i);
+          movie.set("title", TEST_TITLES[i]);
+          movie.save();
+        }
+
+        for (int i = TEST_TITLES.length; i < LARGE_DATASET_SIZE; i++) {
+          final MutableDocument movie = database.newDocument(MOVIE_TYPE);
+          movie.set("movieId", i);
+          movie.set("title", "Movie Title " + i);
+          movie.save();
+        }
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    private void waitForIndexCompaction() {
+      Awaitility.await("Wait for index compaction")
+          .atMost(60, TimeUnit.SECONDS)
+          .pollInterval(500, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            try {
+              database.transaction(() -> {
+                try (final ResultSet rs = database.query("sql", "SELECT FROM " + MOVIE_TYPE + " WHERE title = ?", TEST_TITLES[0])) {
+                  rs.hasNext();
+                }
+              });
+              return true;
+            } catch (final Exception e) {
+              return false;
+            }
+          });
+    }
+
+    // Issue #2757: `=` returns exact matches BEFORE any index exists (baseline)
+    @Test
+    void equalsOperatorBeforeIndexCreation() {
+      database.transaction(() -> {
+        for (final String title : TEST_TITLES) {
+          try (final ResultSet rs = database.query("sql",
+              "SELECT FROM " + MOVIE_TYPE + " WHERE title = ?", title)) {
+
+            assertThat(rs.hasNext())
+                .as("Query with = operator should return result for title: " + title)
+                .isTrue();
+
+            assertThat(rs.next().<String>getProperty("title"))
+                .as("Title should match exactly")
+                .isEqualTo(title);
+
+            assertThat(rs.hasNext())
+                .as("Should return exactly one result")
+                .isFalse();
+          }
+        }
+      });
+    }
+
+    // Issue #2757: `=` keeps returning exact matches after a NOTUNIQUE index is built over the 90K dataset and compacted
+    @Test
+    void equalsOperatorAfterIndexCreation() {
+      database.transaction(() -> {
+        for (final String title : TEST_TITLES) {
+          try (final ResultSet rs = database.query("sql",
+              "SELECT FROM " + MOVIE_TYPE + " WHERE title = ?", title)) {
+            assertThat(rs.hasNext())
+                .as("BEFORE INDEX: Query should return result for: " + title)
+                .isTrue();
+          }
+        }
+      });
+
+      database.transaction(() -> {
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false,
+            MOVIE_TYPE, new String[] { "title" }, MOVIE_PAGE_SIZE);
+      });
+
+      waitForIndexCompaction();
+
+      database.transaction(() -> {
+        for (final String title : TEST_TITLES) {
+          try (final ResultSet rs = database.query("sql",
+              "SELECT FROM " + MOVIE_TYPE + " WHERE title = ?", title)) {
+
+            assertThat(rs.hasNext())
+                .as("AFTER INDEX + COMPACTION: Query with = operator should return result for title: " + title)
+                .isTrue();
+
+            assertThat(rs.next().<String>getProperty("title"))
+                .as("Title should match exactly")
+                .isEqualTo(title);
+
+            assertThat(rs.hasNext())
+                .as("Should return exactly one result")
+                .isFalse();
+          }
+        }
+      });
+    }
+
+    // Issue #2757: LIKE keeps returning exact matches after the same compacted NOTUNIQUE index (control case)
+    @Test
+    void likeOperatorStillWorksAfterIndexCreation() {
+      database.transaction(() -> {
+        database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false,
+            MOVIE_TYPE, new String[] { "title" }, MOVIE_PAGE_SIZE);
+      });
+
+      waitForIndexCompaction();
+
+      database.transaction(() -> {
+        for (final String title : TEST_TITLES) {
+          try (final ResultSet rs = database.query("sql",
+              "SELECT FROM " + MOVIE_TYPE + " WHERE title LIKE ?", title)) {
+
+            assertThat(rs.hasNext())
+                .as("Query with LIKE operator should return result for title: " + title)
+                .isTrue();
+
+            assertThat(rs.next().<String>getProperty("title"))
+                .as("Title should match exactly")
+                .isEqualTo(title);
+          }
+        }
+      });
+    }
+  }
+
+  /**
+   * Regression tests for #2814: a parameterized multi-field UPDATE on an indexed property must keep the index
+   * coherent so later equality queries return the right rows.
+   */
+  @Nested
+  class Issue2814FilteringWithIndex {
+    private static final String DB_PATH = "target/databases/Issue2814FilteringWithIndex";
+
+    private Database database;
+    private String parentRid;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      database = new DatabaseFactory(DB_PATH).create();
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE Parent");
+        database.command("sql", "CREATE DOCUMENT TYPE Child");
+        database.command("sql", "CREATE PROPERTY Child.uid STRING");
+        database.command("sql", "CREATE PROPERTY Child.status STRING (default 'synced')");
+        database.command("sql", "CREATE PROPERTY Child.version INTEGER (default 1)");
+        database.command("sql", "CREATE PROPERTY Child.parent LINK OF Parent");
+
+        database.command("sql", "CREATE INDEX ON Child (status) NOTUNIQUE");
+
+        final ResultSet result = database.command("sql", "INSERT INTO Parent SET name = 'p1' RETURN @this");
+        parentRid = result.next().getIdentity().get().toString();
+
+        database.command("sql", "INSERT INTO Child SET uid = 'c1', parent = " + parentRid);
+        database.command("sql", "INSERT INTO Child SET uid = 'c2', parent = " + parentRid);
+        database.command("sql", "INSERT INTO Child SET uid = 'c3', parent = " + parentRid);
+
+        database.command("sql", "UPDATE Child SET status = 'pending' WHERE uid = 'c1'");
+        database.command("sql", "UPDATE Child SET status = 'pending' WHERE uid = 'c2'");
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    // Issue #2814: baseline state before the parameterized update - 2 pending children
+    @Test
+    void filteringBeforeParameterizedUpdate() {
+      database.transaction(() -> {
+        final ResultSet pending = database.query("sql", "SELECT uid, status FROM Child WHERE status = 'pending'");
+        final List<Result> pendingList = pending.stream().toList();
+
+        assertThat(pendingList).hasSize(2);
+
+        final List<String> uids = pendingList.stream()
+            .map(r -> r.<String>getProperty("uid"))
+            .sorted()
+            .toList();
+        assertThat(uids).containsExactly("c1", "c2");
+      });
+    }
+
+    // Issue #2814: parameterized multi-field UPDATE must update the index, so later WHERE returns correct rows
+    @Test
+    void filteringAfterParameterizedMultiFieldUpdate() {
+      database.transaction(() -> {
+        final Map<String, Object> params = new HashMap<>();
+        params.put("uid", "c1");
+        params.put("version", 2);
+        params.put("status", "synced");
+
+        database.command("sql", "UPDATE Child SET version = :version, status = :status WHERE uid = :uid", params);
+      });
+
+      database.transaction(() -> {
+        final ResultSet pending = database.query("sql", "SELECT uid, status FROM Child WHERE status = 'pending'");
+        final List<Result> pendingList = pending.stream().toList();
+
+        assertThat(pendingList).hasSize(1);
+        assertThat(pendingList.get(0).<String>getProperty("uid")).isEqualTo("c2");
+      });
+
+      database.transaction(() -> {
+        final ResultSet synced = database.query("sql", "SELECT uid, status FROM Child WHERE status = 'synced'");
+        final List<Result> syncedList = synced.stream().toList();
+
+        assertThat(syncedList).hasSize(2);
+
+        final List<String> uids = syncedList.stream()
+            .map(r -> r.<String>getProperty("uid"))
+            .sorted()
+            .toList();
+        assertThat(uids).containsExactly("c1", "c3");
+      });
+
+      database.transaction(() -> {
+        final ResultSet all = database.query("sql", "SELECT uid, status, version FROM Child ORDER BY uid");
+        final List<Result> allList = all.stream().toList();
+
+        assertThat(allList).hasSize(3);
+
+        final Result c1 = allList.stream()
+            .filter(r -> "c1".equals(r.getProperty("uid")))
+            .findFirst()
+            .orElseThrow();
+        assertThat(c1.<String>getProperty("status")).isEqualTo("synced");
+        assertThat(c1.<Integer>getProperty("version")).isEqualTo(2);
+
+        final Result c2 = allList.stream()
+            .filter(r -> "c2".equals(r.getProperty("uid")))
+            .findFirst()
+            .orElseThrow();
+        assertThat(c2.<String>getProperty("status")).isEqualTo("pending");
+
+        final Result c3 = allList.stream()
+            .filter(r -> "c3".equals(r.getProperty("uid")))
+            .findFirst()
+            .orElseThrow();
+        assertThat(c3.<String>getProperty("status")).isEqualTo("synced");
+      });
+    }
+
+    // Issue #2814: parameterized single-field UPDATE on the indexed property keeps the index coherent (control)
+    @Test
+    void filteringAfterParameterizedSingleFieldUpdate() {
+      database.transaction(() -> {
+        final Map<String, Object> params = new HashMap<>();
+        params.put("uid", "c2");
+        params.put("status", "synced");
+
+        database.command("sql", "UPDATE Child SET status = :status WHERE uid = :uid", params);
+      });
+
+      database.transaction(() -> {
+        final ResultSet pending = database.query("sql", "SELECT uid, status FROM Child WHERE status = 'pending'");
+        final List<Result> pendingList = pending.stream().toList();
+
+        assertThat(pendingList).hasSize(1);
+        assertThat(pendingList.get(0).<String>getProperty("uid")).isEqualTo("c1");
+      });
+
+      database.transaction(() -> {
+        final ResultSet synced = database.query("sql", "SELECT uid, status FROM Child WHERE status = 'synced'");
+        final List<Result> syncedList = synced.stream().toList();
+
+        assertThat(syncedList).hasSize(2);
+
+        final List<String> uids = syncedList.stream()
+            .map(r -> r.<String>getProperty("uid"))
+            .sorted()
+            .toList();
+        assertThat(uids).containsExactly("c2", "c3");
+      });
+    }
+  }
+
+  /**
+   * Regression tests for #3075: property paths containing backticks (single and nested) must still be matched
+   * by their indexes via CONTAINS / CONTAINSANY / equality.
+   */
+  @Nested
+  class Issue3075PropertyPathValidation {
+    private static final String DB_PATH = "target/databases/Issue3075PropertyPathValidation";
+
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      database = new DatabaseFactory(DB_PATH).create();
+      database.transaction(() -> {
+        database.command("sql", "CREATE VERTEX TYPE Product");
+        database.command("sql", "CREATE PROPERTY Product.`product-id` INTEGER");
+        database.command("sql", "CREATE PROPERTY Product.`category-name` STRING");
+
+        database.command("sql", "CREATE DOCUMENT TYPE Tag");
+        database.command("sql", "CREATE PROPERTY Tag.`tag-id` INTEGER");
+        database.command("sql", "CREATE PROPERTY Tag.`tag-name` STRING");
+
+        database.command("sql", "CREATE PROPERTY Product.tags LIST OF Tag");
+
+        database.command("sql", "CREATE INDEX ON Product (`product-id`) UNIQUE");
+
+        database.command("sql", "CREATE INDEX ON Product (`tags.tag-id` BY ITEM) NOTUNIQUE");
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    // Issue #3075: equality on a backtick-quoted property hits its index; CONTAINS/CONTAINSANY on a backtick-quoted nested path hits the BY-ITEM index
+    @Test
+    void propertyWithBackticksCanUseIndex() {
+      database.transaction(() -> {
+        database.command("sql",
+            """
+            INSERT INTO Product SET `product-id` = 1, `category-name` = 'Electronics', \
+            tags = [{'@type':'Tag', 'tag-id': 100, 'tag-name': 'new'}, {'@type':'Tag', 'tag-id': 101, 'tag-name': 'featured'}]""");
+        database.command("sql",
+            """
+            INSERT INTO Product SET `product-id` = 2, `category-name` = 'Books', \
+            tags = [{'@type':'Tag', 'tag-id': 100, 'tag-name': 'new'}, {'@type':'Tag', 'tag-id': 102, 'tag-name': 'bestseller'}]""");
+        database.command("sql",
+            """
+            INSERT INTO Product SET `product-id` = 3, `category-name` = 'Clothing', \
+            tags = [{'@type':'Tag', 'tag-id': 103, 'tag-name': 'sale'}]""");
+      });
+
+      database.transaction(() -> {
+        ResultSet result = database.query("sql", "SELECT FROM Product WHERE `product-id` = 1");
+        assertThat(result.stream().count()).isEqualTo(1);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM Product WHERE `product-id` = 1")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX Product[product-id]");
+      });
+
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM Product WHERE `tags.tag-id` CONTAINSANY [100, 101]");
+        assertThat(result.stream().count()).isEqualTo(2);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM Product WHERE `tags.tag-id` CONTAINSANY [100]")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX Product[tags.tag-idbyitem]");
+      });
+
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM Product WHERE `tags.tag-id` CONTAINS 100");
+        assertThat(result.stream().count()).isEqualTo(2);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM Product WHERE `tags.tag-id` CONTAINS 100")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX Product[tags.tag-idbyitem]");
+      });
+    }
+
+    // Issue #3075: nested property paths whose middle segment carries backticks still resolve to the BY-ITEM index
+    @Test
+    void nestedPropertyWithBackticksInMiddle() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE VERTEX TYPE Article");
+        database.command("sql", "CREATE DOCUMENT TYPE Meta");
+        database.command("sql", "CREATE PROPERTY Meta.`content-type` STRING");
+        database.command("sql", "CREATE PROPERTY Article.metadata LIST OF Meta");
+        database.command("sql", "CREATE INDEX ON Article (`metadata.content-type` BY ITEM) NOTUNIQUE");
+
+        database.command("sql",
+            "INSERT INTO Article SET metadata = [{'@type':'Meta', 'content-type': 'text/html'}]");
+        database.command("sql",
+            "INSERT INTO Article SET metadata = [{'@type':'Meta', 'content-type': 'text/plain'}]");
+      });
+
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM Article WHERE `metadata.content-type` CONTAINS 'text/html'");
+        assertThat(result.stream().count()).isEqualTo(1);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM Article WHERE `metadata.content-type` CONTAINS 'text/html'")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX Article[metadata.content-typebyitem]");
+      });
+    }
+
+    // Issue #3075: a top-level path segment carrying backticks followed by a plain nested segment still hits the BY-ITEM index
+    @Test
+    void backticksAtStartOfNestedPath() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE VERTEX TYPE Page");
+        database.command("sql", "CREATE DOCUMENT TYPE PageItem");
+        database.command("sql", "CREATE PROPERTY PageItem.value STRING");
+        database.command("sql", "CREATE PROPERTY Page.`item-list` LIST OF PageItem");
+
+        database.command("sql", "CREATE INDEX ON Page (`item-list.value` BY ITEM) NOTUNIQUE");
+
+        database.command("sql",
+            "INSERT INTO Page SET `item-list` = [{'@type':'PageItem', 'value': 'test1'}, {'@type':'PageItem', 'value': 'test2'}]");
+        database.command("sql",
+            "INSERT INTO Page SET `item-list` = [{'@type':'PageItem', 'value': 'test1'}, {'@type':'PageItem', 'value': 'test3'}]");
+      });
+
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM Page WHERE `item-list`.value CONTAINSANY ['test1']");
+        assertThat(result.stream().count()).isEqualTo(2);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM Page WHERE `item-list`.value CONTAINSANY ['test1']")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX Page[item-list.valuebyitem]");
+      });
+    }
+  }
+
+  /**
+   * Regression tests for #4139: when CREATE INDEX is issued with a manual name, that name must be carried by
+   * the {@link TypeIndex} wrapper and survive schema reload, across LSM, HASH, and FULL_TEXT index families.
+   */
+  @Nested
+  class Issue4139ManualIndexName {
+    private static final String DB_PATH = "target/databases/Issue4139ManualIndexName";
+
+    private DatabaseFactory factory;
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      factory = new DatabaseFactory(DB_PATH);
+      database = factory.create();
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    private void reopenDatabase() {
+      database.close();
+      database = factory.open();
+    }
+
+    // Issue #4139: manual index name from SQL CREATE INDEX is registered and visible via existsIndex / getIndexByName
+    @Test
+    void manualIndexNameIsRegisteredOnSqlCreate() {
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("Abogado");
+        type.createProperty("uuid", String.class);
+      });
+
+      try (final ResultSet rs = database.command("sql",
+          "create index Abogado_uuid if not exists on Abogado (uuid) unique NULL_STRATEGY SKIP")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("Abogado_uuid");
+      }
+
+      assertThat(database.getSchema().existsIndex("Abogado_uuid")).isTrue();
+      assertThat(database.getSchema().getIndexByName("Abogado_uuid")).isNotNull();
+      assertThat(database.getSchema().getIndexByName("Abogado_uuid").getName()).isEqualTo("Abogado_uuid");
+
+      assertThat(database.getSchema().existsIndex("Abogado[uuid]")).isFalse();
+
+      final TypeIndex byProperty = database.getSchema().getType("Abogado").getIndexByProperties("uuid");
+      assertThat(byProperty).isNotNull();
+      assertThat(byProperty.getName()).isEqualTo("Abogado_uuid");
+    }
+
+    // Issue #4139: manual index name survives close/reopen and stays the TypeIndex wrapper name
+    @Test
+    void manualIndexNameSurvivesReload() {
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("Abogado");
+        type.createProperty("uuid", String.class);
+      });
+
+      try (final ResultSet rs = database.command("sql",
+          "create index Abogado_uuid if not exists on Abogado (uuid) unique NULL_STRATEGY SKIP")) {
+        rs.hasNext();
+      }
+
+      reopenDatabase();
+
+      assertThat(database.getSchema().existsIndex("Abogado_uuid")).isTrue();
+      assertThat(database.getSchema().getType("Abogado").getIndexByProperties("uuid").getName())
+          .isEqualTo("Abogado_uuid");
+      assertThat(database.getSchema().existsIndex("Abogado[uuid]")).isFalse();
+    }
+
+    // Issue #4139: a second CREATE INDEX IF NOT EXISTS with the same manual name is a no-op, not a duplicate
+    @Test
+    void ifNotExistsIsIdempotentOnManualName() {
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("Abogado");
+        type.createProperty("uuid", String.class);
+      });
+
+      try (final ResultSet rs = database.command("sql",
+          "create index Abogado_uuid if not exists on Abogado (uuid) unique NULL_STRATEGY SKIP")) {
+        assertThat(rs.next().<Boolean>getProperty("created")).isTrue();
+      }
+
+      try (final ResultSet rs = database.command("sql",
+          "create index Abogado_uuid if not exists on Abogado (uuid) unique NULL_STRATEGY SKIP")) {
+        assertThat(rs.next().<Boolean>getProperty("created")).isFalse();
+      }
+
+      assertThat(database.getSchema().getType("Abogado").getAllIndexes(false)).hasSize(1);
+    }
+
+    // Issue #4139: manual index name supplied via TypeIndexBuilder.withIndexName is honoured at the builder level
+    @Test
+    void manualIndexNameViaTypeIndexBuilder() {
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("Abogado");
+        type.createProperty("uuid", String.class);
+
+        database.getSchema()
+            .buildTypeIndex("Abogado", new String[] { "uuid" })
+            .withType(Schema.INDEX_TYPE.LSM_TREE)
+            .withUnique(true)
+            .withIndexName("Abogado_uuid")
+            .create();
+      });
+
+      assertThat(database.getSchema().existsIndex("Abogado_uuid")).isTrue();
+      assertThat(database.getSchema().existsIndex("Abogado[uuid]")).isFalse();
+    }
+
+    // Issue #4139: manual index name plumbing also works for the HASH index family and survives reload
+    @Test
+    void manualIndexNameWorksForHashIndex() {
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("Abogado");
+        type.createProperty("uuid", String.class);
+      });
+
+      try (final ResultSet rs = database.command("sql",
+          "create index Abogado_uuid_hash if not exists on Abogado (uuid) UNIQUE_HASH")) {
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("Abogado_uuid_hash");
+      }
+
+      assertThat(database.getSchema().existsIndex("Abogado_uuid_hash")).isTrue();
+      assertThat(database.getSchema().existsIndex("Abogado[uuid]")).isFalse();
+
+      reopenDatabase();
+
+      assertThat(database.getSchema().existsIndex("Abogado_uuid_hash")).isTrue();
+      assertThat(database.getSchema().getType("Abogado").getIndexByProperties("uuid").getName())
+          .isEqualTo("Abogado_uuid_hash");
+    }
+
+    // Issue #4139: manual index name plumbing also works for the FULL_TEXT index family and survives reload
+    @Test
+    void manualIndexNameWorksForFullTextIndex() {
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("Abogado");
+        type.createProperty("uuid", String.class);
+      });
+
+      try (final ResultSet rs = database.command("sql",
+          "create index Abogado_uuid_ft if not exists on Abogado (uuid) FULL_TEXT")) {
+        assertThat(rs.next().<String>getProperty("name")).isEqualTo("Abogado_uuid_ft");
+      }
+
+      assertThat(database.getSchema().existsIndex("Abogado_uuid_ft")).isTrue();
+      assertThat(database.getSchema().existsIndex("Abogado[uuid]")).isFalse();
+
+      reopenDatabase();
+      assertThat(database.getSchema().existsIndex("Abogado_uuid_ft")).isTrue();
+    }
+
+    // Issue #4139: with no manual name supplied, the auto-derived "type[property]" form is still produced (control)
+    @Test
+    void noManualNameStillUsesAutoDerivedName() {
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createDocumentType("Abogado");
+        type.createProperty("uuid", String.class);
+      });
+
+      try (final ResultSet rs = database.command("sql",
+          "create index if not exists on Abogado (uuid) unique NULL_STRATEGY SKIP")) {
+        rs.hasNext();
+      }
+
+      assertThat(database.getSchema().existsIndex("Abogado[uuid]")).isTrue();
+    }
+  }
+
+  /**
+   * Regression test for #2453: a NOTUNIQUE index with the default SKIP null strategy must not hide records with
+   * a null indexed property when the WHERE clause is `... IS NULL`.
+   */
+  @Nested
+  class TestIssue2453Nested {
+    private static final String DB_PATH = "target/databases/TestIssue2453Nested";
+
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      database = new DatabaseFactory(DB_PATH).create();
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    // Issue #2453: IS NULL must still return rows with a null indexed property under SKIP null strategy
+    @Test
+    void isNullWithDefaultSkipStrategy() {
+      database.command("SQL", "CREATE VERTEX TYPE vec");
+      database.command("SQL", "CREATE PROPERTY vec.lnk LINK");
+      database.command("SQL", "CREATE INDEX ON vec (lnk) NOTUNIQUE");
+
+      database.transaction(() -> {
+        database.command("SQL", "INSERT INTO vec");
+        database.command("SQL", "INSERT INTO vec");
+        database.command("SQL", "INSERT INTO vec");
+      });
+
+      database.transaction(() -> {
+        final var result = database.query("SQL", "SELECT FROM vec WHERE lnk IS NULL");
+        int count = 0;
+        while (result.hasNext()) {
+          result.next();
+          count++;
+        }
+        assertThat(count).isEqualTo(3);
+      });
     }
   }
 }

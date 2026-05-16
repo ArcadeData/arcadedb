@@ -19,12 +19,19 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -397,6 +404,343 @@ public class ListIndexByItemTest extends TestHelper {
           .toString();
       assertThat(explain).contains("SimpleListDoc[tags");  // Index name contains "tags" (may be "tags by item" or "tagsbyitem")
     });
+  }
+
+  /**
+   * Regression tests for #2774: CONTAINS, IN (inverted), and CONTAINSALL operators must use a BY-ITEM index
+   * when one is available, not just CONTAINSANY.
+   */
+  @Nested
+  class Issue2774IndexByItem {
+    private static final String DB_PATH = "target/databases/Issue2774IndexByItem";
+
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      database = new DatabaseFactory(DB_PATH).create();
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE doc");
+        database.command("sql", "CREATE PROPERTY doc.nums LIST OF INTEGER");
+        database.command("sql", "CREATE INDEX ON doc (nums BY ITEM) NOTUNIQUE");
+        database.command("sql", "INSERT INTO doc SET nums = [1,2,3]");
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    // Issue #2774: baseline check that CONTAINSANY already routes through the BY-ITEM index
+    @Test
+    void containsAnyUsesIndex() {
+      database.transaction(() -> {
+        final String explain = database.query("sql",
+                "EXPLAIN SELECT FROM doc WHERE nums CONTAINSANY [1]")
+            .next()
+            .getProperty("executionPlan")
+            .toString();
+
+        assertThat(explain).contains("FETCH FROM INDEX doc[numsbyitem]");
+        assertThat(explain).doesNotContain("FETCH FROM TYPE doc");
+
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums CONTAINS 1");
+        assertThat(result.hasNext()).isTrue();
+      });
+    }
+
+    // Issue #2774: CONTAINS on a list property must hit the BY-ITEM index, not full scan
+    @Test
+    void containsUsesIndex() {
+      database.transaction(() -> {
+        final String explain = database.query("sql",
+                "EXPLAIN SELECT FROM doc WHERE nums CONTAINS 1")
+            .next()
+            .getProperty("executionPlan")
+            .toString();
+
+        assertThat(explain).contains("FETCH FROM INDEX doc[numsbyitem]");
+        assertThat(explain).doesNotContain("FETCH FROM TYPE doc");
+
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums CONTAINS 1");
+        assertThat(result.hasNext()).isTrue();
+      });
+    }
+
+    // Issue #2774: inverted IN (value IN listField) must hit the BY-ITEM index
+    @Test
+    void inOperatorUsesIndex() {
+      database.transaction(() -> {
+        final String explain = database.query("sql",
+                "EXPLAIN SELECT FROM doc WHERE 1 IN nums")
+            .next()
+            .getProperty("executionPlan")
+            .toString();
+
+        assertThat(explain).contains("FETCH FROM INDEX doc[numsbyitem]");
+        assertThat(explain).doesNotContain("FETCH FROM TYPE doc");
+
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE 1 IN nums");
+        assertThat(result.hasNext()).isTrue();
+      });
+    }
+
+    // Issue #2774: single-value CONTAINSALL must route through the BY-ITEM index
+    @Test
+    void containsAllUsesIndex() {
+      database.transaction(() -> {
+        final String explain = database.query("sql",
+                "EXPLAIN SELECT FROM doc WHERE nums CONTAINSALL [1]")
+            .next()
+            .getProperty("executionPlan")
+            .toString();
+
+        assertThat(explain).contains("FETCH FROM INDEX doc[numsbyitem]");
+        assertThat(explain).doesNotContain("FETCH FROM TYPE doc");
+
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums CONTAINSALL [1]");
+        assertThat(result.hasNext()).isTrue();
+      });
+    }
+
+    // Issue #2774: multi-value CONTAINSALL intentionally avoids the index and returns the correct INTERSECTION
+    @Test
+    void containsAllMultipleValuesReturnsCorrectResults() {
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO doc SET nums = [1, 4, 5]");
+        database.command("sql", "INSERT INTO doc SET nums = [2, 4, 5]");
+      });
+
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums CONTAINSALL [1, 2]");
+        final long count = result.stream().count();
+        assertThat(count).isEqualTo(1);
+
+        final String explain = database.query("sql",
+                "EXPLAIN SELECT FROM doc WHERE nums CONTAINSALL [1, 2]")
+            .next()
+            .getProperty("executionPlan")
+            .toString();
+        assertThat(explain).contains("FETCH FROM TYPE doc");
+      });
+    }
+
+    // Issue #2774: BY-ITEM index continues to be selected when the type holds multiple documents
+    @Test
+    void indexUsageWithMultipleDocuments() {
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO doc SET nums = [4,5,6]");
+        database.command("sql", "INSERT INTO doc SET nums = [7,8,9]");
+        database.command("sql", "INSERT INTO doc SET nums = [1,10,11]");
+      });
+
+      database.transaction(() -> {
+        final String explain = database.query("sql",
+                "EXPLAIN SELECT FROM doc WHERE nums CONTAINS 1")
+            .next()
+            .getProperty("executionPlan")
+            .toString();
+
+        assertThat(explain).contains("FETCH FROM INDEX doc[numsbyitem]");
+
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums CONTAINS 1");
+        final long count = result.stream().count();
+        assertThat(count).isEqualTo(2);
+      });
+
+      database.transaction(() -> {
+        final String explain = database.query("sql",
+                "EXPLAIN SELECT FROM doc WHERE 5 IN nums")
+            .next()
+            .getProperty("executionPlan")
+            .toString();
+
+        assertThat(explain).contains("FETCH FROM INDEX doc[numsbyitem]");
+
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE 5 IN nums");
+        final long count = result.stream().count();
+        assertThat(count).isEqualTo(1);
+      });
+    }
+  }
+
+  /**
+   * Regression tests for #2802: extended operator coverage for BY-ITEM indexes (CONTAINS, CONTAINSANY,
+   * CONTAINSALL, IN, NOT IN) on both nested map-list properties and simple lists.
+   */
+  @Nested
+  class Issue2802ByItemIndexOperators {
+    private static final String DB_PATH = "target/databases/Issue2802ByItemIndexOperators";
+
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      database = new DatabaseFactory(DB_PATH).create();
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE doc");
+        database.command("sql", "CREATE PROPERTY doc.nums LIST OF MAP");
+        database.command("sql", "CREATE INDEX ON doc (`nums.a` BY ITEM) NOTUNIQUE");
+      });
+
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO doc SET nums = [{'a':1},{'a':2}]");
+        database.command("sql", "INSERT INTO doc SET nums = [{'a':2},{'a':3}]");
+        database.command("sql", "INSERT INTO doc SET nums = [{'a':3},{'a':4}]");
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    // Issue #2802: CONTAINS on a nested map-list property must hit the BY-ITEM index
+    @Test
+    void containsOperatorUsesIndex() {
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums.a CONTAINS 2");
+        final long count = result.stream().count();
+        assertThat(count).isEqualTo(2);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINS 2")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX");
+      });
+    }
+
+    // Issue #2802: CONTAINSANY on a nested map-list property must hit the BY-ITEM index
+    @Test
+    void containsAnyOperatorUsesIndex() {
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums.a CONTAINSANY [1, 3]");
+        final long count = result.stream().count();
+        assertThat(count).isEqualTo(3);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINSANY [1, 3]")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX");
+      });
+    }
+
+    // Issue #2802: multi-value CONTAINSALL on a nested map-list bypasses the index to preserve INTERSECTION semantics
+    @Test
+    void containsAllOperatorReturnsCorrectResults() {
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums.a CONTAINSALL [2, 3]");
+        final long count = result.stream().count();
+        assertThat(count).isEqualTo(1);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINSALL [2, 3]")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM TYPE");
+      });
+    }
+
+    // Issue #2802: single-value CONTAINSALL on a nested map-list hits the BY-ITEM index
+    @Test
+    void containsAllSingleValueUsesIndex() {
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE nums.a CONTAINSALL [2]");
+        final long count = result.stream().count();
+        assertThat(count).isEqualTo(2);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE nums.a CONTAINSALL [2]")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX");
+      });
+    }
+
+    // Issue #2802: inverted IN on a nested map-list property must hit the BY-ITEM index
+    @Test
+    void inOperatorUsesIndex() {
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE 2 IN nums.a");
+        final long count = result.stream().count();
+        assertThat(count).isEqualTo(2);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM doc WHERE 2 IN nums.a")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX");
+      });
+    }
+
+    // Issue #2802: NOT IN on a nested map-list property must execute without throwing
+    @Test
+    void notInOperatorExecutes() {
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM doc WHERE 2 NOT IN nums.a");
+        result.stream().count();
+      });
+    }
+
+    // Issue #2802: multi-value CONTAINSALL on a simple list bypasses the index for INTERSECTION correctness
+    @Test
+    void containsAllSimpleListReturnsCorrectResults() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE simpleDoc");
+        database.command("sql", "CREATE PROPERTY simpleDoc.tags LIST OF STRING");
+        database.command("sql", "CREATE INDEX ON simpleDoc (tags BY ITEM) NOTUNIQUE");
+      });
+
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO simpleDoc SET tags = ['apple', 'banana']");
+        database.command("sql", "INSERT INTO simpleDoc SET tags = ['banana', 'cherry']");
+        database.command("sql", "INSERT INTO simpleDoc SET tags = ['apple', 'cherry']");
+      });
+
+      database.transaction(() -> {
+        ResultSet result = database.query("sql", "SELECT FROM simpleDoc WHERE tags CONTAINS 'apple'");
+        long count = result.stream().count();
+        assertThat(count).isEqualTo(2);
+
+        String explain = database.query("sql", "EXPLAIN SELECT FROM simpleDoc WHERE tags CONTAINS 'apple'")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX");
+
+        result = database.query("sql", "SELECT FROM simpleDoc WHERE tags CONTAINSALL ['apple', 'banana']");
+        count = result.stream().count();
+        assertThat(count).isEqualTo(1);
+
+        explain = database.query("sql", "EXPLAIN SELECT FROM simpleDoc WHERE tags CONTAINSALL ['apple', 'banana']")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM TYPE");
+
+        explain = database.query("sql", "EXPLAIN SELECT FROM simpleDoc WHERE tags CONTAINSALL ['apple']")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX");
+      });
+    }
+
+    // Issue #2802: inverted IN on a simple list property must hit the BY-ITEM index
+    @Test
+    void inSimpleListUsesIndex() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE simpleDoc2");
+        database.command("sql", "CREATE PROPERTY simpleDoc2.tags LIST OF STRING");
+        database.command("sql", "CREATE INDEX ON simpleDoc2 (tags BY ITEM) NOTUNIQUE");
+      });
+
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO simpleDoc2 SET tags = ['apple', 'banana']");
+        database.command("sql", "INSERT INTO simpleDoc2 SET tags = ['banana', 'cherry']");
+      });
+
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM simpleDoc2 WHERE 'apple' IN tags");
+        final long count = result.stream().count();
+        assertThat(count).isEqualTo(1);
+
+        final String explain = database.query("sql", "EXPLAIN SELECT FROM simpleDoc2 WHERE 'apple' IN tags")
+            .next().getProperty("executionPlan").toString();
+        assertThat(explain).contains("FETCH FROM INDEX");
+      });
+    }
   }
 
 }
