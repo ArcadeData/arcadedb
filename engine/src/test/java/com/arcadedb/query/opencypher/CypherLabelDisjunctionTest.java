@@ -24,10 +24,12 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -180,5 +182,132 @@ class CypherLabelDisjunctionTest {
       ids.add(((Number) val).intValue());
     }
     return ids;
+  }
+
+  /** See issue #3923 */
+  @Nested
+  class DynamicLabelRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      final DatabaseFactory factory = new DatabaseFactory("./target/databases/testopencypher-dynamic-label-3923");
+      if (factory.exists())
+        factory.open().drop();
+      database = factory.create();
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    // Issue #3923: dynamic label expression resolved from a WITH-bound variable matches nodes by that label
+    @Test
+    void dynamicLabelMatchingFromWithBinding() {
+      database.command("opencypher", "CREATE (n:DynamicLabelTest {name: 'test'})");
+
+      final ResultSet rs = database.query("opencypher",
+          "WITH 'DynamicLabelTest' AS label MATCH (n:$(label)) RETURN labels(n) AS result");
+      assertThat(rs.hasNext()).isTrue();
+      final Result r = rs.next();
+      final List<String> labels = r.getProperty("result");
+      assertThat(labels).containsExactly("DynamicLabelTest");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #3923: dynamic label expression resolved from a query parameter matches nodes by that label
+    @Test
+    void dynamicLabelMatchingFromParameter() {
+      database.command("opencypher", "CREATE (n:DynamicLabelTest {name: 'test'})");
+
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n:$($label)) RETURN labels(n) AS result",
+          Map.of("label", "DynamicLabelTest"));
+      assertThat(rs.hasNext()).isTrue();
+      final Result r = rs.next();
+      final List<String> labels = r.getProperty("result");
+      assertThat(labels).containsExactly("DynamicLabelTest");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #3923: dynamic label that does not exist in the schema yields no rows
+    @Test
+    void dynamicLabelMatchingNonExistingLabelReturnsNothing() {
+      database.command("opencypher", "CREATE (n:DynamicLabelTest {name: 'test'})");
+
+      final ResultSet rs = database.query("opencypher",
+          "WITH 'DoesNotExist' AS label MATCH (n:$(label)) RETURN n");
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    // Issue #3923: static label combined with dynamic label requires both labels to match
+    @Test
+    void dynamicLabelMatchingCombinedWithStaticLabel() {
+      database.getSchema().createVertexType("A");
+      database.getSchema().createVertexType("B").addSuperType("A");
+      database.command("opencypher", "CREATE (n:B {name: 'ab'})");
+      database.command("opencypher", "CREATE (n:A {name: 'aOnly'})");
+
+      // Requires ALL labels (static + dynamic) to match: only the B node should match
+      final ResultSet rs = database.query("opencypher",
+          "WITH 'B' AS label MATCH (n:A:$(label)) RETURN n.name AS name");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("name")).isEqualTo("ab");
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /** See issue #4105 */
+  @Nested
+  class LabelUnionRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue-4105-label-union");
+      if (factory.exists())
+        factory.open().drop();
+      database = factory.create();
+      database.transaction(() -> database.command("opencypher",
+          "CREATE (:Person {name:'Alice'}), (:Company {name:'TechCorp'})"));
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    // Issue #4105: MATCH (n:A|B) matches nodes with either label
+    @Test
+    void labelUnionMatchesEither() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n:Person|Company) RETURN n.name AS name ORDER BY name");
+      final List<String> names = new ArrayList<>();
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        names.add(r.<String>getProperty("name"));
+      }
+      assertThat(names).containsExactly("Alice", "TechCorp");
+    }
+
+    // Issue #4105: equivalent WHERE n:A OR n:B form also matches both labels
+    @Test
+    void labelUnionWhereControlAlsoWorks() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n) WHERE n:Person OR n:Company RETURN n.name AS name ORDER BY name");
+      final List<String> names = new ArrayList<>();
+      while (rs.hasNext()) {
+        final Result r = rs.next();
+        names.add(r.<String>getProperty("name"));
+      }
+      assertThat(names).containsExactly("Alice", "TechCorp");
+    }
   }
 }

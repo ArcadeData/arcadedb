@@ -559,7 +559,7 @@ class ExternalPropertyTest extends TestHelper {
   }
 
   @Test
-  void externalBucketPathOverridePlacesFileOnSecondaryDirectory() throws java.io.IOException {
+  void externalBucketPathOverridePlacesFileOnSecondaryDirectory() throws Exception {
     // Persist the override on the database itself via ALTER DATABASE. This writes the value into the
     // database's configuration.json so it survives close+reopen without polluting the JVM-wide
     // GlobalConfiguration (which would leak into concurrent tests).
@@ -1021,7 +1021,7 @@ class ExternalPropertyTest extends TestHelper {
    * {@code EXTERNAL_PROPERTY} so an INSERT INTO bucket:Doc_0_ext stays rejected.
    */
   @Test
-  void heuristicRecoveryAdoptsOrphanExtBucketOnSchemaJsonMissingEntry() throws java.io.IOException {
+  void heuristicRecoveryAdoptsOrphanExtBucketOnSchemaJsonMissingEntry() throws Exception {
     final DocumentType type = database.getSchema().createDocumentType("Doc");
     type.createProperty("blob", Type.STRING).setExternal(true);
     database.transaction(() -> database.newDocument("Doc").set("blob", "v").save());

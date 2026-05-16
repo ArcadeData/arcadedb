@@ -22,13 +22,18 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.PageId;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
+import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
 
 import org.junit.jupiter.api.Tag;
@@ -43,12 +48,15 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for LSMVectorIndex using JVector.
@@ -2228,6 +2236,233 @@ class LSMVectorIndexTest extends TestHelper {
       final List<Pair<RID, Float>> nullFilterResults =
           index.findNeighborsFromVector(queryVector, 10, null);
       assertThat(nullFilterResults).as("Null filter should return results like unfiltered").isNotEmpty();
+    });
+  }
+
+  // Issue #3117: vector.neighbors() with zero query vector under COSINE similarity must raise a clear IllegalArgumentException.
+  @Test
+  void vectorNeighborsWithZeroVector() {
+    // Step 1: Create schema and index
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE EmbeddingNode");
+      database.command("sql", "CREATE PROPERTY EmbeddingNode.vector ARRAY_OF_FLOATS");
+
+      // Create LSM vector index with 4 dimensions using cosine similarity
+      database.command("sql", """
+          CREATE INDEX ON EmbeddingNode (vector) LSM_VECTOR
+          METADATA {
+            "dimensions" : 4,
+            "similarity" : "COSINE"
+          }""");
+    });
+
+    // Step 2: Insert test data in separate transaction
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO EmbeddingNode SET vector = [0.1, 0.1, 0.1, 0.1]");
+      database.command("sql", "INSERT INTO EmbeddingNode SET vector = [0.2, 0.2, 0.2, 0.2]");
+      database.command("sql", "INSERT INTO EmbeddingNode SET vector = [0.3, 0.3, 0.3, 0.3]");
+      database.command("sql", "INSERT INTO EmbeddingNode SET vector = [0.4, 0.4, 0.4, 0.4]");
+    });
+
+    // Test 1: Query with non-zero vector (this should work)
+    database.transaction(() -> {
+      final float[] queryVector1 = new float[] { 0.0f, 0.1f, 0.1f, 0.1f };
+      final ResultSet result = database.query("sql",
+          "SELECT `vector.neighbors`('EmbeddingNode[vector]', ?, 10) as neighbors FROM EmbeddingNode LIMIT 1",
+          queryVector1);
+
+      assertThat(result.hasNext()).as("Query should return results").isTrue();
+      final Object neighbors = result.next().getProperty("neighbors");
+      assertThat(neighbors).isNotNull();
+      if (neighbors instanceof Object[]) {
+        final Object[] neighborsArray = (Object[]) neighbors;
+        assertThat(neighborsArray.length).isGreaterThan(0);
+      }
+    });
+
+    // Test 2: Query with zero vector should give clear error message
+    // (zero vectors cause undefined cosine similarity)
+    database.transaction(() -> {
+      final float[] queryVector2 = new float[] { 0.0f, 0.0f, 0.0f, 0.0f };
+
+      assertThatThrownBy(() -> {
+        final ResultSet rs = database.query("sql",
+            "SELECT `vector.neighbors`('EmbeddingNode[vector]', ?, 10) as neighbors FROM EmbeddingNode LIMIT 1",
+            queryVector2);
+        // Trigger lazy evaluation by calling next()
+        if (rs.hasNext())
+          rs.next();
+      })
+          .isInstanceOf(IllegalArgumentException.class)
+          .hasMessageContaining("zero vector")
+          .hasMessageContaining("COSINE");
+    });
+
+    // Test 3: Query with another vector should work fine
+    database.transaction(() -> {
+      final float[] queryVector3 = new float[] { 0.5f, 0.5f, 0.5f, 0.5f };
+      final ResultSet result = database.query("sql",
+          "SELECT `vector.neighbors`('EmbeddingNode[vector]', ?, 10) as neighbors FROM EmbeddingNode LIMIT 1",
+          queryVector3);
+
+      assertThat(result.hasNext()).as("Query should return results").isTrue();
+      final Object neighbors = result.next().getProperty("neighbors");
+      assertThat(neighbors).isNotNull();
+      if (neighbors instanceof Object[]) {
+        final Object[] neighborsArray = (Object[]) neighbors;
+        assertThat(neighborsArray.length).isGreaterThan(0);
+      }
+    });
+  }
+
+  // Issue #3717: SQLFunctionVectorNeighbors result processing must skip RIDs that point to missing records instead of failing the query.
+  @Test
+  void resultProcessingShouldSkipMissingRecords() {
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 100_000);
+
+    final int dimensions3717 = 64;
+    final int totalVectors3717 = 50;
+
+    // Create schema with vector index
+    database.transaction(() -> {
+      final VertexType type = database.getSchema().createVertexType("VectorDoc");
+      type.createProperty("name", Type.STRING);
+      type.createProperty("embedding", Type.ARRAY_OF_FLOATS);
+
+      database.getSchema().buildTypeIndex("VectorDoc", new String[] { "embedding" })
+          .withLSMVectorType()
+          .withDimensions(dimensions3717)
+          .withSimilarity("COSINE")
+          .withMaxConnections(16)
+          .withBeamWidth(100)
+          .create();
+    });
+
+    // Insert vectors
+    final List<RID> insertedRIDs = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < totalVectors3717; i++) {
+        final var vertex = database.newVertex("VectorDoc");
+        vertex.set("name", "doc" + i);
+        final float[] vector = new float[dimensions3717];
+        for (int j = 0; j < dimensions3717; j++)
+          vector[j] = (float) Math.random();
+        vertex.set("embedding", vector);
+        vertex.save();
+        insertedRIDs.add(vertex.getIdentity());
+      }
+    });
+
+    // Force graph build by doing a search
+    database.transaction(() -> {
+      final float[] queryVector = new float[dimensions3717];
+      Arrays.fill(queryVector, 0.5f);
+      final ResultSet rs = database.query("sql",
+          "SELECT vectorNeighbors('VectorDoc[embedding]', ?, 10) AS neighbors",
+          queryVector);
+      assertThat(rs.hasNext()).isTrue();
+      rs.close();
+    });
+
+    // Simulate the fix scenario: create a result list that mixes valid and invalid RIDs,
+    // then verify that processing them (as executeWithLSMVectorIndexes does) handles
+    // RecordNotFoundException gracefully.
+    database.transaction(() -> {
+      final List<Pair<RID, Float>> simulatedResults = new ArrayList<>();
+
+      // Add a valid RID
+      simulatedResults.add(new Pair<>(insertedRIDs.get(totalVectors3717 - 1), 0.1f));
+      // Add a non-existent RID (simulates stale vector index entry)
+      final RID fakeRid = database.newRID(insertedRIDs.getFirst().getBucketId(), 999_999);
+      simulatedResults.add(new Pair<>(fakeRid, 0.2f));
+      // Add another valid RID
+      simulatedResults.add(new Pair<>(insertedRIDs.get(totalVectors3717 - 2), 0.3f));
+
+      // Verify the fake RID actually throws RecordNotFoundException
+      try {
+        fakeRid.asDocument();
+        throw new AssertionError("Expected RecordNotFoundException for fake RID " + fakeRid);
+      } catch (final RecordNotFoundException e) {
+        // Expected
+      }
+
+      // Process results as executeWithLSMVectorIndexes does (with the fix applied)
+      final ArrayList<Object> processedResults = new ArrayList<>();
+      for (final Pair<RID, Float> neighbor : simulatedResults) {
+        final RID rid = neighbor.getFirst();
+        final Document record;
+        try {
+          record = rid.asDocument();
+        } catch (final RecordNotFoundException e) {
+          // This is the fix for issue #3717: skip missing records
+          continue;
+        }
+        final float distance = neighbor.getSecond();
+        final LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+        entry.put("record", record);
+        entry.put("@rid", record.getIdentity());
+        entry.put("distance", distance);
+        processedResults.add(entry);
+      }
+
+      // Should have 2 valid results (the fake RID was skipped)
+      assertThat(processedResults.size()).isEqualTo(2);
+    });
+  }
+
+  // Issue #3717: baseline regression confirming vectorNeighbors SQL query works correctly when all records exist.
+  @Test
+  void vectorSearchShouldWorkNormally() {
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 100_000);
+
+    final int dimensions3717 = 64;
+    final int totalVectors3717 = 50;
+
+    database.transaction(() -> {
+      final VertexType type = database.getSchema().createVertexType("VectorDoc2");
+      type.createProperty("name", Type.STRING);
+      type.createProperty("embedding", Type.ARRAY_OF_FLOATS);
+
+      database.getSchema().buildTypeIndex("VectorDoc2", new String[] { "embedding" })
+          .withLSMVectorType()
+          .withDimensions(dimensions3717)
+          .withSimilarity("COSINE")
+          .withMaxConnections(16)
+          .withBeamWidth(100)
+          .create();
+    });
+
+    database.transaction(() -> {
+      for (int i = 0; i < totalVectors3717; i++) {
+        final var vertex = database.newVertex("VectorDoc2");
+        vertex.set("name", "doc" + i);
+        final float[] vector = new float[dimensions3717];
+        for (int j = 0; j < dimensions3717; j++)
+          vector[j] = (float) Math.random();
+        vertex.set("embedding", vector);
+        vertex.save();
+      }
+    });
+
+    // Verify normal search works with expand pattern
+    database.transaction(() -> {
+      final float[] queryVector = new float[dimensions3717];
+      for (int j = 0; j < dimensions3717; j++)
+        queryVector[j] = (float) Math.random();
+
+      assertThatCode(() -> {
+        final ResultSet rs = database.query("sql",
+            "SELECT distance, name FROM (SELECT expand(vectorNeighbors('VectorDoc2[embedding]', ?, 10)))",
+            queryVector);
+        int count = 0;
+        while (rs.hasNext()) {
+          final Result result = rs.next();
+          assertThat((Object) result.getProperty("distance")).isNotNull();
+          count++;
+        }
+        assertThat(count).isEqualTo(10);
+        rs.close();
+      }).doesNotThrowAnyException();
     });
   }
 

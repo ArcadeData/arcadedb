@@ -219,4 +219,23 @@ class DeleteExecutionStepTest extends TestHelper {
     assertThat(result.next().<Number>getProperty("total").longValue()).isEqualTo(0);
     result.close();
   }
+
+  // Issue #3813: DELETE WHERE @rid = (INSERT INTO Doc RETURN @rid).@rid[0] resolves the INSERT subquery to a RID for comparison
+  @Test
+  void deleteWhereRidEqualsSubqueryExpression() {
+    database.getSchema().createDocumentType("Doc");
+
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Doc SET a = 1");
+      final long countBefore = database.countType("Doc", true);
+
+      final ResultSet result = database.command("sql",
+          "DELETE FROM Doc WHERE @rid = (INSERT INTO Doc RETURN @rid).@rid[0]");
+      assertThat(result.hasNext()).isTrue();
+      assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
+
+      // Count should be same as before (inserted 1 then deleted the new one)
+      assertThat(database.countType("Doc", true)).isEqualTo(countBefore);
+    });
+  }
 }

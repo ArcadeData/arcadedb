@@ -21,6 +21,7 @@ package com.arcadedb.index;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
@@ -30,10 +31,18 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -338,5 +347,275 @@ class LSMTreeIndexCompactionTest extends TestHelper {
       }
     }
     LogManager.instance().log(this, Level.FINE, "TEST: Lookup finished in " + (System.currentTimeMillis() - begin) + "ms");
+  }
+
+  private static String issue3714FullErrorMessage(final Throwable e) {
+    final StringBuilder sb = new StringBuilder();
+    Throwable current = e;
+    while (current != null) {
+      if (current.getMessage() != null)
+        sb.append(current.getMessage()).append(" ");
+      current = current.getCause();
+    }
+    return sb.toString();
+  }
+
+  /**
+   * Regression tests for #3714: concurrent batch UPSERTs forcing early index compaction must not corrupt
+   * index pages ("arraycopy: length is negative", page-move stress).
+   */
+  @Nested
+  class Issue3714BatchUpsertArrayCopy {
+    private static final String DB_PATH = "target/databases/Issue3714BatchUpsertArrayCopyTest";
+
+    private Database issue3714Db;
+    private int originalCompactionMinPages;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+
+      originalCompactionMinPages = GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.getValueAsInteger();
+      GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(3);
+
+      issue3714Db = new DatabaseFactory(DB_PATH).create();
+      issue3714Db.transaction(() -> {
+        final var type = issue3714Db.getSchema().buildDocumentType().withName("Metadata").withTotalBuckets(4).create();
+        type.createProperty("recordId", String.class);
+        type.createProperty("data", String.class);
+        issue3714Db.getSchema().buildTypeIndex("Metadata", new String[] { "recordId" })
+            .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withPageSize(16 * 1024).create();
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(originalCompactionMinPages);
+      if (issue3714Db != null && issue3714Db.isOpen())
+        issue3714Db.drop();
+    }
+
+    // Issue #3714: 120K concurrent batch UPSERTs across 4 threads with small page sizes must not corrupt index pages
+    @Test
+    void concurrentBatchUpsertsWithCompactionDoNotCorruptPages() throws Exception {
+      final int threads = 4;
+      final int batchesPerThread = 1500;
+      final int recordsPerBatch = 20;
+      final AtomicReference<Throwable> error = new AtomicReference<>();
+      final AtomicInteger successfulBatches = new AtomicInteger();
+      final CountDownLatch startLatch = new CountDownLatch(1);
+      final CountDownLatch doneLatch = new CountDownLatch(threads);
+
+      for (int t = 0; t < threads; t++) {
+        final int threadId = t;
+        new Thread(() -> {
+          try {
+            startLatch.await();
+            for (int batch = 0; batch < batchesPerThread; batch++) {
+              final StringBuilder sql = new StringBuilder("BEGIN;");
+              for (int r = 0; r < recordsPerBatch; r++) {
+                final String id = "t" + threadId + "_b" + batch + "_r" + r;
+                final String data = "{\"recordId\":\"" + id + "\",\"value\":\"data_" + id + "\",\"batch\":" + batch + "}";
+                sql.append("UPDATE Metadata CONTENT ").append(data)
+                    .append(" UPSERT WHERE recordId = '").append(id).append("';");
+              }
+              sql.append("COMMIT;");
+
+              boolean success = false;
+              for (int retry = 0; retry < 200 && !success; retry++) {
+                try {
+                  issue3714Db.command("sqlscript", sql.toString());
+                  success = true;
+                  successfulBatches.incrementAndGet();
+                } catch (final Exception e) {
+                  final String msg = issue3714FullErrorMessage(e);
+                  if (msg.contains("ConcurrentModification") || msg.contains("Please retry"))
+                    continue;
+                  error.compareAndSet(null, e);
+                  return;
+                }
+              }
+            }
+          } catch (final Throwable e) {
+            error.compareAndSet(null, e);
+          } finally {
+            doneLatch.countDown();
+          }
+        }, "UpsertThread-" + t).start();
+      }
+
+      startLatch.countDown();
+      assertThat(doneLatch.await(300, TimeUnit.SECONDS)).as("Threads should finish within timeout").isTrue();
+
+      if (error.get() != null)
+        error.get().printStackTrace();
+
+      assertThat(error.get()).as("Batch UPSERTs should not throw: %s",
+          error.get() != null ? error.get().getMessage() : "").isNull();
+
+      issue3714Db.transaction(() -> {
+        final long count = issue3714Db.countType("Metadata", false);
+        assertThat(count).isEqualTo((long) successfulBatches.get() * recordsPerBatch);
+      });
+    }
+
+    // Issue #3714: single-thread repeated UPSERTs on the same keys with growing payloads must not corrupt pages on move()
+    @Test
+    void highVolumeRepeatedUpsertsWithGrowingRecords() {
+      final int totalKeys = 2000;
+      final int iterations = 200;
+
+      issue3714Db.transaction(() -> {
+        for (int i = 0; i < totalKeys; i++)
+          issue3714Db.command("sql", "INSERT INTO Metadata SET recordId = 'key_" + i + "', data = 'x'");
+      });
+
+      for (int iter = 0; iter < iterations; iter++) {
+        final StringBuilder sql = new StringBuilder("BEGIN;");
+        for (int i = 0; i < 20; i++) {
+          final int keyIdx = (iter * 20 + i) % totalKeys;
+          final String padding = "x".repeat(10 + iter % 50);
+          sql.append("UPDATE Metadata CONTENT {\"recordId\":\"key_").append(keyIdx)
+              .append("\",\"data\":\"").append(padding).append("_iter").append(iter)
+              .append("\"} UPSERT WHERE recordId = 'key_").append(keyIdx).append("';");
+        }
+        sql.append("COMMIT;");
+
+        boolean success = false;
+        for (int retry = 0; retry < 50 && !success; retry++) {
+          try {
+            issue3714Db.command("sqlscript", sql.toString());
+            success = true;
+          } catch (final Exception e) {
+            final String msg = issue3714FullErrorMessage(e);
+            if (msg.contains("ConcurrentModification") || msg.contains("Please retry"))
+              continue;
+            throw e;
+          }
+        }
+      }
+
+      issue3714Db.transaction(() -> assertThat(issue3714Db.countType("Metadata", false)).isEqualTo(totalKeys));
+    }
+  }
+
+  /**
+   * Regression tests for #3714: concurrent batch UPSERTs must not produce "Variable length quantity is too long"
+   * or "arraycopy: length is negative" during transaction commit.
+   */
+  @Nested
+  class Issue3714BatchUpsertVLQ {
+    private static final String DB_PATH = "target/databases/Issue3714BatchUpsertVLQTest";
+
+    private Database issue3714Db;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      issue3714Db = new DatabaseFactory(DB_PATH).create();
+      issue3714Db.transaction(() -> {
+        final var type = issue3714Db.getSchema().buildDocumentType().withName("Metadata").withTotalBuckets(4).create();
+        type.createProperty("recordId", String.class);
+        type.createProperty("data", String.class);
+        issue3714Db.getSchema().buildTypeIndex("Metadata", new String[] { "recordId" })
+            .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withPageSize(64 * 1024).create();
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (issue3714Db != null && issue3714Db.isOpen())
+        issue3714Db.drop();
+    }
+
+    // Issue #3714: concurrent batch UPSERTs with per-thread key namespaces must not corrupt the index VLQ-encoded entries
+    @Test
+    void concurrentBatchUpsertsDoNotCorruptIndex() throws Exception {
+      final int threads = 2;
+      final int batchesPerThread = 500;
+      final int recordsPerBatch = 20;
+      final AtomicReference<Throwable> error = new AtomicReference<>();
+      final AtomicInteger successfulBatches = new AtomicInteger();
+      final CountDownLatch startLatch = new CountDownLatch(1);
+      final CountDownLatch doneLatch = new CountDownLatch(threads);
+
+      for (int t = 0; t < threads; t++) {
+        final int threadId = t;
+        new Thread(() -> {
+          try {
+            startLatch.await();
+            for (int batch = 0; batch < batchesPerThread; batch++) {
+              final StringBuilder sql = new StringBuilder("BEGIN;");
+              for (int r = 0; r < recordsPerBatch; r++) {
+                final String id = "t" + threadId + "_b" + batch + "_r" + r;
+                final String data = "{\"recordId\":\"" + id + "\",\"value\":\"data_" + id + "\",\"batch\":" + batch + "}";
+                sql.append("UPDATE Metadata CONTENT ").append(data)
+                    .append(" UPSERT WHERE recordId = '").append(id).append("';");
+              }
+              sql.append("COMMIT;");
+
+              boolean success = false;
+              for (int retry = 0; retry < 200 && !success; retry++) {
+                try {
+                  issue3714Db.command("sqlscript", sql.toString());
+                  success = true;
+                  successfulBatches.incrementAndGet();
+                } catch (final Exception e) {
+                  final String msg = issue3714FullErrorMessage(e);
+                  if (msg.contains("ConcurrentModification") || msg.contains("Please retry"))
+                    continue;
+                  error.compareAndSet(null, e);
+                  return;
+                }
+              }
+            }
+          } catch (final Throwable e) {
+            error.compareAndSet(null, e);
+          } finally {
+            doneLatch.countDown();
+          }
+        }, "UpsertThread-" + t).start();
+      }
+
+      startLatch.countDown();
+      assertThat(doneLatch.await(180, TimeUnit.SECONDS)).as("Threads should finish within timeout").isTrue();
+
+      if (error.get() != null)
+        error.get().printStackTrace();
+
+      assertThat(error.get()).as("Batch UPSERTs should not throw: %s",
+          error.get() != null ? error.get().getMessage() : "").isNull();
+
+      issue3714Db.transaction(() -> {
+        final long count = issue3714Db.countType("Metadata", false);
+        assertThat(count).isEqualTo((long) successfulBatches.get() * recordsPerBatch);
+      });
+    }
+
+    // Issue #3714: single-thread repeated batch UPSERTs on the same keys must not corrupt the index
+    @Test
+    void repeatedBatchUpsertsOnSameKeys() {
+      final int totalKeys = 1000;
+      final int iterations = 100;
+
+      issue3714Db.transaction(() -> {
+        for (int i = 0; i < totalKeys; i++)
+          issue3714Db.command("sql", "INSERT INTO Metadata SET recordId = 'key_" + i + "', data = 'initial'");
+      });
+
+      for (int iter = 0; iter < iterations; iter++) {
+        final StringBuilder sql = new StringBuilder("BEGIN;");
+        for (int i = 0; i < 20; i++) {
+          final int keyIdx = (iter * 20 + i) % totalKeys;
+          sql.append("UPDATE Metadata CONTENT {\"recordId\":\"key_").append(keyIdx)
+              .append("\",\"data\":\"updated_iter").append(iter).append("_").append(i)
+              .append("\"} UPSERT WHERE recordId = 'key_").append(keyIdx).append("';");
+        }
+        sql.append("COMMIT;");
+        issue3714Db.command("sqlscript", sql.toString());
+      }
+
+      issue3714Db.transaction(() -> assertThat(issue3714Db.countType("Metadata", false)).isEqualTo(totalKeys));
+    }
   }
 }

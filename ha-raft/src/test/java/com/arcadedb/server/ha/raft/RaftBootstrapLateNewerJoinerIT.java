@@ -30,7 +30,6 @@ import org.junit.jupiter.api.Test;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
-import java.io.IOException;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 
@@ -84,7 +83,7 @@ class RaftBootstrapLateNewerJoinerIT extends BaseRaftHATest {
   }
 
   @Test
-  void lateNewerJoinerAdoptsClusterBaselineAndPreservesLocalLastTxId() throws IOException {
+  void lateNewerJoinerAdoptsClusterBaselineAndPreservesLocalLastTxId() throws Exception {
     final String dbName = getDatabaseName();
 
     // Phase 1: wait for the initial bootstrap baseline to commit and apply on every peer.

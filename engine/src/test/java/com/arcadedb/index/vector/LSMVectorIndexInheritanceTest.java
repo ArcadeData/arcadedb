@@ -32,34 +32,115 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Test case for GitHub issue #3121: Allow vector searches to be filtered by child type.
- * <p>
- * https://github.com/ArcadeData/arcadedb/issues/3121
- * <p>
- * When an index is created on a parent type (e.g., EMBEDDING), sub-indexes are automatically
- * created for each bucket, including buckets of child types. This test verifies that
- * `vector.neighbors`() can search only within a specific child type's buckets by specifying
- * the child type name (e.g., 'EMBEDDING_IMAGE[vector]').
- * <p>
- * Use case:
- * 1. Class-specific: "Get top 50 closest IMAGE embeddings" - search only EMBEDDING_IMAGE buckets
- * 2. Cross-class: "Get top 50 closest embeddings across ALL types" - search all EMBEDDING buckets
+ * LSM vector index behavior with type inheritance: parent type, child type definition, and type-filtered search.
  */
-class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
+class LSMVectorIndexInheritanceTest extends TestHelper {
 
   private static final int DIMENSIONS = 128;
 
-  /**
-   * Test that `vector.neighbors`() can search only within a specific child type's buckets
-   * when the index was created on the parent type.
-   */
+  // Issue #3120: inserting into a child vertex type that extends a parent with an LSM_VECTOR index must work without dimension mismatch errors.
+  @Test
+  void vectorIndexInheritance() {
+    // Step 1: Create parent vertex type with vector property and index
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE EMBEDDING");
+      database.command("sql", "CREATE PROPERTY EMBEDDING.vector ARRAY_OF_FLOATS");
+
+      database.command("sql", """
+          CREATE INDEX ON EMBEDDING (vector) LSM_VECTOR
+          METADATA {
+            "dimensions" : 1024,
+            "similarity" : "COSINE"
+          }""");
+    });
+
+    // Step 2: Insert into parent class (this should work)
+    database.transaction(() -> {
+      final float[] testVector = new float[1024];
+      for (int i = 0; i < 1024; i++) {
+        testVector[i] = (float) Math.random();
+      }
+
+      database.command("sql", "INSERT INTO EMBEDDING SET vector = ?", (Object) testVector);
+    });
+
+    // Step 3: Create child vertex type that extends parent
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE CHUNK_EMBEDDING EXTENDS EMBEDDING");
+    });
+
+    // Step 4: Insert into child class (this is where the bug occurs)
+    database.transaction(() -> {
+      final float[] testVector = new float[1024];
+      for (int i = 0; i < 1024; i++) {
+        testVector[i] = (float) Math.random();
+      }
+
+      database.command("sql", "INSERT INTO CHUNK_EMBEDDING SET vector = ?", (Object) testVector);
+    });
+
+    // Step 5: Verify both records exist
+    database.transaction(() -> {
+      final ResultSet parentRecords = database.query("sql", "SELECT count(*) as cnt FROM EMBEDDING");
+      final long parentCount = parentRecords.hasNext() ?
+          parentRecords.next().<Long>getProperty("cnt") : 0L;
+      assertThat(parentCount).isEqualTo(2L); // Should have both parent and child records
+
+      final ResultSet childRecords = database.query("sql", "SELECT count(*) as cnt FROM CHUNK_EMBEDDING");
+      final long childCount = childRecords.hasNext() ?
+          childRecords.next().<Long>getProperty("cnt") : 0L;
+      assertThat(childCount).isEqualTo(1L);
+    });
+  }
+
+  // Issue #3120: multi-level inheritance (grandparent -> parent -> child) must propagate the vector index correctly at every level.
+  @Test
+  void vectorIndexInheritanceMultipleLevels() {
+    // Create hierarchy: EMBEDDING -> CHUNK_EMBEDDING -> SPECIFIC_CHUNK
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE EMBEDDING");
+      database.command("sql", "CREATE PROPERTY EMBEDDING.vector ARRAY_OF_FLOATS");
+      database.command("sql", """
+          CREATE INDEX ON EMBEDDING (vector) LSM_VECTOR
+          METADATA {
+            "dimensions" : 128,
+            "similarity" : "COSINE"
+          }""");
+
+      database.command("sql", "CREATE VERTEX TYPE CHUNK_EMBEDDING EXTENDS EMBEDDING");
+      database.command("sql", "CREATE VERTEX TYPE SPECIFIC_CHUNK EXTENDS CHUNK_EMBEDDING");
+    });
+
+    // Test insert at each level
+    database.transaction(() -> {
+      final float[] testVector = new float[128];
+      for (int i = 0; i < 128; i++) {
+        testVector[i] = (float) (i * 0.01);
+      }
+
+      // Insert into grandparent
+      database.command("sql", "INSERT INTO EMBEDDING SET vector = ?", (Object) testVector);
+
+      // Insert into parent
+      database.command("sql", "INSERT INTO CHUNK_EMBEDDING SET vector = ?", (Object) testVector);
+
+      // Insert into child
+      database.command("sql", "INSERT INTO SPECIFIC_CHUNK SET vector = ?", (Object) testVector);
+    });
+
+    // Verify all records
+    database.transaction(() -> {
+      final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM EMBEDDING");
+      final long count = result.hasNext() ? result.next().<Long>getProperty("cnt") : 0L;
+      assertThat(count).isEqualTo(3L);
+    });
+  }
+
+  // Issue #3121: vector.neighbors() must scope results to a specific child type's buckets when invoked as '<ChildType>[vector]'.
   @Test
   void vectorSearchByChildType() {
-    //System.out.println("\n=== Testing Vector Search by Child Type ===");
-
     // Step 1: Create parent type with vector index
     database.transaction(() -> {
-      //System.out.println("\n1. Creating parent type EMBEDDING with vector index");
       database.command("sql", "CREATE VERTEX TYPE EMBEDDING");
       database.command("sql", "CREATE PROPERTY EMBEDDING.vector ARRAY_OF_FLOATS");
       database.command("sql", """
@@ -72,7 +153,6 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
 
     // Step 2: Create child types
     database.transaction(() -> {
-      //System.out.println("2. Creating child types");
       database.command("sql", "CREATE VERTEX TYPE EMBEDDING_IMAGE EXTENDS EMBEDDING");
       database.command("sql", "CREATE VERTEX TYPE EMBEDDING_DOCUMENT EXTENDS EMBEDDING");
       database.command("sql", "CREATE VERTEX TYPE EMBEDDING_CHUNK EXTENDS EMBEDDING");
@@ -80,8 +160,6 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
 
     // Step 3: Insert test data into different types with distinguishable vectors
     database.transaction(() -> {
-      //System.out.println("3. Inserting test data");
-
       // Create clearly different vectors for each type:
       // Images: vectors where first component is dominant
       // Documents: vectors where second component is dominant
@@ -96,13 +174,10 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
         database.command("sql", "INSERT INTO EMBEDDING_DOCUMENT SET vector = ?", (Object) documentVector);
         database.command("sql", "INSERT INTO EMBEDDING_CHUNK SET vector = ?", (Object) chunkVector);
       }
-      //System.out.println("   Inserted 30 records (10 each type)");
     });
 
     // Step 4: Test type-specific vector search using child type name
     database.transaction(() -> {
-      //System.out.println("\n4. Testing type-specific vector search on EMBEDDING_IMAGE");
-
       // Query vector similar to image vectors (dominant in first dimensions)
       float[] queryVector = createTestVector(0, 5);
 
@@ -122,16 +197,12 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
       for (Map<String, Object> neighbor : neighbors) {
         Vertex vertex = (Vertex) neighbor.get("record");
         String typeName = vertex.getTypeName();
-        //System.out.println("   Found neighbor: " + vertex.getIdentity() + " type=" + typeName);
         assertThat(typeName).as("All results should be EMBEDDING_IMAGE").isEqualTo("EMBEDDING_IMAGE");
       }
-      //System.out.println("   ✓ Type-specific search returned only EMBEDDING_IMAGE records");
     });
 
     // Step 5: Test cross-type vector search using parent type name
     database.transaction(() -> {
-      //System.out.println("\n5. Testing cross-type vector search on EMBEDDING (parent)");
-
       // Same query vector
       float[] queryVector = createTestVector(0, 5);
 
@@ -145,7 +216,6 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
       List<Map<String, Object>> neighbors = row.getProperty("neighbors");
 
       assertThat(neighbors).as("Should find neighbors").isNotNull();
-      //System.out.println("   Found " + neighbors.size() + " neighbors");
 
       // Count types in results
       Set<String> typesFound = new HashSet<>();
@@ -153,17 +223,12 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
         Vertex vertex = (Vertex) neighbor.get("record");
         typesFound.add(vertex.getTypeName());
       }
-
-      //System.out.println("   Types found: " + typesFound);
       // Cross-type search may return multiple types depending on similarity
       // With our test vectors, images should be closest to the image query vector
-      //System.out.println("   ✓ Cross-type search completed");
     });
 
     // Step 6: Test searching in EMBEDDING_DOCUMENT type
     database.transaction(() -> {
-      //System.out.println("\n6. Testing type-specific search on EMBEDDING_DOCUMENT");
-
       // Query vector similar to document vectors (dominant in second dimensions)
       float[] queryVector = createTestVector(1, 5);
 
@@ -182,19 +247,12 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
         Vertex vertex = (Vertex) neighbor.get("record");
         assertThat(vertex.getTypeName()).isEqualTo("EMBEDDING_DOCUMENT");
       }
-      //System.out.println("   ✓ EMBEDDING_DOCUMENT search returned only document records");
     });
-
-    //System.out.println("\n=== Test completed successfully ===");
   }
 
-  /**
-   * Test that type-specific search excludes records from other types even when they are similar.
-   */
+  // Issue #3121: type-specific vector search must exclude records belonging to sibling types.
   @Test
   void typeFilteringExcludesOtherTypes() {
-    //System.out.println("\n=== Testing Type Filtering Exclusion ===");
-
     // Create schema
     database.transaction(() -> {
       database.command("sql", "CREATE VERTEX TYPE EMBEDDING");
@@ -239,7 +297,6 @@ class Issue3121VectorIndexOnChildTypeTest extends TestHelper {
         Vertex vertex = (Vertex) neighbor.get("record");
         assertThat(vertex.getTypeName()).as("All results should be EMBEDDING_A").isEqualTo("EMBEDDING_A");
       }
-      //System.out.println("✓ Type-specific search correctly excluded other types (found " + neighbors.size() + " results)");
     });
   }
 

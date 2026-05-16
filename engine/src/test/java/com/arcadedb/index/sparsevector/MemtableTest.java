@@ -142,7 +142,7 @@ class MemtableTest {
   }
 
   @Test
-  void concurrentWritersDoNotLoseEntries() throws InterruptedException {
+  void concurrentWritersDoNotLoseEntries() throws Exception {
     final Memtable m = new Memtable();
     final int writers = 8;
     final int perWriter = 5_000;

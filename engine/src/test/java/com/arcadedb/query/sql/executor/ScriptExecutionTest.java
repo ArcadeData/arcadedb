@@ -493,6 +493,39 @@ class ScriptExecutionTest extends TestHelper {
     });
   }
 
+  // Issue #3871: SQLScript LET $x = SELECT ... ; DELETE FROM $x; resolves the variable to records for deletion
+  @Test
+  void deleteFromVariableInScript() {
+    database.getSchema().createDocumentType("Doc");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Doc SET name = 'a'");
+      database.command("sql", "INSERT INTO Doc SET name = 'b'");
+      assertThat(database.countType("Doc", true)).isEqualTo(2);
+
+      database.command("sqlscript",
+          """
+          LET $x = SELECT @rid FROM Doc;
+          DELETE FROM $x;\
+          """);
+
+      assertThat(database.countType("Doc", true)).isEqualTo(0);
+    });
+  }
+
+  // Issue #3871: DELETE FROM TypeName still works as a regression check for variable-target changes
+  @Test
+  void deleteFromTypeStillWorks() {
+    database.getSchema().createDocumentType("DocDeleteFromType");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO DocDeleteFromType SET name = 'c'");
+      assertThat(database.countType("DocDeleteFromType", true)).isEqualTo(1);
+
+      database.command("sql", "DELETE FROM DocDeleteFromType");
+
+      assertThat(database.countType("DocDeleteFromType", true)).isEqualTo(0);
+    });
+  }
+
   @Test
   void assignOnEdgeCreate() {
     database.transaction(() -> {

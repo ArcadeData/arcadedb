@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -36,39 +37,30 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Test to reproduce issue #3135: Concurrent UPDATE of multi-page records (large embeddings)
- * with LSM_VECTOR index causes "Invalid pointer to a chunk" and "Concurrent modification on page" errors.
- *
- * <a href="https://github.com/ArcadeData/arcadedb/issues/3135">GitHub Issue #3135</a>
- *
- * Scenario:
- * 1. Create records with large embeddings (multi-page records due to 3072-dimensional float arrays)
- * 2. Concurrently update embeddings from many threads
- * 3. Corruption occurs: invalid pointer errors when reading/writing
- *
- * @author Luca Garulli (l.garulli@arcadedata.com)
+ * Concurrent UPDATE of multi-page records with LSM_VECTOR index must not corrupt the store.
+ * Isolated in a dedicated class because it intentionally exercises corruption-detection paths
+ * and therefore disables the post-test database integrity check.
  */
-class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
+@Tag("slow")
+class LSMVectorIndexConcurrentMultiPageUpdateTest extends TestHelper {
 
-  private static final int NUM_RECORDS = 2000;  // Number of records to create
-  private static final int CONCURRENT_THREADS = 100;  // Number of concurrent update threads
-  private static final int EMBEDDING_DIM = 3072;  // Dimension to force multi-page records
+  private static final int NUM_RECORDS         = 2000;
+  private static final int CONCURRENT_THREADS  = 100;
+  private static final int EMBEDDING_DIM       = 3072;
 
   private final AtomicInteger updateErrors = new AtomicInteger(0);
   private final AtomicInteger verifyErrors = new AtomicInteger(0);
 
   @Override
   protected boolean isCheckingDatabaseIntegrity() {
-    // Skip integrity check - we're testing corruption detection
+    // The test intentionally probes corruption-detection paths under concurrent multi-page writes.
     return false;
   }
 
+  // Issue #3135: concurrent UPDATE of multi-page records with LSM_VECTOR index must not corrupt the store.
   @Test
   void concurrentMultiPageVectorUpdates() throws Exception {
-    // System.out.println("\n=== Testing Concurrent Multi-Page Vector Updates (Issue #3135) ===");
-
     // Phase 1: Create schema with inheritance and LSM_VECTOR index
-    // System.out.println("\n1. Creating schema with inheritance and LSM_VECTOR index");
     database.transaction(() -> {
       final Schema schema = database.getSchema();
 
@@ -94,7 +86,6 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
     });
 
     // Phase 2: Create records with zero embeddings
-    // System.out.println("\n2. Creating " + NUM_RECORDS + " records with zero embeddings");
     for (int i = 0; i < NUM_RECORDS; i++) {
       final String id = "record_" + i;
       final float[] zeroEmbedding = new float[EMBEDDING_DIM];
@@ -108,12 +99,10 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
       try (final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM RecordV")) {
         final long count = rs.hasNext() ? rs.next().<Long>getProperty("cnt") : 0L;
         assertThat(count).isEqualTo(NUM_RECORDS);
-        // System.out.println("   Created " + count + " records successfully");
       }
     });
 
     // Phase 3: Concurrently update embeddings
-    // System.out.println("\n3. Updating embeddings with " + CONCURRENT_THREADS + " concurrent threads");
     final ExecutorService executor = Executors.newFixedThreadPool(CONCURRENT_THREADS);
     final CountDownLatch latch = new CountDownLatch(NUM_RECORDS);
 
@@ -124,7 +113,6 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
           updateEmbedding(id);
         } catch (final Exception e) {
           // Log but continue - we're testing for corruption
-          //System.err.println("Update error for " + id + ": " + e.getMessage());
         } finally {
           latch.countDown();
         }
@@ -135,10 +123,7 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
     executor.shutdown();
     executor.awaitTermination(1, TimeUnit.MINUTES);
 
-    // System.out.println("   Update errors during concurrent phase: " + updateErrors.get());
-
     // Phase 4: Verification - try to read all embeddings to detect corruption
-    // System.out.println("\n4. Verifying all records for corruption");
     for (int i = 0; i < NUM_RECORDS; i++) {
       final String id = "record_" + i;
       try {
@@ -172,18 +157,10 @@ class Issue3135ConcurrentMultiPageVectorUpdateTest extends TestHelper {
       }
     }
 
-    // Results
-    // System.out.println("\n=== RESULTS ===");
-    // System.out.println("Total records: " + NUM_RECORDS);
-    // System.out.println("Update errors: " + updateErrors.get());
-    // System.out.println("Verification errors (corruption): " + verifyErrors.get());
-
     // The test should pass with no corruption errors
     assertThat(verifyErrors.get())
         .as("Corruption errors detected during verification")
         .isEqualTo(0);
-
-    // System.out.println("\n=== Test completed ===");
   }
 
   private void updateEmbedding(final String id) {

@@ -19,12 +19,14 @@
 package com.arcadedb.query.sql;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DDLTest extends TestHelper {
   @Override
@@ -140,6 +142,36 @@ class DDLTest extends TestHelper {
           .isEqualTo(numOfElements);
     });
 
+  }
+
+  // Issue #4227: CREATE INDEX without an explicit index type throws a clear parsing exception, not an NPE
+  @Test
+  void createIndexWithoutTypeThrowsParsingException() {
+    database.command("sql", "CREATE VERTEX TYPE DOCUMENT");
+    database.command("sql", "CREATE VERTEX TYPE CHUNK");
+    database.command("sql", "CREATE EDGE TYPE `in`");
+
+    database.command("sql", "CREATE PROPERTY CHUNK.subtype STRING");
+    database.command("sql", "CREATE PROPERTY CHUNK.name STRING");
+    database.command("sql", "CREATE PROPERTY CHUNK.text STRING");
+    database.command("sql", "CREATE PROPERTY CHUNK.`index` INTEGER");
+
+    assertThatThrownBy(() -> database.command("sql", "CREATE INDEX ON CHUNK (name)"))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Index type is required")
+        .hasMessageContaining("UNIQUE")
+        .hasMessageContaining("NOTUNIQUE");
+  }
+
+  // Issue #4227: CREATE INDEX with an explicit index type still parses and registers the index
+  @Test
+  void createIndexWithTypeStillWorks() {
+    database.command("sql", "CREATE VERTEX TYPE CHUNK");
+    database.command("sql", "CREATE PROPERTY CHUNK.name STRING");
+
+    database.command("sql", "CREATE INDEX ON CHUNK (name) NOTUNIQUE");
+
+    assertThat(database.getSchema().existsIndex("CHUNK[name]")).isTrue();
   }
 
 }

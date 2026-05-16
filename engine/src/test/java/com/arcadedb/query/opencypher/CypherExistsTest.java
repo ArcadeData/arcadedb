@@ -25,7 +25,11 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -39,7 +43,10 @@ class CypherExistsTest {
 
   @BeforeEach
   void setup() {
-    database = new DatabaseFactory("./target/databases/cypherexists").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/cypherexists");
+    if (factory.exists())
+      factory.open().drop();
+    database = factory.create();
 
     database.transaction(() -> {
       // Create schema
@@ -138,5 +145,176 @@ class CypherExistsTest {
       count++;
     }
     assertThat(count).isEqualTo(2);
+  }
+
+  /** See issue #4097 */
+  @Nested
+  class ExistsOuterVarRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue-4097-exists-outer-var");
+      if (factory.exists())
+        factory.open().drop();
+      database = factory.create();
+      database.transaction(() -> database.command("opencypher",
+          "CREATE (:Node {id:1, name:'test'}), (:Node {id:2, name:'other'})"));
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    // Issue #4097: EXISTS subquery returning an outer variable evaluates to true
+    @Test
+    void existsWithOuterVarReturnsTrue() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n) RETURN exists { RETURN n AS x } AS result ORDER BY result LIMIT 1");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Boolean>getProperty("result")).isTrue();
+    }
+
+    // Issue #4097: EXISTS subquery returning a property of an outer variable evaluates to true
+    @Test
+    void existsWithOuterVarPropertyReturnsTrue() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n) RETURN exists { RETURN n.id AS x } AS result ORDER BY result LIMIT 1");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Boolean>getProperty("result")).isTrue();
+    }
+
+    // Issue #4097: EXISTS subquery returning a literal evaluates to true
+    @Test
+    void existsWithConstantReturnsTrue() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n) RETURN exists { RETURN 1 AS x } AS result ORDER BY result LIMIT 1");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Boolean>getProperty("result")).isTrue();
+    }
+
+    // Issue #4097: EXISTS subquery with an inner MATCH that produces rows evaluates to true
+    @Test
+    void existsWithInnerMatchReturnsTrue() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n) RETURN exists { MATCH (m:Node) RETURN m AS x } AS result ORDER BY result LIMIT 1");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Boolean>getProperty("result")).isTrue();
+    }
+
+    // Issue #4097: EXISTS subquery with count(*) aggregation evaluates to true
+    @Test
+    void existsWithCountStarReturnsTrue() {
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (n) RETURN exists { RETURN count(*) AS c } AS result ORDER BY result LIMIT 1");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Boolean>getProperty("result")).isTrue();
+    }
+  }
+
+  /** See issue #4126 */
+  @Nested
+  class ExistsAndNotExistsRegression {
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      final DatabaseFactory factory = new DatabaseFactory("./target/databases/issue-4126-exists-and-not-exists");
+      if (factory.exists())
+        factory.open().drop();
+      database = factory.create();
+      database.transaction(() -> {
+        database.command("sql", "CREATE VERTEX TYPE Owner");
+        database.command("sql", "CREATE PROPERTY Owner.id STRING");
+        database.command("sql", "CREATE VERTEX TYPE Item");
+        database.command("sql", "CREATE PROPERTY Item.id STRING");
+        database.command("sql", "CREATE PROPERTY Item.flag BOOLEAN");
+        database.command("sql", "CREATE EDGE TYPE rel");
+        database.command("sql", "CREATE EDGE TYPE excl");
+
+        database.command("opencypher", "CREATE (:Owner {id: 'u'})");
+        database.command("opencypher", "CREATE (:Item  {id: 'c', flag: true})");
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null) {
+        database.drop();
+        database = null;
+      }
+    }
+
+    // Issue #4126: control - two-MATCH cross product plus boolean predicate returns the row
+    @Test
+    void twoMatchBooleanOnly() {
+      final List<Result> rows = collect(database.query("opencypher",
+          "MATCH (u:Owner {id: 'u'}) MATCH (c:Item) WHERE c.flag = true RETURN c.id AS id"));
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
+    }
+
+    // Issue #4126: control - two-MATCH plus boolean OR EXISTS returns the row
+    @Test
+    void twoMatchBooleanOrExists() {
+      final List<Result> rows = collect(database.query("opencypher",
+          "MATCH (u:Owner {id: 'u'}) MATCH (c:Item) " +
+              "WHERE c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) } " +
+              "RETURN c.id AS id"));
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
+    }
+
+    // Issue #4126: two-MATCH plus (bool OR EXISTS) AND NOT EXISTS returns the row when no excluded edges exist
+    @Test
+    void twoMatchBooleanOrExistsAndNotExists() {
+      final List<Result> rows = collect(database.query("opencypher",
+          "MATCH (u:Owner {id: 'u'}) MATCH (c:Item) " +
+              "WHERE (c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) }) " +
+              "  AND NOT EXISTS { MATCH (u)-[:excl]->(c) } " +
+              "RETURN c.id AS id"));
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
+    }
+
+    // Issue #4126: two-MATCH plus grouped exclusion AND NOT (EXISTS OR EXISTS) returns the row
+    @Test
+    void twoMatchBooleanOrExistsAndNotGroupedExclusion() {
+      final List<Result> rows = collect(database.query("opencypher",
+          "MATCH (u:Owner {id: 'u'}) MATCH (c:Item) " +
+              "WHERE (c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) }) " +
+              "  AND NOT (EXISTS { MATCH (u)-[:excl]->(c) } " +
+              "        OR EXISTS { MATCH (u)-[:excl*1..3]->(c) }) " +
+              "RETURN c.id AS id"));
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
+    }
+
+    // Issue #4126: same WHERE shape wrapped in a single outer MATCH with EXISTS body returns the row
+    @Test
+    void singleMatchWithExistsWrappingMatchAndWhere() {
+      final List<Result> rows = collect(database.query("opencypher",
+          "MATCH (c:Item) " +
+              "WHERE EXISTS { " +
+              "  MATCH (u:Owner {id: 'u'}) " +
+              "  WHERE (c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) }) " +
+              "    AND NOT (EXISTS { MATCH (u)-[:excl]->(c) } " +
+              "          OR EXISTS { MATCH (u)-[:excl*1..3]->(c) }) " +
+              "} " +
+              "RETURN c.id AS id"));
+      assertThat(rows).hasSize(1);
+      assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
+    }
+
+    private List<Result> collect(final ResultSet rs) {
+      final List<Result> out = new ArrayList<>();
+      while (rs.hasNext())
+        out.add(rs.next());
+      return out;
+    }
   }
 }

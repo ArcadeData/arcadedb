@@ -245,4 +245,58 @@ class MaterializedViewSQLTest extends TestHelper {
 
     database.command("sql", "DROP MATERIALIZED VIEW AlterReopenView");
   }
+
+  // Issue #3878: CREATE MATERIALIZED VIEW with an equality operator in a projection parses and materializes the rows
+  @Test
+  void createMaterializedViewWithEqualityInProjection() {
+    database.transaction(() -> {
+      if (!database.getSchema().existsType("TestDoc")) {
+        database.command("sql", "CREATE DOCUMENT TYPE TestDoc");
+        database.command("sql", "INSERT INTO TestDoc SET name = 'Alice', active = true");
+        database.command("sql", "INSERT INTO TestDoc SET name = 'Bob', active = false");
+      }
+    });
+
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW EqView AS SELECT (true = true) as result FROM TestDoc");
+
+    assertThat(database.getSchema().existsMaterializedView("EqView")).isTrue();
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM EqView")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result result = rs.next();
+      assertThat((Boolean) result.getProperty("result")).isTrue();
+    }
+
+    database.command("sql", "DROP MATERIALIZED VIEW EqView");
+  }
+
+  // Issue #3878: CREATE MATERIALIZED VIEW with an if() projection whose argument contains an equality operator parses and materializes the rows
+  @Test
+  void createMaterializedViewWithIfFunction() {
+    database.transaction(() -> {
+      if (!database.getSchema().existsType("TestDoc")) {
+        database.command("sql", "CREATE DOCUMENT TYPE TestDoc");
+        database.command("sql", "INSERT INTO TestDoc SET name = 'Alice', active = true");
+        database.command("sql", "INSERT INTO TestDoc SET name = 'Bob', active = false");
+      }
+    });
+
+    database.command("sql",
+        "CREATE MATERIALIZED VIEW IfView AS SELECT if((active = true), 1, 2) as flag FROM TestDoc");
+
+    assertThat(database.getSchema().existsMaterializedView("IfView")).isTrue();
+
+    try (final ResultSet rs = database.query("sql", "SELECT FROM IfView ORDER BY flag")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result first = rs.next();
+      assertThat(rs.hasNext()).isTrue();
+      final Result second = rs.next();
+      // Alice (active=true) -> flag=1, Bob (active=false) -> flag=2
+      assertThat((Integer) first.getProperty("flag")).isEqualTo(1);
+      assertThat((Integer) second.getProperty("flag")).isEqualTo(2);
+    }
+
+    database.command("sql", "DROP MATERIALIZED VIEW IfView");
+  }
 }

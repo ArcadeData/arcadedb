@@ -19,6 +19,8 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
@@ -27,8 +29,13 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -468,5 +475,325 @@ class HashIndexTest extends TestHelper {
         v.save();
       }
     });
+  }
+
+  /**
+   * Regression tests for #3714: hash index page corruption during batch UPSERTs caused by a wrong space check
+   * in addRIDToExistingEntry, plus orphan entries left in the overflow chain by remove(keys).
+   */
+  @Nested
+  class Issue3714HashIndexCorruption {
+    private static final String DB_PATH = "target/databases/Issue3714HashIndexCorruptionTest";
+
+    private Database issue3714Db;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      issue3714Db = new DatabaseFactory(DB_PATH).create();
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (issue3714Db != null && issue3714Db.isOpen())
+        issue3714Db.drop();
+    }
+
+    // Issue #3714: a NOTUNIQUE hash index with small page size must not throw on addRIDToExistingEntry under fragmentation
+    @Test
+    void nonUniqueHashIndexPageFragmentation() {
+      issue3714Db.transaction(() -> {
+        final DocumentType type = issue3714Db.getSchema().getOrCreateDocumentType("FragDoc");
+        type.createProperty("category", String.class);
+        type.createProperty("value", Integer.class);
+        issue3714Db.getSchema().buildTypeIndex("FragDoc", new String[] { "category" })
+            .withType(Schema.INDEX_TYPE.HASH).withUnique(false).withPageSize(1024).create();
+      });
+
+      issue3714Db.transaction(() -> {
+        for (int i = 0; i < 1000; i++) {
+          final MutableDocument doc = issue3714Db.newDocument("FragDoc");
+          doc.set("category", "cat_" + (i % 5));
+          doc.set("value", i);
+          doc.save();
+        }
+      });
+
+      issue3714Db.transaction(() -> {
+        final Index index = issue3714Db.getSchema().getIndexByName("FragDoc[category]");
+        for (int c = 0; c < 5; c++) {
+          final IndexCursor cursor = index.get(new Object[] { "cat_" + c });
+          int count = 0;
+          while (cursor.hasNext()) {
+            cursor.next();
+            count++;
+          }
+          assertThat(count).isEqualTo(200);
+        }
+      });
+    }
+
+    // Issue #3714: repeated UPSERTs on a UNIQUE hash index must keep all keys findable, no orphans left behind
+    @Test
+    void repeatedUpsertsWithNonUniqueHashIndex() {
+      issue3714Db.transaction(() -> {
+        final DocumentType type = issue3714Db.getSchema().getOrCreateDocumentType("UpsertDoc");
+        type.createProperty("recordId", String.class);
+        type.createProperty("data", String.class);
+        issue3714Db.getSchema().buildTypeIndex("UpsertDoc", new String[] { "recordId" })
+            .withType(Schema.INDEX_TYPE.HASH).withUnique(true).withPageSize(2048).create();
+      });
+
+      issue3714Db.transaction(() -> {
+        for (int i = 0; i < 200; i++) {
+          final MutableDocument doc = issue3714Db.newDocument("UpsertDoc");
+          doc.set("recordId", "key_" + i);
+          doc.set("data", "initial_" + i);
+          doc.save();
+        }
+      });
+
+      for (int iter = 0; iter < 50; iter++) {
+        final int iteration = iter;
+        issue3714Db.transaction(() -> {
+          for (int i = 0; i < 20; i++) {
+            final int keyIdx = (iteration * 20 + i) % 200;
+            issue3714Db.command("sql",
+                "UPDATE UpsertDoc CONTENT {\"recordId\":\"key_" + keyIdx + "\",\"data\":\"updated_" + iteration + "_" + i
+                    + "\"} UPSERT WHERE recordId = 'key_" + keyIdx + "'");
+          }
+        });
+      }
+
+      issue3714Db.transaction(() -> {
+        assertThat(issue3714Db.countType("UpsertDoc", false)).isEqualTo(200);
+        final Index index = issue3714Db.getSchema().getIndexByName("UpsertDoc[recordId]");
+        for (int i = 0; i < 200; i++) {
+          final IndexCursor cursor = index.get(new Object[] { "key_" + i });
+          assertThat(cursor.hasNext()).withFailMessage("Key key_" + i + " not found after UPSERTs").isTrue();
+        }
+      });
+    }
+
+    // Issue #3714: removeRIDFromEntry on a NOTUNIQUE hash index must stay consistent across insert + delete + reinsert cycles
+    @Test
+    void removeRIDFromEntryUnderFragmentation() {
+      issue3714Db.transaction(() -> {
+        final DocumentType type = issue3714Db.getSchema().getOrCreateDocumentType("RemoveDoc");
+        type.createProperty("tag", String.class);
+        type.createProperty("seq", Integer.class);
+        issue3714Db.getSchema().buildTypeIndex("RemoveDoc", new String[] { "tag" })
+            .withType(Schema.INDEX_TYPE.HASH).withUnique(false).withPageSize(4096).create();
+      });
+
+      final int totalTags = 10;
+      final int docsPerTag = 50;
+
+      issue3714Db.transaction(() -> {
+        for (int t = 0; t < totalTags; t++)
+          for (int s = 0; s < docsPerTag; s++) {
+            final MutableDocument doc = issue3714Db.newDocument("RemoveDoc");
+            doc.set("tag", "tag_" + t);
+            doc.set("seq", t * 1000 + s);
+            doc.save();
+          }
+      });
+
+      issue3714Db.transaction(() -> {
+        for (int t = 0; t < totalTags; t++)
+          for (int s = 0; s < docsPerTag; s += 2) {
+            final int seq = t * 1000 + s;
+            try (final ResultSet rs = issue3714Db.query("sql", "SELECT FROM RemoveDoc WHERE seq = " + seq)) {
+              if (rs.hasNext())
+                rs.next().getRecord().get().asDocument().delete();
+            }
+          }
+      });
+
+      issue3714Db.transaction(() -> {
+        assertThat(issue3714Db.countType("RemoveDoc", false)).isEqualTo(250);
+
+        final Index index = issue3714Db.getSchema().getIndexByName("RemoveDoc[tag]");
+        for (int t = 0; t < totalTags; t++) {
+          final IndexCursor cursor = index.get(new Object[] { "tag_" + t });
+          int count = 0;
+          while (cursor.hasNext()) {
+            cursor.next();
+            count++;
+          }
+          assertThat(count).withFailMessage("tag_%d has %d, expected 25", t, count).isEqualTo(25);
+        }
+      });
+
+      issue3714Db.transaction(() -> {
+        for (int t = 0; t < totalTags; t++)
+          for (int s = docsPerTag; s < docsPerTag + 25; s++) {
+            final MutableDocument doc = issue3714Db.newDocument("RemoveDoc");
+            doc.set("tag", "tag_" + t);
+            doc.set("seq", t * 1000 + s);
+            doc.save();
+          }
+      });
+
+      issue3714Db.transaction(() -> {
+        assertThat(issue3714Db.countType("RemoveDoc", false)).isEqualTo(500);
+
+        final Index index = issue3714Db.getSchema().getIndexByName("RemoveDoc[tag]");
+        for (int t = 0; t < totalTags; t++) {
+          final IndexCursor cursor = index.get(new Object[] { "tag_" + t });
+          int count = 0;
+          while (cursor.hasNext()) {
+            cursor.next();
+            count++;
+          }
+          assertThat(count).withFailMessage("tag_%d has %d, expected 50", t, count).isEqualTo(50);
+        }
+      });
+    }
+
+    // Issue #3714: full batch UPSERT workflow with mixed UNIQUE / NOTUNIQUE hash indexes must not produce duplicate ORDER BY rows
+    @Test
+    void noDuplicatesAfterBatchUpsertsWithHashIndexes() {
+      issue3714Db.transaction(() -> {
+        final DocumentType type = issue3714Db.getSchema().getOrCreateDocumentType("Metadata");
+        type.createProperty("recordId", String.class);
+        type.createProperty("publicationYear", Integer.class);
+        type.createProperty("name", String.class);
+        issue3714Db.getSchema().buildTypeIndex("Metadata", new String[] { "recordId" })
+            .withType(Schema.INDEX_TYPE.HASH).withUnique(true).withPageSize(2048).create();
+        issue3714Db.getSchema().buildTypeIndex("Metadata", new String[] { "publicationYear" })
+            .withType(Schema.INDEX_TYPE.HASH).withUnique(false).withPageSize(2048).create();
+      });
+
+      final int totalRecords = 500;
+      final int distinctYears = 10;
+
+      issue3714Db.transaction(() -> {
+        for (int i = 0; i < totalRecords; i++) {
+          issue3714Db.command("sql",
+              "UPDATE Metadata CONTENT {\"recordId\":\"rec_" + i + "\",\"publicationYear\":" + (2000 + i % distinctYears)
+                  + ",\"name\":\"initial_" + i + "\"} UPSERT WHERE recordId = 'rec_" + i + "'");
+        }
+      });
+
+      for (int iter = 0; iter < 5; iter++) {
+        final int iteration = iter;
+        issue3714Db.transaction(() -> {
+          for (int i = 0; i < totalRecords; i++) {
+            issue3714Db.command("sql",
+                "UPDATE Metadata CONTENT {\"recordId\":\"rec_" + i + "\",\"publicationYear\":" + (2000 + i % distinctYears)
+                    + ",\"name\":\"iter_" + iteration + "_" + i + "\"} UPSERT WHERE recordId = 'rec_" + i + "'");
+          }
+        });
+      }
+
+      issue3714Db.transaction(() -> {
+        assertThat(issue3714Db.countType("Metadata", false)).isEqualTo(totalRecords);
+
+        for (int i = 0; i < totalRecords; i++) {
+          try (final ResultSet rs = issue3714Db.query("sql", "SELECT FROM Metadata WHERE recordId = 'rec_" + i + "'")) {
+            int found = 0;
+            while (rs.hasNext()) {
+              rs.next();
+              found++;
+            }
+            assertThat(found).withFailMessage("Expected 1 record for recordId rec_%d but got %d", i, found).isEqualTo(1);
+          }
+        }
+
+        try (final ResultSet rs = issue3714Db.query("sql", "SELECT publicationYear FROM Metadata ORDER BY publicationYear DESC")) {
+          int count = 0;
+          while (rs.hasNext()) {
+            rs.next();
+            count++;
+          }
+          assertThat(count).withFailMessage("Duplicate results in ORDER BY query: got %d, expected %d", count, totalRecords)
+              .isEqualTo(totalRecords);
+        }
+
+        for (int y = 0; y < distinctYears; y++) {
+          final int year = 2000 + y;
+          try (final ResultSet rs = issue3714Db.query("sql", "SELECT FROM Metadata WHERE publicationYear = " + year)) {
+            int found = 0;
+            while (rs.hasNext()) {
+              rs.next();
+              found++;
+            }
+            assertThat(found).withFailMessage("publicationYear %d returned %d, expected %d", year, found, totalRecords / distinctYears)
+                .isEqualTo(totalRecords / distinctYears);
+          }
+        }
+      });
+    }
+
+    // Issue #3714: index-level remove(keys) on a NOTUNIQUE hash key with overflow chain must purge ALL matching entries
+    @Test
+    void removeAllEntriesForKeyAcrossOverflowChain() {
+      issue3714Db.transaction(() -> {
+        final DocumentType type = issue3714Db.getSchema().getOrCreateDocumentType("OrphanDoc");
+        type.createProperty("key", String.class);
+        type.createProperty("seq", Integer.class);
+        issue3714Db.getSchema().buildTypeIndex("OrphanDoc", new String[] { "key" })
+            .withType(Schema.INDEX_TYPE.HASH).withUnique(false).withPageSize(512).create();
+      });
+
+      final int totalDocs = 400;
+      issue3714Db.transaction(() -> {
+        for (int i = 0; i < totalDocs; i++) {
+          final MutableDocument doc = issue3714Db.newDocument("OrphanDoc");
+          doc.set("key", "hot_key");
+          doc.set("seq", i);
+          doc.save();
+        }
+      });
+
+      issue3714Db.transaction(() -> {
+        final Index index = issue3714Db.getSchema().getIndexByName("OrphanDoc[key]");
+        index.remove(new Object[] { "hot_key" });
+      });
+
+      issue3714Db.transaction(() -> {
+        final Index index = issue3714Db.getSchema().getIndexByName("OrphanDoc[key]");
+        final IndexCursor cursor = index.get(new Object[] { "hot_key" });
+        int remaining = 0;
+        while (cursor.hasNext()) {
+          cursor.next();
+          remaining++;
+        }
+        assertThat(remaining).withFailMessage("Orphan entries left in overflow chain after remove(keys): %d", remaining).isEqualTo(0);
+      });
+    }
+
+    // Issue #3714: deep overflow chains (very small pages) must read back all entries without stack overflow
+    @Test
+    void deepOverflowChainDoesNotStackOverflow() {
+      issue3714Db.transaction(() -> {
+        final DocumentType type = issue3714Db.getSchema().getOrCreateDocumentType("OverflowDoc");
+        type.createProperty("key", String.class);
+        type.createProperty("seq", Integer.class);
+        issue3714Db.getSchema().buildTypeIndex("OverflowDoc", new String[] { "key" })
+            .withType(Schema.INDEX_TYPE.HASH).withUnique(false).withPageSize(512).create();
+      });
+
+      issue3714Db.transaction(() -> {
+        for (int i = 0; i < 300; i++) {
+          final MutableDocument doc = issue3714Db.newDocument("OverflowDoc");
+          doc.set("key", "same_key");
+          doc.set("seq", i);
+          doc.save();
+        }
+      });
+
+      issue3714Db.transaction(() -> {
+        final Index index = issue3714Db.getSchema().getIndexByName("OverflowDoc[key]");
+        final IndexCursor cursor = index.get(new Object[] { "same_key" });
+        int count = 0;
+        while (cursor.hasNext()) {
+          cursor.next();
+          count++;
+        }
+        assertThat(count).isEqualTo(300);
+      });
+    }
   }
 }

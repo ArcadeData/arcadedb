@@ -2,8 +2,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -226,5 +224,91 @@ public class UpdateContentArrayTest extends TestHelper {
       afterCount++;
     }
     assertThat(afterCount).isEqualTo(2);
+  }
+
+  // Issue #1315: UPDATE CONTENT with JSON array of documents updates all records and returns each after RETURN AFTER
+  @Test
+  void originalIssueExample() {
+    database.command("sql", "CREATE DOCUMENT TYPE doc");
+
+    // First, create 3 documents using INSERT (which already supported arrays)
+    database.command("sql",
+        "INSERT INTO doc CONTENT [{\"name\":\"tim\",\"status\":\"new\"},{\"name\":\"tom\",\"status\":\"new\"},{\"name\":\"jim\",\"status\":\"new\"}]");
+
+    // Verify 3 documents were created
+    ResultSet queryResult = database.query("sql", "SELECT COUNT(*) as count FROM doc");
+    assertThat(queryResult.next().<Long>getProperty("count")).isEqualTo(3L);
+
+    // Now use UPDATE with JSON array to modify all 3 documents
+    final ResultSet result = database.command("sql",
+        "UPDATE doc CONTENT [{\"name\":\"tim\",\"status\":\"updated\"},{\"name\":\"tom\",\"status\":\"updated\"},{\"name\":\"jim\",\"status\":\"updated\"}] RETURN AFTER");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item).isNotNull();
+      assertThat(item.<String>getProperty("name")).isIn("tim", "tom", "jim");
+      assertThat(item.<String>getProperty("status")).isEqualTo("updated");
+      count++;
+    }
+
+    assertThat(count).isEqualTo(3);
+
+    queryResult = database.query("sql", "SELECT FROM doc WHERE status = 'updated'");
+    count = 0;
+    while (queryResult.hasNext()) {
+      queryResult.next();
+      count++;
+    }
+    assertThat(count).isEqualTo(3);
+  }
+
+  // Issue #1315: UPDATE CONTENT with JSON array matches INSERT array behavior on existing records
+  @Test
+  void updateMatchesInsertBehavior() {
+    database.command("sql", "CREATE DOCUMENT TYPE Person");
+
+    // INSERT with JSON array (this already worked)
+    database.command("sql",
+        "INSERT INTO Person CONTENT [{\"name\":\"alice\",\"age\":25},{\"name\":\"bob\",\"age\":30}]");
+
+    // Verify INSERT created 2 documents
+    ResultSet queryResult = database.query("sql", "SELECT COUNT(*) as count FROM Person");
+    assertThat(queryResult.next().<Long>getProperty("count")).isEqualTo(2L);
+
+    // UPDATE with JSON array
+    database.command("sql",
+        "UPDATE Person CONTENT [{\"name\":\"alice\",\"age\":26},{\"name\":\"bob\",\"age\":31}]");
+
+    queryResult = database.query("sql", "SELECT FROM Person WHERE name = 'alice'");
+    assertThat(queryResult.hasNext()).isTrue();
+    final Result alice = queryResult.next();
+    assertThat(alice.<Integer>getProperty("age")).isEqualTo(26);
+
+    queryResult = database.query("sql", "SELECT FROM Person WHERE name = 'bob'");
+    assertThat(queryResult.hasNext()).isTrue();
+    final Result bob = queryResult.next();
+    assertThat(bob.<Integer>getProperty("age")).isEqualTo(31);
+  }
+
+  // Issue #1315: CREATE VERTEX CONTENT also accepts a JSON array creating one vertex per element
+  @Test
+  void createVertexAlsoSupportsArrays() {
+    database.command("sql", "CREATE VERTEX TYPE Person");
+
+    final ResultSet result = database.command("sql",
+        "CREATE VERTEX Person CONTENT [{\"name\":\"alice\"},{\"name\":\"bob\"},{\"name\":\"charlie\"}]");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item).isNotNull();
+      count++;
+    }
+
+    assertThat(count).isEqualTo(3);
+
+    final ResultSet queryResult = database.query("sql", "SELECT COUNT(*) as count FROM Person");
+    assertThat(queryResult.next().<Long>getProperty("count")).isEqualTo(3L);
   }
 }

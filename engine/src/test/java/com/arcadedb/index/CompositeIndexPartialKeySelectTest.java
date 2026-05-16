@@ -19,16 +19,29 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.LSMTreeIndexMutable;
+import com.arcadedb.query.sql.executor.ExecutionPlan;
+import com.arcadedb.query.sql.executor.ExecutionStep;
+import com.arcadedb.query.sql.executor.FilterStep;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.FileUtils;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.time.LocalDateTime;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -284,5 +297,120 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
       }
       assertThat(count).isEqualTo(1);
     });
+  }
+
+  /**
+   * Regression tests for #2326: when multiple single-property full-text indexes coexist with a
+   * composite LSM index, the planner must prefer the composite index when all properties are
+   * matched with equality conditions.
+   */
+  @Nested
+  class Issue2326MultiFieldIndexSelection {
+    private static final String DB_PATH = "target/databases/Issue2326MultiFieldIndexSelection";
+
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      database = new DatabaseFactory(DB_PATH).create();
+      database.transaction(() -> {
+        final Schema schema = database.getSchema();
+
+        final DocumentType tc = schema.createDocumentType("example");
+
+        tc.createProperty("p1", String.class);
+        tc.createProperty("p2", String.class);
+        tc.createProperty("p3", String.class);
+
+        tc.createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "p1");
+        tc.createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "p2");
+        tc.createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "p3");
+
+        tc.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "p1", "p2", "p3");
+
+        final String[] perm = { "a", "b", "c", "d", "e", "f", "g", "h" };
+        for (final String l1 : perm) {
+          for (final String l2 : perm) {
+            for (final String l3 : perm) {
+              final MutableDocument doc = database.newDocument("example");
+              doc.set("p1", l1);
+              doc.set("p2", l2);
+              doc.set("p3", l3);
+              doc.save();
+            }
+          }
+        }
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    // Issue #2326: composite LSM index must win over per-field full-text indexes when all keys are equality-matched
+    @Test
+    void compositeIndexIsSelected() {
+      database.transaction(() -> {
+        final ResultSet rs = database.query("sql",
+            "explain select * from example where p1=? and p2=? and p3=?", "e", "b", "h");
+
+        final ExecutionPlan plan = rs.getExecutionPlan().get();
+        final String planString = plan.prettyPrint(0, 3);
+
+        assertThat(planString).contains("example[p1,p2,p3]");
+
+        assertThat(planString).doesNotContain("example[p1]");
+        assertThat(planString).doesNotContain("example[p2]");
+        assertThat(planString).doesNotContain("example[p3]");
+
+        final List<ExecutionStep> steps = plan.getSteps();
+        for (final ExecutionStep step : steps) {
+          if (step instanceof FilterStep)
+            fail("Execution plan contains FilterStep, not using composite index properly");
+        }
+      });
+    }
+
+    // Issue #2326: composite-index-backed query returns the exact tuple matching all three keys
+    @Test
+    void queryReturnsCorrectResult() {
+      database.transaction(() -> {
+        final ResultSet rs = database.query("sql",
+            "select * from example where p1=? and p2=? and p3=?", "e", "b", "h");
+
+        assertThat(rs.stream().count()).isEqualTo(1);
+      });
+    }
+
+    // Issue #2326: queries on a single property may still pick an available index
+    @Test
+    void singlePropertyIndexNotSelected() {
+      database.transaction(() -> {
+        final ResultSet rs = database.query("sql",
+            "explain select * from example where p1=?", "e");
+
+        final ExecutionPlan plan = rs.getExecutionPlan().get();
+        final String planString = plan.prettyPrint(0, 3);
+
+        assertThat(planString).contains("FETCH FROM INDEX");
+      });
+    }
+
+    // Issue #2326: two-property filters must still resolve via some available index
+    @Test
+    void twoPropertyIndexSelection() {
+      database.transaction(() -> {
+        final ResultSet rs = database.query("sql",
+            "explain select * from example where p1=? and p2=?", "e", "b");
+
+        final ExecutionPlan plan = rs.getExecutionPlan().get();
+        final String planString = plan.prettyPrint(0, 3);
+
+        assertThat(planString).contains("FETCH FROM INDEX");
+      });
+    }
   }
 }
