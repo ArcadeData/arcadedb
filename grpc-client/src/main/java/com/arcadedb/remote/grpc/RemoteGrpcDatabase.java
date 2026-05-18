@@ -364,6 +364,33 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     });
   }
 
+  /**
+   * The base {@link RemoteDatabase#transaction(com.arcadedb.database.Database.TransactionScope)}
+   * implementation, on an uncaught exception or a retryable failure, only clears the local
+   * {@code sessionId} on the client without telling the server to roll back. With the HTTP
+   * transport this is benign because the server-side session times out, but with gRPC the
+   * server keeps the {@code TransactionContext} (and its dedicated executor thread) registered
+   * in {@code activeTransactions} until the client explicitly commits, rolls back or closes
+   * the connection. That leaks server-side resources and, once {@code executeQuery} honors the
+   * client's transaction context (fix for #4260), it also makes subsequent queries see the
+   * still-active in-flight tx. Whenever sessionId is being cleared while transactionId is
+   * still set, perform a best-effort rollback so the server cleans up immediately.
+   */
+  @Override
+  protected void setSessionId(final String sessionId) {
+    if (sessionId == null && transactionId != null) {
+      try {
+        rollback();
+      } catch (final Throwable ignore) {
+        // Best-effort: ensure local state is cleared even if the rollback RPC fails.
+        transactionId = null;
+        super.setSessionId(null);
+      }
+      return;
+    }
+    super.setSessionId(sessionId);
+  }
+
   @Override
   public void deleteRecord(final Record record) {
     checkDatabaseIsOpen();

@@ -833,9 +833,58 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   @Override
   public void executeQuery(ExecuteQueryRequest request, StreamObserver<ExecuteQueryResponse> responseObserver) {
+    // Force compression for streaming (usually beneficial)
+    CompressionAwareService.setResponseCompression(responseObserver, "gzip");
+
+    // If the client is inside an externally-managed transaction (started via beginTransaction RPC),
+    // route the query to that transaction's dedicated executor thread. ArcadeDB transactions are
+    // thread-bound: changes pending in the transaction (e.g. a record created via createRecord or
+    // executeCommand and not yet committed) are only visible to the thread that owns the
+    // transaction. Running the query on the gRPC worker thread would miss those in-flight
+    // changes and yield "Record not found" for a record the client just saved (issue #4260).
+    if (request.hasTransaction()) {
+      final String incomingTxId = request.getTransaction().getTransactionId();
+      LogManager.instance().log(this, Level.FINE, "executeQuery(): has Tx %s", incomingTxId);
+
+      final TransactionContext txCtx = (incomingTxId != null && !incomingTxId.isBlank())
+          ? activeTransactions.get(incomingTxId) : null;
+      if (txCtx == null) {
+        responseObserver.onError(Status.INTERNAL
+            .withDescription("Query execution failed: Invalid transaction ID").asException());
+        return;
+      }
+
+      try {
+        final Future<ExecuteQueryResponse> future = txCtx.executor.submit(
+            () -> executeQueryInternal(request, txCtx.db));
+        final ExecuteQueryResponse response = future.get();
+        responseObserver.onNext(response);
+        responseObserver.onCompleted();
+      } catch (Exception e) {
+        final Throwable cause = (e instanceof ExecutionException && e.getCause() != null) ? e.getCause() : e;
+        LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
+        responseObserver.onError(Status.INTERNAL
+            .withDescription("Query execution failed: " + cause.getMessage()).asException());
+      }
+      return;
+    }
+
+    // No external transaction: run on the gRPC worker thread.
+    Database database = null;
+    try {
+      database = getDatabase(request.getDatabase(), request.getCredentials());
+      final ExecuteQueryResponse response = executeQueryInternal(request, database);
+      responseObserver.onNext(response);
+      responseObserver.onCompleted();
+    } catch (Exception e) {
+      LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
+      responseObserver.onError(Status.INTERNAL.withDescription("Query execution failed: " + e.getMessage()).asException());
+    }
+  }
+
+  private ExecuteQueryResponse executeQueryInternal(final ExecuteQueryRequest request, final Database database) {
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
-    Database database = null;
     String profileLanguage = null;
     try {
       final long deserStart = System.nanoTime();
@@ -846,24 +895,6 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
               .mode = %s""",
           projectionConfig.isInclude(),
           projectionConfig.getEnc());
-
-      // Force compression for streaming (usually beneficial)
-      CompressionAwareService.setResponseCompression(responseObserver, "gzip");
-
-      database = getDatabase(request.getDatabase(), request.getCredentials());
-
-      // Check if this is part of a transaction
-      if (request.hasTransaction()) {
-
-        LogManager.instance().log(this, Level.FINE, "executeQuery(): has Tx %s",
-            request.getTransaction().getTransactionId());
-
-        TransactionContext txCtx = activeTransactions.get(request.getTransaction().getTransactionId());
-        if (txCtx == null) {
-          throw new IllegalArgumentException("Invalid transaction ID");
-        }
-        database = txCtx.db;
-      }
 
       // Execute the query
       long startTime = System.currentTimeMillis();
@@ -931,13 +962,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         LogManager.instance().log(this, Level.FINE, "executeQuery(): executionTime + response generation = %s",
             executionTime);
 
-        responseObserver.onNext(response);
-        responseObserver.onCompleted();
+        return response;
       }
-
-    } catch (Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
-      responseObserver.onError(Status.INTERNAL.withDescription("Query execution failed: " + e.getMessage()).asException());
     } finally {
       recordGrpcProfile("grpc.query", profile, database != null ? database.getName() : request.getDatabase(),
           profileLanguage != null ? profileLanguage : request.getLanguage(), request.getQuery());
