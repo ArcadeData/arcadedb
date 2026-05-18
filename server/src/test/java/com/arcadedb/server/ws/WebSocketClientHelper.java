@@ -126,7 +126,8 @@ public class WebSocketClientHelper implements AutoCloseable {
   public String popMessage(final int delayMS) {
     try {
       return this.messageQueue.poll(delayMS, TimeUnit.MILLISECONDS);
-    } catch (final InterruptedException ignored) {
+    } catch (final InterruptedException e) {
+      Thread.currentThread().interrupt();
     }
 
     return null;
