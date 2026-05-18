@@ -145,6 +145,7 @@ public abstract class TestServerHelper {
 
   public static void deleteDatabaseFolders(final int totalServers) {
     FileUtils.deleteRecursively(new File("./target/databases/"));
+    FileUtils.deleteRecursively(new File("./target/config/"));
     FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + File.separator));
     for (int i = 0; i < totalServers; ++i)
       FileUtils.deleteRecursively(new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString() + i + File.separator));
