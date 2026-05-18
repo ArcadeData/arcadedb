@@ -37,9 +37,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
 
 /**
- * Executes all the tests while the server is up and running.
+ * Static utility methods for test server lifecycle and database management.
  */
-public abstract class TestServerHelper {
+public final class TestServerHelper {
+
+  private TestServerHelper() {
+    // Utility class - no instances
+  }
 
   public static ArcadeDBServer[] startServers(final int totalServers,
       final CallableParameterNoReturn<ContextConfiguration> onServerConfigurationCallback,
@@ -107,7 +111,7 @@ public abstract class TestServerHelper {
       throws Exception {
     try {
       callback.call();
-      fail("");
+      fail("Expected exception of type " + expectedException.getName() + " but none was thrown");
     } catch (final Throwable e) {
       if (e.getClass().equals(expectedException))
         // EXPECTED
