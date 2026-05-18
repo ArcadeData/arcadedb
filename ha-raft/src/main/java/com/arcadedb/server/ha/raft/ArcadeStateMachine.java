@@ -917,9 +917,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
         databasePath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
             + File.separator + dbName;
       }
-      final String leaderHttpAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
-      final String clusterToken = raftHAServer != null ? raftHAServer.getClusterToken() : null;
-      SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, clusterToken, server);
+      // Resolve the leader address on each retry: the bootstrap-mismatch entry is applied
+      // during Raft log replay on startup, which can race ahead of leader election on this peer.
+      final RaftHAServer raft = raftHAServer;
+      final String clusterToken = raft != null ? raft.getClusterToken() : null;
+      SnapshotInstaller.install(dbName, databasePath,
+          () -> raft != null ? raft.getLeaderHttpAddress() : null,
+          clusterToken, server);
       LogManager.instance().log(this, Level.INFO,
           "Database '%s' reinstalled after bootstrap mismatch", dbName);
     } catch (final IOException e) {
