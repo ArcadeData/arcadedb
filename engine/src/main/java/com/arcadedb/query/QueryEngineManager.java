@@ -208,10 +208,6 @@ public class QueryEngineManager {
   }
 
   public List<String> getAvailableLanguages() {
-    final List<String> available = new ArrayList<>();
-    for (final QueryEngine.QueryEngineFactory impl : implementations.values()) {
-      available.add(impl.getLanguage());
-    }
-    return available;
+    return new ArrayList<>(implementations.keySet());
   }
 }

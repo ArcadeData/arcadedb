@@ -50,6 +50,15 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
         LogManager.instance().log(this, Level.FINE, "Response: %s", null, response);
         assertThat(connection.getResponseCode()).isEqualTo(200);
         assertThat(connection.getResponseMessage()).isEqualTo("OK");
+
+        final JSONObject parsed = new JSONObject(response);
+        assertThat(parsed.has("ha")).as("?mode=cluster must include 'ha' section when HA is running").isTrue();
+
+        final JSONObject ha = parsed.getJSONObject("ha");
+        assertThat(ha.has("clusterName")).isTrue();
+        assertThat(ha.has("leader")).isTrue();
+        assertThat(ha.has("network")).isTrue();
+        assertThat(ha.getJSONObject("network").has("replicas")).isTrue();
       } finally {
         connection.disconnect();
       }

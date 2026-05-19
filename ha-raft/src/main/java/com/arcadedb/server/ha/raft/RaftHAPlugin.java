@@ -272,8 +272,12 @@ public class RaftHAPlugin implements HAServerPlugin {
   }
 
   private boolean isRaftEnabled() {
-    return configuration != null
-        && configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED);
+    if (configuration == null)
+      return false;
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+      return true;
+    final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
+    return serverList != null && !serverList.isEmpty();
   }
 
   private void validateConfiguration() {

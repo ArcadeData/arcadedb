@@ -110,7 +110,10 @@ public class PluginManager {
   }
 
   private boolean isHAEnabled() {
-    return configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED);
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
+      return true;
+    final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
+    return serverList != null && !serverList.isEmpty();
   }
 
   /**
