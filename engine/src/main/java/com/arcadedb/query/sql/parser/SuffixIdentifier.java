@@ -40,6 +40,7 @@ import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.IN_PROPERTY;
 import static com.arcadedb.schema.Property.OUT_PROPERTY;
 import static com.arcadedb.schema.Property.RID_PROPERTY;
+import static com.arcadedb.schema.Property.THIS_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 
 public class SuffixIdentifier extends SimpleNode {
@@ -90,6 +91,8 @@ public class SuffixIdentifier extends SimpleNode {
     if (recordAttribute != null) {
       if (RID_PROPERTY.equalsIgnoreCase(recordAttribute.name))
         return currentRecord.getIdentity();
+      else if (THIS_PROPERTY.equalsIgnoreCase(recordAttribute.name))
+        return currentRecord;
       else if (TYPE_PROPERTY.equalsIgnoreCase(recordAttribute.name))
         return currentRecord.asDocument().getTypeName();
       else if (CAT_PROPERTY.equalsIgnoreCase(recordAttribute.name)) {
