@@ -19,8 +19,11 @@
 package com.arcadedb.function.rel;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.query.sql.executor.Result;
 
 /**
  * Abstract base class for relationship functions.
@@ -48,10 +51,17 @@ public abstract class AbstractRelFunction implements StatelessFunction {
     if (input instanceof Edge)
       return (Edge) input;
 
-    if (input instanceof Document) {
-      final Document doc = (Document) input;
-      if (doc.getRecord() instanceof Edge)
-        return (Edge) doc.getRecord();
+    if (input instanceof Document doc) {
+      return doc.getRecord() instanceof Edge edge ? edge : null;
+    }
+
+    if (input instanceof Result result) {
+      final Record record = result.getRecord().orElse(null);
+      return record instanceof Edge edge ? edge : null;
+    }
+
+    if (input instanceof Identifiable identifiable) {
+      return identifiable.getRecord() instanceof Edge edge ? edge : null;
     }
 
     return null;
