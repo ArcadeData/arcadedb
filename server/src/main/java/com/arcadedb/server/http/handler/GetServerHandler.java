@@ -39,7 +39,6 @@ import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.*;
-import java.net.*;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.logging.*;
@@ -91,36 +90,6 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       haJSON.put("leader", ha.getLeaderName());
       haJSON.put("electionStatus", ha.getElectionStatus().toString());
       haJSON.put("network", ha.getStats());
-
-      if (!ha.isLeader()) {
-        // ASK TO THE LEADER THE NETWORK COMPOSITION
-        HttpURLConnection connection;
-        try {
-          connection = (HttpURLConnection) new URL(
-              "http://" + ha.getLeaderAddress() + "/api/v1/server?mode=cluster").openConnection();
-        } catch (RuntimeException e) {
-          throw e;
-        } catch (Exception e) {
-          throw new RuntimeException(e);
-        }
-
-        try {
-          connection.setRequestMethod("GET");
-          connection.setRequestProperty("Authorization", exchange.getRequestHeaders().get("Authorization").getFirst());
-          connection.connect();
-
-          JSONObject leaderResponse = new JSONObject(readResponse(connection));
-          final JSONObject network = leaderResponse.getJSONObject("ha").getJSONObject("network");
-          haJSON.getJSONObject("network").put("replicas", network.getJSONArray("replicas"));
-
-        } catch (RuntimeException e) {
-          throw e;
-        } catch (Exception e) {
-          throw new RuntimeException(e);
-        } finally {
-          connection.disconnect();
-        }
-      }
 
       final JSONArray databases = new JSONArray();
 
@@ -256,21 +225,6 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       }
     }
     response.put("settings", settings);
-  }
-
-  private String readResponse(final HttpURLConnection connection) throws IOException {
-    connection.setConnectTimeout(5000);
-    connection.setReadTimeout(5000);
-    final InputStream in = connection.getInputStream();
-    final Scanner scanner = new Scanner(in);
-
-    final StringBuilder buffer = new StringBuilder();
-
-    while (scanner.hasNext()) {
-      buffer.append(scanner.next().replace('\n', ' '));
-    }
-
-    return buffer.toString();
   }
 
   private Object convertValue(final String key, Object value) {
