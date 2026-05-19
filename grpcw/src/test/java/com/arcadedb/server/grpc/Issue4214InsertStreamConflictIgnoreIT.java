@@ -182,6 +182,80 @@ public class Issue4214InsertStreamConflictIgnoreIT extends BaseGraphServerTest {
   }
 
   @Test
+  void conflictIgnorePerBatchShouldSkipDuplicateAndCommitRemainingRows() throws Exception {
+    final String typeName = "Issue4214PerBatchType_" + System.currentTimeMillis();
+
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setCommand("CREATE DOCUMENT TYPE " + typeName).build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setCommand("CREATE PROPERTY " + typeName + ".name STRING").build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setCommand("CREATE INDEX ON " + typeName + "(name) UNIQUE").build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setCommand("INSERT INTO " + typeName + " SET name = 'Alice'").build());
+
+    try {
+      final CountDownLatch done = new CountDownLatch(1);
+      final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
+      final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+      final StreamObserver<InsertChunk> req = asyncAuthenticatedStub.insertStream(new StreamObserver<>() {
+        @Override public void onNext(final InsertSummary s) { summaryRef.set(s); }
+        @Override public void onError(final Throwable t) { errorRef.set(t); done.countDown(); }
+        @Override public void onCompleted() { done.countDown(); }
+      });
+
+      req.onNext(InsertChunk.newBuilder()
+          .setSessionId("issue-4214-per-batch")
+          .setChunkSeq(0)
+          .setLast(true)
+          .setOptions(InsertOptions.newBuilder()
+              .setDatabase(getDatabaseName())
+              .setCredentials(credentials())
+              .setTargetClass(typeName)
+              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_IGNORE)
+              .addKeyColumns("name")
+              .setTransactionMode(InsertOptions.TransactionMode.PER_BATCH)
+              .build())
+          .addRows(GrpcRecord.newBuilder().setType(typeName).putProperties("name", stringValue("Bob")).build())
+          .addRows(GrpcRecord.newBuilder().setType(typeName).putProperties("name", stringValue("Alice")).build())  // duplicate
+          .addRows(GrpcRecord.newBuilder().setType(typeName).putProperties("name", stringValue("Carol")).build())
+          .build());
+      req.onCompleted();
+
+      assertThat(done.await(30, TimeUnit.SECONDS)).as("InsertStream should terminate within 30s").isTrue();
+
+      assertThat(errorRef.get()).as("stream must not abort with an error").isNull();
+      assertThat(summaryRef.get()).as("client must receive an InsertSummary").isNotNull();
+
+      final InsertSummary summary = summaryRef.get();
+      assertThat(summary.getReceived()).isEqualTo(3);
+      assertThat(summary.getInserted()).isEqualTo(2);
+      assertThat(summary.getIgnored()).isEqualTo(1);
+      assertThat(summary.getFailed()).isEqualTo(0);
+      assertThat(summary.getErrorsList()).isEmpty();
+
+      final ExecuteQueryResponse queryResp = authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
+          .setDatabase(getDatabaseName())
+          .setCredentials(credentials())
+          .setQuery("SELECT count(*) as cnt FROM " + typeName)
+          .build());
+      assertThat(queryResp.getResultsList()).isNotEmpty();
+      final long count = queryResp.getResultsList().get(0).getRecordsList().get(0)
+          .getPropertiesMap().get("cnt").getInt64Value();
+      assertThat(count).isEqualTo(3);
+    } finally {
+      authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+          .setDatabase(getDatabaseName()).setCredentials(credentials())
+          .setCommand("DROP TYPE " + typeName + " IF EXISTS UNSAFE").build());
+    }
+  }
+
+  @Test
   void conflictIgnorePerStreamShouldSkipDuplicateAndCommitRemainingRowsForVertices() throws Exception {
     final String typeName = "Issue4214PerStreamVertex_" + System.currentTimeMillis();
 
