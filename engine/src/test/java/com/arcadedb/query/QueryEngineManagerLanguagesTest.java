@@ -49,12 +49,12 @@ class QueryEngineManagerLanguagesTest {
   }
 
   @Test
-  void availableLanguagesIncludeBothCypherAliasesWhenOpenCypherIsAvailable() {
+  void availableLanguagesIncludeBothCypherAliases() {
     final List<String> languages = QueryEngineManager.getInstance().getAvailableLanguages();
-    // When OpenCypher is on the classpath, both 'opencypher' and 'cypher' alias entries must
-    // surface as distinct list entries so callers can probe either name. The factory instance
-    // behind both keys is the same, but the registration must not collapse them.
-    if (languages.contains("opencypher"))
-      assertThat(languages).contains("cypher");
+    // OpenCypher lives in the engine module so the 'opencypher' factory is always registered.
+    // Both 'opencypher' and 'cypher' aliases must surface as distinct list entries so callers
+    // can probe either name; the factory instance behind both keys is the same, but the
+    // registration must not collapse them.
+    assertThat(languages).contains("opencypher", "cypher");
   }
 }
