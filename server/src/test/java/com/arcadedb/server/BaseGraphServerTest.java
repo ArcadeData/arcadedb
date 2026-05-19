@@ -299,9 +299,14 @@ public abstract class BaseGraphServerTest extends StaticBaseServerTest {
       final ContextConfiguration config = new ContextConfiguration();
       config.setValue(GlobalConfiguration.SERVER_NAME, Constants.PRODUCT + "_" + i);
       config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, "./target/databases" + i);
-      config.setValue(GlobalConfiguration.HA_SERVER_LIST, getServerAddresses());
       config.setValue(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST, "localhost");
-      config.setValue(GlobalConfiguration.HA_ENABLED, getServerCount() > 1);
+      // HA_SERVER_LIST and HA_ENABLED are only meaningful for multi-server tests. Setting the
+      // server list unconditionally would auto-enable HA via ContextConfiguration.isHAImplicitlyEnabled(),
+      // which would start Raft for every single-server test and corrupt their write path.
+      if (getServerCount() > 1) {
+        config.setValue(GlobalConfiguration.HA_SERVER_LIST, getServerAddresses());
+        config.setValue(GlobalConfiguration.HA_ENABLED, true);
+      }
       //config.setValue(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT, 2000);
 
       onServerConfiguration(config);
