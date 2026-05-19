@@ -91,7 +91,8 @@ class RemoteDateIT {
       database.commit();
 
       // Now the remote connection will work because the database has proper security setup
-      final RemoteDatabase remote = new RemoteDatabase("localhost", 2480, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
+      final int httpPort = arcadeDBServer.getHttpServer().getPort();
+      final RemoteDatabase remote = new RemoteDatabase("localhost", httpPort, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
 
       try (ResultSet resultSet = remote.query("sql", "select from Order")) {
         Result result = resultSet.next();

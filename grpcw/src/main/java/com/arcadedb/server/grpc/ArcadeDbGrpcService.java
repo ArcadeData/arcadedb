@@ -68,6 +68,7 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -2478,6 +2479,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     // Issue #4149: emit Java time temporals as proto Timestamp instead of falling through to
     // String.valueOf(o), which silently dropped sub-millisecond precision.
+    if (o instanceof LocalDate ld) {
+      final long seconds = ld.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
+      return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()
+          .setTimestampValue(Timestamp.newBuilder().setSeconds(seconds).setNanos(0).build())
+          .setLogicalType("date").build(), null);
+    }
     if (o instanceof LocalDateTime ldt) {
       final Instant instant = ldt.toInstant(ZoneOffset.UTC);
       return dbgEnc("toGrpcValue", o, GrpcValue.newBuilder()

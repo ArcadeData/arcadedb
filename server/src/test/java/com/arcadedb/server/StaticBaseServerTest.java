@@ -23,7 +23,7 @@ import com.arcadedb.log.LogManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Executes all the tests while the server is up and running.

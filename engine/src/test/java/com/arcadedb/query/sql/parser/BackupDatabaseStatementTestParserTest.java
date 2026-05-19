@@ -20,6 +20,8 @@ package com.arcadedb.query.sql.parser;
 
 import org.junit.jupiter.api.Test;
 
+import static org.assertj.core.api.Assertions.assertThat;
+
 class BackupDatabaseStatementTestParserTest extends AbstractParserTest {
 
   @Test
@@ -33,5 +35,12 @@ class BackupDatabaseStatementTestParserTest extends AbstractParserTest {
     checkWrongSyntax("backup database file:///foo/bar/ foo bar");
     checkWrongSyntax("backup database http://www.foo.bar asdf ");
     checkWrongSyntax("BACKUP DATABASE https://www.foo.bar asd ");
+  }
+
+  @Test
+  void isIdempotent() {
+    final SimpleNode parsed = checkRightSyntax("backup database ");
+    assertThat(parsed).isInstanceOf(BackupDatabaseStatement.class);
+    assertThat(((BackupDatabaseStatement) parsed).isIdempotent()).isTrue();
   }
 }

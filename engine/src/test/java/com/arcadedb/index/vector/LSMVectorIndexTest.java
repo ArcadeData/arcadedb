@@ -2373,7 +2373,7 @@ class LSMVectorIndexTest extends TestHelper {
       // Add a valid RID
       simulatedResults.add(new Pair<>(insertedRIDs.get(totalVectors3717 - 1), 0.1f));
       // Add a non-existent RID (simulates stale vector index entry)
-      final RID fakeRid = database.newRID(insertedRIDs.getFirst().getBucketId(), 999_999);
+      final RID fakeRid = database.newRID(insertedRIDs.get(0).getBucketId(), 999_999);
       simulatedResults.add(new Pair<>(fakeRid, 0.2f));
       // Add another valid RID
       simulatedResults.add(new Pair<>(insertedRIDs.get(totalVectors3717 - 2), 0.3f));

@@ -138,7 +138,6 @@
     </distributionManagement>
 
     <modules>
-        <module>test-utils</module>
         <module>engine</module>
         <module>network</module>
         <module>grpc</module>

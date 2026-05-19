@@ -272,7 +272,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
       case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
       case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
-      case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded);
+      case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index);
       }
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
@@ -798,7 +798,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * </ul>
    * The committed baseline is recorded in {@link #bootstrapBaselines} for status export and tests.
    */
-  private void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded) {
+  private void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
     final String dbName = decoded.databaseName();
     final String chosenFingerprint = decoded.bootstrapFingerprint();
     final long chosenLastTxId = decoded.bootstrapLastTxId();
@@ -809,6 +809,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     }
     bootstrapBaselines.put(dbName, new BootstrapBaseline(chosenFingerprint, chosenLastTxId));
+
+    // Re-application during log replay on restart: if we've persisted an applied index at or
+    // beyond this entry's index, the verification ran in a prior session and the local database
+    // has since been forward-replicated past the baseline by Ratis AppendEntries. Re-running
+    // the install path here would race leader-discovery (the StateMachineUpdater thread is
+    // inside applyTransaction and blocks Ratis leader-info notifications), exhaust the snapshot
+    // retry budget with null leader addresses, and trip the critical-error halt.
+    final long persistedApplied = readPersistedAppliedIndex();
+    if (persistedApplied >= index) {
+      HALog.log(this, HALog.BASIC,
+          "Bootstrap baseline for '%s' already applied (persistedAppliedIndex=%d >= entryIndex=%d); skipping verification",
+          dbName, persistedApplied, index);
+      return;
+    }
 
     if (!server.existsDatabase(dbName)) {
       // Late joiner with no local copy of this database. The follow-on INSTALL_DATABASE_ENTRY
@@ -903,9 +917,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
         databasePath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
             + File.separator + dbName;
       }
-      final String leaderHttpAddr = raftHAServer != null ? raftHAServer.getLeaderHttpAddress() : null;
-      final String clusterToken = raftHAServer != null ? raftHAServer.getClusterToken() : null;
-      SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, clusterToken, server);
+      // Resolve the leader address on each retry: the bootstrap-mismatch entry is applied
+      // during Raft log replay on startup, which can race ahead of leader election on this peer.
+      final RaftHAServer raft = raftHAServer;
+      final String clusterToken = raft != null ? raft.getClusterToken() : null;
+      SnapshotInstaller.install(dbName, databasePath,
+          () -> raft != null ? raft.getLeaderHttpAddress() : null,
+          clusterToken, server);
       LogManager.instance().log(this, Level.INFO,
           "Database '%s' reinstalled after bootstrap mismatch", dbName);
     } catch (final IOException e) {

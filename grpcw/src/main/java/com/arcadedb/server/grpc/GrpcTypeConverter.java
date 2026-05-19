@@ -26,6 +26,7 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.math.BigInteger;
 import java.time.Instant;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -151,6 +152,11 @@ class GrpcTypeConverter {
     // Without these branches the read path falls through to String.valueOf(o), emitting
     // string_value at LocalDateTime#toString precision rather than timestamp_value at the
     // column's declared precision.
+    if (o instanceof LocalDate ld) {
+      final long seconds = ld.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
+      return b.setTimestampValue(Timestamp.newBuilder().setSeconds(seconds).setNanos(0).build())
+          .setLogicalType("date").build();
+    }
     if (o instanceof LocalDateTime ldt) {
       final Instant instant = ldt.toInstant(ZoneOffset.UTC);
       return b.setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())

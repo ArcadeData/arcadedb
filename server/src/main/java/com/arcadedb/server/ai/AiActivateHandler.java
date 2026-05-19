@@ -43,13 +43,16 @@ import java.util.logging.Level;
  * Collects hardware fingerprint, validates the key against the gateway, and saves to config/ai.json.
  */
 public class AiActivateHandler extends AbstractServerHttpHandler {
+  // Static so all server instances in the JVM share one client. Each instance spawns
+  // a SelectorManager NIO thread that survives until the client is GC'd; per-instance
+  // clients leaked dozens of threads per server start under the integration-test suite.
+  private static final HttpClient HTTP_CLIENT = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+
   private final AiConfiguration config;
-  private final HttpClient      httpClient;
 
   public AiActivateHandler(final HttpServer httpServer, final AiConfiguration config) {
     super(httpServer);
     this.config = config;
-    this.httpClient = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
   }
 
   @Override
@@ -84,7 +87,7 @@ public class AiActivateHandler extends AbstractServerHttpHandler {
           .timeout(Duration.ofSeconds(15))//
           .build();
 
-      final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+      final HttpResponse<String> response = HTTP_CLIENT.send(request, HttpResponse.BodyHandlers.ofString());
 
       if (response.statusCode() != 200) {
         String errorMsg = "Activation failed";
