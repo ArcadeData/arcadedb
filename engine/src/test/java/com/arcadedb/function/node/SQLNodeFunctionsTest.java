@@ -46,97 +46,100 @@ class SQLNodeFunctionsTest extends TestHelper {
 
   @Test
   void nodeDegreeFromSql_thisReference() {
-    final ResultSet rs = database.query("sql", "SELECT name, node.degree(@this, 'Friend') AS d FROM Person WHERE name = 'Ada'");
-    assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
-    rs.close();
+    try (final ResultSet rs = database.query("sql", "SELECT name, node.degree(@this, 'Friend') AS d FROM Person WHERE name = 'Ada'")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
+    }
   }
 
   @Test
   void nodeDegreeFromSql_ridReference() {
-    final ResultSet rs = database.query("sql", "SELECT name, node.degree(@rid, 'Friend') AS d FROM Person WHERE name = 'Ada'");
-    assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
-    rs.close();
+    try (final ResultSet rs = database.query("sql", "SELECT name, node.degree(@rid, 'Friend') AS d FROM Person WHERE name = 'Ada'")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
+    }
   }
 
   @Test
   void nodeDegreeFromSql_currentVariable() {
-    final ResultSet rs = database.query("sql", "SELECT name, node.degree($current, 'Friend') AS d FROM Person WHERE name = 'Ada'");
-    assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
-    rs.close();
+    try (final ResultSet rs = database.query("sql", "SELECT name, node.degree($current, 'Friend') AS d FROM Person WHERE name = 'Ada'")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
+    }
   }
 
   @Test
   void nodeLabelsFromSql_thisReference() {
-    final ResultSet rs = database.query("sql", "SELECT node.labels(@this) AS lbl FROM Person WHERE name = 'Ada'");
-    assertThat(rs.hasNext()).isTrue();
-    final Collection<String> labels = rs.next().getProperty("lbl");
-    assertThat(labels).contains("Person");
-    rs.close();
+    try (final ResultSet rs = database.query("sql", "SELECT node.labels(@this) AS lbl FROM Person WHERE name = 'Ada'")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Collection<String> labels = rs.next().getProperty("lbl");
+      assertThat(labels).contains("Person");
+    }
   }
 
   @Test
   void nodeIdFromSql_thisReference() {
-    final ResultSet rs = database.query("sql", "SELECT @rid AS expected, node.id(@this) AS rid FROM Person WHERE name = 'Ada'");
-    assertThat(rs.hasNext()).isTrue();
-    final Result row = rs.next();
-    assertThat(row.<String>getProperty("rid")).isEqualTo(row.getProperty("expected").toString());
-    rs.close();
+    try (final ResultSet rs = database.query("sql", "SELECT @rid AS expected, node.id(@this) AS rid FROM Person WHERE name = 'Ada'")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("rid")).isEqualTo(row.getProperty("expected").toString());
+    }
   }
 
   @Test
   void nodeIdFromSql_ridReference() {
-    final ResultSet rs = database.query("sql", "SELECT @rid AS expected, node.id(@rid) AS rid FROM Person WHERE name = 'Ada'");
-    assertThat(rs.hasNext()).isTrue();
-    final Result row = rs.next();
-    assertThat(row.<String>getProperty("rid")).isEqualTo(row.getProperty("expected").toString());
-    rs.close();
+    try (final ResultSet rs = database.query("sql", "SELECT @rid AS expected, node.id(@rid) AS rid FROM Person WHERE name = 'Ada'")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result row = rs.next();
+      assertThat(row.<String>getProperty("rid")).isEqualTo(row.getProperty("expected").toString());
+    }
   }
 
   @Test
   void relTypeFromSql_thisReference() {
-    final ResultSet rs = database.query("sql", "SELECT rel.type(@this) AS t FROM Friend");
-    assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<String>getProperty("t")).isEqualTo("Friend");
-    rs.close();
+    try (final ResultSet rs = database.query("sql", "SELECT rel.type(@this) AS t FROM Friend")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("t")).isEqualTo("Friend");
+    }
   }
 
   @Test
   void relTypeFromSql_ridReference() {
-    final ResultSet rs = database.query("sql", "SELECT rel.type(@rid) AS t FROM Friend");
-    assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<String>getProperty("t")).isEqualTo("Friend");
-    rs.close();
+    try (final ResultSet rs = database.query("sql", "SELECT rel.type(@rid) AS t FROM Friend")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().<String>getProperty("t")).isEqualTo("Friend");
+    }
   }
 
   @Test
   void relStartNodeFromSql_thisReference() {
-    final ResultSet rs = database.query("sql", "SELECT rel.startNode(@this) AS src FROM Friend");
-    assertThat(rs.hasNext()).isTrue();
-    while (rs.hasNext()) {
-      final Result row = rs.next();
-      final Vertex src = row.getProperty("src");
-      assertThat(src).isNotNull();
-      assertThat(src.getString("name")).isEqualTo("Ada");
+    try (final ResultSet rs = database.query("sql", "SELECT rel.startNode(@this) AS src FROM Friend")) {
+      assertThat(rs.hasNext()).isTrue();
+      int count = 0;
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        final Vertex src = row.getProperty("src");
+        assertThat(src).isNotNull();
+        assertThat(src.getString("name")).isEqualTo("Ada");
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
     }
-    rs.close();
   }
 
   @Test
   void relEndNodeFromSql_thisReference() {
-    final ResultSet rs = database.query("sql", "SELECT rel.endNode(@this) AS dst FROM Friend");
-    assertThat(rs.hasNext()).isTrue();
-    int count = 0;
-    while (rs.hasNext()) {
-      final Result row = rs.next();
-      final Vertex dst = row.getProperty("dst");
-      assertThat(dst).isNotNull();
-      assertThat(dst.getString("name")).isIn("Bob", "Cara");
-      count++;
+    try (final ResultSet rs = database.query("sql", "SELECT rel.endNode(@this) AS dst FROM Friend")) {
+      assertThat(rs.hasNext()).isTrue();
+      int count = 0;
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        final Vertex dst = row.getProperty("dst");
+        assertThat(dst).isNotNull();
+        assertThat(dst.getString("name")).isIn("Bob", "Cara");
+        count++;
+      }
+      assertThat(count).isEqualTo(2);
     }
-    assertThat(count).isEqualTo(2);
-    rs.close();
   }
 }

@@ -51,22 +51,17 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
     if (input instanceof Vertex)
       return (Vertex) input;
 
-    if (input instanceof Document) {
-      final Document doc = (Document) input;
-      if (doc.getRecord() instanceof Vertex)
-        return (Vertex) doc.getRecord();
+    if (input instanceof Document doc) {
+      return doc.getRecord() instanceof Vertex vertex ? vertex : null;
     }
 
     if (input instanceof Result result) {
       final Record record = result.getRecord().orElse(null);
-      if (record instanceof Vertex vertex)
-        return vertex;
+      return record instanceof Vertex vertex ? vertex : null;
     }
 
     if (input instanceof Identifiable identifiable) {
-      final Record record = identifiable.getRecord();
-      if (record instanceof Vertex vertex)
-        return vertex;
+      return identifiable.getRecord() instanceof Vertex vertex ? vertex : null;
     }
 
     return null;
