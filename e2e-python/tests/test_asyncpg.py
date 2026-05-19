@@ -302,4 +302,4 @@ async def test_transaction(connection, test_type_setup):
     assert row['name'] == 'TxTest'
     # Without a schema-typed property, ArcadeDB stores the integer literal as Long; it is now
     # advertised as INT8 on the wire (#4201) so asyncpg returns it as a native int.
-    assert row['value'] == 999
+    assert row['value'] == 999  # nosec B101

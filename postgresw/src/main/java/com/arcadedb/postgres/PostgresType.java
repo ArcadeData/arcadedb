@@ -56,7 +56,7 @@ public enum PostgresType {
   CHAR(18, Character.class, 1, value -> value.charAt(0)),
   BOOLEAN(16, Boolean.class, 1, value -> parseBooleanText(value)),
   DATE(1082, Date.class, 4, value -> parseDateText(value)),
-  TIMESTAMP(1114, LocalDateTime.class, 8, value -> LocalDateTime.parse(value.replace(' ', 'T'))),
+  TIMESTAMP(1114, LocalDateTime.class, 8, value -> parseTimestampText(value)),
   VARCHAR(1043, String.class, -1, value -> value),
   TEXT(25, String.class, -1, value -> value),
   BPCHAR(1042, String.class, -1, value -> value),
@@ -85,23 +85,71 @@ public enum PostgresType {
 
   private static Boolean parseBooleanText(final String value) {
     if (value == null)
-      return Boolean.FALSE;
+      throw new PostgresProtocolException("Cannot parse null BOOLEAN text value");
     return switch (value.toLowerCase()) {
-      case "t", "true", "1", "y", "yes", "on" -> Boolean.TRUE;
-      default -> Boolean.FALSE;
+      case "t", "true", "1", "y", "yes", "on"   -> Boolean.TRUE;
+      case "f", "false", "0", "n", "no", "off"  -> Boolean.FALSE;
+      default -> throw new PostgresProtocolException("Cannot parse BOOLEAN text value: " + value);
     };
   }
 
   private static Date parseDateText(final String value) {
     if (value == null)
       throw new PostgresProtocolException("Cannot parse null DATE text value");
+    return Date.from(LocalDate.parse(value).atStartOfDay(ZoneOffset.UTC).toInstant());
+  }
+
+  private static LocalDateTime parseTimestampText(final String value) {
+    if (value == null)
+      throw new PostgresProtocolException("Cannot parse null TIMESTAMP text value");
+    final String iso = value.replace(' ', 'T');
     try {
-      // Accept ISO "YYYY-MM-DD" as Postgres sends in text format
-      return Date.from(LocalDate.parse(value).atStartOfDay(ZoneOffset.UTC).toInstant());
+      return LocalDateTime.parse(iso);
     } catch (DateTimeParseException e) {
-      // Fallback: numeric epoch millis (legacy callers)
-      return new Date(Long.parseLong(value));
+      return java.time.OffsetDateTime.parse(iso).toLocalDateTime();
     }
+  }
+
+  private static Number toNumber(final Object value) {
+    if (value instanceof Number n)
+      return n;
+    if (value instanceof Boolean b)
+      return b ? 1 : 0;
+    if (value instanceof Character c)
+      return (int) c;
+    return new java.math.BigDecimal(value.toString());
+  }
+
+  private static boolean toBooleanValue(final Object value) {
+    if (value instanceof Boolean b)
+      return b;
+    if (value instanceof Number n)
+      return n.intValue() != 0;
+    return parseBooleanText(value.toString());
+  }
+
+  private static LocalDate toLocalDateValue(final Object value) {
+    if (value instanceof LocalDate ld)
+      return ld;
+    if (value instanceof LocalDateTime ldt)
+      return ldt.toLocalDate();
+    if (value instanceof Date d)
+      return d.toInstant().atZone(ZoneOffset.UTC).toLocalDate();
+    if (value instanceof String s)
+      return parseDateText(s).toInstant().atZone(ZoneOffset.UTC).toLocalDate();
+    throw new PostgresProtocolException("Unsupported DATE binary value type: " + value.getClass());
+  }
+
+  private static LocalDateTime toLocalDateTimeValue(final Object value) {
+    if (value instanceof LocalDateTime l)
+      return l;
+    if (value instanceof Date d)
+      return LocalDateTime.ofInstant(d.toInstant(), ZoneOffset.UTC);
+    if (value instanceof LocalDate ld)
+      return ld.atStartOfDay();
+    if (value instanceof String s)
+      return parseTimestampText(s);
+    throw new PostgresProtocolException("Unsupported TIMESTAMP binary value type: " + value.getClass());
   }
 
   public final  int                      code;
@@ -297,7 +345,7 @@ public enum PostgresType {
       // DATE (OID 1082) expects "YYYY-MM-DD" in text format
       serializedValue = date.toInstant().atZone(ZoneOffset.UTC).format(DateTimeFormatter.ISO_LOCAL_DATE);
     } else if (value instanceof LocalDateTime ldt) {
-      // TIMESTAMP (OID 1114) expects "YYYY-MM-DD HH:MM:SS.ffffff" in text format
+      // TIMESTAMP (OID 1114) expects "yyyy-MM-dd HH:mm:ss.SSSSSS" in text format
       serializedValue = ldt.format(POSTGRES_DATETIME_FORMATTER);
     } else if (value instanceof JSONObject json) {
       serializedValue = json.toString();
@@ -328,56 +376,41 @@ public enum PostgresType {
     switch (pgType) {
       case SMALLINT -> {
         typeBuffer.putInt(2);
-        typeBuffer.putShort(((Number) value).shortValue());
+        typeBuffer.putShort(toNumber(value).shortValue());
       }
       case INTEGER -> {
         typeBuffer.putInt(4);
-        typeBuffer.putInt(((Number) value).intValue());
+        typeBuffer.putInt(toNumber(value).intValue());
       }
       case LONG -> {
         typeBuffer.putInt(8);
-        typeBuffer.putLong(((Number) value).longValue());
+        typeBuffer.putLong(toNumber(value).longValue());
       }
       case REAL -> {
         typeBuffer.putInt(4);
-        typeBuffer.putInt(Float.floatToRawIntBits(((Number) value).floatValue()));
+        typeBuffer.putInt(Float.floatToRawIntBits(toNumber(value).floatValue()));
       }
       case DOUBLE -> {
         typeBuffer.putInt(8);
-        typeBuffer.putLong(Double.doubleToRawLongBits(((Number) value).doubleValue()));
+        typeBuffer.putLong(Double.doubleToRawLongBits(toNumber(value).doubleValue()));
       }
       case BOOLEAN -> {
         typeBuffer.putInt(1);
-        typeBuffer.putByte((byte) (Boolean.TRUE.equals(value) ? 1 : 0));
+        typeBuffer.putByte((byte) (toBooleanValue(value) ? 1 : 0));
       }
       case CHAR -> {
-        // Postgres "char" (1 byte) - take first char as single byte
+        // Postgres "char" (OID 18) is a single byte on the wire.
         typeBuffer.putInt(1);
         final char c = (value instanceof Character ch) ? ch : value.toString().charAt(0);
         typeBuffer.putByte((byte) c);
       }
       case DATE -> {
         typeBuffer.putInt(4);
-        final long epochDay;
-        if (value instanceof Date d)
-          epochDay = d.toInstant().atZone(ZoneOffset.UTC).toLocalDate().toEpochDay();
-        else if (value instanceof LocalDateTime ldt)
-          epochDay = ldt.toLocalDate().toEpochDay();
-        else if (value instanceof LocalDate ld)
-          epochDay = ld.toEpochDay();
-        else
-          throw new PostgresProtocolException("Unsupported DATE binary value type: " + value.getClass());
-        typeBuffer.putInt((int) (epochDay - POSTGRES_EPOCH_DAYS));
+        typeBuffer.putInt((int) (toLocalDateValue(value).toEpochDay() - POSTGRES_EPOCH_DAYS));
       }
       case TIMESTAMP -> {
         typeBuffer.putInt(8);
-        final LocalDateTime ldt;
-        if (value instanceof LocalDateTime l)
-          ldt = l;
-        else if (value instanceof Date d)
-          ldt = LocalDateTime.ofInstant(d.toInstant(), ZoneOffset.UTC);
-        else
-          throw new PostgresProtocolException("Unsupported TIMESTAMP binary value type: " + value.getClass());
+        final LocalDateTime ldt = toLocalDateTimeValue(value);
         final long secsFromPgEpoch = ldt.toEpochSecond(ZoneOffset.UTC) - POSTGRES_EPOCH_SECONDS;
         typeBuffer.putLong(secsFromPgEpoch * 1_000_000L + ldt.getNano() / 1000L);
       }
@@ -620,7 +653,7 @@ public enum PostgresType {
         }
         yield LocalDateTime.ofEpochSecond(secs, nanos, ZoneOffset.UTC);
       }
-      case CHAR -> buffer.getChar();
+      case CHAR -> (char) buffer.get();
       case BOOLEAN -> buffer.get() == 1;
       case JSON -> {
         int length = buffer.getInt();
