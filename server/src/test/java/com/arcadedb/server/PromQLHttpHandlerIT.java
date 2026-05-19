@@ -175,7 +175,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
     testEachServer((serverIndex) -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "series",
-          "match[]=" + encode("prom_cpu") + "&start=0&end=10");
+          "match%5B%5D=" + encode("prom_cpu") + "&start=0&end=10");
       assertThat(result.getString("status")).isEqualTo("success");
       final JSONArray data = result.getJSONArray("data");
       assertThat(data.length()).isGreaterThan(0);

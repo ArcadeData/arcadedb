@@ -109,10 +109,10 @@ class RemoteTypesIT extends BaseGraphServerTest {
       assertThat(v.get("oI")).isEqualTo(1);
       assertThat(v.get("oI")).isInstanceOf(Integer.class);
 
-      // DateTime properties (truncate to seconds since milliseconds are not preserved)
+      // DateTime properties: millisecond precision is preserved end-to-end over the remote wire.
       assertThat(v.get("fecha")).isInstanceOf(LocalDateTime.class);
       assertThat(v.getDate("fecha")).isInstanceOf(Date.class);
-      assertThat(v.getLocalDateTime("fecha")).isEqualTo(targetDate.truncatedTo(ChronoUnit.SECONDS));
+      assertThat(v.getLocalDateTime("fecha")).isEqualTo(targetDate);
     });
   }
 

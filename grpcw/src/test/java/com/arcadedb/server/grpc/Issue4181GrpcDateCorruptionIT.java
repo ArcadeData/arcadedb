@@ -19,7 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.test.BaseGraphServerTest;
+import com.arcadedb.server.BaseGraphServerTest;
 import com.google.protobuf.Timestamp;
 import io.grpc.CallOptions;
 import io.grpc.Channel;

@@ -48,6 +48,11 @@ public class BackupDatabaseStatement extends SimpleExecStatement {
   }
 
   @Override
+  public boolean isIdempotent() {
+    return true;
+  }
+
+  @Override
   public ResultSet executeSimple(final CommandContext context) {
     final String targetUrl = this.url != null ? this.url.getUrlString() : null;
     final ResultInternal result = new ResultInternal(context.getDatabase());
