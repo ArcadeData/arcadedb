@@ -110,7 +110,8 @@ public class PluginManager {
   }
 
   private boolean isHAEnabled() {
-    return configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED);
+    return configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)
+        || configuration.isHAImplicitlyEnabled();
   }
 
   /**

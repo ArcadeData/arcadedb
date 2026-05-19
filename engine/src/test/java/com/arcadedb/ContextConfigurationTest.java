@@ -271,4 +271,21 @@ class ContextConfigurationTest {
     config.setValue(GlobalConfiguration.TX_RETRY_DELAY, 100);
     assertThat(config.getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY)).isEqualTo(100);
   }
+
+  @Test
+  void haImplicitlyEnabledFalseWhenServerListUnset() {
+    assertThat(config.isHAImplicitlyEnabled()).isFalse();
+  }
+
+  @Test
+  void haImplicitlyEnabledFalseForBlankServerList() {
+    config.setValue(GlobalConfiguration.HA_SERVER_LIST, "   ");
+    assertThat(config.isHAImplicitlyEnabled()).isFalse();
+  }
+
+  @Test
+  void haImplicitlyEnabledTrueForConfiguredServerList() {
+    config.setValue(GlobalConfiguration.HA_SERVER_LIST, "localhost:2434:2480");
+    assertThat(config.isHAImplicitlyEnabled()).isTrue();
+  }
 }

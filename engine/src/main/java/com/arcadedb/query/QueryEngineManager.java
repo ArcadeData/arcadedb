@@ -55,7 +55,7 @@ import java.util.logging.*;
  */
 public class QueryEngineManager {
   private static final QueryEngineManager                         INSTANCE        = new QueryEngineManager();
-  private final        Map<String, QueryEngine.QueryEngineFactory> implementations = new HashMap<>();
+  private final        Map<String, QueryEngine.QueryEngineFactory> implementations = new LinkedHashMap<>();
   private final        ThreadPoolExecutor                          executorService;
   // Per-pool counter the {@link RejectedExecutionHandler} below increments every time the queue
   // saturates and the task falls back to the caller. ThreadPoolExecutor itself doesn't expose
@@ -208,10 +208,6 @@ public class QueryEngineManager {
   }
 
   public List<String> getAvailableLanguages() {
-    final List<String> available = new ArrayList<>();
-    for (final QueryEngine.QueryEngineFactory impl : implementations.values()) {
-      available.add(impl.getLanguage());
-    }
-    return available;
+    return new ArrayList<>(implementations.keySet());
   }
 }
