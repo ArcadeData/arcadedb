@@ -19,8 +19,11 @@
 package com.arcadedb.function.node;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.Identifiable;
+import com.arcadedb.database.Record;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Vertex;
+import com.arcadedb.query.sql.executor.Result;
 
 /**
  * Abstract base class for node functions.
@@ -52,6 +55,16 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
       final Document doc = (Document) input;
       if (doc.getRecord() instanceof Vertex)
         return (Vertex) doc.getRecord();
+    }
+
+    if (input instanceof Result) {
+      return ((Result) input).getVertex().orElse(null);
+    }
+
+    if (input instanceof Identifiable) {
+      final Record record = ((Identifiable) input).getRecord();
+      if (record instanceof Vertex)
+        return (Vertex) record;
     }
 
     return null;
