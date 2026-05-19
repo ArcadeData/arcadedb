@@ -23,6 +23,12 @@ function openRecordEditor(rid, type, properties, source) {
     showGraphRecordEditor();
 }
 
+function escapeSqlStringLiteral(value) {
+  return String(value)
+    .replace(/\\/g, "\\\\")
+    .replace(/'/g, "\\'");
+}
+
 function getRecordEditorTarget() {
   if (globalRecordEditorState.source === "table")
     return "#tableRecordEditorContent";
@@ -344,10 +350,10 @@ function saveRecordEditor() {
         JSON.parse(current);
         sqlValue = current;
       } catch (e) {
-        sqlValue = "'" + current.replace(/'/g, "\\'") + "'";
+        sqlValue = "'" + escapeSqlStringLiteral(current) + "'";
       }
     } else
-      sqlValue = "'" + current.replace(/'/g, "\\'") + "'";
+      sqlValue = "'" + escapeSqlStringLiteral(current) + "'";
 
     setParts.push("`" + prop + "` = " + sqlValue);
   });
