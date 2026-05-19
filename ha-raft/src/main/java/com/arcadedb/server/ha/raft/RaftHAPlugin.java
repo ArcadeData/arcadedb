@@ -34,7 +34,8 @@ import java.util.logging.Level;
 
 /**
  * ServerPlugin implementation that bootstraps the Raft-based HA subsystem.
- * Discovered via Java ServiceLoader when {@code HA_ENABLED=true}.
+ * Discovered via Java ServiceLoader when either {@code HA_ENABLED=true} or
+ * {@code HA_SERVER_LIST} is non-blank (a configured server list implies HA intent).
  */
 public class RaftHAPlugin implements HAServerPlugin {
 
@@ -272,17 +273,14 @@ public class RaftHAPlugin implements HAServerPlugin {
   }
 
   private boolean isRaftEnabled() {
-    if (configuration == null)
-      return false;
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED))
-      return true;
-    final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
-    return serverList != null && !serverList.isEmpty();
+    return configuration != null
+        && (configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED)
+            || configuration.isHAImplicitlyEnabled());
   }
 
   private void validateConfiguration() {
     final String serverList = configuration.getValueAsString(GlobalConfiguration.HA_SERVER_LIST);
-    if (serverList == null || serverList.isEmpty())
+    if (serverList == null || serverList.isBlank())
       throw new RuntimeException("HA_SERVER_LIST must be configured for Raft HA");
 
     // Validate quorum early - will throw ConfigurationException for invalid values

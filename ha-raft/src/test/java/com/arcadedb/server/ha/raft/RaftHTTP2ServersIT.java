@@ -59,6 +59,9 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
         assertThat(ha.has("leader")).isTrue();
         assertThat(ha.has("network")).isTrue();
         assertThat(ha.getJSONObject("network").has("replicas")).isTrue();
+        // With Raft, every node knows all peers from the group config, so the replicas array
+        // is populated even on followers without the old leader-forwarding round trip.
+        assertThat(ha.getJSONObject("network").getJSONArray("replicas").length()).isPositive();
       } finally {
         connection.disconnect();
       }
