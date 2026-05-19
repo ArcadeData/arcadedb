@@ -2220,6 +2220,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
+  private boolean keyExists(final InsertContext ctx, final MutableDocument incoming) {
+    if (ctx.keyCols.isEmpty())
+      return false;
+    final String where = String.join(" AND ", ctx.keyCols.stream().map(k -> k + " = ?").toList());
+    final Object[] params = ctx.keyCols.stream().map(incoming::get).toArray();
+    try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
+      return rs.hasNext();
+    }
+  }
+
   // ---------- Core insert plumbing ----------
 
   private static final class Counts {
@@ -2270,6 +2280,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           applyGrpcRecord(v, r);
           if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_UPDATE && tryUpsertVertex(ctx, v)) {
             c.updated++;
+          } else if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_IGNORE && keyExists(ctx, v)) {
+            c.ignored++;
           } else {
             v.save();
             c.inserted++;
@@ -2299,6 +2311,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           applyGrpcRecord(d, r);
           if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_UPDATE && tryUpsertDocument(ctx, d)) {
             c.updated++;
+          } else if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_IGNORE && keyExists(ctx, d)) {
+            c.ignored++;
           } else {
             d.save();
             c.inserted++;
