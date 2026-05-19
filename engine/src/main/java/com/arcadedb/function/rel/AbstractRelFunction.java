@@ -57,14 +57,16 @@ public abstract class AbstractRelFunction implements StatelessFunction {
         return (Edge) doc.getRecord();
     }
 
-    if (input instanceof Result) {
-      return ((Result) input).getEdge().orElse(null);
+    if (input instanceof Result result) {
+      final Record record = result.getRecord().orElse(null);
+      if (record instanceof Edge edge)
+        return edge;
     }
 
-    if (input instanceof Identifiable) {
-      final Record record = ((Identifiable) input).getRecord();
-      if (record instanceof Edge)
-        return (Edge) record;
+    if (input instanceof Identifiable identifiable) {
+      final Record record = identifiable.getRecord();
+      if (record instanceof Edge edge)
+        return edge;
     }
 
     return null;

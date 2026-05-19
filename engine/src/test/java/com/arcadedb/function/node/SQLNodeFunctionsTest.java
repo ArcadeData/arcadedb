@@ -19,18 +19,15 @@
 package com.arcadedb.function.node;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collection;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Regression tests for node.* and rel.* functions called from SQL.
- * The argument unwrapping in AbstractNodeFunction.toVertex() and
- * AbstractRelFunction.toEdge() must handle SQL-side wrappers (Result,
- * Identifiable, RID) in addition to the bare Vertex/Edge that Cypher passes.
- */
 class SQLNodeFunctionsTest extends TestHelper {
 
   @Override
@@ -47,64 +44,57 @@ class SQLNodeFunctionsTest extends TestHelper {
     });
   }
 
-  // node.degree via @this (SQL row carrier)
   @Test
   void nodeDegreeFromSql_thisReference() {
     final ResultSet rs = database.query("sql", "SELECT name, node.degree(@this, 'Friend') AS d FROM Person WHERE name = 'Ada'");
     assertThat(rs.hasNext()).isTrue();
-    final Result row = rs.next();
-    assertThat(row.<Long>getProperty("d")).isEqualTo(2L);
+    assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
     rs.close();
   }
 
-  // node.degree via @rid (RID - an Identifiable)
   @Test
   void nodeDegreeFromSql_ridReference() {
     final ResultSet rs = database.query("sql", "SELECT name, node.degree(@rid, 'Friend') AS d FROM Person WHERE name = 'Ada'");
     assertThat(rs.hasNext()).isTrue();
-    final Result row = rs.next();
-    assertThat(row.<Long>getProperty("d")).isEqualTo(2L);
+    assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
     rs.close();
   }
 
-  // node.degree via $current (SQL context variable for the current record)
   @Test
   void nodeDegreeFromSql_currentVariable() {
     final ResultSet rs = database.query("sql", "SELECT name, node.degree($current, 'Friend') AS d FROM Person WHERE name = 'Ada'");
     assertThat(rs.hasNext()).isTrue();
-    final Result row = rs.next();
-    assertThat(row.<Long>getProperty("d")).isEqualTo(2L);
+    assertThat(rs.next().<Long>getProperty("d")).isEqualTo(2L);
     rs.close();
   }
 
-  // node.id via @rid - cross-validates that the RID from @rid and node.id agree
-  @Test
-  void nodeIdFromSql_ridReference() {
-    final ResultSet rs = database.query("sql", "SELECT node.id(@rid) AS rid FROM Person WHERE name = 'Ada'");
-    assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Object>getProperty("rid")).isNotNull();
-    rs.close();
-  }
-
-  // node.labels via @this
   @Test
   void nodeLabelsFromSql_thisReference() {
     final ResultSet rs = database.query("sql", "SELECT node.labels(@this) AS lbl FROM Person WHERE name = 'Ada'");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Object>getProperty("lbl")).isNotNull();
+    final Collection<String> labels = rs.next().getProperty("lbl");
+    assertThat(labels).contains("Person");
     rs.close();
   }
 
-  // node.id via @this
   @Test
   void nodeIdFromSql_thisReference() {
-    final ResultSet rs = database.query("sql", "SELECT node.id(@this) AS rid FROM Person WHERE name = 'Ada'");
+    final ResultSet rs = database.query("sql", "SELECT @rid AS expected, node.id(@this) AS rid FROM Person WHERE name = 'Ada'");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Object>getProperty("rid")).isNotNull();
+    final Result row = rs.next();
+    assertThat(row.<String>getProperty("rid")).isEqualTo(row.getProperty("expected").toString());
     rs.close();
   }
 
-  // rel.type via @this when iterating edges
+  @Test
+  void nodeIdFromSql_ridReference() {
+    final ResultSet rs = database.query("sql", "SELECT @rid AS expected, node.id(@rid) AS rid FROM Person WHERE name = 'Ada'");
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+    assertThat(row.<String>getProperty("rid")).isEqualTo(row.getProperty("expected").toString());
+    rs.close();
+  }
+
   @Test
   void relTypeFromSql_thisReference() {
     final ResultSet rs = database.query("sql", "SELECT rel.type(@this) AS t FROM Friend");
@@ -113,12 +103,40 @@ class SQLNodeFunctionsTest extends TestHelper {
     rs.close();
   }
 
-  // rel.startNode via @this when iterating edges
+  @Test
+  void relTypeFromSql_ridReference() {
+    final ResultSet rs = database.query("sql", "SELECT rel.type(@rid) AS t FROM Friend");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<String>getProperty("t")).isEqualTo("Friend");
+    rs.close();
+  }
+
   @Test
   void relStartNodeFromSql_thisReference() {
     final ResultSet rs = database.query("sql", "SELECT rel.startNode(@this) AS src FROM Friend");
     assertThat(rs.hasNext()).isTrue();
-    assertThat(rs.next().<Object>getProperty("src")).isNotNull();
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      final Vertex src = row.getProperty("src");
+      assertThat(src).isNotNull();
+      assertThat(src.getString("name")).isEqualTo("Ada");
+    }
+    rs.close();
+  }
+
+  @Test
+  void relEndNodeFromSql_thisReference() {
+    final ResultSet rs = database.query("sql", "SELECT rel.endNode(@this) AS dst FROM Friend");
+    assertThat(rs.hasNext()).isTrue();
+    int count = 0;
+    while (rs.hasNext()) {
+      final Result row = rs.next();
+      final Vertex dst = row.getProperty("dst");
+      assertThat(dst).isNotNull();
+      assertThat(dst.getString("name")).isIn("Bob", "Cara");
+      count++;
+    }
+    assertThat(count).isEqualTo(2);
     rs.close();
   }
 }
