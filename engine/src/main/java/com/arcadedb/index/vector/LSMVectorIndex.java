@@ -4828,7 +4828,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * effectively resetting the inactivity window.
    * When the timer fires, it triggers an async graph rebuild regardless of the mutation count.
    */
-  private void scheduleInactivityRebuild() {
+  private synchronized void scheduleInactivityRebuild() {
+    if (!isValid())
+      return; // Index closed or dropped - no point scheduling
+
     final int timeoutMs = getInactivityRebuildTimeoutMs();
     if (timeoutMs <= 0)
       return; // Disabled
@@ -4859,8 +4862,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
           } else {
             // Small graph: synchronous rebuild on the timer thread.
             // Use tryAcquire to avoid blocking the timer thread indefinitely.
-            // If a large rebuild is already running, skip this small one - the next
-            // inactivity timeout or mutation threshold will pick it up.
+            // If another rebuild holds the permit, re-arm the timer so this index
+            // retries at the next interval rather than staying stuck with pending mutations.
             if (mutationsSinceSerialize.get() > 0) {
               if (REBUILD_SEMAPHORE.tryAcquire()) {
                 try {
@@ -4893,7 +4896,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   /**
    * Cancel the inactivity rebuild timer if one is scheduled.
    */
-  private void cancelInactivityRebuildTimer() {
+  private synchronized void cancelInactivityRebuildTimer() {
     final java.util.TimerTask task = inactivityRebuildTask;
     if (task != null) {
       task.cancel();
