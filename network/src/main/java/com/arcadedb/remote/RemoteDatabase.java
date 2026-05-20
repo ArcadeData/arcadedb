@@ -40,6 +40,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
@@ -47,6 +48,7 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -673,10 +675,49 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
   protected Result json2Result(final JSONObject result) {
     final Record record = json2Record(result);
-    if (record == null)
-      return new ResultInternal(result.toMap());
+    if (record == null) {
+      // Issue #4267: honor the per-column type hints emitted by JsonSerializer.serializeResult so
+      // numeric aggregates like count(*) preserve their declared Java type (e.g. Long) instead of
+      // collapsing to the JSONObject default of Integer when the value fits in 32 bits. Matches the
+      // behavior of the gRPC client, which already routes the value through a typed channel.
+      final Map<String, Object> map = result.toMap();
+      final Map<String, Type> propTypes = parsePropertyTypes((String) map.get(Property.PROPERTY_TYPES_PROPERTY));
+      if (!propTypes.isEmpty() || map.containsKey(Property.PROPERTY_TYPES_PROPERTY)) {
+        final Map<String, Object> converted = new HashMap<>(map.size());
+        for (final Map.Entry<String, Object> entry : map.entrySet()) {
+          final String fieldName = entry.getKey();
+          if (Property.METADATA_PROPERTIES.contains(fieldName))
+            continue;
+          final Type propType = propTypes.get(fieldName);
+          Object value = entry.getValue();
+          if (propType != null && value != null)
+            value = Type.convert(null, value, propType.getDefaultJavaType());
+          converted.put(fieldName, value);
+        }
+        return new ResultInternal(converted);
+      }
+      return new ResultInternal(map);
+    }
 
     return new ResultInternal(record);
+  }
+
+  private static Map<String, Type> parsePropertyTypes(final String propTypesAsString) {
+    if (propTypesAsString == null || propTypesAsString.isEmpty())
+      return Collections.emptyMap();
+
+    final Map<String, Type> propTypes = new HashMap<>();
+    for (final String entry : propTypesAsString.split(",")) {
+      final int sep = entry.lastIndexOf(':');
+      if (sep <= 0 || sep == entry.length() - 1)
+        continue;
+      try {
+        propTypes.put(entry.substring(0, sep), Type.getById((byte) Integer.parseInt(entry.substring(sep + 1))));
+      } catch (final NumberFormatException ignored) {
+        // skip malformed entries rather than fail the whole result row
+      }
+    }
+    return propTypes;
   }
 
   protected Record json2Record(final JSONObject result) {

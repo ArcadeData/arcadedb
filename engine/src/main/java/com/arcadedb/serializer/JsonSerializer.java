@@ -182,6 +182,13 @@ public class JsonSerializer {
       object.put(propertyName, value);
     }
 
+    // Issue #4267: emit per-column type hints for synthetic (non-element) result rows so HTTP
+    // clients can restore the original Java type (e.g. count(*) is a long; JSON would otherwise
+    // collapse it to Integer when it fits). Element rows already carry their type via @type and
+    // the schema, so adding @props there would only change existing JSON shapes without benefit.
+    if (type == null && !propertyTypes.isEmpty())
+      object.put(Property.PROPERTY_TYPES_PROPERTY, propertyTypes.toString());
+
     return object;
   }
 

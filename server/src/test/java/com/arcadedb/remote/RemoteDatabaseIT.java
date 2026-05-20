@@ -95,7 +95,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
       // UPDATE DOCUMENT WITH COMMAND
       result = database.command("SQL", "update Person set lastName = 'Red' where name = 'John'");
       assertThat(result.hasNext()).isTrue();
-      assertThat(result.next().<Integer>getProperty("count")).isEqualTo(1);
+      assertThat(result.next().<Long>getProperty("count")).isEqualTo(1L);
 
       final Document record = (Document) database.lookupByRID(rid);
       assertThat((Iterator<? extends Result>) result).isNotNull();
@@ -188,7 +188,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
       // UPDATE VERTEX WITH COMMAND
       result = database.command("SQL", "update Character set lastName = 'Red' where name = 'John' or name = 'Kimbal'");
 
-      assertThat(result.next().<Integer>getProperty("count")).isEqualTo(2);
+      assertThat(result.next().<Long>getProperty("count")).isEqualTo(2L);
 
       // CREATE EDGE WITH COMMAND
       result = database.command("SQL", "create edge " + EDGE1_TYPE_NAME + " from " + rid1 + " to " + rid2);
@@ -349,13 +349,13 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
             // TEST ISOLATION: COUNT SHOULD SEE THE MOST RECENT CHANGES BEFORE THE COMMIT
             ResultSet result = database.query("SQL", "select count(*) as total from Person");
             assertThat(result.hasNext()).isTrue();
-            assertThat((int) result.next().getProperty("total")).isEqualTo(executedBatches * BATCH_SIZE);
+            assertThat(result.next().<Number>getProperty("total").longValue()).isEqualTo((long) executedBatches * BATCH_SIZE);
 
             // CHECK ON A PARALLEL CONNECTION THE TX ISOLATION (RECORDS LESS THEN INSERTED)
             result = database2.query("SQL", "select count(*) as total from Person");
             assertThat(result.hasNext()).isTrue();
-            final int totalRecord = result.next().getProperty("total");
-            assertThat(totalRecord).isLessThan(executedBatches * BATCH_SIZE).withFailMessage(
+            final long totalRecord = result.next().<Number>getProperty("total").longValue();
+            assertThat(totalRecord).isLessThan((long) executedBatches * BATCH_SIZE).withFailMessage(
                 "Found total " + totalRecord + " records but should be less than " + (executedBatches * BATCH_SIZE));
 
             //System.out.println("BATCH " + executedBatches + "/" + TOTAL_TRANSACTIONS);
@@ -373,7 +373,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
       // RETRIEVE DOCUMENT WITH QUERY AFTER COMMIT
       final ResultSet result = database.query("SQL", "select count(*) as total from Person");
       assertThat(result.hasNext()).isTrue();
-      assertThat((int) result.next().getProperty("total")).isEqualTo(TOTAL_TRANSACTIONS * BATCH_SIZE);
+      assertThat(result.next().<Number>getProperty("total").longValue()).isEqualTo((long) TOTAL_TRANSACTIONS * BATCH_SIZE);
     });
   }
 

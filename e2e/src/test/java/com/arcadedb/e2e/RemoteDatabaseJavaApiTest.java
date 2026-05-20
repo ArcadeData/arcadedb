@@ -222,12 +222,12 @@ class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
 
     // Query the materialized view and verify it returns results
     final long viewCount = database.query("sql", "SELECT count() as count FROM HighAlcoholBeers")
-        .stream().findFirst().get().<Integer>getProperty("count");
+        .stream().findFirst().get().<Number>getProperty("count").longValue();
     assertThat(viewCount).isEqualTo(3042);
 
     // Verify count matches a direct query on the source type
     final long directCount = database.query("sql", "SELECT count() as count FROM Beer WHERE abv > 10")
-        .stream().findFirst().get().<Integer>getProperty("count");
+        .stream().findFirst().get().<Number>getProperty("count").longValue();
     assertThat(viewCount).isEqualTo(directCount);
 
     // Verify the brewery name was denormalized into the view (every row should have one)
@@ -237,7 +237,7 @@ class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
     // Refresh the view and re-verify the count is still consistent
     database.command("sql", "REFRESH MATERIALIZED VIEW HighAlcoholBeers");
     final long refreshedCount = database.query("sql", "SELECT count() as count FROM HighAlcoholBeers")
-        .stream().findFirst().get().<Integer>getProperty("count");
+        .stream().findFirst().get().<Number>getProperty("count").longValue();
     assertThat(refreshedCount).isEqualTo(directCount);
 
     // Drop and verify it's removed from the schema
