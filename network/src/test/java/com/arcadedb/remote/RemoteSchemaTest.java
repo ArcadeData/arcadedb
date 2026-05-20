@@ -19,17 +19,23 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.query.sql.executor.ResultInternal;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.ZoneId;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 class RemoteSchemaTest {
 
@@ -394,5 +400,64 @@ class RemoteSchemaTest {
   void createTriggerThrowsUnsupported() {
     assertThatThrownBy(() -> schema.createTrigger(null))
         .isInstanceOf(UnsupportedOperationException.class);
+  }
+
+  @Test
+  void reloadWithTimeSeriesTypeDoesNotThrow() {
+    final ResultSet rs = buildSchemaResultSet(buildTypeRecord("MySeries", "t"));
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(rs);
+
+    schema.reload();
+
+    assertThat(schema.existsType("MySeries")).isTrue();
+    final DocumentType t = schema.getType("MySeries");
+    assertThat(t.getName()).isEqualTo("MySeries");
+  }
+
+  @Test
+  void reloadWithUnknownTypeCodeDoesNotThrow() {
+    final ResultSet rs = buildSchemaResultSet(buildTypeRecord("FutureType", "x"));
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(rs);
+
+    schema.reload();
+
+    assertThat(schema.existsType("FutureType")).isTrue();
+  }
+
+  @Test
+  void reloadWithMixedTypesIncludingTimeSeriesLoadsAll() {
+    final ResultSet rs = buildSchemaResultSet(
+        buildTypeRecord("Person", "vertex"),
+        buildTypeRecord("Knows", "edge"),
+        buildTypeRecord("Readings", "t")
+    );
+    when(mockDatabase.command("sql", "select from schema:types")).thenReturn(rs);
+
+    schema.reload();
+
+    assertThat(schema.existsType("Person")).isTrue();
+    assertThat(schema.existsType("Knows")).isTrue();
+    assertThat(schema.existsType("Readings")).isTrue();
+  }
+
+  private static ResultInternal buildTypeRecord(final String name, final String typeCode) {
+    final ResultInternal r = new ResultInternal();
+    r.setProperty("name", name);
+    r.setProperty("type", typeCode);
+    r.setProperty("records", 0L);
+    r.setProperty("buckets", Collections.emptyList());
+    r.setProperty("bucketSelectionStrategy", "round-robin");
+    r.setProperty("parentTypes", Collections.emptyList());
+    r.setProperty("properties", Collections.emptyList());
+    r.setProperty("custom", new HashMap<>());
+    return r;
+  }
+
+  private static ResultSet buildSchemaResultSet(final ResultInternal... records) {
+    final ResultSet rs = mock(ResultSet.class);
+    final int[] idx = { 0 };
+    when(rs.hasNext()).thenAnswer(inv -> idx[0] < records.length);
+    when(rs.next()).thenAnswer(inv -> records[idx[0]++]);
+    return rs;
   }
 }
