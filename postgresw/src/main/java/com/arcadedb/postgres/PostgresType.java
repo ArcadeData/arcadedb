@@ -26,6 +26,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -43,6 +44,8 @@ import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
+
+import static java.time.OffsetDateTime.parse;
 
 /**
  * Represents PostgreSQL data types and provides serialization/deserialization functionality.
@@ -75,20 +78,20 @@ public enum PostgresType {
       .collect(Collectors.toMap(type -> type.code, type -> type));
 
   // PostgreSQL-compatible datetime format (ISO 8601 without 'T' separator)
-  private static final String POSTGRES_TIMESTAMP_FORMAT = "yyyy-MM-dd HH:mm:ss.SSSSSS";
+  private static final String            POSTGRES_TIMESTAMP_FORMAT   = "yyyy-MM-dd HH:mm:ss.SSSSSS";
   private static final DateTimeFormatter POSTGRES_DATETIME_FORMATTER = DateTimeFormatter.ofPattern(POSTGRES_TIMESTAMP_FORMAT);
   // PostgreSQL caps array dimensions at 6 (MAXDIM in pg_config_manual.h).
-  private static final int MAX_ARRAY_DIMENSIONS = 6;
+  private static final int               MAX_ARRAY_DIMENSIONS        = 6;
   // PostgreSQL's epoch for DATE/TIMESTAMP binary formats is 2000-01-01T00:00:00 UTC.
-  private static final long POSTGRES_EPOCH_SECONDS = 946684800L;
-  private static final long POSTGRES_EPOCH_DAYS = 10957L; // LocalDate.of(2000, 1, 1).toEpochDay()
+  private static final long              POSTGRES_EPOCH_SECONDS      = 946684800L;
+  private static final long              POSTGRES_EPOCH_DAYS         = 10957L; // LocalDate.of(2000, 1, 1).toEpochDay()
 
   private static Boolean parseBooleanText(final String value) {
     if (value == null)
       throw new PostgresProtocolException("Cannot parse null BOOLEAN text value");
     return switch (value.toLowerCase()) {
-      case "t", "true", "1", "y", "yes", "on"   -> Boolean.TRUE;
-      case "f", "false", "0", "n", "no", "off"  -> Boolean.FALSE;
+      case "t", "true", "1", "y", "yes", "on" -> Boolean.TRUE;
+      case "f", "false", "0", "n", "no", "off" -> Boolean.FALSE;
       default -> throw new PostgresProtocolException("Cannot parse BOOLEAN text value: " + value);
     };
   }
@@ -106,7 +109,7 @@ public enum PostgresType {
     try {
       return LocalDateTime.parse(iso);
     } catch (DateTimeParseException e) {
-      return java.time.OffsetDateTime.parse(iso).toLocalDateTime();
+      return parse(iso).toLocalDateTime();
     }
   }
 
@@ -117,7 +120,7 @@ public enum PostgresType {
       return b ? 1 : 0;
     if (value instanceof Character c)
       return (int) c;
-    return new java.math.BigDecimal(value.toString());
+    return new BigDecimal(value.toString());
   }
 
   private static boolean toBooleanValue(final Object value) {
@@ -263,21 +266,16 @@ public enum PostgresType {
       return PostgresType.ARRAY_CHAR;
     } else if (val.getClass().isArray()) {
       // Handle Java arrays
-      if (val instanceof int[]) {
-        return PostgresType.ARRAY_INT;
-      } else if (val instanceof long[]) {
-        return PostgresType.ARRAY_LONG;
-      } else if (val instanceof double[]) {
-        return PostgresType.ARRAY_DOUBLE;
-      } else if (val instanceof float[]) {
-        return PostgresType.ARRAY_REAL;
-      } else if (val instanceof boolean[]) {
-        return PostgresType.ARRAY_BOOLEAN;
-      } else if (val instanceof char[]) {
-        return PostgresType.ARRAY_CHAR;
-      } else if (val instanceof String[]) {
-        return PostgresType.ARRAY_TEXT;
-      }
+      return switch (val) {
+        case int[] ints -> PostgresType.ARRAY_INT;
+        case long[] longs -> PostgresType.ARRAY_LONG;
+        case double[] doubles -> PostgresType.ARRAY_DOUBLE;
+        case float[] floats -> PostgresType.ARRAY_REAL;
+        case boolean[] booleans -> PostgresType.ARRAY_BOOLEAN;
+        case char[] chars -> PostgresType.ARRAY_CHAR;
+        case String[] strings -> PostgresType.ARRAY_TEXT;
+        default -> throw new IllegalStateException("Unexpected value: " + val);
+      };
     } else if (val instanceof Date) {
       return PostgresType.DATE;
     } else if (val instanceof LocalDateTime) {
@@ -292,6 +290,7 @@ public enum PostgresType {
    * Maps an ArcadeDB schema Type to a PostgreSQL type.
    *
    * @param arcadeType The ArcadeDB schema type
+   *
    * @return The corresponding PostgreSQL type
    */
   public static PostgresType getTypeFromArcade(Type arcadeType) {
@@ -374,49 +373,49 @@ public enum PostgresType {
       return;
     }
     switch (pgType) {
-      case SMALLINT -> {
-        typeBuffer.putInt(2);
-        typeBuffer.putShort(toNumber(value).shortValue());
-      }
-      case INTEGER -> {
-        typeBuffer.putInt(4);
-        typeBuffer.putInt(toNumber(value).intValue());
-      }
-      case LONG -> {
-        typeBuffer.putInt(8);
-        typeBuffer.putLong(toNumber(value).longValue());
-      }
-      case REAL -> {
-        typeBuffer.putInt(4);
-        typeBuffer.putInt(Float.floatToRawIntBits(toNumber(value).floatValue()));
-      }
-      case DOUBLE -> {
-        typeBuffer.putInt(8);
-        typeBuffer.putLong(Double.doubleToRawLongBits(toNumber(value).doubleValue()));
-      }
-      case BOOLEAN -> {
-        typeBuffer.putInt(1);
-        typeBuffer.putByte((byte) (toBooleanValue(value) ? 1 : 0));
-      }
-      case CHAR -> {
-        // Postgres "char" (OID 18) is a single byte on the wire.
-        typeBuffer.putInt(1);
-        final char c = (value instanceof Character ch) ? ch : value.toString().charAt(0);
-        typeBuffer.putByte((byte) c);
-      }
-      case DATE -> {
-        typeBuffer.putInt(4);
-        typeBuffer.putInt((int) (toLocalDateValue(value).toEpochDay() - POSTGRES_EPOCH_DAYS));
-      }
-      case TIMESTAMP -> {
-        typeBuffer.putInt(8);
-        final LocalDateTime ldt = toLocalDateTimeValue(value);
-        final long secsFromPgEpoch = ldt.toEpochSecond(ZoneOffset.UTC) - POSTGRES_EPOCH_SECONDS;
-        typeBuffer.putLong(secsFromPgEpoch * 1_000_000L + ldt.getNano() / 1000L);
-      }
-      // Strings, JSON, and arrays do not have a separate binary representation: their wire format
-      // is identical to text for our purposes (length-prefixed UTF-8 bytes / array literal text).
-      default -> serializeAsText(pgType, typeBuffer, value);
+    case SMALLINT -> {
+      typeBuffer.putInt(2);
+      typeBuffer.putShort(toNumber(value).shortValue());
+    }
+    case INTEGER -> {
+      typeBuffer.putInt(4);
+      typeBuffer.putInt(toNumber(value).intValue());
+    }
+    case LONG -> {
+      typeBuffer.putInt(8);
+      typeBuffer.putLong(toNumber(value).longValue());
+    }
+    case REAL -> {
+      typeBuffer.putInt(4);
+      typeBuffer.putInt(Float.floatToRawIntBits(toNumber(value).floatValue()));
+    }
+    case DOUBLE -> {
+      typeBuffer.putInt(8);
+      typeBuffer.putLong(Double.doubleToRawLongBits(toNumber(value).doubleValue()));
+    }
+    case BOOLEAN -> {
+      typeBuffer.putInt(1);
+      typeBuffer.putByte((byte) (toBooleanValue(value) ? 1 : 0));
+    }
+    case CHAR -> {
+      // Postgres "char" (OID 18) is a single byte on the wire.
+      typeBuffer.putInt(1);
+      final char c = (value instanceof Character ch) ? ch : value.toString().charAt(0);
+      typeBuffer.putByte((byte) c);
+    }
+    case DATE -> {
+      typeBuffer.putInt(4);
+      typeBuffer.putInt((int) (toLocalDateValue(value).toEpochDay() - POSTGRES_EPOCH_DAYS));
+    }
+    case TIMESTAMP -> {
+      typeBuffer.putInt(8);
+      final LocalDateTime ldt = toLocalDateTimeValue(value);
+      final long secsFromPgEpoch = ldt.toEpochSecond(ZoneOffset.UTC) - POSTGRES_EPOCH_SECONDS;
+      typeBuffer.putLong(secsFromPgEpoch * 1_000_000L + ldt.getNano() / 1000L);
+    }
+    // Strings, JSON, and arrays do not have a separate binary representation: their wire format
+    // is identical to text for our purposes (length-prefixed UTF-8 bytes / array literal text).
+    default -> serializeAsText(pgType, typeBuffer, value);
     }
   }
 
