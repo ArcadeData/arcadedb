@@ -31,6 +31,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -1253,6 +1254,75 @@ public class OpenCypherVariableLengthPathTest {
       assertThat(rs.hasNext()).isTrue();
       final List<Object> list = (List<Object>) rs.next().getProperty("vals");
       assertThat(list).containsExactly("Alice");
+    } finally {
+      db.drop();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Issue #4271: VLP target node property predicate must resolve $parameter values.
+  // ---------------------------------------------------------------------------
+
+  // Issue #4271: parametrized target property in a variable-length path returns the same rows as the hardcoded literal
+  @Test
+  void varLengthPathTargetPropertyFromParameter() {
+    final Database db = new DatabaseFactory("./target/databases/issue-4271-vlp-target-param").create();
+    try {
+      db.getSchema().createVertexType("Area4271");
+      db.getSchema().createEdgeType("PART_OF4271");
+      db.transaction(() -> db.command("opencypher",
+          """
+          CREATE (a:Area4271 {name:'Glasgow'}), \
+                 (b:Area4271 {name:'Strathclyde'}), \
+                 (c:Area4271 {name:'Scotland'}), \
+                 (a)-[:PART_OF4271]->(b), \
+                 (b)-[:PART_OF4271]->(c)"""));
+
+      // Query 1 (control - both literal): must return Glasgow -> Scotland
+      try (final ResultSet rs = db.query("opencypher",
+          "MATCH (a:Area4271 {name:'Glasgow'})-[:PART_OF4271*1..7]->(b:Area4271 {name:'Scotland'}) RETURN a.name AS an, b.name AS bn")) {
+        final List<Result> rows = collect(rs);
+        assertThat(rows).as("Both literals: should return one match").hasSize(1);
+        assertThat((String) rows.get(0).getProperty("an")).isEqualTo("Glasgow");
+        assertThat((String) rows.get(0).getProperty("bn")).isEqualTo("Scotland");
+      }
+
+      // Query 2 (both parametrized): the regression - target $country was not resolved
+      try (final ResultSet rs = db.query("opencypher",
+          "MATCH (a:Area4271 {name:$place})-[:PART_OF4271*1..7]->(b:Area4271 {name:$country}) RETURN a.name AS an, b.name AS bn",
+          Map.of("place", "Glasgow", "country", "Scotland"))) {
+        final List<Result> rows = collect(rs);
+        assertThat(rows).as("Both parametrized: should match like the literal form").hasSize(1);
+        assertThat((String) rows.get(0).getProperty("an")).isEqualTo("Glasgow");
+        assertThat((String) rows.get(0).getProperty("bn")).isEqualTo("Scotland");
+      }
+
+      // Query 3 (only source parametrized): already worked - sanity check it still does
+      try (final ResultSet rs = db.query("opencypher",
+          "MATCH (a:Area4271 {name:$place})-[:PART_OF4271*1..7]->(b:Area4271 {name:'Scotland'}) RETURN a.name AS an, b.name AS bn",
+          Map.of("place", "Glasgow"))) {
+        final List<Result> rows = collect(rs);
+        assertThat(rows).as("Only source parametrized: still one match").hasSize(1);
+        assertThat((String) rows.get(0).getProperty("an")).isEqualTo("Glasgow");
+        assertThat((String) rows.get(0).getProperty("bn")).isEqualTo("Scotland");
+      }
+
+      // Query 4 (only target parametrized): the failing case from the issue
+      try (final ResultSet rs = db.query("opencypher",
+          "MATCH (a:Area4271 {name:'Glasgow'})-[:PART_OF4271*1..7]->(b:Area4271 {name:$country}) RETURN a.name AS an, b.name AS bn",
+          Map.of("country", "Scotland"))) {
+        final List<Result> rows = collect(rs);
+        assertThat(rows).as("Only target parametrized: must still find the path").hasSize(1);
+        assertThat((String) rows.get(0).getProperty("an")).isEqualTo("Glasgow");
+        assertThat((String) rows.get(0).getProperty("bn")).isEqualTo("Scotland");
+      }
+
+      // Non-matching parameter must filter the result out (sanity check after fix)
+      try (final ResultSet rs = db.query("opencypher",
+          "MATCH (a:Area4271 {name:'Glasgow'})-[:PART_OF4271*1..7]->(b:Area4271 {name:$country}) RETURN a.name AS an",
+          Map.of("country", "Wales"))) {
+        assertThat(rs.hasNext()).as("Non-matching parameter must produce no rows").isFalse();
+      }
     } finally {
       db.drop();
     }
