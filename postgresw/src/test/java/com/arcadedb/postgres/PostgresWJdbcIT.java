@@ -23,7 +23,6 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -39,6 +38,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Properties;
 import java.util.Random;
@@ -479,12 +479,6 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
     }
   }
 
-  @Test
-  @Disabled
-  void waitForConnectionFromExternal() throws Exception {
-    Thread.sleep(1000000);
-  }
-
   private Connection getConnection() throws ClassNotFoundException, SQLException {
     Class.forName("org.postgresql.Driver");
 
@@ -815,6 +809,75 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           assertThat(rs.getString("text")).isEqualTo("chunk3");
           assertThat(rs.next()).isFalse();
         }
+      }
+    }
+  }
+
+  /**
+   * Postgres wire must advertise scalar columns of all native non-string types with their proper
+   * Postgres OIDs instead of VARCHAR, so Postgres clients (pgjdbc, psycopg) deserialize them as
+   * native values. Covers INTEGER (int4), DOUBLE (float8), FLOAT (float4), BOOLEAN (bool).
+   * Queries via Cypher so value-based column type detection in {@code getColumns()} is exercised,
+   * not the schema-based path.
+   */
+  @Test
+  void scalarColumnTypeFidelity() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE VERTEX TYPE SCALAR_COL_TYPES IF NOT EXISTS");
+        st.execute("CREATE PROPERTY SCALAR_COL_TYPES.iVal IF NOT EXISTS INTEGER");
+        st.execute("CREATE PROPERTY SCALAR_COL_TYPES.dVal IF NOT EXISTS DOUBLE");
+        st.execute("CREATE PROPERTY SCALAR_COL_TYPES.fVal IF NOT EXISTS FLOAT");
+        st.execute("CREATE PROPERTY SCALAR_COL_TYPES.bVal IF NOT EXISTS BOOLEAN");
+        st.execute("INSERT INTO SCALAR_COL_TYPES SET iVal = 42, dVal = 3.14, fVal = 1.5, bVal = true");
+      }
+
+      try (var st = conn.createStatement();
+          var rs = st.executeQuery(
+              "{opencypher} MATCH (n:SCALAR_COL_TYPES) RETURN n.iVal AS iVal, n.dVal AS dVal, n.fVal AS fVal, n.bVal AS bVal")) {
+        final var meta = rs.getMetaData();
+        assertThat(meta.getColumnTypeName(1)).isEqualToIgnoringCase("int4");
+        assertThat(meta.getColumnTypeName(2)).isEqualToIgnoringCase("float8");
+        assertThat(meta.getColumnTypeName(3)).isEqualToIgnoringCase("float4");
+        assertThat(meta.getColumnTypeName(4)).isEqualToIgnoringCase("bool");
+
+        assertThat(rs.next()).isTrue();
+        assertThat(rs.getInt("iVal")).isEqualTo(42);
+        assertThat(rs.getDouble("dVal")).isCloseTo(3.14, offset(0.001));
+        assertThat(rs.getFloat("fVal")).isCloseTo(1.5f, offset(0.001f));
+        assertThat(rs.getBoolean("bVal")).isTrue();
+        assertThat(rs.next()).isFalse();
+      }
+    }
+  }
+
+  /**
+   * Postgres wire must advertise DATETIME properties as timestamp (OID 1114) so Postgres clients
+   * parse them as native timestamp values instead of dates. This exercises the schema-based
+   * column type path ({@code getColumnsFromQuerySchema} via {@code getTypeFromArcade}).
+   */
+  @Test
+  void temporalColumnTypeFidelity() throws Exception {
+    try (var conn = getConnection()) {
+      try (var st = conn.createStatement()) {
+        st.execute("CREATE VERTEX TYPE TEMPORAL_COL_TYPES IF NOT EXISTS");
+        st.execute("CREATE PROPERTY TEMPORAL_COL_TYPES.dtVal IF NOT EXISTS DATETIME");
+        st.execute("CREATE VERTEX TEMPORAL_COL_TYPES SET dtVal = '2024-06-15 12:30:45'");
+      }
+
+      try (var st = conn.createStatement();
+          var rs = st.executeQuery("SELECT dtVal FROM TEMPORAL_COL_TYPES")) {
+        final var meta = rs.getMetaData();
+        assertThat(meta.getColumnTypeName(1)).isEqualToIgnoringCase("timestamp");
+
+        assertThat(rs.next()).isTrue();
+        final Timestamp ts = rs.getTimestamp("dtVal");
+        assertThat(ts).isNotNull();
+        // Compare via toLocalDateTime() rather than toString() - Timestamp.toString() formats in
+        // the JVM default timezone, so a non-UTC test host would fail the assertion even though
+        // the wire round-trip is correct.
+        assertThat(ts.toLocalDateTime()).isEqualTo(LocalDateTime.of(2024, 6, 15, 12, 30, 45));
+        assertThat(rs.next()).isFalse();
       }
     }
   }

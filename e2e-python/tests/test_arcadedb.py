@@ -117,7 +117,8 @@ def test_psycopg2_basic_queries():
             product = products[0]
             print(f"Product: {product}")
             assert 'TestItem' in product
-            assert '29' in product
+            # price is INTEGER on the wire, so psycopg returns it as a native int
+            assert 29 in product  # nosec B101
     finally:
         conn.close()
 
