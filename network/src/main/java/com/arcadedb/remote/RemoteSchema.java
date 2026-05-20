@@ -23,12 +23,12 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.*;
@@ -37,12 +37,12 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.logging.Level;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.TimeZone;
+import java.util.logging.Level;
 import java.util.stream.Collectors;
 
 /**
@@ -759,13 +759,14 @@ public class RemoteSchema implements Schema {
           type = new RemoteEdgeType(remoteDatabase, record,
               record.hasProperty("bidirectional") ? (Boolean) record.getProperty("bidirectional") : true);
           break;
-        case "t": // timeseries: represented as document type for remote schema navigation
+        case LocalTimeSeriesType.KIND_CODE: // timeseries: represented as document type for remote schema navigation
           type = new RemoteDocumentType(remoteDatabase, record);
           break;
         default:
           LogManager.instance().log(this, Level.WARNING, "Unknown schema type code '" + record.getProperty("type") + "' for type '"
               + typeName + "' - treating as document type");
           type = new RemoteDocumentType(remoteDatabase, record);
+          break;
         }
       } else
         type.reload(record);
