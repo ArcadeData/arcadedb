@@ -31,6 +31,7 @@ import com.arcadedb.query.sql.method.collection.SQLMethodTransform;
 import com.arcadedb.query.sql.method.collection.SQLMethodValues;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsBoolean;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsByte;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsCypherRID;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsDate;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsDateTime;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsDecimal;
@@ -124,6 +125,7 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodAsLong.NAME, new SQLMethodAsLong());
     register(SQLMethodAsMap.NAME, new SQLMethodAsMap());
     register(SQLMethodAsRID.NAME, new SQLMethodAsRID());
+    register(SQLMethodAsCypherRID.NAME, new SQLMethodAsCypherRID());
     register(SQLMethodAsRecord.NAME, new SQLMethodAsRecord());
     register(SQLMethodAsSet.NAME, new SQLMethodAsSet());
     register(SQLMethodAsShort.NAME, new SQLMethodAsShort());
