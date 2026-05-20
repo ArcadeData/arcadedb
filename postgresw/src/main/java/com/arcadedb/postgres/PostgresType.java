@@ -30,6 +30,7 @@ import java.math.BigDecimal;
 import java.nio.ByteBuffer;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
@@ -44,8 +45,6 @@ import java.util.Objects;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.StreamSupport;
-
-import static java.time.OffsetDateTime.parse;
 
 /**
  * Represents PostgreSQL data types and provides serialization/deserialization functionality.
@@ -109,7 +108,7 @@ public enum PostgresType {
     try {
       return LocalDateTime.parse(iso);
     } catch (DateTimeParseException e) {
-      return parse(iso).toLocalDateTime();
+      return OffsetDateTime.parse(iso).toLocalDateTime();
     }
   }
 
@@ -139,7 +138,7 @@ public enum PostgresType {
     if (value instanceof Date d)
       return d.toInstant().atZone(ZoneOffset.UTC).toLocalDate();
     if (value instanceof String s)
-      return parseDateText(s).toInstant().atZone(ZoneOffset.UTC).toLocalDate();
+      return LocalDate.parse(s);
     throw new PostgresProtocolException("Unsupported DATE binary value type: " + value.getClass());
   }
 
@@ -748,9 +747,15 @@ public enum PostgresType {
    * strings and breaks typed parameter comparisons.
    */
   public boolean isNativeScalarType() {
-    return this == SMALLINT || this == INTEGER || this == LONG ||
-        this == REAL || this == DOUBLE || this == CHAR ||
-        this == BOOLEAN || this == DATE || this == TIMESTAMP;
+    return this == SMALLINT ||
+        this == INTEGER ||
+        this == LONG ||
+        this == REAL ||
+        this == DOUBLE ||
+        this == CHAR ||
+        this == BOOLEAN ||
+        this == DATE ||
+        this == TIMESTAMP;
   }
 
   /**

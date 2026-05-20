@@ -23,7 +23,6 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -478,12 +477,6 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         rs.close();
       }
     }
-  }
-
-  @Test
-  @Disabled
-  void waitForConnectionFromExternal() throws Exception {
-    Thread.sleep(1000000);
   }
 
   private Connection getConnection() throws ClassNotFoundException, SQLException {
