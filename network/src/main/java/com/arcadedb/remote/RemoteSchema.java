@@ -748,7 +748,11 @@ public class RemoteSchema implements Schema {
       final String typeName = record.getProperty("name");
       RemoteDocumentType type = previous != null ? previous.get(typeName) : null;
       if (type == null) {
-        switch ((String) record.getProperty("type")) {
+        // Type codes here come from FetchFromSchemaTypesStep: full names for document/vertex/edge,
+        // KIND_CODE ("t") for timeseries. The single-char codes from LocalDocumentType.toJSON
+        // ("d"/"v"/"e"/"t") are NOT used on this path.
+        final String typeCode = record.getProperty("type");
+        switch (typeCode) {
         case "document":
           type = new RemoteDocumentType(remoteDatabase, record);
           break;
@@ -763,8 +767,8 @@ public class RemoteSchema implements Schema {
           type = new RemoteDocumentType(remoteDatabase, record);
           break;
         default:
-          LogManager.instance().log(this, Level.WARNING, "Unknown schema type code '" + record.getProperty("type") + "' for type '"
-              + typeName + "' - treating as document type");
+          LogManager.instance().log(this, Level.WARNING,
+              "Unknown schema type code '%s' for type '%s' - treating as document type", typeCode, typeName);
           type = new RemoteDocumentType(remoteDatabase, record);
           break;
         }

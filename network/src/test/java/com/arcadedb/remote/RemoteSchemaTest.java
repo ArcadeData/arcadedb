@@ -402,8 +402,6 @@ class RemoteSchemaTest {
         .isInstanceOf(UnsupportedOperationException.class);
   }
 
-  // reload() tests for mixed-schema support (#4265)
-
   @Test
   void reloadWithTimeSeriesTypeDoesNotThrow() {
     final ResultSet rs = buildSchemaResultSet(buildTypeRecord("MySeries", "t"));
