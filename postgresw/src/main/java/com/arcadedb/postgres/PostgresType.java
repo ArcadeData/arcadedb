@@ -81,7 +81,7 @@ public enum PostgresType {
   private static final int MAX_ARRAY_DIMENSIONS = 6;
   // PostgreSQL's epoch for DATE/TIMESTAMP binary formats is 2000-01-01T00:00:00 UTC.
   private static final long POSTGRES_EPOCH_SECONDS = 946684800L;
-  private static final long POSTGRES_EPOCH_DAYS    = 10957L; // LocalDate.of(2000, 1, 1).toEpochDay()
+  private static final long POSTGRES_EPOCH_DAYS = 10957L; // LocalDate.of(2000, 1, 1).toEpochDay()
 
   private static Boolean parseBooleanText(final String value) {
     if (value == null)
@@ -752,5 +752,16 @@ public enum PostgresType {
     return this == SMALLINT || this == INTEGER || this == LONG ||
         this == REAL || this == DOUBLE || this == CHAR ||
         this == BOOLEAN || this == DATE || this == TIMESTAMP;
+  }
+
+  /**
+   * Returns true when {@link #serializeAsBinary} produces a wire payload that matches the type's
+   * binary protocol specification. Array types currently lack a binary encoder, so they MUST be
+   * advertised as text (0) in RowDescription regardless of what the client requested in Bind -
+   * otherwise the RowDescription format code and the DataRow bytes disagree and clients misparse.
+   * String/JSON types are safe because their text and binary wire formats are identical raw bytes.
+   */
+  public boolean hasBinaryEncoding() {
+    return !isArrayType();
   }
 }

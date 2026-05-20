@@ -918,8 +918,9 @@ public class PostgresNetworkExecutor extends Thread {
       // The type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
       bufferDescription.putInt(-1);
       // The format code being used for the field (0=text, 1=binary). Comes from the Bind message's
-      // result-column formats when present; defaults to 0 (text) otherwise.
-      bufferDescription.putShort(resolveResultFormat(resultFormats, colIndex++));
+      // result-column formats when present; defaults to 0 (text) otherwise. Types that lack a
+      // binary encoder (arrays) are forced to text so the announced format and DataRow agree.
+      bufferDescription.putShort(effectiveResultFormat(resultFormats, colIndex++, columnType));
     }
 
     bufferDescription.flip();
@@ -942,6 +943,18 @@ public class PostgresNetworkExecutor extends Thread {
     if (colIndex < resultFormats.size())
       return resultFormats.get(colIndex).shortValue();
     return 0;
+  }
+
+  /**
+   * Same as {@link #resolveResultFormat} but forces text (0) for columns whose type lacks a
+   * binary encoder. Used by both RowDescription and DataRow so the announced format code and the
+   * written bytes always agree, even when the client requested binary.
+   */
+  private static short effectiveResultFormat(final List<Integer> resultFormats, final int colIndex,
+      final PostgresType columnType) {
+    if (!columnType.hasBinaryEncoding())
+      return 0;
+    return resolveResultFormat(resultFormats, colIndex);
   }
 
   private void writeDataRows(final List<Result> resultSet, final Map<String, PostgresType> columns) throws IOException {
@@ -1009,7 +1022,7 @@ public class PostgresNetworkExecutor extends Thread {
         };
 
         final PostgresType columnType = postgresTypeEntry.getValue();
-        if (resolveResultFormat(resultFormats, colIndex++) == 1)
+        if (effectiveResultFormat(resultFormats, colIndex++, columnType) == 1)
           columnType.serializeAsBinary(columnType, bufferValues, value);
         else
           columnType.serializeAsText(columnType, bufferValues, value);

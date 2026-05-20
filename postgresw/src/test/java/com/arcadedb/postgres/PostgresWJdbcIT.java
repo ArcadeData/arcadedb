@@ -39,6 +39,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Properties;
 import java.util.Random;
@@ -830,7 +831,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   void scalarColumnTypeFidelity() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
-        st.execute("CREATE VERTEX TYPE SCALAR_COL_TYPES");
+        st.execute("CREATE VERTEX TYPE SCALAR_COL_TYPES IF NOT EXISTS");
         st.execute("CREATE PROPERTY SCALAR_COL_TYPES.iVal IF NOT EXISTS INTEGER");
         st.execute("CREATE PROPERTY SCALAR_COL_TYPES.dVal IF NOT EXISTS DOUBLE");
         st.execute("CREATE PROPERTY SCALAR_COL_TYPES.fVal IF NOT EXISTS FLOAT");
@@ -866,7 +867,7 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
   void temporalColumnTypeFidelity() throws Exception {
     try (var conn = getConnection()) {
       try (var st = conn.createStatement()) {
-        st.execute("CREATE VERTEX TYPE TEMPORAL_COL_TYPES");
+        st.execute("CREATE VERTEX TYPE TEMPORAL_COL_TYPES IF NOT EXISTS");
         st.execute("CREATE PROPERTY TEMPORAL_COL_TYPES.dtVal IF NOT EXISTS DATETIME");
         st.execute("CREATE VERTEX TEMPORAL_COL_TYPES SET dtVal = '2024-06-15 12:30:45'");
       }
@@ -879,7 +880,10 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
         assertThat(rs.next()).isTrue();
         final Timestamp ts = rs.getTimestamp("dtVal");
         assertThat(ts).isNotNull();
-        assertThat(ts.toString()).startsWith("2024-06-15 12:30:45");
+        // Compare via toLocalDateTime() rather than toString() - Timestamp.toString() formats in
+        // the JVM default timezone, so a non-UTC test host would fail the assertion even though
+        // the wire round-trip is correct.
+        assertThat(ts.toLocalDateTime()).isEqualTo(LocalDateTime.of(2024, 6, 15, 12, 30, 45));
         assertThat(rs.next()).isFalse();
       }
     }
