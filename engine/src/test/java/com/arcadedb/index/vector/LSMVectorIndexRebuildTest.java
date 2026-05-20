@@ -29,6 +29,7 @@ import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -775,6 +776,63 @@ class LSMVectorIndexRebuildTest extends TestHelper {
   void rebuildSemaphoreDefaultIsOne() {
     // The default max concurrent rebuilds should be 1
     assertThat(GlobalConfiguration.VECTOR_INDEX_MAX_CONCURRENT_REBUILDS.getValueAsInteger()).isEqualTo(1);
+  }
+
+  // Issue #4215: when the inactivity-rebuild timer fires on a small graph and tryAcquire() fails, the timer must
+  // re-arm itself so the index eventually rebuilds once the semaphore is free (not stuck with pending mutations).
+  @Test
+  @Tag("slow")
+  void skippedInactivityRebuildShouldRetryUntilServed() throws Exception {
+    final int timeoutMs = 300;
+    final int highThreshold = 10_000; // never reached via mutations
+
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, highThreshold);
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, timeoutMs);
+
+    // Two small-graph indexes on the same database (< ASYNC_REBUILD_MIN_GRAPH_SIZE = 1000 vectors each)
+    database.transaction(() -> {
+      database.getSchema().createVertexType("SmallA");
+      database.getSchema().getType("SmallA").createProperty("vector", Type.ARRAY_OF_FLOATS);
+      database.command("sql", """
+          CREATE INDEX ON SmallA (vector) LSM_VECTOR
+          METADATA {"dimensions": %d, "similarity": "EUCLIDEAN"}""".formatted(EMBEDDING_DIM));
+
+      database.getSchema().createVertexType("SmallB");
+      database.getSchema().getType("SmallB").createProperty("vector", Type.ARRAY_OF_FLOATS);
+      database.command("sql", """
+          CREATE INDEX ON SmallB (vector) LSM_VECTOR
+          METADATA {"dimensions": %d, "similarity": "EUCLIDEAN"}""".formatted(EMBEDDING_DIM));
+    });
+
+    final Random random = new Random(42);
+
+    // Insert into both indexes in one batch so their inactivity timers start at the same time
+    database.transaction(() -> {
+      for (int i = 0; i < 50; i++) {
+        database.command("sql", "INSERT INTO SmallA SET vector = ?", (Object) generateRandomVector(random));
+        database.command("sql", "INSERT INTO SmallB SET vector = ?", (Object) generateRandomVector(random));
+      }
+    });
+
+    final TypeIndex typeIndexA = (TypeIndex) database.getSchema().getIndexByName("SmallA[vector]");
+    final LSMVectorIndex indexA = (LSMVectorIndex) typeIndexA.getIndexesOnBuckets()[0];
+    final TypeIndex typeIndexB = (TypeIndex) database.getSchema().getIndexByName("SmallB[vector]");
+    final LSMVectorIndex indexB = (LSMVectorIndex) typeIndexB.getIndexesOnBuckets()[0];
+
+    assertThat(indexA.getStats().get("mutationsSinceRebuild")).isGreaterThan(0L);
+    assertThat(indexB.getStats().get("mutationsSinceRebuild")).isGreaterThan(0L);
+
+    // Wait generously: both timers fire near-simultaneously; one acquires REBUILD_SEMAPHORE and
+    // rebuilds, the other is skipped. Without the fix the skipped index stays stuck forever.
+    // With the fix it re-arms and clears its pending mutations in the next timer cycle.
+    Thread.sleep(timeoutMs * 15L);
+
+    assertThat(indexA.getStats().get("mutationsSinceRebuild"))
+        .as("SmallA must have rebuilt all pending mutations after the inactivity timer cycles")
+        .isEqualTo(0L);
+    assertThat(indexB.getStats().get("mutationsSinceRebuild"))
+        .as("SmallB must have rebuilt all pending mutations even if its first timer fire was skipped")
+        .isEqualTo(0L);
   }
 
   private float[] generateRandomVector(final Random random) {

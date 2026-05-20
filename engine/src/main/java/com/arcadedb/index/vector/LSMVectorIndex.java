@@ -4870,8 +4870,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 }
               } else {
                 LogManager.instance().log(this, Level.INFO,
-                    "Skipping inactivity rebuild for index %s: another rebuild is already in progress",
-                    indexName);
+                    "Skipping inactivity rebuild for index %s: another rebuild is already in progress, will retry in %d ms",
+                    indexName, timeoutMs);
+                scheduleInactivityRebuild();
               }
             }
           }
