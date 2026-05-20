@@ -23,6 +23,7 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.index.Index;
@@ -36,6 +37,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.logging.Level;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
@@ -757,8 +759,13 @@ public class RemoteSchema implements Schema {
           type = new RemoteEdgeType(remoteDatabase, record,
               record.hasProperty("bidirectional") ? (Boolean) record.getProperty("bidirectional") : true);
           break;
+        case "t": // timeseries: represented as document type for remote schema navigation
+          type = new RemoteDocumentType(remoteDatabase, record);
+          break;
         default:
-          throw new IllegalArgumentException("Unknown record type for " + typeName);
+          LogManager.instance().log(this, Level.WARNING, "Unknown schema type code '" + record.getProperty("type") + "' for type '"
+              + typeName + "' - treating as document type");
+          type = new RemoteDocumentType(remoteDatabase, record);
         }
       } else
         type.reload(record);
