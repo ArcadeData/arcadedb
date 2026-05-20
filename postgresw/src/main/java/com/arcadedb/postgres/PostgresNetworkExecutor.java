@@ -296,13 +296,13 @@ public class PostgresNetworkExecutor extends Thread {
             if (schemaColumns != null)
               portal.columns = schemaColumns;
           }
-          writeRowDescription(portal.columns);
+          writeRowDescription(portal.columns, portal.resultFormats);
           portal.rowDescriptionSent = true;
         } else
           writeNoData();
       } else {
         if (portal.columns != null) {
-          writeRowDescription(portal.columns);
+          writeRowDescription(portal.columns, portal.resultFormats);
           portal.rowDescriptionSent = true;
         }
       }
@@ -380,7 +380,7 @@ public class PostgresNetworkExecutor extends Thread {
                 if (schemaColumns != null)
                   portal.columns = schemaColumns;
               }
-              writeRowDescription(portal.columns);
+              writeRowDescription(portal.columns, portal.resultFormats);
               portal.rowDescriptionSent = true;
               profile.addSerializationNanos(System.nanoTime() - serStart);
             }
@@ -406,7 +406,7 @@ public class PostgresNetworkExecutor extends Thread {
           // we need to send it now before the data rows
           if (!portal.rowDescriptionSent) {
             portal.columns = dataRowColumns;
-            writeRowDescription(portal.columns);
+            writeRowDescription(portal.columns, portal.resultFormats);
             portal.rowDescriptionSent = true;
           }
 
@@ -422,7 +422,7 @@ public class PostgresNetworkExecutor extends Thread {
 
           // Use the columns that were sent in RowDescription for consistency
           final Map<String, PostgresType> columnsToUse = portal.columns != null ? portal.columns : dataRowColumns;
-          writeDataRows(portal.cachedResultSet, columnsToUse);
+          writeDataRows(portal.cachedResultSet, columnsToUse, portal.resultFormats);
           writeCommandComplete(portal.query, portal.cachedResultSet.size());
           profile.addSerializationNanos(System.nanoTime() - serStart);
         } else {
@@ -760,14 +760,13 @@ public class PostgresNetworkExecutor extends Thread {
       for (final String p : propertyNames) {
         if (!columns.containsKey(p)) {
           // Determine the PostgreSQL type based on the actual value.
-          // Arrays/collections use proper array type codes so clients can parse them. Scalars
-          // default to VARCHAR for consistent text serialization, with one exception: Long values
-          // are advertised as INT8 so Postgres clients (psycopg, JDBC, ...) deserialize them as
-          // native integers. Without this, numeric scalars round-trip through clients as strings
-          // and a {@code WHERE id(n) IN $array} parameter loop silently mismatches Long vs. String.
+          // Arrays/collections use proper array type codes; native scalar types (numeric, boolean,
+          // temporal) are advertised with their native OID so Postgres clients (psycopg, JDBC, ...)
+          // deserialize them as native values instead of strings. Without this, typed scalars
+          // round-trip through clients as strings and parameter comparisons fail silently.
           final Object value = row.getProperty(p);
           final PostgresType pgType = PostgresType.getTypeForValue(value);
-          if (pgType.isArrayType() || pgType == PostgresType.LONG)
+          if (pgType.isArrayType() || pgType.isNativeScalarType())
             columns.put(p, pgType);
           else
             columns.put(p, PostgresType.VARCHAR);
@@ -886,6 +885,10 @@ public class PostgresNetworkExecutor extends Thread {
   }
 
   private void writeRowDescription(final Map<String, PostgresType> columns) {
+    writeRowDescription(columns, null);
+  }
+
+  private void writeRowDescription(final Map<String, PostgresType> columns, final List<Integer> resultFormats) {
     if (columns == null)
       return;
 
@@ -896,6 +899,7 @@ public class PostgresNetworkExecutor extends Thread {
 //    final ByteBuffer bufferDescription = ByteBuffer.allocate(64 * 1024).order(ByteOrder.BIG_ENDIAN);
     final Binary bufferDescription = new Binary();
 
+    int colIndex = 0;
     for (final Map.Entry<String, PostgresType> col : columns.entrySet()) {
       final String columnName = col.getKey();
       final PostgresType columnType = col.getValue();
@@ -913,8 +917,10 @@ public class PostgresNetworkExecutor extends Thread {
       bufferDescription.putShort((short) columnType.size);
       // The type modifier (see pg_attribute.atttypmod). The meaning of the modifier is type-specific.
       bufferDescription.putInt(-1);
-      // The format code being used for the field. Currently will be zero (text) or one (binary). In a RowDescription returned from the statement variant of Describe, the format code is not yet known and will always be zero.
-      bufferDescription.putShort((short) 0);
+      // The format code being used for the field (0=text, 1=binary). Comes from the Bind message's
+      // result-column formats when present; defaults to 0 (text) otherwise. Types that lack a
+      // binary encoder (arrays) are forced to text so the announced format and DataRow agree.
+      bufferDescription.putShort(effectiveResultFormat(resultFormats, colIndex++, columnType));
     }
 
     bufferDescription.flip();
@@ -924,7 +930,39 @@ public class PostgresNetworkExecutor extends Thread {
     }, 'T', 4 + 2 + bufferDescription.limit());
   }
 
+  /**
+   * Returns the wire format code (0=text, 1=binary) requested for the column at {@code colIndex}.
+   * Mirrors the Postgres protocol rules for the {@code formats} list in a Bind message:
+   * empty list -> text, single entry -> applies to all columns, otherwise per-column.
+   */
+  private static short resolveResultFormat(final List<Integer> resultFormats, final int colIndex) {
+    if (resultFormats == null || resultFormats.isEmpty())
+      return 0;
+    if (resultFormats.size() == 1)
+      return resultFormats.get(0).shortValue();
+    if (colIndex < resultFormats.size())
+      return resultFormats.get(colIndex).shortValue();
+    return 0;
+  }
+
+  /**
+   * Same as {@link #resolveResultFormat} but forces text (0) for columns whose type lacks a
+   * binary encoder. Used by both RowDescription and DataRow so the announced format code and the
+   * written bytes always agree, even when the client requested binary.
+   */
+  private static short effectiveResultFormat(final List<Integer> resultFormats, final int colIndex,
+      final PostgresType columnType) {
+    if (!columnType.hasBinaryEncoding())
+      return 0;
+    return resolveResultFormat(resultFormats, colIndex);
+  }
+
   private void writeDataRows(final List<Result> resultSet, final Map<String, PostgresType> columns) throws IOException {
+    writeDataRows(resultSet, columns, null);
+  }
+
+  private void writeDataRows(final List<Result> resultSet, final Map<String, PostgresType> columns,
+      final List<Integer> resultFormats) throws IOException {
     if (resultSet.isEmpty())
       return;
 
@@ -934,6 +972,7 @@ public class PostgresNetworkExecutor extends Thread {
     for (final Result row : resultSet) {
       bufferValues.putShort((short) columns.size()); // Int16 The number of column values that follow (possibly zero).
 
+      int colIndex = 0;
       for (final Map.Entry<String, PostgresType> postgresTypeEntry : columns.entrySet()) {
         final String propertyName = postgresTypeEntry.getKey();
 
@@ -982,7 +1021,11 @@ public class PostgresNetworkExecutor extends Thread {
           }
         };
 
-        postgresTypeEntry.getValue().serializeAsText(postgresTypeEntry.getValue(), bufferValues, value);
+        final PostgresType columnType = postgresTypeEntry.getValue();
+        if (effectiveResultFormat(resultFormats, colIndex++, columnType) == 1)
+          columnType.serializeAsBinary(columnType, bufferValues, value);
+        else
+          columnType.serializeAsText(columnType, bufferValues, value);
       }
 
       bufferValues.flip();
