@@ -267,11 +267,17 @@ public enum PostgresType {
       // Handle Java arrays
       return switch (val) {
         case int[] ints -> PostgresType.ARRAY_INT;
+        case Integer[] ints -> PostgresType.ARRAY_INT;
         case long[] longs -> PostgresType.ARRAY_LONG;
+        case Long[] longs -> PostgresType.ARRAY_LONG;
         case double[] doubles -> PostgresType.ARRAY_DOUBLE;
+        case Double[] doubles -> PostgresType.ARRAY_DOUBLE;
         case float[] floats -> PostgresType.ARRAY_REAL;
+        case Float[] floats -> PostgresType.ARRAY_REAL;
         case boolean[] booleans -> PostgresType.ARRAY_BOOLEAN;
+        case Boolean[] booleans -> PostgresType.ARRAY_BOOLEAN;
         case char[] chars -> PostgresType.ARRAY_CHAR;
+        case Character[] chars -> PostgresType.ARRAY_CHAR;
         case String[] strings -> PostgresType.ARRAY_TEXT;
         default -> throw new IllegalStateException("Unexpected value: " + val);
       };
