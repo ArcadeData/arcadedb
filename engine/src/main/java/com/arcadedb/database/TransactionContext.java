@@ -902,13 +902,15 @@ public class TransactionContext implements Transaction {
     // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX
     for (Integer f : locked)
       if (!database.getFileManager().existsFile(f)) {
-        // THE FILE HAS BEEN REMOVED, CHECK IF A NEW COMPACTION WAS EXECUTED
-        final Integer migratedFileIs = ((LocalSchema) database.getSchema()).getMigratedFileId(f);
-        if (migratedFileIs == null) {
-          database.getTransactionManager().unlockFilesInOrder(locked, getRequester());
-          rollback();
-          throw new ConcurrentModificationException("File with id '" + f + "' has been removed");
+        database.getTransactionManager().unlockFilesInOrder(locked, getRequester());
+        rollback();
+        final Integer migrated = ((LocalSchema) database.getSchema()).getMigratedFileId(f);
+        if (migrated != null) {
+          LogManager.instance().log(this, Level.FINE, "Found upgraded file '%d' to '%d' during transaction commit", null, f, migrated);
+          throw new ConcurrentModificationException(
+              "Error on commit transaction: file '" + f + "' has been migrated to '" + migrated + "' (likely by an index compaction). Please retry the operation.");
         }
+        throw new ConcurrentModificationException("File with id '" + f + "' has been removed");
       }
 
     return locked;
