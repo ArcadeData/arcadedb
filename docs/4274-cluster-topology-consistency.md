@@ -29,3 +29,27 @@ node's `?mode=cluster` endpoint and asserts:
 ## Test Results
 
 All 6 tests in `RaftHTTP2ServersIT` pass (including the new regression test).
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4280
+
+## Review Cycles
+
+### Cycle 1 - 28c5e7c61
+
+Gemini-code-assist reviewed with one actionable comment:
+
+> `getStats()` has the same `localPeerId` exclusion bug in its `network.replicas` list.
+
+Applied: same `leaderId != null ? leaderId : localPeerId` pattern to `getStats()`.
+Pushed follow-up commit `8edad8077`. All 6 tests pass.
+
+### Cycle 2
+
+Per repo policy, gemini-code-assist does not re-review follow-up commits.
+No claude bot on this repo. Loop exited with **timeout** state - all known feedback addressed.
+
+## Final State
+
+`timeout` - all review items resolved, no bot re-review available.
