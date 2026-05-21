@@ -200,6 +200,8 @@ public class RemoteHttpComponent extends RWLockContext {
     return stats.toMap();
   }
 
+  // Routing for query/command traffic. RemoteDatabase.begin/commit/rollback build
+  // their URLs through getUrl() instead - any STICKY routing change must update both paths.
   Object httpCommand(final String method,
       final String extendedURL,
       final String operation,
@@ -548,6 +550,9 @@ public class RemoteHttpComponent extends RWLockContext {
     return leaderServer != null;
   }
 
+  // Routing for raw httpClient.send() callers (RemoteDatabase.begin/commit/rollback).
+  // Regular query/command traffic flows through httpCommand() - any STICKY routing
+  // change must update both paths.
   protected String getUrl(final String command) {
     final String host;
     final int port;
