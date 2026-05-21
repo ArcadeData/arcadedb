@@ -904,7 +904,7 @@ public class TransactionContext implements Transaction {
       if (!database.getFileManager().existsFile(f)) {
         database.getTransactionManager().unlockFilesInOrder(locked, getRequester());
         rollback();
-        final Integer migrated = ((LocalSchema) database.getSchema()).getMigratedFileId(f);
+        final Integer migrated = database.getSchema().getEmbedded().getMigratedFileId(f);
         if (migrated != null) {
           LogManager.instance().log(this, Level.FINE, "Found upgraded file '%d' to '%d' during transaction commit", null, f, migrated);
           throw new ConcurrentModificationException(
