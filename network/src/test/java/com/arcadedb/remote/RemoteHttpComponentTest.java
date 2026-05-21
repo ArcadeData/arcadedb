@@ -29,6 +29,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -513,5 +514,41 @@ class RemoteHttpComponentTest {
     final Exception result = component.manageException(response, "test");
 
     assertThat(result).isInstanceOf(ServerIsNotTheLeaderException.class);
+  }
+
+  // STICKY strategy URL-routing tests — regression for issue #4273
+
+  @Test
+  void stickyStrategyUrlUsesPinnedServer() {
+    component.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
+    component.setStickyTransactionServer(new Pair<>("leader-host", 2480));
+
+    assertThat(component.getUrl("command")).isEqualTo("http://leader-host:2480/api/v1/command");
+  }
+
+  @Test
+  void stickyStrategyUrlUsesCurrentServerWhenNotPinned() {
+    component.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
+    // No stickyTransactionServer set — falls back to currentServer (LB hostname)
+
+    assertThat(component.getUrl("command")).isEqualTo("http://localhost:2480/api/v1/command");
+  }
+
+  @Test
+  void stickyStrategyUrlRevertsAfterClearingPin() {
+    component.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
+    component.setStickyTransactionServer(new Pair<>("leader-host", 2480));
+    assertThat(component.getUrl("command")).contains("leader-host");
+
+    component.setStickyTransactionServer(null);
+    assertThat(component.getUrl("command")).isEqualTo("http://localhost:2480/api/v1/command");
+  }
+
+  @Test
+  void roundRobinStrategyIgnoresStickyServer() {
+    component.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.ROUND_ROBIN);
+    component.setStickyTransactionServer(new Pair<>("leader-host", 2480));
+
+    assertThat(component.getUrl("command")).isEqualTo("http://localhost:2480/api/v1/command");
   }
 }
