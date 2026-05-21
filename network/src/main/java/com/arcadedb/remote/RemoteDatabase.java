@@ -323,11 +323,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     }
   }
 
-  /**
-   * Resolves the concrete cluster-member address used to pin a STICKY transaction.
-   * Prefers the leader (already resolved from cluster topology) over the configured
-   * server hostname, which may be a load-balancer that fans out across pods.
-   */
+  // Prefer the leader (concrete pod) over currentServer (typically the LB hostname).
   Pair<String, Integer> resolveStickyTargetServer() {
     final Pair<String, Integer> leader = getLeaderServer();
     return leader != null ? leader : new Pair<>(currentServer, currentPort);

@@ -27,6 +27,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.net.ServerSocket;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -242,10 +243,16 @@ class RemoteDatabaseTest {
   }
 
   @Test
-  void stickyStrategyClearsPinWhenBeginFails() {
-    // Point at a closed port on localhost so begin()'s HTTP call fails fast with ConnectException.
-    // The finally block in begin() must release the sticky pin because no session was established.
-    final TestableRemoteDatabase failDb = new TestableRemoteDatabase("127.0.0.1", 65530, "testdb", "root", "test");
+  void stickyStrategyClearsPinWhenBeginFails() throws Exception {
+    // Bind a ServerSocket on an OS-assigned port, immediately close it: connect attempts to
+    // that port will fail fast with ConnectException. The finally block in begin() must
+    // release the sticky pin because no session was established.
+    final int closedPort;
+    try (final ServerSocket probe = new ServerSocket(0)) {
+      closedPort = probe.getLocalPort();
+    }
+
+    final TestableRemoteDatabase failDb = new TestableRemoteDatabase("127.0.0.1", closedPort, "testdb", "root", "test");
     try {
       failDb.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
 
@@ -253,7 +260,7 @@ class RemoteDatabaseTest {
 
       // Pin released - URL falls back to the configured host, not a stale pinned address
       assertThat(failDb.isTransactionActive()).isFalse();
-      assertThat(failDb.getUrl("command")).isEqualTo("http://127.0.0.1:65530/api/v1/command");
+      assertThat(failDb.getUrl("command")).isEqualTo("http://127.0.0.1:" + closedPort + "/api/v1/command");
     } finally {
       failDb.close();
     }

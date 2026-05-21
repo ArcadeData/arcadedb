@@ -188,6 +188,10 @@ public class RemoteHttpComponent extends RWLockContext {
     this.stickyTransactionServer = server;
   }
 
+  private Pair<String, Integer> getStickyPin() {
+    return connectionStrategy == CONNECTION_STRATEGY.STICKY ? stickyTransactionServer : null;
+  }
+
   Pair<String, Integer> getLeaderServer() {
     return leaderServer;
   }
@@ -214,7 +218,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
     Exception lastException = null;
 
-    final Pair<String, Integer> stickyPin = connectionStrategy == CONNECTION_STRATEGY.STICKY ? stickyTransactionServer : null;
+    final Pair<String, Integer> stickyPin = getStickyPin();
     final boolean stickyPinned = stickyPin != null;
 
     int maxRetry =
@@ -554,16 +558,9 @@ public class RemoteHttpComponent extends RWLockContext {
   // Regular query/command traffic flows through httpCommand() - any STICKY routing
   // change must update both paths.
   protected String getUrl(final String command) {
-    final String host;
-    final int port;
-    final Pair<String, Integer> pin = connectionStrategy == CONNECTION_STRATEGY.STICKY ? stickyTransactionServer : null;
-    if (pin != null) {
-      host = pin.getFirst();
-      port = pin.getSecond();
-    } else {
-      host = currentServer;
-      port = currentPort;
-    }
+    final Pair<String, Integer> pin = getStickyPin();
+    final String host = pin != null ? pin.getFirst() : currentServer;
+    final int port = pin != null ? pin.getSecond() : currentPort;
     return protocol + "://" + host + ":" + port + "/api/v" + apiVersion + "/" + command;
   }
 
