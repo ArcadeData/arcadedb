@@ -664,9 +664,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         stats.put("replicaLags", lags);
     }
 
+    final RaftPeerId statsLeaderId = getLeaderId();
+    final RaftPeerId statsExcludeId = statsLeaderId != null ? statsLeaderId : localPeerId;
     final List<Map<String, String>> replicas = new ArrayList<>();
     for (final RaftPeer peer : raftGroup.getPeers()) {
-      if (!peer.getId().equals(localPeerId)) {
+      if (!peer.getId().equals(statsExcludeId)) {
         final Map<String, String> replicaInfo = new HashMap<>();
         replicaInfo.put("id", peer.getId().toString());
         replicaInfo.put("address", peer.getAddress().toString());
