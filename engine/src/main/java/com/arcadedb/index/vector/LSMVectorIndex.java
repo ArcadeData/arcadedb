@@ -4839,10 +4839,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
     if (mutationsSinceSerialize.get() <= 0)
       return; // Nothing to rebuild
 
-    // Cancel any previously scheduled task (reset on new mutation)
+    // Cancel any previously scheduled task (reset on new mutation) and purge the cancelled
+    // entry from the Timer's queue so a high write rate does not let cancelled tasks pile up.
     final java.util.TimerTask existing = inactivityRebuildTask;
-    if (existing != null)
+    if (existing != null) {
       existing.cancel();
+      if (inactivityTimer != null)
+        inactivityTimer.purge();
+    }
 
     final java.util.TimerTask task = new java.util.TimerTask() {
       @Override
@@ -4864,19 +4868,17 @@ public class LSMVectorIndex implements Index, IndexInternal {
             // Use tryAcquire to avoid blocking the timer thread indefinitely.
             // If another rebuild holds the permit, re-arm the timer so this index
             // retries at the next interval rather than staying stuck with pending mutations.
-            if (mutationsSinceSerialize.get() > 0) {
-              if (REBUILD_SEMAPHORE.tryAcquire()) {
-                try {
-                  buildGraphFromScratch();
-                } finally {
-                  REBUILD_SEMAPHORE.release();
-                }
-              } else {
-                LogManager.instance().log(this, Level.FINE,
-                    "Skipping inactivity rebuild for index %s: another rebuild is already in progress, will retry in %d ms",
-                    indexName, timeoutMs);
-                scheduleInactivityRebuild();
+            if (REBUILD_SEMAPHORE.tryAcquire()) {
+              try {
+                buildGraphFromScratch();
+              } finally {
+                REBUILD_SEMAPHORE.release();
               }
+            } else {
+              LogManager.instance().log(this, Level.FINE,
+                  "Skipping inactivity rebuild for index %s: another rebuild is already in progress, will retry in %d ms",
+                  indexName, timeoutMs);
+              scheduleInactivityRebuild();
             }
           }
         } catch (final Exception e) {

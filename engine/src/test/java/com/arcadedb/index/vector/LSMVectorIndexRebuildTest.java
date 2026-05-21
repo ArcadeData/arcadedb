@@ -29,9 +29,11 @@ import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -778,11 +780,13 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     assertThat(GlobalConfiguration.VECTOR_INDEX_MAX_CONCURRENT_REBUILDS.getValueAsInteger()).isEqualTo(1);
   }
 
-  // Issue #4215: when the inactivity-rebuild timer fires on a small graph and tryAcquire() fails, the timer must
-  // re-arm itself so the index eventually rebuilds once the semaphore is free (not stuck with pending mutations).
+  // When two small-graph vector indexes share the single-permit rebuild semaphore, the loser of
+  // tryAcquire() must re-arm its inactivity timer so it eventually rebuilds once the winner
+  // releases the permit. Without the re-arm the loser is stuck with pending mutations
+  // indefinitely (no further writes = nothing else to re-arm the timer).
   @Test
   @Tag("slow")
-  void skippedInactivityRebuildShouldRetryUntilServed() throws Exception {
+  void skippedInactivityRebuildShouldRetryUntilServed() {
     final int timeoutMs = 300;
     final int highThreshold = 10_000; // never reached via mutations
 
@@ -822,17 +826,13 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     assertThat(indexA.getStats().get("mutationsSinceRebuild")).isGreaterThan(0L);
     assertThat(indexB.getStats().get("mutationsSinceRebuild")).isGreaterThan(0L);
 
-    // Wait generously: both timers fire near-simultaneously; one acquires REBUILD_SEMAPHORE and
-    // rebuilds, the other is skipped. Without the fix the skipped index stays stuck forever.
-    // With the fix it re-arms and clears its pending mutations in the next timer cycle.
-    Thread.sleep(timeoutMs * 15L);
-
-    assertThat(indexA.getStats().get("mutationsSinceRebuild"))
-        .as("SmallA must have rebuilt all pending mutations after the inactivity timer cycles")
-        .isEqualTo(0L);
-    assertThat(indexB.getStats().get("mutationsSinceRebuild"))
-        .as("SmallB must have rebuilt all pending mutations even if its first timer fire was skipped")
-        .isEqualTo(0L);
+    Awaitility.await("both small-graph indexes drain pending mutations after at least one skip cycle")
+        .atMost(Duration.ofMillis(timeoutMs * 25L))
+        .pollInterval(Duration.ofMillis(50))
+        .untilAsserted(() -> {
+          assertThat(indexA.getStats().get("mutationsSinceRebuild")).isEqualTo(0L);
+          assertThat(indexB.getStats().get("mutationsSinceRebuild")).isEqualTo(0L);
+        });
   }
 
   private float[] generateRandomVector(final Random random) {
