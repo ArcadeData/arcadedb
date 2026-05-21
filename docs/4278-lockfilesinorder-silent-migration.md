@@ -45,3 +45,16 @@ Test approach:
 - Fixes potential silent data loss / undetected write serialization failure
 - Callers using `database.transaction()` are unaffected (the lambda retries on ConcurrentModificationException automatically)
 - Direct `begin()/commit()` callers now receive the expected retryable exception
+
+## PR
+
+- https://github.com/ArcadeData/arcadedb/pull/4279
+
+## Review cycles
+
+- **Cycle 1** (HEAD `6ae4f5fd2`): gemini-code-assist COMMENTED with one inline suggestion - use `database.getSchema().getEmbedded()` instead of `((LocalSchema) database.getSchema())` for consistency with lines 143 and 665. Applied verbatim. claude bot did not respond (not configured on this repository - confirmed by reviewing PRs #4270, #4272, #4277 which also only have gemini reviews).
+- **Cycle 2** (HEAD `3b0f5d1b9`): no bot reviews received within 15 min. Gemini does not auto-re-review small follow-up commits; claude bot is not configured. Loop timed out.
+
+## Final state
+
+`timeout` - cycle 2 received no bot reviews within the polling window. Merge is the developer's responsibility.
