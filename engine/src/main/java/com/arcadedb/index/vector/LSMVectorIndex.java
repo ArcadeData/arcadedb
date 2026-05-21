@@ -98,6 +98,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Timer;
+import java.util.TimerTask;
 import java.util.concurrent.ForkJoinPool;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -207,8 +209,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   // Inactivity rebuild timer (issue #3737): when mutations exist but haven't reached the threshold,
   // a timer triggers an async rebuild after a period of inactivity.
-  private volatile java.util.TimerTask inactivityRebuildTask;
-  private volatile java.util.Timer     inactivityTimer;
+  private volatile TimerTask inactivityRebuildTask;
+  private volatile Timer     inactivityTimer;
 
   // Compaction support
   private final    AtomicInteger           currentMutablePages;
@@ -4844,14 +4846,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
     // Cancel any previously scheduled task (reset on new mutation) and purge the cancelled
     // entry from the Timer's queue so a high write rate does not let cancelled tasks pile up.
-    final java.util.TimerTask existing = inactivityRebuildTask;
+    final TimerTask existing = inactivityRebuildTask;
     if (existing != null) {
       existing.cancel();
       if (inactivityTimer != null)
         inactivityTimer.purge();
     }
 
-    final java.util.TimerTask task = new java.util.TimerTask() {
+    final TimerTask task = new TimerTask() {
       @Override
       public void run() {
         // Double-check: only rebuild if there are still pending mutations
@@ -4894,7 +4896,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     inactivityRebuildTask = task;
 
     if (inactivityTimer == null)
-      inactivityTimer = new java.util.Timer("VectorIndex-InactivityTimer-" + indexName, true);
+      inactivityTimer = new Timer("VectorIndex-InactivityTimer-" + indexName, true);
     inactivityTimer.schedule(task, timeoutMs);
   }
 
@@ -4902,12 +4904,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
    * Cancel the inactivity rebuild timer if one is scheduled.
    */
   private synchronized void cancelInactivityRebuildTimer() {
-    final java.util.TimerTask task = inactivityRebuildTask;
+    final TimerTask task = inactivityRebuildTask;
     if (task != null) {
       task.cancel();
       inactivityRebuildTask = null;
     }
-    final java.util.Timer timer = inactivityTimer;
+    final Timer timer = inactivityTimer;
     if (timer != null) {
       timer.cancel();
       inactivityTimer = null;
