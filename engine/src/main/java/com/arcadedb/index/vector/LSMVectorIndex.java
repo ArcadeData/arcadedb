@@ -4872,7 +4872,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   REBUILD_SEMAPHORE.release();
                 }
               } else {
-                LogManager.instance().log(this, Level.INFO,
+                LogManager.instance().log(this, Level.FINE,
                     "Skipping inactivity rebuild for index %s: another rebuild is already in progress, will retry in %d ms",
                     indexName, timeoutMs);
                 scheduleInactivityRebuild();
