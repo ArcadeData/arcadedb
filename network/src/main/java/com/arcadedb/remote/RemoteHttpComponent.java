@@ -81,6 +81,7 @@ public class RemoteHttpComponent extends RWLockContext {
   private         int                         timeout;
   protected       String                      currentServer;
   protected       int                         currentPort;
+  private         Pair<String, Integer>       stickyTransactionServer;
 
   public enum CONNECTION_STRATEGY {
     STICKY, ROUND_ROBIN, FIXED
@@ -183,6 +184,18 @@ public class RemoteHttpComponent extends RWLockContext {
     this.connectionStrategy = connectionStrategy;
   }
 
+  protected void setStickyTransactionServer(final Pair<String, Integer> server) {
+    this.stickyTransactionServer = server;
+  }
+
+  private Pair<String, Integer> getStickyPin() {
+    return connectionStrategy == CONNECTION_STRATEGY.STICKY ? stickyTransactionServer : null;
+  }
+
+  Pair<String, Integer> getLeaderServer() {
+    return leaderServer;
+  }
+
   List<Pair<String, Integer>> getReplicaServerList() {
     return replicaServerList;
   }
@@ -191,6 +204,8 @@ public class RemoteHttpComponent extends RWLockContext {
     return stats.toMap();
   }
 
+  // Routing for query/command traffic. RemoteDatabase.begin/commit/rollback build
+  // their URLs through getUrl() instead - any STICKY routing change must update both paths.
   Object httpCommand(final String method,
       final String extendedURL,
       final String operation,
@@ -203,8 +218,11 @@ public class RemoteHttpComponent extends RWLockContext {
 
     Exception lastException = null;
 
+    final Pair<String, Integer> stickyPin = getStickyPin();
+    final boolean stickyPinned = stickyPin != null;
+
     int maxRetry =
-        leaderIsPreferable || connectionStrategy == CONNECTION_STRATEGY.FIXED ?
+        leaderIsPreferable || connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned ?
             sameServerErrorRetries :
             haServerErrorRetries == 0 ? getReplicaServerList().size() + 1 : haServerErrorRetries;
     if (maxRetry < 1)
@@ -213,6 +231,8 @@ public class RemoteHttpComponent extends RWLockContext {
     Pair<String, Integer> connectToServer;
     if (connectionStrategy == CONNECTION_STRATEGY.FIXED)
       connectToServer = new Pair<>(originalServer, originalPort);
+    else if (stickyPinned)
+      connectToServer = stickyPin;
     else
       connectToServer = leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
 
@@ -316,7 +336,7 @@ public class RemoteHttpComponent extends RWLockContext {
         if (!autoReconnect || retry + 1 >= maxRetry)
           break;
 
-        if (connectionStrategy == CONNECTION_STRATEGY.FIXED) {
+        if (connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned) {
           LogManager.instance()
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
                   connectToServer.getFirst(), connectToServer.getSecond());
@@ -534,8 +554,14 @@ public class RemoteHttpComponent extends RWLockContext {
     return leaderServer != null;
   }
 
+  // Routing for raw httpClient.send() callers (RemoteDatabase.begin/commit/rollback).
+  // Regular query/command traffic flows through httpCommand() - any STICKY routing
+  // change must update both paths.
   protected String getUrl(final String command) {
-    return protocol + "://" + currentServer + ":" + currentPort + "/api/v" + apiVersion + "/" + command;
+    final Pair<String, Integer> pin = getStickyPin();
+    final String host = pin != null ? pin.getFirst() : currentServer;
+    final int port = pin != null ? pin.getSecond() : currentPort;
+    return protocol + "://" + host + ":" + port + "/api/v" + apiVersion + "/" + command;
   }
 
   String getRequestPayload(final JSONObject jsonRequest) {

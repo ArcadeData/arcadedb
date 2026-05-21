@@ -21,10 +21,13 @@ package com.arcadedb.remote;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.exception.TransactionException;
+import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.net.ServerSocket;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -189,5 +192,95 @@ class RemoteDatabaseTest {
   @Test
   void getSerializer() {
     assertThat(database.getSerializer()).isNotNull();
+  }
+
+  // STICKY strategy session-pinning tests — regression for issue #4273
+
+  @Test
+  void stickyStrategyUrlUsesPinnedServerDuringActiveSession() {
+    database.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
+    database.setStickyTransactionServer(new Pair<>("leader-pod", 2480));
+    database.setSessionId("test-session-id");
+
+    assertThat(database.getUrl("command")).isEqualTo("http://leader-pod:2480/api/v1/command");
+    assertThat(database.isTransactionActive()).isTrue();
+  }
+
+  @Test
+  void stickyStrategySessionClearClearsStickyServer() {
+    database.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
+    database.setStickyTransactionServer(new Pair<>("leader-pod", 2480));
+    database.setSessionId("test-session-id");
+    assertThat(database.getUrl("command")).contains("leader-pod");
+
+    // Clearing the session must also release the sticky pin
+    database.setSessionId(null);
+
+    assertThat(database.getUrl("command")).isEqualTo("http://localhost:2480/api/v1/command");
+    assertThat(database.isTransactionActive()).isFalse();
+  }
+
+  @Test
+  void resolveStickyTargetServerFallsBackToCurrentServerWhenNoLeader() {
+    // No leader resolved by the testable cluster-config override - falls back to currentServer/currentPort
+    final Pair<String, Integer> target = database.resolveStickyTargetServer();
+    assertThat(target.getFirst()).isEqualTo("localhost");
+    assertThat(target.getSecond()).isEqualTo(2480);
+  }
+
+  @Test
+  void resolveStickyTargetServerPrefersLeader() {
+    // Simulate cluster-configuration discovery placing a concrete leader pod address;
+    // begin() will pin to this leader rather than the load-balancer hostname.
+    final Pair<String, Integer> leader = new Pair<>("leader-pod", 2481);
+    final TestableRemoteDatabaseWithLeader db = new TestableRemoteDatabaseWithLeader(
+        "localhost", 2480, "testdb", "root", "test", leader);
+    try {
+      assertThat(db.resolveStickyTargetServer()).isEqualTo(leader);
+    } finally {
+      db.close();
+    }
+  }
+
+  @Test
+  void stickyStrategyClearsPinWhenBeginFails() throws Exception {
+    // Bind a ServerSocket on an OS-assigned port, immediately close it: connect attempts to
+    // that port will fail fast with ConnectException. The finally block in begin() must
+    // release the sticky pin because no session was established.
+    final int closedPort;
+    try (final ServerSocket probe = new ServerSocket(0)) {
+      closedPort = probe.getLocalPort();
+    }
+
+    final TestableRemoteDatabase failDb = new TestableRemoteDatabase("127.0.0.1", closedPort, "testdb", "root", "test");
+    try {
+      failDb.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
+
+      assertThatThrownBy(failDb::begin).isInstanceOf(TransactionException.class);
+
+      // Pin released - URL falls back to the configured host, not a stale pinned address
+      assertThat(failDb.isTransactionActive()).isFalse();
+      assertThat(failDb.getUrl("command")).isEqualTo("http://127.0.0.1:" + closedPort + "/api/v1/command");
+    } finally {
+      failDb.close();
+    }
+  }
+
+  /**
+   * Testable subclass that injects a fake leader address via the cluster-configuration hook.
+   */
+  static class TestableRemoteDatabaseWithLeader extends TestableRemoteDatabase {
+    private final Pair<String, Integer> fakeLeader;
+
+    TestableRemoteDatabaseWithLeader(final String server, final int port, final String databaseName,
+        final String userName, final String userPassword, final Pair<String, Integer> fakeLeader) {
+      super(server, port, databaseName, userName, userPassword);
+      this.fakeLeader = fakeLeader;
+    }
+
+    @Override
+    Pair<String, Integer> getLeaderServer() {
+      return fakeLeader;
+    }
   }
 }
