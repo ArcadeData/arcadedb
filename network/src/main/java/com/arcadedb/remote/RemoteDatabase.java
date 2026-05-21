@@ -45,6 +45,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.Pair;
 
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -293,6 +294,14 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (getSessionId() != null)
       throw new TransactionException("Transaction already begun");
 
+    // For STICKY strategy: pin to a concrete cluster member before the HTTP call so
+    // that begin, command, and commit all reach the same physical node. Prefer the
+    // leader (already resolved from the cluster topology) to avoid an extra LB hop.
+    if (getConnectionStrategy() == CONNECTION_STRATEGY.STICKY) {
+      final Pair<String, Integer> leader = getLeaderServer();
+      setStickyTransactionServer(leader != null ? leader : new Pair<>(currentServer, currentPort));
+    }
+
     try {
       final JSONObject jsonRequest = new JSONObject().put("isolationLevel", isolationLevel);
       String payload = getRequestPayload(jsonRequest);
@@ -309,6 +318,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
     } catch (final Exception e) {
+      setStickyTransactionServer(null);
       throw new TransactionException("Error on transaction begin", e);
     }
   }
@@ -609,8 +619,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     return sessionId;
   }
 
-  protected void setSessionId(String sessionId) {
+  protected void setSessionId(final String sessionId) {
     this.sessionId = sessionId;
+    if (sessionId == null)
+      setStickyTransactionServer(null);
   }
 
   HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {

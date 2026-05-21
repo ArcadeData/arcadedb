@@ -21,6 +21,7 @@ package com.arcadedb.remote;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DatabaseIsClosedException;
+import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -189,5 +190,31 @@ class RemoteDatabaseTest {
   @Test
   void getSerializer() {
     assertThat(database.getSerializer()).isNotNull();
+  }
+
+  // STICKY strategy session-pinning tests — regression for issue #4273
+
+  @Test
+  void stickyStrategyUrlUsesPinnedServerDuringActiveSession() {
+    database.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
+    database.setStickyTransactionServer(new Pair<>("leader-pod", 2480));
+    database.setSessionId("test-session-id");
+
+    assertThat(database.getUrl("command")).isEqualTo("http://leader-pod:2480/api/v1/command");
+    assertThat(database.isTransactionActive()).isTrue();
+  }
+
+  @Test
+  void stickyStrategySessionClearClearsStickyServer() {
+    database.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.STICKY);
+    database.setStickyTransactionServer(new Pair<>("leader-pod", 2480));
+    database.setSessionId("test-session-id");
+    assertThat(database.getUrl("command")).contains("leader-pod");
+
+    // Clearing the session must also release the sticky pin
+    database.setSessionId(null);
+
+    assertThat(database.getUrl("command")).isEqualTo("http://localhost:2480/api/v1/command");
+    assertThat(database.isTransactionActive()).isFalse();
   }
 }
