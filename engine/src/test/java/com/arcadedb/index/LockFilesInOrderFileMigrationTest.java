@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for #4278: TransactionContext.lockFilesInOrder must throw ConcurrentModificationException
@@ -117,19 +118,9 @@ class LockFilesInOrderFileMigrationTest extends TestHelper {
     // Commit the transaction: lockFilesInOrder will detect the migration.
     // Before the fix it silently continued (or threw a generic "file removed" later from
     // checkPageVersion). After the fix it throws immediately with a migration-specific message.
-    ConcurrentModificationException thrown = null;
-    try {
-      database.commit();
-    } catch (final ConcurrentModificationException e) {
-      thrown = e;
-    }
-
-    assertThat(thrown)
-        .as("ConcurrentModificationException must be thrown when the mutable file was migrated by compaction")
-        .isNotNull();
-
-    assertThat(thrown.getMessage())
-        .as("Exception message must identify the file migration so callers can retry")
-        .contains("migrated");
+    assertThatThrownBy(database::commit)
+        .as("commit must throw ConcurrentModificationException with a migration-specific message when the mutable file was migrated by compaction")
+        .isInstanceOf(ConcurrentModificationException.class)
+        .hasMessageContaining("migrated");
   }
 }

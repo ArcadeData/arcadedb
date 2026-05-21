@@ -906,7 +906,7 @@ public class TransactionContext implements Transaction {
         rollback();
         final Integer migrated = database.getSchema().getEmbedded().getMigratedFileId(f);
         if (migrated != null) {
-          LogManager.instance().log(this, Level.FINE, "Found upgraded file '%d' to '%d' during transaction commit", null, f, migrated);
+          LogManager.instance().log(this, Level.FINE, "Found upgraded file '%d' to '%d' during transaction commit", f, migrated);
           throw new ConcurrentModificationException(
               "Error on commit transaction: file '" + f + "' has been migrated to '" + migrated + "' (likely by an index compaction). Please retry the operation.");
         }
