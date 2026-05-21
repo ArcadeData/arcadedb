@@ -4082,7 +4082,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public void close() {
-    // Cancel inactivity rebuild timer (issue #3737)
+    // Invalidate first so a concurrent timer thread that wins the monitor after
+    // cancelInactivityRebuildTimer() nulls inactivityTimer cannot bypass the isValid()
+    // guard and resurrect a fresh Timer.
+    valid = false;
     cancelInactivityRebuildTimer();
 
     // Shut down the dedicated graph build pool to cancel any in-progress build operations.

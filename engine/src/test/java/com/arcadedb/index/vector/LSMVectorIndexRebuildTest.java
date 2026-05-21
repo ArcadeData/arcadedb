@@ -826,6 +826,8 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     assertThat(indexA.getStats().get("mutationsSinceRebuild")).isGreaterThan(0L);
     assertThat(indexB.getStats().get("mutationsSinceRebuild")).isGreaterThan(0L);
 
+    // 25x = first timer cycle + retry cycle for the skipped index + two synchronous rebuilds
+    // (well under 1s each at 50 vectors) + slack for GC pauses on loaded CI runners.
     Awaitility.await("both small-graph indexes drain pending mutations after at least one skip cycle")
         .atMost(Duration.ofMillis(timeoutMs * 25L))
         .pollInterval(Duration.ofMillis(50))
