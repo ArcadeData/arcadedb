@@ -212,7 +212,8 @@ public class RemoteHttpComponent extends RWLockContext {
 
     Exception lastException = null;
 
-    final boolean stickyPinned = connectionStrategy == CONNECTION_STRATEGY.STICKY && stickyTransactionServer != null;
+    final Pair<String, Integer> stickyPin = connectionStrategy == CONNECTION_STRATEGY.STICKY ? stickyTransactionServer : null;
+    final boolean stickyPinned = stickyPin != null;
 
     int maxRetry =
         leaderIsPreferable || connectionStrategy == CONNECTION_STRATEGY.FIXED || stickyPinned ?
@@ -225,7 +226,7 @@ public class RemoteHttpComponent extends RWLockContext {
     if (connectionStrategy == CONNECTION_STRATEGY.FIXED)
       connectToServer = new Pair<>(originalServer, originalPort);
     else if (stickyPinned)
-      connectToServer = stickyTransactionServer;
+      connectToServer = stickyPin;
     else
       connectToServer = leaderIsPreferable && leaderServer != null ? leaderServer : new Pair<>(currentServer, currentPort);
 
@@ -548,10 +549,17 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   protected String getUrl(final String command) {
-    if (connectionStrategy == CONNECTION_STRATEGY.STICKY && stickyTransactionServer != null)
-      return protocol + "://" + stickyTransactionServer.getFirst() + ":" + stickyTransactionServer.getSecond()
-          + "/api/v" + apiVersion + "/" + command;
-    return protocol + "://" + currentServer + ":" + currentPort + "/api/v" + apiVersion + "/" + command;
+    final String host;
+    final int port;
+    final Pair<String, Integer> pin = connectionStrategy == CONNECTION_STRATEGY.STICKY ? stickyTransactionServer : null;
+    if (pin != null) {
+      host = pin.getFirst();
+      port = pin.getSecond();
+    } else {
+      host = currentServer;
+      port = currentPort;
+    }
+    return protocol + "://" + host + ":" + port + "/api/v" + apiVersion + "/" + command;
   }
 
   String getRequestPayload(final JSONObject jsonRequest) {

@@ -217,4 +217,44 @@ class RemoteDatabaseTest {
     assertThat(database.getUrl("command")).isEqualTo("http://localhost:2480/api/v1/command");
     assertThat(database.isTransactionActive()).isFalse();
   }
+
+  @Test
+  void resolveStickyTargetServerFallsBackToCurrentServerWhenNoLeader() {
+    // No leader resolved by the testable cluster-config override - falls back to currentServer/currentPort
+    final Pair<String, Integer> target = database.resolveStickyTargetServer();
+    assertThat(target.getFirst()).isEqualTo("localhost");
+    assertThat(target.getSecond()).isEqualTo(2480);
+  }
+
+  @Test
+  void resolveStickyTargetServerPrefersLeader() {
+    // Simulate cluster-configuration discovery placing a concrete leader pod address;
+    // begin() will pin to this leader rather than the load-balancer hostname.
+    final Pair<String, Integer> leader = new Pair<>("leader-pod", 2481);
+    final TestableRemoteDatabaseWithLeader db = new TestableRemoteDatabaseWithLeader(
+        "localhost", 2480, "testdb", "root", "test", leader);
+    try {
+      assertThat(db.resolveStickyTargetServer()).isEqualTo(leader);
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
+   * Testable subclass that injects a fake leader address via the cluster-configuration hook.
+   */
+  static class TestableRemoteDatabaseWithLeader extends TestableRemoteDatabase {
+    private final Pair<String, Integer> fakeLeader;
+
+    TestableRemoteDatabaseWithLeader(final String server, final int port, final String databaseName,
+        final String userName, final String userPassword, final Pair<String, Integer> fakeLeader) {
+      super(server, port, databaseName, userName, userPassword);
+      this.fakeLeader = fakeLeader;
+    }
+
+    @Override
+    Pair<String, Integer> getLeaderServer() {
+      return fakeLeader;
+    }
+  }
 }

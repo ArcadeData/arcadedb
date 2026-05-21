@@ -297,10 +297,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     // For STICKY strategy: pin to a concrete cluster member before the HTTP call so
     // that begin, command, and commit all reach the same physical node. Prefer the
     // leader (already resolved from the cluster topology) to avoid an extra LB hop.
-    if (getConnectionStrategy() == CONNECTION_STRATEGY.STICKY) {
-      final Pair<String, Integer> leader = getLeaderServer();
-      setStickyTransactionServer(leader != null ? leader : new Pair<>(currentServer, currentPort));
-    }
+    if (getConnectionStrategy() == CONNECTION_STRATEGY.STICKY)
+      setStickyTransactionServer(resolveStickyTargetServer());
 
     try {
       final JSONObject jsonRequest = new JSONObject().put("isolationLevel", isolationLevel);
@@ -318,9 +316,21 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
       setSessionId(response.headers().firstValue(ARCADEDB_SESSION_ID).orElse(null));
     } catch (final Exception e) {
-      setStickyTransactionServer(null);
       throw new TransactionException("Error on transaction begin", e);
+    } finally {
+      if (getSessionId() == null)
+        setStickyTransactionServer(null);
     }
+  }
+
+  /**
+   * Resolves the concrete cluster-member address used to pin a STICKY transaction.
+   * Prefers the leader (already resolved from cluster topology) over the configured
+   * server hostname, which may be a load-balancer that fans out across pods.
+   */
+  Pair<String, Integer> resolveStickyTargetServer() {
+    final Pair<String, Integer> leader = getLeaderServer();
+    return leader != null ? leader : new Pair<>(currentServer, currentPort);
   }
 
   public void commit() {
