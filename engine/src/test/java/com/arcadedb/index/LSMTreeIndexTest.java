@@ -52,6 +52,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.utility.FileUtils;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
@@ -59,6 +60,7 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.log.DefaultLogger;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.log.Logger;
@@ -606,37 +608,70 @@ class LSMTreeIndexTest extends TestHelper {
 
   @Test
   void putDuplicates() {
-    database.transaction(() -> {
-      int total = 0;
-
-      final Index[] indexes = database.getSchema().getIndexes();
-
-      for (int i = 0; i < TOT; ++i) {
-        int found = 0;
-
-        final Object[] key = new Object[] { i };
-
-        for (final Index index : indexes) {
-          if (index instanceof TypeIndex)
-            continue;
-
-          final IndexCursor value = index.get(key);
-          if (value.hasNext()) {
-            assertThatThrownBy(() -> {
-              index.put(key, new RID[] { new RID(10, 10) });
-              database.commit();
-            }).isInstanceOf(DuplicatedKeyException.class);
-            database.begin();
-            found++;
-            total++;
+    // Disable auto-compaction: the inner commit is wrapped in assertThatThrownBy,
+    // so the outer transaction's NeedRetryException handling never engages. With
+    // compaction enabled, a file migration mid-test surfaces as
+    // ConcurrentModificationException instead of the DuplicatedKeyException being
+    // asserted, which is the correct retryable signal but not what this test exercises.
+    //
+    // LSMTreeIndexMutable caches minPagesToScheduleACompaction at construction, so
+    // changing the config alone won't affect the mutable created by beginTest(). We
+    // drain pending async compactions and force a sync compaction so the post-split
+    // mutable index reads the now-disabled config (0) and never schedules again.
+    final int originalMinPages = database.getConfiguration().getValueAsInteger(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE);
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
+    try {
+      database.async().waitCompletion();
+      for (final Index idx : database.getSchema().getIndexes()) {
+        if (idx instanceof TypeIndex ti) {
+          for (final IndexInternal bi : ti.getIndexesOnBuckets()) {
+            if (bi instanceof LSMTreeIndex lsm) {
+              lsm.scheduleCompaction();
+              try {
+                lsm.compact();
+              } catch (final Exception ignored) {
+                // compact() may return false or throw if the mutable has < 2 pages; either way the index is safe to test
+              }
+            }
           }
         }
-
-        assertThat(found).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times").isEqualTo(1);
       }
+      database.async().waitCompletion();
 
-      assertThat(total).isEqualTo(TOT);
-    });
+      database.transaction(() -> {
+        int total = 0;
+
+        final Index[] indexes = database.getSchema().getIndexes();
+
+        for (int i = 0; i < TOT; ++i) {
+          int found = 0;
+
+          final Object[] key = new Object[] { i };
+
+          for (final Index index : indexes) {
+            if (index instanceof TypeIndex)
+              continue;
+
+            final IndexCursor value = index.get(key);
+            if (value.hasNext()) {
+              assertThatThrownBy(() -> {
+                index.put(key, new RID[] { new RID(10, 10) });
+                database.commit();
+              }).isInstanceOf(DuplicatedKeyException.class);
+              database.begin();
+              found++;
+              total++;
+            }
+          }
+
+          assertThat(found).withFailMessage("Key '" + Arrays.toString(key) + "' found " + found + " times").isEqualTo(1);
+        }
+
+        assertThat(total).isEqualTo(TOT);
+      });
+    } finally {
+      database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, originalMinPages);
+    }
   }
 
   @Test
