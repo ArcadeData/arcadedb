@@ -214,7 +214,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
   private final    AtomicInteger           currentMutablePages;
   private final    int                     minPagesToScheduleACompaction;
   private          LSMVectorIndexCompacted compactedSubIndex;
-  private          boolean                 valid      = true;
+  private volatile boolean                 valid      = true;
   private volatile BUILD_STATE             buildState = BUILD_STATE.READY;
 
   // Page tracking for inserts (avoids getTotalPages() issue with transaction-local pages)
