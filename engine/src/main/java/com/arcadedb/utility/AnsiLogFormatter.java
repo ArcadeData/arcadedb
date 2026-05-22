@@ -20,10 +20,11 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogFormatter;
 
-import java.util.*;
-import java.util.logging.*;
+import java.time.LocalDateTime;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 
-import static java.util.logging.Level.*;
+import static java.util.logging.Level.SEVERE;
 
 /**
  * Log formatter that uses ANSI code if they are available and enabled.
@@ -35,8 +36,7 @@ public class AnsiLogFormatter extends LogFormatter {
   @Override
   protected String customFormatMessage(final LogRecord iRecord) {
     final Level level = iRecord.getLevel();
-    final String message = AnsiCode.format(iRecord.getMessage());
-    final Object[] additionalArgs = iRecord.getParameters();
+    final String message = AnsiCode.format(formatMessage(iRecord));
     final String requester = getSourceClassSimpleName(iRecord.getLoggerName());
 
     final StringBuilder buffer = new StringBuilder(512);
@@ -44,9 +44,7 @@ public class AnsiLogFormatter extends LogFormatter {
 
     if (AnsiCode.supportsColors())
       buffer.append("$ANSI{cyan ");
-    synchronized (dateFormat) {
-      buffer.append(dateFormat.format(new Date()));
-    }
+    buffer.append(dateFormat.format(LocalDateTime.now()));
 
     if (AnsiCode.supportsColors())
       buffer.append("}");
@@ -73,15 +71,7 @@ public class AnsiLogFormatter extends LogFormatter {
       buffer.append("] ");
     }
 
-    // FORMAT THE MESSAGE
-    try {
-      if (additionalArgs != null)
-        buffer.append(message.formatted(additionalArgs));
-      else
-        buffer.append(message);
-    } catch (final IllegalFormatException ignore) {
-      buffer.append(message);
-    }
+    buffer.append(message);
 
     return AnsiCode.format(buffer.toString());
   }
