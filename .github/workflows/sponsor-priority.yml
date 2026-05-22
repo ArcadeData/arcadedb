@@ -1,0 +1,30 @@
+name: Sponsor Priority Label
+
+on:
+  issues:
+    types: [opened, reopened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to evaluate (manual dry-run)"
+        required: true
+        type: number
+      dry_run:
+        description: "If true, log the decision without applying the label"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  label-sponsor-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate sponsorship and label
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            core.info("sponsor-priority: scaffold reached, no-op");
