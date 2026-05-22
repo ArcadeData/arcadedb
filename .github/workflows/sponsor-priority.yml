@@ -28,6 +28,7 @@ jobs:
         env:
           SPONSORABLE_LOGIN: ArcadeData
           LABEL_NAME: high_priority
+          # 6-char hex without the leading '#'; that's the form the REST labels API expects.
           LABEL_COLOR: B60205
           LABEL_DESCRIPTION: Issue opened by a GitHub Sponsor of ArcadeData
         with:
@@ -52,6 +53,8 @@ jobs:
                 });
                 issue = data;
               } catch (err) {
+                // audit() needs the issue user/association; on dispatch fetch failure we don't
+                // have those yet, so emit a substitute info line keyed by issue_number instead.
                 core.warning(`sponsor-priority: dispatch issues.get failed: ${err.message}`);
                 core.info(
                   `sponsor-priority: issue_number=${context.payload.inputs.issue_number}, ` +
