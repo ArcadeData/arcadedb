@@ -20,20 +20,39 @@ package com.arcadedb.server.ai;
 
 /**
  * Thrown when the AI gateway rejects a subscription token (invalid, expired, disabled).
- * Carries the HTTP status and pre-formatted JSON error response for direct forwarding to the client.
+ * Carries the upstream HTTP status (for logging) and a pre-formatted JSON error response.
+ * <p>
+ * The status returned to the client is always {@code 502 Bad Gateway}, regardless of whether the
+ * upstream gateway returned 401 or 403. The user's session is valid (they would not have reached
+ * this handler otherwise), so propagating 401/403 here would falsely signal "session expired" to
+ * the Studio's global error handler and kick the user out. The {@code code} field in the JSON
+ * body ({@code token_invalid}, {@code token_expired}, {@code token_disabled}) still lets the
+ * Studio show the right "subscription issue" message.
  */
 public class AiTokenException extends RuntimeException {
-  private final int    httpStatus;
+  private static final int CLIENT_HTTP_STATUS = 502;
+
+  private final int    upstreamStatus;
   private final String jsonResponse;
 
-  public AiTokenException(final int httpStatus, final String jsonResponse) {
-    super("AI token error: " + httpStatus);
-    this.httpStatus = httpStatus;
+  public AiTokenException(final int upstreamStatus, final String jsonResponse) {
+    super("AI token error: upstream returned " + upstreamStatus);
+    this.upstreamStatus = upstreamStatus;
     this.jsonResponse = jsonResponse;
   }
 
+  /**
+   * HTTP status to send back to the client. Always {@code 502}; never the raw upstream 401/403.
+   */
   public int getHttpStatus() {
-    return httpStatus;
+    return CLIENT_HTTP_STATUS;
+  }
+
+  /**
+   * Original status returned by the AI gateway. Useful for server-side logging only.
+   */
+  public int getUpstreamStatus() {
+    return upstreamStatus;
   }
 
   public String getJsonResponse() {

@@ -96,7 +96,10 @@ public class AiActivateHandler extends AbstractServerHttpHandler {
           errorMsg = errBody.getString("error", errorMsg);
         } catch (final Exception ignored) {
         }
-        return new ExecutionResponse(response.statusCode(), errorJson(errorMsg));
+        // Never propagate 401/403 from the upstream gateway: those statuses are reserved for
+        // the user's own session and would trigger Studio's "session expired" logout.
+        final int clientStatus = (response.statusCode() == 401 || response.statusCode() == 403) ? 502 : response.statusCode();
+        return new ExecutionResponse(clientStatus, errorJson(errorMsg));
       }
 
       // Activation successful - save to config/ai.json
