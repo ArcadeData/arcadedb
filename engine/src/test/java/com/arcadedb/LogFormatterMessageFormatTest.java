@@ -101,4 +101,59 @@ class LogFormatterMessageFormatTest {
     assertThat(formatted).doesNotContain("{1}");
     assertThat(formatted).doesNotContain("{2}");
   }
+
+  /**
+   * Backwards-compatibility for printf-style ({@code %s}, {@code %d}) JUL records:
+   * the JDK Formatter.formatMessage only handles MessageFormat-style {@code {0}}, so without the
+   * override LogFormatter would drop the parameters array. The override must fall back to
+   * {@link String#formatted(Object...)} when the JDK path returns the raw template unchanged.
+   */
+  @Test
+  void printfStylePlaceholdersWithParametersAreSubstituted() {
+    final LogRecord record = new LogRecord(Level.INFO,
+        "Connected to %s:%d as user %s");
+    record.setParameters(new Object[]{ "db-host", 2480, "root" });
+    record.setLoggerName("com.example.LegacyJulCaller");
+
+    final String formatted = new LogFormatter().format(record);
+
+    assertThat(formatted).contains("db-host");
+    assertThat(formatted).contains("2480");
+    assertThat(formatted).contains("root");
+    assertThat(formatted).doesNotContain("%s");
+    assertThat(formatted).doesNotContain("%d");
+  }
+
+  /**
+   * AnsiLogFormatter must also keep the printf-style fallback (it inherits formatMessage from
+   * LogFormatter).
+   */
+  @Test
+  void ansiFormatterPrintfStylePlaceholdersAreSubstituted() {
+    final LogRecord record = new LogRecord(Level.INFO, "value=%s count=%d");
+    record.setParameters(new Object[]{ "abc", 42 });
+    record.setLoggerName("com.example.LegacyJulCaller");
+
+    final String formatted = new AnsiLogFormatter().format(record);
+
+    assertThat(formatted).contains("abc");
+    assertThat(formatted).contains("42");
+    assertThat(formatted).doesNotContain("%s");
+    assertThat(formatted).doesNotContain("%d");
+  }
+
+  /**
+   * A malformed printf template (parameter count/type mismatch) must not throw — the formatter
+   * should fall back to the raw message rather than propagating IllegalFormatException.
+   */
+  @Test
+  void malformedPrintfTemplateFallsBackToRawMessage() {
+    final LogRecord record = new LogRecord(Level.INFO, "wants %d got nothing");
+    record.setParameters(new Object[]{ "not-a-number" });
+    record.setLoggerName("com.example.LegacyJulCaller");
+
+    final String formatted = new LogFormatter().format(record);
+
+    assertThat(formatted).contains("wants %d got nothing");
+  }
 }

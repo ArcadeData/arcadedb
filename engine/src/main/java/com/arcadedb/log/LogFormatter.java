@@ -63,6 +63,34 @@ public class LogFormatter extends Formatter {
     return buffer.toString();
   }
 
+  /**
+   * Overrides the JDK default to also support printf-style format strings ({@code %s}, {@code %d},
+   * etc.) when {@link Formatter#formatMessage(LogRecord)} would otherwise drop the parameter array
+   * (i.e. the message has no {@code MessageFormat} placeholders {@code {0}..{3}}). Behaviour:
+   * <ol>
+   *   <li>Delegate to the JDK default, which substitutes {@code MessageFormat} placeholders when
+   *       present (the path used by gRPC, JBoss, java.net.http, etc.).</li>
+   *   <li>If the JDK returned the raw template (no substitution) and parameters were supplied,
+   *       fall back to {@link String#formatted(Object...)} for printf-style compatibility.</li>
+   * </ol>
+   * Pre-formatted records with no parameters (ArcadeDB's {@code DefaultLogger} convention) are
+   * returned unchanged.
+   */
+  @Override
+  public String formatMessage(final LogRecord record) {
+    final String julFormatted = super.formatMessage(record);
+    final Object[] parameters = record.getParameters();
+    final String rawMessage = record.getMessage();
+    if (parameters != null && parameters.length > 0 && rawMessage != null && julFormatted.equals(rawMessage)) {
+      try {
+        return rawMessage.formatted(parameters);
+      } catch (final IllegalFormatException ignore) {
+        return rawMessage;
+      }
+    }
+    return julFormatted;
+  }
+
   protected String customFormatMessage(final LogRecord iRecord) {
     final Level level = iRecord.getLevel();
     final String message = AnsiCode.format(formatMessage(iRecord), false);

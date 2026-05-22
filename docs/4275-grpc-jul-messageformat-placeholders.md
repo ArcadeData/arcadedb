@@ -39,7 +39,7 @@ no-op for those records and existing behaviour is preserved.
 
 ## Test
 
-- `engine/src/test/java/com/arcadedb/log/LogFormatterMessageFormatTest.java`
+- `engine/src/test/java/com/arcadedb/LogFormatterMessageFormatTest.java`
   - verifies `{0}`, `{1}` are substituted by both formatters
   - verifies pre-formatted (no-parameter) messages are passed through unchanged
-  - verifies existing ArcadeDB printf-style (%s) messages are unaffected
+  - verifies printf-style `%s`/`%d` messages with parameters still work via the fallback path
