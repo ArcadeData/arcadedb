@@ -35,8 +35,7 @@ public class AnsiLogFormatter extends LogFormatter {
   @Override
   protected String customFormatMessage(final LogRecord iRecord) {
     final Level level = iRecord.getLevel();
-    final String message = AnsiCode.format(iRecord.getMessage());
-    final Object[] additionalArgs = iRecord.getParameters();
+    final String message = AnsiCode.format(formatMessage(iRecord));
     final String requester = getSourceClassSimpleName(iRecord.getLoggerName());
 
     final StringBuilder buffer = new StringBuilder(512);
@@ -73,15 +72,7 @@ public class AnsiLogFormatter extends LogFormatter {
       buffer.append("] ");
     }
 
-    // FORMAT THE MESSAGE
-    try {
-      if (additionalArgs != null)
-        buffer.append(message.formatted(additionalArgs));
-      else
-        buffer.append(message);
-    } catch (final IllegalFormatException ignore) {
-      buffer.append(message);
-    }
+    buffer.append(message);
 
     return AnsiCode.format(buffer.toString());
   }
