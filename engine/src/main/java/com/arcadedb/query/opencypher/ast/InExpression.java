@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
@@ -58,12 +59,12 @@ public class InExpression implements BooleanExpression {
     else
       value = expression.evaluate(result, context);
 
-    // Build the list of values to check against
-    final List<Object> valuesToCheck = new ArrayList<>();
+    // Iterable of values to compare against. For lists/Object[]/collections this is a zero-copy view;
+    // primitive arrays (long[], double[], ...) are auto-boxed by getMultiValueAsList in a single pass.
+    final Iterable<?> valuesToCheck;
 
     if (list.size() == 1) {
-      // Single expression on RHS (e.g., x IN listVar, x IN func(), x IN [1,2,3])
-      // Evaluate and unwrap the list value
+      // Single expression on RHS (e.g., x IN listVar, x IN func(), x IN [1,2,3]). Evaluate and unwrap.
       final Expression listItem = list.get(0);
       final Object listValue;
       if (listItem instanceof FunctionCallExpression)
@@ -73,22 +74,27 @@ public class InExpression implements BooleanExpression {
 
       if (listValue == null)
         return null; // x IN null -> null
-      if (listValue instanceof List)
-        valuesToCheck.addAll((List<?>) listValue);
-      else if (listValue instanceof Collection)
-        valuesToCheck.addAll((Collection<?>) listValue);
-      else
-        throw new IllegalArgumentException("InvalidArgumentType: IN requires a list on the right side, got " + listValue.getClass().getSimpleName());
+      if (listValue instanceof Collection<?> coll) {
+        valuesToCheck = coll;
+      } else if (listValue.getClass().isArray()) {
+        // Includes primitive arrays (long[], int[], double[], ...) coming from JSON numeric-array
+        // query parameters (issue #4284).
+        valuesToCheck = MultiValue.getMultiValueAsList(listValue);
+      } else
+        throw new IllegalArgumentException(
+            "InvalidArgumentType: IN requires a list on the right side, got " + listValue.getClass().getSimpleName());
     } else {
       // Multiple expressions (parsed list literal items)
+      final List<Object> evaluated = new ArrayList<>(list.size());
       for (final Expression listItem : list) {
         final Object listValue;
         if (listItem instanceof FunctionCallExpression)
           listValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(listItem, result, context);
         else
           listValue = listItem.evaluate(result, context);
-        valuesToCheck.add(listValue);
+        evaluated.add(listValue);
       }
+      valuesToCheck = evaluated;
     }
 
     // 3VL: null IN [1,2,3] -> null, 5 IN [1,null,3] -> null (if not found otherwise)

@@ -21,9 +21,10 @@ package com.arcadedb.query.opencypher.ast;
 import com.arcadedb.database.Document;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.List;
+import java.util.Collection;
 import java.util.Map;
 
 /**
@@ -56,6 +57,10 @@ public class ListIndexExpression implements Expression {
       return null;
     }
 
+    // Treat Collections and Java arrays (incl. primitive arrays from numeric-array parameters,
+    // issue #4284) uniformly as Cypher lists, without copying.
+    final boolean isListLike = listValue instanceof Collection || listValue.getClass().isArray();
+
     // Map/Document property access via bracket notation: map['key']
     if (indexValue instanceof String) {
       final String key = (String) indexValue;
@@ -66,7 +71,7 @@ public class ListIndexExpression implements Expression {
       if (listValue instanceof Result)
         return ((Result) listValue).getProperty(key);
       // List with string index is a type error in Cypher
-      if (listValue instanceof List)
+      if (isListLike)
         throw new IllegalArgumentException("List index must be a number, got: String");
       return null;
     }
@@ -77,53 +82,30 @@ public class ListIndexExpression implements Expression {
       index = ((Number) indexValue).intValue();
     else if (indexValue instanceof Double || indexValue instanceof Float) {
       // Float indices are a type error for lists in Cypher
-      if (listValue instanceof List)
+      if (isListLike)
         throw new IllegalArgumentException("TypeError: list index must be an integer, got Float");
       index = ((Number) indexValue).intValue();
     } else if (indexValue instanceof Boolean) {
-      if (listValue instanceof List)
+      if (isListLike)
         throw new IllegalArgumentException("TypeError: list index must be an integer, got Boolean");
       return null;
     } else if (indexValue instanceof Number)
       index = ((Number) indexValue).intValue();
     else {
-      if (listValue instanceof List)
+      if (isListLike)
         throw new IllegalArgumentException("TypeError: list index must be an integer, got " + indexValue.getClass().getSimpleName());
       return null;
     }
 
-    // Handle list types
-    if (listValue instanceof List) {
-      final List<?> list = (List<?>) listValue;
-      if (list.isEmpty()) {
+    if (isListLike) {
+      // O(1) access on lists and arrays - no intermediate copy, so vector embeddings stay cheap.
+      final int size = MultiValue.getSize(listValue);
+      if (size == 0)
         return null;
-      }
-
-      // Support negative indices (Python-style)
-      final int actualIndex = index < 0 ? list.size() + index : index;
-
-      if (actualIndex < 0 || actualIndex >= list.size()) {
+      final int actualIndex = index < 0 ? size + index : index;
+      if (actualIndex < 0 || actualIndex >= size)
         return null; // Out of bounds returns null (Cypher behavior)
-      }
-
-      return list.get(actualIndex);
-    }
-
-    // Handle array types
-    if (listValue.getClass().isArray()) {
-      final Object[] array = (Object[]) listValue;
-      if (array.length == 0) {
-        return null;
-      }
-
-      // Support negative indices
-      final int actualIndex = index < 0 ? array.length + index : index;
-
-      if (actualIndex < 0 || actualIndex >= array.length) {
-        return null;
-      }
-
-      return array[actualIndex];
+      return MultiValue.getValue(listValue, actualIndex);
     }
 
     // In Cypher, numeric indexing is only valid for lists, not for strings or other types
