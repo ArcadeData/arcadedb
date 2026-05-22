@@ -156,4 +156,21 @@ class LogFormatterMessageFormatTest {
 
     assertThat(formatted).contains("wants %d got nothing");
   }
+
+  /**
+   * Templates containing only non-whitelisted printf conversions (e.g. {@code %n} line separator,
+   * {@code %t} date/time, width/precision modifiers) must NOT be passed to
+   * {@link String#formatted(Object...)} — the whitelist is the defensive check we use to keep an
+   * untrusted exception/library message from reaching the format-string sink.
+   */
+  @Test
+  void unsafePrintfConversionsAreNotApplied() {
+    final LogRecord record = new LogRecord(Level.INFO, "line%nseparator and %tY year");
+    record.setParameters(new Object[]{ new java.util.Date() });
+    record.setLoggerName("com.example.LegacyJulCaller");
+
+    final String formatted = new LogFormatter().format(record);
+
+    assertThat(formatted).contains("line%nseparator and %tY year");
+  }
 }

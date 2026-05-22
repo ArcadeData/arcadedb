@@ -25,6 +25,7 @@ import java.text.*;
 import java.util.*;
 import java.util.logging.Formatter;
 import java.util.logging.*;
+import java.util.regex.*;
 
 /**
  * Basic Log formatter.
@@ -40,6 +41,15 @@ public class LogFormatter extends Formatter {
    * The end-of-line character for this platform.
    */
   protected static final String EOL = System.getProperty("line.separator");
+
+  /**
+   * Whitelist of printf-style conversion characters we accept when falling back from
+   * MessageFormat to {@link String#formatted(Object...)}. Restricted to plain value
+   * conversions (no width/precision/index modifiers) so that an unexpected template
+   * containing line-separator/locale ({@code %n}, {@code %t}) or layout specifiers does
+   * not reach {@link String#formatted}.
+   */
+  private static final Pattern SAFE_PRINTF_PATTERN = Pattern.compile("%[%bBhHsScCdoxXeEfgGaA]");
 
   @Override
   public String format(final LogRecord record) {
@@ -81,7 +91,8 @@ public class LogFormatter extends Formatter {
     final String julFormatted = super.formatMessage(record);
     final Object[] parameters = record.getParameters();
     final String rawMessage = record.getMessage();
-    if (parameters != null && parameters.length > 0 && rawMessage != null && julFormatted.equals(rawMessage)) {
+    if (parameters != null && parameters.length > 0 && rawMessage != null
+        && julFormatted.equals(rawMessage) && SAFE_PRINTF_PATTERN.matcher(rawMessage).find()) {
       try {
         return rawMessage.formatted(parameters);
       } catch (final IllegalFormatException ignore) {
