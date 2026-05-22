@@ -163,6 +163,50 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
   }
 
   @Test
+  void clusterTopologyIsConsistentAcrossNodes() throws Exception {
+    // Every node must report the same leaderAddress and the same set of replicaAddresses.
+    // Regression: follower nodes were excluding themselves (localPeerId) from replicaAddresses
+    // instead of excluding the leader, causing the leader to appear inside replicaAddresses
+    // and the follower itself to be missing from the list.
+    String firstLeaderAddress = null;
+    String firstReplicaAddresses = null;
+
+    for (int i = 0; i < getServerCount(); i++) {
+      final HttpURLConnection connection = (HttpURLConnection) new URL(
+          "http://127.0.0.1:" + getServer(i).getHttpServer().getPort() + "/api/v1/server?mode=cluster").openConnection();
+      connection.setRequestMethod("GET");
+      connection.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      try {
+        connection.connect();
+        assertThat(connection.getResponseCode()).isEqualTo(200);
+        final JSONObject parsed = new JSONObject(readResponse(connection));
+        final JSONObject ha = parsed.getJSONObject("ha");
+
+        final String leaderAddress = ha.getString("leaderAddress");
+        final String replicaAddresses = ha.getString("replicaAddresses");
+
+        // The leader must not appear in the replica list
+        assertThat(replicaAddresses).as("server %d: leaderAddress must not appear in replicaAddresses", i)
+            .doesNotContain(leaderAddress);
+
+        // All responses must agree on the same leader
+        if (firstLeaderAddress == null) {
+          firstLeaderAddress = leaderAddress;
+          firstReplicaAddresses = replicaAddresses;
+        } else {
+          assertThat(leaderAddress).as("server %d: leaderAddress must be consistent across all nodes", i)
+              .isEqualTo(firstLeaderAddress);
+          assertThat(replicaAddresses).as("server %d: replicaAddresses must be consistent across all nodes", i)
+              .isEqualTo(firstReplicaAddresses);
+        }
+      } finally {
+        connection.disconnect();
+      }
+    }
+  }
+
+  @Test
   void hAConfiguration() throws Exception {
     // Verify the cluster endpoint reports exactly one leader across both nodes
     int leaderCount = 0;
