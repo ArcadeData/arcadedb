@@ -36,6 +36,7 @@ import com.arcadedb.query.opencypher.ast.MapExpression;
 import com.arcadedb.query.opencypher.ast.PropertyAccessExpression;
 import com.arcadedb.query.opencypher.ast.VariableExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
@@ -165,22 +166,25 @@ public class ExpressionEvaluator {
     if (leftValue == null || rightValue == null)
       return null;
 
-    // List concatenation/append for + operator (must be checked before string concatenation)
+    // List concatenation/append for + operator (must be checked before string concatenation).
+    // Coerce List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284) to a List.
     if (expression.getOperator() == ArithmeticExpression.Operator.ADD) {
-      if (leftValue instanceof List && rightValue instanceof List) {
-        final List<Object> combined = new ArrayList<>((List<?>) leftValue);
-        combined.addAll((List<?>) rightValue);
+      final List<Object> leftList = MultiValue.getMultiValueAsList(leftValue);
+      final List<Object> rightList = MultiValue.getMultiValueAsList(rightValue);
+      if (leftList != null && rightList != null) {
+        final List<Object> combined = new ArrayList<>(leftList);
+        combined.addAll(rightList);
         return combined;
       }
-      if (leftValue instanceof List) {
-        final List<Object> appended = new ArrayList<>((List<?>) leftValue);
+      if (leftList != null) {
+        final List<Object> appended = new ArrayList<>(leftList);
         appended.add(rightValue);
         return appended;
       }
-      if (rightValue instanceof List) {
+      if (rightList != null) {
         final List<Object> prepended = new ArrayList<>();
         prepended.add(leftValue);
-        prepended.addAll((List<?>) rightValue);
+        prepended.addAll(rightList);
         return prepended;
       }
     }
@@ -360,9 +364,11 @@ public class ExpressionEvaluator {
     if (listValue == null)
       return null;
 
+    // Coerce List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284) to a List.
+    final List<Object> list = MultiValue.getMultiValueAsList(listValue);
     final int size;
-    if (listValue instanceof List)
-      size = ((List<?>) listValue).size();
+    if (list != null)
+      size = list.size();
     else if (listValue instanceof String)
       size = ((String) listValue).length();
     else
@@ -394,8 +400,8 @@ public class ExpressionEvaluator {
     if (from >= to)
       return listValue instanceof String ? "" : new ArrayList<>();
 
-    if (listValue instanceof List)
-      return new ArrayList<>(((List<?>) listValue).subList(from, to));
+    if (list != null)
+      return new ArrayList<>(list.subList(from, to));
     return ((String) listValue).substring(from, to);
   }
 

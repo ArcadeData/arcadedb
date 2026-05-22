@@ -21,6 +21,7 @@ package com.arcadedb.function.coll;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.Collections;
 import java.util.List;
@@ -40,10 +41,10 @@ public class TailFunction implements StatelessFunction {
       throw new CommandExecutionException("tail() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof List) {
-      final List<?> list = (List<?>) args[0];
+    // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
+    final List<Object> list = MultiValue.getMultiValueAsList(args[0]);
+    if (list != null)
       return list.size() <= 1 ? Collections.emptyList() : list.subList(1, list.size());
-    }
     return Collections.emptyList();
   }
 }

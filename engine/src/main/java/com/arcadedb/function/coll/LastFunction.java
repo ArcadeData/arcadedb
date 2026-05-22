@@ -21,6 +21,7 @@ package com.arcadedb.function.coll;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.List;
 
@@ -37,10 +38,10 @@ public class LastFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 1)
       throw new CommandExecutionException("last() requires exactly one argument");
-    if (args[0] instanceof List) {
-      final List<?> list = (List<?>) args[0];
+    // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
+    final List<Object> list = MultiValue.getMultiValueAsList(args[0]);
+    if (list != null)
       return list.isEmpty() ? null : list.get(list.size() - 1);
-    }
     return null;
   }
 }

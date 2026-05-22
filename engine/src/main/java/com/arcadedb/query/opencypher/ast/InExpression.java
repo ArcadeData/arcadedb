@@ -22,10 +22,10 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
-import java.util.Collection;
 import java.util.List;
 
 /**
@@ -73,12 +73,11 @@ public class InExpression implements BooleanExpression {
 
       if (listValue == null)
         return null; // x IN null -> null
-      if (listValue instanceof List)
-        valuesToCheck.addAll((List<?>) listValue);
-      else if (listValue instanceof Collection)
-        valuesToCheck.addAll((Collection<?>) listValue);
-      else
+      // Coerce List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284) to a List.
+      final List<Object> coerced = MultiValue.getMultiValueAsList(listValue);
+      if (coerced == null)
         throw new IllegalArgumentException("InvalidArgumentType: IN requires a list on the right side, got " + listValue.getClass().getSimpleName());
+      valuesToCheck.addAll(coerced);
     } else {
       // Multiple expressions (parsed list literal items)
       for (final Expression listItem : list) {

@@ -23,6 +23,7 @@ import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.List;
@@ -199,10 +200,11 @@ public class ComparisonExpression implements BooleanExpression {
       };
     }
 
-    // List comparison (element-wise with null propagation)
-    if (left instanceof List && right instanceof List) {
-      final List<?> leftList = (List<?>) left;
-      final List<?> rightList = (List<?>) right;
+    // List comparison (element-wise with null propagation).
+    // Coerce List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284) to a List.
+    final List<Object> leftList = MultiValue.getMultiValueAsList(left);
+    final List<Object> rightList = MultiValue.getMultiValueAsList(right);
+    if (leftList != null && rightList != null) {
       if (operator == Operator.EQUALS || operator == Operator.NOT_EQUALS) {
         if (leftList.size() != rightList.size())
           return operator == Operator.NOT_EQUALS;

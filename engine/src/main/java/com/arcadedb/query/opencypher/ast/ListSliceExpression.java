@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
@@ -58,9 +59,11 @@ public class ListSliceExpression implements Expression {
     if (listValue == null)
       return null;
 
+    // Coerce List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284) to a List.
+    final List<Object> list = MultiValue.getMultiValueAsList(listValue);
     final int size;
-    if (listValue instanceof List)
-      size = ((List<?>) listValue).size();
+    if (list != null)
+      size = list.size();
     else if (listValue instanceof String)
       size = ((String) listValue).length();
     else
@@ -107,8 +110,8 @@ public class ListSliceExpression implements Expression {
       return new ArrayList<>();
     }
 
-    if (listValue instanceof List)
-      return new ArrayList<>(((List<?>) listValue).subList(from, to));
+    if (list != null)
+      return new ArrayList<>(list.subList(from, to));
     else
       return ((String) listValue).substring(from, to);
   }
