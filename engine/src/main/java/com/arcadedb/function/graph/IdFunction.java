@@ -18,6 +18,7 @@
  */
 package com.arcadedb.function.graph;
 
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
@@ -66,5 +67,13 @@ public class IdFunction implements StatelessFunction {
     final int bucketId = (int) (encoded >>> 32);
     final long offset = encoded & 0xFFFFFFFFL;
     return "#" + bucketId + ":" + offset;
+  }
+
+  /**
+   * Reverses {@link #encodeRidAsLong(RID)} into a native {@link RID}, allowing a Cypher-style numeric id to be resolved back to a record in O(1) via
+   * {@code lookupByRID} (e.g. {@code SELECT FROM :longId}). The bucketId is taken from the upper 32 bits and the offset from the lower 32 bits.
+   */
+  public static RID decodeLongToRid(final BasicDatabase database, final long encoded) {
+    return RID.create(database, (int) (encoded >>> 32), encoded & 0xFFFFFFFFL);
   }
 }

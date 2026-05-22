@@ -27,6 +27,7 @@ import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
@@ -1396,6 +1397,9 @@ public class SelectExecutionPlanner {
 
     if (paramValue instanceof String string && RID.is(paramValue))
       paramValue = context.getDatabase().newRID(string);
+    else if (paramValue instanceof Number number)
+      // a numeric target is a Cypher-style id() value: decode it back to a native RID so it resolves in O(1) (issue #4282)
+      paramValue = IdFunction.decodeLongToRid(context.getDatabase(), number.longValue());
 
     if (paramValue == null) {
       result.chain(new EmptyStep(context));//nothing to return

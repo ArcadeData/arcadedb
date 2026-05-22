@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -72,6 +73,10 @@ public class Rid extends SimpleNode {
 
       if (result instanceof Identifiable identifiable)
         return identifiable.getIdentity();
+
+      if (result instanceof Number number)
+        // a numeric value is a Cypher-style id(): decode it back to a native RID (issue #4282)
+        return IdFunction.decodeLongToRid(context.getDatabase(), number.longValue());
 
       if (result instanceof String string) {
         if (!(string.startsWith("#") && (string.contains(":"))))

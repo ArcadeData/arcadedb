@@ -1099,6 +1099,7 @@ fromClause
 
 fromItem
     : rid (COMMA rid)*                                               # fromRids
+    | integer                                                       # fromCypherRid
     | LBRACKET RBRACKET                                              # fromEmptyArray
     | LBRACKET rid (COMMA rid)* RBRACKET                            # fromRidArray
     | LBRACKET inputParameter (COMMA inputParameter)* RBRACKET      # fromParamArray

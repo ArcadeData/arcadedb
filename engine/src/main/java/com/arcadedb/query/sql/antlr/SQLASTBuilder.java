@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.antlr;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.engine.timeseries.DownsamplingTier;
+import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -1578,6 +1579,21 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     for (final SQLParser.RidContext ridCtx : ctx.rid()) {
       fromItem.rids.add((Rid) visit(ridCtx));
     }
+
+    return fromItem;
+  }
+
+  /**
+   * FROM target given as a bare integer literal: it is a Cypher-style id() value (issue #4282). Since the value is a literal constant we decode it back to a
+   * native RID at parse time (#bucketId:offset), reusing the inverse of {@link IdFunction#encodeRidAsLong}.
+   */
+  @Override
+  public FromItem visitFromCypherRid(final SQLParser.FromCypherRidContext ctx) {
+    final FromItem fromItem = new FromItem(-1);
+    fromItem.rids = new ArrayList<>();
+
+    final long encoded = ((PInteger) visit(ctx.integer())).getValue().longValue();
+    fromItem.rids.add(new Rid(IdFunction.decodeLongToRid(null, encoded)));
 
     return fromItem;
   }
