@@ -20,10 +20,11 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogFormatter;
 
-import java.util.*;
-import java.util.logging.*;
+import java.time.LocalDateTime;
+import java.util.logging.Level;
+import java.util.logging.LogRecord;
 
-import static java.util.logging.Level.*;
+import static java.util.logging.Level.SEVERE;
 
 /**
  * Log formatter that uses ANSI code if they are available and enabled.
@@ -43,9 +44,7 @@ public class AnsiLogFormatter extends LogFormatter {
 
     if (AnsiCode.supportsColors())
       buffer.append("$ANSI{cyan ");
-    synchronized (dateFormat) {
-      buffer.append(dateFormat.format(new Date()));
-    }
+    buffer.append(dateFormat.format(LocalDateTime.now()));
 
     if (AnsiCode.supportsColors())
       buffer.append("}");

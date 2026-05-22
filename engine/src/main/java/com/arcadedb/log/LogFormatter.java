@@ -21,7 +21,8 @@ package com.arcadedb.log;
 import com.arcadedb.utility.AnsiCode;
 
 import java.io.*;
-import java.text.*;
+import java.time.*;
+import java.time.format.*;
 import java.util.*;
 import java.util.logging.Formatter;
 import java.util.logging.*;
@@ -35,7 +36,7 @@ import java.util.regex.*;
 
 public class LogFormatter extends Formatter {
 
-  protected static final DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+  protected static final DateTimeFormatter dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
 
   /**
    * The end-of-line character for this platform.
@@ -109,9 +110,7 @@ public class LogFormatter extends Formatter {
 
     final StringBuilder buffer = new StringBuilder(512);
     buffer.append(EOL);
-    synchronized (dateFormat) {
-      buffer.append(dateFormat.format(new Date()));
-    }
+    buffer.append(dateFormat.format(LocalDateTime.now()));
 
     buffer.append(" %-5.5s ".formatted(level.getName()));
 
