@@ -111,7 +111,7 @@ jobs:
             }
 
             if (dryRun) {
-              audit(true, "labeled");
+              audit(true, "dry_run");
               return;
             }
 
