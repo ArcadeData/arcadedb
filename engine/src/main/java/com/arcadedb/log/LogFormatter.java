@@ -21,10 +21,12 @@ package com.arcadedb.log;
 import com.arcadedb.utility.AnsiCode;
 
 import java.io.*;
-import java.text.*;
+import java.time.*;
+import java.time.format.*;
 import java.util.*;
 import java.util.logging.Formatter;
 import java.util.logging.*;
+import java.util.regex.*;
 
 /**
  * Basic Log formatter.
@@ -34,12 +36,21 @@ import java.util.logging.*;
 
 public class LogFormatter extends Formatter {
 
-  protected static final DateFormat dateFormat = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+  protected static final DateTimeFormatter dateFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
 
   /**
    * The end-of-line character for this platform.
    */
   protected static final String EOL = System.getProperty("line.separator");
+
+  /**
+   * Whitelist of printf-style conversion characters we accept when falling back from
+   * MessageFormat to {@link String#formatted(Object...)}. Restricted to plain value
+   * conversions (no width/precision/index modifiers) so that an unexpected template
+   * containing line-separator/locale ({@code %n}, {@code %t}) or layout specifiers does
+   * not reach {@link String#formatted}.
+   */
+  private static final Pattern SAFE_PRINTF_PATTERN = Pattern.compile("%[%bBhHsScCdoxXeEfgGaA]");
 
   @Override
   public String format(final LogRecord record) {
@@ -63,17 +74,43 @@ public class LogFormatter extends Formatter {
     return buffer.toString();
   }
 
+  /**
+   * Overrides the JDK default to also support printf-style format strings ({@code %s}, {@code %d},
+   * etc.) when {@link Formatter#formatMessage(LogRecord)} would otherwise drop the parameter array
+   * (i.e. the message has no {@code MessageFormat} placeholders {@code {0}..{3}}). Behaviour:
+   * <ol>
+   *   <li>Delegate to the JDK default, which substitutes {@code MessageFormat} placeholders when
+   *       present (the path used by gRPC, JBoss, java.net.http, etc.).</li>
+   *   <li>If the JDK returned the raw template (no substitution) and parameters were supplied,
+   *       fall back to {@link String#formatted(Object...)} for printf-style compatibility.</li>
+   * </ol>
+   * Pre-formatted records with no parameters (ArcadeDB's {@code DefaultLogger} convention) are
+   * returned unchanged.
+   */
+  @Override
+  public String formatMessage(final LogRecord record) {
+    final String julFormatted = super.formatMessage(record);
+    final Object[] parameters = record.getParameters();
+    final String rawMessage = record.getMessage();
+    if (parameters != null && parameters.length > 0 && rawMessage != null
+        && julFormatted.equals(rawMessage) && SAFE_PRINTF_PATTERN.matcher(rawMessage).find()) {
+      try {
+        return rawMessage.formatted(parameters);
+      } catch (final IllegalFormatException ignore) {
+        return rawMessage;
+      }
+    }
+    return julFormatted;
+  }
+
   protected String customFormatMessage(final LogRecord iRecord) {
     final Level level = iRecord.getLevel();
-    final String message = AnsiCode.format(iRecord.getMessage(), false);
-    final Object[] additionalArgs = iRecord.getParameters();
+    final String message = AnsiCode.format(formatMessage(iRecord), false);
     final String requester = getSourceClassSimpleName(iRecord.getLoggerName());
 
     final StringBuilder buffer = new StringBuilder(512);
     buffer.append(EOL);
-    synchronized (dateFormat) {
-      buffer.append(dateFormat.format(new Date()));
-    }
+    buffer.append(dateFormat.format(LocalDateTime.now()));
 
     buffer.append(" %-5.5s ".formatted(level.getName()));
 
@@ -83,15 +120,7 @@ public class LogFormatter extends Formatter {
       buffer.append("] ");
     }
 
-    // FORMAT THE MESSAGE
-    try {
-      if (additionalArgs != null)
-        buffer.append(message.formatted(additionalArgs));
-      else
-        buffer.append(message);
-    } catch (final IllegalFormatException ignore) {
-      buffer.append(message);
-    }
+    buffer.append(message);
 
     return AnsiCode.format(buffer.toString(), false);
   }
