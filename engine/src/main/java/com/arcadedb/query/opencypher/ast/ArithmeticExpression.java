@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.time.LocalDate;
@@ -97,22 +98,25 @@ public class ArithmeticExpression implements Expression {
     if (leftValue == null || rightValue == null)
       return null;
 
-    // List concatenation/append for + operator (must be checked before string concatenation)
+    // List concatenation/append for + operator (must be checked before string concatenation).
+    // Coerce List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284) to a List.
     if (operator == Operator.ADD) {
-      if (leftValue instanceof List && rightValue instanceof List) {
-        final List<Object> combined = new ArrayList<>((List<?>) leftValue);
-        combined.addAll((List<?>) rightValue);
+      final List<Object> leftList = MultiValue.getMultiValueAsList(leftValue);
+      final List<Object> rightList = MultiValue.getMultiValueAsList(rightValue);
+      if (leftList != null && rightList != null) {
+        final List<Object> combined = new ArrayList<>(leftList);
+        combined.addAll(rightList);
         return combined;
       }
-      if (leftValue instanceof List) {
-        final List<Object> appended = new ArrayList<>((List<?>) leftValue);
+      if (leftList != null) {
+        final List<Object> appended = new ArrayList<>(leftList);
         appended.add(rightValue);
         return appended;
       }
-      if (rightValue instanceof List) {
+      if (rightList != null) {
         final List<Object> prepended = new ArrayList<>();
         prepended.add(leftValue);
-        prepended.addAll((List<?>) rightValue);
+        prepended.addAll(rightList);
         return prepended;
       }
     }

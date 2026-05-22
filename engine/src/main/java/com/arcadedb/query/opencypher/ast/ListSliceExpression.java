@@ -19,9 +19,11 @@
 package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.List;
 
 /**
@@ -58,9 +60,12 @@ public class ListSliceExpression implements Expression {
     if (listValue == null)
       return null;
 
+    // Treat Collections and Java arrays (incl. primitive arrays from numeric-array parameters,
+    // issue #4284) uniformly as Cypher lists without copying upfront.
+    final boolean isListLike = listValue instanceof Collection || listValue.getClass().isArray();
     final int size;
-    if (listValue instanceof List)
-      size = ((List<?>) listValue).size();
+    if (isListLike)
+      size = MultiValue.getSize(listValue);
     else if (listValue instanceof String)
       size = ((String) listValue).length();
     else
@@ -107,10 +112,15 @@ public class ListSliceExpression implements Expression {
       return new ArrayList<>();
     }
 
-    if (listValue instanceof List)
-      return new ArrayList<>(((List<?>) listValue).subList(from, to));
-    else
-      return ((String) listValue).substring(from, to);
+    if (isListLike) {
+      // Boxing into a List is unavoidable here - the Cypher slice result is itself a List - but only
+      // copy the requested range, not the whole input.
+      final List<Object> slice = new ArrayList<>(to - from);
+      for (int i = from; i < to; i++)
+        slice.add(MultiValue.getValue(listValue, i));
+      return slice;
+    }
+    return ((String) listValue).substring(from, to);
   }
 
   @Override

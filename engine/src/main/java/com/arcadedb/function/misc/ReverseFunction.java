@@ -21,6 +21,7 @@ package com.arcadedb.function.misc;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.MultiValue;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -44,8 +45,10 @@ public class ReverseFunction implements StatelessFunction {
     if (args[0] instanceof String) {
       final String str = (String) args[0];
       return new StringBuilder(str).reverse().toString();
-    } else if (args[0] instanceof List) {
-      final List<?> list = (List<?>) args[0];
+    }
+    // Accept List/Collection/array (incl. primitive arrays from numeric-array parameters, issue #4284).
+    final List<Object> list = MultiValue.getMultiValueAsList(args[0]);
+    if (list != null) {
       final List<Object> reversed = new ArrayList<>(list);
       Collections.reverse(reversed);
       return reversed;
