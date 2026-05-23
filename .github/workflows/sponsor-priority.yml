@@ -1,0 +1,164 @@
+name: Sponsor Priority Label
+
+on:
+  issues:
+    types: [opened, reopened]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: "Issue number to evaluate (manual dry-run)"
+        required: true
+        type: number
+      dry_run:
+        description: "If true, log the decision without applying the label"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  label-sponsor-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Evaluate sponsorship and label
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          SPONSORABLE_LOGIN: ArcadeData
+          LABEL_NAME: high_priority
+          # 6-char hex without the leading '#'; that's the form the REST labels API expects.
+          LABEL_COLOR: B60205
+          LABEL_DESCRIPTION: Issue opened by a GitHub Sponsor of ArcadeData
+        with:
+          script: |
+            const sponsorable = process.env.SPONSORABLE_LOGIN;
+            const labelName = process.env.LABEL_NAME;
+            const labelColor = process.env.LABEL_COLOR;
+            const labelDescription = process.env.LABEL_DESCRIPTION;
+
+            // Resolve the target issue. For issues events, use the payload directly.
+            // For workflow_dispatch, fetch the issue specified by the input.
+            let issue;
+            let dryRun = false;
+            if (context.eventName === "workflow_dispatch") {
+              dryRun = context.payload.inputs.dry_run !== "false";
+              const issueNumber = Number(context.payload.inputs.issue_number);
+              try {
+                const { data } = await github.rest.issues.get({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: issueNumber,
+                });
+                issue = data;
+              } catch (err) {
+                // audit() needs the issue user/association; on dispatch fetch failure we don't
+                // have those yet, so emit a substitute info line keyed by issue_number instead.
+                core.warning(`sponsor-priority: dispatch issues.get failed: ${err.message}`);
+                core.info(
+                  `sponsor-priority: issue_number=${context.payload.inputs.issue_number}, ` +
+                  `isSponsor=unknown, action=errored` +
+                  (dryRun ? " (dry_run)" : "")
+                );
+                return;
+              }
+            } else {
+              issue = context.payload.issue;
+            }
+
+            const login = issue.user.login;
+            const userType = issue.user.type;
+            const association = issue.author_association;
+
+            const audit = (isSponsor, action) => {
+              core.info(
+                `sponsor-priority: user=${login}, association=${association}, ` +
+                `isSponsor=${isSponsor}, action=${action}` +
+                (dryRun ? " (dry_run)" : "")
+              );
+            };
+
+            // Skip bots and internal contributors before any external call.
+            const isBot = userType === "Bot" || login.endsWith("[bot]");
+            const isInternal =
+              association === "OWNER" ||
+              association === "MEMBER" ||
+              association === "COLLABORATOR";
+            if (isBot || isInternal) {
+              audit("n/a", "skipped");
+              return;
+            }
+
+            // Probe sponsorship.
+            let isSponsor = null;
+            try {
+              const result = await github.graphql(
+                `query($login: String!, $sponsorable: String!) {
+                   organization(login: $sponsorable) {
+                     isSponsoredBy(accountLogin: $login)
+                   }
+                 }`,
+                { login, sponsorable }
+              );
+              isSponsor = Boolean(result?.organization?.isSponsoredBy);
+            } catch (err) {
+              core.warning(`sponsor-priority: graphql failed: ${err.message}`);
+              audit("unknown", "errored");
+              return;
+            }
+
+            if (!isSponsor) {
+              audit(false, "skipped");
+              return;
+            }
+
+            if (dryRun) {
+              audit(true, "dry_run");
+              return;
+            }
+
+            // Ensure the label exists, then apply it.
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: labelName,
+              });
+            } catch (err) {
+              if (err.status === 404) {
+                try {
+                  await github.rest.issues.createLabel({
+                    owner: context.repo.owner,
+                    repo: context.repo.repo,
+                    name: labelName,
+                    color: labelColor,
+                    description: labelDescription,
+                  });
+                } catch (createErr) {
+                  // 422 = lost the race to a concurrent run; the label now exists, fall through.
+                  if (createErr.status !== 422) {
+                    core.warning(`sponsor-priority: createLabel failed: ${createErr.message}`);
+                    audit(true, "errored");
+                    return;
+                  }
+                }
+              } else {
+                core.warning(`sponsor-priority: getLabel failed: ${err.message}`);
+                audit(true, "errored");
+                return;
+              }
+            }
+
+            try {
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: [labelName],
+              });
+              audit(true, "labeled");
+            } catch (err) {
+              core.warning(`sponsor-priority: addLabels failed: ${err.message}`);
+              audit(true, "errored");
+            }
