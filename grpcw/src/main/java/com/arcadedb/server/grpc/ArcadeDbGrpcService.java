@@ -52,6 +52,7 @@ import com.arcadedb.server.grpc.InsertOptions.TransactionMode;
 import com.arcadedb.server.grpc.ProjectionSettings.ProjectionEncoding;
 import com.arcadedb.server.monitor.QueryProfile;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
+import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -2897,7 +2898,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // transaction management). Other wire protocols (HTTP, Postgres) do this as well.
         // Always call init() to ensure the context references the correct database instance,
         // since gRPC reuses threads from its pool and a stale context may exist.
-        DatabaseContext.INSTANCE.init((DatabaseInternal) db);
+        final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) db);
+
+        // Propagate the authenticated user so HA-Raft can forward commands to the leader:
+        // forwardCommandToLeaderViaRaft reads proxied.getCurrentUserName() to set the
+        // X-ArcadeDB-Forwarded-User header. Without this, every command issued through a
+        // follower throws "Cannot forward command to leader: no authenticated user in the
+        // current security context". Mirrors PostgresNetworkExecutor.openDatabase().
+        final String authenticatedUser = resolveAuthenticatedUser(credentials);
+        if (authenticatedUser != null && arcadeServer.getSecurity() != null) {
+          final ServerSecurityUser secUser = arcadeServer.getSecurity().getUser(authenticatedUser);
+          if (secUser != null)
+            ctx.setCurrentUser(secUser.getDatabaseUser(db));
+        }
+
         return db;
       }
     }
@@ -2947,6 +2961,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         throw new RuntimeException("Cannot open database: " + databaseName + " - " + e.getMessage(), e);
       }
     }
+  }
+
+  /**
+   * Resolves the authenticated username for the current request. Prefers the interceptor-set
+   * gRPC context (Bearer or basic auth flows) and falls back to the credentials carried by the
+   * request payload, mirroring the precedence applied in {@link #validateCredentials}.
+   */
+  private String resolveAuthenticatedUser(final DatabaseCredentials credentials) {
+    final String contextUser = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
+    if (contextUser != null && !contextUser.isEmpty())
+      return contextUser;
+    if (credentials != null) {
+      final String credUser = credentials.getUsername();
+      if (credUser != null && !credUser.isEmpty())
+        return credUser;
+    }
+    return null;
   }
 
   private void validateCredentials(DatabaseCredentials credentials) {
