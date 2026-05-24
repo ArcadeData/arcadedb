@@ -20,11 +20,14 @@
 package com.arcadedb.database;
 
 import com.arcadedb.engine.Bucket;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.logging.Level;
 
 /**
@@ -33,8 +36,16 @@ import java.util.logging.Level;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class LocalTransactionExplicitLock implements TransactionExplicitLock {
+  // Bounded internal retry budget for the snapshot-vs-lock race against compaction-induced
+  // file migration. Safe to retry here because no transaction modifications exist when lock()
+  // runs, so each attempt is cheap (no rollback, no page reload). Converges in microseconds
+  // instead of burning user-level COMMIT RETRY attempts that incur full BEGIN+...+COMMIT cost.
+  private static final int MAX_INTERNAL_RETRIES = 50;
+
   private final TransactionContext transactionContext;
   private final IntHashSet         filesToLock = new IntHashSet();
+  private final List<String>       typeNames   = new ArrayList<>();
+  private final List<String>       bucketNames = new ArrayList<>();
 
   public LocalTransactionExplicitLock(final TransactionContext transactionContext) {
     this.transactionContext = transactionContext;
@@ -42,6 +53,44 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
 
   @Override
   public LocalTransactionExplicitLock bucket(final String bucketName) {
+    bucketNames.add(bucketName);
+    collectBucketFileIds(bucketName);
+    return this;
+  }
+
+  @Override
+  public LocalTransactionExplicitLock type(final String typeName) {
+    typeNames.add(typeName);
+    collectTypeFileIds(typeName);
+    return this;
+  }
+
+  @Override
+  public void lock() {
+    ConcurrentModificationException last = null;
+    for (int attempt = 0; attempt < MAX_INTERNAL_RETRIES; attempt++) {
+      try {
+        transactionContext.explicitLock(filesToLock);
+        return;
+      } catch (final ConcurrentModificationException e) {
+        // A compaction migrated one of the snapshotted file IDs between collection and lock check.
+        // Re-resolve and try again; the new file ID is visible via mutable.getFileId() after splitIndex swap.
+        last = e;
+        refreshFileIds();
+      }
+    }
+    throw last;
+  }
+
+  private void refreshFileIds() {
+    filesToLock.clear();
+    for (final String b : bucketNames)
+      collectBucketFileIds(b);
+    for (final String t : typeNames)
+      collectTypeFileIds(t);
+  }
+
+  private void collectBucketFileIds(final String bucketName) {
     final Bucket bucket = transactionContext.getDatabase().getSchema().getBucketByName(bucketName);
     addNonNegative(bucket.getFileId());
     final DocumentType associatedType = transactionContext.getDatabase().getSchema().getInvolvedTypeByBucketId(bucket.getFileId());
@@ -49,12 +98,9 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
       for (final var typeIndex : associatedType.getAllIndexes(true))
         for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
           addNonNegative(idx.getFileId());
-
-    return this;
   }
 
-  @Override
-  public LocalTransactionExplicitLock type(final String typeName) {
+  private void collectTypeFileIds(final String typeName) {
     final DocumentType type = transactionContext.getDatabase().getSchema().getType(typeName);
 
     // Lock all indexes for this type
@@ -74,13 +120,6 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
     LogManager.instance().log(this, Level.FINE,
       "Explicit lock for type '%s' will lock %d bucket files (threadId=%d)",
       typeName, filesToLock.size(), Thread.currentThread().threadId());
-
-    return this;
-  }
-
-  @Override
-  public void lock() {
-    transactionContext.explicitLock(filesToLock);
   }
 
   private void addNonNegative(final int fileId) {
