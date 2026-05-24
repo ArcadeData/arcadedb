@@ -37,6 +37,11 @@ import java.util.Map;
  * </ul>
  * <p>The returned map contains the coordinate keys and a {@code crs} field indicating
  * the coordinate reference system.</p>
+ * <p>Numeric coordinate keys that resolve to a {@link String} are coerced to {@link Number}
+ * when the string parses cleanly as a decimal (e.g. a node whose {@code lat} property was
+ * declared as {@link com.arcadedb.schema.Type#STRING}). When coercion is impossible the
+ * function raises a {@link CommandExecutionException} naming the offending key and value
+ * rather than leaking a raw {@link ClassCastException} (issue #4305).</p>
  */
 public class CypherPointFunction implements StatelessFunction {
   @Override
@@ -53,10 +58,8 @@ public class CypherPointFunction implements StatelessFunction {
     if (args.length == 2) {
       if (args[0] == null || args[1] == null)
         return null;
-      if (!(args[0] instanceof Number) || !(args[1] instanceof Number))
-        throw new CommandExecutionException("point() with two arguments requires numeric latitude and longitude");
-      final double lat = ((Number) args[0]).doubleValue();
-      final double lon = ((Number) args[1]).doubleValue();
+      final double lat = coerceCoordinate("latitude", args[0]);
+      final double lon = coerceCoordinate("longitude", args[1]);
       final Map<String, Object> result = new LinkedHashMap<>();
       result.put("latitude", lat);
       result.put("longitude", lon);
@@ -81,8 +84,8 @@ public class CypherPointFunction implements StatelessFunction {
       final Object lat = map.get("latitude");
       if (lon == null || lat == null)
         return null;
-      final double x = ((Number) lon).doubleValue();
-      final double y = ((Number) lat).doubleValue();
+      final double x = coerceCoordinate("longitude", lon);
+      final double y = coerceCoordinate("latitude", lat);
       result.put("longitude", x);
       result.put("latitude", y);
       result.put("x", x);
@@ -98,8 +101,8 @@ public class CypherPointFunction implements StatelessFunction {
       final Object yv = map.get("y");
       if (xv == null || yv == null)
         return null;
-      final double x = ((Number) xv).doubleValue();
-      final double y = ((Number) yv).doubleValue();
+      final double x = coerceCoordinate("x", xv);
+      final double y = coerceCoordinate("y", yv);
       result.put("x", x);
       result.put("y", y);
       addOptionalZ(result, map);
@@ -108,8 +111,13 @@ public class CypherPointFunction implements StatelessFunction {
         result.put("crs", crsObj.toString());
       else
         result.put("crs", result.containsKey("z") ? "cartesian-3D" : "cartesian");
-      if (map.containsKey("srid"))
-        result.put("srid", ((Number) map.get("srid")).intValue());
+      if (map.containsKey("srid")) {
+        final Object sridObj = map.get("srid");
+        if (!(sridObj instanceof Number))
+          throw new CommandExecutionException(
+              "point() 'srid' must be numeric, found " + describe(sridObj));
+        result.put("srid", ((Number) sridObj).intValue());
+      }
     } else {
       throw new CommandExecutionException("point() map must contain x/y or longitude/latitude properties");
     }
@@ -121,11 +129,39 @@ public class CypherPointFunction implements StatelessFunction {
     if (map.containsKey("z")) {
       final Object zv = map.get("z");
       if (zv != null)
-        result.put("z", ((Number) zv).doubleValue());
+        result.put("z", coerceCoordinate("z", zv));
     } else if (map.containsKey("height")) {
       final Object hv = map.get("height");
       if (hv != null)
-        result.put("z", ((Number) hv).doubleValue());
+        result.put("z", coerceCoordinate("height", hv));
     }
+  }
+
+  /**
+   * Returns the numeric value of {@code value}, coercing a numeric {@link String} when the
+   * underlying property is typed as STRING but the contents are a clean decimal literal.
+   * Throws a {@link CommandExecutionException} that names {@code key} and {@code value}
+   * when coercion is impossible, so the user sees a clear error instead of a raw
+   * {@link ClassCastException} (issue #4305).
+   */
+  private static double coerceCoordinate(final String key, final Object value) {
+    if (value instanceof Number n)
+      return n.doubleValue();
+    if (value instanceof String s) {
+      try {
+        return Double.parseDouble(s.trim());
+      } catch (final NumberFormatException ignored) {
+        throw new CommandExecutionException(
+            "point() '" + key + "' must be numeric, found String value '" + s + "'");
+      }
+    }
+    throw new CommandExecutionException(
+        "point() '" + key + "' must be numeric, found " + describe(value));
+  }
+
+  private static String describe(final Object value) {
+    if (value == null)
+      return "null";
+    return value.getClass().getSimpleName() + " value '" + value + "'";
   }
 }
