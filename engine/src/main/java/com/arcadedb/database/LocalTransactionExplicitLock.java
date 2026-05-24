@@ -40,7 +40,9 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
   // file migration. Safe to retry here because no transaction modifications exist when lock()
   // runs, so each attempt is cheap (no rollback, no page reload). Converges in microseconds
   // instead of burning user-level COMMIT RETRY attempts that incur full BEGIN+...+COMMIT cost.
-  private static final int MAX_INTERNAL_RETRIES = 50;
+  // Sized for the worst legitimate case (concurrent compactions across all indexes of a
+  // multi-indexed type); persistent retry exhaustion past this signals a real concurrency bug.
+  private static final int MAX_INTERNAL_RETRIES = 10;
 
   private final TransactionContext transactionContext;
   private final IntHashSet         filesToLock = new IntHashSet();
@@ -76,10 +78,15 @@ public class LocalTransactionExplicitLock implements TransactionExplicitLock {
         // A compaction migrated one of the snapshotted file IDs between collection and lock check.
         // Re-resolve and try again; the new file ID is visible via mutable.getFileId() after splitIndex swap.
         last = e;
+        LogManager.instance().log(this, Level.WARNING,
+            "Retrying explicit lock acquisition after compaction-induced file migration (attempt %d/%d, threadId=%d): %s",
+            attempt + 1, MAX_INTERNAL_RETRIES, Thread.currentThread().threadId(), e.getMessage());
         refreshFileIds();
       }
     }
-    throw last;
+    throw new ConcurrentModificationException(
+        "Exhausted " + MAX_INTERNAL_RETRIES + " internal retries acquiring explicit lock after compaction-induced file migration. Last error: "
+            + last.getMessage());
   }
 
   private void refreshFileIds() {

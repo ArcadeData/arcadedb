@@ -2905,11 +2905,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // X-ArcadeDB-Forwarded-User header. Without this, every command issued through a
         // follower throws "Cannot forward command to leader: no authenticated user in the
         // current security context". Mirrors PostgresNetworkExecutor.openDatabase().
-        final String authenticatedUser = resolveAuthenticatedUser(credentials);
+        final String authenticatedUser = resolvedUsername(credentials);
         if (authenticatedUser != null && arcadeServer.getSecurity() != null) {
           final ServerSecurityUser secUser = arcadeServer.getSecurity().getUser(authenticatedUser);
           if (secUser != null)
             ctx.setCurrentUser(secUser.getDatabaseUser(db));
+          else
+            // A race between credential validation and concurrent user mutation can land here.
+            // Leaving the user unset would silently break HA leader-forwarding, so surface it.
+            LogManager.instance().log(this, Level.WARNING,
+                "gRPC request authenticated as '%s' but server security has no matching user; HA leader-forwarding will fail for this request",
+                authenticatedUser);
         }
 
         return db;
@@ -2966,9 +2972,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   /**
    * Resolves the authenticated username for the current request. Prefers the interceptor-set
    * gRPC context (Bearer or basic auth flows) and falls back to the credentials carried by the
-   * request payload, mirroring the precedence applied in {@link #validateCredentials}.
+   * request payload. Single source of truth for username precedence; both
+   * {@link #validateCredentials(DatabaseCredentials)} and {@link #getDatabase(String, DatabaseCredentials)}
+   * delegate here so the rule cannot drift between callers.
    */
-  private String resolveAuthenticatedUser(final DatabaseCredentials credentials) {
+  private String resolvedUsername(final DatabaseCredentials credentials) {
     final String contextUser = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
     if (contextUser != null && !contextUser.isEmpty())
       return contextUser;
@@ -2981,21 +2989,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private void validateCredentials(DatabaseCredentials credentials) {
-    // Check if user is already authenticated via the interceptor (e.g., via Bearer token)
-    final String authenticatedUser = GrpcAuthInterceptor.USER_CONTEXT_KEY.get();
-    if (authenticatedUser != null && !authenticatedUser.isEmpty()) {
-      // User already authenticated via interceptor, no need to validate credentials
-      LogManager.instance().log(this, Level.FINE, """
-          validateCredentials(): user already authenticated via interceptor:\
-           %s""", authenticatedUser);
-      return;
-    }
-
-    // Implement credential validation logic
-    // This is a placeholder - integrate with ArcadeDB's security system
-    if (credentials == null || credentials.getUsername().isEmpty()) {
+    final String authenticatedUser = resolvedUsername(credentials);
+    if (authenticatedUser == null)
       throw new IllegalArgumentException("Invalid credentials");
-    }
+
+    LogManager.instance().log(this, Level.FINE, "validateCredentials(): resolved user '%s'", authenticatedUser);
   }
 
   /**
