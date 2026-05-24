@@ -18,6 +18,7 @@
  */
 package com.arcadedb.test.load;
 
+import com.arcadedb.remote.RemoteException;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
@@ -134,6 +135,10 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
       }
     }
 
+    LocalDateTime finishedAt = LocalDateTime.now();
+    logger.info("Finishing at {}", DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(finishedAt));
+    logger.info("Total time: {} minutes", Duration.between(startedAt, finishedAt).toMinutes());
+
     Awaitility.await()
         .atMost(1, TimeUnit.MINUTES)
         .pollInterval(5, TimeUnit.SECONDS)
@@ -148,15 +153,17 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
             logger.info("Final check - Users: {} / {} / {} | Photos: {} / {} / {}", users1, users2, users3, photos1, photos2,
                 photos3);
             return users1 == users2 && users1 == users3 && photos1 == photos2 && photos1 == photos3;
-          } catch (final Exception e) {
-            logger.warn("Quorum recovery check failed: {}", e.getMessage());
+          } catch (final RemoteException e) {
+            // Transient: a node has not caught up or a connection blip - keep polling.
+            logger.debug("Quorum recovery check transient failure: {}", e.getMessage());
+            return false;
+          } catch (final RuntimeException e) {
+            // Unexpected: programming error or infra failure. Log loudly so the cause is visible
+            // before the 1-minute timeout instead of after.
+            logger.warn("Quorum recovery check threw unexpected exception, will keep polling", e);
             return false;
           }
         });
-
-    LocalDateTime finishedAt = LocalDateTime.now();
-    logger.info("Finishing at {}", DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(finishedAt));
-    logger.info("Total time: {} minutes", Duration.between(startedAt, finishedAt).toMinutes());
 
     Metrics.globalRegistry.getMeters().forEach(meter -> {
       logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure());
