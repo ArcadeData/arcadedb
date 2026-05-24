@@ -43,7 +43,7 @@
     "jszip": "^3.10.1",
     "pdfmake": "^0.3.8",
     "swagger-ui-dist": "^5.32.6",
-    "sweetalert2": "^11.26.24"
+    "sweetalert2": "^11.26.25"
   },
   "devDependencies": {
     "copy-webpack-plugin": "^14.0.0",
