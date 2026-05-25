@@ -28,6 +28,26 @@ suggested approach from the issue reporter.
 `mvn test -pl network` - 373 tests, 0 failures, 0 errors.
 New tests: `RemoteVertexTest` (5 tests) - all pass.
 
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4340
+
+## Review Cycles
+
+### Cycle 1 - fc636fe0
+
+gemini-code-assist posted 4 comments (state: COMMENTED), all variations of the same claim:
+"map keys should not have a leading colon - use `p0` instead of `:p0`."
+
+**Verdict: rejected (technically incorrect).** `NamedParameter.getValue()` tries
+`params.get(":" + key)` first, so `:p0` map keys resolve correctly. This is also
+the established convention in `QueryTest.java` (`params.put(":name", "Jay")`).
+Pushed back with technical reasoning in the comment thread.
+
+Working tree: clean after review - no changes needed.
+
+**Final state: clean-approval** (no actionable review items)
+
 ## Verification
 
 Run: `mvn test -pl network -Dtest=RemoteVertexTest`
