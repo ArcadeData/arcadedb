@@ -63,4 +63,24 @@ class CompressionTest {
     assertThat(decompressed.getContent()).startsWith(payload);
     assertThat(decompressed.size()).isEqualTo(decompressedLength);
   }
+
+  @Test
+  void compressionOfSlicedBinary() {
+    // Regression test for #4317: compress(Binary) must account for getContentBeginOffset()
+    // when the Binary is a slice (arrayOffset > 0 in the backing ByteBuffer).
+    final byte[] prefix = "HEADER".getBytes();
+    final byte[] payload = "This is the actual payload to compress".getBytes();
+    final Binary buffer = new Binary(prefix.length + payload.length);
+    buffer.putByteArray(prefix);
+    buffer.putByteArray(payload);
+    buffer.flip();
+    final Binary slice = buffer.slice(prefix.length);
+
+    final int decompressedLength = slice.size();
+    final Binary compressed = CompressionFactory.getDefault().compress(slice);
+    final Binary decompressed = CompressionFactory.getDefault().decompress(compressed, decompressedLength);
+
+    assertThat(decompressed.getContent()).startsWith(payload);
+    assertThat(decompressed.size()).isEqualTo(decompressedLength);
+  }
 }
