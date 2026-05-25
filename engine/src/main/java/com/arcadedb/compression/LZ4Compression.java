@@ -85,7 +85,7 @@ public class LZ4Compression implements Compression {
     final int decompressedLength = data.size() - data.position();
     final int maxCompressedLength = compressor.maxCompressedLength(decompressedLength);
     final byte[] compressed = new byte[maxCompressedLength];
-    final int compressedLength = compressor.compress(data.getContent(), data.position(), data.size(), compressed, 0,
+    final int compressedLength = compressor.compress(data.getContent(), data.position(), decompressedLength, compressed, 0,
         maxCompressedLength);
 
     return new Binary(compressed, compressedLength);
