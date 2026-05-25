@@ -210,28 +210,68 @@ function profilerRenderDeltaCards() {
 
   var startP = summary.snapshotStart.profiler || {};
   var stopP = summary.snapshotStop.profiler || {};
+  var startDbs = summary.snapshotStart.databases || {};
+  var stopDbs = summary.snapshotStop.databases || {};
 
+  // Scope DB-specific counters to the databases that actually appear in the profiled queries
+  // (falling back to all DBs if the server didn't send the list, e.g. an older backend).
+  var profiledDbList = profilerData.profiledDatabases;
+  if (!profiledDbList || !profiledDbList.length)
+    profiledDbList = Object.keys(stopDbs);
+
+  function sumDbField(snap, fields) {
+    var total = 0;
+    var found = false;
+    for (var i = 0; i < profiledDbList.length; i++) {
+      var db = snap[profiledDbList[i]];
+      if (!db) continue;
+      for (var j = 0; j < fields.length; j++) {
+        if (typeof db[fields[j]] === "number") {
+          total += db[fields[j]];
+          found = true;
+        }
+      }
+    }
+    return found ? total : null;
+  }
+
+  function readGlobal(snap, key, field) {
+    return (snap[key] && snap[key][field] !== undefined) ? snap[key][field] : null;
+  }
+
+  // scope: "global" reads from snapshotXxx.profiler (JVM / PageManager singleton).
+  // scope: "db" sums across only the profiled databases from snapshotXxx.databases.
+  // The "Queries" card merges queries+commands because Studio sends every SQL/Cypher
+  // statement, including SELECTs, through database.command(), not database.query().
   var cards = [
-    { label: "Heap Available", key: "ramHeapAvailablePerc", field: "perc", unit: "%", invert: true },
-    { label: "CPU Load", key: "cpuLoad", field: "perc", unit: "%", invert: false },
-    { label: "Queries", key: "queries", field: "count", unit: "", invert: false },
-    { label: "Write Tx", key: "writeTx", field: "count", unit: "", invert: false },
-    { label: "Records Created", key: "createRecord", field: "count", unit: "", invert: false },
-    { label: "Records Updated", key: "updateRecord", field: "count", unit: "", invert: false },
-    { label: "Pages Read", key: "pagesRead", field: "count", unit: "", invert: false },
-    { label: "Cache Hits", key: "pageCacheHits", field: "count", unit: "", invert: false },
-    { label: "GC Time", key: "gcTime", field: "count", unit: " ms", invert: false }
+    { label: "Heap Available", scope: "global", key: "ramHeapAvailablePerc", field: "perc", unit: "%", invert: true, kind: "snapshot" },
+    { label: "CPU Load",       scope: "global", key: "cpuLoad",              field: "perc", unit: "%", invert: false, kind: "snapshot" },
+    { label: "Queries",        scope: "db",     dbFields: ["queries", "commands"], unit: "", invert: false, kind: "counter" },
+    { label: "Write Tx",       scope: "db",     dbFields: ["writeTx"],             unit: "", invert: false, kind: "counter" },
+    { label: "Records Created",scope: "db",     dbFields: ["createRecord"],        unit: "", invert: false, kind: "counter" },
+    { label: "Records Updated",scope: "db",     dbFields: ["updateRecord"],        unit: "", invert: false, kind: "counter" },
+    { label: "Pages Read",     scope: "global", key: "pagesRead",            field: "count", unit: "", invert: false, kind: "counter" },
+    { label: "Cache Hits",     scope: "global", key: "pageCacheHits",        field: "count", unit: "", invert: false, kind: "counter" },
+    { label: "GC Time",        scope: "global", key: "gcTime",               field: "count", unit: " ms", invert: false, kind: "counter" }
   ];
 
   for (var i = 0; i < cards.length; i++) {
     var c = cards[i];
-    var startVal = (startP[c.key] && startP[c.key][c.field] !== undefined) ? startP[c.key][c.field] : null;
-    var stopVal = (stopP[c.key] && stopP[c.key][c.field] !== undefined) ? stopP[c.key][c.field] : null;
+    var startVal, stopVal;
+    if (c.scope === "db") {
+      startVal = sumDbField(startDbs, c.dbFields);
+      stopVal = sumDbField(stopDbs, c.dbFields);
+    } else {
+      startVal = readGlobal(startP, c.key, c.field);
+      stopVal = readGlobal(stopP, c.key, c.field);
+    }
     if (startVal === null || stopVal === null)
       continue;
 
     var delta = stopVal - startVal;
-    var deltaStr = (delta >= 0 ? "+" : "") + profilerFormatNum(delta) + c.unit;
+    var deltaSigned = (delta >= 0 ? "+" : "") + profilerFormatNum(delta) + c.unit;
+    var stopStr = profilerFormatNum(stopVal) + c.unit;
+
     var deltaClass = "";
     if (Math.abs(delta) > 0.01) {
       if (c.invert)
@@ -240,13 +280,29 @@ function profilerRenderDeltaCards() {
         deltaClass = delta > 0 ? "text-warning" : "text-success";
     }
 
+    // For "snapshot" cards (cpu load, heap %) the absolute current value is the headline;
+    // the delta over the profile window is the small secondary line.
+    // For "counter" cards (queries, records, cache hits, ...) the delta is what users care
+    // about during the profile window, so it becomes the headline and the cumulative
+    // counter is shown as a small "now: N" footnote for context.
+    var primary, secondary, primaryClass;
+    if (c.kind === "snapshot") {
+      primary = stopStr;
+      primaryClass = "text-primary";
+      secondary = '<span class="' + deltaClass + '">' + deltaSigned + '</span>';
+    } else {
+      primary = deltaSigned;
+      primaryClass = deltaClass || "text-primary";
+      secondary = '<span class="text-muted">total: ' + stopStr + '</span>';
+    }
+
     container.append(
       '<div class="col-auto">' +
       '  <div class="card" style="background: var(--bg-card); border: 1px solid var(--border-ddd); min-width: 120px;">' +
       '    <div class="card-body p-2 text-center">' +
       '      <div style="font-size: 0.72rem; color: var(--text-lightest); text-transform: uppercase;">' + c.label + '</div>' +
-      '      <div style="font-size: 1rem; font-weight: 600; color: var(--text-primary);">' + profilerFormatNum(stopVal) + c.unit + '</div>' +
-      '      <div class="' + deltaClass + '" style="font-size: 0.78rem;">' + deltaStr + '</div>' +
+      '      <div class="' + primaryClass + '" style="font-size: 1rem; font-weight: 600;">' + primary + '</div>' +
+      '      <div style="font-size: 0.78rem;">' + secondary + '</div>' +
       '    </div>' +
       '  </div>' +
       '</div>'
@@ -267,16 +323,35 @@ function profilerRenderDbBreakdown() {
     return;
   }
 
+  // The per-DB table shows what happened during the profile window. The primary number
+  // in each cell is the delta (matching the summary cards above); the cumulative total
+  // is shown as a small footnote for context.
+  // "Queries" merges queries+commands because Studio always uses POST /command, which
+  // increments stats.commands rather than stats.queries.
   var html = '<table class="table table-sm" style="font-size: 0.82rem;"><thead><tr><th>Database</th><th>Queries</th><th>Write Tx</th><th>Read Tx</th><th>Created</th><th>Updated</th><th>Deleted</th></tr></thead><tbody>';
-  var fields = ["queries", "writeTx", "readTx", "createRecord", "updateRecord", "deleteRecord"];
+  var fields = [
+    ["queries", "commands"],
+    ["writeTx"],
+    ["readTx"],
+    ["createRecord"],
+    ["updateRecord"],
+    ["deleteRecord"]
+  ];
   for (var i = 0; i < dbNames.length; i++) {
     var name = dbNames[i];
     html += '<tr><td><strong>' + escapeHtml(name) + '</strong></td>';
     for (var j = 0; j < fields.length; j++) {
-      var startVal = (startDbs[name] && startDbs[name][fields[j]]) || 0;
-      var stopVal = (stopDbs[name] && stopDbs[name][fields[j]]) || 0;
+      var startVal = 0;
+      var stopVal = 0;
+      var group = fields[j];
+      for (var k = 0; k < group.length; k++) {
+        startVal += (startDbs[name] && startDbs[name][group[k]]) || 0;
+        stopVal += (stopDbs[name] && stopDbs[name][group[k]]) || 0;
+      }
       var delta = stopVal - startVal;
-      html += '<td>' + stopVal + ' <small class="text-muted">(+' + delta + ')</small></td>';
+      var deltaStr = (delta >= 0 ? "+" : "") + delta;
+      var deltaClass = delta > 0 ? "text-warning" : (delta < 0 ? "text-danger" : "");
+      html += '<td><span class="' + deltaClass + '"><strong>' + deltaStr + '</strong></span> <small class="text-muted">/ ' + stopVal + '</small></td>';
     }
     html += '</tr>';
   }

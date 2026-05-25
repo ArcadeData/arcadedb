@@ -34,8 +34,10 @@ import java.util.Arrays;
 import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -227,6 +229,15 @@ public class ServerQueryProfiler {
     result.put("timeoutSeconds", timeoutSeconds);
     result.put("totalQueries", totalRecorded);
 
+    // Names of databases that have at least one recorded query in this window.
+    // The Studio summary cards use this to scope DB-specific deltas (queries, commands,
+    // writeTx, records, ...) to only the databases that were actually exercised, instead
+    // of summing across every database registered with the server.
+    final JSONArray profiledDbs = new JSONArray();
+    for (final String name : collectProfiledDatabaseNames())
+      profiledDbs.put(name);
+    result.put("profiledDatabases", profiledDbs);
+
     // Summary with snapshots
     final JSONObject summary = new JSONObject();
     if (snapshotStartProfiler != null) {
@@ -249,6 +260,17 @@ public class ServerQueryProfiler {
     result.put("queries", aggregateQueries());
 
     return result;
+  }
+
+  private Set<String> collectProfiledDatabaseNames() {
+    final LinkedHashSet<String> names = new LinkedHashSet<>();
+    final int count = Math.min(totalRecorded, MAX_ENTRIES);
+    for (int i = 0; i < count; i++) {
+      final ProfiledQueryEntry entry = entries[i];
+      if (entry != null && entry.database != null)
+        names.add(entry.database);
+    }
+    return names;
   }
 
   private JSONArray aggregateQueries() {

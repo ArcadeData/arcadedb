@@ -51,23 +51,13 @@ public class Profiler {
   public synchronized JSONObject toJSON() {
     final JSONObject json = new JSONObject();
 
-    long readCacheUsed = 0;
-    long cacheMax = 0;
-    long pagesRead = 0;
-    long pagesWritten = 0;
-    long pagesReadSize = 0;
-    long pagesWrittenSize = 0;
-    long pageFlushQueueLength = 0;
-    long asyncQueueLength = 0;
-    int asyncParallelLevel = 0;
-    long pageCacheHits = 0;
-    long pageCacheMiss = 0;
     long totalOpenFiles = 0;
     long maxOpenFiles = 0;
     long walPagesWritten = 0;
     long walBytesWritten = 0;
     long walTotalFiles = 0;
-    long concurrentModificationExceptions = 0;
+    long asyncQueueLength = 0;
+    int asyncParallelLevel = 0;
 
     long writeTx = 0;
     long readTx = 0;
@@ -84,10 +74,6 @@ public class Profiler {
     long iterateBucket = 0;
     long countType = 0;
     long countBucket = 0;
-    long evictionRuns = 0;
-    long pagesEvicted = 0;
-    int readCachePages = 0;
-    int writeCachePages = 0;
     long indexCompactions = 0;
 
     for (final DatabaseInternal db : databases) {
@@ -109,21 +95,6 @@ public class Profiler {
       countBucket += (long) dbStats.get("countBucket");
       indexCompactions += (long) dbStats.get("indexCompactions");
 
-      final PageManager.PPageManagerStats pStats = db.getPageManager().getStats();
-      readCacheUsed += pStats.readCacheRAM;
-      cacheMax += pStats.maxRAM;
-      pagesRead += pStats.pagesRead;
-      pagesReadSize += pStats.pagesReadSize;
-      pagesWritten += pStats.pagesWritten;
-      pagesWrittenSize += pStats.pagesWrittenSize;
-      pageFlushQueueLength += pStats.pageFlushQueueLength;
-      pageCacheHits += pStats.cacheHits;
-      pageCacheMiss += pStats.cacheMiss;
-      concurrentModificationExceptions += pStats.concurrentModificationExceptions;
-      evictionRuns += pStats.evictionRuns;
-      pagesEvicted += pStats.pagesEvicted;
-      readCachePages += pStats.readCachePages;
-
       final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
       totalOpenFiles += fStats.totalOpenFiles;
       maxOpenFiles += fStats.maxOpenFiles;
@@ -137,6 +108,24 @@ public class Profiler {
       walBytesWritten += (Long) walStats.get("bytesWritten");
       walTotalFiles += (Long) walStats.get("logFiles");
     }
+
+    // PageManager is a JVM-wide singleton; counters are global, not per-DB.
+    // Reading them once outside the loop avoids multiplying by databases.size().
+    final PageManager.PPageManagerStats pStats = PageManager.INSTANCE.getStats();
+    final long readCacheUsed = pStats.readCacheRAM;
+    final long cacheMax = pStats.maxRAM;
+    final long pagesRead = pStats.pagesRead;
+    final long pagesReadSize = pStats.pagesReadSize;
+    final long pagesWritten = pStats.pagesWritten;
+    final long pagesWrittenSize = pStats.pagesWrittenSize;
+    final int pageFlushQueueLength = pStats.pageFlushQueueLength;
+    final long pageCacheHits = pStats.cacheHits;
+    final long pageCacheMiss = pStats.cacheMiss;
+    final long concurrentModificationExceptions = pStats.concurrentModificationExceptions;
+    final long evictionRuns = pStats.evictionRuns;
+    final long pagesEvicted = pStats.pagesEvicted;
+    final int readCachePages = pStats.readCachePages;
+    final int writeCachePages = 0;
 
     json.put("readCacheUsed", new JSONObject().put("space", readCacheUsed));
     json.put("cacheMax", new JSONObject().put("space", cacheMax));
@@ -243,23 +232,13 @@ public class Profiler {
     final long freeSpaceInMB = new File(".").getFreeSpace();
     final long totalSpaceInMB = new File(".").getTotalSpace();
 
-    long readCacheUsed = 0;
-    long cacheMax = 0;
-    long pagesRead = 0;
-    long pagesWritten = 0;
-    long pagesReadSize = 0;
-    long pagesWrittenSize = 0;
-    long pageFlushQueueLength = 0;
     long asyncQueueLength = 0;
     int asyncParallelLevel = 0;
-    long pageCacheHits = 0;
-    long pageCacheMiss = 0;
     long totalOpenFiles = 0;
     long maxOpenFiles = 0;
     long walPagesWritten = 0;
     long walBytesWritten = 0;
     long walTotalFiles = 0;
-    long concurrentModificationExceptions = 0;
 
     long writeTx = 0;
     long readTx = 0;
@@ -276,9 +255,6 @@ public class Profiler {
     long iterateBucket = 0;
     long countType = 0;
     long countBucket = 0;
-    long evictionRuns = 0;
-    long pagesEvicted = 0;
-    int readCachePages = 0;
     long indexCompactions = 0;
 
     try {
@@ -301,21 +277,6 @@ public class Profiler {
         countBucket += (long) dbStats.get("countBucket");
         indexCompactions += (long) dbStats.get("indexCompactions");
 
-        final PageManager.PPageManagerStats pStats = db.getPageManager().getStats();
-        readCacheUsed += pStats.readCacheRAM;
-        cacheMax += pStats.maxRAM;
-        pagesRead += pStats.pagesRead;
-        pagesReadSize += pStats.pagesReadSize;
-        pagesWritten += pStats.pagesWritten;
-        pagesWrittenSize += pStats.pagesWrittenSize;
-        pageFlushQueueLength += pStats.pageFlushQueueLength;
-        pageCacheHits += pStats.cacheHits;
-        pageCacheMiss += pStats.cacheMiss;
-        concurrentModificationExceptions += pStats.concurrentModificationExceptions;
-        evictionRuns += pStats.evictionRuns;
-        pagesEvicted += pStats.pagesEvicted;
-        readCachePages += pStats.readCachePages;
-
         final FileManager.FileManagerStats fStats = db.getFileManager().getStats();
         totalOpenFiles += fStats.totalOpenFiles;
         maxOpenFiles += fStats.maxOpenFiles;
@@ -329,6 +290,22 @@ public class Profiler {
         walBytesWritten += (Long) walStats.get("bytesWritten");
         walTotalFiles += (Long) walStats.get("logFiles");
       }
+
+      // PageManager is a JVM-wide singleton; read once, not per-DB.
+      final PageManager.PPageManagerStats pStats = PageManager.INSTANCE.getStats();
+      final long readCacheUsed = pStats.readCacheRAM;
+      final long cacheMax = pStats.maxRAM;
+      final long pagesRead = pStats.pagesRead;
+      final long pagesReadSize = pStats.pagesReadSize;
+      final long pagesWritten = pStats.pagesWritten;
+      final long pagesWrittenSize = pStats.pagesWrittenSize;
+      final int pageFlushQueueLength = pStats.pageFlushQueueLength;
+      final long pageCacheHits = pStats.cacheHits;
+      final long pageCacheMiss = pStats.cacheMiss;
+      final long concurrentModificationExceptions = pStats.concurrentModificationExceptions;
+      final long evictionRuns = pStats.evictionRuns;
+      final long pagesEvicted = pStats.pagesEvicted;
+      final int readCachePages = pStats.readCachePages;
 
       buffer.append("ARCADEDB %s Profiler".formatted(Constants.getRawVersion()));
 

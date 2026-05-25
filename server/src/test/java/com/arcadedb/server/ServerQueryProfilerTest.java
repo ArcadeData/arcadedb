@@ -20,7 +20,9 @@ package com.arcadedb.server;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.Profiler;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.PageManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -32,6 +34,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.util.HashSet;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -371,5 +375,58 @@ class ServerQueryProfilerTest extends StaticBaseServerTest {
 
     final JSONObject results = profiler.stop();
     assertThat(results.getInt("timeoutSeconds")).isEqualTo(120);
+  }
+
+  @Test
+  void profiledDatabasesIsEmptyWhenNoQueries() {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+    final JSONObject results = profiler.stop();
+
+    assertThat(results.has("profiledDatabases")).isTrue();
+    assertThat(results.getJSONArray("profiledDatabases").length()).isEqualTo(0);
+  }
+
+  @Test
+  void profiledDatabasesListsAllRecordedDatabases() {
+    final ServerQueryProfiler profiler = server.getQueryProfiler();
+    profiler.start();
+
+    profiler.recordQuery("dbA", "sql", "SELECT 1", 1_000_000, null);
+    profiler.recordQuery("dbA", "sql", "SELECT 2", 1_000_000, null);
+    profiler.recordQuery("dbB", "sql", "SELECT 3", 1_000_000, null);
+    profiler.recordQuery("dbC", "cypher", "RETURN 1", 1_000_000, null);
+
+    final JSONObject results = profiler.stop();
+    final JSONArray profiledDbs = results.getJSONArray("profiledDatabases");
+    assertThat(profiledDbs.length()).isEqualTo(3);
+
+    final Set<String> names = new HashSet<>();
+    for (int i = 0; i < profiledDbs.length(); i++)
+      names.add(profiledDbs.getString(i));
+    assertThat(names).containsExactlyInAnyOrder("dbA", "dbB", "dbC");
+  }
+
+  @Test
+  void pageManagerStatsAreNotMultipliedByDatabaseCount() {
+    // PageManager is a JVM-wide singleton, so its counters must appear once in the
+    // aggregate profiler JSON regardless of how many databases are registered. Previously
+    // they were summed inside the per-DB loop, multiplying cache hits / pages read by N.
+    server.createDatabase("profiler-pm-db1", ComponentFile.MODE.READ_WRITE);
+    server.createDatabase("profiler-pm-db2", ComponentFile.MODE.READ_WRITE);
+    try {
+      final JSONObject snapshot = Profiler.INSTANCE.toJSON();
+      final long maxRam = snapshot.getJSONObject("cacheMax").getLong("space");
+      // The singleton PageManager has one maxRAM value. With 2 DBs registered, the buggy
+      // code would have reported 2*maxRAM. The fix reads PageManager.INSTANCE.getStats()
+      // once and exposes the singleton value as-is, so this must equal the configured cap.
+      final long configuredMaxRam = PageManager.INSTANCE.getStats().maxRAM;
+      assertThat(maxRam).isEqualTo(configuredMaxRam);
+    } finally {
+      server.getDatabase("profiler-pm-db1").getEmbedded().drop();
+      server.getDatabase("profiler-pm-db2").getEmbedded().drop();
+      server.removeDatabase("profiler-pm-db1");
+      server.removeDatabase("profiler-pm-db2");
+    }
   }
 }
