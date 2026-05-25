@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * new leader and accept writes. This eliminates the possibility of divergent data.
  */
 @Testcontainers
-class   SplitBrainIT extends ContainersTestTemplate {
+class SplitBrainIT extends ContainersTestTemplate {
 
   private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
 
@@ -421,7 +421,8 @@ class   SplitBrainIT extends ContainersTestTemplate {
 
       // Wait for Raft to elect a leader with the restarted node in the cluster
       // before starting the convergence check.
-      assertThat(waitForRaftLeader(servers, 60)).as("Cycle %d: Raft leader must be elected before convergence check", cycle).isGreaterThanOrEqualTo(0);
+      assertThat(waitForRaftLeader(servers, 60)).as("Cycle %d: Raft leader must be elected before convergence check", cycle)
+          .isGreaterThanOrEqualTo(0);
 
       final int currentCycle = cycle;
       logger.info("Cycle {}: Verifying convergence to {} users", cycle, cycleLeaderCount);

@@ -64,15 +64,17 @@ class UserSeedOnPeerAddScenarioIT extends ContainersTestTemplate {
     createArcadeContainer("arcadedb-2", SERVER_LIST, "majority", network);
 
     logger.info("Starting cluster");
-    final List<ServerWrapper> servers = startCluster();
+    final List<ServerWrapper> servers = startContainers();
+    final int leaderIdx = waitForRaftLeader(servers, 60);
+    assertThat(leaderIdx).as("Raft leader index").isGreaterThanOrEqualTo(0);
 
     // Step A: create alice on the leader
     final JSONObject alice = new JSONObject()
         .put("name", "alice")
         .put("password", ALICE_PASSWORD)
         .put("databases", new JSONObject().put("*", new JSONArray().put("admin")));
-    logger.info("Creating user alice on leader");
-    final int createStatus = postServerCommand(servers.get(0), "create user " + alice, "root", PASSWORD, 30_000);
+    logger.info("Creating user alice on leader (node {})", leaderIdx);
+    final int createStatus = postServerCommand(servers.get(leaderIdx), "create user " + alice, "root", PASSWORD, 30_000);
     assertThat(createStatus).as("create user HTTP status").isEqualTo(200);
 
     // Step B: verify alice login works on all three nodes
@@ -90,7 +92,7 @@ class UserSeedOnPeerAddScenarioIT extends ContainersTestTemplate {
     // unreliable here: a duplicate peer ID causes Ratis to reject setConfiguration with a 500,
     // and a bogus peer ID triggers a 90-second Raft retry loop before failing.
     logger.info("POSTing peer-add with empty peerId (validation smoke test)");
-    final int peerAddStatus = postPeerAdd(servers.get(0), "", "", 10_000);
+    final int peerAddStatus = postPeerAdd(servers.get(leaderIdx), "", "", 10_000);
     logger.info("peer-add returned HTTP {} (expected: 400)", peerAddStatus);
     assertThat(peerAddStatus)
         .as("peer-add endpoint should return 400 for missing required fields")

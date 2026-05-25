@@ -18,10 +18,12 @@
  */
 package com.arcadedb.test.load;
 
+import com.arcadedb.remote.RemoteException;
 import com.arcadedb.test.support.ContainersTestTemplate;
 import com.arcadedb.test.support.DatabaseWrapper;
 import com.arcadedb.test.support.ServerWrapper;
 import io.micrometer.core.instrument.Metrics;
+import org.awaitility.Awaitility;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -35,7 +37,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
-class ThreeINodesLoadtTestIT extends ContainersTestTemplate {
+class ThreeNodesLoadTestIT extends ContainersTestTemplate {
 
   private static final String SERVER_LIST = "arcadedb-0:2434:2480,arcadedb-1:2434:2480,arcadedb-2:2434:2480";
 
@@ -132,9 +134,36 @@ class ThreeINodesLoadtTestIT extends ContainersTestTemplate {
         Thread.currentThread().interrupt();
       }
     }
+
     LocalDateTime finishedAt = LocalDateTime.now();
     logger.info("Finishing at {}", DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(finishedAt));
     logger.info("Total time: {} minutes", Duration.between(startedAt, finishedAt).toMinutes());
+
+    Awaitility.await()
+        .atMost(1, TimeUnit.MINUTES)
+        .pollInterval(5, TimeUnit.SECONDS)
+        .until(() -> {
+          try {
+            final long users1 = db1.countUsers();
+            final long photos1 = db1.countPhotos();
+            final long users2 = db2.countUsers();
+            final long photos2 = db2.countPhotos();
+            final long users3 = db3.countUsers();
+            final long photos3 = db3.countPhotos();
+            logger.info("Final check - Users: {} / {} / {} | Photos: {} / {} / {}", users1, users2, users3, photos1, photos2,
+                photos3);
+            return users1 == users2 && users1 == users3 && photos1 == photos2 && photos1 == photos3;
+          } catch (final RemoteException e) {
+            // Transient: a node has not caught up or a connection blip - keep polling.
+            logger.debug("Quorum recovery check transient failure: {}", e.getMessage());
+            return false;
+          } catch (final RuntimeException e) {
+            // Unexpected: programming error or infra failure. Log loudly so the cause is visible
+            // before the 1-minute timeout instead of after.
+            logger.warn("Quorum recovery check threw unexpected exception, will keep polling", e);
+            return false;
+          }
+        });
 
     Metrics.globalRegistry.getMeters().forEach(meter -> {
       logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure());

@@ -899,11 +899,12 @@ public class TransactionContext implements Transaction {
 
     final List<Integer> locked = database.getTransactionManager().tryLockFiles(files.toArray(), timeout, getRequester());
 
-    // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX
+    // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX.
+    // Transaction rollback is the caller's responsibility: commit1stPhase catches and rolls back; the explicit-lock path retries
+    // internally with refreshed file IDs (see LocalTransactionExplicitLock.lock()) since no modifications exist yet at that point.
     for (Integer f : locked)
       if (!database.getFileManager().existsFile(f)) {
         database.getTransactionManager().unlockFilesInOrder(locked, getRequester());
-        rollback();
         final Integer migrated = database.getSchema().getEmbedded().getMigratedFileId(f);
         if (migrated != null) {
           LogManager.instance().log(this, Level.FINE, "Found upgraded file '%d' to '%d' during transaction commit", f, migrated);
