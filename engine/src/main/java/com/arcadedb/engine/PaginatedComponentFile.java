@@ -121,7 +121,7 @@ public class PaginatedComponentFile extends ComponentFile {
       while (buffer.hasRemaining()) {
         final int r = channel.read(buffer, pos);
         if (r < 0)
-          break;
+          throw new IOException("Unexpected EOF calculating checksum at page " + i + " of file '" + getFileName() + "'");
         pos += r;
       }
 
@@ -151,7 +151,7 @@ public class PaginatedComponentFile extends ComponentFile {
     final ByteBuffer buffer = page.getContent();
 
     // NO NEED TO SYNCHRONIZE THE BUFFER BECAUSE MUTABLE PAGES ARE NOT SHARED
-    buffer.rewind();
+    buffer.clear();
     try {
       long pos = page.getPhysicalSize() * (long) pageNumber;
       while (buffer.hasRemaining())
@@ -159,7 +159,7 @@ public class PaginatedComponentFile extends ComponentFile {
     } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
       open(filePath, mode);
-      buffer.rewind();
+      buffer.clear();
       long pos = page.getPhysicalSize() * (long) pageNumber;
       while (buffer.hasRemaining())
         pos += channel.write(buffer, pos);
@@ -199,6 +199,7 @@ public class PaginatedComponentFile extends ComponentFile {
 
     assert page.getPageId().getFileId() == fileId;
     final ByteBuffer buffer = page.getByteBuffer();
+    buffer.clear();
 
     try {
       long pos = page.getPhysicalSize() * (long) pageNumber;
@@ -211,7 +212,7 @@ public class PaginatedComponentFile extends ComponentFile {
     } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
       open(filePath, mode);
-      buffer.rewind();
+      buffer.clear();
       long pos = page.getPhysicalSize() * (long) pageNumber;
       while (buffer.hasRemaining()) {
         final int r = channel.read(buffer, pos);
