@@ -89,6 +89,8 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
     return library.execute((polyglotEngine) -> {
       try {
         final Value fn = polyglotEngine.context.getBindings("js").getMember(functionName);
+        if (fn == null)
+          throw new FunctionExecutionException("Function '" + functionName + "' is not defined");
         final Object[] args = new Object[parameters.length];
         for (int i = 0; i < parameters.length; i++)
           args[i] = toJsArg(parameters[i]);
@@ -96,17 +98,40 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
       } catch (final FunctionExecutionException e) {
         throw e;
       } catch (final Exception e) {
-        throw new FunctionExecutionException("Error on execution of function '" + functionName + "'");
+        throw new FunctionExecutionException("Error on execution of function '" + functionName + "'", e);
       }
     });
   }
 
-  @SuppressWarnings("unchecked")
   private static Object toJsArg(final Object value) {
     if (value instanceof Map<?, ?> map)
-      return toDeepProxyObject((Map<String, Object>) map);
+      return toDeepProxyObject(normalizeMapKeys(map));
     if (value instanceof List<?> list)
-      return toDeepProxyList(list);
+      return toDeepProxyList(normalizeListValues(list));
+    return value;
+  }
+
+  private static Map<String, Object> normalizeMapKeys(final Map<?, ?> map) {
+    final Map<String, Object> result = new LinkedHashMap<>(map.size());
+    for (final Map.Entry<?, ?> entry : map.entrySet()) {
+      final String key = entry.getKey() instanceof String s ? s : String.valueOf(entry.getKey());
+      result.put(key, normalizeValue(entry.getValue()));
+    }
+    return result;
+  }
+
+  private static List<Object> normalizeListValues(final List<?> list) {
+    final List<Object> result = new ArrayList<>(list.size());
+    for (final Object item : list)
+      result.add(normalizeValue(item));
+    return result;
+  }
+
+  private static Object normalizeValue(final Object value) {
+    if (value instanceof Map<?, ?> map)
+      return normalizeMapKeys(map);
+    if (value instanceof List<?> list)
+      return normalizeListValues(list);
     return value;
   }
 
