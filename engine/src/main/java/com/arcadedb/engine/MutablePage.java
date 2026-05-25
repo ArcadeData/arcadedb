@@ -220,7 +220,8 @@ public class MutablePage extends BasePage implements TrackableContent {
               + destPosition + " length=" + length + " pageSize=" + size + ")");
     startPosition += PAGE_HEADER_SIZE;
     destPosition += PAGE_HEADER_SIZE;
-    updateModifiedRange(startPosition, destPosition + length);
+    if (length > 0)
+      updateModifiedRange(Math.min(startPosition, destPosition), Math.max(startPosition, destPosition) + length - 1);
     content.move(startPosition, destPosition, length);
   }
 
