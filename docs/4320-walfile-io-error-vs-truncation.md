@@ -76,3 +76,51 @@ All 3 passed after the fix. Pre-fix: `ioErrorOnChannelThrowsWALException` failed
 - Garbage page content from short reads is no longer possible.
 - Clean EOF and truncated WAL still return `null` as before (no behaviour change for the
   normal path).
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4338
+
+## Review cycles
+
+### Cycle 1 - HEAD acd9fdf2
+
+Reviewer: gemini-code-assist[bot]
+
+Two inline comments:
+
+1. **HIGH/security at WALFile.java:203** - validate page deltaSize / boundaries before
+   `ByteBuffer.allocate`. Applied with a modification: dropped the suggested
+   `currentPageSize > 1MB` cap (currentPageSize is the page CONTENT size, not the physical
+   size; ArcadeDB's configurable page sizes can legitimately exceed 1MB) and the
+   `changesTo >= currentPageSize` check (incorrectly rejected valid WAL transactions where
+   the modified range extends past the content marker, breaking 3 ACIDTransactionTest
+   recovery tests). Kept `deltaSize <= 0 || changesFrom < 0` which is sufficient to prevent
+   the `IllegalArgumentException` from `ByteBuffer.allocate(negative)`.
+
+2. **MEDIUM at test:126** - use single temp file + `setLength()` instead of 70 create/delete
+   cycles. Skipped: suggested form uses `try (WALFile wf = ...)` but `WALFile` is not
+   `AutoCloseable`, so the code would not compile. Microscopic gain (current test runs in
+   0.074s). Rationale recorded in `docs/review-deferred-acd9fdf2.md`.
+
+### Cycle 2 - HEAD bac415b5
+
+Reviewer: gemini-code-assist[bot]
+
+Both inline comments were **byte-identical re-emissions** of cycle 1 (just shifted line
+numbers because the cycle-1 patch added lines). This matches the known behaviour captured in
+memory `reference_arcadedb_repo_bot_reviewers`: gemini does not engage with code changes
+that address prior feedback - it regenerates the same comments each cycle.
+
+Cycle 1 already addressed both items. Loop exited.
+
+## Deferred items
+
+- [docs/review-deferred-acd9fdf2.md](review-deferred-acd9fdf2.md) - test-perf optimization,
+  not applied because the suggested code does not compile (WALFile is not AutoCloseable) and
+  the gain is negligible.
+
+## Final state
+
+`deferred-items` (one item deferred, recorded above). Loop exited at cycle 2 because all
+feedback on the new HEAD was byte-identical to cycle 1.
