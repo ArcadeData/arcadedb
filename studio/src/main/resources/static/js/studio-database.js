@@ -90,6 +90,23 @@ function initSearchableDbSelect(containerId) {
   $(document).on("click.dbselect_" + containerId, function () {
     $menu.removeClass("show");
   });
+
+  // If databases were already loaded before this widget was initialized
+  // (e.g. lazily-initialized tabs like AI), populate the freshly-created
+  // widget from the cached list instead of waiting for the next refresh.
+  if (globalDatabaseList && globalDatabaseList.length > 0) {
+    var countLabel = "(" + globalDatabaseList.length + ")";
+    for (var i = 0; i < globalDatabaseList.length; i++) {
+      var db = escapeHtml(globalDatabaseList[i]);
+      $list.append('<li data-db="' + db + '">' + db + '</li>');
+    }
+    $container.find(".db-count").text(countLabel);
+    var current = getCurrentDatabase();
+    if (current && globalDatabaseList.indexOf(current) !== -1)
+      selectDbInWidget(current);
+    else
+      selectDbInWidget(globalDatabaseList[0]);
+  }
 }
 
 function selectDbInWidget(dbName) {
