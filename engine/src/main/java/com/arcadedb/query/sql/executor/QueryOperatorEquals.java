@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
@@ -36,7 +37,11 @@ public class QueryOperatorEquals {
 
     if (left.getClass().equals(right.getClass()))
       // SAME TYPE, NO CONVERSION
-      BinaryComparator.equals(left, right);
+      return BinaryComparator.equals(left, right);
+
+    // EmbeddedDocument has null identity; the Identifiable branch below would misroute it as a sub-query result.
+    if (left instanceof EmbeddedDocument && right instanceof EmbeddedDocument)
+      return BinaryComparator.equals(left, right);
 
     if (left instanceof Result result && !(right instanceof Result)) {
       if (result.isElement()) {
