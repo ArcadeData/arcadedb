@@ -203,8 +203,9 @@ class UtilityClassesCoverageTest {
       assertThat(QueryOperatorEquals.equals(addr1, addr3)).isFalse();
 
       // Cross-class compare: ImmutableEmbeddedDocument (loaded) vs MutableEmbeddedDocument (in-memory)
-      final Document reloaded = (Document) db.lookupByRID(savedRid, true);
-      final EmbeddedDocument addrImmutable = (EmbeddedDocument) reloaded.get("address");
+      final var reloadedRecord = db.lookupByRID(savedRid, true);
+      assertThat(reloadedRecord).isInstanceOf(Document.class);
+      final EmbeddedDocument addrImmutable = (EmbeddedDocument) ((Document) reloadedRecord).get("address");
       assertThat(addrImmutable.getClass()).isNotEqualTo(addr1.getClass());
       assertThat(QueryOperatorEquals.equals(addrImmutable, addr1)).isTrue();
       assertThat(QueryOperatorEquals.equals(addr1, addrImmutable)).isTrue();
