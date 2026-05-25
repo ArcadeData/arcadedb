@@ -323,12 +323,15 @@ public class PageManager extends LockContext {
     final PPageManagerStats stats = new PPageManagerStats();
     stats.maxRAM = maxRAM;
     stats.readCacheRAM = totalReadCacheRAM.get();
-    stats.readCachePages = readCache.size();
+    // readCache and flushThread are populated by configure(), which is called on first DB
+    // open. When no database has been opened yet (e.g. a profiler snapshot taken at server
+    // startup) they're still null - report empty cache/queue rather than NPE.
+    stats.readCachePages = readCache != null ? readCache.size() : 0;
     stats.pagesRead = totalPagesRead.get();
     stats.pagesReadSize = totalPagesReadSize.get();
     stats.pagesWritten = totalPagesWritten.get();
     stats.pagesWrittenSize = totalPagesWrittenSize.get();
-    stats.pageFlushQueueLength = flushThread.queue.size();
+    stats.pageFlushQueueLength = flushThread != null ? flushThread.queue.size() : 0;
     stats.cacheHits = cacheHits.get();
     stats.cacheMiss = cacheMiss.get();
     stats.concurrentModificationExceptions = totalConcurrentModificationExceptions.get();
