@@ -43,4 +43,44 @@ class CompressionTest {
 
     assertThat(decompressed).isEqualTo(buffer);
   }
+
+  @Test
+  void compressionWithNonZeroPosition() {
+    // Regression test for #4317: compress(Binary) passed data.size() instead of decompressedLength
+    // when position > 0, causing silent corruption or ArrayIndexOutOfBoundsException.
+    final byte[] prefix = "HEADER".getBytes();
+    final byte[] payload = "This is the actual payload to compress".getBytes();
+    final Binary buffer = new Binary(prefix.length + payload.length);
+    buffer.putByteArray(prefix);
+    buffer.putByteArray(payload);
+    // Advance position past the prefix so only the payload slice is to be compressed
+    buffer.position(prefix.length);
+
+    final int decompressedLength = buffer.size() - buffer.position();
+    final Binary compressed = CompressionFactory.getDefault().compress(buffer);
+    final Binary decompressed = CompressionFactory.getDefault().decompress(compressed, decompressedLength);
+
+    assertThat(decompressed.getContent()).startsWith(payload);
+    assertThat(decompressed.size()).isEqualTo(decompressedLength);
+  }
+
+  @Test
+  void compressionOfSlicedBinary() {
+    // Regression test for #4317: compress(Binary) must account for getContentBeginOffset()
+    // when the Binary is a slice (arrayOffset > 0 in the backing ByteBuffer).
+    final byte[] prefix = "HEADER".getBytes();
+    final byte[] payload = "This is the actual payload to compress".getBytes();
+    final Binary buffer = new Binary(prefix.length + payload.length);
+    buffer.putByteArray(prefix);
+    buffer.putByteArray(payload);
+    buffer.flip();
+    final Binary slice = buffer.slice(prefix.length);
+
+    final int decompressedLength = slice.size();
+    final Binary compressed = CompressionFactory.getDefault().compress(slice);
+    final Binary decompressed = CompressionFactory.getDefault().decompress(compressed, decompressedLength);
+
+    assertThat(decompressed.getContent()).startsWith(payload);
+    assertThat(decompressed.size()).isEqualTo(decompressedLength);
+  }
 }
