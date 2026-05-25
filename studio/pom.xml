@@ -60,14 +60,16 @@
                         </configuration>
                     </execution>
 
-                    <!-- Install npm dependencies -->
+                    <!-- Install npm dependencies. When Maven is invoked with -o (offline),
+                         ${settings.offline} resolves to "true" and npm runs in offline mode
+                         using only its local cache; otherwise it resolves to "false". -->
                     <execution>
                         <id>npm install</id>
                         <goals>
                             <goal>npm</goal>
                         </goals>
                         <configuration>
-                            <arguments>install</arguments>
+                            <arguments>install --offline=${settings.offline}</arguments>
                         </configuration>
                     </execution>
 
