@@ -27,11 +27,6 @@ import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Regression test for #4316: TransactionContext.removeFile(int) called List.remove(int index)
- * instead of List.remove(Integer) due to autoboxing pitfall, silently removing the wrong entry
- * or throwing IndexOutOfBoundsException when the fileId was >= lockedFiles.size().
- */
 class TransactionContextRemoveFileTest extends TestHelper {
 
   @Test
