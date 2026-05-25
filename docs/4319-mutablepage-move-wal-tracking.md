@@ -42,3 +42,26 @@ New test class: `engine/src/test/java/com/arcadedb/engine/MutablePageMoveTest.ja
 - `forwardShiftModifiedRangeStartsAtSource` — verifies forward shifts are unaffected
 - `backwardShiftModifiedRangeCoversWrittenBytes` — verifies full written range is covered
 - `samePositionShiftTracksRange` — verifies no-op shift still tracks correctly
+- `moveToEndOfPageDoesNotThrow` — boundary regression: move to last content byte
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4325
+
+## Review cycles
+
+### Cycle 1 — `809a11f5`
+
+Reviewer: `gemini-code-assist` (state: COMMENTED)
+
+Changes applied:
+- Use inclusive upper bound `Math.max(start, dest) + length - 1` instead of `destPosition + length`
+- Add `if (length > 0)` guard to prevent inverted range when length is zero
+- Add `moveToEndOfPageDoesNotThrow` test for boundary regression
+
+Follow-up commit: `33b7da7c`
+
+### Final state: timeout
+
+`claude` bot is not configured in this repository; `gemini-code-assist` does not
+re-review follow-up pushes. Cycle 2 would time out with no new feedback.
