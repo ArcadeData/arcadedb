@@ -841,7 +841,7 @@ public class TransactionContext implements Transaction {
     immutableRecordsCache.values().removeIf(r -> r.getIdentity().getBucketId() == fileId);
 
     if (lockedFiles != null)
-      lockedFiles.remove(fileId);
+      lockedFiles.remove(Integer.valueOf(fileId));
 
     if (updatedRecords != null)
       // FILE DELETED: REMOVE ALL PENDING UPDATED OBJECTS
