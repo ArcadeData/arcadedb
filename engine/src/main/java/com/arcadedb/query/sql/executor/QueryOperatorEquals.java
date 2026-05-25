@@ -36,7 +36,7 @@ public class QueryOperatorEquals {
 
     if (left.getClass().equals(right.getClass()))
       // SAME TYPE, NO CONVERSION
-      BinaryComparator.equals(left, right);
+      return BinaryComparator.equals(left, right);
 
     if (left instanceof Result result && !(right instanceof Result)) {
       if (result.isElement()) {

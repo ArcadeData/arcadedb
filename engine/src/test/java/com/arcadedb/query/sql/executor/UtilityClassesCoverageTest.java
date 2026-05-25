@@ -18,6 +18,9 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.TestHelper;
+import com.arcadedb.database.EmbeddedDocument;
+import com.arcadedb.database.MutableDocument;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -155,6 +158,38 @@ class UtilityClassesCoverageTest {
   void equalsTypeConversion() {
     // Type conversion can succeed in some cases
     assertThat(QueryOperatorEquals.equals("hello", 42)).isFalse();
+  }
+
+  @Test
+  void equalsSameTypeEmbeddedDocuments() throws Exception {
+    // Regression test for #4318: missing `return` in same-type fast path caused
+    // BinaryComparator.equals result to be discarded. For embedded documents the
+    // fallthrough reached comparesValues which compared only the first field value
+    // of the left doc against the entire right doc, always returning false.
+    TestHelper.executeInNewDatabase("testQOE4318", (db) -> {
+      db.transaction(() -> {
+        db.getSchema().createDocumentType("Addr4318");
+        db.getSchema().createDocumentType("Container4318");
+      });
+
+      db.transaction(() -> {
+        final MutableDocument c1 = db.newDocument("Container4318");
+        c1.newEmbeddedDocument("Addr4318", "address").set("city", "NYC").set("zip", "10001");
+
+        final MutableDocument c2 = db.newDocument("Container4318");
+        c2.newEmbeddedDocument("Addr4318", "address").set("city", "NYC").set("zip", "10001");
+
+        final MutableDocument c3 = db.newDocument("Container4318");
+        c3.newEmbeddedDocument("Addr4318", "address").set("city", "LA").set("zip", "90001");
+
+        final EmbeddedDocument addr1 = (EmbeddedDocument) c1.get("address");
+        final EmbeddedDocument addr2 = (EmbeddedDocument) c2.get("address");
+        final EmbeddedDocument addr3 = (EmbeddedDocument) c3.get("address");
+
+        assertThat(QueryOperatorEquals.equals(addr1, addr2)).isTrue();
+        assertThat(QueryOperatorEquals.equals(addr1, addr3)).isFalse();
+      });
+    });
   }
 
   // ===== EmptyResult =====
