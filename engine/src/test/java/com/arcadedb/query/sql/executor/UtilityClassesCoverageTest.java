@@ -19,8 +19,10 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
@@ -172,23 +174,41 @@ class UtilityClassesCoverageTest {
         db.getSchema().createDocumentType("Container4318");
       });
 
-      db.transaction(() -> {
-        final MutableDocument c1 = db.newDocument("Container4318");
-        c1.newEmbeddedDocument("Addr4318", "address").set("city", "NYC").set("zip", "10001");
+      // Save one container, then commit + reopen the transaction so a fresh lookup
+      // returns ImmutableEmbeddedDocument (not the cached mutable instance). This
+      // exercises the cross-class compare (Mutable vs Immutable) noted in #4318.
+      final MutableDocument saved = db.newDocument("Container4318");
+      saved.newEmbeddedDocument("Addr4318", "address").set("city", "NYC").set("zip", "10001");
+      saved.save();
+      final RID savedRid = saved.getIdentity();
+      db.commit();
+      db.begin();
 
-        final MutableDocument c2 = db.newDocument("Container4318");
-        c2.newEmbeddedDocument("Addr4318", "address").set("city", "NYC").set("zip", "10001");
+      final MutableDocument c1 = db.newDocument("Container4318");
+      c1.newEmbeddedDocument("Addr4318", "address").set("city", "NYC").set("zip", "10001");
 
-        final MutableDocument c3 = db.newDocument("Container4318");
-        c3.newEmbeddedDocument("Addr4318", "address").set("city", "LA").set("zip", "90001");
+      final MutableDocument c2 = db.newDocument("Container4318");
+      c2.newEmbeddedDocument("Addr4318", "address").set("city", "NYC").set("zip", "10001");
 
-        final EmbeddedDocument addr1 = (EmbeddedDocument) c1.get("address");
-        final EmbeddedDocument addr2 = (EmbeddedDocument) c2.get("address");
-        final EmbeddedDocument addr3 = (EmbeddedDocument) c3.get("address");
+      final MutableDocument c3 = db.newDocument("Container4318");
+      c3.newEmbeddedDocument("Addr4318", "address").set("city", "LA").set("zip", "90001");
 
-        assertThat(QueryOperatorEquals.equals(addr1, addr2)).isTrue();
-        assertThat(QueryOperatorEquals.equals(addr1, addr3)).isFalse();
-      });
+      final EmbeddedDocument addr1 = (EmbeddedDocument) c1.get("address");
+      final EmbeddedDocument addr2 = (EmbeddedDocument) c2.get("address");
+      final EmbeddedDocument addr3 = (EmbeddedDocument) c3.get("address");
+
+      // Same-class (both Mutable) with same content
+      assertThat(QueryOperatorEquals.equals(addr1, addr2)).isTrue();
+      // Same-class (both Mutable) with different content
+      assertThat(QueryOperatorEquals.equals(addr1, addr3)).isFalse();
+
+      // Cross-class compare: ImmutableEmbeddedDocument (loaded) vs MutableEmbeddedDocument (in-memory)
+      final Document reloaded = (Document) db.lookupByRID(savedRid, true);
+      final EmbeddedDocument addrImmutable = (EmbeddedDocument) reloaded.get("address");
+      assertThat(addrImmutable.getClass()).isNotEqualTo(addr1.getClass());
+      assertThat(QueryOperatorEquals.equals(addrImmutable, addr1)).isTrue();
+      assertThat(QueryOperatorEquals.equals(addr1, addrImmutable)).isTrue();
+      assertThat(QueryOperatorEquals.equals(addrImmutable, addr3)).isFalse();
     });
   }
 

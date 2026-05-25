@@ -19,6 +19,7 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
@@ -36,6 +37,13 @@ public class QueryOperatorEquals {
 
     if (left.getClass().equals(right.getClass()))
       // SAME TYPE, NO CONVERSION
+      return BinaryComparator.equals(left, right);
+
+    // Embedded documents have a null identity; the Identifiable branch below routes them to
+    // comparesValues which treats null-identity Documents as sub-query results and extracts
+    // the first field for comparison. That misroutes any cross-class embedded doc compare
+    // (e.g., MutableEmbeddedDocument vs ImmutableEmbeddedDocument). Compare by content.
+    if (left instanceof EmbeddedDocument && right instanceof EmbeddedDocument)
       return BinaryComparator.equals(left, right);
 
     if (left instanceof Result result && !(right instanceof Result)) {
