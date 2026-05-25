@@ -43,3 +43,23 @@ Three cases:
 Tests run: 3, Failures: 0, Errors: 0 (TransactionContextRemoveFileTest)
 Tests run: 7, Failures: 0, Errors: 0 (TransactionCallbackTest, MVCCTest, LockFilesInOrderFileMigrationTest)
 ```
+
+## Follow-up — explicitLockedFiles gap
+
+Surfaced during PR #4323 review (gemini-code-assist + claude[bot]).
+
+`removeFile` only clears `lockedFiles`. The sibling list `explicitLockedFiles`
+(populated by `explicitLock()` at line 877, used by `checkExplicitLocks()` at
+line 924/959/968) is not cleared, so a `DROP` issued between `explicitLock()`
+and commit leaves a stale file ID in `explicitLockedFiles`.
+
+`explicitLock()` requires no in-flight modifications (line 871-875), so in normal
+flow the explicit lock is acquired on an empty transaction. The edge case is a
+same-transaction `DROP` after explicit lock acquisition. Suggested mirror fix:
+
+```java
+if (explicitLockedFiles != null)
+    explicitLockedFiles.remove(Integer.valueOf(fileId));
+```
+
+Out of scope for #4316. Open a follow-up issue if a reproducer materializes.
