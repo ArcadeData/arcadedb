@@ -200,6 +200,13 @@ public class WALFile extends LockContext {
         tx.pages[i].currentPageSize = readInt(pos);
         pos += Binary.INT_SERIALIZED_SIZE;
 
+        // Reject obviously corrupted page headers so ByteBuffer.allocate cannot blow up with a
+        // negative size and a garbage delta cannot be applied to disk. The outer segment-size
+        // check above already bounds total memory by file size, so a per-page upper cap is not
+        // needed here.
+        if (deltaSize <= 0 || tx.pages[i].changesFrom < 0)
+          return null;
+
         final ByteBuffer buffer = ByteBuffer.allocate(deltaSize);
 
         tx.pages[i].currentContent = new Binary(buffer);
