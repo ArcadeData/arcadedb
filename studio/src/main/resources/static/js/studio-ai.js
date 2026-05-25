@@ -593,6 +593,11 @@ function aiUpdateLiveTools(liveId, toolCalls) {
         : '<i class="fa fa-check ms-1" style="color: #28a745; font-size: 0.7rem;"></i>')
       : '<i class="fa fa-spinner fa-spin ms-1" style="font-size: 0.7rem;"></i>';
     html += '<div style="padding: 2px 0;"><i class="fa ' + icon + ' me-1" style="width: 14px; text-align: center;"></i>' + label + statusIcon + '</div>';
+    if (tc._done && tc.error) {
+      console.warn("AI tool '" + tc.tool + "' failed:", tc.error, tc);
+      html += '<div style="padding: 2px 0 6px 20px; color: #dc3545; font-size: 0.75rem; white-space: pre-wrap; word-break: break-word;">' +
+        escapeHtml(tc.error) + '</div>';
+    }
   }
   el.innerHTML = html;
 
@@ -731,6 +736,9 @@ function aiRenderToolCallLog(toolCalls) {
       ? '<i class="fa fa-circle-exclamation ms-1" style="color: #dc3545; font-size: 0.7rem;" title="' + escapeHtml(tc.error) + '"></i>'
       : '<i class="fa fa-check ms-1" style="color: #28a745; font-size: 0.7rem;"></i>';
     html += '<div style="padding: 2px 0;"><i class="fa ' + icon + ' me-1" style="width: 14px; text-align: center;"></i>' + label + statusIcon + '</div>';
+    if (tc.error)
+      html += '<div style="padding: 2px 0 6px 20px; color: #dc3545; font-size: 0.75rem; white-space: pre-wrap; word-break: break-word;">' +
+        escapeHtml(tc.error) + '</div>';
   }
   html += '</div>';
   return html;

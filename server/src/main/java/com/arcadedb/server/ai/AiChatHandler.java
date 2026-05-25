@@ -150,6 +150,11 @@ public class AiChatHandler extends AbstractServerHttpHandler {
         gatewayRequest.put("schema", new JSONObject()); // minimal, required by gateway validation
         gatewayRequest.put("stream", true);
 
+        LogManager.instance().log(this, Level.INFO,
+            "AI auto-mode chat: gateway will call back to '%s' (database=%s, user=%s). "
+                + "If you see 'fetch failed' on tool calls, the gateway cannot reach this URL.",
+            serverUrl, database, username);
+
         // Stream SSE from gateway to Studio
         return handleStreamingRequest(exchange, gatewayRequest, chat, messages, username);
       } else {
@@ -255,13 +260,23 @@ public class AiChatHandler extends AbstractServerHttpHandler {
         // Check if this is the final 'done' event
         try {
           final JSONObject event = new JSONObject(data);
-          if ("done".equals(event.getString("type", ""))) {
+          final String type = event.getString("type", "");
+          if ("done".equals(type)) {
             // Inject chatId before forwarding the done event
             event.put("chatId", chat.getString("id"));
             doneData = event;
             output.write(("data: " + event + "\n\n").getBytes(StandardCharsets.UTF_8));
             output.flush();
             continue;
+          }
+          // Surface tool failures reported by the gateway in the server log so they
+          // are diagnosable without having to inspect the SSE stream from the browser.
+          if ("tool_end".equals(type)) {
+            final String toolError = event.getString("error", null);
+            if (toolError != null && !toolError.isEmpty())
+              LogManager.instance().log(this, Level.WARNING,
+                  "AI gateway reported tool failure: tool=%s error=%s",
+                  event.getString("tool", "?"), toolError);
           }
         } catch (final Exception ignored) {
           // Not valid JSON or missing type, forward as-is
