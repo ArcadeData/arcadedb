@@ -24,6 +24,8 @@ import com.arcadedb.function.FunctionExecutionException;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -83,46 +85,46 @@ class PolyglotFunctionTest extends TestHelper {
 
   @Test
   void jsonObjectAsInput() {
-
     database.command("sql", """
         DEFINE FUNCTION Test.objectComparison "return a.foo == 'bar'" PARAMETERS [a] LANGUAGE js;
         """);
 
     FunctionDefinition function = database.getSchema().getFunction("Test", "objectComparison");
 
-    Boolean execute = (Boolean) function.execute("{\"foo\":\"bar\"}");
-
+    Boolean execute = (Boolean) function.execute(Map.of("foo", "bar"));
     assertThat(execute).isTrue();
-
-    ResultSet resultSet = database.query("sql", """
-        SELECT `Test.objectComparison`('{"foo":"bar"}') as matchRating;
-        """);
-
-    assertThat(resultSet.next().<Boolean>getProperty("matchRating")).isTrue();
-
   }
 
   @Test
   void stringObjectAsInput() {
-
     database.command("sql", """
         DEFINE FUNCTION Test.lowercase "return a.toLowerCase()" PARAMETERS [a] LANGUAGE js;
         """);
 
     FunctionDefinition function = database.getSchema().getFunction("Test", "lowercase");
 
-    //enclose in single quote
-    String execute = (String) function.execute("'UPPERCASE'");
-
+    String execute = (String) function.execute("UPPERCASE");
     assertThat(execute).isEqualTo("uppercase");
 
-    // doubel quotes for SQL parser, then single quotes for JS
     ResultSet resultSet = database.query("sql", """
-        SELECT `Test.lowercase`("'UPPERCASE'") as lowercase;
+        SELECT `Test.lowercase`('UPPERCASE') as lowercase;
+        """);
+    assertThat(resultSet.next().<String>getProperty("lowercase")).isEqualTo("uppercase");
+  }
+
+  @Test
+  void jsInjectionPrevented() {
+    database.command("sql", """
+        DEFINE FUNCTION Test.identity "return a" PARAMETERS [a] LANGUAGE js;
         """);
 
-    assertThat(resultSet.next().<String>getProperty("lowercase")).isEqualTo("uppercase");
+    FunctionDefinition function = database.getSchema().getFunction("Test", "identity");
 
+    // A string that the old looksLikeJson heuristic would have passed as JS source.
+    // After the fix it must arrive in JS as a plain string, not as an object literal.
+    final String injectionAttempt = "{a:1,b:2}";
+    final Object result = function.execute(injectionAttempt);
+    assertThat(result).isInstanceOf(String.class).isEqualTo(injectionAttempt);
   }
 
   private void registerFunctions() {
