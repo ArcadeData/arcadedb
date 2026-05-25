@@ -164,34 +164,31 @@ class UtilityClassesCoverageTest {
 
   @Test
   void equalsSameTypeEmbeddedDocuments() throws Exception {
-    // Regression test for #4318: missing `return` in same-type fast path caused
-    // BinaryComparator.equals result to be discarded. For embedded documents the
-    // fallthrough reached comparesValues which compared only the first field value
-    // of the left doc against the entire right doc, always returning false.
-    TestHelper.executeInNewDatabase("testQOE4318", (db) -> {
+    // Embedded documents (null identity) must compare by content for both same-class and cross-class pairs.
+    TestHelper.executeInNewDatabase("testQOEEmbedded", (db) -> {
       db.transaction(() -> {
-        db.getSchema().createDocumentType("Addr4318");
-        db.getSchema().createDocumentType("Container4318");
+        db.getSchema().createDocumentType("AddrEmb");
+        db.getSchema().createDocumentType("ContainerEmb");
       });
 
       // Save one container, then commit + reopen the transaction so a fresh lookup
-      // returns ImmutableEmbeddedDocument (not the cached mutable instance). This
-      // exercises the cross-class compare (Mutable vs Immutable) noted in #4318.
-      final MutableDocument saved = db.newDocument("Container4318");
-      saved.newEmbeddedDocument("Addr4318", "address").set("city", "NYC").set("zip", "10001");
+      // returns ImmutableEmbeddedDocument and the test can compare it against an
+      // in-memory MutableEmbeddedDocument (cross-class path).
+      final MutableDocument saved = db.newDocument("ContainerEmb");
+      saved.newEmbeddedDocument("AddrEmb", "address").set("city", "NYC").set("zip", "10001");
       saved.save();
       final RID savedRid = saved.getIdentity();
       db.commit();
       db.begin();
 
-      final MutableDocument c1 = db.newDocument("Container4318");
-      c1.newEmbeddedDocument("Addr4318", "address").set("city", "NYC").set("zip", "10001");
+      final MutableDocument c1 = db.newDocument("ContainerEmb");
+      c1.newEmbeddedDocument("AddrEmb", "address").set("city", "NYC").set("zip", "10001");
 
-      final MutableDocument c2 = db.newDocument("Container4318");
-      c2.newEmbeddedDocument("Addr4318", "address").set("city", "NYC").set("zip", "10001");
+      final MutableDocument c2 = db.newDocument("ContainerEmb");
+      c2.newEmbeddedDocument("AddrEmb", "address").set("city", "NYC").set("zip", "10001");
 
-      final MutableDocument c3 = db.newDocument("Container4318");
-      c3.newEmbeddedDocument("Addr4318", "address").set("city", "LA").set("zip", "90001");
+      final MutableDocument c3 = db.newDocument("ContainerEmb");
+      c3.newEmbeddedDocument("AddrEmb", "address").set("city", "LA").set("zip", "90001");
 
       final EmbeddedDocument addr1 = (EmbeddedDocument) c1.get("address");
       final EmbeddedDocument addr2 = (EmbeddedDocument) c2.get("address");
