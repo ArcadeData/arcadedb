@@ -43,3 +43,23 @@ as they are no longer used on the execution path.
 
 - `engine/src/main/java/com/arcadedb/function/polyglot/JavascriptFunctionDefinition.java`
 - `engine/src/test/java/com/arcadedb/function/polyglot/PolyglotFunctionTest.java`
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4339
+
+## Review cycles
+
+### Cycle 1
+
+- Head SHA: `718d99c4cd18085bef654417af21d45280fce89f`
+- gemini-code-assist: COMMENTED (3 inline comments)
+  1. **high** - `ClassCastException` risk in `toJsArg` when casting `Map<?,?>` to `Map<String,Object>` if map has non-String keys. Fixed by adding `normalizeMapKeys`/`normalizeListValues`/`normalizeValue` helpers.
+  2. **medium** - null check for `fn = getMember(functionName)`. Fixed by adding `if (fn == null) throw new FunctionExecutionException(...)`.
+  3. **medium** - original exception cause swallowed in catch block. Fixed by passing `e` to `FunctionExecutionException(String, Throwable)` constructor.
+- Follow-up commit: `0468570ea` - address review: normalize map keys, add null guard, preserve exception cause
+- All 23 polyglot tests pass after the follow-up commit.
+
+## Final state
+
+`cycle-1-feedback-addressed` - gemini-code-assist reviewed and all 3 comments were applied. Per repo convention, gemini does not re-review follow-up pushes, so the loop exits after 1 productive cycle.
