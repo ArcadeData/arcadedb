@@ -76,4 +76,13 @@ class MutablePageMoveTest {
     final int[] range = page.getModifiedRange();
     assertThat(range[0]).isEqualTo(50 + BasePage.PAGE_HEADER_SIZE);
   }
+
+  @Test
+  void moveToEndOfPageDoesNotThrow() {
+    final MutablePage page = freshPage();
+    // dest=1006, length=10: last byte is at 1006+8+10-1 = 1023 = PAGE_SIZE-1 (inclusive upper bound)
+    page.move(0, 1006, 10);
+    final int[] range = page.getModifiedRange();
+    assertThat(range[1]).isEqualTo(PAGE_SIZE - 1);
+  }
 }

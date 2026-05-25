@@ -23,18 +23,16 @@ so bytes `[destPosition, startPosition)` were written but not logged.
 
 ```diff
 - updateModifiedRange(startPosition, destPosition + length);
-+ updateModifiedRange(Math.min(startPosition, destPosition), destPosition + length);
++ if (length > 0)
++   updateModifiedRange(Math.min(startPosition, destPosition), Math.max(startPosition, destPosition) + length - 1);
 ```
 
-The lower bound is now `min(start, dest)` so backward shifts correctly start
-tracking at `destPosition`. The upper bound stays `destPosition + length`,
-which is always safe — `content.move` already validates that
-`destPosition + length <= content.length` before we reach this call.
-
-Note: the issue's suggested fix used `Math.max(start, dest) + length` for the
-upper bound, but that over-extends the range for backward shifts where
-`start + length` can reach the page boundary and trigger the bounds check in
-`updateModifiedRange`. Using `destPosition + length` is both correct and safe.
+The lower bound is `min(start, dest)` so backward shifts start tracking at
+`destPosition`. The upper bound uses inclusive semantics (`+ length - 1`)
+consistent with all other `updateModifiedRange` call sites. The `length > 0`
+guard prevents an inverted range when `length == 0`. For a full-page backward
+shift the upper bound evaluates to `physicalSize - 1`, which is the last
+valid byte index.
 
 ## Test
 
