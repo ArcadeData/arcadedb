@@ -83,11 +83,11 @@
         <postgres.version>42.7.11</postgres.version>
 
         <assertj-core.version>3.27.7</assertj-core.version>
-        <junit.jupiter.version>6.0.3</junit.jupiter.version>
+        <junit.jupiter.version>6.1.0</junit.jupiter.version>
         <awaitility.version>4.3.0</awaitility.version>
         <json-path.version>3.0.0</json-path.version>
         <slf4j.version>2.0.18</slf4j.version>
-        <undertow-core.version>2.4.0.Final</undertow-core.version>
+        <undertow-core.version>2.4.1.Final</undertow-core.version>
         <jboss-threads.version>3.9.2</jboss-threads.version>
         <mockito-core.version>5.23.0</mockito-core.version>
         <neo4j-driver.version>6.1.0</neo4j-driver.version>
@@ -97,7 +97,7 @@
         <protobuf-maven-plugin.version>5.1.4</protobuf-maven-plugin.version>
         <grpc.version>1.79.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
-        <protobuf-java.version>4.34.1</protobuf-java.version>
+        <protobuf-java.version>4.35.0</protobuf-java.version>
         <com.google.api.grpc.version>2.71.0</com.google.api.grpc.version>
         <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
 
