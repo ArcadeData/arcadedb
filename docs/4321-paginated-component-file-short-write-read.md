@@ -35,6 +35,23 @@ For `read()`, also throw `IOException` on `-1` (EOF) to surface truncated pages.
   `write()`, `read()`, `readPage()`, and `calculateChecksum()`
 - `engine/src/test/java/com/arcadedb/engine/PaginatedComponentFileRoundTripTest.java` — new regression test
 
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4341
+
+## Review cycles
+
+- **Cycle 1** (`3c35c9b77`) - gemini-code-assist flagged 5 medium-priority issues:
+  - `calculateChecksum` should throw `IOException` on EOF, not `break` (avoids stale-byte CRC)
+  - `write()` and `read()` should use `buffer.clear()` instead of `buffer.rewind()` so the buffer limit is reset to capacity (defensive against partially-filled buffers)
+  - `read()` was missing any buffer reset at the start
+  - Retry blocks should also use `buffer.clear()`
+- **Cycle 2** (`64fb9ed7e`) - gemini-code-assist posted one inline comment that was a duplicate of an already-applied cycle-1 suggestion. No new actionable feedback.
+
+## Final state
+
+clean-approval
+
 ## Test Results
 
 All tests pass:
