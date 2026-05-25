@@ -44,6 +44,20 @@ Tests run: 3, Failures: 0, Errors: 0 (TransactionContextRemoveFileTest)
 Tests run: 7, Failures: 0, Errors: 0 (TransactionCallbackTest, MVCCTest, LockFilesInOrderFileMigrationTest)
 ```
 
+## Pull Request
+
+[#4323](https://github.com/ArcadeData/arcadedb/pull/4323)
+
+## Review cycles
+
+| Cycle | HEAD | Bot activity | Action taken |
+|---|---|---|---|
+| 1 | `5402ba3e` | gemini-code-assist: `removeIf` style + `explicitLockedFiles` mirror. claude: drop class-level Javadoc with issue ref; explicitLockedFiles follow-up. | Dropped Javadoc per memory `feedback_no_tracking_files_in_repo_root.md` and project convention. Deferred the two gemini items with justification. |
+| 2 | `0fd9c75f` | gemini: no re-review (per memory). claude: drop `review-deferred-*.md` artifact; open follow-up issue for explicitLockedFiles; reflection test acceptable. | Deleted `review-deferred-5402ba3e.md`. Merged deferred-item analysis into this tracking doc. Follow-up issue creation deferred to developer (auto-mode denied). |
+| 3 | `3f46c73b` | gemini: no re-review. claude: ready to merge as-is; explicitLockedFiles still flagged as low-risk follow-up. | No actionable changes. Final state. |
+
+Final state: `clean-approval` (claude converged; gemini did not re-review follow-up pushes per documented behavior).
+
 ## Follow-up — explicitLockedFiles gap
 
 Surfaced during PR #4323 review (gemini-code-assist + claude[bot]).
