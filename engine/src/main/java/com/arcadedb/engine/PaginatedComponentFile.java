@@ -117,7 +117,13 @@ public class PaginatedComponentFile extends ComponentFile {
     final long totalPages = getTotalPages();
     for (int i = 0; i < totalPages; i++) {
       buffer.clear();
-      channel.read(buffer, pageSize * (long) i);
+      long pos = pageSize * (long) i;
+      while (buffer.hasRemaining()) {
+        final int r = channel.read(buffer, pos);
+        if (r < 0)
+          break;
+        pos += r;
+      }
 
       buffer.rewind();
       for (int j = 0; j < pageSize; j++) {
@@ -147,14 +153,16 @@ public class PaginatedComponentFile extends ComponentFile {
     // NO NEED TO SYNCHRONIZE THE BUFFER BECAUSE MUTABLE PAGES ARE NOT SHARED
     buffer.rewind();
     try {
-      channel.write(buffer, (page.getPhysicalSize() * (long) pageNumber));
+      long pos = page.getPhysicalSize() * (long) pageNumber;
+      while (buffer.hasRemaining())
+        pos += channel.write(buffer, pos);
     } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
       open(filePath, mode);
       buffer.rewind();
-      final int written = channel.write(buffer, (page.getPhysicalSize() * (long) pageNumber));
-      if (written < pageSize)
-        LogManager.instance().log(this, Level.WARNING, "Written less bytes than expected: %d < %d", null, written, pageSize);
+      long pos = page.getPhysicalSize() * (long) pageNumber;
+      while (buffer.hasRemaining())
+        pos += channel.write(buffer, pos);
     }
 
     return pageSize;
@@ -193,17 +201,36 @@ public class PaginatedComponentFile extends ComponentFile {
     final ByteBuffer buffer = page.getByteBuffer();
 
     try {
-      channel.read(buffer, page.getPhysicalSize() * (long) pageNumber);
+      long pos = page.getPhysicalSize() * (long) pageNumber;
+      while (buffer.hasRemaining()) {
+        final int r = channel.read(buffer, pos);
+        if (r < 0)
+          throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
+        pos += r;
+      }
     } catch (final ClosedChannelException e) {
       LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
       open(filePath, mode);
-      channel.read(buffer, page.getPhysicalSize() * (long) pageNumber);
+      buffer.rewind();
+      long pos = page.getPhysicalSize() * (long) pageNumber;
+      while (buffer.hasRemaining()) {
+        final int r = channel.read(buffer, pos);
+        if (r < 0)
+          throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
+        pos += r;
+      }
     }
   }
 
   public void readPage(final int pageNum, final ByteBuffer buf) throws IOException {
     buf.clear();
-    channel.read(buf, pageSize * (long) pageNum);
+    long pos = pageSize * (long) pageNum;
+    while (buf.hasRemaining()) {
+      final int r = channel.read(buf, pos);
+      if (r < 0)
+        throw new IOException("Unexpected EOF reading page " + pageNum + " from file '" + getFileName() + "'");
+      pos += r;
+    }
   }
 
   public int getPageSize() {
