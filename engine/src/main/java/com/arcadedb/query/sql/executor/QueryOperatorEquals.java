@@ -39,10 +39,7 @@ public class QueryOperatorEquals {
       // SAME TYPE, NO CONVERSION
       return BinaryComparator.equals(left, right);
 
-    // Embedded documents have a null identity; the Identifiable branch below routes them to
-    // comparesValues which treats null-identity Documents as sub-query results and extracts
-    // the first field for comparison. That misroutes any cross-class embedded doc compare
-    // (e.g., MutableEmbeddedDocument vs ImmutableEmbeddedDocument). Compare by content.
+    // EmbeddedDocument has null identity; the Identifiable branch below would misroute it as a sub-query result.
     if (left instanceof EmbeddedDocument && right instanceof EmbeddedDocument)
       return BinaryComparator.equals(left, right);
 

@@ -171,9 +171,7 @@ class UtilityClassesCoverageTest {
         db.getSchema().createDocumentType("ContainerEmb");
       });
 
-      // Save one container, then commit + reopen the transaction so a fresh lookup
-      // returns ImmutableEmbeddedDocument and the test can compare it against an
-      // in-memory MutableEmbeddedDocument (cross-class path).
+      // Commit + reopen the transaction so a fresh lookup returns ImmutableEmbeddedDocument (cross-class path).
       final MutableDocument saved = db.newDocument("ContainerEmb");
       saved.newEmbeddedDocument("AddrEmb", "address").set("city", "NYC").set("zip", "10001");
       saved.save();
