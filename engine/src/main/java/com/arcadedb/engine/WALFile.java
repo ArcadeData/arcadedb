@@ -203,7 +203,14 @@ public class WALFile extends LockContext {
         final ByteBuffer buffer = ByteBuffer.allocate(deltaSize);
 
         tx.pages[i].currentContent = new Binary(buffer);
-        channel.read(buffer, pos);
+
+        long readPos = pos;
+        while (buffer.hasRemaining()) {
+          final int n = channel.read(buffer, readPos);
+          if (n == -1)
+            return null; // truncated WAL: EOF before delta is complete
+          readPos += n;
+        }
 
         pos += deltaSize;
       }
@@ -216,6 +223,8 @@ public class WALFile extends LockContext {
       tx.endPositionInLog = pos + Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
 
       return tx;
+    } catch (final IOException e) {
+      throw new WALException("Error reading WAL file " + filePath, e);
     } catch (final Exception e) {
       return null;
     }
