@@ -271,10 +271,11 @@ public class TransactionManager {
             // FINISHED
             break;
 
-          lastTxId = lowerTxId;
-
           try {
             applyChanges(walPositions[lowerTx], Collections.emptyMap(), false);
+            // Only advance lastTxId after a successful apply, otherwise a failed transaction
+            // would wrongly increment the next-tx counter past data that was never written.
+            lastTxId = lowerTxId;
           } catch (WALVersionGapException e) {
             LogManager.instance().log(this, Level.SEVERE,
                 "Recovery aborted for database '%s': version gap in WAL (txId=%d). WAL files have been preserved for manual inspection. No further transactions will be replayed.",
@@ -286,12 +287,17 @@ public class TransactionManager {
           walPositions[lowerTx] = activeWALFilePool[lowerTx].getTransaction(walPositions[lowerTx].endPositionInLog);
         }
 
-        // CONTINUE FROM LAST TXID
-        transactionIds.set(lastTxId + 1);
+        // Only update the next-tx counter if recovery actually applied a transaction. When
+        // lastTxId is still -1 the counter must keep the persistedLastTxId value loaded by the
+        // constructor; overwriting it with 0 would lose recency and risk transaction-id reuse.
+        if (lastTxId != -1)
+          transactionIds.set(lastTxId + 1);
 
         if (!walGapDetected) {
           // REMOVE ALL WAL FILES
           for (final WALFile file : activeWALFilePool) {
+            if (file == null)
+              continue;
             try {
               file.drop();
               LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
@@ -302,6 +308,8 @@ public class TransactionManager {
         } else {
           // Close WAL files without deleting: preserve for manual inspection after gap detection
           for (final WALFile file : activeWALFilePool) {
+            if (file == null)
+              continue;
             try {
               file.close();
             } catch (final IOException e) {
