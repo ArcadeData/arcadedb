@@ -24,7 +24,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
@@ -55,7 +54,16 @@ import java.util.logging.Level;
 /**
  * POST /api/v1/ai/chat - Main AI chat endpoint.
  * Collects schema context, loads chat history, and forwards to the central gateway.
- * Supports SSE streaming in auto mode for real-time tool call updates.
+ *
+ * <p><b>Auto mode</b> uses a client-orchestrated streaming protocol so the gateway
+ * never has to open an inbound HTTP connection into the user's network. The gateway
+ * emits SSE events ({@code session}, {@code tool_call}, {@code done}); this handler
+ * executes each tool locally via {@link ToolDispatcher} and POSTs the result to
+ * {@code /api/chat/tool_result/:sessionId} so the LLM loop resumes. Studio sees the
+ * usual {@code tool_start}/{@code tool_end} events, synthesized locally.
+ *
+ * <p><b>Review-first mode</b> embeds the schema directly in the prompt and uses a
+ * single non-streaming request to the gateway (no tool calls).
  */
 public class AiChatHandler extends AbstractServerHttpHandler {
   // Static so all server instances in the JVM share one client. Each instance spawns
@@ -88,6 +96,19 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     if (payload == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Request body is required").toString());
+
+    // Default to v1 when the client doesn't send a version (oldest Studio bundles).
+    // Once we publish v2 we keep accepting unversioned requests as v1 here and only
+    // bump the default when v1 is dropped from SUPPORTED_VERSIONS.
+    final int protocolVersion = payload.getInt("protocolVersion", 1);
+    if (!AiProtocol.isSupported(protocolVersion))
+      return new ExecutionResponse(400, new JSONObject()
+          .put("error", "Unsupported AI protocol version: " + protocolVersion
+              + ". Server supports: " + AiProtocol.SUPPORTED_VERSIONS + ". Please update Studio.")
+          .put("code", "protocol_unsupported")
+          .put("currentProtocolVersion", AiProtocol.CURRENT_VERSION)
+          .put("supportedProtocolVersions", AiProtocol.supportedVersionsArray())
+          .toString());
 
     final String database = payload.getString("database", null);
     final String message = payload.getString("message", null);
@@ -141,22 +162,15 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       gatewayRequest.put("serverVersion", Constants.getVersion());
 
       if ("auto".equals(mode)) {
-        // Tool-calling path: create session for gateway to call back
-        final HttpAuthSession authSession = httpServer.getAuthSessionManager().createSession(user);
-        final String serverUrl = getServerUrl(exchange);
-        gatewayRequest.put("arcadedb", new JSONObject()
-            .put("url", serverUrl)
-            .put("sessionId", authSession.token));
-        gatewayRequest.put("schema", new JSONObject()); // minimal, required by gateway validation
+        // Client-orchestrated streaming: we deliberately do NOT send arcadedb.url to the
+        // gateway. The gateway emits tool_call SSE events; we execute each tool locally
+        // via ToolDispatcher and POST the result back to /api/chat/tool_result/:sessionId.
+        // No inbound connectivity from the gateway to this server is required.
+        gatewayRequest.put("schema", new JSONObject()); // gateway still validates presence
         gatewayRequest.put("stream", true);
 
-        LogManager.instance().log(this, Level.INFO,
-            "AI auto-mode chat: gateway will call back to '%s' (database=%s, user=%s). "
-                + "If you see 'fetch failed' on tool calls, the gateway cannot reach this URL.",
-            serverUrl, database, username);
-
-        // Stream SSE from gateway to Studio
-        return handleStreamingRequest(exchange, gatewayRequest, chat, messages, username);
+        final ToolDispatcher dispatcher = new ToolDispatcher(server, user, database);
+        return handleStreamingRequest(exchange, gatewayRequest, chat, messages, username, dispatcher);
       } else {
         // Review-first path: embed schema/serverInfo in prompt
         final MCPConfiguration mcpConfig = server.getMCPConfiguration();
@@ -198,11 +212,24 @@ public class AiChatHandler extends AbstractServerHttpHandler {
   }
 
   /**
-   * Handles SSE streaming: reads gateway SSE stream and forwards events to Studio.
-   * Returns null to signal that the response was already sent via the exchange.
+   * Handles SSE streaming in the client-orchestrated tool-use flow.
+   *
+   * <p>The gateway emits SSE events on the open response stream:
+   * <ul>
+   *   <li>{@code {type:"session", sessionId}} once at the start - we remember it so we
+   *   know where to address tool_result POSTs.</li>
+   *   <li>{@code {type:"tool_call", id, name, arguments}} when the LLM wants a tool -
+   *   we synthesize a {@code tool_start} for Studio, execute locally via
+   *   {@link ToolDispatcher}, synthesize a {@code tool_end} for Studio, and POST
+   *   {@code {id, result}} back to {@code /api/chat/tool_result/:sessionId}, which
+   *   resumes the gateway's LLM loop.</li>
+   *   <li>{@code {type:"done", ...}} - final event; we enrich with chatId, save chat
+   *   history, and forward.</li>
+   * </ul>
+   * Returns {@code null} to signal that the response was already sent via the exchange.
    */
   private ExecutionResponse handleStreamingRequest(final HttpServerExchange exchange, final JSONObject gatewayRequest,
-      final JSONObject chat, final JSONArray messages, final String username) throws Exception {
+      final JSONObject chat, final JSONArray messages, final String username, final ToolDispatcher dispatcher) throws Exception {
 
     final HttpRequest request = HttpRequest.newBuilder()//
         .uri(URI.create(config.getGatewayUrl() + "/api/chat"))//
@@ -246,6 +273,7 @@ public class AiChatHandler extends AbstractServerHttpHandler {
 
     final OutputStream output = exchange.getOutputStream();
     JSONObject doneData = null;
+    String gatewaySessionId = null;
 
     try (InputStream body = response.body();
          BufferedReader reader = new BufferedReader(new InputStreamReader(body, StandardCharsets.UTF_8))) {
@@ -255,36 +283,73 @@ public class AiChatHandler extends AbstractServerHttpHandler {
           continue;
 
         final String data = line.substring(6);
-        final byte[] sseBytes = ("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8);
 
-        // Check if this is the final 'done' event
+        JSONObject event = null;
+        String type = "";
         try {
-          final JSONObject event = new JSONObject(data);
-          final String type = event.getString("type", "");
-          if ("done".equals(type)) {
+          event = new JSONObject(data);
+          type = event.getString("type", "");
+        } catch (final Exception ignored) {
+          // Not valid JSON: forward verbatim, can't act on it locally.
+          output.write(("data: " + data + "\n\n").getBytes(StandardCharsets.UTF_8));
+          output.flush();
+          continue;
+        }
+
+        switch (type) {
+          case "session" -> {
+            gatewaySessionId = event.getString("sessionId", null);
+            // Internal control event - do not forward to Studio.
+          }
+          case "tool_call" -> {
+            final String toolId = event.getString("id", null);
+            final String toolName = event.getString("name", "");
+            final JSONObject toolArgs = event.getJSONObject("arguments", new JSONObject());
+
+            // Synthesize tool_start for Studio's live UI (keeps Studio's existing renderer happy).
+            forwardEvent(output, new JSONObject()
+                .put("type", "tool_start")
+                .put("tool", toolName)
+                .put("args", toolArgs));
+
+            // Execute locally. Returns JSON string (success or {"error":"..."}).
+            final String toolResult = dispatcher.execute(toolName, toolArgs);
+
+            // Synthesize tool_end. If the result encodes an error, propagate it.
+            final JSONObject toolEnd = new JSONObject()
+                .put("type", "tool_end")
+                .put("tool", toolName)
+                .put("args", toolArgs);
+            String toolError = null;
+            try {
+              final JSONObject parsed = new JSONObject(toolResult);
+              toolError = parsed.getString("error", null);
+            } catch (final Exception ignored) { /* result is not a JSON object */ }
+            if (toolError != null && !toolError.isEmpty()) {
+              toolEnd.put("error", toolError);
+              LogManager.instance().log(this, Level.WARNING,
+                  "AI tool '%s' failed locally: %s", toolName, toolError);
+            }
+            forwardEvent(output, toolEnd);
+
+            // POST the result back to the gateway so the paused LLM loop resumes.
+            if (gatewaySessionId == null) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "AI gateway sent tool_call before session event; cannot deliver result");
+              break;
+            }
+            postToolResult(gatewaySessionId, toolId, toolResult);
+          }
+          case "done" -> {
             // Inject chatId before forwarding the done event
             event.put("chatId", chat.getString("id"));
             doneData = event;
-            output.write(("data: " + event + "\n\n").getBytes(StandardCharsets.UTF_8));
-            output.flush();
-            continue;
+            forwardEvent(output, event);
           }
-          // Surface tool failures reported by the gateway in the server log so they
-          // are diagnosable without having to inspect the SSE stream from the browser.
-          if ("tool_end".equals(type)) {
-            final String toolError = event.getString("error", null);
-            if (toolError != null && !toolError.isEmpty())
-              LogManager.instance().log(this, Level.WARNING,
-                  "AI gateway reported tool failure: tool=%s error=%s",
-                  event.getString("tool", "?"), toolError);
-          }
-        } catch (final Exception ignored) {
-          // Not valid JSON or missing type, forward as-is
+          default ->
+            // Forward any other event types unchanged (forward-compat).
+            forwardEvent(output, event);
         }
-
-        // Forward intermediate events (tool_start, tool_end)
-        output.write(sseBytes);
-        output.flush();
       }
     } finally {
       try { output.close(); } catch (final Exception ignored) {}
@@ -308,6 +373,39 @@ public class AiChatHandler extends AbstractServerHttpHandler {
     }
 
     return null; // response already sent
+  }
+
+  private static void forwardEvent(final OutputStream output, final JSONObject event) throws IOException {
+    output.write(("data: " + event + "\n\n").getBytes(StandardCharsets.UTF_8));
+    output.flush();
+  }
+
+  /**
+   * Delivers a tool execution result to the gateway's pending-tool registry so the
+   * paused LLM loop can continue. Errors here are logged but not re-thrown - the
+   * SSE reader keeps draining whatever the gateway sends (typically the gateway's
+   * own timeout-driven error response).
+   */
+  private void postToolResult(final String sessionId, final String toolId, final String resultJson) {
+    final JSONObject body = new JSONObject().put("id", toolId).put("result", resultJson);
+    final HttpRequest req = HttpRequest.newBuilder()
+        .uri(URI.create(config.getGatewayUrl() + "/api/chat/tool_result/" + sessionId))
+        .header("Content-Type", "application/json")
+        .header("Authorization", "Bearer " + config.getSubscriptionToken())
+        .POST(HttpRequest.BodyPublishers.ofString(body.toString()))
+        .timeout(Duration.ofSeconds(15))
+        .build();
+    try {
+      final HttpResponse<String> resp = HTTP_CLIENT.send(req, HttpResponse.BodyHandlers.ofString());
+      if (resp.statusCode() != 200) {
+        LogManager.instance().log(this, Level.WARNING,
+            "AI gateway tool_result POST returned %d: %s", resp.statusCode(), resp.body());
+      }
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Failed to deliver tool_result to AI gateway (session=%s, id=%s): %s",
+          sessionId, toolId, e.getMessage());
+    }
   }
 
   /**
@@ -344,12 +442,6 @@ public class AiChatHandler extends AbstractServerHttpHandler {
       result.put("toolCalls", toolCalls);
 
     return new ExecutionResponse(200, result.toString());
-  }
-
-  private String getServerUrl(final HttpServerExchange exchange) {
-    final String scheme = exchange.getRequestScheme();
-    final String host = exchange.getHostAndPort();
-    return scheme + "://" + host;
   }
 
   private JSONObject callGateway(final JSONObject requestBody) throws Exception {
