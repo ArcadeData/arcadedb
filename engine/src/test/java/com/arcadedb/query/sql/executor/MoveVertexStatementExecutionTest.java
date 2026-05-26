@@ -130,4 +130,106 @@ class MoveVertexStatementExecutionTest extends TestHelper {
     assertThat(rs.hasNext()).isFalse();
     rs.close();
   }
+
+  /**
+   * Regression test for issue #4347: a single script combining the CREATE and MOVE statements
+   * (as reported in the issue from the Studio "SQL Script" mode) must succeed.
+   */
+  @Test
+  void moveVertexByRidInSingleScript() {
+    database.transaction(() -> database.command("sqlscript", """
+        CREATE VERTEX TYPE testMoveVertexRidSingleA;
+        CREATE VERTEX TYPE testMoveVertexRidSingleB;
+        CREATE VERTEX testMoveVertexRidSingleA;
+        """).close());
+
+    final String[] holder = new String[1];
+    database.transaction(() -> {
+      try (final ResultSet selectRs = database.query("sql", "select from testMoveVertexRidSingleA")) {
+        assertThat(selectRs.hasNext()).isTrue();
+        holder[0] = selectRs.next().getElement().get().getIdentity().toString();
+      }
+    });
+
+    // Reproduces the exact pattern from the issue screenshot: a SELECT followed by MOVE VERTEX <RID> in the same script.
+    database.transaction(() -> database.command("sqlscript", """
+        SELECT FROM testMoveVertexRidSingleA;
+        MOVE VERTEX %s TO TYPE:testMoveVertexRidSingleB;
+        """.formatted(holder[0])).close());
+
+    try (final ResultSet check = database.query("sql", "select from testMoveVertexRidSingleA")) {
+      assertThat(check.hasNext()).isFalse();
+    }
+    try (final ResultSet check = database.query("sql", "select from testMoveVertexRidSingleB")) {
+      assertThat(check.hasNext()).isTrue();
+      check.next();
+      assertThat(check.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * Regression test for issue #4347: MOVE VERTEX from an SQL script using a literal RID
+   * caused java.lang.StackOverflowError because the base Statement.createExecutionPlan(CommandContext)
+   * recursed into itself for any subclass that did not override it (including MoveVertexStatement).
+   */
+  @Test
+  void moveVertexByRidInScript() {
+    database.transaction(() -> database.command("sqlscript", """
+        CREATE VERTEX TYPE testMoveVertexRidScriptA;
+        CREATE VERTEX TYPE testMoveVertexRidScriptB;
+        CREATE VERTEX testMoveVertexRidScriptA;
+        """).close());
+
+    final String[] holder = new String[1];
+    database.transaction(() -> {
+      try (final ResultSet selectRs = database.query("sql", "select from testMoveVertexRidScriptA")) {
+        assertThat(selectRs.hasNext()).isTrue();
+        holder[0] = selectRs.next().getElement().get().getIdentity().toString();
+      }
+    });
+
+    database.transaction(
+        () -> database.command("sqlscript", "MOVE VERTEX " + holder[0] + " TO TYPE:testMoveVertexRidScriptB;").close());
+
+    try (final ResultSet check = database.query("sql", "select from testMoveVertexRidScriptA")) {
+      assertThat(check.hasNext()).isFalse();
+    }
+    try (final ResultSet check = database.query("sql", "select from testMoveVertexRidScriptB")) {
+      assertThat(check.hasNext()).isTrue();
+      check.next();
+      assertThat(check.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * Regression test for issue #4347: MOVE VERTEX with a direct RID source
+   * caused java.lang.StackOverflowError because the RID expression was not
+   * recognized as a record source and was rendered as a type identifier of the form "(#X:Y)".
+   */
+  @Test
+  void moveVertexByRid() {
+    final String typeA = "testMoveVertexRidA";
+    final String typeB = "testMoveVertexRidB";
+    database.getSchema().createVertexType(typeA);
+    database.getSchema().createVertexType(typeB);
+
+    database.setAutoTransaction(true);
+
+    final ResultSet created = database.command("sql", "create vertex " + typeA);
+    assertThat(created.hasNext()).isTrue();
+    final String rid = created.next().getElement().get().getIdentity().toString();
+    created.close();
+
+    database.command("sql", "MOVE VERTEX " + rid + " TO TYPE:" + typeB).close();
+
+    ResultSet rs = database.query("sql", "select from " + typeA);
+    assertThat(rs.hasNext()).isFalse();
+    rs.close();
+
+    rs = database.query("sql", "select from " + typeB);
+    assertThat(rs.hasNext()).isTrue();
+    rs.next();
+    assertThat(rs.hasNext()).isFalse();
+    rs.close();
+  }
 }

@@ -6,6 +6,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.MoveVertexExecutionPlanner;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
@@ -68,6 +69,11 @@ public class MoveVertexStatement extends Statement {
   public UpdateExecutionPlan createExecutionPlan(final CommandContext ctx, final int limit) {
     final MoveVertexExecutionPlanner planner = new MoveVertexExecutionPlanner(this);
     return planner.createExecutionPlan(ctx, limit);
+  }
+
+  @Override
+  public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
+    return createExecutionPlan(context, limit != null ? limit.getValue(context) : 0);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
