@@ -190,6 +190,8 @@ public class RemoteVertex {
 
     query.append(" from " + vertex.getIdentity() + " to " + toVertex.getIdentity());
 
+    final Map<String, Object> params = new HashMap<>();
+
     if (properties != null && properties.length > 0) {
       query.append(" set ");
 
@@ -212,6 +214,7 @@ public class RemoteVertex {
       for (int i = 0; i < properties.length; i += 2) {
         final String propName = (String) properties[i];
         final Object propValue = properties[i + 1];
+        final String paramName = ":p" + (i / 2);
 
         if (i > 0)
           query.append(", ");
@@ -219,15 +222,12 @@ public class RemoteVertex {
         query.append("`");
         query.append(propName);
         query.append("` = ");
+        query.append(paramName);
 
-        if (propValue instanceof String)
-          query.append("'");
-        query.append(propValue);
-        if (propValue instanceof String)
-          query.append("'");
+        params.put(paramName, propValue);
       }
     }
-    final ResultSet resultSet = remoteDatabase.command("sql", query.toString());
+    final ResultSet resultSet = remoteDatabase.command("sql", query.toString(), params);
 
     return new RemoteMutableEdge((RemoteImmutableEdge) resultSet.next().getEdge().get());
   }
