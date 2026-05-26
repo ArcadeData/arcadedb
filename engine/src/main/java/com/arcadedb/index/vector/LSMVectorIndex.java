@@ -2732,7 +2732,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final float score = metadata.similarityFunction.compare(queryVectorFloat, deltaVf);
       final float distance = switch (metadata.similarityFunction) {
         case COSINE -> 2.0f * (1.0f - score);
-        case EUCLIDEAN -> score;
+        case EUCLIDEAN -> score > 0 ? (1.0f / score) - 1.0f : Float.MAX_VALUE;
         case DOT_PRODUCT -> -score;
         default -> score;
       };
@@ -2778,7 +2778,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final float score = metadata.similarityFunction.compare(queryVectorFloat, vec);
       final float distance = switch (metadata.similarityFunction) {
         case COSINE -> 2.0f * (1.0f - score);
-        case EUCLIDEAN -> score;
+        case EUCLIDEAN -> score > 0 ? (1.0f / score) - 1.0f : Float.MAX_VALUE;
         case DOT_PRODUCT -> -score;
         default -> score;
       };
@@ -2973,8 +2973,9 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   // JVector COSINE score = (1 + cos) / 2, so cos = 2*score - 1, distance = 1 - cos
                     2.0f * (1.0f - score);
                 case EUCLIDEAN ->
-                  // For euclidean, the score is already the distance
-                    score;
+                  // JVector EUCLIDEAN score = 1/(1+L2²) (similarity, larger = closer).
+                  // Convert back to L2² so ascending sort places nearest candidates first.
+                    score > 0 ? (1.0f / score) - 1.0f : Float.MAX_VALUE;
                 case DOT_PRODUCT ->
                   // For dot product, higher score is better (closer), so negate it
                     -score;
@@ -3167,7 +3168,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           final float score = nodeScore.score;
           final float distance = switch (metadata.similarityFunction) {
             case COSINE -> 2.0f * (1.0f - score);
-            case EUCLIDEAN -> score;
+            case EUCLIDEAN -> score > 0 ? (1.0f / score) - 1.0f : Float.MAX_VALUE;
             case DOT_PRODUCT -> -score;
             default -> score;
           };
@@ -3317,7 +3318,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
                 case COSINE ->
                   // JVector COSINE score = (1 + cos) / 2, so cos = 2*score - 1, distance = 1 - cos
                     2.0f * (1.0f - score);
-                case EUCLIDEAN -> score;
+                case EUCLIDEAN ->
+                  // JVector EUCLIDEAN score = 1/(1+L2²) (similarity, larger = closer).
+                  // Convert back to L2² so ascending sort places nearest candidates first.
+                    score > 0 ? (1.0f / score) - 1.0f : Float.MAX_VALUE;
                 case DOT_PRODUCT -> -score;
                 default -> score;
               };
