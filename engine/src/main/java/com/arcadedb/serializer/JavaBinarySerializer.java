@@ -56,7 +56,7 @@ public class JavaBinarySerializer {
     final Map<String, Object> properties = document.toMap();
     final ByteArrayOutputStream staged = new ByteArrayOutputStream();
     int validCount = 0;
-    try (final DataOutputStream tempOut = new DataOutputStream(staged)) {
+    try (final DataOutputStream stagedOut = new DataOutputStream(staged)) {
       for (final Map.Entry<String, Object> prop : properties.entrySet()) {
         final Object propValue = prop.getValue();
         if (propValue == null)
@@ -76,9 +76,9 @@ public class JavaBinarySerializer {
         serializer.serializeValue(db, buffer, type, propValue);
         buffer.flip();
 
-        tempOut.writeUTF(propName);
-        tempOut.writeInt(buffer.size());
-        tempOut.write(buffer.getContent(), 0, buffer.size());
+        stagedOut.writeUTF(propName);
+        stagedOut.writeInt(buffer.size());
+        stagedOut.write(buffer.getContent(), 0, buffer.size());
         validCount++;
       }
     }
