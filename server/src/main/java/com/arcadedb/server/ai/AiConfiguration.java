@@ -109,6 +109,11 @@ public class AiConfiguration {
     final JSONObject json = new JSONObject();
     json.put("configured", isConfigured());
     json.put("gatewayUrl", gatewayUrl);
+    // Protocol negotiation: Studio reads currentProtocolVersion at init and either
+    // matches it or warns. supportedProtocolVersions lets a transitional bundle pick
+    // the highest mutually-supported version.
+    json.put("currentProtocolVersion", AiProtocol.CURRENT_VERSION);
+    json.put("supportedProtocolVersions", AiProtocol.supportedVersionsArray());
     return json;
   }
 

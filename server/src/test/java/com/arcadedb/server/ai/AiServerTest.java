@@ -54,6 +54,41 @@ class AiServerTest extends BaseGraphServerTest {
       final String body = readBody(connection);
       final JSONObject config = new JSONObject(body);
       assertThat(config.getBoolean("configured")).isFalse();
+      // Protocol version is advertised so Studio can detect incompatibility at init.
+      assertThat(config.getInt("currentProtocolVersion")).isEqualTo(AiProtocol.CURRENT_VERSION);
+      assertThat(config.getJSONArray("supportedProtocolVersions").length()).isGreaterThan(0);
+    } finally {
+      connection.disconnect();
+    }
+  }
+
+  @Test
+  void chatEndpointRejectsUnsupportedProtocolVersion() throws Exception {
+    // Activate AI so we get past the not-configured gate and exercise the version check.
+    getServer(0).getAiConfiguration().activate("test-token", "127.0.0.1", "hw", "v");
+
+    final JSONObject payload = new JSONObject()
+        .put("database", "graph")
+        .put("message", "Hello")
+        .put("protocolVersion", 999);
+
+    final HttpURLConnection connection = (HttpURLConnection) new URI(getAiUrl("/chat")).toURL().openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", getBasicAuth());
+    connection.setRequestProperty("Content-Type", "application/json");
+    connection.setDoOutput(true);
+
+    try (final DataOutputStream out = new DataOutputStream(connection.getOutputStream())) {
+      out.write(payload.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    connection.connect();
+
+    try {
+      assertThat(connection.getResponseCode()).isEqualTo(400);
+      final JSONObject err = new JSONObject(readErrorBody(connection));
+      assertThat(err.getString("code")).isEqualTo("protocol_unsupported");
+      assertThat(err.getInt("currentProtocolVersion")).isEqualTo(AiProtocol.CURRENT_VERSION);
+      assertThat(err.getJSONArray("supportedProtocolVersions").length()).isGreaterThan(0);
     } finally {
       connection.disconnect();
     }
