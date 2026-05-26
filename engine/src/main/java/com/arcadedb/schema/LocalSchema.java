@@ -1828,7 +1828,7 @@ public class LocalSchema implements Schema {
       // Restore compaction file-migration map so WAL recovery can redirect or safely skip
       // pages that reference old (pre-compaction) file IDs.
       migratedFileIds.clear();
-      if (root.has("migratedFileIds")) {
+      if (root.has("migratedFileIds") && !root.isNull("migratedFileIds")) {
         final JSONObject migratedJSON = root.getJSONObject("migratedFileIds");
         for (final String key : migratedJSON.keySet())
           migratedFileIds.put(Integer.parseInt(key), migratedJSON.getInt(key));
@@ -1999,6 +1999,7 @@ public class LocalSchema implements Schema {
   public void setMigratedFileId(final int oldFileId, final int newFileId) {
     LogManager.instance().log(this, Level.FINE, "Migrating file id %d to %d", null, oldFileId, newFileId);
     migratedFileIds.put(oldFileId, newFileId);
+    saveConfiguration();
   }
 
   public Integer getMigratedFileId(final int oldFileId) {

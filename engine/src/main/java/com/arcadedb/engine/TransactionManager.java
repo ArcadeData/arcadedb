@@ -340,7 +340,7 @@ public class TransactionManager {
           LogManager.instance().log(this, Level.FINE,
               "Skipping page for compaction-migrated file %d (now %d) during transaction apply", null, txPage.fileId, migratedTo);
         else
-          LogManager.instance().log(this, Level.WARNING,
+          LogManager.instance().log(this, Level.INFO,
               "Skipping page for missing file %d during transaction apply, file was deleted or migration map is incomplete", null,
               txPage.fileId);
         continue;
