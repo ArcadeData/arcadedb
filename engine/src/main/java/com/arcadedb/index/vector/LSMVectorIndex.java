@@ -2702,6 +2702,15 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return page;
   }
 
+  /** Map JVector similarity (larger = closer) back to a distance so ascending sort returns nearest first. */
+  static float scoreToDistance(final VectorSimilarityFunction similarityFunction, final float score) {
+    return switch (similarityFunction) {
+      case COSINE -> 2.0f * (1.0f - score);
+      case EUCLIDEAN -> score > 0 ? (1.0f / score) - 1.0f : Float.MAX_VALUE;
+      case DOT_PRODUCT -> -score;
+    };
+  }
+
   /**
    * Brute-force scan of delta vectors (inserted since last graph rebuild) and merge with graph search results.
    * Cost is negligible for small delta buffers (microseconds for ≤100 vectors).
@@ -2730,13 +2739,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       final VectorFloat<?> deltaVf = vts.createFloatVector(delta.vector);
       final float score = metadata.similarityFunction.compare(queryVectorFloat, deltaVf);
-      final float distance = switch (metadata.similarityFunction) {
-        case COSINE -> 2.0f * (1.0f - score);
-        case EUCLIDEAN -> score;
-        case DOT_PRODUCT -> -score;
-        default -> score;
-      };
-      results.add(new Pair<>(bindRid(delta.rid), distance));
+      results.add(new Pair<>(bindRid(delta.rid), scoreToDistance(metadata.similarityFunction, score)));
       added = true;
     }
 
@@ -2776,13 +2779,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         continue;
 
       final float score = metadata.similarityFunction.compare(queryVectorFloat, vec);
-      final float distance = switch (metadata.similarityFunction) {
-        case COSINE -> 2.0f * (1.0f - score);
-        case EUCLIDEAN -> score;
-        case DOT_PRODUCT -> -score;
-        default -> score;
-      };
-      results.add(new Pair<>(bindRid(loc.rid), distance));
+      results.add(new Pair<>(bindRid(loc.rid), scoreToDistance(metadata.similarityFunction, score)));
       added = true;
     }
 
@@ -2965,22 +2962,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
               if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
                 continue;
 
-              // JVector returns similarity scores - convert to distance based on similarity function
-              // Note: JVector's COSINE returns (1 + cos(a,b)) / 2 mapped to [0, 1]
-              final float score = nodeScore.score;
-              final float distance = switch (metadata.similarityFunction) {
-                case COSINE ->
-                  // JVector COSINE score = (1 + cos) / 2, so cos = 2*score - 1, distance = 1 - cos
-                    2.0f * (1.0f - score);
-                case EUCLIDEAN ->
-                  // For euclidean, the score is already the distance
-                    score;
-                case DOT_PRODUCT ->
-                  // For dot product, higher score is better (closer), so negate it
-                    -score;
-                default -> score;
-              };
-              results.add(new Pair<>(bindRid(loc.rid), distance));
+              results.add(new Pair<>(bindRid(loc.rid), scoreToDistance(metadata.similarityFunction, nodeScore.score)));
             } else {
               skippedDeletedOrNull++;
             }
@@ -3164,14 +3146,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           if (allowedRIDs != null && !allowedRIDs.isEmpty() && !allowedRIDs.contains(loc.rid))
             continue;
 
-          final float score = nodeScore.score;
-          final float distance = switch (metadata.similarityFunction) {
-            case COSINE -> 2.0f * (1.0f - score);
-            case EUCLIDEAN -> score;
-            case DOT_PRODUCT -> -score;
-            default -> score;
-          };
-          results.add(new Pair<>(bindRid(loc.rid), distance));
+          results.add(new Pair<>(bindRid(loc.rid), scoreToDistance(metadata.similarityFunction, nodeScore.score)));
         }
 
         LogManager.instance()
@@ -3310,17 +3285,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
             final int vectorId = ordinalToVectorId[ordinal];
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
             if (loc != null && !loc.deleted) {
-              // Convert similarity score to distance
-              // Note: JVector's COSINE returns (1 + cos(a,b)) / 2 mapped to [0, 1]
-              final float score = nodeScore.score;
-              final float distance = switch (metadata.similarityFunction) {
-                case COSINE ->
-                  // JVector COSINE score = (1 + cos) / 2, so cos = 2*score - 1, distance = 1 - cos
-                    2.0f * (1.0f - score);
-                case EUCLIDEAN -> score;
-                case DOT_PRODUCT -> -score;
-                default -> score;
-              };
+              final float distance = scoreToDistance(metadata.similarityFunction, nodeScore.score);
               results.add(new Pair<>(bindRid(loc.rid), distance));
             } else {
               skippedDeletedOrNull++;
