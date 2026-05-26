@@ -232,7 +232,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       LogManager.instance()
               .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                       e.getMessage());
-      sendErrorResponse(exchange, 503, "Found duplicate key in index", e,
+      // 409 Conflict (RFC 9110 §15.5.10): a unique-constraint violation is a client data conflict,
+      // not a transient server-availability problem. 503 told clients/load balancers the request was
+      // retry-worthy, amplifying the bad write. See issue #4350.
+      sendErrorResponse(exchange, 409, "Found duplicate key in index", e,
               e.getIndexName() + "|" + e.getKeys() + "|" + e.getCurrentIndexedRID());
     } catch (final RecordNotFoundException e) {
       LogManager.instance()
@@ -263,6 +266,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         LogManager.instance().log(this, getUserSevereErrorLogLevel(), "Security error on command execution (%s): %s",
                 SecurityException.class.getSimpleName(), realException.getMessage());
         sendErrorResponse(exchange, 403, "Security error", realException, null);
+      } else if (realException instanceof DuplicatedKeyException dup) {
+        // Symmetric with the un-wrapped DuplicatedKeyException catch arm. Some code paths
+        // (e.g. script execution, command planners) wrap DuplicatedKeyException in
+        // CommandExecutionException; without this branch the response would degrade to 500.
+        // See issue #4350.
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
+                dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
       } else {
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
@@ -292,6 +305,16 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
                 .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
                         realException.getMessage());
         sendErrorResponse(exchange, 400, "Cannot execute command", realException, null);
+      } else if (realException instanceof DuplicatedKeyException dup) {
+        // Same as the un-wrapped DuplicatedKeyException arm above, but reached when the
+        // exception was thrown inside the auto-commit transaction wrapper in
+        // DatabaseAbstractHandler (which wraps any Exception thrown by execute() in a
+        // TransactionException). Without this branch the response degrades to 500. See issue #4350.
+        LogManager.instance()
+                .log(this, getUserSevereErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(),
+                        realException.getMessage());
+        sendErrorResponse(exchange, 409, "Found duplicate key in index", dup,
+                dup.getIndexName() + "|" + dup.getKeys() + "|" + dup.getCurrentIndexedRID());
       } else {
         LogManager.instance()
                 .log(this, getUserSevereErrorLogLevel(), "Error on transaction execution (%s): %s", getClass().getSimpleName(),

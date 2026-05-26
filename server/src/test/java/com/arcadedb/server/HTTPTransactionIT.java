@@ -220,7 +220,9 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
           .isInstanceOf(IOException.class);
 
       String response = readError(connection2);
-      assertThat(connection2.getResponseCode()).isEqualTo(503);
+      // Issue #4350: DuplicatedKeyException must surface as 409 Conflict (client data conflict),
+      // not 503 Service Unavailable (which is retry-worthy and was triggering load-balancer retries).
+      assertThat(connection2.getResponseCode()).isEqualTo(409);
       connection2.disconnect();
       assertThat(response.contains("DuplicatedKeyException")).isTrue();
     });
