@@ -58,3 +58,21 @@ Changed `checkIntegrity()` to:
 - All new tests pass
 - `TransactionManagerCloseWALFsyncTest` still passes (no regression)
 - `ApplyChangesPartialReplayTest` still passes (no regression)
+- `LocalDatabaseLastTransactionIdTest`, `WALFileGetTransactionTest` still pass
+
+## PR
+
+- https://github.com/ArcadeData/arcadedb/pull/4356
+
+## Review cycles
+
+- cycle 1 (`99242ac`): gemini-code-assist commented with three findings
+  - critical: `lastTxId = lowerTxId` set before `applyChanges` succeeds - on gap detection lastTxId reflected a failed tx
+  - critical: `transactionIds.set(lastTxId + 1)` with `lastTxId=-1` overwrites the persistedLastTxId loaded in the constructor
+  - high: `activeWALFilePool` may contain null entries (FileNotFoundException at init); cleanup loops must null-check
+  - all three applied in commit `5b600c9`
+- cycle 2 (`5b600c9`): no re-review from gemini-code-assist (expected per repo behaviour - bot does not re-review follow-up pushes); loop timed out at 15 min
+
+## Final state
+
+- timeout (cycle 2): PR open with cycle-1 feedback addressed, awaiting human merge
