@@ -134,10 +134,24 @@ public class InCondition extends BooleanExpression {
 
   protected static Object executeQuery(final SelectStatement rightStatement, final CommandContext context) {
     final ResultSet result = rightStatement.execute(context.getDatabase(), context.getInputParameters());
-    return result.stream().collect(Collectors.toSet());
+    return result.stream()
+        .map(r -> {
+          if (!r.isElement()) {
+            final Set<String> names = r.getPropertyNames();
+            if (names.size() == 1)
+              return r.getProperty(names.iterator().next());
+          }
+          return (Object) r;
+        })
+        .collect(Collectors.toSet());
   }
 
-  protected static boolean evaluateExpression(final Object iLeft, final Object iRight) {
+  protected static boolean evaluateExpression(Object iLeft, final Object iRight) {
+    if (iLeft instanceof Result r && !r.isElement()) {
+      final Set<String> names = r.getPropertyNames();
+      if (names.size() == 1)
+        iLeft = r.getProperty(names.iterator().next());
+    }
     if (MultiValue.isMultiValue(iRight)) {
       if (iRight instanceof Set<?> set)
         return set.contains(iLeft);
