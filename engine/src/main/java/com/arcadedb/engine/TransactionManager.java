@@ -251,6 +251,7 @@ public class TransactionManager {
         }
 
         long lastTxId = -1;
+        boolean walGapDetected = false;
 
         while (true) {
           int lowerTx = -1;
@@ -272,7 +273,15 @@ public class TransactionManager {
 
           lastTxId = lowerTxId;
 
-          applyChanges(walPositions[lowerTx], Collections.emptyMap(), true);
+          try {
+            applyChanges(walPositions[lowerTx], Collections.emptyMap(), false);
+          } catch (WALVersionGapException e) {
+            LogManager.instance().log(this, Level.SEVERE,
+                "Recovery aborted for database '%s': version gap in WAL (txId=%d). WAL files have been preserved for manual inspection. No further transactions will be replayed.",
+                null, database, lowerTxId);
+            walGapDetected = true;
+            break;
+          }
 
           walPositions[lowerTx] = activeWALFilePool[lowerTx].getTransaction(walPositions[lowerTx].endPositionInLog);
         }
@@ -280,14 +289,28 @@ public class TransactionManager {
         // CONTINUE FROM LAST TXID
         transactionIds.set(lastTxId + 1);
 
-        // REMOVE ALL WAL FILES
-        for (final WALFile file : activeWALFilePool) {
-          try {
-            file.drop();
-            LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
-          } catch (final IOException e) {
-            LogManager.instance().log(this, Level.SEVERE, "Error on dropping WAL file '%s'", e, file);
+        if (!walGapDetected) {
+          // REMOVE ALL WAL FILES
+          for (final WALFile file : activeWALFilePool) {
+            try {
+              file.drop();
+              LogManager.instance().log(this, Level.FINE, "Dropped WAL file '%s'", null, file);
+            } catch (final IOException e) {
+              LogManager.instance().log(this, Level.SEVERE, "Error on dropping WAL file '%s'", e, file);
+            }
           }
+        } else {
+          // Close WAL files without deleting: preserve for manual inspection after gap detection
+          for (final WALFile file : activeWALFilePool) {
+            try {
+              file.close();
+            } catch (final IOException e) {
+              LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, file);
+            }
+          }
+          LogManager.instance().log(this, Level.SEVERE,
+              "WAL files for database '%s' have been preserved in '%s' for manual inspection.",
+              null, database, database.getDatabasePath());
         }
         createWALFilePool();
         database.getPageManager().removeAllReadPagesOfDatabase(database);
