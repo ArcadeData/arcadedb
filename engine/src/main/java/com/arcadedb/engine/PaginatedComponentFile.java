@@ -51,6 +51,18 @@ public class PaginatedComponentFile extends ComponentFile {
     super(filePath, mode);
   }
 
+  public void force(final boolean metaData) throws IOException {
+    if (channel == null)
+      return;
+    try {
+      channel.force(metaData);
+    } catch (final ClosedChannelException e) {
+      LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on force. Reopen it and retry...", null, fileName);
+      open(filePath, mode);
+      channel.force(metaData);
+    }
+  }
+
   @Override
   public void close() {
     try {
