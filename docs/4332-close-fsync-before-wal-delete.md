@@ -35,3 +35,25 @@ committed transactions.
 - `dataReadableAfterReopenWithoutWALRecovery`: commits records, closes, manually deletes any
   leftover WAL files, reopens, and asserts all committed records are readable - proving data
   pages were persisted independently of the WAL.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4345
+
+## Review cycles
+
+- **Cycle 1** (`57e8f8d7`) - initial push. Both bots reviewed.
+  - gemini-code-assist: wrap `channel.force()` in try/catch for `ClosedChannelException` (consistency with
+    `read`/`write` methods in same class).
+  - claude: (1) log `force()` failures at SEVERE instead of WARNING - the caller proceeds to delete WAL files;
+    (2) null-check `listFiles()` result in `noWalFilesAfterCleanClose` for symmetry with the other test;
+    (3) reorder imports to match project convention.
+- **Cycle 2** (`400f5a41`) - applied gemini's suggestion. Reopen the channel on `ClosedChannelException`
+  and retry the force. No new bot reviews on this SHA.
+- **Cycle 3** (`9bf58fed`) - applied all three claude items. No new bot reviews on this SHA.
+
+## Final state
+
+`clean-approval` - all actionable bot feedback addressed; bots did not re-review later cycles, which
+matches the documented repo behaviour (gemini does not re-review follow-up pushes; claude reviewed
+only the initial commit).
