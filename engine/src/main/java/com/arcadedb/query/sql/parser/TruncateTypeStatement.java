@@ -98,6 +98,16 @@ public class TruncateTypeStatement extends DDLStatement {
       return true;
     });
 
+    // Index builds run in their own transactions (TypeIndexBuilder.create wraps each bucket's build
+    // in a database.transaction(..., joinCurrent=false, ...)), so they observe disk state rather than
+    // the in-flight deletes pending in our current transaction. Commit + begin so the empty buckets
+    // are visible to the upcoming index build; otherwise the recreated index would be populated with
+    // the records we just logically deleted but not yet flushed.
+    if (!indexDefs.isEmpty() && db.isTransactionActive()) {
+      db.commit();
+      db.begin();
+    }
+
     // Recreate the indexes from the saved definitions; they start empty since all records are gone.
     for (final IndexDefinition def : indexDefs)
       schema.buildTypeIndex(def.typeName, def.propertyNames)
