@@ -1825,12 +1825,17 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     // After compaction, live vectors that appeared AFTER the tombstone on the page must
     // still be accessible. Before the fix the compactor mis-aligned on the old-format
-    // tombstone and dropped every subsequent entry, so the count would drop to roughly
-    // tombstoneIdx (~400) instead of totalVectors - 1.
+    // tombstone and dropped every subsequent entry, so the count would collapse to
+    // roughly tombstoneIdx (~400). The expected count is totalVectors (when the patched
+    // tombstone is the last entry on the page there is no live entry following it on
+    // disk for the compactor to mis-align onto) or totalVectors - 1 (when the deletion
+    // tombstone is correctly matched against the live entry with the same RID). Either
+    // way it must be far above tombstoneIdx; a strict bound of totalVectors - 1
+    // distinguishes the bug case decisively.
     final long countAfterCompaction = typeIndex.countEntries();
     assertThat(countAfterCompaction)
         .as("All live vectors must survive compaction across an old-format tombstone")
-        .isGreaterThanOrEqualTo(totalVectors - 10);
+        .isGreaterThanOrEqualTo(totalVectors - 1);
 
     database.transaction(() -> {
       final float[] queryVec = createDeterministicVector(tombstoneIdx + 50, dimensions);

@@ -288,8 +288,11 @@ public class LSMVectorIndexCompactor {
             currentOffset += 1;
 
             // Read and preserve quantized vector data if quantization is enabled.
-            // For tombstones, delegate to the shared page-parser helper which handles
-            // old-format tombstones (pre-issue #3722) that omitted the quantType byte.
+            // When quantization is NONE, vectors live in documents (nothing to copy here);
+            // for INT8/BINARY we copy the quantized payload to the compacted page to keep
+            // search performance. For tombstones, delegate to the shared page-parser helper
+            // which handles old-format tombstones (pre-issue #3722) that omitted the
+            // quantType byte.
             VectorQuantizationType quantType = VectorQuantizationType.NONE;
             byte[] quantizedData = null;
             float quantMin = 0.0f;
