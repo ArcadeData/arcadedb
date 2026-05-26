@@ -52,38 +52,39 @@ public class JavaBinarySerializer {
 
     final Binary buffer = db.getContext().getTemporaryBuffer1();
 
-    // PROPERTY COUNT
+    // Pre-serialize all properties into (name, bytes) pairs so the written count matches exactly.
+    // Properties with null values or unrecognized types are silently excluded.
     final Map<String, Object> properties = document.toMap();
-    out.writeInt(properties.size());
+    final List<String> names = new ArrayList<>(properties.size());
+    final List<byte[]> payloads = new ArrayList<>(properties.size());
     for (final Map.Entry<String, Object> prop : properties.entrySet()) {
-      final String propName = prop.getKey();
       final Object propValue = prop.getValue();
-
-      // PROPERTY NAME
-      out.writeUTF(propName);
-
-      if (propValue != null) {
-        // PROPERTY VALUE
-        buffer.clear();
-
-        final Property property = documentType.getPropertyIfExists(propName);
-        final byte type = BinaryTypes.getTypeFromValue(propValue, property);
-        if (type == -1) {
-          // INVALID: SKIP IT
-          LogManager.instance()
-              .log(BinaryTypes.class, Level.WARNING,
-                  "Cannot serialize property '%s' of type %s, value %s. The property will be ignored",
-                  propName, propValue.getClass(), propValue);
-          continue;
-        }
-
-        buffer.putByte(type);
-        serializer.serializeValue(db, buffer, type, propValue);
-        buffer.flip();
-
-        out.writeInt(buffer.size());
-        out.write(buffer.getContent(), 0, buffer.size());
+      if (propValue == null)
+        continue;
+      final Property schemaProp = documentType.getPropertyIfExists(prop.getKey());
+      final byte type = BinaryTypes.getTypeFromValue(propValue, schemaProp);
+      if (type == -1) {
+        LogManager.instance()
+            .log(BinaryTypes.class, Level.WARNING,
+                "Cannot serialize property '%s' of type %s, value %s. The property will be ignored",
+                prop.getKey(), propValue.getClass(), propValue);
+        continue;
       }
+      buffer.clear();
+      buffer.putByte(type);
+      serializer.serializeValue(db, buffer, type, propValue);
+      buffer.flip();
+      names.add(prop.getKey());
+      payloads.add(Arrays.copyOf(buffer.getContent(), buffer.size()));
+    }
+
+    // PROPERTY COUNT - matches exactly what will be written below
+    out.writeInt(names.size());
+    for (int i = 0; i < names.size(); i++) {
+      out.writeUTF(names.get(i));
+      final byte[] payload = payloads.get(i);
+      out.writeInt(payload.length);
+      out.write(payload);
     }
 
     // SPECIAL OPERATION FOR VERTICES AND EDGES
