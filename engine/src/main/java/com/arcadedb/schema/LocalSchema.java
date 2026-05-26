@@ -1825,6 +1825,15 @@ public class LocalSchema implements Schema {
           extensions.put(extName, extJSON.getJSONObject(extName));
       }
 
+      // Restore compaction file-migration map so WAL recovery can redirect or safely skip
+      // pages that reference old (pre-compaction) file IDs.
+      migratedFileIds.clear();
+      if (root.has("migratedFileIds")) {
+        final JSONObject migratedJSON = root.getJSONObject("migratedFileIds");
+        for (final String key : migratedJSON.keySet())
+          migratedFileIds.put(Integer.parseInt(key), migratedJSON.getInt(key));
+      }
+
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on loading schema. The schema will be reset", e);
     } finally {
@@ -1909,6 +1918,15 @@ public class LocalSchema implements Schema {
       for (final Map.Entry<String, JSONObject> entry : extensions.entrySet())
         extJSON.put(entry.getKey(), entry.getValue());
       root.put("extensions", extJSON);
+    }
+
+    // Serialize compaction file-migration map so WAL recovery after a restart can distinguish
+    // safe compaction skips from genuinely unexpected missing files.
+    if (!migratedFileIds.isEmpty()) {
+      final JSONObject migratedJSON = new JSONObject();
+      for (final Map.Entry<Integer, Integer> entry : migratedFileIds.entrySet())
+        migratedJSON.put(String.valueOf(entry.getKey()), entry.getValue());
+      root.put("migratedFileIds", migratedJSON);
     }
 
     return root;

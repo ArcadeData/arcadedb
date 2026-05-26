@@ -330,12 +330,19 @@ public class TransactionManager {
       final PageId pageId = new PageId(database, txPage.fileId, txPage.pageNumber);
 
       if (!database.getFileManager().existsFile(txPage.fileId)) {
-        // Referencing a deleted file is expected during Raft replay and crash recovery -
-        // schema changes may delete files before their prior TX entries are replayed.
-        // Always skip to avoid aborting the entire multi-page transaction.
-        LogManager.instance()
-            .log(this, Level.FINE,
-                "Skipping page for deleted file %d during transaction apply", null, txPage.fileId);
+        // Referencing a missing file is expected in two safe cases:
+        // 1. LSM compaction migrated the file to a new ID - data is already in the new file.
+        // 2. A schema change (DROP TYPE / DROP INDEX) deleted the file intentionally.
+        // In both cases we skip. For case 1 the migration map is populated so we can log at FINE.
+        // For case 2 (or any unexpected missing file) we log at WARNING so operators notice.
+        final Integer migratedTo = database.getSchema().getEmbedded().getMigratedFileId(txPage.fileId);
+        if (migratedTo != null)
+          LogManager.instance().log(this, Level.FINE,
+              "Skipping page for compaction-migrated file %d (now %d) during transaction apply", null, txPage.fileId, migratedTo);
+        else
+          LogManager.instance().log(this, Level.WARNING,
+              "Skipping page for missing file %d during transaction apply, file was deleted or migration map is incomplete", null,
+              txPage.fileId);
         continue;
       }
 
