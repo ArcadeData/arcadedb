@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
@@ -260,24 +261,38 @@ public class MergeStep extends AbstractExecutionStep {
     // Find ALL matching nodes
     final List<Vertex> matches = findAllNodes(nodePattern, baseResult);
 
-    if (!matches.isEmpty()) {
-      final List<Result> results = new ArrayList<>();
-      for (final Vertex v : matches) {
-        final ResultInternal r = copyResult(baseResult);
-        if (variable != null)
-          r.setProperty(variable, v);
-        r.setProperty("  wasCreated", false);
-        results.add(r);
-      }
-      return results;
-    }
+    if (!matches.isEmpty())
+      return buildMatchResults(matches, variable, baseResult);
 
-    // No match - create one
-    final Vertex vertex = createVertex(nodePattern, baseResult);
-    if (variable != null)
-      baseResult.setProperty(variable, vertex);
-    baseResult.setProperty("  wasCreated", true);
-    return List.of(baseResult);
+    // No match - create one.  If a UNIQUE-index collision is raised on create
+    // (issue #4351: another row in the same batch/transaction already produced
+    // the same key, or a concurrent transaction did), re-run the match so MERGE
+    // keeps its atomic match-or-create semantics instead of surfacing the raw
+    // DuplicatedKeyException.
+    try {
+      final Vertex vertex = createVertex(nodePattern, baseResult);
+      if (variable != null)
+        baseResult.setProperty(variable, vertex);
+      baseResult.setProperty("  wasCreated", true);
+      return List.of(baseResult);
+    } catch (final DuplicatedKeyException e) {
+      final List<Vertex> retryMatches = findAllNodes(nodePattern, baseResult);
+      if (retryMatches.isEmpty())
+        throw e;
+      return buildMatchResults(retryMatches, variable, baseResult);
+    }
+  }
+
+  private List<Result> buildMatchResults(final List<Vertex> matches, final String variable, final ResultInternal baseResult) {
+    final List<Result> results = new ArrayList<>(matches.size());
+    for (final Vertex v : matches) {
+      final ResultInternal r = copyResult(baseResult);
+      if (variable != null)
+        r.setProperty(variable, v);
+      r.setProperty("  wasCreated", false);
+      results.add(r);
+    }
+    return results;
   }
 
   /**
@@ -290,7 +305,18 @@ public class MergeStep extends AbstractExecutionStep {
     final List<Result> found = findAllMatchingPaths(pathPattern, baseResult);
     if (!found.isEmpty())
       return found;
-    return createNewPath(pathPattern, baseResult);
+
+    // Issue #4351: when path creation collides on a UNIQUE index (most often a
+    // node endpoint already inserted earlier in the same batch), re-run the
+    // path match so MERGE preserves its atomic match-or-create semantics.
+    try {
+      return createNewPath(pathPattern, baseResult);
+    } catch (final DuplicatedKeyException e) {
+      final List<Result> retry = findAllMatchingPaths(pathPattern, baseResult);
+      if (retry.isEmpty())
+        throw e;
+      return retry;
+    }
   }
 
   /**
