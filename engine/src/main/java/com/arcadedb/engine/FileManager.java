@@ -170,6 +170,20 @@ public class FileManager {
     recordedChanges = null;
   }
 
+  public void syncFiles() {
+    for (final ComponentFile f : fileNameMap.values()) {
+      if (f instanceof PaginatedComponentFile pcf) {
+        try {
+          pcf.force(true);
+        } catch (final IOException e) {
+          // Log at SEVERE: the caller proceeds to delete WAL files, so a failed fsync here
+          // leaves committed data unrecoverable on a subsequent OS crash.
+          LogManager.instance().log(this, Level.SEVERE, "Error on syncing file '%s' to disk", e, f.getFileName());
+        }
+      }
+    }
+  }
+
   public void close() {
     for (final ComponentFile f : fileNameMap.values())
       f.close();
