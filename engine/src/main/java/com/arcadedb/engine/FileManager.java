@@ -176,7 +176,9 @@ public class FileManager {
         try {
           pcf.force(true);
         } catch (final IOException e) {
-          LogManager.instance().log(this, Level.WARNING, "Error on syncing file '%s' to disk", e, f.getFileName());
+          // Log at SEVERE: the caller proceeds to delete WAL files, so a failed fsync here
+          // leaves committed data unrecoverable on a subsequent OS crash.
+          LogManager.instance().log(this, Level.SEVERE, "Error on syncing file '%s' to disk", e, f.getFileName());
         }
       }
     }

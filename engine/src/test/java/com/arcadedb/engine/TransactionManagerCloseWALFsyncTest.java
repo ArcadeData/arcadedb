@@ -19,9 +19,10 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.TestHelper;
+import org.junit.jupiter.api.Test;
+
 import java.io.File;
 import java.util.Arrays;
-import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -54,6 +55,7 @@ class TransactionManagerCloseWALFsyncTest extends TestHelper {
     final File[] walFiles = new File(dbPath).listFiles((dir, name) -> name.endsWith(".wal"));
     assertThat(walFiles)
         .as("No WAL files must remain after a clean close")
+        .isNotNull()
         .isEmpty();
 
     // Reopen so TestHelper.afterTest() can drop the database.
