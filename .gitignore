@@ -560,6 +560,7 @@ dist
 
 notes.txt
 /.claude/worktrees
+.worktrees/
 /server/profiler
 /server/chats
 config/ai.json
