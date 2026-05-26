@@ -52,6 +52,7 @@ import java.net.http.HttpResponse;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -701,7 +702,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       final Map<String, Object> map = result.toMap();
       final Map<String, Type> propTypes = parsePropertyTypes((String) map.get(Property.PROPERTY_TYPES_PROPERTY));
       if (!propTypes.isEmpty() || map.containsKey(Property.PROPERTY_TYPES_PROPERTY)) {
-        final Map<String, Object> converted = new HashMap<>(map.size());
+        final Map<String, Object> converted = new LinkedHashMap<>(map.size());
         for (final Map.Entry<String, Object> entry : map.entrySet()) {
           final String fieldName = entry.getKey();
           if (Property.METADATA_PROPERTIES.contains(fieldName))

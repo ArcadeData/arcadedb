@@ -65,7 +65,7 @@ class JsFunctionsTest extends ArcadeContainerTemplate {
   @Test
   void jsObjectComparison() {
     database.command("sql", """
-        DEFINE FUNCTION Test.objectComparison "return a.foo == 'bar'" PARAMETERS [a] LANGUAGE js;
+        DEFINE FUNCTION Test.objectComparison "return JSON.parse(a).foo == 'bar'" PARAMETERS [a] LANGUAGE js;
         """);
 
     ResultSet resultSet = database.query("sql", """
@@ -82,9 +82,8 @@ class JsFunctionsTest extends ArcadeContainerTemplate {
         DEFINE FUNCTION Test.lowercase "return a.toLowerCase()" PARAMETERS [a] LANGUAGE js;
         """);
 
-    // doubel quotes for SQL parser, then single quotes for JS
     ResultSet resultSet = database.query("sql", """
-        SELECT `Test.lowercase`("'UPPERCASE'") as lowercase;
+        SELECT `Test.lowercase`('UPPERCASE') as lowercase;
         """);
 
     assertThat(resultSet.next().<String>getProperty("lowercase")).isEqualTo("uppercase");
