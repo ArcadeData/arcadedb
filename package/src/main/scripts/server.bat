@@ -87,7 +87,14 @@ set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError ^
   -Djava.util.logging.config.file=config/arcadedb-log.properties ^
   --enable-native-access=ALL-UNNAMED
 
-rem ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G"
+rem ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G".
+rem
+rem Tip for low-footprint setups (e.g. arcadedb.profile=low-ram): prefer a small initial heap
+rem such as "-Xms64M -Xmx256M". Pinning Xms=Xmx to a large value (e.g. -Xms512M -Xmx512M) tells
+rem the JVM "you have 512MB, fill it" and G1GC has no pressure to collect young-gen garbage, so
+rem the heap-used gauge in Studio can sit at hundreds of MB on an idle server even though the
+rem live working set is only ~30-50MB. A smaller initial heap makes the JVM collect early and
+rem Studio reports the actual live heap.
 set ARCADEDB_OPTS_MEMORY=
 
 set ARCADEDB_JMX=-Dcom.sun.management.jmxremote=true ^
