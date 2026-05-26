@@ -51,6 +51,11 @@ public class PaginatedComponentFile extends ComponentFile {
     super(filePath, mode);
   }
 
+  public void force(final boolean metaData) throws IOException {
+    if (channel != null)
+      channel.force(metaData);
+  }
+
   @Override
   public void close() {
     try {

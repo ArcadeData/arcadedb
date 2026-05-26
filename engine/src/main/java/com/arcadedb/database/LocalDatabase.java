@@ -1972,6 +1972,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(this);
 
+      if (!drop)
+        fileManager.syncFiles();
+
       open = false;
 
       PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);

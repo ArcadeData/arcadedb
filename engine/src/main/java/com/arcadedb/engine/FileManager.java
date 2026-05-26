@@ -170,6 +170,18 @@ public class FileManager {
     recordedChanges = null;
   }
 
+  public void syncFiles() {
+    for (final ComponentFile f : fileNameMap.values()) {
+      if (f instanceof PaginatedComponentFile pcf) {
+        try {
+          pcf.force(true);
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.WARNING, "Error on syncing file '%s' to disk", e, f.getFileName());
+        }
+      }
+    }
+  }
+
   public void close() {
     for (final ComponentFile f : fileNameMap.values())
       f.close();
