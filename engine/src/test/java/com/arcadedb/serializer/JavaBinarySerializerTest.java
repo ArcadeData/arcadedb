@@ -78,6 +78,8 @@ class JavaBinarySerializerTest extends TestHelper {
 
     @Override
     public int read(final byte[] b, final int off, final int len) throws IOException {
+      if (off < 0 || len < 0 || len > b.length - off)
+        throw new IndexOutOfBoundsException();
       if (len == 0)
         return 0;
       return delegate.read(b, off, 1);
@@ -95,6 +97,8 @@ class JavaBinarySerializerTest extends TestHelper {
 
     @Override
     public void readFully(final byte[] b, final int off, final int len) throws IOException {
+      if (off < 0 || len < 0 || len > b.length - off)
+        throw new IndexOutOfBoundsException();
       int total = 0;
       while (total < len) {
         final int n = read(b, off + total, len - total);
