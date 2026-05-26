@@ -287,12 +287,9 @@ public class LSMVectorIndexCompactor {
             final boolean deleted = page.readByte(currentOffset) == 1;
             currentOffset += 1;
 
-            // Read and preserve quantized vector data if quantization is enabled.
-            // When quantization is NONE, vectors live in documents (nothing to copy here);
-            // for INT8/BINARY we copy the quantized payload to the compacted page to keep
-            // search performance. For tombstones, delegate to the shared page-parser helper
-            // which handles old-format tombstones (pre-issue #3722) that omitted the
-            // quantType byte.
+            // Tombstones delegate to the shared parser helper so old-format tombstones
+            // (pre-#3722, written without the quantType byte) are handled consistently
+            // with the read path. Live entries always carry the quantType byte.
             VectorQuantizationType quantType = VectorQuantizationType.NONE;
             byte[] quantizedData = null;
             float quantMin = 0.0f;
@@ -361,6 +358,8 @@ public class LSMVectorIndexCompactor {
         if (parseFailure != null)
           throw new IOException("Compaction aborted: parse error in page " + pageNum, parseFailure);
       } catch (final IOException ioe) {
+        // Re-throw parse-failure IOException so compaction aborts; the outer
+        // Exception catch below only handles truly unreadable pages.
         throw ioe;
       } catch (final Exception e) {
         // Page is corrupted or unreadable, log warning and skip
