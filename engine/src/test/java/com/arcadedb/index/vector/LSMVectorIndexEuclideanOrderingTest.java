@@ -21,10 +21,15 @@ package com.arcadedb.index.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.Pair;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -126,5 +131,65 @@ class LSMVectorIndexEuclideanOrderingTest extends TestHelper {
     assertThat(results.get(1).getSecond())
         .as("distances must be non-decreasing")
         .isLessThanOrEqualTo(results.get(2).getSecond());
+  }
+
+  @Test
+  void scoreToDistanceHelperRoundsTripEuclidean() {
+    // Verify the helper formula directly: similarity = 1/(1+L2²) → distance = (1/similarity)-1 = L2²
+    final float l2Squared = 4.0f;
+    final float similarity = 1.0f / (1.0f + l2Squared);
+    final float distance = LSMVectorIndex.scoreToDistance(VectorSimilarityFunction.EUCLIDEAN, similarity);
+    assertThat(distance).isEqualTo(l2Squared);
+
+    // Defensive branch: zero similarity (vectors at infinity) must produce a max-distance sentinel
+    assertThat(LSMVectorIndex.scoreToDistance(VectorSimilarityFunction.EUCLIDEAN, 0.0f))
+        .isEqualTo(Float.MAX_VALUE);
+  }
+
+  @Test
+  void queryNodesEuclideanScoreIsPositiveSimilarity() {
+    // Neo4j-compatible db.index.vector.queryNodes must yield a (0, 1] similarity score for EUCLIDEAN,
+    // not 1 - L2² (which would be hugely negative once the LSMVectorIndex distance is squared L2).
+    database.transaction(() -> {
+      database.command("sql", "CREATE VERTEX TYPE EuclidQN IF NOT EXISTS");
+      database.command("sql", "CREATE PROPERTY EuclidQN.name IF NOT EXISTS STRING");
+      database.command("sql", "CREATE PROPERTY EuclidQN.embedding IF NOT EXISTS ARRAY_OF_FLOATS");
+      database.command("sql", """
+          CREATE INDEX IF NOT EXISTS ON EuclidQN (embedding) LSM_VECTOR
+          METADATA {
+            "dimensions": 2,
+            "similarity": "EUCLIDEAN",
+            "idPropertyName": "name"
+          }""");
+    });
+
+    database.transaction(() -> {
+      database.newVertex("EuclidQN").set("name", "near")
+          .set("embedding", new float[] { 0.1f, 0.1f }).save();
+      database.newVertex("EuclidQN").set("name", "far")
+          .set("embedding", new float[] { 10.0f, 10.0f }).save();
+    });
+
+    final Map<String, Object> params = new HashMap<>();
+    params.put("vec", new float[] { 0.0f, 0.0f });
+    params.put("k", 2);
+
+    try (final ResultSet results = database.query("opencypher",
+        "CALL db.index.vector.queryNodes('EuclidQN[embedding]', $k, $vec) YIELD node, score RETURN node.name AS name, score",
+        params)) {
+
+      assertThat(results.hasNext()).isTrue();
+      final Result first = results.next();
+      assertThat((String) first.getProperty("name")).isEqualTo("near");
+      final double nearScore = ((Number) first.getProperty("score")).doubleValue();
+      assertThat(nearScore).as("near vector score must be a positive similarity in (0, 1]").isBetween(0.0, 1.0);
+
+      assertThat(results.hasNext()).isTrue();
+      final Result second = results.next();
+      assertThat((String) second.getProperty("name")).isEqualTo("far");
+      final double farScore = ((Number) second.getProperty("score")).doubleValue();
+      assertThat(farScore).as("far vector score must be a positive similarity in (0, 1]").isBetween(0.0, 1.0);
+      assertThat(nearScore).as("nearer vector must have a higher similarity score").isGreaterThan(farScore);
+    }
   }
 }

@@ -2702,18 +2702,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
     return page;
   }
 
-  /**
-   * Convert a JVector similarity score into a distance value suitable for ascending sort (nearest first).
-   * JVector returns similarity (larger = closer) for every metric, so each branch maps back to a true distance:
-   * COSINE score=(1+cos)/2 → 2*(1-score); EUCLIDEAN score=1/(1+L2²) → L2² via (1/score)-1; DOT_PRODUCT is negated.
-   * The EUCLIDEAN branch guards against a zero similarity (vectors at infinity) with Float.MAX_VALUE.
-   */
-  private static float scoreToDistance(final VectorSimilarityFunction similarityFunction, final float score) {
+  /** Map JVector similarity (larger = closer) back to a distance so ascending sort returns nearest first. */
+  static float scoreToDistance(final VectorSimilarityFunction similarityFunction, final float score) {
     return switch (similarityFunction) {
       case COSINE -> 2.0f * (1.0f - score);
       case EUCLIDEAN -> score > 0 ? (1.0f / score) - 1.0f : Float.MAX_VALUE;
       case DOT_PRODUCT -> -score;
-      default -> score;
     };
   }
 
