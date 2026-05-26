@@ -246,7 +246,6 @@ class OpenCypherAdvancedFunctionTest {
   // ==================== Path Functions ====================
 
   @Test
-  @Disabled("Requires path matching with variable length relationships to be fully implemented")
   void nodesFunction() {
     // Get a path and extract nodes from it
     final ResultSet result = database.command("opencypher",
@@ -263,7 +262,6 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  @Disabled("Requires path matching with variable length relationships to be fully implemented")
   void relationshipsFunction() {
     // Get a path and extract relationships from it
     final ResultSet result = database.command("opencypher",
@@ -279,7 +277,6 @@ class OpenCypherAdvancedFunctionTest {
   }
 
   @Test
-  @Disabled("Requires path matching with variable length relationships to be fully implemented")
   void lengthFunctionOnPath() {
     // Get a path and return its length (number of relationships)
     final ResultSet result = database.command("opencypher",
