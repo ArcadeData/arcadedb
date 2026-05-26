@@ -36,6 +36,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.Pair;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.Field;
@@ -1699,6 +1700,154 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
         results.add(rs.next());
     }
     return results;
+  }
+
+  // Issue #4335: compactor must apply the same old-format tombstone rewind that
+  // LSMVectorIndexPageParser.skipQuantizationData applies.
+  // Without the fix the compactor reads the first byte of the NEXT entry's vectorId
+  // as the quantization-type byte, mis-aligning all subsequent entries and silently
+  // dropping them from the compacted output.
+  @Test
+  @Tag("slow")
+  void compactionSurvivesOldFormatTombstone() throws Exception {
+    final int dimensions = 8;
+    final int pageSize = 8192;    // small pages so ~1 500 entries span 2 pages
+    final int totalVectors = 1500;
+    final int tombstoneIdx = 400; // delete vector #400 (middle of first page)
+
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_MUTATIONS_BEFORE_REBUILD, 100_000);
+    database.getConfiguration().setValue(GlobalConfiguration.VECTOR_INDEX_INACTIVITY_REBUILD_TIMEOUT_MS, 0);
+
+    database.transaction(() -> {
+      final VertexType type = database.getSchema().createVertexType("OFTVec");
+      type.createProperty("name", Type.STRING);
+      type.createProperty("vector", Type.ARRAY_OF_FLOATS);
+
+      database.getSchema().buildTypeIndex("OFTVec", new String[] { "vector" })
+          .withLSMVectorType()
+          .withDimensions(dimensions)
+          .withSimilarity("COSINE")
+          .withMaxConnections(16)
+          .withBeamWidth(100)
+          .withPageSize(pageSize)
+          .create();
+    });
+
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("OFTVec[vector]");
+    final LSMVectorIndex lsmIndex = (LSMVectorIndex) typeIndex.getSubIndexes().iterator().next();
+
+    final List<RID> rids = new ArrayList<>();
+    database.transaction(() -> {
+      for (int i = 0; i < totalVectors; i++) {
+        final MutableVertex v = database.newVertex("OFTVec");
+        v.set("name", "v" + i);
+        v.set("vector", createDeterministicVector(i, dimensions));
+        v.save();
+        rids.add(v.getIdentity());
+      }
+    });
+
+    database.transaction(() -> rids.get(tombstoneIdx).asVertex().delete());
+
+    // Patch the tombstone to old format: remove the quantization-type byte so that the
+    // next entry's first vectorId byte is exposed where the quantType byte used to be.
+    final int fileId = lsmIndex.getFileId();
+    final DatabaseInternal db = (DatabaseInternal) database;
+    database.transaction(() -> {
+      try {
+        for (int pageNum = 0; pageNum < lsmIndex.getTotalPages(); pageNum++) {
+          final MutablePage page = db.getTransaction()
+              .getPageToModify(new PageId(db, fileId, pageNum), pageSize, false);
+
+          final int numEntries = page.readInt(LSMVectorIndex.OFFSET_NUM_ENTRIES);
+          final int offsetFreeContent = page.readInt(LSMVectorIndex.OFFSET_FREE_CONTENT);
+          int offset = LSMVectorIndex.HEADER_BASE_SIZE;
+          int tombstoneQuantTypeOffset = -1;
+
+          for (int i = 0; i < numEntries; i++) {
+            final long[] vid = page.readNumberAndSize(offset);
+            offset += (int) vid[1];
+            final long[] bid = page.readNumberAndSize(offset);
+            offset += (int) bid[1];
+            final long[] pos = page.readNumberAndSize(offset);
+            offset += (int) pos[1];
+            final boolean deleted = page.readByte(offset) == 1;
+            offset += 1;
+
+            if (deleted && tombstoneQuantTypeOffset == -1)
+              tombstoneQuantTypeOffset = offset;
+
+            final byte quantType = page.readByte(offset);
+            offset += 1;
+            if (quantType == 1) {
+              final int vecLen = page.readInt(offset);
+              offset += 4 + vecLen + 8;
+            } else if (quantType == 2) {
+              final int origLen = page.readInt(offset);
+              offset += 4 + ((origLen + 7) / 8) + 4;
+            }
+          }
+
+          if (tombstoneQuantTypeOffset > 0) {
+            final int shiftStart = tombstoneQuantTypeOffset + 1;
+            final int shiftLength = offsetFreeContent - shiftStart;
+            if (shiftLength > 0) {
+              final byte[] dataAfter = new byte[shiftLength];
+              for (int i = 0; i < shiftLength; i++)
+                dataAfter[i] = page.readByte(shiftStart + i);
+              for (int i = 0; i < shiftLength; i++)
+                page.writeByte(tombstoneQuantTypeOffset + i, dataAfter[i]);
+              page.writeInt(LSMVectorIndex.OFFSET_FREE_CONTENT, offsetFreeContent - 1);
+            }
+            break;
+          }
+        }
+      } catch (final Exception e) {
+        throw new RuntimeException("Failed to patch tombstone to old format", e);
+      }
+    });
+
+    // Must have at least 2 pages for findLastImmutablePage to return >= 1.
+    assertThat(lsmIndex.getTotalPages())
+        .as("Need >= 2 pages for compaction to run (increase totalVectors or reduce pageSize)")
+        .isGreaterThanOrEqualTo(2);
+
+    // Trigger compaction.
+    assertThat(lsmIndex.scheduleCompaction()).as("Should schedule compaction").isTrue();
+    Thread.sleep(100);
+    boolean compacted = lsmIndex.compact();
+    if (!compacted) {
+      lsmIndex.scheduleCompaction();
+      Thread.sleep(100);
+      compacted = lsmIndex.compact();
+    }
+    assertThat(compacted).as("Compaction must have run (needed to exercise the tombstone fix)").isTrue();
+
+    // After compaction, live vectors that appeared AFTER the tombstone on the page must
+    // still be accessible. Before the fix the compactor mis-aligned on the old-format
+    // tombstone and dropped every subsequent entry.
+    if (compacted) {
+      // The compacted index must contain all live entries (totalVectors - 1 deleted).
+      // Before the fix this count would be << totalVectors because the misaligned entries
+      // after the tombstone were silently dropped.
+      final long countAfterCompaction = typeIndex.countEntries();
+      assertThat(countAfterCompaction)
+          .as("All live vectors must survive compaction across an old-format tombstone")
+          .isGreaterThan(totalVectors - 100);  // allow small variance; bug would give ~tombstoneIdx entries
+
+      database.transaction(() -> {
+        final float[] queryVec = createDeterministicVector(tombstoneIdx + 50, dimensions);
+        final ResultSet rs = database.query("sql",
+            "SELECT vectorNeighbors('OFTVec[vector]', ?, ?) AS neighbors", queryVec, 10);
+
+        assertThat(rs.hasNext()).as("Query after compaction must return results").isTrue();
+        final Result result = rs.next();
+        final List<?> neighbors = result.getProperty("neighbors");
+        assertThat(neighbors).as("neighbors must not be null").isNotNull();
+        assertThat(neighbors.size()).as("Must find neighbors for vectors after old-format tombstone").isGreaterThan(0);
+        rs.close();
+      });
+    }
   }
 
   private static float[] generateRandomVector(final Random random) {
