@@ -67,7 +67,14 @@ if [ -f "$ARCADEDB_PID" ]; then
   rm "$ARCADEDB_PID"
 fi
 
-# ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G"
+# ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G".
+#
+# Tip for low-footprint setups (e.g. arcadedb.profile=low-ram): prefer a small initial heap
+# such as "-Xms64M -Xmx256M". Pinning Xms=Xmx to a large value (e.g. -Xms512M -Xmx512M) tells
+# the JVM "you have 512MB, fill it" and G1GC has no pressure to collect young-gen garbage, so
+# the heap-used gauge in Studio can sit at hundreds of MB on an idle server even though the
+# live working set is only ~30-50MB. A smaller initial heap makes the JVM collect early and
+# Studio reports the actual live heap.
 if [ -z "$ARCADEDB_OPTS_MEMORY" ]; then
   ARCADEDB_OPTS_MEMORY=""
 fi
