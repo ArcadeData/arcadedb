@@ -37,3 +37,26 @@ In `executeQuery`, unwrap single-property non-element `Result` rows to their sca
 ## Test Results
 
 All 5 tests in `InConditionSubqueryTest` pass. No regressions in `QueryTest` (66), `QueryAndIndexesTest` (2), `SQLScriptTest` (27), or related suites.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4344
+
+## Review Cycles
+
+### Cycle 1 - HEAD `334640ca4`
+
+- gemini-code-assist reviewed (COMMENTED)
+- Feedback: also unwrap `iLeft` at the top of `evaluateExpression` for Set fast-path symmetry when `iLeft` itself is a single-property non-element `Result`
+- Applied: yes - added `iLeft` unwrap before the `MultiValue.isMultiValue(iRight)` block
+- Follow-up commit: `29b72391e` - "address review: unwrap iLeft Result in evaluateExpression for Set fast-path symmetry"
+
+### Cycle 2 - HEAD `29b72391e`
+
+- gemini-code-assist: no re-review (known behavior - bot does not re-review follow-up pushes)
+- claude: no review (bot not installed in this repository)
+- Exited loop: known bot limitation, not a code quality concern
+
+## Final State
+
+`timeout` - per-repository bot behavior: only gemini-code-assist is installed, and it does not re-review follow-up commits.
