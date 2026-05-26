@@ -40,22 +40,12 @@ import java.util.logging.*;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraalPolyglotEngine implements AutoCloseable {
-  public final   Database     database;
-  public final   String       language;
-  public final   List<String> allowedPackages;
-  public final   List<String> restrictedPackages;
-  public final   Context      context;
-  private static Set<String>  supportedLanguages;
-
-  static {
-    try {
-      // Use the shared engine to discover supported languages
-      supportedLanguages = PolyglotEngineManager.getInstance().getSharedEngine().getLanguages().keySet();
-    } catch (Throwable e) {
-      LogManager.instance().log(GraalPolyglotEngine.class, Level.WARNING, "GraalVM Polyglot Engine: no languages found");
-      supportedLanguages = Collections.emptySet();
-    }
-  }
+  public final         Database            database;
+  public final         String              language;
+  public final         List<String>        allowedPackages;
+  public final         List<String>        restrictedPackages;
+  public final         Context             context;
+  private static volatile Set<String>      supportedLanguages;
 
   private GraalPolyglotEngine(final Database database, final Engine engine, final String language, final OutputStream output,
       final List<String> allowedPackages, final List<String> restrictedPackages, final long maxExecutionTimeMs) {
@@ -116,7 +106,24 @@ public class GraalPolyglotEngine implements AutoCloseable {
   }
 
   public static Set<String> getSupportedLanguages() {
-    return supportedLanguages;
+    Set<String> result = supportedLanguages;
+    if (result == null) {
+      synchronized (GraalPolyglotEngine.class) {
+        result = supportedLanguages;
+        if (result == null) {
+          try {
+            // Touching the shared Engine here loads Truffle and every GraalVM language jar on the
+            // classpath. Done lazily so a server that never uses polyglot does not pay this cost.
+            result = PolyglotEngineManager.getInstance().getSharedEngine().getLanguages().keySet();
+          } catch (Throwable e) {
+            LogManager.instance().log(GraalPolyglotEngine.class, Level.WARNING, "GraalVM Polyglot Engine: no languages found");
+            result = Collections.emptySet();
+          }
+          supportedLanguages = result;
+        }
+      }
+    }
+    return result;
   }
 
   public static final class Builder {
