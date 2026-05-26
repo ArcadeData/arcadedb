@@ -22,6 +22,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -77,6 +79,14 @@ public class TruncateTypeStatement extends DDLStatement {
       }
     }
 
+    // Capture index definitions BEFORE truncating records (issue #4352): scanning + record-by-record
+    // delete with in-loop batched commit can leave LSM-Tree indexes full of stale tombstones, so the
+    // index ends up in an inconsistent state (infinite-loop iteration, spurious duplicate-key errors).
+    // It's faster and safer to drop the indexes, clear the records, then recreate the (empty) indexes.
+    final List<IndexDefinition> indexDefs = collectIndexDefinitions(typez, polymorphic);
+    for (final IndexDefinition def : indexDefs)
+      schema.dropIndex(def.name);
+
     // Scan and delete all records, committing in batches to avoid OOM
     final long[] count = {0};
     db.scanType(typeName.getStringValue(), polymorphic, rec -> {
@@ -88,12 +98,63 @@ public class TruncateTypeStatement extends DDLStatement {
       return true;
     });
 
+    // Recreate the indexes from the saved definitions; they start empty since all records are gone.
+    for (final IndexDefinition def : indexDefs)
+      schema.buildTypeIndex(def.typeName, def.propertyNames)
+          .withType(def.indexType)
+          .withUnique(def.unique)
+          .withPageSize(def.pageSize)
+          .withNullStrategy(def.nullStrategy)
+          .create();
+
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "truncate type");
     result.setProperty("typeName", typeName.getStringValue());
     rs.add(result);
 
     return rs;
+  }
+
+  private static List<IndexDefinition> collectIndexDefinitions(final DocumentType typez, final boolean polymorphic) {
+    final List<IndexDefinition> defs = new ArrayList<>();
+    final Set<String> seen = new HashSet<>();
+    for (final TypeIndex index : typez.getAllIndexes(false))
+      if (seen.add(index.getName()))
+        defs.add(IndexDefinition.from(index));
+    if (polymorphic)
+      for (final DocumentType sub : typez.getSubTypes())
+        for (final TypeIndex index : sub.getAllIndexes(false))
+          if (seen.add(index.getName()))
+            defs.add(IndexDefinition.from(index));
+    return defs;
+  }
+
+  private static final class IndexDefinition {
+    final String                              name;
+    final String                              typeName;
+    final String[]                            propertyNames;
+    final Schema.INDEX_TYPE                   indexType;
+    final boolean                             unique;
+    final int                                 pageSize;
+    final LSMTreeIndexAbstract.NULL_STRATEGY  nullStrategy;
+
+    private IndexDefinition(final String name, final String typeName, final String[] propertyNames,
+        final Schema.INDEX_TYPE indexType, final boolean unique, final int pageSize,
+        final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+      this.name = name;
+      this.typeName = typeName;
+      this.propertyNames = propertyNames;
+      this.indexType = indexType;
+      this.unique = unique;
+      this.pageSize = pageSize;
+      this.nullStrategy = nullStrategy;
+    }
+
+    static IndexDefinition from(final TypeIndex index) {
+      final List<String> props = index.getPropertyNames();
+      return new IndexDefinition(index.getName(), index.getTypeName(), props.toArray(new String[0]),
+          index.getType(), index.isUnique(), index.getPageSize(), index.getNullStrategy());
+    }
   }
 
   @Override
