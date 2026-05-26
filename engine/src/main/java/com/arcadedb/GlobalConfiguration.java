@@ -108,11 +108,24 @@ public enum GlobalConfiguration {
         ASYNC_TX_BATCH_SIZE.setValue(8);
         PAGE_FLUSH_QUEUE.setValue(8);
         SQL_STATEMENT_CACHE.setValue(16);
+        OPENCYPHER_STATEMENT_CACHE.setValue(16);
+        OPENCYPHER_PLAN_CACHE.setValue(16);
+
+        ASYNC_WORKER_THREADS.setValue(1);
+        TX_WAL_FILES.setValue(1);
+
+        QUERY_PARALLELISM_POOL_THREADS.setValue(2);
+        QUERY_PARALLELISM_QUEUE_SIZE.setValue(64);
+        SPARSE_VECTOR_SCORING_POOL_THREADS.setValue(1);
+        SPARSE_VECTOR_SCORING_QUEUE_SIZE.setValue(64);
 
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
         SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);
+        SERVER_HTTP_WORKER_THREADS.setValue(16);
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(10_000);
         VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(10_000);
+
+        POLYGLOT_ENGINE_ENABLED.setValue(false);
 
         PageManager.INSTANCE.configure();
 
@@ -381,6 +394,14 @@ public enum GlobalConfiguration {
   POLYGLOT_COMMAND_TIMEOUT("arcadedb.polyglotCommand.timeout", SCOPE.DATABASE, "Default timeout for polyglot commands (in ms)",
       Long.class, 10_000),
 
+  POLYGLOT_ENGINE_ENABLED("arcadedb.polyglotEngineEnabled", SCOPE.JVM,
+      "Enable the GraalVM Polyglot Engine used to register scripting languages (js, python, ...) as query engines. "
+          + "When true (default), the shared Engine is created lazily on first use and all GraalVM languages found on "
+          + "the classpath are registered. When false, the Polyglot engine is not initialised and no polyglot language "
+          + "is registered: this saves tens of MB of heap and class-loading work on small footprints. The 'low-ram' "
+          + "profile sets this to false.",
+      Boolean.class, true),
+
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE, """
       Maximum number of elements (records) allowed in a single query for memory-intensive operations (eg. ORDER BY in heap). \
       If exceeded, the query fails with an OCommandExecutionException. Negative number means no limit.\
@@ -545,6 +566,13 @@ public enum GlobalConfiguration {
   SERVER_HTTP_IO_THREADS("arcadedb.server.httpsIoThreads", SCOPE.SERVER,
       "Number of threads to use in the HTTP servers. The default number for most of the use cases is 2 threads per cpus (or 1 per virtual core)",
       Integer.class, 0, null, (value) -> Runtime.getRuntime().availableProcessors()),
+
+  SERVER_HTTP_WORKER_THREADS("arcadedb.server.httpWorkerThreads", SCOPE.SERVER,
+      "Maximum number of worker threads used by the embedded Undertow HTTP server to process blocking requests. "
+          + "Each idle thread reserves a stack (~512KB-1MB) and Thread metadata in heap, so lowering the value reduces "
+          + "memory footprint on small deployments. Default is 500 to preserve the legacy behaviour; the 'low-ram' "
+          + "profile lowers it to 16.",
+      Integer.class, 500),
 
   SERVER_HTTP_SESSION_EXPIRE_TIMEOUT("arcadedb.server.httpSessionExpireTimeout", SCOPE.SERVER,
       "Timeout in seconds for a HTTP session (managing a transaction) to expire. This timeout is computed from the latest command against the session",

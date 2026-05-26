@@ -290,7 +290,7 @@ public class HttpServer implements ServerPlugin {
         .setHandler(createBodySizeLimitHandler(routes, configuration))//
         .setSocketOption(Options.READ_TIMEOUT, configuration.getValueAsInteger(GlobalConfiguration.NETWORK_SOCKET_TIMEOUT))
         .setIoThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_IO_THREADS))//
-        .setWorkerThreads(500)//
+        .setWorkerThreads(configuration.getValueAsInteger(GlobalConfiguration.SERVER_HTTP_WORKER_THREADS))//
         .setServerOption(SHUTDOWN_TIMEOUT, 5000);
 
     if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL)) {

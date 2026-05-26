@@ -113,9 +113,14 @@ public class QueryEngineManager {
     pool.allowCoreThreadTimeOut(true);
     executorService = pool;
 
-    // REGISTER ALL THE SUPPORTED LANGUAGE FROM POLYGLOT ENGINE
-    for (final String language : PolyglotQueryEngine.PolyglotQueryEngineFactory.getSupportedLanguages())
-      register(new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
+    // REGISTER ALL THE SUPPORTED LANGUAGE FROM POLYGLOT ENGINE.
+    // Guarded by POLYGLOT_ENGINE_ENABLED: when disabled we skip the iteration completely, so
+    // GraalPolyglotEngine.getSupportedLanguages() is never invoked and the shared Engine - which
+    // pulls in Truffle and every GraalVM language jar on the classpath - is never created.
+    if (GlobalConfiguration.POLYGLOT_ENGINE_ENABLED.getValueAsBoolean()) {
+      for (final String language : PolyglotQueryEngine.PolyglotQueryEngineFactory.getSupportedLanguages())
+        register(new PolyglotQueryEngine.PolyglotQueryEngineFactory(language));
+    }
 
     register(new JavaQueryEngine.JavaQueryEngineFactory());
     register(new SQLQueryEngine.SQLQueryEngineFactory());
