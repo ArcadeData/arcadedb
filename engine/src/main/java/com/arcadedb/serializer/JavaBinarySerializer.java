@@ -52,8 +52,7 @@ public class JavaBinarySerializer {
 
     final Binary buffer = db.getContext().getTemporaryBuffer1();
 
-    // Stage serialized property bytes in a single growing buffer so the written count matches
-    // exactly. Properties with null values or unrecognized types are excluded.
+    // Count must be written before the payload, so stage the entries to know the final count up-front.
     final Map<String, Object> properties = document.toMap();
     final ByteArrayOutputStream staged = new ByteArrayOutputStream();
     int validCount = 0;
@@ -84,7 +83,6 @@ public class JavaBinarySerializer {
       }
     }
 
-    // PROPERTY COUNT - matches exactly what will be written below
     out.writeInt(validCount);
     out.write(staged.toByteArray());
 

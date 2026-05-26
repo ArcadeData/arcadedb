@@ -160,8 +160,7 @@ class JavaBinarySerializerTest extends TestHelper {
         doc2.readExternal(in);
         // Null properties are not serialized; the non-null ones must come back intact
         final Map<String, Object> result = doc2.toMap();
-        assertThat(result).containsEntry("id", 100L).containsEntry("name", "John");
-        assertThat(result.containsKey("nullProp")).isFalse();
+        assertThat(result).containsEntry("id", 100L).containsEntry("name", "John").doesNotContainKey("nullProp");
       }
     }
   }
