@@ -1788,7 +1788,7 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
             }
           }
 
-          if (tombstoneQuantTypeOffset > 0) {
+          if (tombstoneQuantTypeOffset != -1) {
             final int shiftStart = tombstoneQuantTypeOffset + 1;
             final int shiftLength = offsetFreeContent - shiftStart;
             if (shiftLength > 0) {
@@ -1825,29 +1825,25 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
 
     // After compaction, live vectors that appeared AFTER the tombstone on the page must
     // still be accessible. Before the fix the compactor mis-aligned on the old-format
-    // tombstone and dropped every subsequent entry.
-    if (compacted) {
-      // The compacted index must contain all live entries (totalVectors - 1 deleted).
-      // Before the fix this count would be << totalVectors because the misaligned entries
-      // after the tombstone were silently dropped.
-      final long countAfterCompaction = typeIndex.countEntries();
-      assertThat(countAfterCompaction)
-          .as("All live vectors must survive compaction across an old-format tombstone")
-          .isGreaterThan(totalVectors - 100);  // allow small variance; bug would give ~tombstoneIdx entries
+    // tombstone and dropped every subsequent entry, so the count would drop to roughly
+    // tombstoneIdx (~400) instead of totalVectors - 1.
+    final long countAfterCompaction = typeIndex.countEntries();
+    assertThat(countAfterCompaction)
+        .as("All live vectors must survive compaction across an old-format tombstone")
+        .isGreaterThanOrEqualTo(totalVectors - 10);
 
-      database.transaction(() -> {
-        final float[] queryVec = createDeterministicVector(tombstoneIdx + 50, dimensions);
-        final ResultSet rs = database.query("sql",
-            "SELECT vectorNeighbors('OFTVec[vector]', ?, ?) AS neighbors", queryVec, 10);
+    database.transaction(() -> {
+      final float[] queryVec = createDeterministicVector(tombstoneIdx + 50, dimensions);
+      final ResultSet rs = database.query("sql",
+          "SELECT vectorNeighbors('OFTVec[vector]', ?, ?) AS neighbors", queryVec, 10);
 
-        assertThat(rs.hasNext()).as("Query after compaction must return results").isTrue();
-        final Result result = rs.next();
-        final List<?> neighbors = result.getProperty("neighbors");
-        assertThat(neighbors).as("neighbors must not be null").isNotNull();
-        assertThat(neighbors.size()).as("Must find neighbors for vectors after old-format tombstone").isGreaterThan(0);
-        rs.close();
-      });
-    }
+      assertThat(rs.hasNext()).as("Query after compaction must return results").isTrue();
+      final Result result = rs.next();
+      final List<?> neighbors = result.getProperty("neighbors");
+      assertThat(neighbors).as("neighbors must not be null").isNotNull();
+      assertThat(neighbors.size()).as("Must find neighbors for vectors after old-format tombstone").isGreaterThan(0);
+      rs.close();
+    });
   }
 
   private static float[] generateRandomVector(final Random random) {
