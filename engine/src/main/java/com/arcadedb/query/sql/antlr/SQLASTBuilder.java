@@ -4736,10 +4736,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
       // Parenthesized SELECT statement wrapped in SubqueryExpression
       fromItem.statement = ((SubqueryExpression) sourceObj).getStatement();
     } else if (sourceObj instanceof final Expression expr) {
-      // Expression that contains a subquery - try to extract the SelectStatement
+      // Expression that contains a subquery, a RID literal or another simple form
 
-      // Check if the mathExpression is a SubqueryExpression
-      if (expr.mathExpression instanceof SubqueryExpression) {
+      if (expr.rid != null) {
+        // MOVE VERTEX #X:Y TO ...
+        fromItem.rids = new ArrayList<>();
+        fromItem.rids.add(expr.rid);
+      } else if (expr.mathExpression instanceof SubqueryExpression) {
         fromItem.statement = ((SubqueryExpression) expr.mathExpression).getStatement();
       } else {
         // Fallback: use the expression itself as identifier

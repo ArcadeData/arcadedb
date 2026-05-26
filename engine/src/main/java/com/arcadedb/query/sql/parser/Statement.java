@@ -112,7 +112,7 @@ public class Statement extends SimpleNode {
    * @return an execution plan
    */
   public InternalExecutionPlan createExecutionPlan(final CommandContext context) {
-    return createExecutionPlan(context);
+    throw new UnsupportedOperationException("createExecutionPlan(CommandContext) is not implemented for " + getClass().getSimpleName());
   }
 
   public InternalExecutionPlan createExecutionPlanNoCache(final CommandContext context) {
