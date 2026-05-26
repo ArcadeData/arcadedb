@@ -38,6 +38,26 @@ The correct API that guarantees the buffer is fully populated is `DataInput.read
 - Full `JavaBinarySerializerTest` suite: 6/6 passed
 - All serializer tests (`*Serializer*`): 30/30 passed, zero regressions
 
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4348
+
+## Review cycles
+
+**Cycle 1** — HEAD `b038b84d`
+- gemini-code-assist: COMMENTED - two medium suggestions: add bounds checks to `ThrottledObjectInput.read(byte[],int,int)` and `readFully(byte[],int,int)`
+- Applied: added `if (off < 0 || len < 0 || len > b.length - off) throw new IndexOutOfBoundsException()` to both methods
+- Commit: `4f40314c5`
+
+**Cycle 2** — HEAD `4f40314c5`
+- gemini-code-assist: COMMENTED - same suggestions repeated but changes are already applied (stale feedback)
+- No actionable items; working tree clean
+- Early-exit: clean-approval
+
+## Final state
+
+`clean-approval` - all review items addressed, no new actionable feedback on cycle 2
+
 ## Status
 
 Done
