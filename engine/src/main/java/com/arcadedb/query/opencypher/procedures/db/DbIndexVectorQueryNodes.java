@@ -32,6 +32,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.Pair;
+import io.github.jbellis.jvector.vector.VectorSimilarityFunction;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -121,7 +122,9 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
     // Sort by distance (ascending - closer is better)
     allNeighbors.sort(Comparator.comparing(Pair::getSecond));
 
-    // Take top k results, converting distance to score (similarity)
+    // Take top k results, converting distance to score (similarity).
+    // EUCLIDEAN distance is L2² in [0, ∞); map it back to a (0, 1] similarity so callers receive a comparable score.
+    final VectorSimilarityFunction similarityFunction = vectorIndexes.getFirst().getSimilarityFunction();
     final int resultCount = Math.min(limit, allNeighbors.size());
     final List<Result> results = new ArrayList<>(resultCount);
 
@@ -130,9 +133,13 @@ public class DbIndexVectorQueryNodes implements CypherProcedure {
       final Document record = neighbor.getFirst().asDocument();
       final float distance = neighbor.getSecond();
 
+      final float score = similarityFunction == VectorSimilarityFunction.EUCLIDEAN
+          ? 1.0f / (1.0f + distance)
+          : 1.0f - distance;
+
       final ResultInternal r = new ResultInternal();
       r.setProperty("node", record);
-      r.setProperty("score", 1.0f - distance);
+      r.setProperty("score", score);
       results.add(r);
     }
 
