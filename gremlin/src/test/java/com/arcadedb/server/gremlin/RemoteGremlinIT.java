@@ -54,7 +54,7 @@ class RemoteGremlinIT extends AbstractGremlinServerIT {
         }
 
         try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\").count()").execute()) {
-          assertThat(list.nextIfAvailable().<Integer>getProperty("result")).isEqualTo(1_000);
+          assertThat(list.nextIfAvailable().<Long>getProperty("result")).isEqualTo(1_000);
         }
 
         graph.tx().commit();

@@ -79,7 +79,7 @@ class RemoteGremlinFactoryIT extends AbstractGremlinServerIT {
 
         // THIS IS IN THE SAME SCOPE, SO IT CAN SEE THE PENDING VERTICES ADDED EARLIER
         try (final ResultSet list = graph.gremlin("g.V().hasLabel(\"inputstructure\").count()").execute()) {
-          assertThat((Integer) list.nextIfAvailable().getProperty("result")).isEqualTo(1_000);
+          assertThat( list.nextIfAvailable().<Long>getProperty("result")).isEqualTo(1_000);
         }
 
         graph.tx().commit(); // <-- WITHOUT THIS COMMIT THE NEXT 2 TRAVERSALS WOULD NOT SEE THE ADDED VERTICES
