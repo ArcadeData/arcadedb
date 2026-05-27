@@ -45,3 +45,27 @@ worker loop also sees the failure and can clean up stale state.
 - `DatabaseAsyncTransactionRetryExhaustedTest`: 1/1 pass
 - `AsyncTest`: 11/11 pass
 - `DatabaseAsyncExecutorLifecycleRaceTest`: 1/1 pass
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4374
+
+## Review Cycles
+
+### Cycle 1 - SHA `5adc3ed3216323343d406209721c17eece1b7cba`
+
+**Reviewer:** gemini-code-assist (COMMENTED)
+
+**Changes applied:**
+- Removed redundant `async.onError(lastException)` call before the re-throw (re-throwing already causes `AsyncThread.run()` to call `onError`, so the explicit call caused double notification)
+- Replaced `database.getTransaction().isActive()` with `database.isTransactionActive()` for consistency with line 47 of the same file
+
+### Cycle 2 - SHA `b7e08e6f86fba0342aa34e0eae8eedb3a10cf217`
+
+**Reviewer:** gemini-code-assist (COMMENTED)
+
+**Assessment:** Stale repeat of cycle-1 feedback. The code already matches the suggested snippet. No changes needed.
+
+## Final State
+
+`clean-approval` - all review feedback addressed, working tree clean.
