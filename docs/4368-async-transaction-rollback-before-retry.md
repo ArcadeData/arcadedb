@@ -36,9 +36,9 @@ already does at line 69-70.
 
 New test: `engine/src/test/java/com/arcadedb/database/async/DatabaseAsyncTransactionRetryTest.java`
 
-- `asyncTransactionRetriesAfterConcurrentModificationException`: TransactionScope throws CME on
-  the first attempt, succeeds on the second. Verifies okCallback is called and no error is
-  reported.
+- `partialWriteFromFailedAttemptIsNotCommitted`: TransactionScope saves a document and throws
+  CME on the first attempt, then succeeds on the second. After `waitCompletion()`, asserts
+  exactly one document exists. Fails before the fix (count = 2), passes after.
 
 ## Verification
 
@@ -52,6 +52,27 @@ cd engine && mvn test -Dtest=DatabaseAsyncTransactionRetryTest
 - All async tests (`DatabaseAsync*`, `AsyncTest`): PASS (13 tests)
 - Transaction tests (`*Transaction*`): PASS (62/63 tests - 1 pre-existing failure in `ACIDTransactionTest.asyncIOExceptionAfterWALIsWrittenManyRecords` that also fails on main)
 
-## Status
+## PR
 
-Implementation complete, tests passing.
+https://github.com/ArcadeData/arcadedb/pull/4376
+
+## Review cycles
+
+**Cycle 1** — HEAD `06056e118`
+
+- gemini-code-assist reviewed (state: COMMENTED)
+- 1 actionable inline comment: tracking-doc Issue/Root-Cause sections described the wrong
+  failure mode ("Transaction already begun" vs. the actual nested-tx behavior). Corrected in
+  follow-up commit `31ae2769a`.
+- claude bot not configured on this repo; waited but never appeared.
+
+**Cycle 2** — HEAD `31ae2769a`
+
+- gemini-code-assist did not re-review (known constraint: bot does not review follow-up
+  pushes on ArcadeData/arcadedb). Final state: timeout.
+- No unaddressed feedback remains.
+
+## Final State
+
+`timeout` (cycle 2 - gemini does not re-review follow-up pushes; all feedback from cycle 1
+was addressed)
