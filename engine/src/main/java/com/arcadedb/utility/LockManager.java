@@ -62,11 +62,11 @@ public class LockManager<RESOURCE, REQUESTER> {
         return LOCK_STATUS.ALREADY_ACQUIRED;
       } else {
         // TRY TO RE-LOCK IT UNTIL TIMEOUT IS EXPIRED
-        final long startTime = System.currentTimeMillis();
+        final long startTime = System.nanoTime();
         do {
           try {
             if (timeout > 0) {
-              final long remaining = timeout - (System.currentTimeMillis() - startTime);
+              final long remaining = timeout - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
               if (remaining <= 0)
                 break;
               currentLock.lock.await(remaining, TimeUnit.MILLISECONDS);
@@ -79,7 +79,7 @@ public class LockManager<RESOURCE, REQUESTER> {
             Thread.currentThread().interrupt();
             break;
           }
-        } while (currentLock != null && (timeout == 0 || System.currentTimeMillis() - startTime < timeout));
+        } while (currentLock != null && (timeout == 0 || TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime) < timeout));
       }
     }
 

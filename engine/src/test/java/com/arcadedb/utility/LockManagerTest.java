@@ -240,7 +240,7 @@ class LockManagerTest {
     });
     waiter.start();
 
-    waiterEntered.await(1, TimeUnit.SECONDS);
+    assertThat(waiterEntered.await(1, TimeUnit.SECONDS)).isTrue();
     Thread.sleep(100); // let waiter reach the await() call
     lockManager.unlock(resource, "holder");
 
