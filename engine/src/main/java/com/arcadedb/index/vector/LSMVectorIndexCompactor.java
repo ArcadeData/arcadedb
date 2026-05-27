@@ -263,6 +263,7 @@ public class LSMVectorIndexCompactor {
 
         // Parse variable-sized entries sequentially (no pointer table)
         int currentOffset = headerSize;
+        Exception parseFailure = null;
         for (int i = 0; i < numberOfEntries; i++) {
           try {
             // Read variable-sized vectorId
@@ -286,11 +287,9 @@ public class LSMVectorIndexCompactor {
             final boolean deleted = page.readByte(currentOffset) == 1;
             currentOffset += 1;
 
-            // CRITICAL: Always read quantization type byte (matches writer that always writes it)
-            final byte quantTypeOrdinal = page.readByte(currentOffset);
-            currentOffset += 1;
-
-            // Read and preserve quantized vector data if quantization is enabled
+            // Tombstones delegate to the shared parser helper so old-format tombstones
+            // (pre-#3722, written without the quantType byte) are handled consistently
+            // with the read path. Live entries always carry the quantType byte.
             VectorQuantizationType quantType = VectorQuantizationType.NONE;
             byte[] quantizedData = null;
             float quantMin = 0.0f;
@@ -298,65 +297,70 @@ public class LSMVectorIndexCompactor {
             float quantMedian = 0.0f;
             int originalLength = 0;
 
-            if (quantTypeOrdinal > 0 && quantTypeOrdinal < VectorQuantizationType.values().length) {
-              quantType = VectorQuantizationType.values()[quantTypeOrdinal];
+            if (deleted) {
+              currentOffset = LSMVectorIndexPageParser.skipQuantizationData(page, currentOffset, true);
+            } else {
+              final byte quantTypeOrdinal = page.readByte(currentOffset);
+              currentOffset += 1;
 
-              if (quantType == VectorQuantizationType.INT8) {
-                // Read: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
-                final int vectorLength = page.readInt(currentOffset);
-                currentOffset += 4;
+              if (quantTypeOrdinal > 0 && quantTypeOrdinal < VectorQuantizationType.values().length) {
+                quantType = VectorQuantizationType.values()[quantTypeOrdinal];
 
-                // Read quantized bytes
-                quantizedData = new byte[vectorLength];
-                for (int j = 0; j < vectorLength; j++) {
-                  quantizedData[j] = page.readByte(currentOffset);
-                  currentOffset += 1;
+                if (quantType == VectorQuantizationType.INT8) {
+                  // Read: vector length (4 bytes) + quantized bytes + min (4 bytes) + max (4 bytes)
+                  final int vectorLength = page.readInt(currentOffset);
+                  currentOffset += 4;
+
+                  quantizedData = new byte[vectorLength];
+                  for (int j = 0; j < vectorLength; j++) {
+                    quantizedData[j] = page.readByte(currentOffset);
+                    currentOffset += 1;
+                  }
+
+                  quantMin = Float.intBitsToFloat(page.readInt(currentOffset));
+                  currentOffset += 4;
+                  quantMax = Float.intBitsToFloat(page.readInt(currentOffset));
+                  currentOffset += 4;
+
+                } else if (quantType == VectorQuantizationType.BINARY) {
+                  // Read: original length (4 bytes) + packed bytes + median (4 bytes)
+                  originalLength = page.readInt(currentOffset);
+                  currentOffset += 4;
+
+                  final int byteCount = (originalLength + 7) / 8;
+                  quantizedData = new byte[byteCount];
+                  for (int j = 0; j < byteCount; j++) {
+                    quantizedData[j] = page.readByte(currentOffset);
+                    currentOffset += 1;
+                  }
+
+                  quantMedian = Float.intBitsToFloat(page.readInt(currentOffset));
+                  currentOffset += 4;
                 }
-
-                // Read min and max
-                quantMin = Float.intBitsToFloat(page.readInt(currentOffset));
-                currentOffset += 4;
-                quantMax = Float.intBitsToFloat(page.readInt(currentOffset));
-                currentOffset += 4;
-
-              } else if (quantType == VectorQuantizationType.BINARY) {
-                // Read: original length (4 bytes) + packed bytes + median (4 bytes)
-                originalLength = page.readInt(currentOffset);
-                currentOffset += 4;
-
-                final int byteCount = (originalLength + 7) / 8;
-                quantizedData = new byte[byteCount];
-                for (int j = 0; j < byteCount; j++) {
-                  quantizedData[j] = page.readByte(currentOffset);
-                  currentOffset += 1;
-                }
-
-                // Read median
-                quantMedian = Float.intBitsToFloat(page.readInt(currentOffset));
-                currentOffset += 4;
               }
             }
-
-            // NOTE: When quantization is NONE, vectors are stored in documents.
-            // When quantization is enabled (INT8/BINARY), we preserve the quantized data
-            // in compacted pages to maintain search performance.
 
             // Last write wins: keep entry with highest vectorId for each RID
             final VectorEntryData entry = new VectorEntryData(id, rid, deleted, quantType, quantizedData, quantMin,
                 quantMax, quantMedian, originalLength);
             final VectorEntryData existing = vectorMap.get(rid);
-            if (existing == null || id > existing.id) {
-              // This entry is newer (higher vectorId), keep it
+            if (existing == null || id > existing.id)
               vectorMap.put(rid, entry);
-            }
             totalEntriesRead++;
 
           } catch (final Exception e) {
-            LogManager.instance().log(mainIndex, Level.WARNING,
-                "Error parsing entry %d in page %d: %s", i, pageNum, e.getMessage());
-            break; // Skip rest of page if parsing fails
+            LogManager.instance().log(mainIndex, Level.SEVERE,
+                "Aborting compaction: parse error on entry %d in page %d: %s", i, pageNum, e.getMessage());
+            parseFailure = e;
+            break;
           }
         }
+        if (parseFailure != null)
+          throw new IOException("Compaction aborted: parse error in page " + pageNum, parseFailure);
+      } catch (final IOException ioe) {
+        // Re-throw parse-failure IOException so compaction aborts; the outer
+        // Exception catch below only handles truly unreadable pages.
+        throw ioe;
       } catch (final Exception e) {
         // Page is corrupted or unreadable, log warning and skip
         LogManager.instance().log(mainIndex, Level.WARNING,
