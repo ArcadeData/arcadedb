@@ -42,9 +42,33 @@ New test in `RemoteDatabaseTest`:
 cd network && mvn test -Dtest=RemoteDatabaseTest -pl .
 ```
 
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4377
+
+## Review cycles
+
+### Cycle 1 - SHA 64f4b6f0c0203010be8e642694bad79e6efa8274
+
+gemini-code-assist reviewed with 3 medium-priority comments (all applied):
+1. Pass IOException cause `e` to `TransactionException` constructor for better stack traces.
+2. Use `127.0.0.1` instead of `"replica-server"` in both test replica entries to avoid DNS lookups.
+3. (Same as #2, second test.)
+
+Follow-up SHA: `76076726b611663477f1df992d177cebee92781f`
+
+### Cycle 2 - SHA 76076726b611663477f1df992d177cebee92781f
+
+No review - gemini-code-assist does not re-review follow-up pushes (known repo behavior).
+Loop exited with `timeout` state.
+
+## Final state: timeout (gemini does not re-review follow-up pushes)
+
 ## Status
 
 - [x] Test written (failing before fix)
 - [x] Fix implemented
 - [x] Tests passing (375 tests, 0 failures, full network module)
-- [ ] PR opened
+- [x] PR opened: https://github.com/ArcadeData/arcadedb/pull/4377
+- [x] Cycle 1 review addressed
+- [ ] PR merged (developer's responsibility)
