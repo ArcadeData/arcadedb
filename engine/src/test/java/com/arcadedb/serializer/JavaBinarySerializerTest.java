@@ -29,6 +29,7 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
 import java.io.*;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -264,6 +265,48 @@ class JavaBinarySerializerTest extends TestHelper {
         assertThat(vTest.toMap()).isEqualTo(v1.toMap());
         assertThat(vTest.getOutEdgesHeadChunk()).isEqualTo(v1.getOutEdgesHeadChunk());
         assertThat(vTest.getInEdgesHeadChunk()).isEqualTo(v1.getInEdgesHeadChunk());
+      }
+    }
+  }
+
+  @Test
+  void documentWithNullPropertyDoesNotDesync() throws Exception {
+    database.getSchema().createDocumentType("Doc");
+
+    // Null-valued property must not inflate the written count - otherwise readExternal desyncs
+    final MutableDocument doc1 = database.newDocument("Doc").set("id", 100L).set("nullProp", (Object) null).set("name", "John");
+    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream();
+        final ObjectOutput out = new ObjectOutputStream(arrayOut)) {
+      doc1.writeExternal(out);
+      out.flush();
+
+      final MutableDocument doc2 = database.newDocument("Doc");
+      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray());
+          final ObjectInput in = new ObjectInputStream(arrayIn)) {
+        doc2.readExternal(in);
+        // Null properties are not serialized; the non-null ones must come back intact
+        final Map<String, Object> result = doc2.toMap();
+        assertThat(result).containsEntry("id", 100L).containsEntry("name", "John").doesNotContainKey("nullProp");
+      }
+    }
+  }
+
+  @Test
+  void documentAllNullPropertiesDeserializesEmpty() throws Exception {
+    database.getSchema().createDocumentType("Doc");
+
+    final MutableDocument doc1 = database.newDocument("Doc").set("a", (Object) null).set("b", (Object) null);
+    try (final ByteArrayOutputStream arrayOut = new ByteArrayOutputStream();
+        final ObjectOutput out = new ObjectOutputStream(arrayOut)) {
+      doc1.writeExternal(out);
+      out.flush();
+
+      final MutableDocument doc2 = database.newDocument("Doc");
+      try (final ByteArrayInputStream arrayIn = new ByteArrayInputStream(arrayOut.toByteArray());
+          final ObjectInput in = new ObjectInputStream(arrayIn)) {
+        doc2.readExternal(in);
+        // toMap(false) excludes @cat/@type metadata - only user properties should be empty
+        assertThat(doc2.toMap(false)).isEmpty();
       }
     }
   }
