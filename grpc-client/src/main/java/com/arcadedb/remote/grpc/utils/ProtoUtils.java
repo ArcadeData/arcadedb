@@ -280,7 +280,7 @@ public class ProtoUtils {
     }
 
     if (value instanceof LocalDate ld) {
-      final long seconds = ld.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
+      final long seconds = ld.toEpochDay() * 86400L;
       return dbgEnc("toGrpcValue", value,
           GrpcValue.newBuilder().setTimestampValue(Timestamp.newBuilder().setSeconds(seconds).setNanos(0).build())
               .setLogicalType("date").build());
