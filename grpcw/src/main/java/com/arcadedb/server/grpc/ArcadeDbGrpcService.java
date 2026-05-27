@@ -3160,6 +3160,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (grpcValue == null)
       return null;
 
+    // Issue #4263: a property explicitly set to null travels over the wire as a GrpcValue with no
+    // kind set. Treat it as a real null regardless of the declared schema type, otherwise the STRING
+    // branch below would store the literal string "null" (String.valueOf(null)).
+    if (grpcValue.getKindCase() == GrpcValue.KindCase.KIND_NOT_SET)
+      return null;
+
     // Try schema
     Property prop = null;
     try {
