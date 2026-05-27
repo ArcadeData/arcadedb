@@ -52,3 +52,26 @@ procedures inherit the corrected behaviour automatically.
   — `extractRelTypes()` extended to also split on comma.
 - `engine/src/test/java/.../procedures/algo/AlgoLeidenTest.java`
   — Two new regression tests for comma and pipe relTypes separators.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4360 (PR #4360)
+
+Commit: `9353de88fc20a5b904cc026654853a1c04bf0d71`
+
+## Review Cycles
+
+### Cycle 1
+
+- Head SHA: `9353de88` (fix(#4287): split comma/pipe-separated relTypes string in extractRelTypes)
+- gemini-code-assist: COMMENTED (2 medium-priority inline suggestions)
+  1. `AbstractAlgoProcedure.splitRelTypeString()` - trim source string first for consistency with split-token trimming
+  2. `AbstractPathProcedure.extractRelTypes()` - same trimming + return `null` instead of `String[0]` for delimiter-only input
+- Both suggestions applied. Follow-up commit: `79f9dd0c3` (address review: trim source string before split for consistency)
+
+### Cycle 2
+
+- Head SHA: `79f9dd0c3` (address review: trim source string before split for consistency)
+- Skipped: gemini does not re-review follow-up pushes on this repository (see memory reference_arcadedb_repo_bot_reviewers)
+
+## Final State: max-cycles-reached (gemini no re-review) - effectively clean after cycle 1
