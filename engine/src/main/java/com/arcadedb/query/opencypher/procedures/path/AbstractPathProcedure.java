@@ -52,14 +52,17 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
       return null;
 
     if (arg instanceof String s) {
-      if (s.isEmpty())
+      final String trimmedSource = s.trim();
+      if (trimmedSource.isEmpty())
         return null;
 
       // Handle pipe- or comma-separated format "REL1|REL2" or "REL1,REL2"
-      if (s.contains("|") || s.contains(","))
-        return Arrays.stream(s.split("[,|]")).map(String::trim).filter(t -> !t.isEmpty()).toArray(String[]::new);
+      if (trimmedSource.contains("|") || trimmedSource.contains(",")) {
+        final String[] types = Arrays.stream(trimmedSource.split("[,|]")).map(String::trim).filter(t -> !t.isEmpty()).toArray(String[]::new);
+        return types.length == 0 ? null : types;
+      }
 
-      return new String[]{s};
+      return new String[]{trimmedSource};
     }
     if (arg instanceof Collection<?> coll)
       return coll.stream().map(Object::toString).toArray(String[]::new);

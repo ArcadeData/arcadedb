@@ -129,12 +129,13 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   }
 
   private static String[] splitRelTypeString(final String s) {
-    if (s.isEmpty())
+    final String trimmedSource = s.trim();
+    if (trimmedSource.isEmpty())
       return null;
-    if (!s.contains(",") && !s.contains("|"))
-      return new String[]{s};
+    if (!trimmedSource.contains(",") && !trimmedSource.contains("|"))
+      return new String[]{trimmedSource};
     final List<String> types = new ArrayList<>();
-    for (final String part : s.split("[,|]")) {
+    for (final String part : trimmedSource.split("[,|]")) {
       final String trimmed = part.trim();
       if (!trimmed.isEmpty())
         types.add(trimmed);
