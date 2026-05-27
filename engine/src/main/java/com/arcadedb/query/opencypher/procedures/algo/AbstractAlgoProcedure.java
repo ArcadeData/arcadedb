@@ -123,11 +123,26 @@ public abstract class AbstractAlgoProcedure implements CypherProcedure {
   protected String[] extractRelTypes(final Object arg) {
     if (arg == null)
       return null;
-    if (arg instanceof String)
-      return new String[]{(String) arg};
-    if (arg instanceof Collection<?>)
-      return ((Collection<?>) arg).stream().map(Object::toString).toArray(String[]::new);
+    if (arg instanceof String s)
+      return splitRelTypeString(s);
+    if (arg instanceof Collection<?> coll)
+      return coll.stream().map(Object::toString).toArray(String[]::new);
     return new String[]{arg.toString()};
+  }
+
+  private static String[] splitRelTypeString(final String s) {
+    final String trimmedSource = s.trim();
+    if (trimmedSource.isEmpty())
+      return null;
+    if (!trimmedSource.contains(",") && !trimmedSource.contains("|"))
+      return new String[]{trimmedSource};
+    final List<String> types = new ArrayList<>();
+    for (final String part : trimmedSource.split("[,|]")) {
+      final String trimmed = part.trim();
+      if (!trimmed.isEmpty())
+        types.add(trimmed);
+    }
+    return types.isEmpty() ? null : types.toArray(new String[0]);
   }
 
   @SuppressWarnings("unchecked")

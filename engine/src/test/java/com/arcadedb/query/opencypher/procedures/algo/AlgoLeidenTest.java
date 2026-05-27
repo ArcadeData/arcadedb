@@ -26,6 +26,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -144,6 +146,21 @@ class AlgoLeidenTest {
       count++;
     }
     assertThat(count).isEqualTo(6);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"KNOWS,NONEXISTENT", "KNOWS|NONEXISTENT"})
+  void leidenWithSeparatedRelTypesYieldsMultiNodeCommunities(final String relTypes) {
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.leiden('" + relTypes + "') YIELD nodeId, community RETURN nodeId, community");
+
+    final List<Integer> communities = new ArrayList<>();
+    while (rs.hasNext())
+      communities.add(((Number) rs.next().getProperty("community")).intValue());
+
+    assertThat(communities).hasSize(6);
+    final Set<Integer> unique = new HashSet<>(communities);
+    assertThat(unique.size()).isLessThan(communities.size());
   }
 
   @Test
