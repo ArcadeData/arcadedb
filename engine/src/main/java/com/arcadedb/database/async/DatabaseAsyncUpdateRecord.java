@@ -60,6 +60,9 @@ public class DatabaseAsyncUpdateRecord implements DatabaseAsyncTask {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on executing async update record operation (threadId=%d)", e, Thread.currentThread().threadId());
 
+      if (database.isTransactionActive())
+        database.rollback();
+
       async.onError(e);
 
       if (onErrorCallback != null)
