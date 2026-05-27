@@ -30,9 +30,22 @@ leading to silent data corruption or lost writes under load.
 
 ## Fix
 
-Added `if (database.isTransactionActive()) database.rollback();` to the catch block of each
-of the three task classes, before the error callbacks. This ensures:
+Added rollback with nested try-catch to the catch block of each of the three task classes,
+before the error callbacks:
+
+```java
+if (database.isTransactionActive()) {
+    try {
+        database.rollback();
+    } catch (final Exception re) {
+        LogManager.instance().log(this, Level.WARNING, "Error on rolling back active transaction", re);
+    }
+}
+```
+
+This ensures:
 - The transaction is cleaned up immediately when a record-level op fails
+- A rollback failure can never mask the original exception or block error callbacks
 - Error callbacks are still invoked (no change to notification semantics)
 - The outer `AsyncThread` loop starts the next message with a fresh transaction
   (via the `requiresActiveTx()` + `database.begin()` check)
@@ -57,13 +70,34 @@ Tests run: 3, Failures: 0, Errors: 0, Skipped: 0
 BUILD SUCCESS
 ```
 
-Regression suite (`ACIDTransactionTest` alone): 11/11 passing.
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4379
+
+## Review Cycles
+
+### Cycle 1 - SHA 2caa7d16d
+
+**Changes:** Initial implementation - added `if (database.isTransactionActive()) database.rollback()` to all three catch blocks.
+
+**gemini-code-assist review:** COMMENTED (medium priority, 3 inline comments - identical on all three files)
+
+> If `database.rollback()` throws an exception, it will propagate out of the catch block, preventing `async.onError(e)` and `onErrorCallback.call(e)` from being executed, thereby masking the original exception. Wrapping the rollback in a nested try-catch block ensures that the original exception is always properly reported to the callbacks.
+
+**Assessment:** Valid defensive-programming concern. Applied as-is.
+
+**Addressed SHA:** 63bfd2d98 - wrapped rollback in nested try-catch with WARNING log, all three files.
+
+## Final State
+
+`deferred-items` - gemini does not re-review follow-up pushes; no further review cycles available.
 
 ## Status
 
 - [x] Analysis complete
 - [x] Tracking doc created
 - [x] Tests written (`DatabaseAsyncRecordRollbackOnExceptionTest`)
-- [x] Implementation complete (rollback added to all three catch blocks)
+- [x] Implementation complete
+- [x] Review feedback addressed (cycle 1)
 - [x] Tests passing (3/3)
-- [ ] PR opened
+- [x] PR opened - #4379
