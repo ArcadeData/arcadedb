@@ -58,3 +58,39 @@ Only affects callers that pass values with `|v| >= 2^59` to `Simple8bCodec.encod
 Time-series use of nanosecond timestamps (values up to ~10^18) can exceed `2^59` (~5.7 × 10^17),
 making this a real data-corruption risk in production. The fix changes a silent corruption
 into a correctly-thrown exception, allowing callers to handle the out-of-range condition.
+
+---
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4361
+
+## Review Cycles
+
+### Cycle 1 - HEAD d230f84b8
+
+**Changes:** Initial fix commit - `Long.compareUnsigned` validation + 3 regression tests.
+
+**gemini-code-assist review:** COMMENTED
+- Inline comment on `docs/4336-simple8b-zigzag-validation.md` line 49: test name in tracking
+  doc said `extremeNegativeBoundaryStillThrows()` but actual test is `nearLongMaxValueThrows()`.
+  Categorized: actionable and clear. Applied.
+
+**claude review:** Not received (bot not configured on ArcadeData/arcadedb).
+
+**Outcome:** Follow-up commit `936f8c408` pushed to address gemini feedback.
+
+### Cycle 2 - HEAD 936f8c408
+
+**Changes:** Doc-only fix: corrected test name in tracking doc.
+
+**gemini-code-assist review:** No new review (does not re-review follow-up pushes per known repo behavior).
+
+**claude review:** Not received (bot not configured on ArcadeData/arcadedb).
+
+**Outcome:** Timeout — no reviews received in cycle 2.
+
+## Final State
+
+`timeout` - gemini reviewed cycle 1 only; claude bot not present in this repository.
+Feedback from cycle 1 was addressed. PR is ready for human review and merge.
