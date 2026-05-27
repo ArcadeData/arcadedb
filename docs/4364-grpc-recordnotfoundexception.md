@@ -49,3 +49,20 @@ record-not-found in the same class.
 - `ArcadeDbGrpcServiceCoverageIT` (35 tests) - all pass
 - `GrpcServerIT` (28 tests) - all pass
 - `grpc-client` full suite (90 tests) - all pass
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4365
+
+## Review Cycles
+
+### Cycle 1: `380d6d6dc`
+
+- **claude[bot]**: Clean approval. "Overall: Looks good - clean, minimal fix with solid test coverage." Two minor pre-existing observations (IllegalArgumentException not mapped to INVALID_ARGUMENT; no logging in generic catch) - both explicitly out of scope.
+- **gemini-code-assist[bot]**: Encountered an error creating the review. No actionable items.
+
+No changes applied.
+
+## Final State
+
+`clean-approval` - no follow-up commits needed.
