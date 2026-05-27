@@ -31,6 +31,11 @@ import com.google.protobuf.Timestamp;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -173,6 +178,52 @@ class ProtoUtilsTest {
     assertThat(value.getMapValue().getEntriesMap().get("name").getStringValue()).isEqualTo("Alice");
     assertThat(value.getMapValue().getEntriesMap().get("age").getInt32Value()).isEqualTo(30);
     assertThat(value.getMapValue().getEntriesMap().get("active").getBoolValue()).isTrue();
+  }
+
+  @Test
+  void toGrpcValueLocalDateTime() {
+    // LocalDateTime had no explicit branch in ProtoUtils.toGrpcValue() - it fell through
+    // to setStringValue(value.toString()) producing an ISO string that the server could not
+    // parse as epoch milliseconds (issue #4358).
+    final LocalDateTime ldt = LocalDateTime.of(2026, 5, 26, 14, 27, 38, 470_000_000);
+    final GrpcValue value = ProtoUtils.toGrpcValue(ldt);
+
+    assertThat(value.hasTimestampValue()).as("LocalDateTime must serialize to TIMESTAMP_VALUE, not STRING_VALUE").isTrue();
+    final Timestamp ts = value.getTimestampValue();
+    final LocalDateTime roundTrip = LocalDateTime.ofEpochSecond(ts.getSeconds(), ts.getNanos(), ZoneOffset.UTC);
+    assertThat(roundTrip).isEqualTo(ldt);
+  }
+
+  @Test
+  void toGrpcValueLocalDate() {
+    // LocalDate must also serialize to TIMESTAMP_VALUE at midnight UTC (issue #4358).
+    final LocalDate ld = LocalDate.of(2026, 5, 26);
+    final GrpcValue value = ProtoUtils.toGrpcValue(ld);
+
+    assertThat(value.hasTimestampValue()).as("LocalDate must serialize to TIMESTAMP_VALUE, not STRING_VALUE").isTrue();
+    final long expectedSeconds = ld.atStartOfDay(ZoneOffset.UTC).toEpochSecond();
+    assertThat(value.getTimestampValue().getSeconds()).isEqualTo(expectedSeconds);
+    assertThat(value.getTimestampValue().getNanos()).isZero();
+  }
+
+  @Test
+  void toGrpcValueInstant() {
+    final Instant instant = Instant.ofEpochSecond(1_000_000_000L, 123_456_789);
+    final GrpcValue value = ProtoUtils.toGrpcValue(instant);
+
+    assertThat(value.hasTimestampValue()).as("Instant must serialize to TIMESTAMP_VALUE").isTrue();
+    assertThat(value.getTimestampValue().getSeconds()).isEqualTo(1_000_000_000L);
+    assertThat(value.getTimestampValue().getNanos()).isEqualTo(123_456_789);
+  }
+
+  @Test
+  void toGrpcValueZonedDateTime() {
+    final ZonedDateTime zdt = ZonedDateTime.of(2026, 5, 26, 14, 27, 38, 470_000_000, ZoneOffset.UTC);
+    final GrpcValue value = ProtoUtils.toGrpcValue(zdt);
+
+    assertThat(value.hasTimestampValue()).as("ZonedDateTime must serialize to TIMESTAMP_VALUE").isTrue();
+    assertThat(value.getTimestampValue().getSeconds()).isEqualTo(zdt.toEpochSecond());
+    assertThat(value.getTimestampValue().getNanos()).isEqualTo(zdt.getNano());
   }
 
   // testToGrpcValueEmbeddedDocument removed - requires database, tested in integration tests
