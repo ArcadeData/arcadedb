@@ -29,7 +29,11 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.LSMVectorIndexMetadata;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeIndexBuilder;
+import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 
 import java.util.*;
 
@@ -109,13 +113,23 @@ public class TruncateTypeStatement extends DDLStatement {
     }
 
     // Recreate the indexes from the saved definitions; they start empty since all records are gone.
-    for (final IndexDefinition def : indexDefs)
-      schema.buildTypeIndex(def.typeName, def.propertyNames)
-          .withType(def.indexType)
-          .withUnique(def.unique)
-          .withPageSize(def.pageSize)
-          .withNullStrategy(def.nullStrategy)
-          .create();
+    for (final IndexDefinition def : indexDefs) {
+      // withType() may swap the builder to a type-specific subclass (e.g. TypeLSMVectorIndexBuilder
+      // for LSM_VECTOR), so call it first and keep the returned reference instead of chaining.
+      final TypeIndexBuilder builder = schema.buildTypeIndex(def.typeName, def.propertyNames).withType(def.indexType);
+      builder.withUnique(def.unique);
+      builder.withPageSize(def.pageSize);
+      builder.withNullStrategy(def.nullStrategy);
+
+      // Type-specific metadata (e.g. LSM_VECTOR dimensions/similarity) must be carried over,
+      // otherwise the recreated index loses its configuration and inserts fail with "index
+      // dimension 0" (issue #4359). The type-specific builder's withMetadata(IndexMetadata)
+      // override reinstates the vector-specific fields.
+      if (def.indexType == Schema.INDEX_TYPE.LSM_VECTOR && def.metadata instanceof LSMVectorIndexMetadata vectorMeta)
+        ((TypeLSMVectorIndexBuilder) builder).withMetadata(cloneVectorMetadata(def.typeName, def.propertyNames, vectorMeta));
+
+      builder.create();
+    }
 
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "truncate type");
@@ -147,10 +161,11 @@ public class TruncateTypeStatement extends DDLStatement {
     final boolean                             unique;
     final int                                 pageSize;
     final LSMTreeIndexAbstract.NULL_STRATEGY  nullStrategy;
+    final IndexMetadata                       metadata;
 
     private IndexDefinition(final String name, final String typeName, final String[] propertyNames,
         final Schema.INDEX_TYPE indexType, final boolean unique, final int pageSize,
-        final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
+        final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy, final IndexMetadata metadata) {
       this.name = name;
       this.typeName = typeName;
       this.propertyNames = propertyNames;
@@ -158,13 +173,48 @@ public class TruncateTypeStatement extends DDLStatement {
       this.unique = unique;
       this.pageSize = pageSize;
       this.nullStrategy = nullStrategy;
+      this.metadata = metadata;
     }
 
     static IndexDefinition from(final TypeIndex index) {
       final List<String> props = index.getPropertyNames();
       return new IndexDefinition(index.getName(), index.getTypeName(), props.toArray(new String[0]),
-          index.getType(), index.isUnique(), index.getPageSize(), index.getNullStrategy());
+          index.getType(), index.isUnique(), index.getPageSize(), index.getNullStrategy(), index.getMetadata());
     }
+  }
+
+  /**
+   * Returns a fresh {@link LSMVectorIndexMetadata} carrying the vector-specific configuration of
+   * {@code source} (dimensions, similarity, HNSW parameters, ...). A copy - rather than the original
+   * reference - avoids reusing the dropped index's mutable runtime fields (e.g. {@code buildState})
+   * on the rebuilt index and resets {@code associatedBucketId} so the per-bucket builder sets it
+   * correctly during {@code create()}.
+   */
+  private static LSMVectorIndexMetadata cloneVectorMetadata(final String typeName, final String[] propertyNames,
+      final LSMVectorIndexMetadata source) {
+    final LSMVectorIndexMetadata copy = new LSMVectorIndexMetadata(typeName, propertyNames, -1);
+    copy.dimensions = source.dimensions;
+    copy.similarityFunction = source.similarityFunction;
+    copy.quantizationType = source.quantizationType;
+    copy.encoding = source.encoding;
+    copy.maxConnections = source.maxConnections;
+    copy.beamWidth = source.beamWidth;
+    copy.efSearch = source.efSearch;
+    copy.neighborOverflowFactor = source.neighborOverflowFactor;
+    copy.alphaDiversityRelaxation = source.alphaDiversityRelaxation;
+    copy.idPropertyName = source.idPropertyName;
+    copy.locationCacheSize = source.locationCacheSize;
+    copy.graphBuildCacheSize = source.graphBuildCacheSize;
+    copy.mutationsBeforeRebuild = source.mutationsBeforeRebuild;
+    copy.inactivityRebuildTimeoutMs = source.inactivityRebuildTimeoutMs;
+    copy.storeVectorsInGraph = source.storeVectorsInGraph;
+    copy.addHierarchy = source.addHierarchy;
+    copy.pqSubspaces = source.pqSubspaces;
+    copy.pqClusters = source.pqClusters;
+    copy.pqCenterGlobally = source.pqCenterGlobally;
+    copy.pqTrainingLimit = source.pqTrainingLimit;
+    copy.collations = source.collations;
+    return copy;
   }
 
   @Override
