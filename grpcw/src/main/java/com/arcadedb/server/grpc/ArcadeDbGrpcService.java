@@ -604,10 +604,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       resp.onNext(LookupByRidResponse.newBuilder().setFound(true).setRecord(convertToGrpcRecord(el.getRecord(), db)).build());
       resp.onCompleted();
-// CURRENT IMPL EXPECTS AN EXCEPTION INSTEAD
-//    } catch (RecordNotFoundException e) {
-//      resp.onNext(LookupByRidResponse.newBuilder().setFound(false).build());
-//      resp.onCompleted();
+    } catch (RecordNotFoundException e) {
+      resp.onError(Status.NOT_FOUND.withDescription("LookupByRid: " + e.getMessage()).asException());
     } catch (Exception e) {
       resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + e.getMessage()).asException());
     }
