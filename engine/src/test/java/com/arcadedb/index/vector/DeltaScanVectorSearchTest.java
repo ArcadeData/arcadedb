@@ -306,8 +306,8 @@ class DeltaScanVectorSearchTest extends TestHelper {
     final List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 5);
     assertThat(results).hasSize(1);
 
-    // For EUCLIDEAN, JVector returns similarity = 1/(1+dist²), so identical vectors → score 1.0
-    assertThat(results.get(0).getSecond()).isEqualTo(1.0f);
+    // findNeighborsFromVector returns L2² distance for EUCLIDEAN, so identical vectors → 0.0
+    assertThat(results.get(0).getSecond()).isEqualTo(0.0f);
   }
 
   @Test
