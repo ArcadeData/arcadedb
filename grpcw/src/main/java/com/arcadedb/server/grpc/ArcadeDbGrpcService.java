@@ -65,6 +65,8 @@ import io.grpc.stub.ServerCallStreamObserver;
 import io.grpc.stub.StreamObserver;
 import org.jspecify.annotations.NonNull;
 
+import com.arcadedb.utility.DateUtils;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -73,6 +75,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -3260,11 +3263,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       case DATE:
       case DATETIME:
-        // Prefer timestamp_value; else accept epoch ms in int64; else parse string
+        // Prefer timestamp_value; else accept epoch ms in int64; else parse string (epoch ms or ISO 8601)
         return switch (v.getKindCase()) {
           case TIMESTAMP_VALUE -> new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue()));
           case INT64_VALUE -> new Date(v.getInt64Value());
-          case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue())); // or parse ISO if you emit it
+          case STRING_VALUE -> {
+            final String s = v.getStringValue();
+            try {
+              yield new Date(Long.parseLong(s));
+            } catch (NumberFormatException ignored) {
+              final Long millis = DateUtils.dateTimeToTimestamp(db, s, ChronoUnit.MILLIS);
+              yield millis != null ? new Date(millis) : null;
+            }
+          }
           default -> null;
         };
 

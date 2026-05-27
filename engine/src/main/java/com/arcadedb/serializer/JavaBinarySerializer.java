@@ -52,39 +52,39 @@ public class JavaBinarySerializer {
 
     final Binary buffer = db.getContext().getTemporaryBuffer1();
 
-    // PROPERTY COUNT
+    // Count must be written before the payload, so stage the entries to know the final count up-front.
     final Map<String, Object> properties = document.toMap();
-    out.writeInt(properties.size());
-    for (final Map.Entry<String, Object> prop : properties.entrySet()) {
-      final String propName = prop.getKey();
-      final Object propValue = prop.getValue();
-
-      // PROPERTY NAME
-      out.writeUTF(propName);
-
-      if (propValue != null) {
-        // PROPERTY VALUE
-        buffer.clear();
-
-        final Property property = documentType.getPropertyIfExists(propName);
-        final byte type = BinaryTypes.getTypeFromValue(propValue, property);
+    final ByteArrayOutputStream staged = new ByteArrayOutputStream();
+    int validCount = 0;
+    try (final DataOutputStream stagedOut = new DataOutputStream(staged)) {
+      for (final Map.Entry<String, Object> prop : properties.entrySet()) {
+        final Object propValue = prop.getValue();
+        if (propValue == null)
+          continue;
+        final String propName = prop.getKey();
+        final Property schemaProp = documentType.getPropertyIfExists(propName);
+        final byte type = BinaryTypes.getTypeFromValue(propValue, schemaProp);
         if (type == -1) {
-          // INVALID: SKIP IT
           LogManager.instance()
               .log(BinaryTypes.class, Level.WARNING,
                   "Cannot serialize property '%s' of type %s, value %s. The property will be ignored",
                   propName, propValue.getClass(), propValue);
           continue;
         }
-
+        buffer.clear();
         buffer.putByte(type);
         serializer.serializeValue(db, buffer, type, propValue);
         buffer.flip();
 
-        out.writeInt(buffer.size());
-        out.write(buffer.getContent(), 0, buffer.size());
+        stagedOut.writeUTF(propName);
+        stagedOut.writeInt(buffer.size());
+        stagedOut.write(buffer.getContent(), 0, buffer.size());
+        validCount++;
       }
     }
+
+    out.writeInt(validCount);
+    out.write(staged.toByteArray());
 
     // SPECIAL OPERATION FOR VERTICES AND EDGES
     if (document instanceof Vertex) {
@@ -126,7 +126,7 @@ public class JavaBinarySerializer {
       final int propertySize = in.readInt();
 
       final byte[] array = new byte[propertySize];
-      in.read(array);
+      in.readFully(array);
 
       final Binary buffer = new Binary(array);
       final byte propType = buffer.getByte();

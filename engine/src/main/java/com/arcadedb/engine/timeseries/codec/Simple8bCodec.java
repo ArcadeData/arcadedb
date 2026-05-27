@@ -66,7 +66,7 @@ public final class Simple8bCodec {
     final long[] zigzagged = new long[values.length];
     for (int i = 0; i < values.length; i++) {
       final long encoded = zigzagEncode(values[i]);
-      if (encoded > MAX_ZIGZAG_VALUE)
+      if (Long.compareUnsigned(encoded, MAX_ZIGZAG_VALUE) > 0)
         throw new IllegalArgumentException(
             "Value " + values[i] + " at index " + i + " is outside the Simple-8b supported range [-(2^59), (2^59)-1]");
       zigzagged[i] = encoded;
