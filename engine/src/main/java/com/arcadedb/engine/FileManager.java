@@ -184,7 +184,7 @@ public class FileManager {
     }
   }
 
-  public void close() {
+  public synchronized void close() {
     for (final ComponentFile f : fileNameMap.values())
       f.close();
 
@@ -193,7 +193,7 @@ public class FileManager {
     fileIdMap.clear();
   }
 
-  public void dropFile(final int fileId) throws IOException {
+  public synchronized void dropFile(final int fileId) throws IOException {
     final ComponentFile file = fileIdMap.remove(fileId);
     if (file != null) {
       fileNameMap.remove(file.getComponentName());
@@ -226,8 +226,8 @@ public class FileManager {
     return stats;
   }
 
-  public List<ComponentFile> getFiles() {
-    return Collections.unmodifiableList(files);
+  public synchronized List<ComponentFile> getFiles() {
+    return Collections.unmodifiableList(new ArrayList<>(files));
   }
 
   /**
@@ -349,7 +349,7 @@ public class FileManager {
     }
   }
 
-  private void registerFile(final ComponentFile file) {
+  private synchronized void registerFile(final ComponentFile file) {
     final int pos = file.getFileId();
     while (files.size() < pos + 1)
       files.add(null);
