@@ -149,7 +149,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // Use statement cache to avoid re-parsing
       final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
 
-      if (!statement.isReadOnly())
+      // EXPLAIN never executes the underlying query, so the idempotency rule does not apply.
+      // PROFILE is treated as idempotent at the wrapper level to match SQL parity
+      // (see ProfileStatement/ExplainStatement in the SQL parser, both return isIdempotent()==true).
+      // Without this bypass, EXPLAIN/PROFILE of a CREATE/MERGE/DELETE/SET fails the read-only
+      // gate even though the user explicitly asked for plan inspection rather than execution
+      // (issue #4366).
+      if (!explain && !profile && !statement.isReadOnly())
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
       return execute(actualQuery, statement, configuration, parameters, explain, profile);

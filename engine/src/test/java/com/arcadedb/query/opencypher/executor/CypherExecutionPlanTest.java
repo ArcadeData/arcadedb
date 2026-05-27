@@ -273,6 +273,66 @@ class CypherExecutionPlanTest {
     assertThat(results.size()).isGreaterThanOrEqualTo(2);
   }
 
+  /**
+   * Regression test for issue #4366: EXPLAIN must not trigger the idempotency check
+   * because the underlying query is never executed. Without the fix, this throws
+   * {@code QueryNotIdempotentException}.
+   */
+  @Test
+  void shouldExplainNonIdempotentMultiStatementQuery() {
+    final long beforeCount = database.countType("Person", false);
+
+    final ResultSet resultSet = database.query("opencypher", """
+        EXPLAIN MERGE (a:Person {name: $src}) \
+        MERGE (b:Person {name: $dest}) \
+        CREATE (a)-[:KNOWS {since: $year}]->(b)""",
+        Map.of("src", "Alice", "dest", "Eve", "year", 2024));
+
+    assertThat((Object) resultSet).isNotNull();
+    assertThat(resultSet.hasNext()).isTrue();
+
+    // EXPLAIN must not modify the database
+    assertThat(database.countType("Person", false)).isEqualTo(beforeCount);
+  }
+
+  /**
+   * Regression test for issue #4366: PROFILE must work on non-idempotent queries
+   * when invoked through command(). Matches SQL parity where ProfileStatement
+   * is treated as idempotent at the wrapper level.
+   */
+  @Test
+  void shouldProfileNonIdempotentMultiStatementQueryViaCommand() {
+    database.transaction(() -> {
+      final ResultSet resultSet = database.command("opencypher", """
+          PROFILE MERGE (a:Person {name: $src}) \
+          MERGE (b:Person {name: $dest}) \
+          CREATE (a)-[:KNOWS {since: $year}]->(b)""",
+          Map.of("src", "Alice", "dest", "Frank", "year", 2024));
+
+      assertThat((Object) resultSet).isNotNull();
+      final var results = resultSet.stream().toList();
+      assertThat(results.size()).isGreaterThanOrEqualTo(1);
+    });
+  }
+
+  /**
+   * Regression test for issue #4366: EXPLAIN of a CREATE (non-idempotent) via the
+   * read-only query() path must not throw {@code QueryNotIdempotentException}.
+   */
+  @Test
+  void shouldExplainCreateQueryWithoutIdempotencyError() {
+    final long beforeCount = database.countType("Person", false);
+
+    final ResultSet resultSet = database.query("opencypher",
+        "EXPLAIN CREATE (p:Person {name: 'NewPerson'})");
+
+    assertThat((Object) resultSet).isNotNull();
+    assertThat(resultSet.hasNext()).isTrue();
+
+    // EXPLAIN must not modify the database
+    assertThat(database.countType("Person", false)).isEqualTo(beforeCount);
+  }
+
   @Test
   void shouldHandleEmptyResult() {
     final ResultSet resultSet = database.query("opencypher",
