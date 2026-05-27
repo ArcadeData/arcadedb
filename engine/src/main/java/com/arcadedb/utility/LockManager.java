@@ -66,8 +66,10 @@ public class LockManager<RESOURCE, REQUESTER> {
         do {
           try {
             if (timeout > 0) {
-              if (!currentLock.lock.await(timeout, TimeUnit.MILLISECONDS))
-                continue;
+              final long remaining = timeout - (System.currentTimeMillis() - startTime);
+              if (remaining <= 0)
+                break;
+              currentLock.lock.await(remaining, TimeUnit.MILLISECONDS);
             } else
               currentLock.lock.await();
 
