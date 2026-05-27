@@ -46,7 +46,7 @@ The arithmetic proof:
 ### `Simple8bCodecTest.java`
 - Added `longMaxValueThrows()` — `Long.MAX_VALUE` must throw `IllegalArgumentException`
 - Added `longMinValueThrows()` — `Long.MIN_VALUE` must throw `IllegalArgumentException`
-- Added `extremeNegativeBoundaryStillThrows()` — values just outside range from below still throw
+- Added `nearLongMaxValueThrows()` — values just outside range from above still throw
 
 ## Test Results
 
