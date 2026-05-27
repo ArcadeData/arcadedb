@@ -126,7 +126,7 @@ public class JavaBinarySerializer {
       final int propertySize = in.readInt();
 
       final byte[] array = new byte[propertySize];
-      in.read(array);
+      in.readFully(array);
 
       final Binary buffer = new Binary(array);
       final byte propType = buffer.getByte();
