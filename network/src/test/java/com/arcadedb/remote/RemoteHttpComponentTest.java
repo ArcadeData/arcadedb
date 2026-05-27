@@ -19,6 +19,7 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
@@ -34,8 +35,14 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.InputStream;
+import java.lang.reflect.Field;
 import java.net.ConnectException;
+import java.net.ServerSocket;
+import java.net.Socket;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.NoSuchElementException;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -514,6 +521,89 @@ class RemoteHttpComponentTest {
     final Exception result = component.manageException(response, "test");
 
     assertThat(result).isInstanceOf(ServerIsNotTheLeaderException.class);
+  }
+
+  // Regression test for issue #4372: leaderServer null-read in httpCommand retry path
+
+  /**
+   * When reloadClusterConfiguration() returns true but leaderServer is concurrently null
+   * (topology change race), httpCommand must not set connectToServer = null and exit early.
+   * Instead it falls through to getNextReplicaAddress() and retries with an available replica.
+   */
+  @Test
+  @SuppressWarnings("unchecked")
+  void httpCommandRetryWithReplicaWhenLeaderNulledConcurrently() throws Exception {
+    // Primary server: closed port — triggers ConnectException (IOException) on iteration 0
+    final int closedPort;
+    try (final ServerSocket probe = new ServerSocket(0)) {
+      closedPort = probe.getLocalPort();
+    }
+
+    // Replica server: accepts one connection and returns HTTP/1.1 200 OK with JSON body
+    try (final ServerSocket replicaSocket = new ServerSocket(0)) {
+      final int replicaPort = replicaSocket.getLocalPort();
+
+      final Thread serverThread = new Thread(() -> {
+        try {
+          final Socket client = replicaSocket.accept();
+          final InputStream in = client.getInputStream();
+          // Read until end of HTTP headers (avoid blocking the client's write)
+          final byte[] buf = new byte[8192];
+          int total = 0;
+          while (total < buf.length) {
+            final int n = in.read(buf, total, buf.length - total);
+            if (n < 0)
+              break;
+            total += n;
+            final String so_far = new String(buf, 0, total, StandardCharsets.ISO_8859_1);
+            if (so_far.contains("\r\n\r\n"))
+              break;
+          }
+          final byte[] resp = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}"
+              .getBytes(StandardCharsets.UTF_8);
+          client.getOutputStream().write(resp);
+          client.getOutputStream().flush();
+          client.close();
+        } catch (final Exception ignored) {
+          // best-effort cleanup
+        }
+      });
+      serverThread.setDaemon(true);
+      serverThread.start();
+
+      // sameServerErrorRetries=2 so maxRetry=2 when leaderIsPreferable=true,
+      // giving us one retry iteration after the initial ConnectException.
+      final ContextConfiguration cfg = new ContextConfiguration();
+      cfg.setValue(GlobalConfiguration.NETWORK_SAME_SERVER_ERROR_RETRIES, 2);
+
+      final TestableRemoteHttpComponent racingComponent = new TestableRemoteHttpComponent(
+          "127.0.0.1", closedPort, "root", "test", cfg) {
+        @Override
+        boolean reloadClusterConfiguration() {
+          // Simulate the race: leaderServer is null (never set by the no-op
+          // requestClusterConfiguration), but we add the replica so the fixed code
+          // can fall through to getNextReplicaAddress() instead of using null.
+          try {
+            final Field f = RemoteHttpComponent.class.getDeclaredField("replicaServerList");
+            f.setAccessible(true);
+            ((List<Pair<String, Integer>>) f.get(this)).add(new Pair<>("127.0.0.1", replicaPort));
+          } catch (final Exception e) {
+            throw new RuntimeException(e);
+          }
+          return true;
+        }
+      };
+
+      try {
+        // With the fix: httpCommand snapshots leaderServer, detects null, falls through
+        // to getNextReplicaAddress(), retries with the replica, receives HTTP 200.
+        final Object result = racingComponent.httpCommand(
+            "GET", null, "server", null, null, null, true, true, null);
+        assertThat(result).isNull();
+      } finally {
+        racingComponent.close();
+      }
+    }
   }
 
   // STICKY strategy URL-routing tests — regression for issue #4273
