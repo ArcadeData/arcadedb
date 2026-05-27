@@ -55,9 +55,9 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
       if (s.isEmpty())
         return null;
 
-      // Handle pipe-separated format "REL1|REL2|REL3"
-      if (s.contains("|"))
-        return s.split("\\|");
+      // Handle pipe- or comma-separated format "REL1|REL2" or "REL1,REL2"
+      if (s.contains("|") || s.contains(","))
+        return Arrays.stream(s.split("[,|]")).map(String::trim).filter(t -> !t.isEmpty()).toArray(String[]::new);
 
       return new String[]{s};
     }

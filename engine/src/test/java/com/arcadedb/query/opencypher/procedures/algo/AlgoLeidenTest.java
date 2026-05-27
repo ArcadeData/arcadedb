@@ -147,6 +147,42 @@ class AlgoLeidenTest {
   }
 
   @Test
+  void leidenWithCommaRelTypesYieldsMultiNodeCommunities() {
+    // "KNOWS,NONEXISTENT" must be split into ["KNOWS","NONEXISTENT"].
+    // Without the fix, the whole string is treated as one non-existent type so
+    // every node appears isolated (all singleton communities).
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.leiden('KNOWS,NONEXISTENT') YIELD nodeId, community RETURN nodeId, community");
+
+    final List<Integer> communities = new ArrayList<>();
+    while (rs.hasNext())
+      communities.add(((Number) rs.next().getProperty("community")).intValue());
+
+    assertThat(communities).hasSize(6);
+    // At least two nodes must share a community — proof that KNOWS edges were matched
+    final Set<Integer> unique = new HashSet<>(communities);
+    assertThat(unique.size()).isLessThan(communities.size());
+  }
+
+  @Test
+  void leidenWithPipeRelTypesYieldsMultiNodeCommunities() {
+    // "KNOWS|NONEXISTENT" must be split into ["KNOWS","NONEXISTENT"].
+    // Without the fix, the whole string is treated as one non-existent type so
+    // every node appears isolated (all singleton communities).
+    final ResultSet rs = database.query("opencypher",
+        "CALL algo.leiden('KNOWS|NONEXISTENT') YIELD nodeId, community RETURN nodeId, community");
+
+    final List<Integer> communities = new ArrayList<>();
+    while (rs.hasNext())
+      communities.add(((Number) rs.next().getProperty("community")).intValue());
+
+    assertThat(communities).hasSize(6);
+    // At least two nodes must share a community — proof that KNOWS edges were matched
+    final Set<Integer> unique = new HashSet<>(communities);
+    assertThat(unique.size()).isLessThan(communities.size());
+  }
+
+  @Test
   void leidenEmptyGraph() {
     final DatabaseFactory factory = new DatabaseFactory("./target/databases/test-algo-leiden-empty");
     if (factory.exists())
