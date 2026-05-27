@@ -76,14 +76,17 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
       return null;
 
     if (arg instanceof String s) {
-      if (s.isEmpty())
+      final String trimmedSource = s.trim();
+      if (trimmedSource.isEmpty())
         return null;
 
-      // Handle pipe-separated format "Label1|Label2|Label3"
-      if (s.contains("|"))
-        return s.split("\\|");
+      // Handle pipe- or comma-separated format "Label1|Label2" or "Label1,Label2"
+      if (trimmedSource.contains("|") || trimmedSource.contains(",")) {
+        final String[] labels = Arrays.stream(trimmedSource.split("[,|]")).map(String::trim).filter(t -> !t.isEmpty()).toArray(String[]::new);
+        return labels.length == 0 ? null : labels;
+      }
 
-      return new String[]{s};
+      return new String[]{trimmedSource};
     }
     if (arg instanceof Collection<?> coll)
       return coll.stream().map(Object::toString).toArray(String[]::new);
