@@ -79,8 +79,8 @@ public class RemoteHttpComponent extends RWLockContext {
   private volatile Pair<String, Integer>       leaderServer;
   private          int                         currentReplicaServerIndex = -1;
   private          int                         timeout;
-  protected volatile String                    currentServer;
-  protected volatile int                       currentPort;
+  protected        String                      currentServer;
+  protected        int                         currentPort;
   private         Pair<String, Integer>       stickyTransactionServer;
 
   public enum CONNECTION_STRATEGY {
