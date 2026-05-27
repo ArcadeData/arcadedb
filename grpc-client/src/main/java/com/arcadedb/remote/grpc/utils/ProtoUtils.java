@@ -39,6 +39,11 @@ import com.arcadedb.log.LogManager;
 
 import java.math.BigDecimal;
 import java.math.BigInteger;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 import java.util.ArrayList;
 import java.util.logging.Level;
 
@@ -271,6 +276,36 @@ public class ProtoUtils {
       return dbgEnc("toGrpcValue", value,
           GrpcValue.newBuilder().setTimestampValue(Timestamp.newBuilder()
                   .setSeconds(Math.floorDiv(v.getTime(), 1000L)).setNanos((int) Math.floorMod(v.getTime(), 1000L) * 1_000_000).build())
+              .setLogicalType("datetime").build());
+    }
+
+    if (value instanceof LocalDate ld) {
+      final long seconds = ld.toEpochDay() * 86400L;
+      return dbgEnc("toGrpcValue", value,
+          GrpcValue.newBuilder().setTimestampValue(Timestamp.newBuilder().setSeconds(seconds).setNanos(0).build())
+              .setLogicalType("date").build());
+    }
+
+    if (value instanceof LocalDateTime ldt) {
+      final Instant instant = ldt.toInstant(ZoneOffset.UTC);
+      return dbgEnc("toGrpcValue", value,
+          GrpcValue.newBuilder()
+              .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
+              .setLogicalType("datetime").build());
+    }
+
+    if (value instanceof Instant instant) {
+      return dbgEnc("toGrpcValue", value,
+          GrpcValue.newBuilder()
+              .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
+              .setLogicalType("datetime").build());
+    }
+
+    if (value instanceof ZonedDateTime zdt) {
+      final Instant instant = zdt.toInstant();
+      return dbgEnc("toGrpcValue", value,
+          GrpcValue.newBuilder()
+              .setTimestampValue(Timestamp.newBuilder().setSeconds(instant.getEpochSecond()).setNanos(instant.getNano()).build())
               .setLogicalType("datetime").build());
     }
 
