@@ -48,6 +48,20 @@ does `Long.parseLong(v.getStringValue())` unconditionally. This works for epoch-
 - `GrpcTypeConverterTest`, `Issue4149GrpcTypeConverterTest`, `Issue4181GrpcDateCorruptionIT`, `ArcadeDbGrpcServiceExtendedTest`: 71/71 pass (no regressions)
 - `Issue4260ReloadInsideTransactionIT`, `RemoteGrpcDatabaseCoverageIT`: 33/33 pass
 
-## Status
+## PR
 
-Implementation complete. All tests pass. Ready for PR.
+https://github.com/ArcadeData/arcadedb/pull/4362
+
+## Review Cycles
+
+**Cycle 1** - HEAD `d7c8c429`:
+- gemini-code-assist (COMMENTED): One inline suggestion on `ProtoUtils.java` line 287 - use `ld.toEpochDay() * 86400L` instead of `ld.atStartOfDay(ZoneOffset.UTC).toEpochSecond()` to avoid object allocations. Applied.
+- claude bot: not present on this repo, did not respond.
+
+**Cycle 2** - HEAD `788cc3c9`:
+- gemini-code-assist: no new actionable comments (stale cycle-1 comment only, already addressed).
+- claude bot: not present on this repo.
+
+## Final State
+
+`timeout` (claude bot does not exist on ArcadeData/arcadedb; gemini reviewed cycle 1 and the cycle 1 feedback was fully addressed).
