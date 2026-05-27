@@ -277,7 +277,7 @@ class RemoteDatabaseTest {
     final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", unreachablePort, "testdb", "root", "test");
     try {
       // Expose a replica entry so maxRetry = 2, allowing the server-switch retry path.
-      db.getReplicaServerList().add(new Pair<>("replica-server", 9999));
+      db.getReplicaServerList().add(new Pair<>("127.0.0.1", 9999));
       // Simulate an in-flight transaction (session issued by the original server).
       db.setSessionId("live-session-id");
 
@@ -306,7 +306,7 @@ class RemoteDatabaseTest {
 
     final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", unreachablePort, "testdb", "root", "test");
     try {
-      db.getReplicaServerList().add(new Pair<>("replica-server", 9999));
+      db.getReplicaServerList().add(new Pair<>("127.0.0.1", 9999));
       // No setSessionId - no active transaction.
 
       assertThatThrownBy(() -> db.query("sql", "select 1"))

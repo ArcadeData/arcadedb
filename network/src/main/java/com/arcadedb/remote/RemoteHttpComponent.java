@@ -343,7 +343,7 @@ public class RemoteHttpComponent extends RWLockContext {
         } else {
           if (this instanceof RemoteDatabase remoteDb && remoteDb.getSessionId() != null) {
             remoteDb.setSessionId(null);
-            throw new TransactionException("Server failover during active transaction");
+            throw new TransactionException("Server failover during active transaction", e);
           }
 
           if (!reloadClusterConfiguration())
