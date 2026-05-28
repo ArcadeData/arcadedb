@@ -65,6 +65,7 @@ public class RangeFunction implements StatelessFunction {
     } else {
       for (long i = start; i >= end; ) {
         result.add(i);
+        // Long.MIN_VALUE - step wraps to 0L when step = Long.MIN_VALUE (two's-complement), which is still a correct underflow boundary.
         if (i < Long.MIN_VALUE - step)
           break;
         i += step;

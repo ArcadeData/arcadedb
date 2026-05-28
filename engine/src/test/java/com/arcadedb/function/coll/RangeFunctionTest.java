@@ -107,4 +107,14 @@ class RangeFunctionTest {
         new Object[]{ 0L, Long.MIN_VALUE, Long.MIN_VALUE }, null);
     assertThat(result).containsExactly(0L, Long.MIN_VALUE);
   }
+
+  /** Symmetric to negativeStepLongMinValue: step = Long.MAX_VALUE on the positive branch. */
+  @Test
+  @Timeout(value = 5, unit = TimeUnit.SECONDS)
+  void positiveStepLongMaxValue() {
+    @SuppressWarnings("unchecked")
+    final List<Long> result = (List<Long>) fn.execute(
+        new Object[]{ 0L, Long.MAX_VALUE, Long.MAX_VALUE }, null);
+    assertThat(result).containsExactly(0L, Long.MAX_VALUE);
+  }
 }
