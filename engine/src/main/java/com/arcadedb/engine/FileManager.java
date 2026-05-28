@@ -193,30 +193,34 @@ public class FileManager {
     fileIdMap.clear();
   }
 
-  public synchronized void dropFile(final int fileId) throws IOException {
-    final ComponentFile file = fileIdMap.remove(fileId);
-    if (file != null) {
-      fileNameMap.remove(file.getComponentName());
-      files.set(fileId, null);
-      modificationCount.incrementAndGet();
-      file.drop();
+  public void dropFile(final int fileId) throws IOException {
+    final ComponentFile file;
+    synchronized (this) {
+      file = fileIdMap.remove(fileId);
+      if (file != null) {
+        fileNameMap.remove(file.getComponentName());
+        files.set(fileId, null);
+        modificationCount.incrementAndGet();
 
-      final FileChange entry = new FileChange(false, fileId, file.getFileName());
-      if (recordedChanges != null) {
-        if (recordedChanges.remove(entry)) {
-          LogManager.instance().log(this, Level.FINE,
-              "dropFile fileId=%d cancels prior CREATE entry (componentName='%s', fileName='%s')",
-              null, fileId, file.getComponentName(), file.getFileName());
-          // JUST ADDED: REMOVE THE ENTRY
-          return;
+        final FileChange entry = new FileChange(false, fileId, file.getFileName());
+        if (recordedChanges != null) {
+          if (recordedChanges.remove(entry)) {
+            LogManager.instance().log(this, Level.FINE,
+                "dropFile fileId=%d cancels prior CREATE entry (componentName='%s', fileName='%s')",
+                null, fileId, file.getComponentName(), file.getFileName());
+            // JUST ADDED: REMOVE THE ENTRY
+          } else {
+            recordedChanges.add(entry);
+            LogManager.instance().log(this, Level.FINE,
+                "recorded DROP fileId=%d fileName='%s' componentName='%s'",
+                null, fileId, file.getFileName(), file.getComponentName());
+          }
         }
-
-        recordedChanges.add(entry);
-        LogManager.instance().log(this, Level.FINE,
-            "recorded DROP fileId=%d fileName='%s' componentName='%s'",
-            null, fileId, file.getFileName(), file.getComponentName());
       }
     }
+
+    if (file != null)
+      file.drop();
   }
 
   public FileManagerStats getStats() {
@@ -252,28 +256,17 @@ public class FileManager {
     return f;
   }
 
-  public synchronized ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.MODE mode)
+  public ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.MODE mode)
       throws IOException {
     ComponentFile file = fileNameMap.get(fileName);
     if (file != null)
       return file;
 
-    file = new PaginatedComponentFile(filePath, mode);
-    registerFile(file);
+    synchronized (this) {
+      file = fileNameMap.get(fileName);
+      if (file != null)
+        return file;
 
-    if (recordedChanges != null) {
-      recordedChanges.add(new FileChange(true, file.getFileId(), file.getFileName()));
-      LogManager.instance().log(this, Level.FINE,
-          "recorded CREATE fileId=%d fileName='%s' componentName='%s'",
-          null, file.getFileId(), file.getFileName(), file.getComponentName());
-    }
-
-    return file;
-  }
-
-  public synchronized ComponentFile getOrCreateFile(final int fileId, final String filePath) throws IOException {
-    ComponentFile file = fileIdMap.get(fileId);
-    if (file == null) {
       file = new PaginatedComponentFile(filePath, mode);
       registerFile(file);
 
@@ -283,9 +276,32 @@ public class FileManager {
             "recorded CREATE fileId=%d fileName='%s' componentName='%s'",
             null, file.getFileId(), file.getFileName(), file.getComponentName());
       }
-    }
 
-    return file;
+      return file;
+    }
+  }
+
+  public ComponentFile getOrCreateFile(final int fileId, final String filePath) throws IOException {
+    ComponentFile file = fileIdMap.get(fileId);
+    if (file != null)
+      return file;
+
+    synchronized (this) {
+      file = fileIdMap.get(fileId);
+      if (file == null) {
+        file = new PaginatedComponentFile(filePath, mode);
+        registerFile(file);
+
+        if (recordedChanges != null) {
+          recordedChanges.add(new FileChange(true, file.getFileId(), file.getFileName()));
+          LogManager.instance().log(this, Level.FINE,
+              "recorded CREATE fileId=%d fileName='%s' componentName='%s'",
+              null, file.getFileId(), file.getFileName(), file.getComponentName());
+        }
+      }
+
+      return file;
+    }
   }
 
   public synchronized int newFileId() {
