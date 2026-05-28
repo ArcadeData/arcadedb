@@ -266,6 +266,56 @@ class RemoteDatabaseTest {
     }
   }
 
+  @Test
+  void haFailoverDuringActiveTransactionThrowsTransactionException() throws Exception {
+    // Bind an ephemeral port then immediately close it; connect attempts will fail fast.
+    final int unreachablePort;
+    try (final ServerSocket probe = new ServerSocket(0)) {
+      unreachablePort = probe.getLocalPort();
+    }
+
+    final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", unreachablePort, "testdb", "root", "test");
+    try {
+      // Expose a replica entry so maxRetry = 2, allowing the server-switch retry path.
+      db.getReplicaServerList().add(new Pair<>("127.0.0.1", 9999));
+      // Simulate an in-flight transaction (session issued by the original server).
+      db.setSessionId("live-session-id");
+
+      // query() uses leaderIsPreferable=false, so a replica-sized retry budget applies.
+      // The HTTP call fails (ConnectException), the retry path detects an active session,
+      // and must reject the server switch with TransactionException.
+      assertThatThrownBy(() -> db.query("sql", "select 1"))
+          .isInstanceOf(TransactionException.class)
+          .hasMessageContaining("failover");
+
+      // Session must be cleared so the object is in a consistent, retryable state.
+      assertThat(db.isTransactionActive()).isFalse();
+    } finally {
+      db.close();
+    }
+  }
+
+  @Test
+  void haFailoverWithoutActiveTransactionContinuesRetry() throws Exception {
+    // With no active session the retry path should proceed to a normal connectivity error,
+    // not a TransactionException.
+    final int unreachablePort;
+    try (final ServerSocket probe = new ServerSocket(0)) {
+      unreachablePort = probe.getLocalPort();
+    }
+
+    final TestableRemoteDatabase db = new TestableRemoteDatabase("127.0.0.1", unreachablePort, "testdb", "root", "test");
+    try {
+      db.getReplicaServerList().add(new Pair<>("127.0.0.1", 9999));
+      // No setSessionId - no active transaction.
+
+      assertThatThrownBy(() -> db.query("sql", "select 1"))
+          .isNotInstanceOf(TransactionException.class);
+    } finally {
+      db.close();
+    }
+  }
+
   /**
    * Testable subclass that injects a fake leader address via the cluster-configuration hook.
    */

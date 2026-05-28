@@ -341,6 +341,11 @@ public class RemoteHttpComponent extends RWLockContext {
               .log(this, Level.WARNING, "Remote server (%s:%d) seems unreachable, retrying...",
                   connectToServer.getFirst(), connectToServer.getSecond());
         } else {
+          if (this instanceof RemoteDatabase remoteDb && remoteDb.getSessionId() != null) {
+            remoteDb.setSessionId(null);
+            throw new TransactionException("Server failover during active transaction", e);
+          }
+
           if (!reloadClusterConfiguration())
             throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
 
