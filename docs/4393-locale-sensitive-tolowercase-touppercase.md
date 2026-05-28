@@ -20,7 +20,7 @@ All case conversion uses `String.toLowerCase()` / `String.toUpperCase()` with no
 
 Replace all `.toLowerCase()` with `.toLowerCase(Locale.ROOT)` and `.toUpperCase()` with `.toUpperCase(Locale.ROOT)` at all 10 sites. For user-facing text transforms (`toLower()`/`toUpper()`), `Locale.ROOT` is also appropriate - it matches the behavior of SQL `LOWER()`/`UPPER()` in all major databases (deterministic, ASCII-folding only).
 
-## Affected Files (10)
+## Affected Files (21)
 
 | File | Change |
 |---|---|
@@ -29,11 +29,22 @@ Replace all `.toLowerCase()` with `.toLowerCase(Locale.ROOT)` and `.toUpperCase(
 | `text/ToBooleanFunction.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` |
 | `convert/ConvertToBoolean.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` |
 | `util/UtilCompress.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` |
+| `util/UtilDecompress.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` |
 | `math/RoundFunction.java` | `toUpperCase()` -> `toUpperCase(Locale.ROOT)` |
 | `date/AbstractDateFunction.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` in `unitToMillis` |
 | `date/DateField.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` |
 | `text/NormalizeFunction.java` | `toUpperCase()` -> `toUpperCase(Locale.ROOT)` |
 | `vector/VectorDistanceFunction.java` | `toUpperCase()` -> `toUpperCase(Locale.ROOT)` |
+| `node/AbstractNodeFunction.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` in `parseDirection` |
+| `sql/geo/SQLFunctionGeoDistance.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` |
+| `sql/time/SQLFunctionTimeBucket.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` in `parseInterval` |
+| `sql/vector/SQLFunctionMultiVectorScore.java` | `toUpperCase()` -> `toUpperCase(Locale.ROOT)` |
+| `sql/vector/SQLFunctionVectorApproxDistance.java` | `toUpperCase()` -> `toUpperCase(Locale.ROOT)` |
+| `sql/vector/SQLFunctionVectorFuse.java` | `toUpperCase()` -> `toUpperCase(Locale.ROOT)` |
+| `sql/vector/SQLFunctionVectorScoreTransform.java` | `toUpperCase()` -> `toUpperCase(Locale.ROOT)` |
+| `sql/vector/SQLFunctionVectorToString.java` | `toUpperCase()` -> `toUpperCase(Locale.ROOT)` |
+| `FunctionRegistry.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` in name normalization |
+| `CypherFunctionRegistry.java` | `toLowerCase()` -> `toLowerCase(Locale.ROOT)` in name normalization |
 
 ## Test
 

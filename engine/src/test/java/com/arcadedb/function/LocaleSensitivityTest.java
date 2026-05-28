@@ -27,6 +27,9 @@ import com.arcadedb.function.text.NormalizeFunction;
 import com.arcadedb.function.text.ToLowerFunction;
 import com.arcadedb.function.node.AbstractNodeFunction;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoDistance;
+import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
+import com.arcadedb.function.sql.vector.SQLFunctionMultiVectorScore;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorScoreTransform;
 import com.arcadedb.function.text.ToUpperFunction;
 import com.arcadedb.function.util.UtilCompress;
 import com.arcadedb.function.util.UtilDecompress;
@@ -282,6 +285,41 @@ class LocaleSensitivityTest {
     final Object resultNMI = fn.execute(null, null, null, new Object[]{p, p, "NMI"}, null);
     final Object resultNmi = fn.execute(null, null, null, new Object[]{p, p, "nmi"}, null);
     assertThat(resultNMI).isEqualTo(resultNmi);
+  }
+
+  // ========= SQLFunctionTimeBucket =========
+
+  @Test
+  void timeBucketParseIntervalUpperCaseUnderTurkishLocale() {
+    // Single-letter units ('m','s','h','d','w') are not affected by tr_TR,
+    // but uppercase variants must work correctly for any locale
+    assertThat(SQLFunctionTimeBucket.parseInterval("5M")).isEqualTo(5 * 60_000L);
+    assertThat(SQLFunctionTimeBucket.parseInterval("10S")).isEqualTo(10 * 1000L);
+    assertThat(SQLFunctionTimeBucket.parseInterval("2H")).isEqualTo(2 * 3_600_000L);
+  }
+
+  // ========= SQLFunctionVectorScoreTransform =========
+
+  @Test
+  void vectorScoreTransformSigmoidUnderTurkishLocale() {
+    // "sigmoid".toUpperCase(tr_TR) -> "SİGMOİD" (two i's become İ) != "SIGMOID"
+    final SQLFunctionVectorScoreTransform fn = new SQLFunctionVectorScoreTransform();
+    final Object resultLower = fn.execute(null, null, null, new Object[]{0.5f, "sigmoid"}, null);
+    final Object resultUpper = fn.execute(null, null, null, new Object[]{0.5f, "SIGMOID"}, null);
+    assertThat(resultLower).isEqualTo(resultUpper);
+    assertThat(resultLower).isNotNull();
+  }
+
+  // ========= SQLFunctionMultiVectorScore =========
+
+  @Test
+  void multiVectorScoreMinMethodUnderTurkishLocale() {
+    // "min".toUpperCase(tr_TR) -> "MİN" (i -> İ) != "MIN"
+    final SQLFunctionMultiVectorScore fn = new SQLFunctionMultiVectorScore();
+    final java.util.List<Double> scores = java.util.List.of(0.9, 0.7, 0.8);
+    final Object resultLower = fn.execute(null, null, null, new Object[]{scores, "min"}, null);
+    final Object resultUpper = fn.execute(null, null, null, new Object[]{scores, "MIN"}, null);
+    assertThat(resultLower).isEqualTo(resultUpper);
   }
 
   // ========= VectorDistanceFunction =========
