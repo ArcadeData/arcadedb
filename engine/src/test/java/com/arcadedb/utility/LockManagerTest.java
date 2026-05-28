@@ -217,4 +217,58 @@ class LockManagerTest {
     // Just verify it doesn't throw (the method doesn't return anything)
     lockManager.unlock("nonexistent", "requester");
   }
+
+  /**
+   * Regression test for tryLock missing putIfAbsent retry after await timeout.
+   *
+   * Thread B uses a 2-second total timeout. Thread A holds the lock for 300ms — well
+   * within the window — so Thread B's await(2000ms) is woken up by the countDown
+   * and Thread B must acquire YES. The fix also ensures remaining time is tracked so
+   * that subsequent iterations never wait longer than the residual budget.
+   */
+  @Test
+  void tryLockSucceedsWhenReleasedWithinTotalTimeout() throws Exception {
+    final String resource = "resource-timeout-regression";
+    lockManager.tryLock(resource, "holder", 5000);
+
+    final AtomicReference<LockManager.LOCK_STATUS> result = new AtomicReference<>();
+    final CountDownLatch waiterEntered = new CountDownLatch(1);
+
+    final Thread waiter = new Thread(() -> {
+      waiterEntered.countDown();
+      result.set(lockManager.tryLock(resource, "waiter", 2000));
+    });
+    waiter.start();
+
+    assertThat(waiterEntered.await(1, TimeUnit.SECONDS)).isTrue();
+    Thread.sleep(100); // let waiter reach the await() call
+    lockManager.unlock(resource, "holder");
+
+    waiter.join(4000);
+    assertThat(result.get()).isEqualTo(LockManager.LOCK_STATUS.YES);
+  }
+
+  /**
+   * Regression test for the double-wait caused by using the full timeout on each
+   * await iteration rather than the remaining time.
+   *
+   * Thread A holds the lock for the entire duration. Thread B requests a 300ms
+   * timeout and must return NO in roughly 300ms — not in 600ms (two full-timeout
+   * iterations that can occur when timing jitter makes the loop condition true a
+   * second time). Allowing 250ms slack to account for OS scheduling, 300+250=550ms
+   * is well below the 600ms that a double-wait would produce.
+   */
+  @Test
+  void tryLockDoesNotOverwaitBeyondRequestedTimeout() throws Exception {
+    final String resource = "resource-overswait-regression";
+    lockManager.tryLock(resource, "holder", 5000);
+
+    final long timeoutMs = 300L;
+    final long start = System.currentTimeMillis();
+    final LockManager.LOCK_STATUS status = lockManager.tryLock(resource, "waiter", timeoutMs);
+    final long elapsed = System.currentTimeMillis() - start;
+
+    assertThat(status).isEqualTo(LockManager.LOCK_STATUS.NO);
+    assertThat(elapsed).isLessThan(timeoutMs + 250);
+  }
 }
