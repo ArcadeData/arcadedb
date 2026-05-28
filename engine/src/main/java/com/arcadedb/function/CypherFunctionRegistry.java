@@ -36,6 +36,7 @@ import com.arcadedb.function.util.*;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -86,7 +87,7 @@ public final class CypherFunctionRegistry {
    * @throws IllegalArgumentException if a function with the same name is already registered
    */
   public static void register(final StatelessFunction function) {
-    final String name = function.getName().toLowerCase();
+    final String name = function.getName().toLowerCase(Locale.ROOT);
     final StatelessFunction existing = FUNCTIONS.putIfAbsent(name, function);
     if (existing != null) {
       LogManager.instance().log(CypherFunctionRegistry.class, Level.WARNING,
@@ -106,7 +107,7 @@ public final class CypherFunctionRegistry {
    * @param function the function to register
    */
   public static void registerOrReplace(final StatelessFunction function) {
-    final String name = function.getName().toLowerCase();
+    final String name = function.getName().toLowerCase(Locale.ROOT);
     FUNCTIONS.put(name, function);
     // Also register in the unified FunctionRegistry for cross-engine access
     FunctionRegistry.registerOrReplace(function);
@@ -147,7 +148,7 @@ public final class CypherFunctionRegistry {
    * @return the normalized name (lowercase, without apoc. prefix)
    */
   private static String normalizeApocName(final String name) {
-    final String lowerName = name.toLowerCase();
+    final String lowerName = name.toLowerCase(Locale.ROOT);
     if (lowerName.startsWith(APOC_PREFIX)) {
       return lowerName.substring(APOC_PREFIX.length());
     }

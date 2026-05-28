@@ -27,11 +27,13 @@ import com.arcadedb.function.text.NormalizeFunction;
 import com.arcadedb.function.text.ToLowerFunction;
 import com.arcadedb.function.text.ToUpperFunction;
 import com.arcadedb.function.util.UtilCompress;
+import com.arcadedb.function.util.UtilDecompress;
 import com.arcadedb.function.vector.VectorDistanceFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Isolated;
 
 import java.util.Locale;
 
@@ -44,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * in any function that uses the JVM default locale.
  * All internal keyword parsing must use Locale.ROOT.
  */
+@Isolated
 class LocaleSensitivityTest {
 
   private Locale originalLocale;
@@ -70,7 +73,7 @@ class LocaleSensitivityTest {
 
   @Test
   void toLowerFunctionCapitalIUnderTurkishLocale() {
-    // "I".toLowerCase(tr_TR) -> "ı" (ı); Locale.ROOT gives "i"
+    // "I".toLowerCase(tr_TR) -> "ı"; Locale.ROOT gives "i"
     final ToLowerFunction fn = new ToLowerFunction();
     assertThat(fn.execute(new Object[]{"I"}, null)).isEqualTo("i");
   }
@@ -86,7 +89,7 @@ class LocaleSensitivityTest {
 
   @Test
   void toUpperFunctionLowercaseIUnderTurkishLocale() {
-    // "i".toUpperCase(tr_TR) -> "İ" (İ); Locale.ROOT gives "I"
+    // "i".toUpperCase(tr_TR) -> "İ"; Locale.ROOT gives "I"
     final ToUpperFunction fn = new ToUpperFunction();
     assertThat(fn.execute(new Object[]{"i"}, null)).isEqualTo("I");
   }
@@ -115,28 +118,42 @@ class LocaleSensitivityTest {
 
   @Test
   void utilCompressUpperCaseGzipUnderTurkishLocale() {
-    // "GZIP".toLowerCase(tr_TR) -> "gzıp" (dotless-i at position 2)
-    // then switch("gzıp") misses the "gzip" case and falls to default -> throws
+    // "GZIP".toLowerCase(tr_TR) -> "gzıp" (dotless-i at I); switch misses "gzip"
     final UtilCompress fn = new UtilCompress();
-    final Object result = fn.execute(new Object[]{"hello", "GZIP"}, null);
-    assertThat(result).isNotNull().isInstanceOf(String.class);
+    final Object resultUpper = fn.execute(new Object[]{"hello", "GZIP"}, null);
+    final Object resultLower = fn.execute(new Object[]{"hello", "gzip"}, null);
+    assertThat(resultUpper).isEqualTo(resultLower);
   }
 
   @Test
   void utilCompressUpperCaseDeflateUnderTurkishLocale() {
     final UtilCompress fn = new UtilCompress();
-    final Object result = fn.execute(new Object[]{"hello", "DEFLATE"}, null);
-    assertThat(result).isNotNull().isInstanceOf(String.class);
+    final Object resultUpper = fn.execute(new Object[]{"hello", "DEFLATE"}, null);
+    final Object resultLower = fn.execute(new Object[]{"hello", "deflate"}, null);
+    assertThat(resultUpper).isEqualTo(resultLower);
+  }
+
+  // ========= UtilDecompress =========
+
+  @Test
+  void utilDecompressUpperCaseGzipUnderTurkishLocale() {
+    // Same bug as UtilCompress - "GZIP".toLowerCase(tr_TR) -> "gzıp"
+    final UtilCompress compress = new UtilCompress();
+    final UtilDecompress decompress = new UtilDecompress();
+    final String compressed = (String) compress.execute(new Object[]{"hello world", "gzip"}, null);
+    final Object resultUpper = decompress.execute(new Object[]{compressed, "GZIP"}, null);
+    final Object resultLower = decompress.execute(new Object[]{compressed, "gzip"}, null);
+    assertThat(resultUpper).isEqualTo(resultLower).isEqualTo("hello world");
   }
 
   // ========= RoundFunction =========
 
   @Test
-  void roundFunctionUpperCaseModeUnderTurkishLocale() {
+  void roundFunctionCeilingModeUnderTurkishLocale() {
+    // "ceiling".toUpperCase(tr_TR) -> "CEİLİNG" (i->İ); Locale.ROOT gives "CEILING"
     final RoundFunction fn = new RoundFunction();
-    assertThat(fn.execute(new Object[]{2.5, 0, "half_up"}, null)).isEqualTo(3.0);
-    assertThat(fn.execute(new Object[]{2.5, 0, "HALF_UP"}, null)).isEqualTo(3.0);
-    assertThat(fn.execute(new Object[]{2.4, 0, "half_down"}, null)).isEqualTo(2.0);
+    assertThat(fn.execute(new Object[]{2.1, 0, "ceiling"}, null)).isEqualTo(3.0);
+    assertThat(fn.execute(new Object[]{2.1, 0, "CEILING"}, null)).isEqualTo(3.0);
   }
 
   // ========= AbstractDateFunction.unitToMillis =========
@@ -182,19 +199,19 @@ class LocaleSensitivityTest {
     // "MINUTE".toLowerCase(tr_TR) -> "mınute" (dotless-i) != "minute"
     // "MILLISECOND".toLowerCase(tr_TR) -> "mıllısecond" != "millisecond"
     final DateField fn = new DateField();
-    final long timestampMs = 1_700_000_000_000L;
+    // Use a timestamp with a specific millisecond value to enable exact assertions
+    final long timestampMs = 1_700_000_000_123L; // ...000.123 ms
     assertThat(fn.execute(new Object[]{timestampMs, "MINUTE"}, null)).isNotNull();
-    assertThat(fn.execute(new Object[]{timestampMs, "MILLISECOND"}, null)).isNotNull();
-    assertThat(fn.execute(new Object[]{timestampMs, "MILLISECONDS"}, null)).isNotNull();
-    assertThat(fn.execute(new Object[]{timestampMs, "MILLIS"}, null)).isNotNull();
+    assertThat(fn.execute(new Object[]{timestampMs, "MILLISECOND"}, null)).isEqualTo(123L);
+    assertThat(fn.execute(new Object[]{timestampMs, "MILLISECONDS"}, null)).isEqualTo(123L);
+    assertThat(fn.execute(new Object[]{timestampMs, "MILLIS"}, null)).isEqualTo(123L);
   }
 
   // ========= NormalizeFunction =========
 
   @Test
   void normalizeFunctionLowerCaseFormUnderTurkishLocale() {
-    // The standard forms (NFC, NFD, NFKC, NFKD) contain no 'i', so Turkish locale does not break them.
-    // Still verify that lowercase form names work correctly via Locale.ROOT toUpperCase.
+    // Standard form names (NFC, NFD, NFKC, NFKD) contain no 'i'; verify Locale.ROOT toUpperCase consistency
     final NormalizeFunction fn = new NormalizeFunction();
     final String composed = "é"; // é NFC
     assertThat(fn.execute(new Object[]{composed, "nfc"}, null)).isEqualTo(composed);
@@ -207,13 +224,13 @@ class LocaleSensitivityTest {
 
   @Test
   void vectorDistanceFunctionLowerCaseMetricUnderTurkishLocale() {
-    // "euclidean".toUpperCase(tr_TR) -> "EUCLİDEAN" (dotted-İ) != "EUCLIDEAN"
+    // "euclidean".toUpperCase(tr_TR) -> "EUCLİDEAN" (i->İ) != "EUCLIDEAN"
     final VectorDistanceFunction fn = new VectorDistanceFunction();
     final float[] a = {3.0f, 0.0f};
     final float[] b = {0.0f, 4.0f};
     assertThat(fn.execute(new Object[]{a, b, "euclidean"}, null)).isEqualTo(5.0);
     assertThat(fn.execute(new Object[]{a, b, "EUCLIDEAN"}, null)).isEqualTo(5.0);
-    assertThat(fn.execute(new Object[]{a, b, "cosine"}, null)).isNotNull();
-    assertThat(fn.execute(new Object[]{a, b, "manhattan"}, null)).isNotNull();
+    assertThat(fn.execute(new Object[]{a, b, "cosine"}, null)).isEqualTo(fn.execute(new Object[]{a, b, "COSINE"}, null));
+    assertThat(fn.execute(new Object[]{a, b, "manhattan"}, null)).isEqualTo(fn.execute(new Object[]{a, b, "MANHATTAN"}, null));
   }
 }
