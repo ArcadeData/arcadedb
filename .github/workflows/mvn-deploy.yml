@@ -9,6 +9,9 @@ on:
     paths-ignore:
       - 'bindings/python/**'
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest

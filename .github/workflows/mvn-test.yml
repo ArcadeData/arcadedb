@@ -15,6 +15,9 @@ on:
     paths-ignore:
       - 'bindings/python/**'
 
+permissions:
+  contents: read
+
 jobs:
   setup:
     runs-on: ubuntu-latest
@@ -82,6 +85,9 @@ jobs:
   unit-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -127,6 +133,9 @@ jobs:
   slow-unit-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -170,6 +179,9 @@ jobs:
   integration-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -213,6 +225,9 @@ jobs:
   ha-integration-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -284,6 +299,9 @@ jobs:
   java-e2e-tests:
     runs-on: ubuntu-latest
     needs: build-and-package
+    permissions:
+      contents: read
+      checks: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -361,6 +379,7 @@ jobs:
     needs: build-and-package
     permissions:
       contents: read
+      checks: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 

@@ -1000,7 +1000,8 @@ class TestLSMVectorIndex:
         # Create vectors:
         # v1: [0.1, 0.1]
         # v2: [3.1, 4.1] -> Distance to v1 is 5. Squared distance is 25.
-        # JVector Euclidean Similarity = 1 / (1 + d^2) = 1 / (1 + 25) = 1/26 ~= 0.038
+        # The Python API exposes the squared Euclidean distance (lower is better):
+        # origin -> 0.0, point_3_4 -> 25.0
 
         vectors = [
             ("origin", [0.1, 0.1]),
@@ -1034,23 +1035,23 @@ class TestLSMVectorIndex:
             print(f"  - {n[0].get('name')}: {n[1]}")
 
         # 1. Check exact match (origin)
-        # Similarity should be 1.0 (1 / (1 + 0))
+        # Squared Euclidean distance should be 0.0
         origin = [n for n in neighbors if str(n[0].get("name")) == "origin"]
         assert len(origin) == 1
         assert (
-            abs(origin[0][1] - 1.0) < 0.0001
-        ), f"Origin similarity should be 1.0, got {origin[0][1]}"
+            abs(origin[0][1] - 0.0) < 0.0001
+        ), f"Origin distance should be 0.0, got {origin[0][1]}"
 
         # 2. Check distant point
-        # Similarity should be ~0.03846
+        # Squared Euclidean distance should be ~25.0
         point = [n for n in neighbors if str(n[0].get("name")) == "point_3_4"]
         assert len(point) == 1
-        expected_sim = 1.0 / (1.0 + 25.0)
+        expected_distance = 25.0
         assert (
-            abs(point[0][1] - expected_sim) < 0.0001
-        ), f"Point similarity should be {expected_sim}, got {point[0][1]}"
+            abs(point[0][1] - expected_distance) < 0.0001
+        ), f"Point distance should be {expected_distance}, got {point[0][1]}"
 
-        # 3. Check sorting (Higher score first)
+        # 3. Check sorting (lower distance first)
         assert neighbors[0][0].get("name") == "origin", "Best match should be first"
         assert (
             neighbors[1][0].get("name") == "point_3_4"

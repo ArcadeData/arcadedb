@@ -32,10 +32,16 @@ on:
       - 'NOTICE'
       - 'ATTRIBUTIONS.md'
 
+permissions:
+  contents: read
+
 jobs:
   license-check:
     name: Check License Compliance
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
 
     steps:
       - name: Checkout code

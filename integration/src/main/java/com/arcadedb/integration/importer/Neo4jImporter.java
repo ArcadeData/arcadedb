@@ -51,6 +51,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.zip.GZIPInputStream;
 
@@ -92,6 +93,9 @@ public class Neo4jImporter {
   private final        ImporterContext                context;
   private final        Map<String, Map<String, Type>> schemaProperties         = new HashMap<>();
   private final static SimpleDateFormat               dateTimeISO8601Format    = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss");
+  // Allow-list for imported labels: ASCII letters, digits, underscore, hyphen and space only. Excluding '.', '/' and '\'
+  // makes path-traversal sequences structurally impossible in the on-disk bucket file names derived from these labels.
+  private final static Pattern                        SAFE_LABEL               = Pattern.compile("[A-Za-z0-9_ -]+");
 
   // Neo4j ID -> packed ArcadeDB RID mapping, populated during vertex pass.
   // Uses primitive LongLongMap for numeric IDs (common case), falls back to HashMap for non-numeric IDs.
@@ -681,9 +685,10 @@ public class Neo4jImporter {
     return null;
   }
 
-  // Rejects untrusted import labels that could become path-traversal sequences in on-disk bucket file names.
+  // Validates untrusted import labels against a strict allow-list before they become on-disk bucket file names. Only
+  // letters, digits, underscore, hyphen and space are accepted; path separators and '..' cannot appear by construction.
   private static String validateLabel(final String label) {
-    if (label != null && (label.indexOf('/') >= 0 || label.indexOf('\\') >= 0 || label.indexOf('\0') >= 0 || label.contains("..")))
+    if (label != null && !SAFE_LABEL.matcher(label).matches())
       throw new ImportException("Invalid label: must not contain path separators or '..'");
     return label;
   }

@@ -1248,10 +1248,10 @@ def ensure_milvus_compose_file(compose_file: Path, release_tag: str) -> None:
         urlretrieve(url, str(compose_file))  # nosec B310
         raw = compose_file.read_text(encoding="utf-8")
 
-    sanitized = re.sub(r"(?m)^\s*version\s*:\s*.*\n", "", raw)
-    sanitized = re.sub(r"(?m)^\s*container_name:\s*.*\n", "", sanitized)
+    sanitized = re.sub(r"(?m)^[ \t]*version[ \t]*:[ \t]*[^\n]*\n", "", raw)
+    sanitized = re.sub(r"(?m)^[ \t]*container_name:[ \t]*[^\n]*\n", "", sanitized)
     sanitized = re.sub(
-        r"(?ms)(^\s*networks:\s*\n(?:.*\n)*?^\s*milvus:\s*\n)(\s*name:\s*milvus\s*\n)",
+        r"(?m)(^[ \t]*networks:[ \t]*\n(?:[^\n]*\n)*?^[ \t]*milvus:[ \t]*\n)([ \t]*name:[ \t]*milvus[ \t]*\n)",
         r"\1",
         sanitized,
     )
