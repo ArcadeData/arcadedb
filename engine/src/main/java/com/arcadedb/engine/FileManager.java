@@ -184,7 +184,7 @@ public class FileManager {
     }
   }
 
-  public void close() {
+  public synchronized void close() {
     for (final ComponentFile f : fileNameMap.values())
       f.close();
 
@@ -193,7 +193,7 @@ public class FileManager {
     fileIdMap.clear();
   }
 
-  public void dropFile(final int fileId) throws IOException {
+  public synchronized void dropFile(final int fileId) throws IOException {
     final ComponentFile file = fileIdMap.remove(fileId);
     if (file != null) {
       fileNameMap.remove(file.getComponentName());
@@ -226,8 +226,8 @@ public class FileManager {
     return stats;
   }
 
-  public List<ComponentFile> getFiles() {
-    return Collections.unmodifiableList(files);
+  public synchronized List<ComponentFile> getFiles() {
+    return Collections.unmodifiableList(new ArrayList<>(files));
   }
 
   /**
@@ -252,7 +252,7 @@ public class FileManager {
     return f;
   }
 
-  public ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.MODE mode)
+  public synchronized ComponentFile getOrCreateFile(final String fileName, final String filePath, final ComponentFile.MODE mode)
       throws IOException {
     ComponentFile file = fileNameMap.get(fileName);
     if (file != null)
@@ -271,7 +271,7 @@ public class FileManager {
     return file;
   }
 
-  public ComponentFile getOrCreateFile(final int fileId, final String filePath) throws IOException {
+  public synchronized ComponentFile getOrCreateFile(final int fileId, final String filePath) throws IOException {
     ComponentFile file = fileIdMap.get(fileId);
     if (file == null) {
       file = new PaginatedComponentFile(filePath, mode);
