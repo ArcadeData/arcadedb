@@ -38,6 +38,7 @@ class RandFunctionBenchmark {
   private static final int      ITERATIONS = 10;
   // Reused (not allocated per call) so the empty-args setup does not add noise to the measured loop.
   private static final Object[] NO_ARGS    = new Object[0];
+  private static       long     sink;
 
   @Test
   void compareRandomSources() {
@@ -53,7 +54,8 @@ class RandFunctionBenchmark {
   private static void bench(final String name, final DoubleOp op) {
     for (int w = 0; w < WARMUP; w++) {
       double s = 0;
-      for (int i = 0; i < N; i++) s += op.next();
+      for (int i = 0; i < N; i++)
+        s += op.next();
       blackhole(s);
     }
 
@@ -61,10 +63,12 @@ class RandFunctionBenchmark {
     for (int it = 0; it < ITERATIONS; it++) {
       final long t0 = System.nanoTime();
       double s = 0;
-      for (int i = 0; i < N; i++) s += op.next();
+      for (int i = 0; i < N; i++)
+        s += op.next();
       final long t1 = System.nanoTime();
       blackhole((long) s);
-      if (t1 - t0 < best) best = t1 - t0;
+      if (t1 - t0 < best)
+        best = t1 - t0;
     }
     System.out.printf(Locale.ROOT, "%-42s best=%7.2f ms   (%.2f ns/op)%n", name, best / 1_000_000.0, (double) best / N);
   }
@@ -73,9 +77,12 @@ class RandFunctionBenchmark {
     double next();
   }
 
-  @SuppressWarnings("unused") private static long sink;
 
-  private static void blackhole(final double v) { sink ^= (long) v; }
+  private static void blackhole(final double v) {
+    sink ^= (long) v;
+  }
 
-  private static void blackhole(final long v) { sink ^= v; }
+  private static void blackhole(final long v) {
+    sink ^= v;
+  }
 }
