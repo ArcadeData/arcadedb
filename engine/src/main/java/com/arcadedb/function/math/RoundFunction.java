@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.util.Locale;
 
 /**
  * round() function - rounds a number to the nearest integer or to a specified number of decimal places.
@@ -72,7 +73,7 @@ public class RoundFunction implements StatelessFunction {
 
     RoundingMode mode = RoundingMode.HALF_UP;
     if (args.length == 3 && args[2] != null) {
-      final String modeStr = args[2].toString().toUpperCase().replace(" ", "_");
+      final String modeStr = args[2].toString().toUpperCase(Locale.ROOT).replace(" ", "_");
       mode = switch (modeStr) {
         case "UP" -> RoundingMode.UP;
         case "DOWN" -> RoundingMode.DOWN;

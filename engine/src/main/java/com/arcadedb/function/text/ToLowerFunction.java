@@ -22,6 +22,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Locale;
+
 /**
  * toLower() function - converts a string to lowercase.
  */
@@ -37,6 +39,6 @@ public class ToLowerFunction implements StatelessFunction {
       throw new CommandExecutionException("toLower() requires exactly one argument");
     if (args[0] == null)
       return null;
-    return args[0].toString().toLowerCase();
+    return args[0].toString().toLowerCase(Locale.ROOT);
   }
 }

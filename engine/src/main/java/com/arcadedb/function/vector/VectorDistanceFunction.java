@@ -23,6 +23,8 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Locale;
+
 /**
  * vector_distance(vectorA, vectorB, [metric]) - calculates the distance between two vectors.
  * Supported metrics: EUCLIDEAN (default), COSINE, MANHATTAN.
@@ -47,7 +49,7 @@ public class VectorDistanceFunction implements StatelessFunction {
     final float[] b = VectorUtils.toFloatArray(args[1]);
     VectorUtils.validateSameDimension(a, b);
 
-    final String metric = args.length > 2 && args[2] != null ? args[2].toString().toUpperCase() : "EUCLIDEAN";
+    final String metric = args.length > 2 && args[2] != null ? args[2].toString().toUpperCase(Locale.ROOT) : "EUCLIDEAN";
 
     return switch (metric) {
       case "EUCLIDEAN" -> (double) VectorUtils.l2Distance(a, b);

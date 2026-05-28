@@ -20,6 +20,8 @@ package com.arcadedb.function.convert;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Locale;
+
 /**
  * convert.toBoolean(value) - Convert to boolean.
  *
@@ -60,7 +62,7 @@ public class ConvertToBoolean extends AbstractConvertFunction {
     }
 
     if (args[0] instanceof String) {
-      final String str = ((String) args[0]).toLowerCase();
+      final String str = ((String) args[0]).toLowerCase(Locale.ROOT);
       if ("true".equals(str) || "yes".equals(str) || "1".equals(str))
         return Boolean.TRUE;
       if ("false".equals(str) || "no".equals(str) || "0".equals(str))
