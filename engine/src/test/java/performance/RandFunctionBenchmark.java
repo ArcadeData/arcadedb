@@ -33,9 +33,11 @@ import java.util.concurrent.ThreadLocalRandom;
  */
 @Tag("benchmark")
 class RandFunctionBenchmark {
-  private static final int N          = 5_000_000;
-  private static final int WARMUP     = 5;
-  private static final int ITERATIONS = 10;
+  private static final int      N          = 5_000_000;
+  private static final int      WARMUP     = 5;
+  private static final int      ITERATIONS = 10;
+  // Reused (not allocated per call) so the empty-args setup does not add noise to the measured loop.
+  private static final Object[] NO_ARGS    = new Object[0];
 
   @Test
   void compareRandomSources() {
@@ -43,7 +45,7 @@ class RandFunctionBenchmark {
 
     System.out.println("\n=== rand() per-call cost: SecureRandom (current) vs ThreadLocalRandom vs Math.random() ===");
 
-    bench("RandFunction (ThreadLocal<SecureRandom>)", () -> ((Number) rand.execute(null, null)).doubleValue());
+    bench("RandFunction (ThreadLocal<SecureRandom>)", () -> ((Number) rand.execute(NO_ARGS, null)).doubleValue());
     bench("ThreadLocalRandom.nextDouble()", () -> ThreadLocalRandom.current().nextDouble());
     bench("Math.random()", Math::random);
   }
