@@ -26,6 +26,7 @@ import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.function.text.NormalizeFunction;
 import com.arcadedb.function.text.ToLowerFunction;
 import com.arcadedb.function.node.AbstractNodeFunction;
+import com.arcadedb.function.sql.geo.SQLFunctionGeoDistance;
 import com.arcadedb.function.text.ToUpperFunction;
 import com.arcadedb.function.util.UtilCompress;
 import com.arcadedb.function.util.UtilDecompress;
@@ -254,6 +255,33 @@ class LocaleSensitivityTest {
     assertThat(fn.execute(new Object[]{composed, "nfd"}, null)).isNotNull();
     assertThat(fn.execute(new Object[]{composed, "nfkc"}, null)).isEqualTo(composed);
     assertThat(fn.execute(new Object[]{composed, "nfkd"}, null)).isNotNull();
+  }
+
+  // ========= FunctionRegistry name normalization =========
+
+  @Test
+  void functionRegistryNormalizeApocNameUnderTurkishLocale() {
+    // "NODEINFO".toLowerCase(tr_TR) -> "nodeınfo" (I->ı) != "nodeinfo"
+    // normalizeApocName must use Locale.ROOT for case folding
+    assertThat(FunctionRegistry.normalizeApocName("NODEINFO")).isEqualTo("nodeinfo");
+    assertThat(FunctionRegistry.normalizeApocName("TOINTEGER")).isEqualTo("tointeger");
+    assertThat(FunctionRegistry.normalizeApocName("TYPEIN")).isEqualTo("typein");
+  }
+
+  // ========= SQLFunctionGeoDistance =========
+
+  @Test
+  void geoDistanceUpperCaseMiUnderTurkishLocale() {
+    // "MI".toLowerCase(tr_TR) -> "mı" (dotless-i) != "mi"; same for "NMI" -> "nmı"
+    final SQLFunctionGeoDistance fn = new SQLFunctionGeoDistance();
+    // Two identical WKT points → distance = 0 regardless of unit
+    final String p = "POINT(0 0)";
+    final Object resultMI = fn.execute(null, null, null, new Object[]{p, p, "MI"}, null);
+    final Object resultMi = fn.execute(null, null, null, new Object[]{p, p, "mi"}, null);
+    assertThat(resultMI).isEqualTo(resultMi);
+    final Object resultNMI = fn.execute(null, null, null, new Object[]{p, p, "NMI"}, null);
+    final Object resultNmi = fn.execute(null, null, null, new Object[]{p, p, "nmi"}, null);
+    assertThat(resultNMI).isEqualTo(resultNmi);
   }
 
   // ========= VectorDistanceFunction =========
