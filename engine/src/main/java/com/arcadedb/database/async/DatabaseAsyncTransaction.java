@@ -64,6 +64,8 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
       } catch (final ConcurrentModificationException e) {
         // RETRY
         lastException = e;
+        if (database.isTransactionActive())
+          database.rollback();
 
       } catch (final Exception e) {
         if (database.getTransaction().isActive())
