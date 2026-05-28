@@ -44,3 +44,28 @@ New test in `FileManagerTest`: `getFiles_concurrentWithNewFileId_noConcurrentMod
 
 - New test reproduces CME with current code; passes after fix
 - Existing `FileManagerTest` tests continue to pass
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4399
+
+## Review Cycles
+
+### Cycle 1 - SHA 08b5b07a
+
+Gemini reviewed (3 medium-priority inline comments); Claude did not respond (timeout after 15 min).
+
+Gemini feedback applied:
+- `dropFile()`: narrowed lock scope - `file.drop()` moved outside the synchronized block so blocking disk I/O does not hold the mutex. Early `return` inside the lock replaced with `else` branch to preserve the existing behavior of always calling `file.drop()` when the file is non-null (Gemini's suggestion had a subtle bug in this path that was corrected).
+- `getOrCreateFile(String, String, MODE)`: lock-free first lookup on `fileNameMap` (ConcurrentHashMap), double-checked inside `synchronized` block only when absent.
+- `getOrCreateFile(int, String)`: same double-checked locking pattern using `fileIdMap`.
+
+Commit: eb83aee2
+
+### Cycle 2 - SHA eb83aee2
+
+Neither bot responded within the 15-minute timeout.
+
+## Final State
+
+`timeout` - loop stopped after cycle 2 timeout with no bot reviews on the post-review push. PR is left open for developer merge.
