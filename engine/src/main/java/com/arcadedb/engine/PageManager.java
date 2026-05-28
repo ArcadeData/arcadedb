@@ -530,8 +530,11 @@ public class PageManager extends LockContext {
     final CachedPage prev = readCache.put(page.getPageId(), page);
     if (prev == null)
       totalReadCacheRAM.addAndGet(page.getPhysicalSize());
-    else
-      totalReadCacheRAM.addAndGet(page.getPhysicalSize() - prev.getPhysicalSize());
+    else {
+      final long delta = page.getPhysicalSize() - prev.getPhysicalSize();
+      if (delta != 0)
+        totalReadCacheRAM.addAndGet(delta);
+    }
 
     checkForPageDisposal();
   }

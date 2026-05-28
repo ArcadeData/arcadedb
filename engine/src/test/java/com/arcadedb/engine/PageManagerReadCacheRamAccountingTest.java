@@ -60,9 +60,12 @@ class PageManagerReadCacheRamAccountingTest {
 
   @AfterEach
   void tearDown() {
-    if (db != null && db.isOpen())
-      db.drop();
-    GlobalConfiguration.MAX_PAGE_RAM.reset();
+    try {
+      if (db != null && db.isOpen())
+        db.drop();
+    } finally {
+      GlobalConfiguration.MAX_PAGE_RAM.reset();
+    }
   }
 
   @Test
