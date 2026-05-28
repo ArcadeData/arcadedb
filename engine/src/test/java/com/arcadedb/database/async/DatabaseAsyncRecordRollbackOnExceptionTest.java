@@ -25,38 +25,18 @@ import com.arcadedb.database.RID;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordUpdateListener;
+import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Regression tests for DatabaseAsyncCreateRecord, DatabaseAsyncUpdateRecord, and
- * DatabaseAsyncDeleteRecord not rolling back the shared async transaction when an
- * exception is thrown inside execute(). Without the fix, the failed task's dirty
- * pages and transaction cache remain in the long-lived batch transaction, which
- * is then committed by the periodic commit cycle, producing phantom records or
- * corrupted data.
- *
- * <p>Each test injects a RuntimeException via a record-event listener that fires
- * after the storage operation succeeds but before execute() returns. With
- * commitEvery=1 the bug manifests immediately: the outer loop sees an active
- * transaction (not rolled back), calls commit(), and persists the dirty state.
- * With the fix the catch block calls rollback(), the outer loop sees no active
- * transaction, and the dirty state is discarded.
- */
+/** Regression tests: a failed async record task must roll back the shared batch transaction. */
 class DatabaseAsyncRecordRollbackOnExceptionTest extends TestHelper {
 
   private static final String TYPE = "Item";
 
-  /**
-   * A RuntimeException thrown inside DatabaseAsyncCreateRecord.execute() (via the
-   * AfterRecordCreateListener) must roll back the async transaction. Without the
-   * fix, the dirty bucket page is committed at the next commit-every boundary,
-   * producing an extra phantom record. With the fix only the two subsequent
-   * creates that succeed are persisted.
-   */
   @Test
   void createRecordExceptionRollsBackTransaction() {
     database.transaction(() -> database.getSchema().createDocumentType(TYPE));
@@ -90,11 +70,6 @@ class DatabaseAsyncRecordRollbackOnExceptionTest extends TestHelper {
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isEqualTo(2));
   }
 
-  /**
-   * A RuntimeException thrown inside DatabaseAsyncUpdateRecord.execute() (via the
-   * AfterRecordUpdateListener, fired after updateRecordNoLock) must roll back the
-   * async transaction so the dirty update is not committed.
-   */
   @Test
   void updateRecordExceptionRollsBackTransaction() {
     final RID[] rid = new RID[1];
@@ -140,12 +115,6 @@ class DatabaseAsyncRecordRollbackOnExceptionTest extends TestHelper {
     });
   }
 
-  /**
-   * A RuntimeException thrown inside DatabaseAsyncDeleteRecord.execute() (via the
-   * AfterRecordDeleteListener, fired from inside deleteRecordNoLock after the bucket
-   * record is marked as deleted) must roll back the async transaction so the record
-   * is not permanently deleted.
-   */
   @Test
   void deleteRecordExceptionRollsBackTransaction() {
     final RID[] rid = new RID[1];
@@ -183,5 +152,55 @@ class DatabaseAsyncRecordRollbackOnExceptionTest extends TestHelper {
     assertThat(errors.get()).isEqualTo(1);
     // Original record must still exist (delete was rolled back) plus the new create.
     database.transaction(() -> assertThat(database.countType(TYPE, true)).isEqualTo(2));
+  }
+
+  @Test
+  void writeCommandExceptionRollsBackTransaction() {
+    database.transaction(() -> database.getSchema().createDocumentType(TYPE));
+
+    final AtomicInteger errors = new AtomicInteger();
+
+    // Async commands run on round-robin threads, so the trigger keys off record content (not call
+    // order): only the record tagged "fail" throws, deterministically failing its own command.
+    final AfterRecordCreateListener throwOnFail = record -> {
+      if ("fail".equals(((Document) record).getString("marker")))
+        throw new RuntimeException("injected error on write command");
+    };
+
+    database.async().setCommitEvery(1);
+
+    final AsyncResultsetCallback countErrors = new AsyncResultsetCallback() {
+      @Override
+      public void onComplete(final ResultSet resultset) {
+        while (resultset.hasNext())
+          resultset.next();
+      }
+
+      @Override
+      public void onError(final Exception exception) {
+        errors.incrementAndGet();
+      }
+    };
+
+    database.getEvents().registerListener(throwOnFail);
+    try {
+      // Write command that fails after the bucket page is written; its transaction must roll back.
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET marker = 'fail'", countErrors);
+      // Two write commands that succeed; they must still be committed after the rollback.
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET marker = 'ok'", null);
+      database.async().command("sql", "INSERT INTO " + TYPE + " SET marker = 'ok'", null);
+
+      database.async().waitCompletion();
+    } finally {
+      database.getEvents().unregisterListener(throwOnFail);
+    }
+
+    assertThat(errors.get()).isEqualTo(1);
+    // Only the two "ok" inserts must be present; the "fail" insert (rolled back) must not.
+    database.transaction(() -> {
+      assertThat(database.countType(TYPE, true)).isEqualTo(2);
+      assertThat(database.query("sql", "SELECT count(*) AS c FROM " + TYPE + " WHERE marker = 'fail'").next()
+          .<Long>getProperty("c")).isEqualTo(0L);
+    });
   }
 }
