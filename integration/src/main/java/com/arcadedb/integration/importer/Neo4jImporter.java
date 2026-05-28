@@ -681,11 +681,7 @@ public class Neo4jImporter {
     return null;
   }
 
-  /**
-   * Validates a label coming from the (untrusted) import source before it is turned into a schema type and, in turn,
-   * into an on-disk bucket file name. Rejects path separators and parent-directory traversal so that a crafted input
-   * file cannot drive writes outside the database directory.
-   */
+  // Rejects untrusted import labels that could become path-traversal sequences in on-disk bucket file names.
   private static String validateLabel(final String label) {
     if (label != null && (label.indexOf('/') >= 0 || label.indexOf('\\') >= 0 || label.indexOf('\0') >= 0 || label.contains("..")))
       throw new ImportException("Invalid label: must not contain path separators or '..'");
