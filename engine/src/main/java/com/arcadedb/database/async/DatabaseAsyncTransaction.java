@@ -78,8 +78,13 @@ public class DatabaseAsyncTransaction implements DatabaseAsyncTask {
       }
     }
 
-    if (lastException != null)
-      async.onError(lastException);
+    if (lastException != null) {
+      if (database.isTransactionActive())
+        database.rollback();
+      if (onErrorCallback != null)
+        onErrorCallback.call(lastException);
+      throw lastException;
+    }
   }
 
   @Override
