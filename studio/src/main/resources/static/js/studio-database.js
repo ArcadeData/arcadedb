@@ -450,7 +450,7 @@ function updateDatabases(callback, preferSelected) {
 
       // Update current database display
       try {
-        $("#currentDatabase").html(getCurrentDatabase());
+        $("#currentDatabase").text(getCurrentDatabase());
       } catch (e) {
         console.warn("Error updating current database display:", e);
       }
@@ -854,7 +854,7 @@ function resetDatabase() {
 }
 
 function backupDatabase() {
-  let database = getCurrentDatabase();
+  let database = escapeHtml(getCurrentDatabase());
   if (database == "") {
     globalNotify("Error", "Database not selected", "danger");
     return;
@@ -5165,9 +5165,19 @@ function dropMaterializedView(name) {
 
 // ===== Flame Graph Visualization =====
 
+// Tooltip HTML is built from already-escaped data and kept in JS, keyed by index,
+// so it is never round-tripped through a DOM attribute and re-parsed as HTML.
+var flameTips = [];
+
+function flameTipAttr(tipHtml) {
+  flameTips.push(tipHtml);
+  return " data-flame-tip-idx='" + (flameTips.length - 1) + "'";
+}
+
 function renderFlameGraph(plan, profile) {
   var container = $("#flameGraphContainer");
   var html = "";
+  flameTips = [];
 
   if (profile)
     html += renderProfileBreakdown(profile);
@@ -5185,7 +5195,7 @@ function renderFlameGraph(plan, profile) {
         html += "<div class='flame-graph'>";
         html += "<div class='flame-graph-header'><i class='fa fa-fire'></i> Engine Execution Flame Graph</div>";
         html += "<div class='flame-bar flame-depth-0' style='width:100%'";
-        html += " data-flame-tip='Engine execution &mdash; " + escapeHtml(formatCostNanos(totalCost)) + "'>";
+        html += flameTipAttr("Engine execution &mdash; " + escapeHtml(formatCostNanos(totalCost))) + ">";
         html += "<span class='flame-label'>Engine <small>" + formatCostNanos(totalCost) + "</small></span>";
         html += "</div>";
         html += renderFlameRow(steps, totalCost, 1);
@@ -5227,7 +5237,7 @@ function renderProfileBreakdown(profile) {
     var widthPct = Math.max(pct, 2);
     var tip = escapeHtml(p.name) + " &mdash; " + escapeHtml(formatCostNanos(p.nanos)) + " (" + pct.toFixed(1) + "%)";
     html += "<div class='profile-seg " + p.cls + "' style='width:" + widthPct + "%'";
-    html += " data-flame-tip='" + tip.replace(/'/g, "&#39;") + "'>";
+    html += flameTipAttr(tip) + ">";
     html += "<span class='flame-label'>" + escapeHtml(p.name) + " <small>" + formatCostNanos(p.nanos) + "</small></span>";
     html += "</div>";
   }
@@ -5269,7 +5279,7 @@ function renderFlameRow(steps, rootCost, depth) {
     var tipHtml = escapeHtml(name) + " &mdash; " + escapeHtml(costLabel) + " (" + pctOfRoot.toFixed(1) + "% of total)";
     if (desc) tipHtml += "<br>" + escapeHtml(desc);
     html += "<div class='flame-bar " + depthClass + "'";
-    html += " data-flame-tip='" + tipHtml.replace(/'/g, "&#39;") + "'>";
+    html += flameTipAttr(tipHtml) + ">";
     html += "<span class='flame-label'>" + escapeHtml(name) + " <small>" + costLabel + "</small></span>";
     html += "</div>";
     // Recursively render sub-steps inside this cell (inherits parent width)
@@ -5287,8 +5297,9 @@ function initFlameTooltips() {
     $("body").append("<div id='flameTooltip' class='flame-tooltip'></div>");
     tip = $("#flameTooltip");
   }
-  $("[data-flame-tip]").on("mouseenter", function(e) {
-    tip.html($(this).attr("data-flame-tip")).css({
+  $("[data-flame-tip-idx]").on("mouseenter", function(e) {
+    var idx = parseInt($(this).attr("data-flame-tip-idx"), 10);
+    tip.html(flameTips[idx] || "").css({
       left: e.pageX + 12,
       top: e.pageY - 10
     }).addClass("visible");
@@ -5463,12 +5474,15 @@ function displayMvHealth(views) {
     html += "<td class='text-end'>" + formatMs(v.refreshMaxTimeMs) + "</td>";
     html += "<td class='text-end'>" + formatMs(v.lastRefreshDurationMs) + "</td>";
     html += "<td class='text-end'>" + (v.errorCount > 0 ? '<span class="text-danger">' + formatNumber(v.errorCount) + '</span>' : '0') + "</td>";
-    html += '<td><button class="btn btn-sm db-action-btn" onclick="refreshMvFromMetrics(\'' + escapeHtml(v.name).replace(/'/g, "\\'") + '\')"><i class="fa fa-sync"></i></button></td>';
+    html += '<td><button class="btn btn-sm db-action-btn" data-mv-name="' + escapeHtml(v.name) + '"><i class="fa fa-sync"></i></button></td>';
     html += "</tr>";
   }
 
   html += "</tbody></table></div>";
   container.html(html);
+  container.find(".db-action-btn[data-mv-name]").on("click", function () {
+    refreshMvFromMetrics($(this).attr("data-mv-name"));
+  });
 }
 
 function refreshMvFromMetrics(name) {
