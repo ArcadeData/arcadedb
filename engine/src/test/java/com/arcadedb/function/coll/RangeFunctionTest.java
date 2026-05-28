@@ -100,4 +100,14 @@ class RangeFunctionTest {
         new Object[]{ Long.MIN_VALUE, Long.MIN_VALUE, -1L }, null);
     assertThat(result).containsExactly(Long.MIN_VALUE);
   }
+
+  /** Extreme: step = Long.MIN_VALUE; guard evaluates to 0 (MIN - MIN = 0 in two's-complement). */
+  @Test
+  @Timeout(value = 5, unit = TimeUnit.SECONDS)
+  void negativeStepLongMinValue() {
+    @SuppressWarnings("unchecked")
+    final List<Long> result = (List<Long>) fn.execute(
+        new Object[]{ 0L, Long.MIN_VALUE, Long.MIN_VALUE }, null);
+    assertThat(result).containsExactly(0L, Long.MIN_VALUE);
+  }
 }
