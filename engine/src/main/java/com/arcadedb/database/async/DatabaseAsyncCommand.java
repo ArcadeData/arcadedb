@@ -20,9 +20,11 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.*;
+import java.util.logging.*;
 
 public class DatabaseAsyncCommand implements DatabaseAsyncTask {
   public final boolean                idempotent;
@@ -71,6 +73,18 @@ public class DatabaseAsyncCommand implements DatabaseAsyncTask {
         userCallback.onComplete(resultset);
 
     } catch (final Exception e) {
+      // A failed write command leaves dirty pages in the shared batch transaction that would be
+      // persisted at the next commit-every boundary. Roll back so the failure does not contaminate
+      // the batch. Read queries (idempotent) produce no dirty pages, so they must not roll back the
+      // pending writes of prior tasks in the same commit window.
+      if (!idempotent && database.isTransactionActive()) {
+        try {
+          database.rollback();
+        } catch (final Exception re) {
+          LogManager.instance().log(this, Level.WARNING, "Error on rolling back active transaction", re);
+        }
+      }
+
       if (userCallback != null)
         userCallback.onError(e);
     }

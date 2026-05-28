@@ -51,6 +51,14 @@ public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
       LogManager.instance().log(this, Level.SEVERE, "Error on executing async create record operation (threadId=%d)", e,
           Thread.currentThread().threadId());
 
+      if (database.isTransactionActive()) {
+        try {
+          database.rollback();
+        } catch (final Exception re) {
+          LogManager.instance().log(this, Level.WARNING, "Error on rolling back active transaction", re);
+        }
+      }
+
       async.onError(e);
 
       if (onErrorCallback != null)
