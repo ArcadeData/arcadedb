@@ -238,7 +238,7 @@ public class Neo4jImporter {
         break;
 
       case "relationship":
-        final String edgeLabel = json.has("label") && !json.isNull("label") ? json.getString("label") : null;
+        final String edgeLabel = json.has("label") && !json.isNull("label") ? validateLabel(json.getString("label")) : null;
         if (edgeLabel != null)
           database.getSchema().buildEdgeType().withName(edgeLabel).withTotalBuckets(bucketsPerType).withIgnoreIfExists(true)
               .create();
@@ -401,7 +401,7 @@ public class Neo4jImporter {
                 (context.createdEdges.get() / elapsed * 1000));
           }
 
-          final String type = json.getString("label");
+          final String type = validateLabel(json.getString("label"));
           if (type == null) {
             log("- found edge in line %d without labels. Skip it.", lineNumber.get());
             context.warnings.incrementAndGet();
@@ -672,13 +672,20 @@ public class Neo4jImporter {
     if (nodeLabels != null && !nodeLabels.isEmpty()) {
       if (nodeLabels.length() > 1) {
         // MULTI LABEL, CREATE A NEW MIXED TYPE THAT EXTEND ALL THE LABELS BY USING INHERITANCE
-        final List<String> list = nodeLabels.toList().stream().map(String.class::cast).sorted(Comparator.naturalOrder())
-            .collect(Collectors.toList());
+        final List<String> list = nodeLabels.toList().stream().map(String.class::cast).map(Neo4jImporter::validateLabel)
+            .sorted(Comparator.naturalOrder()).collect(Collectors.toList());
         return new Pair<>(String.join(Labels.LABEL_SEPARATOR, list), list);
       } else
-        return new Pair<>((String) nodeLabels.get(0), null);
+        return new Pair<>(validateLabel((String) nodeLabels.get(0)), null);
     }
     return null;
+  }
+
+  // Rejects untrusted import labels that could become path-traversal sequences in on-disk bucket file names.
+  private static String validateLabel(final String label) {
+    if (label != null && (label.indexOf('/') >= 0 || label.indexOf('\\') >= 0 || label.indexOf('\0') >= 0 || label.contains("..")))
+      throw new ImportException("Invalid label: must not contain path separators or '..'");
+    return label;
   }
 
   private void log(final String text, final Object... args) {

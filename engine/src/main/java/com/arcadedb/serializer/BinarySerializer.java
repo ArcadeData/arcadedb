@@ -648,7 +648,7 @@ public class BinarySerializer {
       break;
     }
     default:
-      LogManager.instance().log(this, Level.INFO, "Error on serializing value '" + value + "', type not supported");
+      LogManager.instance().log(this, Level.INFO, "Error on serializing value '%s', type not supported", value);
     }
 
     if (encrypt) {

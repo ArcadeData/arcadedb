@@ -21,10 +21,15 @@ package com.arcadedb.function.math;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.security.SecureRandom;
+
 /**
  * rand() function - returns a random float between 0.0 (inclusive) and 1.0 (exclusive).
  */
 public class RandFunction implements StatelessFunction {
+  // Per-thread SecureRandom: cryptographically strong source without cross-thread lock contention on the query hot path.
+  private static final ThreadLocal<SecureRandom> RANDOM = ThreadLocal.withInitial(SecureRandom::new);
+
   @Override
   public String getName() {
     return "rand";
@@ -32,6 +37,6 @@ public class RandFunction implements StatelessFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    return Math.random();
+    return RANDOM.get().nextDouble();
   }
 }
