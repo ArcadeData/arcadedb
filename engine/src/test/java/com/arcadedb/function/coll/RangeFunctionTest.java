@@ -26,9 +26,6 @@ import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Regression tests for RangeFunction long-overflow infinite loop (#4392).
- */
 class RangeFunctionTest {
 
   private final RangeFunction fn = new RangeFunction();
