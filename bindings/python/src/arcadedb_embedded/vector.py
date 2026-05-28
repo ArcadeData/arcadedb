@@ -144,11 +144,11 @@ class VectorIndex:
         The metric used depends on the `distance_function` parameter during index creation:
 
         1. **EUCLIDEAN** (Default):
-           - Returns **Similarity Score** (Higher is better).
-           - Formula: $1 / (1 + d^2)$ where $d$ is Euclidean distance.
-           - Range: (0.0, 1.0]
-           - 1.0: Identical vectors
-           - ~0.0: Very distant vectors
+           - Returns **Squared Euclidean Distance** (Lower is better).
+           - Formula: $d^2$ where $d$ is the Euclidean distance.
+           - Range: [0.0, +inf)
+           - 0.0: Identical vectors
+           - Larger values: more distant vectors
 
         2. **COSINE**:
         - Returns **Cosine Distance** (Lower is better).
@@ -331,16 +331,6 @@ class VectorIndex:
 
         return wrapped_results
 
-    def _uses_reverse_score_sort(self):
-        try:
-            idx_to_check = self._get_primary_lsm_index()
-            return bool(
-                idx_to_check
-                and str(idx_to_check.getSimilarityFunction()) == "EUCLIDEAN"
-            )
-        except Exception:
-            return False
-
     def _find_neighbor_pairs(
         self,
         idx,
@@ -369,7 +359,9 @@ class VectorIndex:
         return idx.findNeighborsFromVector(java_vector, k)
 
     def _sort_results(self, results):
-        results.sort(key=lambda item: item[1], reverse=self._uses_reverse_score_sort())
+        # All similarity functions are exposed as distances (lower is better) by the
+        # engine's findNeighborsFromVector, so the best matches sort ascending by score.
+        results.sort(key=lambda item: item[1])
         return results
 
     def _collect_search_results(
