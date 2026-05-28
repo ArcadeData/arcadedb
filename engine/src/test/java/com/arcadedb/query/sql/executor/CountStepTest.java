@@ -78,7 +78,7 @@ class CountStepTest extends TestHelper {
     });
 
     final ResultSet result = database.query("sql", "SELECT status, count(*) as total FROM Order GROUP BY status");
-    int totalRecords = 0;
+    long totalRecords = 0;
     while (result.hasNext()) {
       final Result item = result.next();
       final long count = item.<Number>getProperty("total").longValue();

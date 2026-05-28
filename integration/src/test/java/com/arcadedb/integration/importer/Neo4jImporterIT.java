@@ -322,6 +322,41 @@ class Neo4jImporterIT {
   }
 
   @Test
+  void rejectNodeLabelWithPathTraversal() {
+    final File databaseDirectory = new File(DATABASE_PATH);
+    try {
+      final String content = "{\"type\":\"node\",\"id\":\"0\",\"labels\":[\"../../etc/evil\"],\"properties\":{\"name\":\"x\"}}\n";
+      final ByteArrayInputStream is = new ByteArrayInputStream(content.getBytes());
+      final Neo4jImporter importer = new Neo4jImporter(is, (" -d " + DATABASE_PATH + " -o").split(" "));
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(ImportException.class)
+          .hasMessageContaining("path separators");
+    } finally {
+      FileUtils.deleteRecursively(databaseDirectory);
+    }
+  }
+
+  @Test
+  void rejectEdgeLabelWithPathTraversal() {
+    final File databaseDirectory = new File(DATABASE_PATH);
+    try {
+      final StringBuilder content = new StringBuilder();
+      content.append("{\"type\":\"node\",\"id\":\"0\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"Alice\"}}\n");
+      content.append("{\"type\":\"node\",\"id\":\"1\",\"labels\":[\"Person\"],\"properties\":{\"name\":\"Bob\"}}\n");
+      content.append("{\"id\":\"r0\",\"type\":\"relationship\",\"label\":\"..\\\\..\\\\evil\",\"properties\":{},");
+      content.append("\"start\":{\"id\":\"0\",\"labels\":[\"Person\"]},\"end\":{\"id\":\"1\",\"labels\":[\"Person\"]}}\n");
+
+      final ByteArrayInputStream is = new ByteArrayInputStream(content.toString().getBytes());
+      final Neo4jImporter importer = new Neo4jImporter(is, (" -d " + DATABASE_PATH + " -o").split(" "));
+      assertThatThrownBy(importer::run)
+          .isInstanceOf(ImportException.class)
+          .hasMessageContaining("path separators");
+    } finally {
+      FileUtils.deleteRecursively(databaseDirectory);
+    }
+  }
+
+  @Test
   void importNeo4jMultiTypes() throws Exception {
     final File databaseDirectory = new File(DATABASE_PATH);
 
