@@ -105,10 +105,12 @@ function profilerLoadSavedRuns() {
         var f = files[i];
         var sizeKb = Math.round(f.size / 1024);
         var dateStr = new Date(f.lastModified).toLocaleString();
-        menu.append('<li><a class="dropdown-item" style="cursor:pointer;" onclick="profilerLoadRun(\'' +
-          f.fileName.replace(/'/g, "\\'") + '\')">' + escapeHtml(f.fileName) +
-          ' <small class="text-muted">(' + sizeKb + ' KB, ' + dateStr + ')</small></a></li>');
+        menu.append('<li><a class="dropdown-item profiler-load-run" style="cursor:pointer;" data-run-file="' + escapeHtml(f.fileName) + '">' + escapeHtml(f.fileName) +
+          ' <small class="text-muted">(' + sizeKb + ' KB, ' + escapeHtml(dateStr) + ')</small></a></li>');
       }
+      menu.find(".profiler-load-run").on("click", function () {
+        profilerLoadRun(jQuery(this).attr("data-run-file"));
+      });
     },
     error: function() { /* silent */ }
   });

@@ -344,10 +344,10 @@ function saveRecordEditor() {
         JSON.parse(current);
         sqlValue = current;
       } catch (e) {
-        sqlValue = "'" + current.replace(/'/g, "\\'") + "'";
+        sqlValue = "'" + current.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
       }
     } else
-      sqlValue = "'" + current.replace(/'/g, "\\'") + "'";
+      sqlValue = "'" + current.replace(/\\/g, "\\\\").replace(/'/g, "\\'") + "'";
 
     setParts.push("`" + prop + "` = " + sqlValue);
   });

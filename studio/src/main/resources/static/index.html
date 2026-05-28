@@ -120,10 +120,12 @@
         toastEl.innerHTML =
           '<div class="toast-header">' +
             '<i class="fa ' + iconClass + ' me-2" style="color:' + iconColor + '"></i>' +
-            '<strong class="me-auto">' + (title || '') + '</strong>' +
+            '<strong class="me-auto"></strong>' +
             '<button type="button" class="btn-close" data-bs-dismiss="toast"></button>' +
           '</div>' +
-          '<div class="toast-body">' + (message || '') + '</div>';
+          '<div class="toast-body"></div>';
+        toastEl.querySelector('.toast-header strong').textContent = title || '';
+        toastEl.querySelector('.toast-body').textContent = message || '';
 
         container.appendChild(toastEl);
         // Errors and warnings stay visible until the user dismisses them; informational toasts auto-hide.
