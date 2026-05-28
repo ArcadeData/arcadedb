@@ -76,11 +76,11 @@ public class RemoteHttpComponent extends RWLockContext {
   private final   Integer                     txRetries;
   private         int                         apiVersion                = 1;
   private         CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
-  private         Pair<String, Integer>       leaderServer;
-  private         int                         currentReplicaServerIndex = -1;
-  private         int                         timeout;
-  protected       String                      currentServer;
-  protected       int                         currentPort;
+  private volatile Pair<String, Integer>       leaderServer;
+  private          int                         currentReplicaServerIndex = -1;
+  private          int                         timeout;
+  protected        String                      currentServer;
+  protected        int                         currentPort;
   private         Pair<String, Integer>       stickyTransactionServer;
 
   public enum CONNECTION_STRATEGY {
@@ -350,9 +350,10 @@ public class RemoteHttpComponent extends RWLockContext {
             throw new RemoteException("Error on executing remote operation " + operation + ", no server available", e);
 
           final Pair<String, Integer> currentConnectToServer = connectToServer;
+          final Pair<String, Integer> snapshotLeader = leaderServer;
 
-          if (leaderIsPreferable && !currentConnectToServer.equals(leaderServer)) {
-            connectToServer = leaderServer;
+          if (leaderIsPreferable && snapshotLeader != null && !currentConnectToServer.equals(snapshotLeader)) {
+            connectToServer = snapshotLeader;
           } else
             connectToServer = getNextReplicaAddress();
 
