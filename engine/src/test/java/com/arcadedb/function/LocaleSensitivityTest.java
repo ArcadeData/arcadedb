@@ -25,10 +25,12 @@ import com.arcadedb.function.date.DateField;
 import com.arcadedb.function.math.RoundFunction;
 import com.arcadedb.function.text.NormalizeFunction;
 import com.arcadedb.function.text.ToLowerFunction;
+import com.arcadedb.function.node.AbstractNodeFunction;
 import com.arcadedb.function.text.ToUpperFunction;
 import com.arcadedb.function.util.UtilCompress;
 import com.arcadedb.function.util.UtilDecompress;
 import com.arcadedb.function.vector.VectorDistanceFunction;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -207,10 +209,44 @@ class LocaleSensitivityTest {
     assertThat(fn.execute(new Object[]{timestampMs, "MILLIS"}, null)).isEqualTo(123L);
   }
 
+  // ========= AbstractNodeFunction.parseDirection =========
+
+  @Test
+  void parsedDirectionInUnderTurkishLocale() {
+    // "IN".toLowerCase(tr_TR) -> "ın" (dotless-i) != "in"; breaks graph traversal direction matching
+    final AbstractNodeFunction fn = new AbstractNodeFunction() {
+      @Override
+      protected String getSimpleName() {
+        return "test";
+      }
+
+      @Override
+      public int getMinArgs() {
+        return 1;
+      }
+
+      @Override
+      public int getMaxArgs() {
+        return 1;
+      }
+
+      @Override
+      public Object execute(final Object[] args, final CommandContext ctx) {
+        return parseDirection(args[0] != null ? args[0].toString() : null);
+      }
+    };
+
+    assertThat(fn.execute(new Object[]{"IN"}, null)).isEqualTo(Vertex.DIRECTION.IN);
+    assertThat(fn.execute(new Object[]{"in"}, null)).isEqualTo(Vertex.DIRECTION.IN);
+    assertThat(fn.execute(new Object[]{"INCOMING"}, null)).isEqualTo(Vertex.DIRECTION.IN);
+    assertThat(fn.execute(new Object[]{"OUT"}, null)).isEqualTo(Vertex.DIRECTION.OUT);
+    assertThat(fn.execute(new Object[]{"BOTH"}, null)).isEqualTo(Vertex.DIRECTION.BOTH);
+  }
+
   // ========= NormalizeFunction =========
 
   @Test
-  void normalizeFunctionLowerCaseFormUnderTurkishLocale() {
+  void normalizeFunctionWorksUnderTurkishLocale() {
     // Standard form names (NFC, NFD, NFKC, NFKD) contain no 'i'; verify Locale.ROOT toUpperCase consistency
     final NormalizeFunction fn = new NormalizeFunction();
     final String composed = "é"; // é NFC
