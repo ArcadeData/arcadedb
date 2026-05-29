@@ -310,4 +310,29 @@ class ExpandStepTest extends TestHelper {
     assertThat(count).isEqualTo(3);
     result.close();
   }
+
+  @Test
+  void expandDocumentListWithAliasPreservesDocumentProperties() {
+    database.getSchema().createDocumentType("DocParent");
+    database.getSchema().createDocumentType("DocChild");
+
+    database.transaction(() -> {
+      final MutableDocument c1 = database.newDocument("DocChild").set("x", 1).save();
+      final MutableDocument c2 = database.newDocument("DocChild").set("x", 2).save();
+      database.newDocument("DocParent").set("children", List.of(c1, c2)).save();
+    });
+
+    final ResultSet result = database.query("sql", "SELECT expand(children) AS ignored FROM DocParent");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item.getPropertyNames()).contains("x");
+      assertThat(item.getPropertyNames()).doesNotContain("ignored");
+      count++;
+    }
+
+    assertThat(count).isEqualTo(2);
+    result.close();
+  }
 }

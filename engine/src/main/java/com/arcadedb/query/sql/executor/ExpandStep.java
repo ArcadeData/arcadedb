@@ -38,7 +38,7 @@ public class ExpandStep extends AbstractExecutionStep {
   Iterator  nextSubsequence = null;
   Result    nextElement     = null;
   Result    sourceResult    = null; // Source result from which we're expanding, used to preserve metadata
-  String    alias           = null; // Optional alias to use as property name for plain (non-document) values
+  final String alias;
 
   public ExpandStep(final CommandContext context) {
     this(context, null);
