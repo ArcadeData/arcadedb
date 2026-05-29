@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -81,8 +82,19 @@ public class RaftTransactionBroker {
   public void replicateSchema(final String dbName, final String schemaJson,
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas) {
+    replicateSchema(dbName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, Collections.emptyList());
+  }
+
+  /**
+   * Replicates schema changes, additionally embedding TimeSeries sealed-store blobs (issue #4382)
+   * so followers install the rewritten sealed files atomically with the mutable-bucket clear WAL.
+   */
+  public void replicateSchema(final String dbName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<RaftLogEntryCodec.TsSealedBlob> sealedFileBlobs) {
     final ByteString entry = RaftLogEntryCodec.encodeSchemaEntry(dbName, schemaJson,
-        filesToAdd, filesToRemove, walEntries, bucketDeltas);
+        filesToAdd, filesToRemove, walEntries, bucketDeltas, sealedFileBlobs);
     groupCommitter.submitAndWait(entry.toByteArray());
   }
 

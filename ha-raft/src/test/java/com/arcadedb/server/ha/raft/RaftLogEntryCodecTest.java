@@ -403,4 +403,79 @@ class RaftLogEntryCodecTest {
         .isInstanceOf(IllegalStateException.class)
         .hasMessageContaining("trailing");
   }
+
+  // --- TimeSeries sealed-store blob section (issue #4382) ---
+
+  @Test
+  void roundTripSchemaEntryWithSealedBlobs() {
+    final byte[] sealed0 = new byte[1024];
+    for (int i = 0; i < sealed0.length; i++)
+      sealed0[i] = (byte) (i % 7);
+    final byte[] sealed1 = "TSIX-fake-sealed-store-content".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+
+    final List<RaftLogEntryCodec.TsSealedBlob> blobs = List.of(
+        new RaftLogEntryCodec.TsSealedBlob("weather", 0, "weather_shard_0.ts.sealed", sealed0),
+        new RaftLogEntryCodec.TsSealedBlob("weather", 1, "weather_shard_1.ts.sealed", sealed1));
+
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{\"types\":{}}",
+        Map.of(), Map.of(), List.of(), List.of(), blobs);
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
+    assertThat(decoded.sealedFileBlobs()).hasSize(2);
+    assertThat(decoded.sealedFileBlobs().get(0).typeName()).isEqualTo("weather");
+    assertThat(decoded.sealedFileBlobs().get(0).shardIndex()).isEqualTo(0);
+    assertThat(decoded.sealedFileBlobs().get(0).fileName()).isEqualTo("weather_shard_0.ts.sealed");
+    assertThat(decoded.sealedFileBlobs().get(0).bytes()).isEqualTo(sealed0);
+    assertThat(decoded.sealedFileBlobs().get(1).shardIndex()).isEqualTo(1);
+    assertThat(decoded.sealedFileBlobs().get(1).bytes()).isEqualTo(sealed1);
+  }
+
+  @Test
+  void schemaEntryWithoutSealedBlobsHasEmptyList() {
+    // Entries produced by the pre-#4382 codec (no blob section) must decode with an empty list.
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{}", Map.of(), Map.of());
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.sealedFileBlobs()).isEmpty();
+  }
+
+  @Test
+  void schemaEntryWithEmbeddedWalAndSealedBlobsRoundtrip() {
+    final byte[] clearWal = new byte[] { 9, 8, 7, 6 };
+    final Map<Integer, Integer> delta = Map.of(2, -1);
+    final byte[] sealed = new byte[512];
+    java.util.Arrays.fill(sealed, (byte) 3);
+
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{\"schemaVersion\":2}",
+        Map.of(), Map.of(), List.of(clearWal), List.of(delta),
+        List.of(new RaftLogEntryCodec.TsSealedBlob("metrics", 0, "metrics_shard_0.ts.sealed", sealed)));
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
+
+    assertThat(decoded.walEntries()).hasSize(1);
+    assertThat(decoded.walEntries().get(0)).isEqualTo(clearWal);
+    assertThat(decoded.bucketDeltas().get(0)).isEqualTo(delta);
+    assertThat(decoded.sealedFileBlobs()).hasSize(1);
+    assertThat(decoded.sealedFileBlobs().get(0).bytes()).isEqualTo(sealed);
+  }
+
+  @Test
+  void corruptedSealedBlobFailsCrc() {
+    final byte[] sealed = new byte[256];
+    for (int i = 0; i < sealed.length; i++)
+      sealed[i] = (byte) i;
+
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{}",
+        Map.of(), Map.of(), List.of(), List.of(),
+        List.of(new RaftLogEntryCodec.TsSealedBlob("weather", 0, "weather_shard_0.ts.sealed", sealed)));
+
+    // Flip a byte inside the trailing compressed blob payload to corrupt it.
+    final byte[] corrupted = new byte[encoded.size()];
+    encoded.copyTo(corrupted, 0);
+    corrupted[corrupted.length - 1] ^= 0xFF;
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(
+            () -> RaftLogEntryCodec.decode(ByteString.copyFrom(corrupted)))
+        .isInstanceOf(IllegalStateException.class);
+  }
 }

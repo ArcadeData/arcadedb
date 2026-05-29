@@ -29,6 +29,7 @@ import com.arcadedb.engine.timeseries.simd.TimeSeriesVectorOpsProvider;
 import com.arcadedb.schema.Type;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.ByteBuffer;
@@ -1524,6 +1525,82 @@ public class TimeSeriesSealedStore implements AutoCloseable {
       indexChannel.close();
     if (indexFile != null)
       indexFile.close();
+  }
+
+  /**
+   * Returns the sealed-store file name (relative, e.g. {@code weather_shard_0.ts.sealed}). Used as the
+   * blob key when shipping the sealed store to HA followers.
+   */
+  public String getSealedFileName() {
+    return new File(basePath + ".ts.sealed").getName();
+  }
+
+  /**
+   * Reads the entire sealed-store file into a byte array. Used on the HA leader to capture the
+   * post-compaction (or post-retention/downsampling) sealed bytes so they can be shipped to followers.
+   * The header is flushed first so the on-disk image is current.
+   */
+  public byte[] readWholeSealedFile() throws IOException {
+    flushHeader();
+    directoryLock.readLock().lock();
+    try {
+      final long len = indexFile.length();
+      if (len > Integer.MAX_VALUE)
+        throw new IOException("Sealed store file too large to ship: " + len + " bytes");
+      final byte[] bytes = new byte[(int) len];
+      indexFile.seek(0);
+      indexFile.readFully(bytes);
+      return bytes;
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Atomically replaces this sealed store's file with the supplied bytes (received from the HA leader)
+   * and reopens it, rebuilding the in-memory block directory. Holds the write lock so concurrent
+   * scans/iterations never observe a half-swapped file or a stale {@code FileChannel}.
+   * <p>
+   * The existing file handle is closed before the swap so the replace succeeds on platforms (Windows)
+   * that forbid replacing a file while it is open.
+   */
+  public void installSealedFileBytes(final byte[] bytes) throws IOException {
+    directoryLock.writeLock().lock();
+    try {
+      // Close current handles before replacing the file (required on Windows).
+      try {
+        if (indexChannel != null && indexChannel.isOpen())
+          indexChannel.close();
+      } catch (final IOException ignored) {
+      }
+      try {
+        if (indexFile != null)
+          indexFile.close();
+      } catch (final IOException ignored) {
+      }
+
+      final File target = new File(basePath + ".ts.sealed");
+      final File incoming = new File(basePath + ".ts.sealed.incoming");
+      try (final FileOutputStream fos = new FileOutputStream(incoming)) {
+        fos.write(bytes);
+        fos.getFD().sync();
+      }
+      Files.move(incoming.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING);
+
+      indexFile = new RandomAccessFile(target, "rw");
+      indexChannel = indexFile.getChannel();
+
+      blockDirectory.clear();
+      globalMinTs = Long.MAX_VALUE;
+      globalMaxTs = Long.MIN_VALUE;
+      headerDirty = false;
+      if (indexFile.length() >= HEADER_SIZE)
+        loadDirectory();
+      else
+        writeEmptyHeader();
+    } finally {
+      directoryLock.writeLock().unlock();
+    }
   }
 
   /**

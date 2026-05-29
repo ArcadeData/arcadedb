@@ -85,10 +85,19 @@ public class TimeSeriesMaintenanceScheduler {
         return;
       }
 
+      // Under HA, destructive maintenance (compaction, retention, downsampling) is leader-only:
+      // it mutates the replicated mutable bucket and the sealed store, and the leader ships the
+      // result to followers. Followers running it independently would diverge. The individual
+      // engine operations also self-gate via runWithCompactionReplication, but skipping here avoids
+      // the wasted DatabaseContext init + transaction churn on every follower tick.
+      final DatabaseInternal dbInternal = (DatabaseInternal) db;
+      if (dbInternal.isReplicated() && !dbInternal.isLeader())
+        return;
+
       // The maintenance thread is created by a ScheduledExecutorService and does not
       // have a DatabaseContext initialized.  We must initialize it before calling any
       // database operation (begin/commit) or we get "Transaction context not found".
-      DatabaseContext.INSTANCE.init((DatabaseInternal) db);
+      DatabaseContext.INSTANCE.init(dbInternal);
       try {
         final TimeSeriesEngine engine = type.getEngine();
         if (engine == null)

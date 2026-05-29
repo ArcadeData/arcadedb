@@ -119,23 +119,31 @@ public class TimeSeriesTypeBuilder {
     for (final ColumnDefinition col : columns)
       type.createProperty(col.getName(), col.getDataType());
 
-    try {
-      database.begin();
-      type.initEngine();
-      database.commit();
-    } catch (final Exception e) {
-      if (database.isTransactionActive())
-        database.rollback();
-      throw new SchemaException("Failed to initialize TimeSeries engine for type '" + typeName + "'", e);
-    }
+    // Wrap engine initialization + type registration in recordFileChanges so that, under HA, the
+    // shard bucket-file creation, their header-page writes and the schema JSON are captured and
+    // shipped to followers atomically in a single SCHEMA_ENTRY. Without this the TIMESERIES type
+    // never appears on followers ("Type 'x' was not found") - issue #4382. On a standalone database
+    // recordFileChanges simply runs the callback and persists the schema.
+    schema.recordFileChanges(() -> {
+      final DatabaseInternal db = database.getWrappedDatabaseInstance();
+      db.begin();
+      try {
+        type.initEngine();
+        db.commit();
+      } catch (final Exception e) {
+        if (db.isTransactionActive())
+          db.rollback();
+        throw new SchemaException("Failed to initialize TimeSeries engine for type '" + typeName + "'", e);
+      }
 
-    // Register the type with the schema only after successful engine initialization
-    schema.registerType(type);
+      // Register the type with the schema only after successful engine initialization
+      schema.registerType(type);
+      return null;
+    });
 
     // Schedule automatic retention/downsampling if policies are defined
     schema.getTimeSeriesMaintenanceScheduler().schedule(database, type);
 
-    schema.saveConfiguration();
     return type;
   }
 }

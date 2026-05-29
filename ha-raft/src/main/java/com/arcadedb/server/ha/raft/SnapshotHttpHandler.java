@@ -281,6 +281,16 @@ public class SnapshotHttpHandler implements HttpHandler {
         if (file != null)
           addFileToZip(zipOut, file.getOSFile());
 
+      // TimeSeries sealed-store files (.ts.sealed) use raw FileChannel I/O and are NOT registered with
+      // the FileManager, so they are absent from getFiles(). Add them explicitly so a snapshot-syncing
+      // follower also receives the compacted time-series data instead of only the mutable buckets
+      // (issue #4382).
+      final File dbDir = new File(db.getDatabasePath());
+      final File[] sealedFiles = dbDir.listFiles((d, name) -> name.endsWith(".ts.sealed"));
+      if (sealedFiles != null)
+        for (final File sealedFile : sealedFiles)
+          addFileToZip(zipOut, sealedFile);
+
       zipOut.finish();
       HALog.log(this, HALog.BASIC, "Database snapshot for '%s' sent successfully", databaseName);
 
