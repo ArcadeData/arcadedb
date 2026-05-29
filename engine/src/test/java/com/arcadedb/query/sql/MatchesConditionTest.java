@@ -24,13 +24,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Regression tests for the MATCHES condition. The compiled {@link java.util.regex.Pattern}
- * is cached per command context. The cache key must uniquely identify the regex string:
- * two distinct regexes can share the same {@code String.hashCode()} (e.g. {@code "Aa.*"} and
- * {@code "BB.*"} both hash to 2031100), and a hashCode-based key would make the second
- * MATCHES evaluation reuse the first regex's compiled pattern, silently returning wrong rows.
- */
+/** Regression tests for the MATCHES per-context regex pattern cache. */
 class MatchesConditionTest extends TestHelper {
 
   @Test
@@ -77,14 +71,13 @@ class MatchesConditionTest extends TestHelper {
   }
 
   @Test
-  void collidingRegexesWithLiteralMatches() {
+  void literalMatchesReturnCorrectRows() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Word");
       database.command("sql", "INSERT INTO Word SET name = 'Aardvark'");
       database.command("sql", "INSERT INTO Word SET name = 'BBking'");
     });
 
-    // First MATCHES compiles and caches "Aa.*"; the second uses the colliding "BB.*".
     final ResultSet first = database.query("sql", "SELECT name FROM Word WHERE name MATCHES 'Aa.*'");
     assertThat(first.hasNext()).isTrue();
     assertThat(first.next().<String>getProperty("name")).isEqualTo("Aardvark");
