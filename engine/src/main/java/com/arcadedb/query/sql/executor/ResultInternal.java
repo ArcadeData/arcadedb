@@ -41,6 +41,9 @@ public class ResultInternal implements Result {
   protected Document element;
   protected float score = 0f;
   protected float similarity = 0f;
+  // Tracks properties explicitly removed via removeProperty so they do not fall through to the
+  // backing element. Null until first removal (lazy init to avoid allocation overhead).
+  protected Set<String> tombstones;
 
   public ResultInternal() {
     // Memory optimization: Use smaller initial capacity to reduce memory footprint
@@ -170,17 +173,30 @@ public class ResultInternal implements Result {
     else
       content.put(name, value);
 
+    // Re-setting a previously removed property lifts the tombstone.
+    if (tombstones != null)
+      tombstones.remove(name);
+
     return this;
   }
 
   public void removeProperty(final String name) {
     if (content != null)
       content.remove(name);
+    if (element != null) {
+      // Record the removal as a tombstone so that getProperty does not fall through to the
+      // backing element and re-surface the original value.
+      if (tombstones == null)
+        tombstones = new HashSet<>();
+      tombstones.add(name);
+    }
   }
 
   public <T> T getProperty(final String name) {
     T result;
-    if (content != null && !content.isEmpty())
+    if (tombstones != null && tombstones.contains(name))
+      result = null;
+    else if (content != null && !content.isEmpty())
       // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
       result = (T) content.get(name);
     else if (element != null)
@@ -206,7 +222,9 @@ public class ResultInternal implements Result {
 
   public <T> T getProperty(final String name, final Object defaultValue) {
     T result;
-    if (content != null && content.containsKey(name))
+    if (tombstones != null && tombstones.contains(name))
+      result = (T) defaultValue;
+    else if (content != null && content.containsKey(name))
       result = (T) content.get(name);
     else if (element != null && element.has(name))
       result = (T) element.get(name);
@@ -221,7 +239,9 @@ public class ResultInternal implements Result {
   @Override
   public Record getElementProperty(final String name) {
     Object result = null;
-    if (content != null && content.containsKey(name))
+    if (tombstones != null && tombstones.contains(name))
+      result = null;
+    else if (content != null && content.containsKey(name))
       result = content.get(name);
     else if (element != null)
       result = element.get(name);
@@ -275,8 +295,11 @@ public class ResultInternal implements Result {
     if (similarity > 0)
       result.add("$similarity");
 
-    if (element != null)
-      result.addAll(element.getPropertyNames());
+    if (element != null) {
+      for (final String name : element.getPropertyNames())
+        if (tombstones == null || !tombstones.contains(name))
+          result.add(name);
+    }
 
     if (content != null)
       result.addAll(content.keySet());
@@ -291,6 +314,9 @@ public class ResultInternal implements Result {
     // $similarity is always available as a special property
     if ("$similarity".equals(propName))
       return true;
+
+    if (tombstones != null && tombstones.contains(propName))
+      return false;
 
     if (element != null && element.has(propName))
       return true;
