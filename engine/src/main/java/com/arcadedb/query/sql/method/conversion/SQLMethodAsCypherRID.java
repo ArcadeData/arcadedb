@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
 /**
- * Converts a record/RID into the numeric (Long) form used by the native OpenCypher engine's {@code id()} function, so SQL queries can return values that round-trip with Cypher. The encoding matches {@link IdFunction#encodeRidAsLong(RID)}: bucketId in the upper 32 bits, offset in the lower 32 bits.
+ * Converts a record/RID into the numeric (Long) form used by the native OpenCypher engine's {@code id()} function, so SQL queries can return values that round-trip with Cypher. The encoding matches {@link IdFunction#encodeRidAsLong(RID)}: the bucketId in the upper bits and the offset in the lower bits, with the split governed by {@code arcadedb.opencypher.idBucketBits}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

@@ -370,6 +370,15 @@ public enum GlobalConfiguration {
       directory and path traversal (../) is blocked. Empty string means no restriction.""",
       String.class, ""),
 
+  OPENCYPHER_ID_BUCKET_BITS("arcadedb.opencypher.idBucketBits", SCOPE.JVM,
+      """
+      Number of bits reserved for the bucketId when packing a RID into the numeric value returned by the OpenCypher id() function (and SQL's .asCypherRID() method). \
+      Out of the 63 usable bits (the sign bit is always kept clear to preserve the Neo4j id(n) >= 0 semantics), this many go to the bucketId and the rest to the \
+      record position within the bucket. The default of 16 allows up to 65536 buckets and ~1.4e14 positions per bucket, covering the vast majority of use cases. \
+      Increase it for databases with many buckets, decrease it for buckets holding a very high number of records. Must be between 1 and 31. \
+      Changing this value alters the numeric id() output, so encode and decode must use the same setting.""",
+      Integer.class, 16, integerRangeAsStrings(1, 31)),
+
   // COMMAND
   COMMAND_TIMEOUT("arcadedb.command.timeout", SCOPE.DATABASE, "Default timeout for commands (in ms)", Long.class, 0),
 
@@ -518,6 +527,11 @@ public enum GlobalConfiguration {
 
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
       "development", Set.of((Object[]) new String[]{"development", "test", "production"})),
+
+  SERVER_STUDIO_ENABLED("arcadedb.server.studioEnabled", SCOPE.SERVER,
+      "Force-enable the Studio web tool (static content) even when the server runs in 'production' mode. In 'development' and "
+          + "'test' mode Studio is always served; in 'production' mode it is disabled by default and this setting can re-enable it",
+      Boolean.class, false),
 
   // Metrics
   SERVER_METRICS("arcadedb.serverMetrics", SCOPE.SERVER, "True to enable metrics", Boolean.class, true),
@@ -1010,6 +1024,17 @@ public enum GlobalConfiguration {
     else
       value = defValue;
     explicitlySet = false;
+  }
+
+  /**
+   * Builds the set of allowed values for an integer option constrained to the inclusive range {@code [fromInclusive, toInclusive]}. The values are stored as
+   * strings because {@link #setValue(Object)} validates against {@code value.toString()}.
+   */
+  private static Set<Object> integerRangeAsStrings(final int fromInclusive, final int toInclusive) {
+    final Set<Object> set = new HashSet<>();
+    for (int i = fromInclusive; i <= toInclusive; i++)
+      set.add(Integer.toString(i));
+    return set;
   }
 
   public static void dumpConfiguration(final PrintStream out) {
