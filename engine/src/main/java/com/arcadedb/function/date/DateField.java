@@ -24,6 +24,7 @@ import java.time.Instant;
 import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.temporal.WeekFields;
+import java.util.Locale;
 
 /**
  * date.field(timestamp, field) - Extract a field from timestamp.
@@ -57,7 +58,7 @@ public class DateField extends AbstractDateFunction {
       return null;
 
     final long timestamp = toMillis(args[0]);
-    final String field = args[1] != null ? args[1].toString().toLowerCase() : "year";
+    final String field = args[1] != null ? args[1].toString().toLowerCase(Locale.ROOT) : "year";
 
     final ZonedDateTime dateTime = Instant.ofEpochMilli(timestamp).atZone(ZoneId.systemDefault());
 

@@ -23,6 +23,7 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.text.Normalizer;
+import java.util.Locale;
 
 /**
  * normalize(string, [normalForm]) - returns the given string normalized using the specified normal form.
@@ -47,7 +48,7 @@ public class NormalizeFunction implements StatelessFunction {
     final String input = args[0].toString();
     final Normalizer.Form form;
     if (args.length > 1 && args[1] != null) {
-      final String formName = args[1].toString().toUpperCase();
+      final String formName = args[1].toString().toUpperCase(Locale.ROOT);
       form = switch (formName) {
         case "NFC" -> Normalizer.Form.NFC;
         case "NFD" -> Normalizer.Form.NFD;

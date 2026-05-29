@@ -22,6 +22,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Locale;
+
 /**
  * Calculates approximate distance between quantized vectors without full dequantization.
  * Supports two modes:
@@ -67,7 +69,7 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
     // Parse type
     final String typeStr;
     if (typeObj instanceof String str) {
-      typeStr = str.toUpperCase();
+      typeStr = str.toUpperCase(Locale.ROOT);
     } else {
       throw new CommandSQLParsingException("Type must be a string, found: " + typeObj.getClass().getSimpleName());
     }

@@ -25,6 +25,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneOffset;
 import java.util.Date;
+import java.util.Locale;
 
 /**
  * SQL function: time_bucket(interval_string, timestamp)
@@ -77,7 +78,7 @@ public class SQLFunctionTimeBucket extends SQLFunctionConfigurableAbstract {
       throw new IllegalArgumentException("Invalid time_bucket interval: '" + interval + "'");
 
     final long value = Long.parseLong(interval.substring(0, unitStart));
-    final String unit = interval.substring(unitStart).trim().toLowerCase();
+    final String unit = interval.substring(unitStart).trim().toLowerCase(Locale.ROOT);
 
     return switch (unit) {
       case "s" -> value * 1000L;

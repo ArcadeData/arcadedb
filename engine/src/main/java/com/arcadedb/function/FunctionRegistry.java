@@ -22,6 +22,7 @@ import com.arcadedb.log.LogManager;
 
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -68,7 +69,7 @@ public final class FunctionRegistry {
    * @return true if registered successfully, false if a function with the same name already exists
    */
   public static boolean register(final Function function) {
-    final String name = function.getName().toLowerCase();
+    final String name = function.getName().toLowerCase(Locale.ROOT);
     final Function existing = FUNCTIONS.putIfAbsent(name, function);
     if (existing != null) {
       LogManager.instance().log(FunctionRegistry.class, Level.WARNING,
@@ -84,7 +85,7 @@ public final class FunctionRegistry {
    * @param function the function to register
    */
   public static void registerOrReplace(final Function function) {
-    final String name = function.getName().toLowerCase();
+    final String name = function.getName().toLowerCase(Locale.ROOT);
     FUNCTIONS.put(name, function);
   }
 
@@ -167,7 +168,7 @@ public final class FunctionRegistry {
    * @return the normalized name (lowercase, without apoc. prefix)
    */
   public static String normalizeApocName(final String name) {
-    final String lowerName = name.toLowerCase();
+    final String lowerName = name.toLowerCase(Locale.ROOT);
     if (lowerName.startsWith(APOC_PREFIX)) {
       return lowerName.substring(APOC_PREFIX.length());
     }

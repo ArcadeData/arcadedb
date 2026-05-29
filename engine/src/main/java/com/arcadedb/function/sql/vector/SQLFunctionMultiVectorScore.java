@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -76,7 +77,7 @@ public class SQLFunctionMultiVectorScore extends SQLFunctionVectorAbstract {
     // Parse method
     final String methodStr;
     if (methodObj instanceof String str) {
-      methodStr = str.toUpperCase();
+      methodStr = str.toUpperCase(Locale.ROOT);
     } else {
       throw new CommandSQLParsingException("Method must be a string, found: " + methodObj.getClass().getSimpleName());
     }
