@@ -22,9 +22,18 @@ The correct guard is `content.containsKey(name)`, which is what the two-arg over
 
 ## Fix Applied
 
-Changed the guard in `getProperty(String name)` from `!content.isEmpty()` to `content.containsKey(name)`. This aligns both overloads and closes the fall-through loophole after `removeProperty`.
+Added a lazy-initialised `Set<String> tombstones` field. When `removeProperty(name)` is called on a result that has a backing element, the name is added to tombstones. All read paths check tombstones first:
 
-The semantics are now: if content holds the key (even as a null value), use content; otherwise fall through to element.
+- `getProperty(name)` - if tombstoned, return null before any content/element check
+- `getProperty(name, defaultValue)` - if tombstoned, return defaultValue
+- `getElementProperty(name)` - if tombstoned, return null
+- `hasProperty(name)` - if tombstoned, return false
+- `getPropertyNames()` - element property names filtered to exclude tombstoned keys
+- `toMap()` - when tombstones are present, builds a merged view: element.toMap() minus tombstoned keys, overlaid with content entries
+
+`setProperty(name, value)` lifts the tombstone when a key is re-set.
+
+The `!content.isEmpty()` guard in the single-arg `getProperty` is intentionally preserved (not replaced with `containsKey`) because projection mode populates content with all non-excluded fields - replacing it breaks `SELECT *, !field` exclusion queries that rely on the projection-mode semantics.
 
 ## Tests Added
 

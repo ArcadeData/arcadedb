@@ -296,9 +296,12 @@ public class ResultInternal implements Result {
       result.add("$similarity");
 
     if (element != null) {
-      for (final String name : element.getPropertyNames())
-        if (tombstones == null || !tombstones.contains(name))
-          result.add(name);
+      if (tombstones == null || tombstones.isEmpty())
+        result.addAll(element.getPropertyNames());
+      else
+        for (final String name : element.getPropertyNames())
+          if (!tombstones.contains(name))
+            result.add(name);
     }
 
     if (content != null)
@@ -335,7 +338,19 @@ public class ResultInternal implements Result {
 
   @Override
   public Map<String, Object> toMap() {
-    return element != null ? element.toMap() : content;
+    if (element == null)
+      return content;
+
+    if (tombstones == null || tombstones.isEmpty())
+      return element.toMap();
+
+    // When tombstones are present, build a merged view: element properties minus tombstones,
+    // overlaid with any content overrides.
+    final Map<String, Object> merged = new LinkedHashMap<>(element.toMap());
+    merged.keySet().removeAll(tombstones);
+    if (content != null)
+      merged.putAll(content);
+    return merged;
   }
 
   @Override
