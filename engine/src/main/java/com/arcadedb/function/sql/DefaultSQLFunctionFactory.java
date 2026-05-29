@@ -64,6 +64,7 @@ import com.arcadedb.function.sql.graph.SQLFunctionInE;
 import com.arcadedb.function.sql.graph.SQLFunctionInV;
 import com.arcadedb.function.sql.graph.SQLFunctionOut;
 import com.arcadedb.function.sql.graph.SQLFunctionOutE;
+import com.arcadedb.function.sql.graph.SQLFunctionCypherRID;
 import com.arcadedb.function.sql.graph.SQLFunctionOutV;
 import com.arcadedb.function.sql.graph.SQLFunctionShortestPath;
 import com.arcadedb.function.sql.math.SQLFunctionAbsoluteValue;
@@ -235,6 +236,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionOutE.NAME, SQLFunctionOutE.class);
     register(SQLFunctionOutV.NAME, SQLFunctionOutV.class);
     register(SQLFunctionShortestPath.NAME, SQLFunctionShortestPath.class);
+    register(SQLFunctionCypherRID.NAME, new SQLFunctionCypherRID());
 
     // Math
     register(SQLFunctionAbsoluteValue.NAME, SQLFunctionAbsoluteValue.class);

@@ -1262,8 +1262,7 @@ public class SelectExecutionPlanner {
     } else if (target.getStatement() != null) {
       handleSubqueryAsTarget(info.fetchExecutionPlan, maybePushWhereIntoTraverse(target.getStatement(), info), context);
     } else if (target.getFunctionCall() != null) {
-      //        handleFunctionCallAsTarget(result, target.getFunctionCall(), context);//TODO
-      throw new CommandExecutionException("function call as target is not supported yet");
+      handleFunctionCallAsTarget(info.fetchExecutionPlan, target.getFunctionCall(), context);
     } else if (target.getInputParam() != null) {
       handleInputParamAsTarget(info.fetchExecutionPlan, info.buckets, info, target.getInputParam(), context);
     } else if (target.getInputParams() != null && !target.getInputParams().isEmpty()) {
@@ -1611,6 +1610,39 @@ public class SelectExecutionPlanner {
       actualRids.add(rid.toRecordId((Result) null, context));
 
     plan.chain(new FetchFromRidsStep(actualRids, context));
+  }
+
+  /**
+   * Resolves a function call used as the FROM/UPDATE/DELETE target (e.g. {@code SELECT FROM cypherRID(:id)}). The function is evaluated once and its result -
+   * a record, a RID, or a collection of them - is turned into the RID list to fetch in O(1). A function that does not return record(s) is rejected with a clear
+   * error.
+   */
+  private void handleFunctionCallAsTarget(final SelectExecutionPlan plan, final FunctionCall functionCall,
+      final CommandContext context) {
+    final Object value = functionCall.execute(null, context);
+
+    if (value == null) {
+      plan.chain(new EmptyStep(context));
+      return;
+    }
+
+    final List<RID> rids = new ArrayList<>();
+    final Iterator<?> iterator = MultiValue.getMultiValueIterator(value);
+    while (iterator.hasNext()) {
+      final Object item = iterator.next();
+      if (item == null)
+        continue;
+      if (item instanceof Identifiable identifiable && identifiable.getIdentity() != null)
+        rids.add(identifiable.getIdentity());
+      else
+        throw new CommandExecutionException(
+            "Function '" + functionCall.getName().getStringValue() + "' used as target did not return a record or RID, but: " + item);
+    }
+
+    if (rids.isEmpty())
+      plan.chain(new EmptyStep(context));
+    else
+      plan.chain(new FetchFromRidsStep(rids, context));
   }
 
   private static void handleExpand(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext context) {

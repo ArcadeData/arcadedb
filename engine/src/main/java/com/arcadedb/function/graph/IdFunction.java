@@ -19,6 +19,7 @@
 package com.arcadedb.function.graph;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
@@ -79,15 +80,22 @@ public class IdFunction implements StatelessFunction {
   }
 
   /**
-   * Reverses {@link #encodeRidAsLong(RID)} into the canonical {@code #bucketId:offset} string form, using the same bit split configured by
-   * {@link GlobalConfiguration#OPENCYPHER_ID_BUCKET_BITS}. Used by lookup paths that need to resolve a Long-encoded RID back to a record (e.g.
-   * {@code MATCH (n) WHERE id(n) = $longId}).
+   * Reverses {@link #encodeRidAsLong(RID)} into a native {@link RID}, using the same bit split configured by {@link GlobalConfiguration#OPENCYPHER_ID_BUCKET_BITS}.
+   * Lets a Cypher-style numeric id be resolved back to a record in O(1) via {@code lookupByRID} (e.g. the SQL {@code cypherRID()} function or
+   * {@code MATCH (n) WHERE id(n) = $longId}). A valid encoded id is always non-negative (the sign bit is reserved); callers that accept untrusted input should
+   * reject negative values before calling this.
    */
-  public static String decodeLongToRidString(final long encoded) {
+  public static RID decodeLongToRid(final BasicDatabase database, final long encoded) {
     final int bucketBits = GlobalConfiguration.OPENCYPHER_ID_BUCKET_BITS.getValueAsInteger();
     final int positionBits = 63 - bucketBits;
-    final int bucketId = (int) (encoded >>> positionBits);
-    final long position = encoded & ((1L << positionBits) - 1);
-    return "#" + bucketId + ":" + position;
+    return RID.create(database, (int) (encoded >>> positionBits), encoded & ((1L << positionBits) - 1));
+  }
+
+  /**
+   * Reverses {@link #encodeRidAsLong(RID)} into the canonical {@code #bucketId:offset} string form. Used by lookup paths that resolve a Long-encoded RID back to
+   * a record (e.g. {@code MATCH (n) WHERE id(n) = $longId}).
+   */
+  public static String decodeLongToRidString(final long encoded) {
+    return decodeLongToRid(null, encoded).toString();
   }
 }

@@ -1754,6 +1754,21 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   }
 
   /**
+   * FROM target given as a function call, e.g. {@code SELECT FROM cypherRID(:id)}. The function is evaluated at execution time and its result (a record, RID, or
+   * collection of them) is used as the source.
+   */
+  @Override
+  public FromItem visitFromFunctionCall(final SQLParser.FromFunctionCallContext ctx) {
+    final FromItem fromItem = new FromItem(-1);
+    fromItem.functionCall = (FunctionCall) visit(ctx.functionCall());
+
+    if (ctx.identifier() != null)
+      fromItem.alias = (Identifier) visit(ctx.identifier());
+
+    return fromItem;
+  }
+
+  /**
    * WHERE clause visitor.
    * Maps to WhereClause which contains a BooleanExpression.
    */
