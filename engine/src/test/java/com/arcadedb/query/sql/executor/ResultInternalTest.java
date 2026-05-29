@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.TestHelper;
+
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -70,5 +72,89 @@ class ResultInternalTest {
     // Test intermediate value
     result.setSimilarity(0.5f);
     assertThat(result.getSimilarity()).isEqualTo(0.5f);
+  }
+
+  /**
+   * Regression test for issue #4398: after removeProperty empties content of a specific key,
+   * getProperty must not fall through to the backing element and resurface the original value.
+   */
+  @Test
+  void getPropertyAfterRemoveDoesNotFallThroughToElement() throws Exception {
+    TestHelper.executeInNewDatabase(database -> {
+      database.getSchema().createDocumentType("Person");
+      final var doc = database.newDocument("Person");
+      doc.set("name", "Alice");
+
+      final ResultInternal result = new ResultInternal();
+      result.setElement(doc);
+      // Override in content layer
+      result.setProperty("name", "Bob");
+      assertThat(result.<String>getProperty("name")).isEqualTo("Bob");
+
+      // After removal, the element value must NOT resurface
+      result.removeProperty("name");
+      assertThat(result.<String>getProperty("name")).isNull();
+    });
+  }
+
+  /**
+   * When content holds the key, its value shadows the element even when another key is also present.
+   */
+  @Test
+  void getPropertyUsesContentWhenKeyPresent() throws Exception {
+    TestHelper.executeInNewDatabase(database -> {
+      database.getSchema().createDocumentType("Item");
+      final var doc = database.newDocument("Item");
+      doc.set("color", "red");
+
+      final ResultInternal result = new ResultInternal();
+      result.setElement(doc);
+      result.setProperty("color", "blue");
+      result.setProperty("extra", "value"); // another key keeps content non-empty
+
+      assertThat(result.<String>getProperty("color")).isEqualTo("blue");
+    });
+  }
+
+  /**
+   * A key absent from content still falls through to the backing element correctly.
+   */
+  @Test
+  void getPropertyFallsThroughToElementWhenContentDoesNotContainKey() throws Exception {
+    TestHelper.executeInNewDatabase(database -> {
+      database.getSchema().createDocumentType("Widget");
+      final var doc = database.newDocument("Widget");
+      doc.set("size", "large");
+
+      final ResultInternal result = new ResultInternal();
+      result.setElement(doc);
+      // content is empty - no setProperty call
+
+      assertThat(result.<String>getProperty("size")).isEqualTo("large");
+    });
+  }
+
+  /**
+   * Regression: with other keys present in content, accessing a removed key must return null,
+   * not the element value (the original isEmpty-guard bug allowed fall-through here).
+   */
+  @Test
+  void getPropertyDoesNotFallThroughWhenContentHasOtherKeys() throws Exception {
+    TestHelper.executeInNewDatabase(database -> {
+      database.getSchema().createDocumentType("Node");
+      final var doc = database.newDocument("Node");
+      doc.set("label", "original");
+
+      final ResultInternal result = new ResultInternal();
+      result.setElement(doc);
+      result.setProperty("label", "overridden");
+      result.setProperty("unrelated", 42); // keeps content non-empty after removal
+
+      result.removeProperty("label");
+
+      // With the old isEmpty guard, "label" would return "original" because
+      // content is still non-empty (contains "unrelated"). The fix uses containsKey.
+      assertThat(result.<String>getProperty("label")).isNull();
+    });
   }
 }
