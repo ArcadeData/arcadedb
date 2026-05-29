@@ -30,7 +30,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.util.ArrayList;
-import java.util.Date;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -127,7 +127,7 @@ class TimeSeriesAccuracyTest {
     assertThat(results).hasSize(3);
 
     // Sort by hour to ensure deterministic order
-    results.sort((a, b) -> ((Date) a.getProperty("hour")).compareTo((Date) b.getProperty("hour")));
+    results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     // Bucket 0
     assertBucketAggregates(results.get(0), BUCKET_0_START, BUCKET_0_END);
@@ -185,7 +185,7 @@ class TimeSeriesAccuracyTest {
         max(value) AS max_val, avg(value) AS avg_val, count(*) AS cnt \
         FROM Sensor GROUP BY hour ORDER BY hour""");
     final List<Result> sqlResults = collectResults(rs);
-    sqlResults.sort((a, b) -> ((Date) a.getProperty("hour")).compareTo((Date) b.getProperty("hour")));
+    sqlResults.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     // Compare API vs SQL for each bucket
     final List<Long> bucketTimestamps = apiResult.getBucketTimestamps();

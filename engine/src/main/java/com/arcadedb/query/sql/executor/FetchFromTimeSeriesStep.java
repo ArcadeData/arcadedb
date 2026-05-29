@@ -24,9 +24,11 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.utility.DateUtils;
 
 import java.io.IOException;
-import java.util.Date;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Iterator;
 import java.util.List;
 
@@ -109,9 +111,13 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
               final ColumnDefinition col = columns.get(i);
               Object value = row[i];
 
-              // Convert timestamp long to Date for SQL compatibility
+              // Issue #4385: expose the stored millisecond timestamp as a LocalDateTime (the engine's
+              // standard DATETIME representation) instead of a java.util.Date. A java.util.Date is
+              // formatted by the result JSON serializer with the date-only pattern, truncating the
+              // value to the day; a temporal keeps the full date-time with its sub-second precision.
               if (col.getRole() == ColumnDefinition.ColumnRole.TIMESTAMP && value instanceof Long)
-                value = new Date((Long) value);
+                value = DateUtils.dateTime(context.getDatabase(), (Long) value, ChronoUnit.MILLIS, LocalDateTime.class,
+                    ChronoUnit.MILLIS);
 
               result.setProperty(col.getName(), value);
             }
