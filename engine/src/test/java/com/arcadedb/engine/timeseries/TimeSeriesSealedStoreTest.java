@@ -373,4 +373,59 @@ class TimeSeriesSealedStoreTest {
       assertThat((long) results.get(0)[0]).isEqualTo(5000L);
     }
   }
+
+  /**
+   * Regression for HA sealed-store replication (issue #4382): a sealed file captured on the leader via
+   * {@link TimeSeriesSealedStore#readWholeSealedFile()} can be installed verbatim on another node via
+   * {@link TimeSeriesSealedStore#installSealedFileBytes(byte[])}, the install is idempotent (re-applying
+   * the same bytes is a no-op), and installing a newer (larger) image overwrites the older one.
+   */
+  @Test
+  void installSealedFileBytesIsIdempotentAndOverwrites() throws Exception {
+    final String sourcePath = "target/databases/TimeSeriesSealedStoreTest/source";
+    final byte[] sealedV1;
+    final byte[] sealedV2;
+
+    // Build a "leader" sealed store with one block, capture its bytes (V1), then add a second block (V2).
+    try (final TimeSeriesSealedStore source = new TimeSeriesSealedStore(sourcePath, columns)) {
+      source.appendBlock(2, 1000L, 2000L, new byte[][] {
+          DeltaOfDeltaCodec.encode(new long[] { 1000L, 2000L }),
+          DictionaryCodec.encode(new String[] { "A", "B" }),
+          GorillaXORCodec.encode(new double[] { 1.0, 2.0 })
+      }, new double[] { Double.NaN, Double.NaN, 1.0 }, new double[] { Double.NaN, Double.NaN, 2.0 },
+          new double[] { Double.NaN, Double.NaN, 3.0 }, null);
+      source.flushHeader();
+      sealedV1 = source.readWholeSealedFile();
+
+      source.appendBlock(2, 3000L, 4000L, new byte[][] {
+          DeltaOfDeltaCodec.encode(new long[] { 3000L, 4000L }),
+          DictionaryCodec.encode(new String[] { "C", "D" }),
+          GorillaXORCodec.encode(new double[] { 3.0, 4.0 })
+      }, new double[] { Double.NaN, Double.NaN, 3.0 }, new double[] { Double.NaN, Double.NaN, 4.0 },
+          new double[] { Double.NaN, Double.NaN, 7.0 }, null);
+      source.flushHeader();
+      sealedV2 = source.readWholeSealedFile();
+    }
+
+    // A "follower" store that starts empty, then installs V1.
+    try (final TimeSeriesSealedStore follower = new TimeSeriesSealedStore(TEST_PATH, columns)) {
+      assertThat(follower.getBlockCount()).isZero();
+
+      follower.installSealedFileBytes(sealedV1);
+      assertThat(follower.getBlockCount()).isEqualTo(1);
+      assertThat(follower.scanRange(0L, 10000L, null, null)).hasSize(2);
+      assertThat(follower.readWholeSealedFile()).isEqualTo(sealedV1);
+
+      // Idempotent re-apply of the same image: state unchanged.
+      follower.installSealedFileBytes(sealedV1);
+      assertThat(follower.getBlockCount()).isEqualTo(1);
+      assertThat(follower.scanRange(0L, 10000L, null, null)).hasSize(2);
+
+      // Installing the newer image overwrites it (ordered Raft replay ships V2 after V1).
+      follower.installSealedFileBytes(sealedV2);
+      assertThat(follower.getBlockCount()).isEqualTo(2);
+      assertThat(follower.scanRange(0L, 10000L, null, null)).hasSize(4);
+      assertThat(follower.readWholeSealedFile()).isEqualTo(sealedV2);
+    }
+  }
 }

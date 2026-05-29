@@ -834,6 +834,15 @@ public enum GlobalConfiguration {
       If the transfer stalls beyond this duration, the connection is force-closed to free the semaphore slot.""",
       Long.class, 300_000L),
 
+  HA_TS_MAX_SEALED_INLINE_SIZE("arcadedb.ha.tsMaxSealedInlineSize", SCOPE.SERVER,
+      """
+      Maximum size in bytes of a TimeSeries sealed-store file that may be shipped inline inside a single \
+      Raft SCHEMA_ENTRY during compaction. When the projected sealed-store size would exceed this cap, the \
+      leader skips compacting that shard (data stays in the fully replicated mutable bucket) instead of \
+      producing an entry too large for the Raft transport. Kept below the Raft message size cap (64MB) with \
+      headroom for the schema JSON and the mutable-bucket clear WAL.""",
+      Long.class, 48 * 1024 * 1024L),
+
   HA_SNAPSHOT_WATCHDOG_TIMEOUT("arcadedb.ha.snapshotWatchdogTimeout", SCOPE.SERVER,
       """
       Delay in milliseconds before the snapshot-gap watchdog triggers a download. \

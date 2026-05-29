@@ -146,6 +146,13 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     if (tmpFile.exists() && !tmpFile.delete())
       throw new IOException("Failed to delete stale temporary file: " + tmpFile.getAbsolutePath());
 
+    // Clean up a stale .incoming file left by an HA sealed-blob install that crashed before the
+    // atomic move (issue #4382). The live .ts.sealed below is authoritative; the Raft entry that
+    // produced the .incoming will be re-applied on catch-up.
+    final File incomingFile = new File(basePath + ".ts.sealed.incoming");
+    if (incomingFile.exists() && !incomingFile.delete())
+      throw new IOException("Failed to delete stale incoming file: " + incomingFile.getAbsolutePath());
+
     final File f = new File(basePath + ".ts.sealed");
     final boolean exists = f.exists();
     this.indexFile = new RandomAccessFile(f, "rw");
@@ -1471,6 +1478,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     directoryLock.readLock().lock();
     try {
       return blockDirectory.size();
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Returns the current on-disk size of the sealed-store file in bytes. Used by the HA compaction
+   * path to decide whether the rewritten sealed store would be too large to ship inline in a single
+   * Raft entry (issue #4382).
+   */
+  public long getFileSizeBytes() throws IOException {
+    directoryLock.readLock().lock();
+    try {
+      return indexFile.length();
     } finally {
       directoryLock.readLock().unlock();
     }
