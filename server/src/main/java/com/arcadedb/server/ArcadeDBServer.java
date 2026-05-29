@@ -242,6 +242,21 @@ public class ArcadeDBServer {
 
     pluginManager.startPlugins(ServerPlugin.PluginInstallationPriority.AFTER_HTTP_ON);
 
+    // HA WAS REQUESTED (EXPLICITLY VIA ha.enabled=true OR IMPLICITLY VIA A NON-BLANK ha.serverList) BUT NO
+    // HAServerPlugin REGISTERED ITSELF. THE MOST COMMON CAUSE FOR EMBEDDED DEPLOYMENTS IS A MISSING
+    // arcadedb-ha-raft DEPENDENCY: SINCE THE APACHE RATIS MIGRATION THE HA IMPLEMENTATION LIVES IN A
+    // SEPARATE MODULE AND IS DISCOVERED VIA ServiceLoader, SO EMBEDDING arcadedb-server ALONE NO LONGER
+    // ENABLES HA. WARN LOUDLY INSTEAD OF SILENTLY RUNNING STANDALONE.
+    if ((configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) || configuration.isHAImplicitlyEnabled())
+        && haServer == null) {
+      final String haWarning = "High availability was requested but no HA plugin was found on the classpath. "
+          + "The node will run STANDALONE (no replication). Since the Apache Ratis migration the HA implementation "
+          + "is in the separate 'arcadedb-ha-raft' module: add the 'arcadedb-ha-raft' dependency to your "
+          + "(embedded) application, or use the official server distribution/Docker image which bundles it.";
+      LogManager.instance().log(this, Level.WARNING, haWarning);
+      getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "HA", null, haWarning);
+    }
+
     loadDefaultDatabases();
 
     // RELOAD DATABASE IF A PLUGIN REGISTERED A NEW DATABASE (LIKE THE GREMLIN SERVER)
