@@ -290,11 +290,10 @@ public class EdgeLinkedList {
     EdgeSegment current = lastSegment;
     while (current != null) {
       final EdgeSegment next = current.getPrevious();
-      int deleted = 0;
-      int segDeleted;
-      while ((segDeleted = current.removeVertex(vertexRID)) > 0)
-        deleted += segDeleted;
-      if (deleted > 0) {
+      boolean deleted = false;
+      while (current.removeVertex(vertexRID) > 0)
+        deleted = true;
+      if (deleted) {
         final boolean segmentWillBeDeleted = prevBrowsed != null && current.isEmpty() && next != null;
         updateSegment(current, prevBrowsed);
         if (!segmentWillBeDeleted)
