@@ -1155,15 +1155,24 @@ public class MergeStep extends AbstractExecutionStep {
     // Ensure edge type exists (Cypher auto-creates types)
     context.getDatabase().getSchema().getOrCreateEdgeType(type);
 
-    final MutableEdge edge = fromVertex.newEdge(type, toVertex);
-
+    // Evaluate edge properties BEFORE creating the edge so they are passed to newEdge() and set
+    // before the internal save()/validation. Otherwise edges with mandatory properties fail
+    // validation inside newEdge() (issue #4413).
+    final Object[] edgeProperties;
     if (relPattern.hasProperties()) {
       final Map<String, Object> evaluatedProperties = evaluateProperties(relPattern.getProperties(), result);
-      setProperties(edge, evaluatedProperties);
-    }
+      final List<Object> keyValues = new ArrayList<>(evaluatedProperties.size() * 2);
+      for (final Map.Entry<String, Object> entry : evaluatedProperties.entrySet()) {
+        keyValues.add(entry.getKey());
+        keyValues.add(TemporalUtil.toCoreJavaType(entry.getValue()));
+      }
+      edgeProperties = keyValues.toArray();
+    } else
+      edgeProperties = null;
 
-    edge.save();
-    return edge;
+    return edgeProperties != null
+        ? fromVertex.newEdge(type, toVertex, edgeProperties)
+        : fromVertex.newEdge(type, toVertex);
   }
 
   /**

@@ -406,21 +406,25 @@ public class CreateStep extends AbstractExecutionStep {
     if (!context.getDatabase().getSchema().existsType(type))
       context.getDatabase().getSchema().getOrCreateEdgeType(type);
 
-    final MutableEdge edge = fromVertex.newEdge(type, toVertex);
-
-    // Set properties from pattern
+    // Evaluate edge properties BEFORE creating the edge so they are passed to newEdge() and set
+    // before the internal save()/validation. Otherwise edges with mandatory properties fail
+    // validation inside newEdge() (issue #4413).
+    final long startProps = context.isProfiling() ? System.nanoTime() : 0;
+    final Object[] edgeProperties;
     if (relPattern.hasProperties()) {
-      final long startProps = context.isProfiling() ? System.nanoTime() : 0;
       if (relPattern.getPropertiesParameterName() != null)
-        setPropertiesFromParameter(edge, relPattern.getPropertiesParameterName());
+        edgeProperties = buildPropertiesFromParameter(relPattern.getPropertiesParameterName());
       else
-        setPropertiesOnEdge(edge, relPattern.getProperties(), currentResult);
-      if (context.isProfiling())
-        propertyEvaluationTime += (System.nanoTime() - startProps);
-    }
+        edgeProperties = buildEdgeProperties(relPattern.getProperties(), currentResult);
+    } else
+      edgeProperties = null;
+    if (context.isProfiling())
+      propertyEvaluationTime += (System.nanoTime() - startProps);
 
     final long startSave = context.isProfiling() ? System.nanoTime() : 0;
-    edge.save();
+    final MutableEdge edge = edgeProperties != null
+        ? fromVertex.newEdge(type, toVertex, edgeProperties)
+        : fromVertex.newEdge(type, toVertex);
     if (context.isProfiling()) {
       saveOperationTime += (System.nanoTime() - startSave);
       edgeCount++;
@@ -488,13 +492,16 @@ public class CreateStep extends AbstractExecutionStep {
   }
 
   /**
-   * Sets properties on an edge from a property map.
+   * Builds an alternating key/value array of edge properties from a property map, ready to be passed
+   * to {@link com.arcadedb.graph.Vertex#newEdge}. Evaluating and passing the properties at edge
+   * creation time ensures mandatory-property validation (performed inside newEdge's save) sees them.
    * Property values can be:
    * - Literal values (already evaluated)
    * - ParameterReference objects (to be resolved from context parameters)
    * - Expression objects (to be evaluated in the context of the current result)
    */
-  private void setPropertiesOnEdge(final MutableEdge edge, final Map<String, Object> properties, final Result currentResult) {
+  private Object[] buildEdgeProperties(final Map<String, Object> properties, final Result currentResult) {
+    final List<Object> keyValues = new ArrayList<>(properties.size() * 2);
     for (final Map.Entry<String, Object> entry : properties.entrySet()) {
       // Intern property names to reduce string allocations in bulk operations
       final String key = entry.getKey().intern();
@@ -515,9 +522,33 @@ public class CreateStep extends AbstractExecutionStep {
       }
 
       // In Cypher, null property values are not stored
-      if (value != null)
-        edge.set(key, convertTemporalForStorage(value));
+      if (value != null) {
+        keyValues.add(key);
+        keyValues.add(convertTemporalForStorage(value));
+      }
     }
+    return keyValues.toArray();
+  }
+
+  /**
+   * Builds an alternating key/value array of properties from a parameter that resolves to a map at
+   * runtime. Used for bare parameter properties syntax (e.g., CREATE (a)-[:REL $props]->(b)).
+   */
+  @SuppressWarnings("unchecked")
+  private Object[] buildPropertiesFromParameter(final String parameterName) {
+    final Object paramValue = context.getInputParameters().get(parameterName);
+    if (!(paramValue instanceof Map))
+      return null;
+    final Map<String, Object> map = (Map<String, Object>) paramValue;
+    final List<Object> keyValues = new ArrayList<>(map.size() * 2);
+    for (final Map.Entry<String, Object> entry : map.entrySet()) {
+      final Object value = entry.getValue();
+      if (value != null) {
+        keyValues.add(entry.getKey());
+        keyValues.add(convertTemporalForStorage(value));
+      }
+    }
+    return keyValues.toArray();
   }
 
   @Override
