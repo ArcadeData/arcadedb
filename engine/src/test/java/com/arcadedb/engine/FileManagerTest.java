@@ -29,8 +29,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermission;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.util.ArrayList;
 import java.util.EnumSet;
+import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.AssertionsForClassTypes.assertThatExceptionOfType;
@@ -99,5 +103,63 @@ public class FileManagerTest {
     assertThat(fileManager.getFiles().isEmpty()).isTrue();
     // cleanup
     Files.deleteIfExists(dir);
+  }
+
+  @Test
+  void getFiles_concurrentWithNewFileId_noConcurrentModificationException(@TempDir Path dir) throws Exception {
+    // Regression test for #4371: concurrent newFileId() + getFiles() iteration must not throw CME.
+    // newFileId() adds to the backing list under its own lock; getFiles() must return a snapshot
+    // so that iterating the returned list is safe even while writers add slots concurrently.
+    final FileManager fileManager = new FileManager(dir.toFile().getAbsolutePath(), ComponentFile.MODE.READ_WRITE, Set.of());
+    final int threadCount = 8;
+    final int iterationsPerThread = 500;
+    final AtomicReference<Throwable> caughtError = new AtomicReference<>();
+    final CountDownLatch startLatch = new CountDownLatch(1);
+
+    final List<Thread> writers = new ArrayList<>();
+    for (int i = 0; i < threadCount; i++) {
+      writers.add(new Thread(() -> {
+        try {
+          startLatch.await();
+          for (int j = 0; j < iterationsPerThread; j++)
+            fileManager.newFileId();
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }));
+    }
+
+    final List<Thread> readers = new ArrayList<>();
+    for (int i = 0; i < threadCount; i++) {
+      readers.add(new Thread(() -> {
+        try {
+          startLatch.await();
+          for (int j = 0; j < iterationsPerThread; j++) {
+            // iterate the full snapshot returned by getFiles() - must not throw CME
+            for (final ComponentFile ignored : fileManager.getFiles()) {
+              // just traverse
+            }
+          }
+        } catch (final InterruptedException e) {
+          Thread.currentThread().interrupt();
+        } catch (final Throwable t) {
+          caughtError.compareAndSet(null, t);
+        }
+      }));
+    }
+
+    writers.forEach(Thread::start);
+    readers.forEach(Thread::start);
+    startLatch.countDown();
+
+    for (final Thread t : writers)
+      t.join(10_000);
+    for (final Thread t : readers)
+      t.join(10_000);
+
+    assertThat(caughtError.get())
+        .as("concurrent getFiles() iteration must not throw ConcurrentModificationException")
+        .isNull();
+    assertThat(fileManager.getFiles()).hasSize(threadCount * iterationsPerThread);
   }
 }
