@@ -22,6 +22,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Locale;
+
 /**
  * toBoolean() function - converts a value to a boolean.
  * Numbers: 0 is false, non-zero is true.
@@ -46,7 +48,7 @@ public class ToBooleanFunction implements StatelessFunction {
     if (args[0] instanceof Number)
       return ((Number) args[0]).longValue() != 0L;
     if (args[0] instanceof String) {
-      final String str = ((String) args[0]).toLowerCase();
+      final String str = ((String) args[0]).toLowerCase(Locale.ROOT);
       if ("true".equals(str))
         return Boolean.TRUE;
       else if ("false".equals(str))

@@ -22,6 +22,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Locale;
+
 /**
  * toUpper() function - converts a string to uppercase.
  */
@@ -37,6 +39,6 @@ public class ToUpperFunction implements StatelessFunction {
       throw new CommandExecutionException("toUpper() requires exactly one argument");
     if (args[0] == null)
       return null;
-    return args[0].toString().toUpperCase();
+    return args[0].toString().toUpperCase(Locale.ROOT);
   }
 }

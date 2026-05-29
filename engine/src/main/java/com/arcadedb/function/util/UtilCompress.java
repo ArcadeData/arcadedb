@@ -24,6 +24,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.zip.Deflater;
 import java.util.zip.DeflaterOutputStream;
 import java.util.zip.GZIPOutputStream;
@@ -63,7 +64,7 @@ public class UtilCompress extends AbstractUtilFunction {
       return null;
 
     final String data = args[0].toString();
-    final String algorithm = args.length > 1 && args[1] != null ? args[1].toString().toLowerCase() : "gzip";
+    final String algorithm = args.length > 1 && args[1] != null ? args[1].toString().toLowerCase(Locale.ROOT) : "gzip";
 
     try {
       final byte[] inputBytes = data.getBytes(StandardCharsets.UTF_8);

@@ -22,6 +22,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Locale;
+
 /**
  * Applies score transformation functions to reshape score distributions.
  * Supported transformations:
@@ -72,7 +74,7 @@ public class SQLFunctionVectorScoreTransform extends SQLFunctionVectorAbstract {
     // Parse transformation method
     final String methodStr;
     if (methodObj instanceof String str) {
-      methodStr = str.toUpperCase();
+      methodStr = str.toUpperCase(Locale.ROOT);
     } else {
       throw new CommandSQLParsingException("Method must be a string, found: " + methodObj.getClass().getSimpleName());
     }

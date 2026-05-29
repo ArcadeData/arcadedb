@@ -25,6 +25,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
+import java.util.Locale;
 import java.util.zip.GZIPInputStream;
 import java.util.zip.InflaterInputStream;
 
@@ -63,7 +64,7 @@ public class UtilDecompress extends AbstractUtilFunction {
       return null;
 
     final String base64Data = args[0].toString();
-    final String algorithm = args.length > 1 && args[1] != null ? args[1].toString().toLowerCase() : "gzip";
+    final String algorithm = args.length > 1 && args[1] != null ? args[1].toString().toLowerCase(Locale.ROOT) : "gzip";
 
     try {
       final byte[] compressedBytes = Base64.getDecoder().decode(base64Data);

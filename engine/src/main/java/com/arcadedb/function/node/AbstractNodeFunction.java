@@ -25,6 +25,8 @@ import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.util.Locale;
+
 /**
  * Abstract base class for node functions.
  *
@@ -77,7 +79,7 @@ public abstract class AbstractNodeFunction implements StatelessFunction {
     if (direction == null)
       return Vertex.DIRECTION.BOTH;
 
-    switch (direction.toLowerCase()) {
+    switch (direction.toLowerCase(Locale.ROOT)) {
     case "in":
     case "incoming":
       return Vertex.DIRECTION.IN;

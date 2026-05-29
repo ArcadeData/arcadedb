@@ -26,6 +26,7 @@ import java.time.ZoneId;
 import java.time.ZonedDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.Date;
+import java.util.Locale;
 
 /**
  * Abstract base class for date functions.
@@ -94,7 +95,7 @@ public abstract class AbstractDateFunction implements StatelessFunction {
     if (unit == null)
       return 1; // default to milliseconds
 
-    return switch (unit.toLowerCase()) {
+    return switch (unit.toLowerCase(Locale.ROOT)) {
       case UNIT_MS, "millis", "milliseconds" -> 1L;
       case UNIT_S, "sec", "seconds" -> 1000L;
       case UNIT_M, "min", "minutes" -> 60_000L;

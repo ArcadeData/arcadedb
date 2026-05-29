@@ -32,6 +32,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -168,7 +169,7 @@ public class SQLFunctionVectorFuse extends SQLFunctionVectorAbstract {
   }
 
   private static Strategy parseStrategy(final String raw) {
-    final String name = raw == null ? "RRF" : raw.toUpperCase();
+    final String name = raw == null ? "RRF" : raw.toUpperCase(Locale.ROOT);
     try {
       return Strategy.valueOf(name);
     } catch (final IllegalArgumentException e) {
