@@ -119,11 +119,16 @@ function renderGraphAppearanceSection(type, rid) {
   html += "</div></div>";
 
   // --- Appearance Section ---
+  var appearanceCollapsed = globalStorageLoad("graphAppearanceCollapsed", "false") === "true";
   html += "<div class='record-editor-section'>";
   html += "<div class='d-flex align-items-center justify-content-between'>";
   html += "<div class='record-editor-section-header' style='margin-bottom:0'><i class='fa fa-palette'></i> Appearance <small>(" + escapeHtml(type) + ")</small></div>";
+  html += "<div class='d-flex gap-1'>";
+  html += "<button class='btn btn-sm btn-outline-secondary record-editor-appearance-toggle' style='font-size:0.68rem; padding:1px 6px;' onclick='toggleGraphAppearanceSection()' title='Show/hide appearance'><i class='fa fa-chevron-" + (appearanceCollapsed ? "down" : "up") + "'></i></button>";
   html += "<button class='btn btn-sm btn-outline-secondary' style='font-size:0.68rem; padding:1px 6px;' onclick='resetGraphTypeStyle(\"" + escapeHtml(type).replace(/"/g, "&quot;") + "\")' title='Reset to defaults'><i class='fa fa-rotate-left'></i> Reset</button>";
-  html += "</div><div style='margin-top:10px'></div>";
+  html += "</div>";
+  html += "</div>";
+  html += "<div id='geAppearanceBody'" + (appearanceCollapsed ? " style='display:none'" : "") + "><div style='margin-top:10px'></div>";
 
   // Label
   var labelText = getOrCreateStyleTypeAttrib(type, "labelText");
@@ -208,7 +213,8 @@ function renderGraphAppearanceSection(type, rid) {
     html += "</div></div>";
   }
 
-  html += "</div>";
+  html += "</div>"; // close geAppearanceBody
+  html += "</div>"; // close record-editor-section
   return html;
 }
 
@@ -311,6 +317,20 @@ function bindGraphAppearanceEvents(type) {
       renderGraph();
     });
   }
+}
+
+function toggleGraphAppearanceSection() {
+  var body = $("#geAppearanceBody");
+  var btn = $(".record-editor-appearance-toggle i");
+  var collapsed = body.is(":visible");
+  if (collapsed) {
+    body.hide();
+    btn.removeClass("fa-chevron-up").addClass("fa-chevron-down");
+  } else {
+    body.show();
+    btn.removeClass("fa-chevron-down").addClass("fa-chevron-up");
+  }
+  globalStorageSave("graphAppearanceCollapsed", collapsed ? "true" : "false");
 }
 
 function saveRecordEditor() {
