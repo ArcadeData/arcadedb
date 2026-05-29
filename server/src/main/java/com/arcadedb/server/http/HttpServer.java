@@ -268,7 +268,9 @@ public class HttpServer implements ServerPlugin {
         .delete("/chats/{id}", aiChatsHandler)//
     );
 
-    if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())) {
+    // Studio (static content) is served in development/test mode, and in production only when explicitly force-enabled
+    if (!"production".equals(GlobalConfiguration.SERVER_MODE.getValueAsString())
+        || GlobalConfiguration.SERVER_STUDIO_ENABLED.getValueAsBoolean()) {
       routes.addPrefixPath("/", Handlers.routing().setFallbackHandler(new GetDynamicContentHandler(this)));
     }
 

@@ -280,7 +280,7 @@ public class ArcadeDBServer {
     if ("production".equals(mode))
       logProductionChecklist();
 
-    if (!"production".equals(mode)) {
+    if (!"production".equals(mode) || GlobalConfiguration.SERVER_STUDIO_ENABLED.getValueAsBoolean()) {
       final InputStream file = getClass().getClassLoader().getResourceAsStream("static/index.html");
       if (file != null) {
         final String studioHost = getStudioDisplayHost();
@@ -343,6 +343,13 @@ public class ArcadeDBServer {
     if (rootPassword != null && !rootPassword.isEmpty())
       LogManager.instance().log(this, Level.WARNING,
           "  - Root password: set via configuration [WARNING]. Consider using server-users.json instead");
+
+    // STUDIO
+    if (GlobalConfiguration.SERVER_STUDIO_ENABLED.getValueAsBoolean())
+      LogManager.instance().log(this, Level.WARNING,
+          "  - Studio web tool: force-enabled (arcadedb.server.studioEnabled=true) [WARNING]. Restrict network access to it");
+    else
+      LogManager.instance().log(this, Level.INFO, "  - Studio web tool: disabled [OK]");
   }
 
   private void createDirectories() {
