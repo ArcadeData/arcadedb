@@ -49,8 +49,10 @@ public class MathUnaryFunction implements StatelessFunction {
       return null;
     if (args[0] instanceof Number) {
       final double result = op.applyAsDouble(((Number) args[0]).doubleValue());
-      // Return integer type if the result is a whole number
-      if (result == Math.floor(result) && !Double.isInfinite(result))
+      // Return integer type only when the result is a whole number that fits in a long.
+      // Without the range guard, large doubles (e.g. 1e30) saturate to Long.MAX_VALUE on cast.
+      if (result >= Long.MIN_VALUE && result <= Long.MAX_VALUE
+          && result == Math.floor(result) && !Double.isInfinite(result))
         return (long) result;
       return result;
     }

@@ -143,29 +143,36 @@ public class BooleanSimplifier extends ExpressionRewriter {
 
   /**
    * Check if boolean expression wraps literal true.
-   * In Cypher AST, literals implement Expression, not BooleanExpression.
-   * They get wrapped in BooleanWrapperExpression when used in boolean context.
+   * Boolean literals in WHERE clauses are represented as a
+   * {@link BooleanCoercionExpression} wrapping a {@link LiteralExpression} with
+   * value {@link Boolean#TRUE}.
    */
   private boolean isWrappedTrue(final BooleanExpression expr) {
-    if (expr instanceof BooleanWrapperExpression wrapper) {
-      // Check if wrapper contains literal true
-      // Note: BooleanWrapperExpression doesn't expose inner expression yet
-      // For now, return false - this will be implemented when wrapper API is available
-      return false;
-    }
+    if (expr instanceof BooleanCoercionExpression coercion)
+      return Boolean.TRUE.equals(booleanLiteralValue(coercion));
     return false;
   }
 
   /**
    * Check if boolean expression wraps literal false.
+   * Boolean literals in WHERE clauses are represented as a
+   * {@link BooleanCoercionExpression} wrapping a {@link LiteralExpression} with
+   * value {@link Boolean#FALSE}.
    */
   private boolean isWrappedFalse(final BooleanExpression expr) {
-    if (expr instanceof BooleanWrapperExpression wrapper) {
-      // Check if wrapper contains literal false
-      // Note: BooleanWrapperExpression doesn't expose inner expression yet
-      // For now, return false - this will be implemented when wrapper API is available
-      return false;
-    }
+    if (expr instanceof BooleanCoercionExpression coercion)
+      return Boolean.FALSE.equals(booleanLiteralValue(coercion));
     return false;
+  }
+
+  /**
+   * Returns the {@link Boolean} value when the coercion wraps a boolean literal,
+   * or {@code null} otherwise.
+   */
+  private static Boolean booleanLiteralValue(final BooleanCoercionExpression coercion) {
+    final Expression inner = coercion.getExpression();
+    if (inner instanceof LiteralExpression lit && lit.getValue() instanceof Boolean b)
+      return b;
+    return null;
   }
 }
