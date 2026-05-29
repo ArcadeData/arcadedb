@@ -1159,14 +1159,10 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * lookups, no reader opens.
    */
   private long computeFileFingerprint() {
-    // Index-based walk over the FileManager's view, with a {@code size()} snapshot up front.
-    // Avoids both the {@code toArray()} allocation (one full-list copy per fingerprint compute,
-    // O(total files) bytes) and the {@code ConcurrentModificationException} risk that direct
-    // iterator-based traversal would carry: {@link FileManager} only ever appends slots or
-    // nulls them in place, never truncates, so {@code get(i)} for {@code i < snapshotSize}
-    // returns a stable value even under concurrent registerFile/dropFile. Files appended after
-    // we snapshot {@code size} are missed by this pass; the next bump of
-    // {@link FileManager#getModificationCount} will trigger a re-walk that picks them up.
+    // getFiles() returns a thread-safe snapshot of the FileManager's file list (since #4371),
+    // so iteration here is safe even though this method is called without holding mutatorLock.
+    // Files registered after the snapshot is taken are invisible to this pass; the next bump of
+    // FileManager#getModificationCount will trigger a re-walk that picks them up.
     final var files = database.getFileManager().getFiles();
     final int size = files.size();
     long count = 0L;
