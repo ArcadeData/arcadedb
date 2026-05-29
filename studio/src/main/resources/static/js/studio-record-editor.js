@@ -322,15 +322,15 @@ function bindGraphAppearanceEvents(type) {
 function toggleGraphAppearanceSection() {
   var body = $("#geAppearanceBody");
   var btn = $(".record-editor-appearance-toggle i");
-  var collapsed = body.is(":visible");
-  if (collapsed) {
+  var isVisible = body.is(":visible");
+  if (isVisible) {
     body.hide();
     btn.removeClass("fa-chevron-up").addClass("fa-chevron-down");
   } else {
     body.show();
     btn.removeClass("fa-chevron-down").addClass("fa-chevron-up");
   }
-  globalStorageSave("graphAppearanceCollapsed", collapsed ? "true" : "false");
+  globalStorageSave("graphAppearanceCollapsed", isVisible ? "true" : "false");
 }
 
 function saveRecordEditor() {
