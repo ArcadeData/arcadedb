@@ -67,7 +67,7 @@ public class MatchesCondition extends BooleanExpression {
   }
 
   private boolean matches(final Object value, final String regex, final CommandContext context) {
-    final String key = "MATCHES_" + regex.hashCode();
+    final String key = "MATCHES_" + regex;
     Pattern p = (Pattern) context.getVariable(key);
     if (p == null) {
       p = Pattern.compile(regex);
