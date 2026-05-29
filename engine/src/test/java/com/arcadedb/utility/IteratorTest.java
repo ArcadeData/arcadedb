@@ -178,6 +178,20 @@ class IteratorTest {
   }
 
   @Test
+  void multiIteratorCountEntriesWithNonResettableIterable() {
+    // Regression test for #4396: countEntries() was discarding the count
+    // returned by CollectionUtils.countEntries(iter) for non-resettable iterables.
+    final MultiIterator<String> multi = new MultiIterator<>();
+
+    // Plain Iterable backed by a non-resettable iterator (not a Collection or ResettableIterator)
+    final Iterable<String> nonResettable = () -> Arrays.asList("x", "y", "z").iterator();
+    multi.addIterator(nonResettable);
+    multi.addIterator(Arrays.asList("a", "b"));
+
+    assertThat(multi.countEntries()).isEqualTo(5);
+  }
+
+  @Test
   void multiIteratorGetBrowsed() {
     final MultiIterator<String> multi = new MultiIterator<>();
     multi.addIterator(Arrays.asList("a", "b", "c"));
