@@ -26,9 +26,11 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalTimeSeriesType;
+import com.arcadedb.utility.DateUtils;
 
 import java.io.IOException;
-import java.util.Date;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -98,7 +100,11 @@ public class AggregateFromTimeSeriesStep extends AbstractExecutionStep {
             public ResultInternal next() {
               final long bucketTs = bucketIterator.next();
               final ResultInternal row = new ResultInternal(context.getDatabase());
-              row.setProperty(timeBucketAlias, new Date(bucketTs));
+              // Issue #4385: expose the bucket timestamp as a LocalDateTime (the engine's standard
+              // DATETIME representation) rather than a java.util.Date, so the result JSON serializer
+              // keeps the full date-time instead of truncating to the day.
+              row.setProperty(timeBucketAlias,
+                  DateUtils.dateTime(context.getDatabase(), bucketTs, ChronoUnit.MILLIS, LocalDateTime.class, ChronoUnit.MILLIS));
               for (int i = 0; i < requests.size(); i++) {
                 final MultiColumnAggregationRequest req = requests.get(i);
                 final String outputAlias = requestAliasToOutputAlias.getOrDefault(req.alias(), req.alias());

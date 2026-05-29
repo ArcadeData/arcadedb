@@ -21,8 +21,13 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.JsonSerializer;
+import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -204,5 +209,39 @@ class TimeSeriesSQLTest extends TestHelper {
 
     assertThat(results).hasSize(1); // All in same hour bucket
     assertThat(((Number) results.get(0).getProperty("avg_val")).doubleValue()).isEqualTo(20.0);
+  }
+
+  /**
+   * Regression test for issue #4385: querying a TIMESERIES type returned the TIMESTAMP column
+   * truncated to a date (e.g. "2026-05-28") instead of the full date-time. The TIMESTAMP was
+   * exposed to SQL as a {@code java.util.Date}, which the result JSON serializer formats with the
+   * date-only pattern. It must be exposed as a {@code LocalDateTime} so the date-time pattern (and
+   * its sub-second precision) is preserved.
+   */
+  @Test
+  void selectTimestampKeepsTimeComponent() {
+    database.command("sql",
+        "CREATE TIMESERIES TYPE SensorReading TIMESTAMP ts TAGS (deviceId STRING) FIELDS (measureValue DOUBLE)");
+
+    // 1779950766233 ms = 2026-05-28T06:46:06.233Z, the same instant as the issue's nanosecond sample.
+    final long tsMillis = 1779950766233L;
+
+    database.transaction(() -> database.command("sql",
+        "INSERT INTO SensorReading SET ts = " + tsMillis + ", deviceId = 'd123', measureValue = 4.985"));
+
+    final ResultSet rs = database.query("sql", "SELECT FROM SensorReading");
+    assertThat(rs.hasNext()).isTrue();
+    final Result row = rs.next();
+
+    // The in-memory value must be a temporal, not a java.util.Date.
+    final Object tsValue = row.getProperty("ts");
+    assertThat(tsValue).isInstanceOf(LocalDateTime.class);
+    assertThat((LocalDateTime) tsValue)
+        .isEqualTo(LocalDateTime.ofInstant(Instant.ofEpochMilli(tsMillis), ZoneOffset.UTC));
+
+    // The serialized JSON (what the HTTP endpoint returns) must keep the time component.
+    final JSONObject json = new JsonSerializer(database).serializeResult(database, row);
+    final String tsAsString = json.get("ts").toString();
+    assertThat(tsAsString).contains("2026-05-28").contains("06:46:06");
   }
 }

@@ -25,7 +25,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
-import java.util.Date;
+import java.time.LocalDateTime;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -74,7 +74,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
     assertThat(results).hasSize(3);
 
     // Sort by hour to ensure deterministic order
-    results.sort((a, b) -> ((Date) a.getProperty("hour")).compareTo((Date) b.getProperty("hour")));
+    results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     assertThat(((Number) results.get(0).getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
     assertThat(((Number) results.get(1).getProperty("avg_temp")).doubleValue()).isCloseTo(150.0, within(0.01));
@@ -89,7 +89,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
     final List<Result> results = collectResults(rs);
     assertThat(results).hasSize(3);
 
-    results.sort((a, b) -> ((Date) a.getProperty("hour")).compareTo((Date) b.getProperty("hour")));
+    results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     // Bucket 0: avg(temp)=25, max(humidity)=65
     assertThat(((Number) results.get(0).getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
@@ -112,7 +112,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
     final List<Result> results = collectResults(rs);
     assertThat(results).hasSize(3);
 
-    results.sort((a, b) -> ((Date) a.getProperty("hour")).compareTo((Date) b.getProperty("hour")));
+    results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     assertThat(((Number) results.get(0).getProperty("cnt")).longValue()).isEqualTo(4);
     assertThat(((Number) results.get(1).getProperty("cnt")).longValue()).isEqualTo(2);
@@ -128,7 +128,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
     final List<Result> results = collectResults(rs);
     assertThat(results).hasSize(2);
 
-    results.sort((a, b) -> ((Date) a.getProperty("hour")).compareTo((Date) b.getProperty("hour")));
+    results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     assertThat(((Number) results.get(0).getProperty("avg_temp")).doubleValue()).isCloseTo(25.0, within(0.01));
     assertThat(((Number) results.get(1).getProperty("avg_temp")).doubleValue()).isCloseTo(150.0, within(0.01));
@@ -142,7 +142,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
     final List<Result> results = collectResults(rs);
     assertThat(results).hasSize(3);
 
-    results.sort((a, b) -> ((Date) a.getProperty("hour")).compareTo((Date) b.getProperty("hour")));
+    results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     assertThat(((Number) results.get(0).getProperty("sum_temp")).doubleValue()).isCloseTo(100.0, within(0.01));
     assertThat(((Number) results.get(1).getProperty("sum_temp")).doubleValue()).isCloseTo(300.0, within(0.01));
@@ -157,7 +157,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
     final List<Result> results = collectResults(rs);
     assertThat(results).hasSize(3);
 
-    results.sort((a, b) -> ((Date) a.getProperty("hour")).compareTo((Date) b.getProperty("hour")));
+    results.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     assertThat(((Number) results.get(0).getProperty("min_temp")).doubleValue()).isCloseTo(10.0, within(0.01));
     assertThat(((Number) results.get(1).getProperty("min_temp")).doubleValue()).isCloseTo(100.0, within(0.01));
@@ -206,7 +206,7 @@ class TimeSeriesAggregationPushDownTest extends TestHelper {
     final ResultSet rsPushDown = database.query("sql",
         "SELECT ts.timeBucket('1h', ts) AS hour, avg(temperature) AS avg_temp, max(temperature) AS max_temp FROM SensorData GROUP BY hour");
     final List<Result> pushDownResults = collectResults(rsPushDown);
-    pushDownResults.sort((a, b) -> ((Date) a.getProperty("hour")).compareTo((Date) b.getProperty("hour")));
+    pushDownResults.sort((a, b) -> ((LocalDateTime) a.getProperty("hour")).compareTo((LocalDateTime) b.getProperty("hour")));
 
     // Verify values match expected
     assertThat(pushDownResults).hasSize(3);
