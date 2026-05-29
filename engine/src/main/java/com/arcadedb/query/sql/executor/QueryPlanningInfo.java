@@ -38,8 +38,9 @@ import java.util.*;
 public class QueryPlanningInfo {
 
   protected Timeout timeout;
-  boolean distinct = false;
-  boolean expand   = false;
+  boolean distinct    = false;
+  boolean expand      = false;
+  String  expandAlias = null;
 
   Projection preAggregateProjection;
   Projection aggregateProjection;
@@ -85,6 +86,7 @@ public class QueryPlanningInfo {
     final QueryPlanningInfo result = new QueryPlanningInfo();
     result.distinct = this.distinct;
     result.expand = this.expand;
+    result.expandAlias = this.expandAlias;
     result.preAggregateProjection = this.preAggregateProjection;
     result.aggregateProjection = this.aggregateProjection;
     result.projection = this.projection;
