@@ -1111,6 +1111,7 @@ fromItem
     | indexIdentifier                                               # fromIndex
     | schemaIdentifier                                              # fromSchema
     | LPAREN statement RPAREN (modifier)* (AS? identifier)?         # fromSubquery
+    | functionCall (AS? identifier)?                                 # fromFunctionCall
     | identifier (modifier)* (AS? identifier)?                      # fromIdentifier
     ;
 
