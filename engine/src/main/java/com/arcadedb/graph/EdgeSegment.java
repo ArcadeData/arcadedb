@@ -57,7 +57,18 @@ public interface EdgeSegment extends Record {
 
   int removeEdge(RID edgeRID);
 
+  /**
+   * Removes <b>all</b> the entries pointing to the given vertex from this segment and returns how many were removed.
+   * Used for bulk removal (e.g. {@link EdgeLinkedList#removeVertex(RID)}). To remove a single edge by its endpoints
+   * use {@link #removeVertexFirst(RID)}.
+   */
   int removeVertex(RID vertexRID);
+
+  /**
+   * Removes only the <b>first</b> entry pointing to the given vertex (returns 0 or 1). Used to delete a single
+   * (lightweight) edge identified by its endpoints, where parallel edges to the same neighbour must not be removed.
+   */
+  int removeVertexFirst(RID vertexRID);
 
   EdgeSegment getPrevious();
 

@@ -338,6 +338,45 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
 
   @Override
   public int removeVertex(final RID rid) {
+    // REMOVES *ALL* THE ENTRIES POINTING TO THE GIVEN VERTEX (BULK REMOVAL). See removeVertexFirst() to remove a single entry.
+    int used = getUsed();
+    if (used <= CONTENT_START_POSITION)
+      return 0;
+
+    final int bucketId = rid.getBucketId();
+    final long position = rid.getPosition();
+
+    buffer.position(CONTENT_START_POSITION);
+
+    int found = 0;
+    while (buffer.position() < used) {
+      final int lastPos = buffer.position();
+
+      buffer.getNumber();
+      buffer.getNumber();
+
+      final int currVertexBucketId = (int) buffer.getNumber();
+      final long currVertexPosition = buffer.getNumber();
+
+      if (currVertexBucketId == bucketId && currVertexPosition == position) {
+        // FOUND MOVE THE ENTIRE BUFFER FROM THE NEXT ITEM TO THE CURRENT ONE
+        buffer.move(buffer.position(), lastPos, used - buffer.position());
+
+        used -= (buffer.position() - lastPos);
+        setUsed(used);
+
+        // RE-SCAN FROM THE SAME OFFSET: THE FOLLOWING ENTRY HAS BEEN SHIFTED INTO lastPos
+        buffer.position(lastPos);
+        ++found;
+      }
+    }
+
+    return found;
+  }
+
+  @Override
+  public int removeVertexFirst(final RID rid) {
+    // REMOVES ONLY THE FIRST ENTRY POINTING TO THE GIVEN VERTEX (USED TO DELETE A SINGLE EDGE BY ITS ENDPOINTS).
     int used = getUsed();
     if (used <= CONTENT_START_POSITION)
       return 0;

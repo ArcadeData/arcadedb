@@ -258,8 +258,8 @@ public class EdgeLinkedList {
         // DELETE BY EDGE RID
         deleted = current.removeEdge(rid);
       else
-        // DELETE BY VERTEX RID
-        deleted = current.removeVertex(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
+        // DELETE BY VERTEX RID: REMOVE A SINGLE ENTRY, SO PARALLEL EDGES TO THE SAME NEIGHBOUR ARE PRESERVED
+        deleted = current.removeVertexFirst(direction == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut());
 
       if (deleted > 0) {
         updateSegment(current, prevBrowsed);
@@ -286,15 +286,24 @@ public class EdgeLinkedList {
   }
 
   public void removeVertex(final RID vertexRID) {
+    // BULK REMOVAL: WALK *ALL* THE SEGMENTS REMOVING EVERY ENTRY POINTING TO THE VERTEX. A VERTEX CAN HAVE MULTIPLE EDGES
+    // TO THE SAME NEIGHBOUR SPREAD ACROSS SEGMENTS, SO STOPPING AT THE FIRST MATCH WOULD LEAVE ORPHAN REFERENCES (issue #4395).
     EdgeSegment prevBrowsed = null;
     EdgeSegment current = lastSegment;
     while (current != null) {
+      // CAPTURE THE PREVIOUS LINK BEFORE updateSegment(), WHICH MAY DELETE AND RELINK THE CURRENT SEGMENT
+      final EdgeSegment next = current.getPrevious();
+
       if (current.removeVertex(vertexRID) > 0) {
+        // TRACK WHETHER updateSegment() WILL DROP THE NOW-EMPTY SEGMENT FROM THE CHAIN
+        final boolean dropped = prevBrowsed != null && current.isEmpty() && next != null;
         updateSegment(current, prevBrowsed);
-        break;
-      }
-      prevBrowsed = current;
-      current = current.getPrevious();
+        if (!dropped)
+          prevBrowsed = current;
+      } else
+        prevBrowsed = current;
+
+      current = next;
     }
   }
 
