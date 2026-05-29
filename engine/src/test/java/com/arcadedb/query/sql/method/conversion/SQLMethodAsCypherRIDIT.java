@@ -21,6 +21,7 @@ package com.arcadedb.query.sql.method.conversion;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
+import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -84,7 +85,7 @@ class SQLMethodAsCypherRIDIT {
     }
 
     // Sanity: encoded value matches the RID we resolved above.
-    assertThat(cypherIdFromCypher).isEqualTo(((long) aliceRid.getBucketId() << 32) | (aliceRid.getPosition() & 0xFFFFFFFFL));
+    assertThat(cypherIdFromCypher).isEqualTo(IdFunction.encodeRidAsLong(aliceRid));
   }
 
   @Test
@@ -93,7 +94,7 @@ class SQLMethodAsCypherRIDIT {
         "SELECT '#10:10'.asCypherRID() AS ident")) {
       assertThat(rs.hasNext()).isTrue();
       final long encoded = rs.next().<Number>getProperty("ident").longValue();
-      assertThat(encoded).isEqualTo(((long) 10 << 32) | 10L);
+      assertThat(encoded).isEqualTo(IdFunction.encodeRidAsLong(new RID(10, 10)));
     }
   }
 
