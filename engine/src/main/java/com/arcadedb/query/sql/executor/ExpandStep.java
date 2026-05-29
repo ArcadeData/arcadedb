@@ -41,7 +41,7 @@ public class ExpandStep extends AbstractExecutionStep {
   String    alias           = null; // Optional alias to use as property name for plain (non-document) values
 
   public ExpandStep(final CommandContext context) {
-    super(context);
+    this(context, null);
   }
 
   public ExpandStep(final CommandContext context, final String alias) {
