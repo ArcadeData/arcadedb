@@ -25,6 +25,8 @@ import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.LocalSchema;
+import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
@@ -620,9 +622,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
           decoded.filesToAdd());
     }
 
+    // A TimeSeries compaction/maintenance entry carries only sealed-store blobs (+ the mutable-bucket
+    // clear WAL) and never changes the schema or creates/removes paginated files. For such entries we
+    // MUST NOT re-update + reload the schema: load() re-instantiates every TimeSeries engine (closing
+    // shard executors with a 30s awaitTermination) on the Raft apply thread, stalling replication.
+    // installSealedFileBytes already reopened the sealed store and the clear WAL applies to the live
+    // mutable-bucket pages, so neither the schema update nor the reload is needed.
+    final boolean sealedOnlyEntry = isEmptyMap(decoded.filesToAdd()) && isEmptyMap(decoded.filesToRemove())
+        && decoded.sealedFileBlobs() != null && !decoded.sealedFileBlobs().isEmpty();
+
     try {
       if (decoded.filesToAdd() != null)
         createNewFiles(db, decoded.filesToAdd());
+
+      // Install any TimeSeries sealed-store blobs BEFORE applying the WAL (issue #4382). The WAL
+      // below carries the mutable-bucket clear; installing the sealed file first guarantees a query
+      // never observes "cleared mutable + stale sealed" (the data-loss window).
+      applySealedBlobs(db, decoded.sealedFileBlobs());
 
       if (decoded.filesToRemove() != null)
         for (final Map.Entry<Integer, String> fileEntry : decoded.filesToRemove().entrySet()) {
@@ -631,7 +647,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           db.getSchema().getEmbedded().removeFile(fileEntry.getKey());
         }
 
-      if (decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
+      if (!sealedOnlyEntry && decoded.schemaJson() != null && !decoded.schemaJson().isEmpty())
         db.getSchema().getEmbedded().update(new JSONObject(decoded.schemaJson()));
 
       // Apply WAL entries BEFORE the schema reload. New files created above are initially empty;
@@ -659,7 +675,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
       // Reload schema after WAL pages are on disk so new index files have valid content
       // and are correctly registered (page counts, type links, in-memory structures).
-      db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
+      // Skipped for sealed-only TimeSeries compaction entries (see sealedOnlyEntry above).
+      if (!sealedOnlyEntry)
+        db.getSchema().getEmbedded().load(ComponentFile.MODE.READ_WRITE, true);
 
     } catch (final IOException e) {
       throw new RuntimeException("Failed to apply schema entry for database '" + decoded.databaseName() + "'", e);
@@ -733,6 +751,44 @@ public class ArcadeStateMachine extends BaseStateMachine {
         continue;
       db.getFileManager().getOrCreateFile(fileId, databasePath + File.separator + fileName);
     }
+  }
+
+  /**
+   * Installs TimeSeries sealed-store blobs shipped by the leader (issue #4382): for each blob the
+   * full {@code .ts.sealed} file is replaced atomically and the in-memory sealed store reopened.
+   * Idempotent: re-applying the same blob (crash/restart replay) simply rewrites the identical file.
+   */
+  private void applySealedBlobs(final DatabaseInternal db, final List<RaftLogEntryCodec.TsSealedBlob> blobs)
+      throws IOException {
+    if (blobs == null || blobs.isEmpty())
+      return;
+    for (final RaftLogEntryCodec.TsSealedBlob blob : blobs) {
+      final LocalSchema schema = db.getSchema().getEmbedded();
+      if (!schema.existsType(blob.typeName())) {
+        // Should not happen: the type-creation entry has a lower Raft index and is applied first.
+        LogManager.instance().log(this, Level.SEVERE,
+            "Received TimeSeries sealed blob for unknown type '%s' (db=%s); skipping", null, blob.typeName(),
+            decodedDbName(db));
+        continue;
+      }
+      if (!(schema.getType(blob.typeName()) instanceof LocalTimeSeriesType tsType) || tsType.getEngine() == null) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Received TimeSeries sealed blob for non-timeseries or uninitialized type '%s' (db=%s); skipping", null,
+            blob.typeName(), decodedDbName(db));
+        continue;
+      }
+      tsType.getEngine().getShard(blob.shardIndex()).getSealedStore().installSealedFileBytes(blob.bytes());
+      HALog.log(this, HALog.DETAILED, "Installed TimeSeries sealed blob for %s shard %d (%d bytes) on db '%s'",
+          blob.typeName(), blob.shardIndex(), blob.bytes().length, decodedDbName(db));
+    }
+  }
+
+  private static String decodedDbName(final DatabaseInternal db) {
+    return db != null ? db.getName() : "?";
+  }
+
+  private static boolean isEmptyMap(final Map<?, ?> map) {
+    return map == null || map.isEmpty();
   }
 
   private void applyInstallDatabaseEntry(final RaftLogEntryCodec.DecodedEntry decoded) {

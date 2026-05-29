@@ -24,6 +24,7 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -32,6 +33,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.zip.CRC32;
 
 /**
  * Codec for encoding and decoding Raft log entries. Converts WAL transaction data
@@ -76,8 +78,25 @@ public final class RaftLogEntryCodec {
       // BOOTSTRAP_FINGERPRINT_ENTRY fields (issue #4147). Hex-encoded SHA-256 of the bootstrap
       // source's database files and the corresponding lastTxId. Null/-1 for non-bootstrap entries.
       String bootstrapFingerprint,
-      long bootstrapLastTxId
+      long bootstrapLastTxId,
+      // TimeSeries sealed-store blobs embedded in a SCHEMA_ENTRY (issue #4382). Empty for all other
+      // entry types and for SCHEMA_ENTRYs produced by nodes that predate this section.
+      List<TsSealedBlob> sealedFileBlobs
   ) {
+  }
+
+  /**
+   * A TimeSeries sealed-store file shipped to followers as part of a compaction/maintenance
+   * SCHEMA_ENTRY. The whole file is carried (the smallest safe unit: sealed blocks use cumulative
+   * offsets and a rewritten header, so partial appends are unsafe across nodes whose pre-image may
+   * differ). The bytes are already decompressed and CRC-verified by the decoder.
+   *
+   * @param typeName   the TimeSeries type owning the shard
+   * @param shardIndex the shard index whose sealed store changed
+   * @param fileName   the sealed-store file name relative to the database directory
+   * @param bytes      the full sealed-store file content
+   */
+  public record TsSealedBlob(String typeName, int shardIndex, String fileName, byte[] bytes) {
   }
 
   /**
@@ -128,6 +147,22 @@ public final class RaftLogEntryCodec {
   public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
       final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
       final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas) {
+    return encodeSchemaEntry(databaseName, schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas,
+        Collections.emptyList());
+  }
+
+  /**
+   * Encodes a schema entry, optionally embedding TimeSeries sealed-store blobs (issue #4382).
+   * <p>
+   * The sealed-blob section is appended AFTER the WAL section as a self-describing trailing section,
+   * so older nodes (whose decoder stops after the WAL section) ignore it and never produce it. Each
+   * blob carries its type name, shard index, file name, a CRC32 of the uncompressed bytes, and the
+   * compressed bytes.
+   */
+  public static ByteString encodeSchemaEntry(final String databaseName, final String schemaJson,
+      final Map<Integer, String> filesToAdd, final Map<Integer, String> filesToRemove,
+      final List<byte[]> walEntries, final List<Map<Integer, Integer>> bucketDeltas,
+      final List<TsSealedBlob> sealedFileBlobs) {
     try {
       final ByteArrayOutputStream baos = new ByteArrayOutputStream();
       final DataOutputStream dos = new DataOutputStream(baos);
@@ -158,6 +193,25 @@ public final class RaftLogEntryCodec {
           dos.writeInt(e.getKey());
           dos.writeInt(e.getValue());
         }
+      }
+
+      // TimeSeries sealed-store blob section (trailing, backward/forward compatible).
+      final int blobCount = sealedFileBlobs != null ? sealedFileBlobs.size() : 0;
+      dos.writeInt(blobCount);
+      for (int i = 0; i < blobCount; i++) {
+        final TsSealedBlob blob = sealedFileBlobs.get(i);
+        final byte[] raw = blob.bytes() != null ? blob.bytes() : new byte[0];
+        checkByteLength(raw.length, "SCHEMA_ENTRY sealed blob uncompressed");
+        final CRC32 crc = new CRC32();
+        crc.update(raw);
+        final byte[] compressed = CompressionFactory.getDefault().compress(raw);
+        dos.writeUTF(blob.typeName());
+        dos.writeInt(blob.shardIndex());
+        dos.writeUTF(blob.fileName());
+        dos.writeLong(crc.getValue());
+        dos.writeInt(raw.length);          // uncompressed length
+        dos.writeInt(compressed.length);   // compressed length
+        dos.write(compressed);
       }
 
       dos.flush();
@@ -292,7 +346,8 @@ public final class RaftLogEntryCodec {
       final byte typeByte = dis.readByte();
       final RaftLogEntryType type = RaftLogEntryType.fromId(typeByte);
       if (type == null)
-        return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false, null, -1L);
+        return new DecodedEntry(null, null, null, null, null, null, null, null, null, null, false, null, -1L,
+            Collections.emptyList());
       final String databaseName = dis.readUTF();
 
       final DecodedEntry result = switch (type) {
@@ -300,7 +355,7 @@ public final class RaftLogEntryCodec {
         case SCHEMA_ENTRY -> decodeSchemaEntry(dis, databaseName);
         case INSTALL_DATABASE_ENTRY -> decodeInstallDatabaseEntry(dis, databaseName);
         case DROP_DATABASE_ENTRY -> new DecodedEntry(RaftLogEntryType.DROP_DATABASE_ENTRY, databaseName,
-            null, null, null, null, null, null, null, null, false, null, -1L);
+            null, null, null, null, null, null, null, null, false, null, -1L, Collections.emptyList());
         case SECURITY_USERS_ENTRY -> decodeSecurityUsersEntry(dis);
         case BOOTSTRAP_FINGERPRINT_ENTRY -> decodeBootstrapFingerprintEntry(dis, databaseName);
       };
@@ -337,7 +392,7 @@ public final class RaftLogEntryCodec {
     }
 
     return new DecodedEntry(RaftLogEntryType.TX_ENTRY, databaseName, walData, bucketRecordDelta,
-        null, null, null, null, null, null, false, null, -1L);
+        null, null, null, null, null, null, false, null, -1L, Collections.emptyList());
   }
 
   private static DecodedEntry decodeSchemaEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -380,8 +435,40 @@ public final class RaftLogEntryCodec {
       // Older log entries without embedded WAL section - treat as empty
     }
 
+    // TimeSeries sealed-store blob section (issue #4382). Trailing section: a missing one (older
+    // entry) ends the stream and is treated as empty; a CRC mismatch is a hard failure.
+    List<TsSealedBlob> sealedFileBlobs = Collections.emptyList();
+    try {
+      final int blobCount = dis.readInt();
+      checkCollectionSize(blobCount, "SCHEMA_ENTRY sealed blobs");
+      if (blobCount > 0) {
+        sealedFileBlobs = new ArrayList<>(blobCount);
+        for (int i = 0; i < blobCount; i++) {
+          final String typeName = dis.readUTF();
+          final int shardIndex = dis.readInt();
+          final String fileName = dis.readUTF();
+          final long expectedCrc = dis.readLong();
+          final int uncompressedLen = dis.readInt();
+          checkByteLength(uncompressedLen, "SCHEMA_ENTRY sealed blob uncompressed");
+          final int compressedLen = dis.readInt();
+          checkByteLength(compressedLen, "SCHEMA_ENTRY sealed blob compressed");
+          final byte[] compressed = new byte[compressedLen];
+          dis.readFully(compressed);
+          final byte[] raw = CompressionFactory.getDefault().decompress(compressed, uncompressedLen);
+          final CRC32 crc = new CRC32();
+          crc.update(raw);
+          if (crc.getValue() != expectedCrc)
+            throw new IllegalStateException(
+                "CRC mismatch decoding SCHEMA_ENTRY sealed blob for '" + fileName + "' (corrupted replication payload)");
+          sealedFileBlobs.add(new TsSealedBlob(typeName, shardIndex, fileName, raw));
+        }
+      }
+    } catch (final EOFException ignored) {
+      // Older log entry without the sealed-blob section - treat as empty
+    }
+
     return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,
-        schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L);
+        schemaJson, filesToAdd, filesToRemove, walEntries, bucketDeltas, null, false, null, -1L, sealedFileBlobs);
   }
 
   private static DecodedEntry decodeInstallDatabaseEntry(final DataInputStream dis, final String databaseName) throws IOException {
@@ -392,7 +479,7 @@ public final class RaftLogEntryCodec {
       forceSnapshot = dis.readBoolean();
     }
     return new DecodedEntry(RaftLogEntryType.INSTALL_DATABASE_ENTRY, databaseName,
-        null, null, null, null, null, null, null, null, forceSnapshot, null, -1L);
+        null, null, null, null, null, null, null, null, forceSnapshot, null, -1L, Collections.emptyList());
   }
 
   private static DecodedEntry decodeBootstrapFingerprintEntry(final DataInputStream dis, final String databaseName)
@@ -404,7 +491,7 @@ public final class RaftLogEntryCodec {
     final String fingerprint = new String(fpBytes, StandardCharsets.UTF_8);
     final long lastTxId = dis.readLong();
     return new DecodedEntry(RaftLogEntryType.BOOTSTRAP_FINGERPRINT_ENTRY, databaseName,
-        null, null, null, null, null, null, null, null, false, fingerprint, lastTxId);
+        null, null, null, null, null, null, null, null, false, fingerprint, lastTxId, Collections.emptyList());
   }
 
   private static DecodedEntry decodeSecurityUsersEntry(final DataInputStream dis) throws IOException {
@@ -414,7 +501,7 @@ public final class RaftLogEntryCodec {
     dis.readFully(bytes);
     final String usersJson = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
     return new DecodedEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, "",
-        null, null, null, null, null, null, null, usersJson, false, null, -1L);
+        null, null, null, null, null, null, null, usersJson, false, null, -1L, Collections.emptyList());
   }
 
   private static void writeFileMap(final DataOutputStream dos, final Map<Integer, String> fileMap) throws IOException {

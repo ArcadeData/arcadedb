@@ -193,6 +193,33 @@ public interface DatabaseInternal extends Database {
   }
 
   /**
+   * Returns true if this node is the current leader (or always true when not replicated, i.e. standalone).
+   * Used by engine-internal background work (e.g. the TimeSeries maintenance scheduler) to keep
+   * destructive maintenance leader-only without a compile dependency on the HA module.
+   */
+  default boolean isLeader() {
+    return true;
+  }
+
+  /**
+   * Registers the post-mutation bytes of a TimeSeries sealed-store file so the HA layer can ship them
+   * to followers as part of the current compaction/maintenance replication unit. No-op when standalone:
+   * the sealed store is a node-local derived artifact that does not need replication outside HA.
+   * Only meaningful while a {@link #runWithCompactionReplication(Callable)} session is active on the
+   * calling thread; the buffered blobs are drained and embedded in the SCHEMA_ENTRY shipped at the end
+   * of that session.
+   *
+   * @param typeName     the TimeSeries type owning the shard
+   * @param shardIndex   the shard index whose sealed store changed
+   * @param sealedFileName the sealed-store file name (relative to the database directory)
+   * @param sealedBytes  the full content of the sealed-store file after the mutation
+   */
+  default void recordTimeSeriesSealedChange(final String typeName, final int shardIndex, final String sealedFileName,
+      final byte[] sealedBytes) {
+    // no-op: standalone databases do not replicate the sealed store
+  }
+
+  /**
    * Gets a global variable value by name.
    * @param name Variable name (with or without $ prefix)
    * @return The variable value, or null if not set
