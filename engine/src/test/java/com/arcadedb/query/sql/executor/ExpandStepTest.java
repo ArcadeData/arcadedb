@@ -257,4 +257,60 @@ class ExpandStepTest extends TestHelper {
     assertThat(result.hasNext()).isFalse();
     result.close();
   }
+
+  // Regression test for issue #4389: expand() AS alias must use the alias as property name for plain values
+  @Test
+  void expandWithAliasUsesAliasAsPropertyName() {
+    final ResultSet result = database.query("sql", "SELECT expand([1,2,3,4]) AS test");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item.getPropertyNames()).containsExactly("test");
+      assertThat(item.getPropertyNames()).doesNotContain("value");
+      count++;
+    }
+
+    assertThat(count).isEqualTo(4);
+    result.close();
+  }
+
+  // Regression test for issue #4389: expand() without alias still uses "value" as property name
+  @Test
+  void expandWithoutAliasUsesValueAsPropertyName() {
+    final ResultSet result = database.query("sql", "SELECT expand([1,2,3,4])");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item.getPropertyNames()).containsExactly("value");
+      count++;
+    }
+
+    assertThat(count).isEqualTo(4);
+    result.close();
+  }
+
+  // Regression test for issue #4389: expand() AS alias works on string values
+  @Test
+  void expandStringListWithAliasUsesAliasAsPropertyName() {
+    database.getSchema().createDocumentType("AliasTest");
+
+    database.transaction(() -> {
+      database.newDocument("AliasTest").set("tags", java.util.List.of("a", "b", "c")).save();
+    });
+
+    final ResultSet result = database.query("sql", "SELECT expand(tags) AS tag FROM AliasTest");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item.getPropertyNames()).containsExactly("tag");
+      assertThat(item.getPropertyNames()).doesNotContain("value");
+      count++;
+    }
+
+    assertThat(count).isEqualTo(3);
+    result.close();
+  }
 }
