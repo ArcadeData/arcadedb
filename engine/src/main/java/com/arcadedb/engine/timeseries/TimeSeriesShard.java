@@ -18,15 +18,18 @@
  */
 package com.arcadedb.engine.timeseries;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
 import java.io.IOException;
+import java.util.logging.Level;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -70,6 +73,9 @@ public class TimeSeriesShard implements AutoCloseable {
   // cycle at a time per shard, so page versions are always consistent at commit.
   // Writes to *different* shards are still fully concurrent.
   private final Lock                   appendLock      = new ReentrantLock();
+  // Throttle (60s window) for the oversized-sealed-store WARNING so a permanently-too-large shard
+  // does not spam the log every maintenance cycle.
+  private volatile long                lastOversizedWarnMs = 0;
 
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
                          final List<ColumnDefinition> columns) throws IOException {
@@ -385,6 +391,22 @@ public class TimeSeriesShard implements AutoCloseable {
           db.rollback();
           return;
         }
+
+        // HA safety valve (issue #4382): if the rewritten sealed store would be too large to ship
+        // inline in a single Raft entry, skip compaction entirely this cycle. The data stays in the
+        // mutable bucket, which IS fully replicated, so there is no divergence or data loss - just no
+        // sealing. The projected size over-estimates (raw mutable bytes are a ceiling on the
+        // compressed sealed delta), so we always stay safely under the transport cap.
+        if (db.isReplicated()) {
+          final long cap = database.getConfiguration().getValueAsLong(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE);
+          final long projected = sealedStore.getFileSizeBytes() + (long) pageCount * mutableBucket.getPageSize();
+          if (projected > cap) {
+            db.rollback();
+            warnOversizedSealedSkip(projected, cap);
+            return;
+          }
+        }
+
         snapshotDataPageCount = pageCount;
         mutableBucket.setCompactionInProgress(true);
         mutableBucket.setCompactionWatermark(initialBlockCount);
@@ -744,6 +766,18 @@ public class TimeSeriesShard implements AutoCloseable {
   /**
    * Best-effort: clear the compaction-in-progress flag after a non-crash error.
    */
+  private void warnOversizedSealedSkip(final long projectedBytes, final long capBytes) {
+    final long now = System.currentTimeMillis();
+    if (now - lastOversizedWarnMs < 60_000)
+      return;
+    lastOversizedWarnMs = now;
+    LogManager.instance().log(this, Level.WARNING,
+        "Skipping HA compaction of TimeSeries '%s' shard %d: projected sealed-store size %d bytes exceeds the inline "
+            + "replication cap %d bytes (%s). Data remains in the replicated mutable bucket; raise the cap or reduce "
+            + "retention to re-enable sealing.",
+        null, typeName, shardIndex, projectedBytes, capBytes, GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE.getKey());
+  }
+
   private void clearCompactionFlagBestEffort() {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
     compactionLock.writeLock().lock();

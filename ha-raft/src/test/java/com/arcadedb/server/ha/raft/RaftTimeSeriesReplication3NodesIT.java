@@ -55,6 +55,13 @@ class RaftTimeSeriesReplication3NodesIT extends BaseRaftHATest {
   }
 
   @Override
+  protected boolean persistentRaftStorage() {
+    // Required by the lagging-follower test, which stops a node, compacts on the leader, then restarts
+    // the node and expects it to catch up (Raft storage must survive the in-test restart).
+    return true;
+  }
+
+  @Override
   protected void checkDatabasesAreIdentical() {
     // Time-series sealed-store files are compacted independently per node and use direct file I/O
     // (not page-level replication), so byte-level page comparison is not meaningful here. The test
@@ -143,6 +150,106 @@ class RaftTimeSeriesReplication3NodesIT extends BaseRaftHATest {
         if (i != finalLeader)
           assertThat(readSealedFile(i, 0))
               .as("sealed store on server %d must match leader %d", i, finalLeader)
+              .isEqualTo(leaderBytes);
+    });
+  }
+
+  /**
+   * Compaction must keep working - and stay consistent - across a leadership change (failover). After
+   * the leader steps down, the new leader continues to seal + clear + replicate, and every node ends
+   * with identical data, an empty mutable bucket, and byte-identical sealed stores.
+   */
+  @Test
+  @Tag("slow")
+  void compactionSurvivesLeadershipChange() throws Exception {
+    awaitLeaderElected();
+    final int firstLeader = findLeaderIndex();
+
+    executeCommand(firstLeader,
+        "sql", "CREATE TIMESERIES TYPE weather TIMESTAMP ts TAGS (location STRING) FIELDS (temperature DOUBLE) SHARDS 1");
+    waitForReplicationIsCompleted(firstLeader);
+
+    insertSamples(0, 30);
+    awaitAllServersReportSamples(30);
+    timeSeriesEngine(findLeaderIndex()).compactAll();
+    awaitAllServersReportSamples(30);
+
+    // Step the current leader down and wait for a leader to be (re)elected.
+    getRaftPlugin(firstLeader).getRaftHAServer().transferLeadership(10_000);
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
+        .until(() -> findLeaderIndex() >= 0);
+
+    // Write + compact under the new leadership.
+    insertSamples(30, 50);
+    awaitAllServersReportSamples(50);
+    timeSeriesEngine(findLeaderIndex()).compactAll();
+    awaitAllServersReportSamples(50);
+
+    awaitMutableEmptyAndSealedConsistent();
+  }
+
+  /**
+   * A follower that is offline while the leader compacts must, on restart, catch up to the full state:
+   * it receives the missed compaction (sealed blocks + mutable clear) via Raft and converges to the
+   * leader - same sample count, empty mutable bucket, byte-identical sealed store.
+   */
+  @Test
+  @Tag("slow")
+  void laggingFollowerCatchesUpWithSealedDataAfterRestart() throws Exception {
+    awaitLeaderElected();
+    final int leader = findLeaderIndex();
+
+    executeCommand(leader,
+        "sql", "CREATE TIMESERIES TYPE weather TIMESTAMP ts TAGS (location STRING) FIELDS (temperature DOUBLE) SHARDS 1");
+    waitForReplicationIsCompleted(leader);
+
+    insertSamples(0, 30);
+    awaitAllServersReportSamples(30);
+
+    // Take a follower offline, then compact + write more on the leader so the follower misses it all.
+    final int follower = (leader + 1) % getServerCount();
+    getServer(follower).stop();
+
+    timeSeriesEngine(findLeaderIndex()).compactAll();
+    insertSamples(30, 50);
+
+    // The still-online nodes converge to 50.
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(250, TimeUnit.MILLISECONDS).untilAsserted(() -> {
+      for (int i = 0; i < getServerCount(); i++)
+        if (i != follower)
+          assertThat(countSamples(i)).as("online server %d before follower restart", i).isEqualTo(50L);
+    });
+
+    // Restart the follower; it must catch up (Raft log replay or snapshot) including the sealed data.
+    restartServer(follower);
+
+    Awaitility.await().atMost(60, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS).untilAsserted(() -> {
+      assertThat(countSamples(follower)).as("restarted follower sample count").isEqualTo(50L);
+      assertThat(mutableSampleCount(follower)).as("restarted follower mutable bucket").isZero();
+    });
+  }
+
+  private void awaitLeaderElected() {
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(500, TimeUnit.MILLISECONDS)
+        .until(() -> findLeaderIndex() >= 0);
+    assertThat(findLeaderIndex()).as("a leader must be elected").isGreaterThanOrEqualTo(0);
+  }
+
+  private void insertSamples(final int fromInclusive, final int toExclusive) throws Exception {
+    for (int i = fromInclusive; i < toExclusive; i++)
+      executeCommand(findLeaderIndex(), "sql",
+          "INSERT INTO weather SET ts = " + (1000 + i) + ", location = 'us-east', temperature = " + (20.0 + i));
+  }
+
+  private void awaitMutableEmptyAndSealedConsistent() {
+    Awaitility.await().atMost(30, TimeUnit.SECONDS).pollInterval(250, TimeUnit.MILLISECONDS).untilAsserted(() -> {
+      for (int i = 0; i < getServerCount(); i++)
+        assertThat(mutableSampleCount(i)).as("mutable bucket samples on server %d", i).isZero();
+      final int leader = findLeaderIndex();
+      final byte[] leaderBytes = readSealedFile(leader, 0);
+      for (int i = 0; i < getServerCount(); i++)
+        if (i != leader)
+          assertThat(readSealedFile(i, 0)).as("sealed store on server %d must match leader %d", i, leader)
               .isEqualTo(leaderBytes);
     });
   }
