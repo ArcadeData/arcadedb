@@ -257,4 +257,82 @@ class ExpandStepTest extends TestHelper {
     assertThat(result.hasNext()).isFalse();
     result.close();
   }
+
+  @Test
+  void expandWithAliasUsesAliasAsPropertyName() {
+    final ResultSet result = database.query("sql", "SELECT expand([1,2,3,4]) AS test");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item.getPropertyNames()).containsExactly("test");
+      assertThat(item.getPropertyNames()).doesNotContain("value");
+      count++;
+    }
+
+    assertThat(count).isEqualTo(4);
+    result.close();
+  }
+
+  @Test
+  void expandWithoutAliasUsesValueAsPropertyName() {
+    final ResultSet result = database.query("sql", "SELECT expand([1,2,3,4])");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item.getPropertyNames()).containsExactly("value");
+      count++;
+    }
+
+    assertThat(count).isEqualTo(4);
+    result.close();
+  }
+
+  @Test
+  void expandStringListWithAliasUsesAliasAsPropertyName() {
+    database.getSchema().createDocumentType("AliasTest");
+
+    database.transaction(() -> {
+      database.newDocument("AliasTest").set("tags", List.of("a", "b", "c")).save();
+    });
+
+    final ResultSet result = database.query("sql", "SELECT expand(tags) AS tag FROM AliasTest");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item.getPropertyNames()).containsExactly("tag");
+      assertThat(item.getPropertyNames()).doesNotContain("value");
+      count++;
+    }
+
+    assertThat(count).isEqualTo(3);
+    result.close();
+  }
+
+  @Test
+  void expandDocumentListWithAliasPreservesDocumentProperties() {
+    database.getSchema().createDocumentType("DocParent");
+    database.getSchema().createDocumentType("DocChild");
+
+    database.transaction(() -> {
+      final MutableDocument c1 = database.newDocument("DocChild").set("x", 1).save();
+      final MutableDocument c2 = database.newDocument("DocChild").set("x", 2).save();
+      database.newDocument("DocParent").set("children", List.of(c1, c2)).save();
+    });
+
+    final ResultSet result = database.query("sql", "SELECT expand(children) AS ignored FROM DocParent");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item.getPropertyNames()).contains("x");
+      assertThat(item.getPropertyNames()).doesNotContain("ignored");
+      count++;
+    }
+
+    assertThat(count).isEqualTo(2);
+    result.close();
+  }
 }

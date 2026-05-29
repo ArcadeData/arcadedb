@@ -698,6 +698,9 @@ public class SelectExecutionPlanner {
     extractSubQueries(info);
     if (info.projection != null && info.projection.isExpand()) {
       info.expand = true;
+      final ProjectionItem expandItem = info.projection.getItems().getFirst();
+      if (expandItem.getAlias() != null)
+        info.expandAlias = expandItem.getAlias().getStringValue();
       info.projection = info.projection.getExpandContent();
     }
     if (info.whereClause != null) {
@@ -1612,7 +1615,7 @@ public class SelectExecutionPlanner {
 
   private static void handleExpand(final SelectExecutionPlan result, final QueryPlanningInfo info, final CommandContext context) {
     if (info.expand) {
-      result.chain(new ExpandStep(context));
+      result.chain(new ExpandStep(context, info.expandAlias));
     }
   }
 

@@ -38,9 +38,15 @@ public class ExpandStep extends AbstractExecutionStep {
   Iterator  nextSubsequence = null;
   Result    nextElement     = null;
   Result    sourceResult    = null; // Source result from which we're expanding, used to preserve metadata
+  final String alias;
 
   public ExpandStep(final CommandContext context) {
+    this(context, null);
+  }
+
+  public ExpandStep(final CommandContext context, final String alias) {
     super(context);
+    this.alias = alias;
   }
 
   @Override
@@ -101,7 +107,7 @@ public class ExpandStep extends AbstractExecutionStep {
             nextElement = new ResultInternal(map);
           } else {
             nextElement = new ResultInternal(context.getDatabase());
-            ((ResultInternal) nextElement).setProperty("value", nextElementObj);
+            ((ResultInternal) nextElement).setProperty(alias != null ? alias : "value", nextElementObj);
           }
           // Copy metadata from source result to the expanded result (e.g., LET variables like $nrid)
           if (sourceResult != null && nextElement instanceof ResultInternal resultInternal) {
