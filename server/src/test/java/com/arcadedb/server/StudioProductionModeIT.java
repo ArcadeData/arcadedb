@@ -34,7 +34,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Verifies that the Studio web tool (static content) is disabled by default in production mode,
- * and can be force-enabled with {@link GlobalConfiguration#SERVER_STUDIO_ENABLED}.
+ * and can be force-enabled with {@link GlobalConfiguration#STUDIO_ENABLED}.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -69,7 +69,7 @@ class StudioProductionModeIT extends StaticBaseServerTest {
   @Test
   void studioEnabledInProductionWhenForced() throws Exception {
     GlobalConfiguration.SERVER_MODE.setValue("production");
-    GlobalConfiguration.SERVER_STUDIO_ENABLED.setValue(true);
+    GlobalConfiguration.STUDIO_ENABLED.setValue(true);
 
     startServer();
 

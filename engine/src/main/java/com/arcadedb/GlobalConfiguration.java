@@ -528,7 +528,7 @@ public enum GlobalConfiguration {
   SERVER_MODE("arcadedb.server.mode", SCOPE.SERVER, "Server mode between 'development', 'test' and 'production'", String.class,
       "development", Set.of((Object[]) new String[]{"development", "test", "production"})),
 
-  SERVER_STUDIO_ENABLED("arcadedb.server.studioEnabled", SCOPE.SERVER,
+  STUDIO_ENABLED("arcadedb.studio.enabled", SCOPE.SERVER,
       "Force-enable the Studio web tool (static content) even when the server runs in 'production' mode. In 'development' and "
           + "'test' mode Studio is always served; in 'production' mode it is disabled by default and this setting can re-enable it",
       Boolean.class, false),
