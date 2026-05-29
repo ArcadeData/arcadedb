@@ -49,6 +49,8 @@ public abstract class ExpressionRewriter {
 
     // Dispatch to specific visit methods based on concrete type
     // BooleanExpression implementers
+    if (expression instanceof BooleanCoercionExpression)
+      return visitBooleanCoercion((BooleanCoercionExpression) expression);
     if (expression instanceof ComparisonExpression)
       return visitComparison((ComparisonExpression) expression);
     if (expression instanceof LogicalExpression)
@@ -112,6 +114,15 @@ public abstract class ExpressionRewriter {
 
     // Unknown expression type: return as-is
     return expression;
+  }
+
+  /**
+   * Rewrite a boolean coercion expression (wraps an Expression as a BooleanExpression).
+   * Default: return as-is (the wrapped expression is a leaf-level value).
+   * Note: BooleanCoercionExpression implements BooleanExpression, not Expression.
+   */
+  protected BooleanExpression visitBooleanCoercion(final BooleanCoercionExpression expr) {
+    return expr;
   }
 
   /**
