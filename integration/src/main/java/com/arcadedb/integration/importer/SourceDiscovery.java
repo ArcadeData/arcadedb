@@ -95,10 +95,13 @@ public class SourceDiscovery {
 
   public Source getSource() throws IOException {
     final Source source;
-    if (url.startsWith("http://") || url.startsWith("https://"))
+    if (url.startsWith("http://") || url.startsWith("https://")) {
+      ImportSecurityValidator.validateRemoteURL(url);
       source = getSourceFromURL(url);
-    else
+    } else {
+      ImportSecurityValidator.validateLocalURL(url);
       source = getSourceFromFile(url);
+    }
     return source;
   }
 
