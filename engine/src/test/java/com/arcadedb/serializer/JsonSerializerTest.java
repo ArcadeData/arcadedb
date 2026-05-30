@@ -22,8 +22,12 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONObject;
 import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -96,5 +100,126 @@ class JsonSerializerTest extends TestHelper {
       assertThat(JsonPath.<String>read(json, "$.@in")).isEqualTo(vertex2.getIdentity().toString());
       assertThat(JsonPath.<String>read(json, "$.@out")).isEqualTo(vertex1.getIdentity().toString());
     });
+  }
+
+  @Test
+  void expandScalarListDoesNotEmitPropsHint() {
+    try (final ResultSet rs = database.query("sql", "SELECT expand([1,2,3,4]) AS test")) {
+      int count = 0;
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        final JSONObject json = jsonSerializer.serializeResult(database, row);
+        assertThat(json.has(Property.PROPERTY_TYPES_PROPERTY)).isFalse();
+        assertThat(json.has("test")).isTrue();
+        count++;
+      }
+      assertThat(count).isEqualTo(4);
+    }
+  }
+
+  @Test
+  void stringExpandDoesNotEmitPropsHint() {
+    try (final ResultSet rs = database.query("sql", "SELECT expand(['a','b','c']) AS tag")) {
+      int count = 0;
+      while (rs.hasNext()) {
+        final Result row = rs.next();
+        final JSONObject json = jsonSerializer.serializeResult(database, row);
+        assertThat(json.has(Property.PROPERTY_TYPES_PROPERTY)).isFalse();
+        assertThat(json.has("tag")).isTrue();
+        count++;
+      }
+      assertThat(count).isEqualTo(3);
+    }
+  }
+
+  @Test
+  void scalarProjectionDoesNotEmitPropsHintForJsonFaithfulTypes() {
+    try (final ResultSet rs = database.query("sql", "SELECT 1 AS i, 'x' AS s, true AS b")) {
+      assertThat(rs.hasNext()).isTrue();
+      final JSONObject json = jsonSerializer.serializeResult(database, rs.next());
+      assertThat(json.has(Property.PROPERTY_TYPES_PROPERTY)).isFalse();
+      assertThat(json.getInt("i")).isEqualTo(1);
+      assertThat(json.getString("s")).isEqualTo("x");
+      assertThat(json.getBoolean("b")).isTrue();
+    }
+  }
+
+  @Test
+  void doublePropertyDoesNotEmitPropsHint() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("DoubleType");
+      type.createProperty("d", Type.DOUBLE);
+      database.newDocument("DoubleType").set("d", 2.5d).save();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT d FROM DoubleType")) {
+      assertThat(rs.hasNext()).isTrue();
+      final JSONObject json = jsonSerializer.serializeResult(database, rs.next());
+      assertThat(json.has(Property.PROPERTY_TYPES_PROPERTY)).isFalse();
+    }
+  }
+
+  @Test
+  void floatProjectionStillEmitsPropsHint() {
+    // 2.5 is inferred as FLOAT by the SQL parser (not DOUBLE); FLOAT is lossy through JSON (deserializes to Double), so the hint must stay.
+    try (final ResultSet rs = database.query("sql", "SELECT 2.5 AS f")) {
+      assertThat(rs.hasNext()).isTrue();
+      final JSONObject json = jsonSerializer.serializeResult(database, rs.next());
+      assertThat(json.has(Property.PROPERTY_TYPES_PROPERTY)).isTrue();
+      assertThat(json.getString(Property.PROPERTY_TYPES_PROPERTY)).contains("f:" + Type.FLOAT.getId());
+    }
+  }
+
+  @Test
+  void floatSchemaPropertyStillEmitsPropsHint() {
+    // Schema-backed FLOAT, independent of how the SQL parser types a decimal literal.
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("FloatType");
+      type.createProperty("f", Type.FLOAT);
+      database.newDocument("FloatType").set("f", 2.5f).save();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT f FROM FloatType")) {
+      assertThat(rs.hasNext()).isTrue();
+      final JSONObject json = jsonSerializer.serializeResult(database, rs.next());
+      assertThat(json.has(Property.PROPERTY_TYPES_PROPERTY)).isTrue();
+      assertThat(json.getString(Property.PROPERTY_TYPES_PROPERTY)).contains("f:" + Type.FLOAT.getId());
+    }
+  }
+
+  @Test
+  void mixedFaithfulAndLossyColumnsEmitHintOnlyForLossy() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("MixedType");
+      for (int i = 0; i < 2; i++)
+        database.newDocument("MixedType").save();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT 1 AS i, count(*) AS c FROM MixedType")) {
+      assertThat(rs.hasNext()).isTrue();
+      final JSONObject json = jsonSerializer.serializeResult(database, rs.next());
+      // i is an Integer (JSON-faithful) so it is absent from the hint; c is a Long (lossy) so it stays.
+      assertThat(json.has(Property.PROPERTY_TYPES_PROPERTY)).isTrue();
+      final String hint = json.getString(Property.PROPERTY_TYPES_PROPERTY);
+      assertThat(hint).contains("c:" + Type.LONG.getId());
+      assertThat(hint).doesNotContain("i:");
+    }
+  }
+
+  @Test
+  void countStarStillEmitsPropsHintForLong() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("CountType");
+      for (int i = 0; i < 3; i++)
+        database.newDocument("CountType").save();
+    });
+
+    try (final ResultSet rs = database.query("sql", "SELECT count(*) AS c FROM CountType")) {
+      assertThat(rs.hasNext()).isTrue();
+      final JSONObject json = jsonSerializer.serializeResult(database, rs.next());
+      // count(*) yields a Long, which JSON cannot round-trip (collapses to Integer), so the hint stays.
+      assertThat(json.has(Property.PROPERTY_TYPES_PROPERTY)).isTrue();
+      assertThat(json.getString(Property.PROPERTY_TYPES_PROPERTY)).contains("c:" + Type.LONG.getId());
+    }
   }
 }
