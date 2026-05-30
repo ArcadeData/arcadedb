@@ -257,7 +257,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
             // Check if target variable is already bound (e.g., from a previous MATCH)
             final Object targetObj = lastResult.getProperty(targetVariable);
-            boundTarget = targetObj instanceof Vertex ? (Vertex) targetObj : null;
+            boundTarget = targetObj instanceof Vertex vertex ? vertex : null;
 
             if (sourceObj instanceof Vertex) {
               final Vertex sourceVertex = (Vertex) sourceObj;

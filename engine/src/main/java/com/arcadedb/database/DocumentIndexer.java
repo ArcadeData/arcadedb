@@ -256,8 +256,8 @@ public class DocumentIndexer {
     final Object oldListValue = originalRecord.get(listPropertyName);
     final Object newListValue = modifiedRecord.get(listPropertyName);
 
-    final List<?> oldList = oldListValue instanceof List ? (List<?>) oldListValue : List.of();
-    final List<?> newList = newListValue instanceof List ? (List<?>) newListValue : List.of();
+    final List<?> oldList = oldListValue instanceof List<?> list ? list : List.of();
+    final List<?> newList = newListValue instanceof List<?> list ? list : List.of();
 
     // For nested paths, we need to compare the extracted values, not the objects themselves
     final boolean isNested = pathParts.length > 1;
