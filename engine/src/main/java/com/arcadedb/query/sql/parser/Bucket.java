@@ -36,11 +36,6 @@ public class Bucket extends SimpleNode {
     super(id);
   }
 
-  @Override
-  public String toString(final String prefix) {
-    return super.toString(prefix);
-  }
-
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (bucketName != null) {
       builder.append("bucket:" + bucketName);
