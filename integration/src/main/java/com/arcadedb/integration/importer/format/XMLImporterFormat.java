@@ -52,6 +52,9 @@ public class XMLImporterFormat implements FormatImporter {
       final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
       xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
       xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+      // DISABLE DTD PROCESSING AND EXTERNAL ENTITIES TO PREVENT XXE AND ENTITY-EXPANSION (BILLION LAUGHS) ATTACKS
+      xmlFactory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
+      xmlFactory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
       final XMLStreamReader xmlReader = xmlFactory.createXMLStreamReader(parser.getInputStream());
 
       int nestLevel = 0;
@@ -201,6 +204,9 @@ public class XMLImporterFormat implements FormatImporter {
       final XMLInputFactory xmlFactory = XMLInputFactory.newInstance();
       xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_DTD, "");
       xmlFactory.setProperty(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
+      // DISABLE DTD PROCESSING AND EXTERNAL ENTITIES TO PREVENT XXE AND ENTITY-EXPANSION (BILLION LAUGHS) ATTACKS
+      xmlFactory.setProperty(XMLInputFactory.SUPPORT_DTD, false);
+      xmlFactory.setProperty(XMLInputFactory.IS_SUPPORTING_EXTERNAL_ENTITIES, false);
 
       final XMLStreamReader xmlReader = xmlFactory.createXMLStreamReader(parser.getInputStream());
 
