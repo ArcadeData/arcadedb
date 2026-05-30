@@ -46,6 +46,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Date;
+import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -62,6 +63,11 @@ import static com.arcadedb.schema.Property.TYPE_PROPERTY;
 import static com.arcadedb.utility.CollectionUtils.arrayToList;
 
 public class JsonSerializer {
+  // Types JSON round-trips to the same Java type (decimals -> Double, 32-bit-signed-range integers -> Integer), so
+  // the per-column @props hint is omitted for them; lossy types (LONG, FLOAT, SHORT, BYTE, DECIMAL, temporals, ...) keep it.
+  private static final Set<Type> JSON_ROUND_TRIP_FAITHFUL_TYPES = EnumSet.of(Type.BOOLEAN, Type.INTEGER, Type.DOUBLE,
+      Type.STRING);
+
   private boolean  useCollectionSize         = false;
   private boolean  includeVertexEdges        = true;
   private boolean  useVertexEdgeSize         = true;
@@ -165,7 +171,7 @@ public class JsonSerializer {
       else
         propertyType = null;
 
-      if (propertyType != null) {
+      if (propertyType != null && !JSON_ROUND_TRIP_FAITHFUL_TYPES.contains(propertyType)) {
         if (!propertyTypes.isEmpty())
           propertyTypes.append(",");
         propertyTypes.append(propertyName).append(":").append(propertyType.getId());
@@ -224,6 +230,7 @@ public class JsonSerializer {
       else
         propertyType = null;
 
+      // Unlike serializeResult (which omits JSON-faithful types), this opt-in metadata path is exhaustive by design.
       if (includeMetadata && propertyType != null) {
         if (propertyTypes.length() > 0)
           propertyTypes.append(",");
