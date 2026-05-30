@@ -129,6 +129,14 @@ public class LocalDocumentType implements DocumentType {
     return set;
   }
 
+  /**
+   * Enforces the UPDATE_SCHEMA permission for any schema-mutating operation. No-op in embedded mode or when no
+   * current user is bound to the thread (e.g. schema load at startup, replication apply).
+   */
+  protected void checkForSchemaMutation() {
+    ((DatabaseInternal) schema.getDatabase()).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+  }
+
   @Override
   public DocumentType addSuperType(final String superName) {
     return addSuperType(schema.getType(superName));
@@ -163,6 +171,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public DocumentType removeSuperType(final DocumentType superType) {
+    checkForSchemaMutation();
     recordFileChanges(() -> {
       if (!superTypes.remove(superType))
         // ALREADY REMOVED SUPER TYPE
@@ -180,6 +189,7 @@ public class LocalDocumentType implements DocumentType {
   }
 
   public void rename(final String newName) {
+    checkForSchemaMutation();
     if (schema.existsType(newName))
       throw new IllegalArgumentException("Type with name '" + newName + "' already exists");
 
@@ -281,6 +291,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public DocumentType setSuperTypes(List<DocumentType> newSuperTypes) {
+    checkForSchemaMutation();
     if (newSuperTypes == null)
       newSuperTypes = Collections.emptyList();
 
@@ -321,6 +332,7 @@ public class LocalDocumentType implements DocumentType {
    * Sets the list of aliases for the type. Any previous configuration will be lost.
    */
   public LocalDocumentType setAliases(final Set<String> aliases) {
+    checkForSchemaMutation();
     final Set<String> newAliases = new HashSet<>(aliases);
     newAliases.removeAll(this.aliases);
     for (String alias : newAliases) {
@@ -434,7 +446,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public LocalProperty createProperty(final String propertyName, final Type propertyType, final String ofType) {
-    ((DatabaseInternal) schema.getDatabase()).checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+    checkForSchemaMutation();
 
     if (properties.containsKey(propertyName))
       throw new SchemaException(
@@ -530,6 +542,7 @@ public class LocalDocumentType implements DocumentType {
    */
   @Override
   public Property dropProperty(final String propertyName) {
+    checkForSchemaMutation();
     for (final TypeIndex index : getAllIndexes(true)) {
       if (index.getPropertyNames().contains(propertyName))
         throw new SchemaException(
@@ -613,6 +626,7 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public DocumentType addBucket(final Bucket bucket) {
+    checkForSchemaMutation();
     recordFileChanges(() -> {
       addBucketInternal(bucket);
       return null;
@@ -622,6 +636,7 @@ public class LocalDocumentType implements DocumentType {
 
   @Override
   public DocumentType removeBucket(final Bucket bucket) {
+    checkForSchemaMutation();
     recordFileChanges(() -> {
       removeBucketInternal(bucket);
       return null;
@@ -1596,6 +1611,7 @@ public class LocalDocumentType implements DocumentType {
   }
 
   DocumentType addSuperType(final DocumentType superType, final boolean createIndexes) {
+    checkForSchemaMutation();
     if (this.equals(superType))
       return this;
 

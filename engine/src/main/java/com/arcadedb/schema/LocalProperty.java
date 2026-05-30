@@ -19,7 +19,9 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
 
@@ -29,8 +31,18 @@ public class LocalProperty extends AbstractProperty {
     super(owner, name, type, owner.getSchema().getDictionary().getIdByName(name, true));
   }
 
+  /**
+   * Enforces the UPDATE_SCHEMA permission for any property-level schema mutation. No-op in embedded mode or when no
+   * current user is bound to the thread (e.g. schema load at startup, replication apply).
+   */
+  private void checkForSchemaMutation() {
+    ((DatabaseInternal) owner.getSchema().getEmbedded().getDatabase())
+        .checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+  }
+
   @Override
   public Property setDefaultValue(final Object defaultValue) {
+    checkForSchemaMutation();
     final Database database = owner.getSchema().getEmbedded().getDatabase();
 
     // TODO: OPTIMIZE THE CASE WHERE FUNCTIONS ARE DEFAULT
@@ -56,6 +68,7 @@ public class LocalProperty extends AbstractProperty {
 
   @Override
   public Property setOfType(String ofType) {
+    checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.ofType, ofType);
     if (changed) {
       final LocalSchema schema = (LocalSchema) owner.getSchema();
@@ -81,6 +94,7 @@ public class LocalProperty extends AbstractProperty {
 
   @Override
   public Property setReadonly(final boolean readonly) {
+    checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.readonly, readonly);
     if (changed) {
       this.readonly = readonly;
@@ -91,6 +105,7 @@ public class LocalProperty extends AbstractProperty {
 
   @Override
   public Property setMandatory(final boolean mandatory) {
+    checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.mandatory, mandatory);
     if (changed) {
       this.mandatory = mandatory;
@@ -104,6 +119,7 @@ public class LocalProperty extends AbstractProperty {
    */
   @Override
   public Property setNotNull(final boolean notNull) {
+    checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.notNull, notNull);
     if (changed) {
       this.notNull = notNull;
@@ -114,6 +130,7 @@ public class LocalProperty extends AbstractProperty {
 
   @Override
   public Property setHidden(final boolean hidden) {
+    checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.hidden, hidden);
     if (changed) {
       this.hidden = hidden;
@@ -124,6 +141,7 @@ public class LocalProperty extends AbstractProperty {
 
   @Override
   public Property setExternal(final boolean external) {
+    checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.external, external);
     if (changed) {
       final LocalDocumentType localOwner = (LocalDocumentType) owner;
@@ -151,6 +169,7 @@ public class LocalProperty extends AbstractProperty {
 
   @Override
   public Property setCompression(final String compression) {
+    checkForSchemaMutation();
     final String normalized;
     if (compression == null || compression.isEmpty() || "none".equalsIgnoreCase(compression))
       normalized = null;
@@ -173,6 +192,7 @@ public class LocalProperty extends AbstractProperty {
 
   @Override
   public Property setMax(final String max) {
+    checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.max, max);
     if (changed) {
       switch (type) {
@@ -198,6 +218,7 @@ public class LocalProperty extends AbstractProperty {
 
   @Override
   public Property setMin(final String min) {
+    checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.min, min);
     if (changed) {
       switch (type) {
@@ -223,6 +244,7 @@ public class LocalProperty extends AbstractProperty {
 
   @Override
   public Property setRegexp(final String regexp) {
+    checkForSchemaMutation();
     final boolean changed = !Objects.equals(this.regexp, regexp);
     if (changed) {
       this.regexp = regexp;
@@ -233,6 +255,7 @@ public class LocalProperty extends AbstractProperty {
 
   @Override
   public Object setCustomValue(final String key, final Object value) {
+    checkForSchemaMutation();
     final Object prev;
     if (value == null)
       prev = custom.remove(key);
