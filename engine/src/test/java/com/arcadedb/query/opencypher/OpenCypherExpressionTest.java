@@ -351,10 +351,9 @@ class OpenCypherExpressionTest {
     // TCK List12 Scenario [6]: list comprehension in WHERE with labels() and toLower()
     // The filter references variables bound in later MATCH steps (b),
     // so it must not be pushed down to the node scan of (n).
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:A {name: 'c'}) CREATE (a)-[:T]->(:B), (a)-[:T]->(:C)");
-    });
+          "CREATE (a:A {name: 'c'}) CREATE (a)-[:T]->(:B), (a)-[:T]->(:C)"));
 
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (n)-->(b) WHERE n.name IN [x IN labels(b) | toLower(x)] RETURN b");

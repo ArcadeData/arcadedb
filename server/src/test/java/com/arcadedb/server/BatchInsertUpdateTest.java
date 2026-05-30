@@ -170,9 +170,8 @@ class BatchInsertUpdateTest {
         database.async().updateRecord(record, newRecord -> {
           counter.incrementAndGet();
           countDownLatch.countDown();
-        }, exception -> {
-          exception.printStackTrace();
-        });
+        }, exception ->
+          exception.printStackTrace());
       } else {
         record = database.newDocument("Order");
         record.set("id", autoIncrementOrderId.incrementAndGet());

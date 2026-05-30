@@ -212,9 +212,8 @@ class ExternalPropertyTest extends TestHelper {
     final long extCountBefore = externalBucket.count();
     assertThat(extCountBefore).isGreaterThanOrEqualTo(1L);
 
-    database.transaction(() -> {
-      database.lookupByRID(saved[0], true).asDocument().delete();
-    });
+    database.transaction(() ->
+      database.lookupByRID(saved[0], true).asDocument().delete());
 
     final long extCountAfter = externalBucket.count();
     assertThat(extCountAfter).as("external record should be deleted by cascade").isEqualTo(extCountBefore - 1L);
@@ -254,9 +253,8 @@ class ExternalPropertyTest extends TestHelper {
     });
     assertThat(database.getSchema().getType("Doc").getProperty("blob").isExternal()).isTrue();
 
-    database.transaction(() -> {
-      database.command("sql", "ALTER PROPERTY Doc.blob EXTERNAL false");
-    });
+    database.transaction(() ->
+      database.command("sql", "ALTER PROPERTY Doc.blob EXTERNAL false"));
     assertThat(database.getSchema().getType("Doc").getProperty("blob").isExternal()).isFalse();
   }
 

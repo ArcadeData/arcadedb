@@ -83,9 +83,8 @@ class TimeSeriesFunctionCorrelateTest extends TestHelper {
     database.command("sql",
         "CREATE TIMESERIES TYPE SingleCorr TIMESTAMP ts FIELDS (a DOUBLE, b DOUBLE)");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO SingleCorr SET ts = 1000, a = 5.0, b = 10.0");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO SingleCorr SET ts = 1000, a = 5.0, b = 10.0"));
 
     final ResultSet rs = database.query("sql", "SELECT ts.correlate(a, b) AS corr FROM SingleCorr");
     assertThat(rs.hasNext()).isTrue();

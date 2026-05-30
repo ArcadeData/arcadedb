@@ -1192,10 +1192,9 @@ public class OpenCypherMatchEnhancementsTest {
     final Database db = new DatabaseFactory("./target/databases/testopencypher-match-4188-" + tag).create();
     db.getSchema().createVertexType("Person");
     db.getSchema().createEdgeType("FRIEND");
-    db.transaction(() -> {
+    db.transaction(() ->
       db.command("opencypher",
-          "CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (a)-[:FRIEND]->(b)");
-    });
+          "CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (a)-[:FRIEND]->(b)"));
     return db;
   }
 }

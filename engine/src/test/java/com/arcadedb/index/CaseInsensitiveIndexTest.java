@@ -125,9 +125,8 @@ class CaseInsensitiveIndexTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON UniqueCI (Code COLLATE CI) UNIQUE");
     });
 
-    database.transaction(() -> {
-      database.newDocument("UniqueCI").set("Code", "ABC").save();
-    });
+    database.transaction(() ->
+      database.newDocument("UniqueCI").set("Code", "ABC").save());
 
     // Inserting same value with different case should fail
     assertThatThrownBy(() -> database.transaction(() ->

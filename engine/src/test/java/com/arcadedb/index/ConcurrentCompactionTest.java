@@ -114,9 +114,8 @@ class ConcurrentCompactionTest extends TestHelper {
       // Verify data integrity after concurrent compaction
       for (int t = 0; t < TYPES_COUNT; t++) {
         final String typeName = "Type_" + t;
-        database.transaction(() -> {
-          assertThat(database.countType(typeName, false)).isEqualTo(RECORDS_PER_TYPE);
-        });
+        database.transaction(() ->
+          assertThat(database.countType(typeName, false)).isEqualTo(RECORDS_PER_TYPE));
       }
 
     } finally {
@@ -173,14 +172,13 @@ class ConcurrentCompactionTest extends TestHelper {
 
       database.async().waitCompletion();
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.getSchema()
             .buildTypeIndex(typeName, new String[] { "userId" })
             .withType(Schema.INDEX_TYPE.LSM_TREE)
             .withUnique(false)
             .withPageSize(indexPageSize)
-            .create();
-      });
+            .create());
 
       assertThat(database.getSchema().getIndexByName(typeName + "[userId]")).isNotNull();
 
@@ -189,25 +187,23 @@ class ConcurrentCompactionTest extends TestHelper {
 
       ((DatabaseInternal) database).isAsyncProcessing();
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.getSchema()
             .buildTypeIndex(typeName, new String[] { "movieId" })
             .withType(Schema.INDEX_TYPE.LSM_TREE)
             .withUnique(false)
             .withPageSize(indexPageSize)
-            .create();
-      });
+            .create());
 
       assertThat(database.getSchema().getIndexByName(typeName + "[movieId]")).isNotNull();
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.getSchema()
             .buildTypeIndex(typeName, new String[] { "rating" })
             .withType(Schema.INDEX_TYPE.LSM_TREE)
             .withUnique(false)
             .withPageSize(indexPageSize)
-            .create();
-      });
+            .create());
 
       assertThat(database.getSchema().getIndexByName(typeName + "[rating]")).isNotNull();
 
@@ -264,14 +260,13 @@ class ConcurrentCompactionTest extends TestHelper {
 
       database.async().waitCompletion();
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.getSchema()
             .buildTypeIndex("TestType", new String[] { "id" })
             .withType(Schema.INDEX_TYPE.LSM_TREE)
             .withUnique(false)
             .withPageSize(indexPageSize)
-            .create();
-      });
+            .create());
 
       final IndexInternal firstIndex = (IndexInternal) database.getSchema().getIndexByName("TestType[id]");
       firstIndex.scheduleCompaction();
@@ -286,14 +281,13 @@ class ConcurrentCompactionTest extends TestHelper {
       new Timer().schedule(new TimerTask() {
         @Override
         public void run() {
-          database.transaction(() -> {
+          database.transaction(() ->
             database.getSchema()
                 .buildTypeIndex("TestType", new String[] { "value" })
                 .withType(Schema.INDEX_TYPE.LSM_TREE)
                 .withUnique(false)
                 .withPageSize(indexPageSize)
-                .create();
-          });
+                .create());
           indexCreationCompleted.set(true);
           creationLatch.countDown();
         }

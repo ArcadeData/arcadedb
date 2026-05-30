@@ -451,9 +451,8 @@ public class ArcadeDBServer {
           false);
     databases.clear();
 
-    CodeUtils.executeIgnoringExceptions(() -> {
-      LogManager.instance().log(this, Level.INFO, "- Stop JMX Metrics");
-    }, "Error on stopping JMX Metrics", false);
+    CodeUtils.executeIgnoringExceptions(() ->
+      LogManager.instance().log(this, Level.INFO, "- Stop JMX Metrics"), "Error on stopping JMX Metrics", false);
 
     LogManager.instance().log(this, Level.INFO, "ArcadeDB Server is down");
 

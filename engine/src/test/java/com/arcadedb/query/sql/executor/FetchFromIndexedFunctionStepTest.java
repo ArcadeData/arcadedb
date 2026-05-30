@@ -214,11 +214,10 @@ public class FetchFromIndexedFunctionStepTest extends TestHelper {
     database.command("sql", "CREATE PROPERTY SpecialDoc.text STRING");
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.FULL_TEXT, false, "SpecialDoc", "text");
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.newDocument("SpecialDoc")
           .set("text", "Test with special chars: hello@world.com")
-          .save();
-    });
+          .save());
 
     database.transaction(() -> {
       final ResultSet result = database.query("sql",

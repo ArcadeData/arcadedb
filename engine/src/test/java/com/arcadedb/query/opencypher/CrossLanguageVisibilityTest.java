@@ -94,9 +94,8 @@ class CrossLanguageVisibilityTest {
 
   @Test
   void cypherCreatedVertexVisibleToSql_separateTransactions() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Bob'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Bob'})"));
 
     final ResultSet result = database.query("sql", "SELECT name FROM Person");
     assertThat(result.hasNext()).isTrue();
@@ -138,10 +137,9 @@ class CrossLanguageVisibilityTest {
 
   @Test
   void cypherCreatedEdgeVisibleToSql() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})");
-    });
+          "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})"));
 
     final ResultSet result = database.query("sql",
         "SELECT FROM KNOWS");
@@ -214,9 +212,8 @@ class CrossLanguageVisibilityTest {
 
   @Test
   void sqlUpdateVisibleToCypher_sameTransaction() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Bob', age: 25})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Bob', age: 25})"));
 
     database.transaction(() -> {
       database.command("sql", "UPDATE Person SET age = 26 WHERE name = 'Bob'");
@@ -325,9 +322,8 @@ class CrossLanguageVisibilityTest {
 
   @Test
   void rollbackHidesWritesFromBothEngines() {
-    database.transaction(() -> {
-      database.command("sql", "CREATE VERTEX TYPE Person");
-    });
+    database.transaction(() ->
+      database.command("sql", "CREATE VERTEX TYPE Person"));
 
     // Start a transaction, write via SQL, then read via Cypher, then roll back.
     database.begin();

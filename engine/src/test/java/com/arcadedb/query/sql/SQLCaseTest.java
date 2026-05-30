@@ -312,9 +312,8 @@ class SQLCaseTest {
   @Test
   void caseWithNullHandling() {
     // Test CASE with null values
-    database.transaction(() -> {
-      database.newVertex("Person").set("name", "NoAge").save(); // No age property
-    });
+    database.transaction(() ->
+      database.newVertex("Person").set("name", "NoAge").save());
 
     final ResultSet results = database.query("sql",
         """

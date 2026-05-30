@@ -84,7 +84,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     logger.logLine(0, "Executing full backup of database to '%s'...", backupFile);
 
-    encryptFile(backupFile, zipFile -> {
+    encryptFile(backupFile, zipFile ->
       // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
       database.executeInReadLock(() -> {
         // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
@@ -113,8 +113,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
               databaseOrigSize > 0 ? (databaseOrigSize - databaseCompressedSize) * 100 / databaseOrigSize : 0);
         });
         return null;
-      });
-    });
+      }));
   }
 
   private long compressFile(final ZipOutputStream zipFile, final File inputFile) throws IOException {

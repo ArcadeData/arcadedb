@@ -271,15 +271,14 @@ class OpenCypherBatchBenchmark {
 
       // Execute the UNWIND + MATCH + CREATE query
       final long start = System.currentTimeMillis();
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             UNWIND $batch AS BatchEntry \
             MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
             CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
             CREATE (p)-[:embb]->(b)""",
-            params);
-      });
+            params));
       final long elapsed = System.currentTimeMillis() - start;
 
       // Verify correctness: BATCH_SIZE embeddings and BATCH_SIZE edges created
@@ -326,15 +325,14 @@ class OpenCypherBatchBenchmark {
       final Map<String, Object> params = new HashMap<>();
       params.put("batch", batch);
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             UNWIND $batch AS BatchEntry \
             MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
             CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
             CREATE (p)-[:embb]->(b)""",
-            params);
-      });
+            params));
 
       // Verify each edge connects CHUNK_EMBEDDING to the correct CHUNK.
       // Use elementId() (Neo4j-compatible string identifier) to compare with the RID strings captured
@@ -376,15 +374,14 @@ class OpenCypherBatchBenchmark {
         batch.add(entry);
       }
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             UNWIND $batch AS BatchEntry \
             MATCH (b:CHUNK) WHERE elementId(b) = BatchEntry.destRID \
             CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
             CREATE (p)-[:embb]->(b)""",
-            Map.of("batch", batch));
-      });
+            Map.of("batch", batch)));
 
       // Verify correctness: same number of embeddings and edges as batch entries
       database.transaction(() -> {

@@ -708,7 +708,7 @@ class LSMVectorIndexStorageBenchmark {
 
     // Load all vectors from database for ground truth computation
     final Map<RID, float[]> allVectors = new HashMap<>();
-    db.transaction(() -> {
+    db.transaction(() ->
       db.scanType("VectorDoc", true, record -> {
         final var doc = record.asDocument();
         final RID rid = doc.getIdentity();
@@ -719,8 +719,7 @@ class LSMVectorIndexStorageBenchmark {
           // benchmark data is float[]; tolerate the rare unsupported entry rather than aborting
         }
         return true;
-      });
-    });
+      }));
 
     System.out.println(String.format("  Loaded %d vectors for ground truth computation", allVectors.size()));
 

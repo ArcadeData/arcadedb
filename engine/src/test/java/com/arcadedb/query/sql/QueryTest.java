@@ -630,7 +630,7 @@ class QueryTest extends TestHelper {
 
   @Test
   void graphElementSize() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript",
           """
               CREATE VERTEX TYPE News;
@@ -644,8 +644,7 @@ class QueryTest extends TestHelper {
               INSERT INTO User CONTENT { "id": "1", "name": "User 1" };
               CREATE EDGE Published FROM (SELECT FROM Author WHERE id = 1) TO (SELECT FROM News WHERE id = 1);
               CREATE EDGE Published FROM (SELECT FROM Author WHERE id = 1) TO (SELECT FROM News WHERE id = 2);
-              """);
-    });
+              """));
 
     ResultSet resultSet = database.query("sql", "SELECT out(\"Published\").in(\"HasRead\") as output FROM Author");
     Assertions.assertThat(resultSet.hasNext()).isTrue();
@@ -863,22 +862,20 @@ class QueryTest extends TestHelper {
   // Issue #1898: SELECT with OR mixing an indexed equality and a non-indexed CONTAINS predicate
   @Test
   void selectWithOr() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           CREATE VERTEX TYPE Asset IF NOT EXISTS;
           CREATE PROPERTY Asset.id IF NOT EXISTS STRING (mandatory true);
           CREATE PROPERTY Asset.addresses IF NOT EXISTS LIST OF STRING;
           CREATE INDEX IF NOT EXISTS ON Asset (id) UNIQUE;
-          """);
-    });
+          """));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           INSERT INTO Asset CONTENT {"id":"first", "addresses":["192.168.10.10","192.168.20.10"]};
           INSERT INTO Asset CONTENT {"id":"second"};
           INSERT INTO Asset CONTENT {"id":"third"};
-          """);
-    });
+          """));
 
     database.transaction(() -> {
       final ResultSet rs = database.command("SQL", """

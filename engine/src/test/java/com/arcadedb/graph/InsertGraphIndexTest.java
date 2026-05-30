@@ -55,11 +55,10 @@ class InsertGraphIndexTest extends TestHelper {
     {
       final Vertex[] cachedVertices = loadVertices();
       checkGraph(cachedVertices);
-      database.transaction(() -> {
+      database.transaction(() ->
         database.select().fromType(EDGE_TYPE_NAME).edges().toList().forEach(e -> {
           e.delete();
-        });
-      });
+        }));
     }
     database.close();
   }

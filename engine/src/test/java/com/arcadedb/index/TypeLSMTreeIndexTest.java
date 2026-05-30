@@ -772,9 +772,8 @@ class TypeLSMTreeIndexTest extends TestHelper {
   void indexNameSpecialCharactersUsingSQL() throws Exception {
     database.command("sql", "create vertex type `This.is:special`");
     database.command("sql", "create property `This.is:special`.`other.special:property` string");
-    database.transaction(() -> {
-      database.newVertex("This.is:special").set("other.special:property", "testEncoding").save();
-    });
+    database.transaction(() ->
+      database.newVertex("This.is:special").set("other.special:property", "testEncoding").save());
 
     database.async().waitCompletion();
     // Second call ensures all async operations including index compaction are fully complete

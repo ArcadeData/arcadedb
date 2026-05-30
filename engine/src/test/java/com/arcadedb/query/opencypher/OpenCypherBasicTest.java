@@ -57,9 +57,8 @@ public class OpenCypherBasicTest {
     database.getSchema().createVertexType("TestVertex");
 
     // Create a test vertex
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:TestVertex {name: 'Test'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:TestVertex {name: 'Test'})"));
 
     final ResultSet result = database.query("opencypher", "MATCH (n:TestVertex) RETURN n");
 

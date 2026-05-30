@@ -300,9 +300,8 @@ class LSMTreeFullTextIndexTest extends TestHelper {
     });
 
     // Delete the document and verify it's removed from the index
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Article4 WHERE title = 'Java Programming'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Article4 WHERE title = 'Java Programming'"));
 
     database.transaction(() -> {
       final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article4[title,body]");
@@ -371,9 +370,8 @@ class LSMTreeFullTextIndexTest extends TestHelper {
     });
 
     // Verify we can insert new documents after restart
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Article5 SET title = 'Database Design', body = 'SQL and NoSQL databases'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Article5 SET title = 'Database Design', body = 'SQL and NoSQL databases'"));
 
     // Verify the new document is indexed correctly
     database.transaction(() -> {

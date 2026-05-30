@@ -251,9 +251,7 @@ public class JavaQueryEngine implements QueryEngine {
   @Override
   public AnalyzedQuery analyze(final String query) {
     try {
-      executeUserCode(() -> {
-        return null;
-      }, timeout);
+      executeUserCode(() -> null, timeout);
     } catch (final CommandExecutionException e) {
       throw e;
     } catch (final ExecutionException e) {

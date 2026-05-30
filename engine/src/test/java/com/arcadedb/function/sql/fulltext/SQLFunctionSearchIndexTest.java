@@ -73,20 +73,18 @@ class SQLFunctionSearchIndexTest extends TestHelper {
 
   @Test
   void invalidIndexName() {
-    database.transaction(() -> {
+    database.transaction(() ->
       assertThatThrownBy(() ->
           database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX('NonExistent', 'java') = true")
-      ).isInstanceOf(SchemaException.class);
-    });
+      ).isInstanceOf(SchemaException.class));
   }
 
   @Test
   void nullParameters() {
-    database.transaction(() -> {
+    database.transaction(() ->
       assertThatThrownBy(() ->
           database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX(null, 'java') = true")
-      ).isInstanceOf(CommandExecutionException.class);
-    });
+      ).isInstanceOf(CommandExecutionException.class));
   }
 
   @Test

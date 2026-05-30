@@ -83,9 +83,8 @@ public class UpsertStatementExecutionTest extends TestHelper {
 
   @Override
   protected void endTest() {
-    database.transaction(() -> {
-      database.command("sql", "delete from UpsertStatementExecutionTest");
-    });
+    database.transaction(() ->
+      database.command("sql", "delete from UpsertStatementExecutionTest"));
   }
 
   @Test

@@ -93,10 +93,9 @@ class ContinuousAggregateTest extends TestHelper {
     createSensorType();
 
     // Insert data at hour 0
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sql",
-          "INSERT INTO SensorReading SET ts = 100, sensor_id = 'A', temperature = 20.0");
-    });
+          "INSERT INTO SensorReading SET ts = 100, sensor_id = 'A', temperature = 20.0"));
 
     database.getSchema().buildContinuousAggregate()
         .withName("hourly_temps")
@@ -107,10 +106,9 @@ class ContinuousAggregateTest extends TestHelper {
     assertThat(wm1).isEqualTo(0L); // bucket start for ts=100 with 1h interval is 0
 
     // Insert data at hour 1
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sql",
-          "INSERT INTO SensorReading SET ts = 3600000, sensor_id = 'A', temperature = 25.0");
-    });
+          "INSERT INTO SensorReading SET ts = 3600000, sensor_id = 'A', temperature = 25.0"));
 
     final long wm2 = database.getSchema().getContinuousAggregate("hourly_temps").getWatermarkTs();
     assertThat(wm2).isGreaterThanOrEqualTo(wm1);

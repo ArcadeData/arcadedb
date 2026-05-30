@@ -42,10 +42,9 @@ class BinaryIndexTest extends TestHelper {
           .getOrCreateIndex(Schema.INDEX_TYPE.LSM_TREE, false);
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       // First insert - SUCCESS
-      database.newVertex("vt").set("prop", new byte[]{1, 2, 3}).save();
-    });
+      database.newVertex("vt").set("prop", new byte[]{1, 2, 3}).save());
 
     database.transaction(() -> {
       // Lookup - should work
@@ -57,15 +56,13 @@ class BinaryIndexTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       // Second insert - should also work
-      database.newVertex("vt").set("prop", new byte[]{1, 2, 3}).save();
-    });
+      database.newVertex("vt").set("prop", new byte[]{1, 2, 3}).save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       // Third insert - should also work
-      database.newVertex("vt").set("prop", new byte[]{1, 2, 3}).save();
-    });
+      database.newVertex("vt").set("prop", new byte[]{1, 2, 3}).save());
   }
 
   @Test

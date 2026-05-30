@@ -235,11 +235,10 @@ class FunctionTest extends TestHelper {
 
   @Test
   void functionDateRejectsUnknownOption() {
-    database.transaction(() -> {
+    database.transaction(() ->
       org.assertj.core.api.Assertions.assertThatThrownBy(() ->
           database.query("SQL", "SELECT date(\"2023-03-04\", { whoops: 1 }) as date").next())
           .hasMessageContaining("whoops")
-          .hasMessageContaining("date");
-    });
+          .hasMessageContaining("date"));
   }
 }

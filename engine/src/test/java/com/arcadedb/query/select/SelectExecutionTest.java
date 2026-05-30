@@ -263,13 +263,12 @@ public class SelectExecutionTest extends TestHelper {
 
   @Test
   void okUpdate() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.select().fromType("Vertex")//
           .where().property("id").lt().value(10)//
           .and().property("name").eq().value("John")//
           .limit(10).vertices()//
-          .forEachRemaining(a -> a.modify().set("modified", true).save());
-    });
+          .forEachRemaining(a -> a.modify().set("modified", true).save()));
 
     database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
@@ -392,11 +391,10 @@ public class SelectExecutionTest extends TestHelper {
 
   @Test
   void errorMissingParameter() {
-    expectingException(() -> {
+    expectingException(() ->
       database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .vertices().nextOrNull();
-    }, IllegalArgumentException.class, "Missing parameter 'value'");
+          .vertices().nextOrNull(), IllegalArgumentException.class, "Missing parameter 'value'");
   }
 
   @Test

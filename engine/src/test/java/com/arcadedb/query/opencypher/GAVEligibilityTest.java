@@ -566,10 +566,9 @@ class GAVEligibilityTest {
   @Test
   void antiJoinChainFiltersConnectedPairs() {
     // Add Charlie-KNOWS-Alice to create a direct connection
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (c:Person {name: 'Charlie'}), (a:Person {name: 'Alice'}) CREATE (c)-[:KNOWS]->(a)");
-    });
+          "MATCH (c:Person {name: 'Charlie'}), (a:Person {name: 'Alice'}) CREATE (c)-[:KNOWS]->(a)"));
 
     // Now: Alice-Bob-Charlie-Java should be filtered out because Alice-KNOWS-Charlie exists
     final ResultSet result = database.query("opencypher",
@@ -647,14 +646,9 @@ class GAVEligibilityTest {
   void antiJoinWithGAVMatchesWithoutGAV() {
     // Build a denser graph to test anti-join at scale
     // Add Bob→Charlie KNOWS edge to create a triangle (Alice-Bob-Charlie)
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (b:Person {name: 'Bob'}), (c:Person {name: 'Charlie'}) CREATE (b)-[:KNOWS]->(c)");
-      // Now: Alice→Bob KNOWS, Bob→Charlie KNOWS
-      // BOTH from Alice: [Bob]
-      // BOTH from Bob: [Alice, Charlie]
-      // BOTH from Charlie: [Bob]
-    });
+          "MATCH (b:Person {name: 'Bob'}), (c:Person {name: 'Charlie'}) CREATE (b)-[:KNOWS]->(c)"));
 
     final var gav = com.arcadedb.graph.olap.GraphAnalyticalView.builder(database)
         .withName("test_antijoin_gav")
@@ -743,10 +737,9 @@ class GAVEligibilityTest {
   @Test
   void antiJoinWithGAVFiltersCorrectly() {
     // Add Charlie→Alice edge, build GAV, verify anti-join filters with CSR
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (c:Person {name: 'Charlie'}), (a:Person {name: 'Alice'}) CREATE (c)-[:KNOWS]->(a)");
-    });
+          "MATCH (c:Person {name: 'Charlie'}), (a:Person {name: 'Alice'}) CREATE (c)-[:KNOWS]->(a)"));
 
     final var gav = com.arcadedb.graph.olap.GraphAnalyticalView.builder(database)
         .withName("test_antijoin_filter_gav")

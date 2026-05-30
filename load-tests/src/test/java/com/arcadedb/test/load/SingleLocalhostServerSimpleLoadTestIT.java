@@ -202,9 +202,8 @@ class SingleLocalhostServerSimpleLoadTestIT {
     logger.info("Finishing at {}", DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(finishedAt));
     logger.info("Total time: {} minutes", Duration.between(startedAt, finishedAt).toMinutes());
 
-    Metrics.globalRegistry.getMeters().forEach(meter -> {
-      logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure());
-    });
+    Metrics.globalRegistry.getMeters().forEach(meter ->
+      logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure()));
 
     db.assertThatUserCountIs(expectedUsersCount);
     db.assertThatPhotoCountIs(expectedPhotoCount);

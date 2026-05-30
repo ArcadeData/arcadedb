@@ -101,13 +101,11 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
 
   @Test
   void authenticationFailureReturns403() throws Throwable {
-    execute(() -> {
+    execute(() ->
       assertThatThrownBy(() -> {
         new WebSocketClientHelper("ws://localhost:2480/ws", "root", "bad");
       }).isInstanceOf(UpgradeFailedException.class)
-          .hasMessageContaining("403");
-
-    }, "authenticationFailureReturns403");
+          .hasMessageContaining("403"), "authenticationFailureReturns403");
   }
 
   @Test

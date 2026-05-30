@@ -95,9 +95,8 @@ class HTTPMaterializedViewIT extends BaseGraphServerTest {
   // Test 4: DROP IF EXISTS doesn't throw
   @Test
   void dropIfExistsViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
-      command(serverIndex, "DROP MATERIALIZED VIEW IF EXISTS NonExistentView");
-    });
+    testEachServer((serverIndex) ->
+      command(serverIndex, "DROP MATERIALIZED VIEW IF EXISTS NonExistentView"));
   }
 
   // Test 5: CREATE IF NOT EXISTS is idempotent

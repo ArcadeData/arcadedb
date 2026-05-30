@@ -91,9 +91,8 @@ public class PerformanceInsertMTStressTest {
     String resourceTypeName = "Resource";
     DocumentType resourceType = db.getSchema().createDocumentType(resourceTypeName);
 
-    IntStream.rangeClosed(1, threadCount).forEach(i -> {
-      resourceType.addBucket(db.getSchema().createBucket(resourceTypeName + "_" + i));
-    });
+    IntStream.rangeClosed(1, threadCount).forEach(i ->
+      resourceType.addBucket(db.getSchema().createBucket(resourceTypeName + "_" + i)));
 
     resourceType.setBucketSelectionStrategy(new ThreadBucketSelectionStrategy());
     resourceType.createProperty("identifier", Type.STRING);

@@ -83,9 +83,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
   @Override
   protected void endTest() {
-    database.transaction(() -> {
-      database.command("sql", "delete from OUpdateStatementExecutionTest");
-    });
+    database.transaction(() ->
+      database.command("sql", "delete from OUpdateStatementExecutionTest"));
     GlobalConfiguration.resetAll();
   }
 
@@ -1005,11 +1004,10 @@ public class UpdateStatementExecutionTest extends TestHelper {
       assertThat(result.hasNext()).isTrue();
     });
 
-    assertThatThrownBy(() -> {
+    assertThatThrownBy(() ->
       database.transaction(() -> {
         database.command("sql", "UPDATE doc CONTENT { \"other\": \"new\" } WHERE prop = 'Ho'");
-      });
-    }).isInstanceOf(ValidationException.class)
+      })).isInstanceOf(ValidationException.class)
         .hasMessageContaining("mandatory");
   }
 
@@ -1049,9 +1047,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY doc.other STRING");
     });
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO doc CONTENT { \"prop\": \"Ho\", \"other\": \"value\" }");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO doc CONTENT { \"prop\": \"Ho\", \"other\": \"value\" }"));
 
     database.transaction(() -> {
       database.command("sql", "UPDATE doc SET prop = null, other = 'changed' APPLY DEFAULTS WHERE prop = 'Ho'");
@@ -1072,9 +1069,8 @@ public class UpdateStatementExecutionTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY doc.other STRING");
     });
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO doc CONTENT { \"prop\": \"Original\", \"other\": \"value\" }");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO doc CONTENT { \"prop\": \"Original\", \"other\": \"value\" }"));
 
     database.transaction(() -> {
       database.command("sql", "UPDATE doc SET other = 'changed' WHERE prop = 'Original'");

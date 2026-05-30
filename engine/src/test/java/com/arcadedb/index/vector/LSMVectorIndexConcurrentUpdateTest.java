@@ -99,9 +99,8 @@ class LSMVectorIndexConcurrentUpdateTest extends TestHelper {
     final float[] zeroEmbedding = new float[EMBEDDING_DIM];
     for (int i = 0; i < INITIAL_RECORDS; i++) {
       final String id = "record_" + recordCounter.getAndIncrement();
-      database.transaction(() -> {
-        database.command("sql", "INSERT INTO RecordV SET id=?, embedding=?", id, zeroEmbedding);
-      });
+      database.transaction(() ->
+        database.command("sql", "INSERT INTO RecordV SET id=?, embedding=?", id, zeroEmbedding));
     }
 
     // Phase 2: Concurrent inserts and updates

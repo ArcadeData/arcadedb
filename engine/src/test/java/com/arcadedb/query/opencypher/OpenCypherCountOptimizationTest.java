@@ -105,9 +105,8 @@ class OpenCypherCountOptimizationTest {
   @Test
   void countWithEmptyType() {
     // Create empty type
-    database.transaction(() -> {
-      database.getSchema().createVertexType("EmptyType");
-    });
+    database.transaction(() ->
+      database.getSchema().createVertexType("EmptyType"));
 
     // Test count on empty type
     final String query = "MATCH (e:EmptyType) RETURN COUNT(e) as count";

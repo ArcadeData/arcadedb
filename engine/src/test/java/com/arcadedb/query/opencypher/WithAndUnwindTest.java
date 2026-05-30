@@ -443,11 +443,10 @@ class WithAndUnwindTest {
 
     // Query using WHERE clause (was slow before fix)
     final long startWhere = System.nanoTime();
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           "UNWIND $batch AS e MATCH (a:BenchNode), (b:BenchNode) WHERE a.uid = e.src AND b.uid = e.dst CREATE (a)-[:BENCH_EDGE]->(b)",
-          Map.of("batch", batch));
-    });
+          Map.of("batch", batch)));
     final long whereTimeMs = (System.nanoTime() - startWhere) / 1_000_000;
 
     // Verify edges were created
@@ -467,11 +466,10 @@ class WithAndUnwindTest {
     );
 
     final long startInline = System.nanoTime();
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           "UNWIND $batch AS e MATCH (a:BenchNode {uid: e.src}), (b:BenchNode {uid: e.dst}) CREATE (a)-[:BENCH_EDGE]->(b)",
-          Map.of("batch", batch2));
-    });
+          Map.of("batch", batch2)));
     final long inlineTimeMs = (System.nanoTime() - startInline) / 1_000_000;
 
     // Verify total edges

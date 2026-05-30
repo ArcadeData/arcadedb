@@ -147,10 +147,9 @@ class OpenCypherLoadCSVTest {
     database.getSchema().createVertexType("Person");
 
     final String url = csvFile.toAbsolutePath().toUri().toString();
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "LOAD CSV WITH HEADERS FROM '" + url + "' AS row CREATE (n:Person {name: row.name, age: toInteger(row.age)})");
-    });
+          "LOAD CSV WITH HEADERS FROM '" + url + "' AS row CREATE (n:Person {name: row.name, age: toInteger(row.age)})"));
 
     // Verify the nodes were created
     final List<Result> results = new ArrayList<>();

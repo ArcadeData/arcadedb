@@ -82,9 +82,8 @@ class OpenCypherCypher25ClausesTest {
   // Issue #3365: FINISH after MATCH returns no rows even if MATCH produces some.
   @Test
   void finishAfterMatchReturnsEmptyWithNoRowLeak() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Person {name: 'A'}), (:Person {name: 'B'}), (:Person {name: 'C'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Person {name: 'A'}), (:Person {name: 'B'}), (:Person {name: 'C'})"));
 
     final ResultSet result = database.query("opencypher", "MATCH (n:Person) FINISH");
     assertThat(result.hasNext()).isFalse();
@@ -137,9 +136,8 @@ class OpenCypherCypher25ClausesTest {
   // Issue #3365: FOR feeds CREATE producing one vertex per iteration.
   @Test
   void forIterationFollowedByCreate() {
-    database.transaction(() -> {
-      database.command("opencypher", "FOR name IN ['Alice', 'Bob', 'Carol'] CREATE (:Person {name: name})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "FOR name IN ['Alice', 'Bob', 'Carol'] CREATE (:Person {name: name})"));
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person) RETURN count(n) AS c");
     assertThat(((Number) verify.next().getProperty("c")).longValue()).isEqualTo(3L);
@@ -191,9 +189,8 @@ class OpenCypherCypher25ClausesTest {
   // Issue #3365: INSERT accepts multiple comma-separated patterns in one statement.
   @Test
   void insertMultiplePatternsInOneStatement() {
-    database.transaction(() -> {
-      database.command("opencypher", "INSERT (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "INSERT (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})"));
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person) RETURN n");
     int count = 0;
@@ -230,12 +227,10 @@ class OpenCypherCypher25ClausesTest {
   void insertProducesIdenticalGraphToCreate() {
     database.getSchema().createEdgeType("KNOWS");
 
-    database.transaction(() -> {
-      database.command("opencypher", "INSERT (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'})");
-    });
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (a:Person {name: 'C'})-[:KNOWS]->(b:Person {name: 'D'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "INSERT (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'})"));
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (a:Person {name: 'C'})-[:KNOWS]->(b:Person {name: 'D'})"));
 
     final ResultSet verifyVertices = database.query("opencypher", "MATCH (n:Person) RETURN count(n) AS c");
     assertThat(((Number) verifyVertices.next().getProperty("c")).longValue()).isEqualTo(4L);
@@ -249,9 +244,8 @@ class OpenCypherCypher25ClausesTest {
   void insertRejectsVariableLengthRelationship() {
     database.getSchema().createEdgeType("KNOWS");
 
-    assertThatThrownBy(() -> database.transaction(() -> {
-      database.command("opencypher", "INSERT (a:Person)-[:KNOWS*1..3]->(b:Person)");
-    }))
+    assertThatThrownBy(() -> database.transaction(() ->
+      database.command("opencypher", "INSERT (a:Person)-[:KNOWS*1..3]->(b:Person)")))
         .isInstanceOfAny(CommandParsingException.class, RuntimeException.class)
         .hasMessageContaining("");
   }
@@ -259,9 +253,8 @@ class OpenCypherCypher25ClausesTest {
   // Issue #3365: INSERT accepts the IS-label syntax as an alternative to the colon.
   @Test
   void insertWithLabelIsSyntax() {
-    database.transaction(() -> {
-      database.command("opencypher", "INSERT (n IS Person {name: 'Eve'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "INSERT (n IS Person {name: 'Eve'})"));
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Eve'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
@@ -368,9 +361,8 @@ class OpenCypherCypher25ClausesTest {
     measurement.createProperty("f32", Type.FLOAT);
     measurement.createProperty("f64", Type.DOUBLE);
 
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Measurement {f32: 1.5, f64: 2.5})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Measurement {f32: 1.5, f64: 2.5})"));
 
     final ResultSet rs = database.query("opencypher",
         """
@@ -393,9 +385,8 @@ class OpenCypherCypher25ClausesTest {
     m.createProperty("i", Type.INTEGER);
     m.createProperty("l", Type.LONG);
 
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Sample {b: 1, s: 2, i: 3, l: 4})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Sample {b: 1, s: 2, i: 3, l: 4})"));
 
     final ResultSet rs = database.query("opencypher",
         """
@@ -443,10 +434,9 @@ class OpenCypherCypher25ClausesTest {
   @Test
   void groupedPlusEquivalentToVarLength() {
     database.getSchema().createEdgeType("KNOWS");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})");
-    });
+          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})"));
 
     final ResultSet qpp = database.query("opencypher",
         "MATCH (a:Person {name:'A'})-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person {name:'D'}) RETURN d.name AS name");
@@ -462,10 +452,9 @@ class OpenCypherCypher25ClausesTest {
   @Test
   void groupedRangeQuantifier() {
     database.getSchema().createEdgeType("KNOWS");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})");
-    });
+          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})"));
 
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name:'A'})((:Person)-[:KNOWS]->(:Person)){1,2}(end:Person) RETURN end.name AS name ORDER BY name");
@@ -481,10 +470,9 @@ class OpenCypherCypher25ClausesTest {
   @Test
   void groupedExactQuantifier() {
     database.getSchema().createEdgeType("KNOWS");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})");
-    });
+          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})"));
 
     final ResultSet result = database.query("opencypher",
         "MATCH (a:Person {name:'A'})((:Person)-[:KNOWS]->(:Person)){2}(end:Person) RETURN end.name AS name");
@@ -496,10 +484,9 @@ class OpenCypherCypher25ClausesTest {
   @Test
   void groupedRejectsZeroQuantifier() {
     database.getSchema().createEdgeType("KNOWS");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})");
-    });
+          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})"));
 
     assertThatThrownBy(() -> database.query("opencypher",
         "MATCH (a:Person {name:'A'})((:Person)-[:KNOWS]->(:Person)){0}(end:Person) RETURN end"))
@@ -510,10 +497,9 @@ class OpenCypherCypher25ClausesTest {
   @Test
   void groupedRejectsInnerWhere() {
     database.getSchema().createEdgeType("KNOWS");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})");
-    });
+          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})"));
 
     assertThatThrownBy(() -> database.query("opencypher",
         "MATCH (a:Person {name:'A'})((:Person)-[:KNOWS]->(b:Person) WHERE b.name <> 'X')+(end:Person) RETURN end"))
@@ -524,10 +510,9 @@ class OpenCypherCypher25ClausesTest {
   @Test
   void groupedRejectsMultiRelInner() {
     database.getSchema().createEdgeType("KNOWS");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})");
-    });
+          "CREATE (a:Person {name:'A'})-[:KNOWS]->(b:Person {name:'B'})-[:KNOWS]->(c:Person {name:'C'})-[:KNOWS]->(d:Person {name:'D'})"));
 
     assertThatThrownBy(() -> database.query("opencypher",
         "MATCH (a:Person {name:'A'})((:Person)-[:KNOWS]->(:Person)-[:KNOWS]->(:Person))+(end:Person) RETURN end"))

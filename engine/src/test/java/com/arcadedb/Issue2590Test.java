@@ -55,9 +55,8 @@ public class Issue2590Test extends TestHelper {
     assertThat(updateToNull.hasNext()).isTrue();
 
     // Update from LIC-CCC to duplicate existing value LIC-AAA (should fail)
-    assertThatThrownBy(() -> {
-      database.command("sql", "UPDATE NullRemoteTest SET licenseKey = 'LIC-AAA' WHERE licenseKey = 'LIC-CCC'");
-    }).isInstanceOf(DuplicatedKeyException.class)
+    assertThatThrownBy(() ->
+      database.command("sql", "UPDATE NullRemoteTest SET licenseKey = 'LIC-AAA' WHERE licenseKey = 'LIC-CCC'")).isInstanceOf(DuplicatedKeyException.class)
         .as("UPDATE to duplicate value should enforce unique constraint");
 
     database.rollback();

@@ -149,9 +149,8 @@ class CypherReduceAndShortestPathTest {
    */
   @Test
   void reduceWithNullListFromOptionalMatch() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Person {name: 'IsolatedB', id: 99})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Person {name: 'IsolatedB', id: 99})"));
 
     final ResultSet resultSet = database.query("opencypher",
         """

@@ -68,9 +68,8 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
     }
 
     final Database database = getDatabase(0);
-    database.transaction(() -> {
-      populateDatabase(parallel, database);
-    });
+    database.transaction(() ->
+      populateDatabase(parallel, database));
 
     // CLOSE ALL DATABASES BEFORE TO START THE SERVERS
     LogManager.instance().log(this, Level.INFO, "TEST: Closing databases before starting");

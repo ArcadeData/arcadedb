@@ -249,9 +249,8 @@ class ExpandStepTest extends TestHelper {
   void shouldExpandNonExistentField() {
     database.getSchema().createDocumentType("NoField");
 
-    database.transaction(() -> {
-      database.newDocument("NoField").set("name", "test").save();
-    });
+    database.transaction(() ->
+      database.newDocument("NoField").set("name", "test").save());
 
     final ResultSet result = database.query("sql", "SELECT expand(nonexistent) FROM NoField");
     assertThat(result.hasNext()).isFalse();
@@ -293,9 +292,8 @@ class ExpandStepTest extends TestHelper {
   void expandStringListWithAliasUsesAliasAsPropertyName() {
     database.getSchema().createDocumentType("AliasTest");
 
-    database.transaction(() -> {
-      database.newDocument("AliasTest").set("tags", List.of("a", "b", "c")).save();
-    });
+    database.transaction(() ->
+      database.newDocument("AliasTest").set("tags", List.of("a", "b", "c")).save());
 
     final ResultSet result = database.query("sql", "SELECT expand(tags) AS tag FROM AliasTest");
 

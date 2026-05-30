@@ -104,7 +104,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void noPath() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_noPath", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_noPath", (graph) ->
       graph.transaction(() -> {
         graph.getSchema().createVertexType("isolated");
 
@@ -119,8 +119,7 @@ public class SQLFunctionDuanSSSPTest {
             new BasicCommandContext());
 
         assertThat(result).isEmpty();
-      });
-    });
+      }));
   }
 
   @Test
@@ -158,7 +157,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void largerGraph() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_largerGraph", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_largerGraph", (graph) ->
       graph.transaction(() -> {
         graph.getSchema().createVertexType("city");
         graph.getSchema().createEdgeType("road");
@@ -197,8 +196,7 @@ public class SQLFunctionDuanSSSPTest {
         // or 0 -> 1 -> 3 -> 4 -> 5 (cost: 4+5+2+3 = 14)
         // The algorithm should find the optimal path
         assertThat(result.size()).isGreaterThan(1);
-      });
-    });
+      }));
   }
 
   // NOTE: Cypher test removed because Cypher engine is in a separate module

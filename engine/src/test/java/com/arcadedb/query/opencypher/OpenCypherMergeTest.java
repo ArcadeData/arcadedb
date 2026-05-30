@@ -67,9 +67,8 @@ class OpenCypherMergeTest {
 
   @Test
   void mergeCreatesNodeWhenNotExists() {
-    database.transaction(() -> {
-      database.command("opencypher", "MERGE (n:Person {name: 'Alice'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MERGE (n:Person {name: 'Alice'})"));
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Alice'}) RETURN n");
     assertThat(verify.hasNext()).isTrue();
@@ -80,14 +79,12 @@ class OpenCypherMergeTest {
   @Test
   void mergeFindsNodeWhenExists() {
     // Create node
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Bob'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Bob'})"));
 
     // MERGE should find it, not create duplicate
-    database.transaction(() -> {
-      database.command("opencypher", "MERGE (n:Person {name: 'Bob'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MERGE (n:Person {name: 'Bob'})"));
 
     // Verify only one Bob exists
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Bob'}) RETURN n");
@@ -112,19 +109,16 @@ class OpenCypherMergeTest {
   @Test
   void mergeMultipleTimes() {
     // First MERGE creates
-    database.transaction(() -> {
-      database.command("opencypher", "MERGE (n:Person {name: 'David', age: 30})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MERGE (n:Person {name: 'David', age: 30})"));
 
     // Second MERGE finds
-    database.transaction(() -> {
-      database.command("opencypher", "MERGE (n:Person {name: 'David', age: 30})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MERGE (n:Person {name: 'David', age: 30})"));
 
     // Third MERGE finds
-    database.transaction(() -> {
-      database.command("opencypher", "MERGE (n:Person {name: 'David', age: 30})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MERGE (n:Person {name: 'David', age: 30})"));
 
     // Verify only one David exists
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'David'}) RETURN n");
@@ -145,10 +139,9 @@ class OpenCypherMergeTest {
     });
 
     // MERGE relationship
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MERGE (a:Person {name: 'Eve'})-[r:KNOWS]->(b:Person {name: 'Frank'})");
-    });
+          "MERGE (a:Person {name: 'Eve'})-[r:KNOWS]->(b:Person {name: 'Frank'})"));
 
     // Verify relationship exists
     ResultSet verify = database.query("opencypher",
@@ -156,10 +149,9 @@ class OpenCypherMergeTest {
     assertThat(verify.hasNext()).isTrue();
 
     // MERGE again - should find existing relationship
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MERGE (a:Person {name: 'Eve'})-[r:KNOWS]->(b:Person {name: 'Frank'})");
-    });
+          "MERGE (a:Person {name: 'Eve'})-[r:KNOWS]->(b:Person {name: 'Frank'})"));
 
     // Verify still only one relationship
     verify = database.query("opencypher",
@@ -245,12 +237,11 @@ class OpenCypherMergeTest {
     });
 
     // MERGE relationship using backticks around the type name 'in' (which is a reserved keyword)
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           """
           MATCH (a:Person {name: 'Alice'}), (b:Company {name: 'TechCorp'}) \
-          MERGE (a)-[r:`in`]->(b) RETURN a, b, r""");
-    });
+          MERGE (a)-[r:`in`]->(b) RETURN a, b, r"""));
 
     // Verify the relationship type is "in" (without backticks)
     final ResultSet verify = database.query("opencypher",
@@ -263,12 +254,11 @@ class OpenCypherMergeTest {
     assertThat(relType).doesNotContain("`");
 
     // MERGE again - should find the existing relationship (proves backticks are treated consistently)
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           """
           MATCH (a:Person {name: 'Alice'}), (b:Company {name: 'TechCorp'}) \
-          MERGE (a)-[r2:`in`]->(b) RETURN r2""");
-    });
+          MERGE (a)-[r2:`in`]->(b) RETURN r2"""));
 
     // Verify still only one relationship
     final ResultSet countVerify = database.query("opencypher",
@@ -287,9 +277,8 @@ class OpenCypherMergeTest {
     database.getSchema().createVertexType("select");
 
     // Create node using backticks around the label 'select' (which is a reserved keyword)
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:`select` {id: 1})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:`select` {id: 1})"));
 
     // Verify the node label is "select" (without backticks)
     final ResultSet verify = database.query("opencypher",
@@ -311,16 +300,14 @@ class OpenCypherMergeTest {
     @Test
     void unboundLabelOnlyEndpointCreatesNewNodeWhenSameLabelExists() {
       // Setup: Alice + an existing Company
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "CREATE (:Person {name: 'Alice'}), (:Company {name: 'TechCorp', industry: 'Technology'})");
-      });
+            "CREATE (:Person {name: 'Alice'}), (:Company {name: 'TechCorp', industry: 'Technology'})"));
 
       // c is unbound and label-only — MERGE must create a fresh Company, not reuse TechCorp
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)");
-      });
+            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)"));
 
       // Two Company nodes: TechCorp + the new label-only one
       final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
@@ -338,14 +325,12 @@ class OpenCypherMergeTest {
     @Test
     void unboundLabelOnlyEndpointCreatesNodeWhenNoSameLabelExists() {
       // Control case: no Company exists yet — both old and new code should create one
-      database.transaction(() -> {
-        database.command("opencypher", "CREATE (:Person {name: 'Alice'})");
-      });
+      database.transaction(() ->
+        database.command("opencypher", "CREATE (:Person {name: 'Alice'})"));
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)");
-      });
+            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)"));
 
       final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
       assertThat(((Number) countRs.next().getProperty("cnt")).longValue()).isEqualTo(1L);
@@ -359,17 +344,15 @@ class OpenCypherMergeTest {
     @Test
     void explicitlyBoundEndpointStillReusesExistingNode() {
       // Control case: c is explicitly bound via MATCH — must reuse TechCorp
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "CREATE (:Person {name: 'Alice'}), (:Company {name: 'TechCorp', industry: 'Technology'})");
-      });
+            "CREATE (:Person {name: 'Alice'}), (:Company {name: 'TechCorp', industry: 'Technology'})"));
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             MATCH (p:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) \
-            MERGE (p)-[r:WORKS_AT {since: 2020}]->(c)""");
-      });
+            MERGE (p)-[r:WORKS_AT {since: 2020}]->(c)"""));
 
       final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
       assertThat(((Number) countRs.next().getProperty("cnt")).longValue()).isEqualTo(1L);
@@ -382,18 +365,16 @@ class OpenCypherMergeTest {
 
     @Test
     void unboundLabelOnlyEndpointCreatesNewNodeWithMultipleExistingSameLabel() {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             CREATE (:Person {name: 'Alice'}), \
             (:Company {name: 'TechCorp', industry: 'Technology'}), \
-            (:Company {name: 'DataInc', industry: 'Analytics'})""");
-      });
+            (:Company {name: 'DataInc', industry: 'Analytics'})"""));
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)");
-      });
+            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)"));
 
       // TechCorp + DataInc + 1 new = 3 total
       final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
@@ -409,20 +390,17 @@ class OpenCypherMergeTest {
     @Test
     void secondMergeReusesCreatedPathAndDoesNotCreateAnotherNode() {
       // Idempotency: the second MERGE must find the path created by the first
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "CREATE (:Person {name: 'Alice'}), (:Company {name: 'TechCorp', industry: 'Technology'})");
-      });
+            "CREATE (:Person {name: 'Alice'}), (:Company {name: 'TechCorp', industry: 'Technology'})"));
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)");
-      });
+            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)"));
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)");
-      });
+            "MATCH (p:Person {name: 'Alice'}) MERGE (p)-[r:WORKS_AT {since: 2020}]->(c:Company)"));
 
       // TechCorp + 1 new; the second MERGE must not create a third
       final ResultSet countRs = database.query("opencypher", "MATCH (c:Company) RETURN count(c) AS cnt");
@@ -436,16 +414,14 @@ class OpenCypherMergeTest {
     @Test
     void undirectedMergeFindsExistingEdgeInReverseOrientation() {
       // Create alice->bob directed edge
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "CREATE (:Person {name: 'Alice'})-[:KNOWS]->(:Person {name: 'Bob'})");
-      });
+            "CREATE (:Person {name: 'Alice'})-[:KNOWS]->(:Person {name: 'Bob'})"));
 
       // Undirected MERGE with Bob on the left — must match the stored alice->bob edge
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "MERGE (x:Person {name: 'Bob'})-[:KNOWS]-(y:Person {name: 'Alice'})");
-      });
+            "MERGE (x:Person {name: 'Bob'})-[:KNOWS]-(y:Person {name: 'Alice'})"));
 
       // No new nodes or edges should have been created
       final ResultSet personCount = database.query("opencypher", "MATCH (p:Person) RETURN count(p) AS cnt");
@@ -463,20 +439,18 @@ class OpenCypherMergeTest {
     @Test
     void preBoundIntermediateNodeIsRespectedDuringPathTraversal() {
       // Setup: alice->dave->carol exists; no alice->bob->carol path yet
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             CREATE (alice:Person {name: 'Alice'})-[:KNOWS]->(dave:Person {name: 'Dave'})-[:KNOWS]->(carol:Person {name: 'Carol'}),\
-             (bob:Person {name: 'Bob'})""");
-      });
+             (bob:Person {name: 'Bob'})"""));
 
       // MATCH binds alice and bob; MERGE the path through bob specifically
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             MATCH (alice:Person {name: 'Alice'}), (bob:Person {name: 'Bob'}) \
-            MERGE (alice)-[:KNOWS]->(bob)-[:KNOWS]->(carol:Person {name: 'Carol'})""");
-      });
+            MERGE (alice)-[:KNOWS]->(bob)-[:KNOWS]->(carol:Person {name: 'Carol'})"""));
 
       // alice->bob edge must have been created (the dave path must NOT be accepted as a match for bob)
       final ResultSet rs = database.query("opencypher",
@@ -1213,12 +1187,11 @@ class OpenCypherMergeTest {
             CREATE (c)-[:in]->(b)""");
       });
 
-      db.transaction(() -> {
+      db.transaction(() ->
         db.command("opencypher",
             """
             MATCH (a:DOCUMENT {name:'parentA'}) \
-            MERGE (n:CHUNK {name:'A_only'})-[:in]->(a)""");
-      });
+            MERGE (n:CHUNK {name:'A_only'})-[:in]->(a)"""));
 
       final ResultSet rs = db.query("opencypher",
           "MATCH (n:CHUNK {name:'A_only'})-[:in]->(a:DOCUMENT {name:'parentA'}) RETURN count(n) AS cnt");
@@ -1244,13 +1217,12 @@ class OpenCypherMergeTest {
             CREATE (c:CHUNK {name:'shared', subtype:'CHUNK'})-[:in]->(b)""");
       });
 
-      db.transaction(() -> {
+      db.transaction(() ->
         // Should NOT match the parentB-attached chunk; should create a new one under parentA.
         db.command("opencypher",
             """
             MATCH (a:DOCUMENT {name:'parentA'}) \
-            MERGE (n:CHUNK {name:'shared', subtype:'CHUNK'})-[:in]->(a)""");
-      });
+            MERGE (n:CHUNK {name:'shared', subtype:'CHUNK'})-[:in]->(a)"""));
 
       // Two CHUNK nodes exist now: the original one under parentB and the new one under parentA.
       final ResultSet total = db.query("opencypher", "MATCH (n:CHUNK) RETURN count(n) AS cnt");
@@ -1277,12 +1249,11 @@ class OpenCypherMergeTest {
             CREATE (c:CHUNK {name:'existing'})-[:in]->(a)""");
       });
 
-      db.transaction(() -> {
+      db.transaction(() ->
         db.command("opencypher",
             """
             MATCH (a:DOCUMENT {name:'parentA'}) \
-            MERGE (n:CHUNK {name:'existing'})-[:in]->(a)""");
-      });
+            MERGE (n:CHUNK {name:'existing'})-[:in]->(a)"""));
 
       final ResultSet rs = db.query("opencypher", "MATCH (n:CHUNK) RETURN count(n) AS cnt");
       assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(1L);
@@ -1304,12 +1275,11 @@ class OpenCypherMergeTest {
             CREATE (s)-[:in]->(c:CHUNK {name:'target'})""");
       });
 
-      db.transaction(() -> {
+      db.transaction(() ->
         db.command("opencypher",
             """
             MATCH (s:DOCUMENT {name:'src'}) \
-            MERGE (s)-[:in]->(n:CHUNK {name:'target'})""");
-      });
+            MERGE (s)-[:in]->(n:CHUNK {name:'target'})"""));
 
       // Must MATCH (not create) the existing chunk.
       final ResultSet rs = db.query("opencypher", "MATCH (n:CHUNK) RETURN count(n) AS cnt");
@@ -1331,13 +1301,12 @@ class OpenCypherMergeTest {
             CREATE (c:CHUNK {name:'noise_'+toString(i)})-[:in]->(b)""");
       });
 
-      db.transaction(() -> {
+      db.transaction(() ->
         db.command("opencypher",
             """
             MATCH (a:DOCUMENT {name:'parentA'}) \
             UNWIND range(1,10) AS i \
-            MERGE (n:CHUNK {name:'A_'+toString(i)})-[:in]->(a)""");
-      });
+            MERGE (n:CHUNK {name:'A_'+toString(i)})-[:in]->(a)"""));
 
       final ResultSet underA = db.query("opencypher",
           "MATCH (n:CHUNK)-[:in]->(:DOCUMENT {name:'parentA'}) RETURN count(n) AS cnt");
@@ -1348,13 +1317,12 @@ class OpenCypherMergeTest {
       assertThat(underB.next().<Number>getProperty("cnt").longValue()).isEqualTo(50L);
 
       // Re-run MERGE: nothing new should be created.
-      db.transaction(() -> {
+      db.transaction(() ->
         db.command("opencypher",
             """
             MATCH (a:DOCUMENT {name:'parentA'}) \
             UNWIND range(1,10) AS i \
-            MERGE (n:CHUNK {name:'A_'+toString(i)})-[:in]->(a)""");
-      });
+            MERGE (n:CHUNK {name:'A_'+toString(i)})-[:in]->(a)"""));
 
       final ResultSet total = db.query("opencypher", "MATCH (n:CHUNK) RETURN count(n) AS cnt");
       assertThat(total.next().<Number>getProperty("cnt").longValue()).isEqualTo(60L);
@@ -1413,13 +1381,12 @@ class OpenCypherMergeTest {
             CREATE (s)-[:in]->(:CHUNK {name:'pre'})""");
       });
 
-      db.transaction(() -> {
+      db.transaction(() ->
         db.command("opencypher",
             """
             MATCH (s:DOCUMENT {name:'src'}) \
             MERGE (s)-[:in]->(n:CHUNK {name:'pre'}) \
-            RETURN n.name AS name""");
-      });
+            RETURN n.name AS name"""));
 
       final ResultSet rs = db.query("opencypher", "MATCH (n:CHUNK) RETURN count(n) AS cnt");
       assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(1L);
@@ -1428,9 +1395,8 @@ class OpenCypherMergeTest {
     // Issue #4226: When the MERGE pattern returns the bound anchor in a projection, both vertex variables must resolve to the correct identities.
     @Test
     void mergeWithBoundAnchorReturnsBoundVariable() {
-      db.transaction(() -> {
-        db.command("opencypher", "CREATE (:DOCUMENT {name:'parentA'})");
-      });
+      db.transaction(() ->
+        db.command("opencypher", "CREATE (:DOCUMENT {name:'parentA'})"));
 
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
@@ -1460,13 +1426,12 @@ class OpenCypherMergeTest {
         db.command("opencypher", "CREATE (:B {name:'b2'})");
       });
 
-      db.transaction(() -> {
+      db.transaction(() ->
         // Bound anchor is b in the middle; the path should match the existing chain.
         db.command("opencypher",
             """
             MATCH (b:B {name:'b1'}) \
-            MERGE (a:A {name:'a1'})-[:R1]->(b)-[:R2]->(c:C {name:'c1'})""");
-      });
+            MERGE (a:A {name:'a1'})-[:R1]->(b)-[:R2]->(c:C {name:'c1'})"""));
 
       final ResultSet rs = db.query("opencypher", "MATCH (b:B) RETURN count(b) AS cnt");
       assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(2L);

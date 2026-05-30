@@ -155,10 +155,9 @@ class RaftSchemaReplicationIT extends BaseRaftHATest {
     });
 
     // Create index in a separate transaction
-    leaderDb.transaction(() -> {
+    leaderDb.transaction(() ->
       leaderDb.getSchema().getType("RaftIndexed")
-          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "code");
-    });
+          .createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "code"));
 
     assertClusterConsistency();
 

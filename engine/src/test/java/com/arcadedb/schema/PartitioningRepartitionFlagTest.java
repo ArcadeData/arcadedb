@@ -181,9 +181,8 @@ class PartitioningRepartitionFlagTest extends TestHelper {
 
   @Test
   void roundRobinTypeIsNeverFlagged() {
-    database.transaction(() -> {
-      database.getSchema().buildDocumentType().withName("RoundRobinDoc").withTotalBuckets(4).create();
-    });
+    database.transaction(() ->
+      database.getSchema().buildDocumentType().withName("RoundRobinDoc").withTotalBuckets(4).create());
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("RoundRobinDoc");
     assertThat(type.isNeedsRepartition()).isFalse();
 

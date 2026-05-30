@@ -65,12 +65,11 @@ class CSVImporterIT {
     final Database db = databaseFactory.create();
 
     //Max property size is 1024: should fail
-    assertThatThrownBy(() -> {
+    assertThatThrownBy(() ->
       db.command("sql", """
           IMPORT DATABASE file://src/test/resources/importer-big-size.csv
           WITH maxProperties=1000, maxPropertySize=1024
-          """);
-    }).isInstanceOf(Exception.class);
+          """)).isInstanceOf(Exception.class);
 
     //Max property size is 8192: should succeed
     try {
@@ -410,9 +409,8 @@ class CSVImporterIT {
       assertThat(db.countType("Car", true)).isEqualTo(3);
 
       // Verify they are actual vertices
-      db.iterateType("Car", true).forEachRemaining(record -> {
-        assertThat(record.asDocument()).isInstanceOf(Vertex.class);
-      });
+      db.iterateType("Car", true).forEachRemaining(record ->
+        assertThat(record.asDocument()).isInstanceOf(Vertex.class));
 
       // Also verify sparse values are skipped
       db.iterateType("Car", true).forEachRemaining(record -> {

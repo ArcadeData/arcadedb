@@ -120,13 +120,12 @@ class OpenCypherVariableLengthPathTest {
     // Create a separate database for this test with the TCK scenario
     final Database db2 = new DatabaseFactory("./target/databases/testopencypher-vlp-prop").create();
     try {
-      db2.transaction(() -> {
+      db2.transaction(() ->
         db2.command("opencypher",
             """
             CREATE (a:Artist:A), (b:Artist:B), (c:Artist:C) \
             CREATE (a)-[:WORKED_WITH {year: 1987}]->(b), \
-            (b)-[:WORKED_WITH {year: 1988}]->(c)""");
-      });
+            (b)-[:WORKED_WITH {year: 1988}]->(c)"""));
 
       db2.transaction(() -> {
         // First: check all artists exist

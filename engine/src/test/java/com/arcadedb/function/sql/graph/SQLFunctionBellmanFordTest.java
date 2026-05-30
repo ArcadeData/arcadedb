@@ -95,7 +95,7 @@ class SQLFunctionBellmanFordTest {
 
   @Test
   void executeWithNegativeWeight() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordNegTest", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordNegTest", (graph) ->
       graph.transaction(() -> {
         graph.getSchema().createVertexType("node");
         graph.getSchema().createEdgeType("road");
@@ -131,13 +131,12 @@ class SQLFunctionBellmanFordTest {
         assertThat(result.get(0)).isEqualTo(a.getIdentity());
         assertThat(result.get(1)).isEqualTo(b.getIdentity());
         assertThat(result.get(2)).isEqualTo(c.getIdentity());
-      });
-    });
+      }));
   }
 
   @Test
   void executeNoPath() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordNoPathTest", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordNoPathTest", (graph) ->
       graph.transaction(() -> {
         graph.getSchema().createVertexType("node");
         graph.getSchema().createEdgeType("road");
@@ -155,8 +154,7 @@ class SQLFunctionBellmanFordTest {
             new Object[] { b, a, "'weight'" }, ctx);
 
         assertThat(result).isEmpty();
-      });
-    });
+      }));
   }
 
   @Test
