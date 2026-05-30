@@ -133,7 +133,7 @@ class AlterTypeExecutionTest extends TestHelper {
     assertThat(database.getSchema().getType("Sedan")).isNotNull();
     // Assertions.assertNull fails, hence the use of database.command()
     ResultSet result = database.command("sql", "SELECT FROM schema:types");
-    assertThat(result.stream().anyMatch(x -> x.getProperty("name").equals("Mpv"))).isFalse();
+    assertThat(result.stream().anyMatch(x -> "Mpv".equals(x.getProperty("name")))).isFalse();
 
     database.begin();
     database.getSchema().getType("Sedan").newRecord().set("engine_number", "123").set("vehicle_model", "Diablo Stallion").save();

@@ -192,7 +192,7 @@ public class JSONImporterFormat implements FormatImporter {
           final Object mappingValue = mapping.get(attributeName);
           if (mappingValue instanceof JSONObject object)
             mappingObject = object;
-          else if (mappingValue instanceof String && mappingValue.toString().equals("@ignore"))
+          else if (mappingValue instanceof String && "@ignore".equals(mappingValue.toString()))
             ignoreObject = true;
         }
         attributeValue = parseRecord(reader, settings, context, database, mappingObject, ignoreObject);
@@ -414,7 +414,7 @@ public class JSONImporterFormat implements FormatImporter {
             // CONVERTED TO EDGE, REMOVE THE PROPERTY ENTIRELY
             attributes.map.remove(mappingName);
         }
-      } else if (mappingValue instanceof String && mappingValue.toString().equals("@ignore")) {
+      } else if (mappingValue instanceof String && "@ignore".equals(mappingValue.toString())) {
         attributes.map.remove(mappingName);
       }
 

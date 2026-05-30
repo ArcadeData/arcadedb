@@ -123,7 +123,7 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && varName.equalsIgnoreCase("$parent")) {
+      if (context != null && "$parent".equalsIgnoreCase(varName)) {
         return context.getParent();
       }
       // For $ variables, check record metadata FIRST - this preserves LET variable values
@@ -171,7 +171,7 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && varName.equalsIgnoreCase("$parent"))
+      if (context != null && "$parent".equalsIgnoreCase(varName))
         return context.getParent();
 
       if (context != null && context.getVariable(varName) != null)
@@ -319,7 +319,7 @@ public class SuffixIdentifier extends SimpleNode {
 
   @Override
   public boolean refersToParent() {
-    return identifier != null && identifier.getStringValue().equalsIgnoreCase("$parent");
+    return identifier != null && "$parent".equalsIgnoreCase(identifier.getStringValue());
   }
 
   public void setValue(final Object target, final Object value, final CommandContext context) {

@@ -487,7 +487,7 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     for (int i = 0; i < 2; i++) {
       final Result item = result.next();
-      if (item.<String>getProperty("name").equals("parent")) {
+      if ("parent".equals(item.<String>getProperty("name"))) {
         assertThat(item.getProperty("children") instanceof Collection).isTrue();
         assertThat(((Collection) item.getProperty("children")).size()).isEqualTo(1);
       }

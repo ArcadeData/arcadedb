@@ -107,7 +107,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     final String command_lc = command.toLowerCase(Locale.ENGLISH).trim();
 
-    if (command_lc.equals(LIST_DATABASES))
+    if (LIST_DATABASES.equals(command_lc))
       return listDatabases(user);
     else
       checkRootUser(user);
@@ -138,7 +138,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     else if (command_lc.startsWith(CONNECT_CLUSTER)) {
       if (!connectCluster(extractTarget(command, CONNECT_CLUSTER), exchange))
         return null;
-    } else if (command_lc.equals(DISCONNECT_CLUSTER))
+    } else if (DISCONNECT_CLUSTER.equals(command_lc))
       disconnectCluster();
     else if (command_lc.startsWith(SET_DATABASE_SETTING))
       setDatabaseSetting(extractTarget(command, SET_DATABASE_SETTING));
@@ -148,9 +148,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       response.put("result", getServerEvents(extractTarget(command, GET_SERVER_EVENTS)));
     else if (command_lc.startsWith(ALIGN_DATABASE))
       alignDatabase(extractTarget(command, ALIGN_DATABASE));
-    else if (command_lc.equals(GET_BACKUP_CONFIG))
+    else if (GET_BACKUP_CONFIG.equals(command_lc))
       return getBackupConfig();
-    else if (command_lc.equals(SET_BACKUP_CONFIG))
+    else if (SET_BACKUP_CONFIG.equals(command_lc))
       return setBackupConfig(payload);
     else if (command_lc.startsWith(LIST_BACKUPS))
       return listBackups(extractTarget(command, LIST_BACKUPS));
@@ -902,7 +902,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ServerQueryProfiler profiler = httpServer.getServer().getQueryProfiler();
     final String sub = subCommand.toLowerCase(Locale.ENGLISH).trim();
 
-    if (sub.equals("start") || sub.startsWith("start ")) {
+    if ("start".equals(sub) || sub.startsWith("start ")) {
       final String timeoutStr = sub.substring(5).trim();
       if (!timeoutStr.isEmpty()) {
         try {
@@ -914,19 +914,19 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         profiler.start();
       return new ExecutionResponse(200, new JSONObject().put("result", "ok").put("recording", true).toString());
 
-    } else if (sub.equals("stop")) {
+    } else if ("stop".equals(sub)) {
       final JSONObject results = profiler.stop();
       return new ExecutionResponse(200, results != null ? results.toString() : new JSONObject().put("result", "ok").toString());
 
-    } else if (sub.equals("reset")) {
+    } else if ("reset".equals(sub)) {
       profiler.reset();
       return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
 
-    } else if (sub.equals("results")) {
+    } else if ("results".equals(sub)) {
       final JSONObject results = profiler.getResults();
       return new ExecutionResponse(200, results != null ? results.toString() : new JSONObject().put("result", "ok").toString());
 
-    } else if (sub.equals("list")) {
+    } else if ("list".equals(sub)) {
       final JSONArray files = profiler.listSavedRuns();
       return new ExecutionResponse(200, new JSONObject().put("result", files).toString());
 

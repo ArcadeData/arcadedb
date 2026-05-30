@@ -119,9 +119,9 @@ class CypherExistsTest {
       final String name = result.getProperty("p.name");
       final Boolean hasJob = (Boolean) result.getProperty("hasJob");
 
-      if (name.equals("Alice") || name.equals("Bob")) {
+      if ("Alice".equals(name) || "Bob".equals(name)) {
         assertThat(hasJob).isTrue();
-      } else if (name.equals("Charlie")) {
+      } else if ("Charlie".equals(name)) {
         assertThat(hasJob).isFalse();
       }
       count++;

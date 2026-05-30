@@ -203,13 +203,13 @@ public class RedisQueryEngine implements QueryEngine {
       }
 
       final String upperCmd = trimmed.toUpperCase(Locale.ENGLISH);
-      if (upperCmd.equals("MULTI")) {
+      if ("MULTI".equals(upperCmd)) {
         inTransaction = true;
         continue;
-      } else if (upperCmd.equals("EXEC")) {
+      } else if ("EXEC".equals(upperCmd)) {
         // Execute all queued commands in a transaction
         return executeTransaction(commands);
-      } else if (upperCmd.equals("DISCARD")) {
+      } else if ("DISCARD".equals(upperCmd)) {
         // Discard all queued commands
         commands.clear();
         return createResultSet("OK");

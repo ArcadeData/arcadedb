@@ -83,7 +83,7 @@ public class RebuildTypeStatement extends DDLStatement {
     boolean repartition = false;
     for (final Map.Entry<Expression, Expression> e : settings.entrySet()) {
       final String key = e.getKey().toString();
-      if (key.equalsIgnoreCase("batchSize")) {
+      if ("batchSize".equalsIgnoreCase(key)) {
         final Object raw = e.getValue().value;
         try {
           batchSize = Integer.parseInt(raw == null ? "null" : raw.toString());
@@ -97,7 +97,7 @@ public class RebuildTypeStatement extends DDLStatement {
         if (batchSize <= 0)
           throw new CommandSQLParsingException(
               "REBUILD TYPE setting 'batchSize' must be a positive integer, got: " + batchSize);
-      } else if (key.equalsIgnoreCase("repartition")) {
+      } else if ("repartition".equalsIgnoreCase(key)) {
         // Boolean opt-in. When true, every record whose current bucket no longer matches its
         // partition strategy's hash is deleted from its current bucket and re-inserted into the
         // target bucket - which gives it a NEW RID. The flag is cleared on full success only.

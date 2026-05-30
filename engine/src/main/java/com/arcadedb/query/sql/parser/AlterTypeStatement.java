@@ -199,7 +199,7 @@ public class AlterTypeStatement extends DDLStatement {
     boolean repartitionRequested = false;
     for (final Map.Entry<Identifier, Expression> e : settings.entrySet()) {
       final String key = e.getKey().getStringValue();
-      if (key.equalsIgnoreCase("repartition")) {
+      if ("repartition".equalsIgnoreCase(key)) {
         final Object raw = e.getValue().execute((Result) null, context);
         repartitionRequested = parseBooleanSetting("ALTER TYPE", "repartition", raw);
       } else

@@ -375,7 +375,7 @@ public class MatchExecutionPlanner {
 
     // Check that the method is a simple out/in (not outE/inE/bothE/outV/inV)
     final String methodName = et.edge.item.getMethod().methodName.getStringValue().toLowerCase(Locale.ENGLISH);
-    return methodName.equals("out") || methodName.equals("in") || methodName.equals("both");
+    return "out".equals(methodName) || "in".equals(methodName) || "both".equals(methodName);
   }
 
   /**

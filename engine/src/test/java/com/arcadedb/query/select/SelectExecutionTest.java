@@ -151,7 +151,7 @@ public class SelectExecutionTest extends TestHelper {
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(3) || v.getString("name").equals("John")).isTrue();
+        assertThat(v.getInteger("id").equals(3) || "John".equals(v.getString("name"))).isTrue();
       }
     }
 
@@ -162,7 +162,7 @@ public class SelectExecutionTest extends TestHelper {
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(3) || v.getString("name").equals("John2")).isTrue();
+        assertThat(v.getInteger("id").equals(3) || "John2".equals(v.getString("name"))).isTrue();
       }
     }
 
@@ -173,7 +173,7 @@ public class SelectExecutionTest extends TestHelper {
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(-1) || v.getString("name").equals("John")).isTrue();
+        assertThat(v.getInteger("id").equals(-1) || "John".equals(v.getString("name"))).isTrue();
       }
     }
   }
@@ -188,8 +188,8 @@ public class SelectExecutionTest extends TestHelper {
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(3) && v.getString("name").equals("John2") ||//
-            v.getString("name").equals("John")).isTrue();
+        assertThat(v.getInteger("id").equals(3) && "John2".equals(v.getString("name")) ||//
+            "John".equals(v.getString("name"))).isTrue();
       }
     }
 
@@ -202,7 +202,7 @@ public class SelectExecutionTest extends TestHelper {
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
         assertThat(v.getInteger("id").equals(3) ||//
-            v.getString("name").equals("John2") && v.getString("name").equals("John")).isTrue();
+            "John2".equals(v.getString("name")) && "John".equals(v.getString("name"))).isTrue();
       }
     }
   }

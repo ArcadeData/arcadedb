@@ -65,7 +65,7 @@ public class PInteger extends PNumber {
     if (stringValue.startsWith("-")) {
       stringValue = stringValue.substring(1);
     }
-    if (stringValue.length() > 2 && stringValue.substring(0, 2).equalsIgnoreCase("0x")) {
+    if (stringValue.length() > 2 && "0x".equalsIgnoreCase(stringValue.substring(0, 2))) {
       return 16;
     }
     if (stringValue.length() > 1 && stringValue.charAt(0) == '0') {

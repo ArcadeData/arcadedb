@@ -48,16 +48,16 @@ public class ConsoleStatement extends SimpleExecStatement {
 
     final String logLevelAsString = logLevel.getStringValue().toLowerCase(Locale.ENGLISH);
 
-    if (logLevelAsString.equals("log")) {
+    if ("log".equals(logLevelAsString)) {
       LogManager.instance().log(this, Level.INFO, "%s", msg);
-    } else if (logLevelAsString.equals("output")) {
+    } else if ("output".equals(logLevelAsString)) {
       System.out.println(msg);
-    } else if (logLevelAsString.equals("error")) {
+    } else if ("error".equals(logLevelAsString)) {
       System.err.println(msg);
       LogManager.instance().log(this, Level.SEVERE, "%s", msg);
-    } else if (logLevelAsString.equals("warn")) {
+    } else if ("warn".equals(logLevelAsString)) {
       LogManager.instance().log(this, Level.WARNING, "%s", msg);
-    } else if (logLevelAsString.equals("debug")) {
+    } else if ("debug".equals(logLevelAsString)) {
       LogManager.instance().log(this, Level.FINE, "%s", msg);
     } else {
       throw new CommandExecutionException("Unsupported log level: " + logLevel);

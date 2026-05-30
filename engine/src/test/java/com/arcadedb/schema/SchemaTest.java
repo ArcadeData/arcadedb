@@ -192,7 +192,7 @@ class SchemaTest extends TestHelper {
     assertThat(database.getSchema().existsType("V111")).isTrue();
 
     // Verify getTypes() does not return duplicates for aliased types
-    final long v1Count = database.getSchema().getTypes().stream().filter(t -> t.getName().equals("V1")).count();
+    final long v1Count = database.getSchema().getTypes().stream().filter(t -> "V1".equals(t.getName())).count();
     assertThat(v1Count).isEqualTo(1L);
 
     database.transaction(() -> {
@@ -233,7 +233,7 @@ class SchemaTest extends TestHelper {
         300L);
 
     // Verify getTypes() still does not return duplicates after reopen
-    final long v1CountAfterReopen = database.getSchema().getTypes().stream().filter(t -> t.getName().equals("V1")).count();
+    final long v1CountAfterReopen = database.getSchema().getTypes().stream().filter(t -> "V1".equals(t.getName())).count();
     assertThat(v1CountAfterReopen).isEqualTo(1L);
   }
 

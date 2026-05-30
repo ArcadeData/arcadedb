@@ -3479,13 +3479,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   private static boolean isRecordAttributeName(final String name) {
     if (name == null)
       return false;
-    return name.equalsIgnoreCase(Property.RID_PROPERTY) ||
-        name.equalsIgnoreCase(Property.TYPE_PROPERTY) ||
-        name.equalsIgnoreCase(Property.IN_PROPERTY) ||
-        name.equalsIgnoreCase(Property.OUT_PROPERTY) ||
-        name.equalsIgnoreCase(Property.CAT_PROPERTY) ||
-        name.equalsIgnoreCase(Property.PROPERTY_TYPES_PROPERTY) ||
-        name.equalsIgnoreCase(Property.THIS_PROPERTY);
+    return Property.RID_PROPERTY.equalsIgnoreCase(name) ||
+        Property.TYPE_PROPERTY.equalsIgnoreCase(name) ||
+        Property.IN_PROPERTY.equalsIgnoreCase(name) ||
+        Property.OUT_PROPERTY.equalsIgnoreCase(name) ||
+        Property.CAT_PROPERTY.equalsIgnoreCase(name) ||
+        Property.PROPERTY_TYPES_PROPERTY.equalsIgnoreCase(name) ||
+        Property.THIS_PROPERTY.equalsIgnoreCase(name);
   }
 
   /**

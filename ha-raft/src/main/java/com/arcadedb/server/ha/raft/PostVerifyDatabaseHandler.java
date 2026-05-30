@@ -288,7 +288,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
   private static String categorizeFile(final String fileName) {
     if (fileName == null) return "unknown";
     final String lower = fileName.toLowerCase();
-    if (lower.endsWith(".json") || lower.equals("configuration") || lower.contains("schema"))
+    if (lower.endsWith(".json") || "configuration".equals(lower) || lower.contains("schema"))
       return "config";
     if (lower.contains("index") || lower.contains(".idx") || lower.contains(".ridx") || lower.contains(".notunique")
         || lower.contains(".unique") || lower.contains(".dictionary"))

@@ -26,7 +26,7 @@ public class LockStatement extends SimpleExecStatement {
     final DatabaseInternal database = context.getDatabase();
 
     TransactionExplicitLock explicitLock = null;
-    if (mode.equals("TYPE")) {
+    if ("TYPE".equals(mode)) {
       if (identifiers != null && !identifiers.isEmpty()) {
         explicitLock = context.getDatabase().acquireLock();
 

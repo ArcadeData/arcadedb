@@ -107,13 +107,13 @@ public class OrderByItem {
     if (recordAttr != null) {
       aVal = a.getProperty(recordAttr);
       if (aVal == null) {
-        if (recordAttr.equalsIgnoreCase(RID_PROPERTY)) {
+        if (RID_PROPERTY.equalsIgnoreCase(recordAttr)) {
           aVal = a.getIdentity().orElse(null);
         } //TODO check other attributes
       }
       bVal = b.getProperty(recordAttr);
       if (bVal == null) {
-        if (recordAttr.equalsIgnoreCase(RID_PROPERTY)) {
+        if (RID_PROPERTY.equalsIgnoreCase(recordAttr)) {
           bVal = b.getIdentity().orElse(null);
         } //TODO check other attributes
       }
@@ -184,7 +184,7 @@ public class OrderByItem {
   }
 
   public boolean refersToParent() {
-    if (alias != null && alias.equalsIgnoreCase("$parent"))
+    if ("$parent".equalsIgnoreCase(alias))
       return true;
 
     if (expression != null && expression.refersToParent())

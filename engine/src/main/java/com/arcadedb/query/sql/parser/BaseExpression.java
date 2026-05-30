@@ -461,7 +461,7 @@ public class BaseExpression extends MathExpression {
   }
 
   public List<String> getMatchPatternInvolvedAliases() {
-    if (this.identifier != null && this.identifier.toString().equals("$matched")) {
+    if (this.identifier != null && "$matched".equals(this.identifier.toString())) {
       if (modifier != null && modifier.suffix != null && modifier.suffix.identifier != null) {
         return List.of(modifier.suffix.identifier.toString());
       }

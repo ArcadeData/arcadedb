@@ -132,7 +132,7 @@ class OpenCypherFunctionTest {
     final String relType = result.getProperty("relType");
 
     assertThat(relType).isNotNull();
-    assertThat(relType.equals("KNOWS") || relType.equals("WORKS_AT")).isTrue();
+    assertThat("KNOWS".equals(relType) || "WORKS_AT".equals(relType)).isTrue();
   }
 
   @Test

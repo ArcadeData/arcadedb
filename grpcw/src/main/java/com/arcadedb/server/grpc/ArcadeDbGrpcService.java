@@ -695,7 +695,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         props.forEach((k, v) -> {
           String key = k.trim().toLowerCase();
-          if (key.equals("@rid") || key.equals("@type") || key.equals("@cat")) {
+          if ("@rid".equals(key) || "@type".equals(key) || "@cat".equals(key)) {
             // Skip internal fields to prevent accidental overwrites
             LogManager.instance().log(this, Level.FINE, "Skipping internal field during update: %s", k);
             return;
@@ -722,7 +722,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         props.forEach((k, v) -> {
           String key = k.trim().toLowerCase();
-          if (key.equals("@rid") || key.equals("@type") || key.equals("@cat")) {
+          if ("@rid".equals(key) || "@type".equals(key) || "@cat".equals(key)) {
             // Skip internal fields to prevent accidental overwrites
             LogManager.instance().log(this, Level.FINE, "Skipping internal field during update: %s", k);
             return;

@@ -194,7 +194,7 @@ public class DeleteExecutionPlanner {
       if (str.length() < 5)
         continue;
 
-      if (str.substring(0, 4).equalsIgnoreCase("key "))
+      if ("key ".equalsIgnoreCase(str.substring(0, 4)))
         return exp;
     }
     return null;
@@ -206,7 +206,7 @@ public class DeleteExecutionPlanner {
       if (str.length() < 5)
         continue;
 
-      if (str.substring(0, 4).equalsIgnoreCase("rid "))
+      if ("rid ".equalsIgnoreCase(str.substring(0, 4)))
         return exp;
 
     }

@@ -73,7 +73,7 @@ public class WebSocketReceiveListener extends AbstractReceiveListener {
         this.sendAck(channel, action);
         break;
       default:
-        if (rawAction.equals("")) {
+        if ("".equals(rawAction)) {
           sendError(channel, "Message error", "Property 'action' is required.", null);
         } else {
           sendError(channel, "Unknown action", "%s is not a valid action.".formatted(rawAction), null);

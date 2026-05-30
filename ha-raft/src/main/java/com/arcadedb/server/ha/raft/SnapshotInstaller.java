@@ -507,7 +507,7 @@ public final class SnapshotInstaller {
       try (final DirectoryStream<Path> stream = Files.newDirectoryStream(newDir)) {
         for (final Path entry : stream) {
           final String name = entry.getFileName().toString();
-          if (name.equals(SNAPSHOT_COMPLETE_FILE))
+          if (SNAPSHOT_COMPLETE_FILE.equals(name))
             continue;
           Files.move(entry, dbDir.resolve(name), StandardCopyOption.REPLACE_EXISTING);
         }

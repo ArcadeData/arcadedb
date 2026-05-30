@@ -126,9 +126,9 @@ class BatchInsertUpdateTest {
         int updated = 0;
         for (Iterator<Record> it = database.iterateType("Order", false); it.hasNext(); ) {
           final String status = it.next().asDocument().getString("status");
-          if (status.equals("created"))
+          if ("created".equals(status))
             ++created;
-          else if (status.equals("updated"))
+          else if ("updated".equals(status))
             ++updated;
         }
         assertThat(created).isEqualTo(TOTAL);

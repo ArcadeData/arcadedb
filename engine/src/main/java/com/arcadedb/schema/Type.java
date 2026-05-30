@@ -494,9 +494,9 @@ public enum Type {
         if (value instanceof Boolean)
           return value;
         else if (value instanceof String string) {
-          if (string.equalsIgnoreCase("true"))
+          if ("true".equalsIgnoreCase(string))
             return Boolean.TRUE;
-          else if (string.equalsIgnoreCase("false"))
+          else if ("false".equalsIgnoreCase(string))
             return Boolean.FALSE;
           throw new IllegalArgumentException("Value is not boolean. Expected true or false but received '" + value + "'");
         } else if (value instanceof Number number)

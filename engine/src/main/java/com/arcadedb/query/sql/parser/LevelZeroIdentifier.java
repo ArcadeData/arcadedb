@@ -172,7 +172,7 @@ public class LevelZeroIdentifier extends SimpleNode {
   }
 
   public boolean isCount() {
-    return functionCall != null && functionCall.name.getStringValue().equalsIgnoreCase("count");
+    return functionCall != null && "count".equalsIgnoreCase(functionCall.name.getStringValue());
   }
 
   public boolean isEarlyCalculated(final CommandContext context) {

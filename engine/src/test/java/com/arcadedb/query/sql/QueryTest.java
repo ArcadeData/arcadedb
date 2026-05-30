@@ -896,7 +896,7 @@ class QueryTest extends TestHelper {
           addresses CONTAINS '192.168.10.10'
           """);
       assertThat(rs.hasNext()).isTrue();
-      assertThat(rs.nextIfAvailable().getProperty("id").equals("first")).isTrue();
+      assertThat("first".equals(rs.nextIfAvailable().getProperty("id"))).isTrue();
       assertThat(rs.hasNext()).isFalse();
     });
     database.transaction(() -> {

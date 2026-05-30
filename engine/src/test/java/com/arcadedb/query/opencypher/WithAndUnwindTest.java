@@ -160,7 +160,7 @@ class WithAndUnwindTest {
     while (result.hasNext()) {
       final var row = result.next();
       final String name = row.getProperty("name");
-      assertThat(name.equals("Alice") || name.equals("Charlie")).as("Should only return Alice or Charlie").isTrue();
+      assertThat("Alice".equals(name) || "Charlie".equals(name)).as("Should only return Alice or Charlie").isTrue();
       count++;
     }
     result.close();
@@ -274,7 +274,7 @@ class WithAndUnwindTest {
     while (result.hasNext()) {
       final var row = result.next();
       final String name = row.getProperty("name");
-      assertThat(name.equals("Alice") || name.equals("Diana")).as("Should return Alice (30) and Diana (28), ages between 25 and 35")
+      assertThat("Alice".equals(name) || "Diana".equals(name)).as("Should return Alice (30) and Diana (28), ages between 25 and 35")
           .isTrue();
       count++;
     }
@@ -402,7 +402,7 @@ class WithAndUnwindTest {
       final var row = result.next();
       assertThat(row.<String>getProperty("aname")).isEqualTo("Alice");
       final String bname = row.getProperty("bname");
-      assertThat(bname.equals("Bob") || bname.equals("Charlie")).as("Should return people Alice knows").isTrue();
+      assertThat("Bob".equals(bname) || "Charlie".equals(bname)).as("Should return people Alice knows").isTrue();
       count++;
     }
     result.close();

@@ -86,9 +86,9 @@ public enum GlobalConfiguration {
       final int cores = Runtime.getRuntime().availableProcessors();
 
       final String v = value.toString();
-      if (v.equalsIgnoreCase("default")) {
+      if ("default".equalsIgnoreCase(v)) {
         // NOT MUCH TO DO HERE, THIS IS THE DEFAULT OPTION
-      } else if (v.equalsIgnoreCase("high-performance")) {
+      } else if ("high-performance".equalsIgnoreCase(v)) {
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("fast");
         VECTOR_INDEX_GRAPH_BUILD_CACHE_SIZE.setValue(-1);
         VECTOR_INDEX_LOCATION_CACHE_SIZE.setValue(-1);
@@ -99,7 +99,7 @@ public enum GlobalConfiguration {
         else
           ASYNC_WORKER_THREADS.setValue(1);
 
-      } else if (v.equalsIgnoreCase("low-ram")) {
+      } else if ("low-ram".equalsIgnoreCase(v)) {
         MAX_PAGE_RAM.setValue(16); // 16 MB OF RAM FOR PAGE CACHE
         INDEX_COMPACTION_RAM_MB.setValue(16);
         INITIAL_PAGE_CACHE_SIZE.setValue(256);
@@ -129,7 +129,7 @@ public enum GlobalConfiguration {
 
         PageManager.INSTANCE.configure();
 
-      } else if (v.equalsIgnoreCase("low-cpu")) {
+      } else if ("low-cpu".equalsIgnoreCase(v)) {
         ASYNC_WORKER_THREADS.setValue(1);
         ASYNC_OPERATIONS_QUEUE_IMPL.setValue("standard");
         SERVER_HTTP_IO_THREADS.setValue(cores > 8 ? 4 : 2);

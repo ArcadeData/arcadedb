@@ -47,7 +47,7 @@ public class TraverseProjectionItem extends SimpleNode {
   }
 
   private boolean isStar() {
-    return base.toString().equals("*") && modifier == null;
+    return "*".equals(base.toString()) && modifier == null;
   }
 
   private Object handleStar(final Result currentRecord, final CommandContext context) {

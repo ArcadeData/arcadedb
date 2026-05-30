@@ -96,7 +96,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       final AnalyzedEntity entity = sourceSchema.getSchema().getEntity(settings.documentTypeName);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
-      if (!settings.documentPropertiesInclude.equalsIgnoreCase("*")) {
+      if (!"*".equalsIgnoreCase(settings.documentPropertiesInclude)) {
         final String[] includes = settings.documentPropertiesInclude.split(",");
 
         final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
@@ -202,7 +202,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       csvParser.beginParsing(inputFileReader);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
-      if (!settings.vertexPropertiesInclude.isEmpty() && !settings.vertexPropertiesInclude.equalsIgnoreCase("*")) {
+      if (!settings.vertexPropertiesInclude.isEmpty() && !"*".equalsIgnoreCase(settings.vertexPropertiesInclude)) {
         final String[] includes = settings.vertexPropertiesInclude.split(",");
         final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));
         for (final AnalyzedProperty p : entity.getProperties())
@@ -304,7 +304,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       csvParser.beginParsing(inputFileReader);
 
       final List<AnalyzedProperty> properties = new ArrayList<>();
-      if (!settings.edgePropertiesInclude.isEmpty() && !settings.edgePropertiesInclude.equalsIgnoreCase("*")) {
+      if (!settings.edgePropertiesInclude.isEmpty() && !"*".equalsIgnoreCase(settings.edgePropertiesInclude)) {
         final String[] includes = settings.edgePropertiesInclude.split(",");
 
         final Set<String> propertiesSet = new HashSet<>(Arrays.asList(includes));

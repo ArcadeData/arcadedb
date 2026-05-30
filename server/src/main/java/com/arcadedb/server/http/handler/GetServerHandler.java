@@ -231,7 +231,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       // MASK SENSITIVE DATA
       value = "*****";
 
-    if (key.equals("arcadedb.server.defaultDatabases")) {
+    if ("arcadedb.server.defaultDatabases".equals(key)) {
       final String defaultDatabases = (String) value;
       if (value != null && !defaultDatabases.isEmpty()) {
         // CREATE DEFAULT DATABASES

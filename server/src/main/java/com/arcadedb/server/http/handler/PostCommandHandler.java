@@ -119,7 +119,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     paramMap = AbstractQueryHandler.decodeTypedJsonMarkers(paramMap);
 
     if (limit != -1) {
-      if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
+      if ("sql".equalsIgnoreCase(language) || "sqlScript".equalsIgnoreCase(language)) {
         final String commandLC = command.toLowerCase(Locale.ENGLISH).trim();
         if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
           if (!commandLC.contains(" limit ") && !commandLC.contains("\nlimit ")) {
@@ -137,7 +137,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
       }
     }
 
-    if (language.equalsIgnoreCase("sqlScript") && !command.endsWith(";"))
+    if ("sqlScript".equalsIgnoreCase(language) && !command.endsWith(";"))
       command += ";";
 
     if ("detailed".equalsIgnoreCase(profileExecution))

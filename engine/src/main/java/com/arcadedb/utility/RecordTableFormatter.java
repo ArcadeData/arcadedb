@@ -39,10 +39,10 @@ public class RecordTableFormatter extends TableFormatter {
 
     @Override
     public Object getField(final String field) {
-      if (field.equalsIgnoreCase(RID_PROPERTY)) {
+      if (RID_PROPERTY.equalsIgnoreCase(field)) {
         if (result.getIdentity().isPresent())
           return result.getIdentity().get();
-      } else if (field.equalsIgnoreCase(TYPE_PROPERTY)) {
+      } else if (TYPE_PROPERTY.equalsIgnoreCase(field)) {
         if (result.getRecord().isPresent())
           return ((Document) result.getRecord().get()).getTypeName();
       }

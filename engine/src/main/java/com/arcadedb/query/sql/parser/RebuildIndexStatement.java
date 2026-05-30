@@ -65,9 +65,9 @@ public class RebuildIndexStatement extends DDLStatement {
     int maxAttempts = MAX_ATTEMPTS;
     if (!settings.isEmpty()) {
       for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
-        if (entry.getKey().toString().equalsIgnoreCase("batchSize"))
+        if ("batchSize".equalsIgnoreCase(entry.getKey().toString()))
           batchSize = Integer.parseInt(entry.getValue().value.toString());
-        else if (entry.getKey().toString().equalsIgnoreCase("maxAttempts"))
+        else if ("maxAttempts".equalsIgnoreCase(entry.getKey().toString()))
           maxAttempts = Integer.parseInt(entry.getValue().value.toString());
         else
           throw new CommandSQLParsingException("Unrecognized setting '" + entry.getKey() + "' in rebuild index statement");

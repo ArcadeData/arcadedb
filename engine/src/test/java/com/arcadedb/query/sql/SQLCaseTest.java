@@ -147,9 +147,9 @@ class SQLCaseTest {
       final String name = result.getProperty("name");
       final int statusCode = ((Number) result.getProperty("statusCode")).intValue();
 
-      if (name.equals("Eve"))
+      if ("Eve".equals(name))
         assertThat(statusCode).isEqualTo(1);
-      else if (name.equals("Frank"))
+      else if ("Frank".equals(name))
         assertThat(statusCode).isEqualTo(0);
 
       count++;

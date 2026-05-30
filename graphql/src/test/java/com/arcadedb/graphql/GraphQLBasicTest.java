@@ -207,7 +207,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
         final GraphQLResult address = record.getProperty("address");
         assertThat(address).isNotNull();
 
-        assertThat(address.getProperty("city").equals("Rome")).isTrue();
+        assertThat("Rome".equals(address.getProperty("city"))).isTrue();
 
         assertThat(resultSet.hasNext()).isFalse();
       }

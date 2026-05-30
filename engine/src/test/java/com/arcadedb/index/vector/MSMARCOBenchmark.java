@@ -139,7 +139,7 @@ class MSMARCOBenchmark {
           type.createProperty("vectorId", Type.INTEGER);
           type.createProperty("embedding", Type.ARRAY_OF_FLOATS);
 
-          final String quantStr = QUANTIZATION.equals("NONE") ? "" :
+          final String quantStr = "NONE".equals(QUANTIZATION) ? "" :
               String.format(", \"quantization\": \"%s\"", QUANTIZATION);
           db.command("sql", String.format(
               "CREATE INDEX ON Vector (embedding) LSM_VECTOR METADATA { \"dimensions\": %d, \"similarity\": \"COSINE\"%s }",

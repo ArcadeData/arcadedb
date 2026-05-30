@@ -425,13 +425,13 @@ public class PromQLParser {
         if (s.length() == 1 && isOperatorChar(s.charAt(0))) {
           // Check that we're not part of a longer operator
           final int next = pos + 1;
-          if (s.equals("=") && next < input.length() && (input.charAt(next) == '=' || input.charAt(next) == '~'))
+          if ("=".equals(s) && next < input.length() && (input.charAt(next) == '=' || input.charAt(next) == '~'))
             return false;
-          if (s.equals("!") && next < input.length() && (input.charAt(next) == '=' || input.charAt(next) == '~'))
+          if ("!".equals(s) && next < input.length() && (input.charAt(next) == '=' || input.charAt(next) == '~'))
             return false;
-          if (s.equals("<") && next < input.length() && input.charAt(next) == '=')
+          if ("<".equals(s) && next < input.length() && input.charAt(next) == '=')
             return false;
-          if (s.equals(">") && next < input.length() && input.charAt(next) == '=')
+          if (">".equals(s) && next < input.length() && input.charAt(next) == '=')
             return false;
         }
         pos += s.length();

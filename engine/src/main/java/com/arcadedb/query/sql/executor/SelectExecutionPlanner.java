@@ -393,7 +393,7 @@ public class SelectExecutionPlanner {
     if (function == null) {
       return false;
     }
-    return function.getName().getStringValue().equalsIgnoreCase("distinct");
+    return "distinct".equalsIgnoreCase(function.getName().getStringValue());
   }
 
   private boolean handleHardwiredOptimizations(final SelectExecutionPlan result, final CommandContext context) {
@@ -461,7 +461,7 @@ public class SelectExecutionPlanner {
       return false;
     }
     final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
-    return item.getExpression().toString().equalsIgnoreCase("count(*)");
+    return "count(*)".equalsIgnoreCase(item.getExpression().toString());
   }
 
   /**
@@ -596,9 +596,9 @@ public class SelectExecutionPlanner {
 
     final String functionName = functionCall.getName().getStringValue().toLowerCase();
     final boolean isMax;
-    if (functionName.equals("max"))
+    if ("max".equals(functionName))
       isMax = true;
-    else if (functionName.equals("min"))
+    else if ("min".equals(functionName))
       isMax = false;
     else
       return null;
@@ -1372,7 +1372,7 @@ public class SelectExecutionPlanner {
     if (booleanExpression instanceof BinaryCondition condition) {
       final BinaryCondition cond = condition;
       final BinaryCompareOperator operator = cond.getOperator();
-      if (isRangeOperator(operator) && cond.getLeft().toString().equalsIgnoreCase(RID_PROPERTY)) {
+      if (isRangeOperator(operator) && RID_PROPERTY.equalsIgnoreCase(cond.getLeft().toString())) {
         final Object obj;
         if (cond.getRight().getRid() != null) {
           obj = cond.getRight().getRid().toRecordId((Result) null, context);
@@ -1559,7 +1559,7 @@ public class SelectExecutionPlanner {
       if (str.length() < 5) {
         continue;
       }
-      if (str.substring(0, 4).equalsIgnoreCase("key ")) {
+      if ("key ".equalsIgnoreCase(str.substring(0, 4))) {
         return exp;
       }
     }
@@ -1572,7 +1572,7 @@ public class SelectExecutionPlanner {
       if (str.length() < 5) {
         continue;
       }
-      if (str.substring(0, 4).equalsIgnoreCase("rid ")) {
+      if ("rid ".equalsIgnoreCase(str.substring(0, 4))) {
         return exp;
       }
     }
@@ -1920,8 +1920,8 @@ public class SelectExecutionPlanner {
       if (attrName == null)
         continue;
 
-      final boolean isOut = attrName.equalsIgnoreCase(Property.OUT_PROPERTY);
-      final boolean isIn = attrName.equalsIgnoreCase(Property.IN_PROPERTY);
+      final boolean isOut = Property.OUT_PROPERTY.equalsIgnoreCase(attrName);
+      final boolean isIn = Property.IN_PROPERTY.equalsIgnoreCase(attrName);
       if (!isOut && !isIn)
         continue;
 
@@ -2780,7 +2780,7 @@ public class SelectExecutionPlanner {
         }
       }
       if (indexFound && orderType != null) {
-        final boolean isAsc = orderType.equals(OrderByItem.ASC);
+        final boolean isAsc = OrderByItem.ASC.equals(orderType);
 
         List<Integer> filterClusterIds = null;
         if (filterClusters != null)
@@ -3095,7 +3095,7 @@ public class SelectExecutionPlanner {
         }
       }
     }
-    return result == null || result.equals(OrderByItem.ASC);
+    return result == null || OrderByItem.ASC.equals(result);
   }
 
   private ExecutionStepInternal createParallelIndexFetch(final List<IndexSearchDescriptor> indexSearchDescriptors,
@@ -3793,7 +3793,7 @@ public class SelectExecutionPlanner {
     if (info.orderBy.getItems().size() == 1) {
       OrderByItem item = info.orderBy.getItems().getFirst();
       String recordAttr = item.getRecordAttr();
-      return recordAttr != null && recordAttr.equalsIgnoreCase(RID_PROPERTY) && OrderByItem.DESC.equals(item.getType());
+      return RID_PROPERTY.equalsIgnoreCase(recordAttr) && OrderByItem.DESC.equals(item.getType());
     }
     return false;
   }
@@ -3808,7 +3808,7 @@ public class SelectExecutionPlanner {
     if (info.orderBy.getItems().size() == 1) {
       final OrderByItem item = info.orderBy.getItems().getFirst();
       final String recordAttr = item.getRecordAttr();
-      return recordAttr != null && recordAttr.equalsIgnoreCase(RID_PROPERTY) && (item.getType() == null || OrderByItem.ASC.equals(
+      return RID_PROPERTY.equalsIgnoreCase(recordAttr) && (item.getType() == null || OrderByItem.ASC.equals(
           item.getType()));
     }
     return false;

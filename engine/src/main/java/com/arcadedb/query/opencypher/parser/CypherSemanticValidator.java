@@ -1525,7 +1525,7 @@ public class CypherSemanticValidator {
       String name = item.getAlias();
       if (name == null && item.getExpression() instanceof VariableExpression)
         name = ((VariableExpression) item.getExpression()).getVariableName();
-      if (name != null && !name.equals("*")) {
+      if (name != null && !"*".equals(name)) {
         if (!seen.add(name))
           throw new CommandParsingException("ColumnNameConflict: Column name '" + name + "' is defined more than once");
       }
@@ -1693,7 +1693,7 @@ public class CypherSemanticValidator {
    * "xINeqWHEREx" (from "x IN eq WHERE x") or "[1,2]" or "n:Foo".
    */
   private static boolean isValidVariableName(final String name) {
-    if (name == null || name.isEmpty() || name.equals("*"))
+    if (name == null || name.isEmpty() || "*".equals(name))
       return false;
 
     // Valid Cypher identifiers start with letter or underscore

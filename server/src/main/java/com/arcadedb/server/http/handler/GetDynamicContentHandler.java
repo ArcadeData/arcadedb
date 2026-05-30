@@ -58,7 +58,7 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       // UNAUTHORIZED ACCESS TO RELATIVE PATH
       return new ExecutionResponse(404, "Not Found");
 
-    if (uri.isEmpty() || uri.equals("/"))
+    if (uri.isEmpty() || "/".equals(uri))
       uri = "/index.html";
 
     if (!uri.contains("."))
@@ -178,11 +178,11 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
         if (assignmentPos < 0) {
           // READ
           final String variableName = command.substring("var:".length());
-          if (variableName.equalsIgnoreCase("swVersion"))
+          if ("swVersion".equalsIgnoreCase(variableName))
             buffer.append(Constants.getVersion());
-          else if (variableName.equalsIgnoreCase("now"))
+          else if ("now".equalsIgnoreCase(variableName))
             buffer.append(System.currentTimeMillis());
-          else if (variableName.equalsIgnoreCase("uuid"))
+          else if ("uuid".equalsIgnoreCase(variableName))
             buffer.append(UUID.randomUUID());
           else
             buffer.append(variables.get(variableName));

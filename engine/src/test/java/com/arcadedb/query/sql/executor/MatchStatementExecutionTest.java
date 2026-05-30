@@ -264,7 +264,7 @@ public class MatchStatementExecutionTest extends TestHelper {
 
       final MutableDocument person = personId.getRecord().asVertex().modify();
       final String name = person.getString("name");
-      assertThat(name.equals("n1") || name.equals("n2")).isTrue();
+      assertThat("n1".equals(name) || "n2".equals(name)).isTrue();
     }
     qResult.close();
   }
@@ -314,7 +314,7 @@ public class MatchStatementExecutionTest extends TestHelper {
       final Document person = item.getProperty("person");
 
       final String name = person.getString("name");
-      assertThat(name.equals("n1") || name.equals("n2")).isTrue();
+      assertThat("n1".equals(name) || "n2".equals(name)).isTrue();
     }
     qResult.close();
   }

@@ -168,13 +168,13 @@ class Discussion4044HybridSearchE2ETest extends TestHelper {
   }
 
   private static int[] buildTokens(final String variant, final int specificToken) {
-    if (variant.equals("interest_rates") || variant.equals("loyalty_points"))
+    if ("interest_rates".equals(variant) || "loyalty_points".equals(variant))
       return new int[] { TOKEN_NACHISLENIE, specificToken, 23 };
     return new int[] { specificToken, 47, 91 };
   }
 
   private static float[] buildWeights(final String variant) {
-    if (variant.equals("interest_rates") || variant.equals("loyalty_points"))
+    if ("interest_rates".equals(variant) || "loyalty_points".equals(variant))
       return new float[] { 0.6f, 0.9f, 0.2f };
     return new float[] { 0.3f, 0.2f, 0.1f };
   }

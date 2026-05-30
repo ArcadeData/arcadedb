@@ -114,7 +114,7 @@ public class Json extends SimpleNode {
 
     for (final JsonItem item : items) {
       final String left = item.getLeftValue();
-      if (left != null && left.toLowerCase(Locale.ENGLISH).equals(Property.TYPE_PROPERTY)) {
+      if (left != null && Property.TYPE_PROPERTY.equals(left.toLowerCase(Locale.ENGLISH))) {
         return String.valueOf(item.right.execute((Result) null, context));
       }
     }

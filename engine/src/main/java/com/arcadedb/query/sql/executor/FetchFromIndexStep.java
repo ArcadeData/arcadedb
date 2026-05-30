@@ -250,7 +250,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     final InCondition inCondition = (InCondition) condition;
 
     final Expression left = inCondition.getLeft();
-    if (!left.toString().equalsIgnoreCase("key")) {
+    if (!"key".equalsIgnoreCase(left.toString())) {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
     final Object rightValue = inCondition.evaluateRight((Result) null, context);
@@ -502,7 +502,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
   private void processBetweenCondition() {
     final Expression key = ((BetweenCondition) condition).getFirst();
-    if (!key.toString().equalsIgnoreCase("key"))
+    if (!"key".equalsIgnoreCase(key.toString()))
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
 
     final Expression second = ((BetweenCondition) condition).getSecond();
@@ -522,7 +522,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private void processBinaryCondition() {
     final BinaryCompareOperator operator = ((BinaryCondition) condition).getOperator();
     final Expression left = ((BinaryCondition) condition).getLeft();
-    if (!left.toString().equalsIgnoreCase("key")) {
+    if (!"key".equalsIgnoreCase(left.toString())) {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
     final Object rightValue = ((BinaryCondition) condition).getRight().execute((Result) null, context);

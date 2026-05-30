@@ -263,7 +263,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
       final List<Object> vertices = responseAsJson.getJSONObject("result").getJSONArray("vertices").toList();
       assertThat(vertices).hasSize(2);
       for (final Object o : vertices)
-        assertThat(((Map) o).get("t").equals("V1") || ((Map) o).get("t").equals("V2")).isTrue();
+        assertThat("V1".equals(((Map) o).get("t")) || "V2".equals(((Map) o).get("t"))).isTrue();
 
       final List<Object> records = responseAsJson.getJSONObject("result").getJSONArray("records").toList();
       assertThat(records).hasSize(1);
@@ -271,8 +271,8 @@ class HTTPGraphIT extends BaseGraphServerTest {
 //        Assertions.assertTrue(
 //            ((Map) o).get("@type").equals("V1") || ((Map) o).get("@type").equals("V2") || ((Map) o).get("@type").equals("E1"));
 
-        assertThat(((Map) o).get("@type").equals("V1") || ((Map) o).get("@type").equals("V2") || ((Map) o).get("@type")
-            .equals("E1")).isTrue();
+        assertThat("V1".equals(((Map) o).get("@type")) || "V2".equals(((Map) o).get("@type")) || "E1"
+            .equals(((Map) o).get("@type"))).isTrue();
       final List<Object> edges = responseAsJson.getJSONObject("result").getJSONArray("edges").toList();
       assertThat(edges).hasSize(1);
       for (final Object o : edges)

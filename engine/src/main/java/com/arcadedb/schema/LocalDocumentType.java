@@ -816,11 +816,11 @@ public class LocalDocumentType implements DocumentType {
   @Override
   public DocumentType setBucketSelectionStrategy(final String selectionStrategyName, final Object... args) {
     BucketSelectionStrategy selectionStrategy;
-    if (selectionStrategyName.equalsIgnoreCase("thread"))
+    if ("thread".equalsIgnoreCase(selectionStrategyName))
       selectionStrategy = new ThreadBucketSelectionStrategy();
-    else if (selectionStrategyName.equalsIgnoreCase("round-robin"))
+    else if ("round-robin".equalsIgnoreCase(selectionStrategyName))
       selectionStrategy = new RoundRobinBucketSelectionStrategy();
-    else if (selectionStrategyName.equalsIgnoreCase("partitioned")) {
+    else if ("partitioned".equalsIgnoreCase(selectionStrategyName)) {
       final List<String> convertedParams = new ArrayList<>(args.length);
       for (int i = 0; i < args.length; i++)
         convertedParams.add(FileUtils.getStringContent(args[i]));
@@ -1568,7 +1568,7 @@ public class LocalDocumentType implements DocumentType {
     type.put("indexes", indexes);
 
     final BucketSelectionStrategy strategy = getBucketSelectionStrategy();
-    if (!strategy.getName().equals(RoundRobinBucketSelectionStrategy.NAME))
+    if (!RoundRobinBucketSelectionStrategy.NAME.equals(strategy.getName()))
       // WRITE ONLY IF NOT DEFAULT
       type.put("bucketSelectionStrategy", strategy.toJSON());
 

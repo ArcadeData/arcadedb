@@ -155,7 +155,7 @@ public class XMLImporterFormat implements FormatImporter {
         case XMLStreamReader.CHARACTERS:
         case XMLStreamReader.CDATA:
           final String text = xmlReader.getText();
-          if (!text.isEmpty() && !text.equals("\n")) {
+          if (!text.isEmpty() && !"\n".equals(text)) {
             final String trimmedText = text.trim();
             // Only update lastContent if there's actual non-whitespace content
             // This prevents whitespace between elements from erasing previously captured content
@@ -289,7 +289,7 @@ public class XMLImporterFormat implements FormatImporter {
         case XMLStreamReader.CHARACTERS:
         case XMLStreamReader.CDATA:
           final String text = xmlReader.getText();
-          if (!text.isEmpty() && !text.equals("\n")) {
+          if (!text.isEmpty() && !"\n".equals(text)) {
             final String trimmedText = text.trim();
             // Only update lastContent if there's actual non-whitespace content
             // This prevents whitespace between elements from erasing previously captured content

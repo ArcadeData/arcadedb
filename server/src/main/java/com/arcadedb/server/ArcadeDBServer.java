@@ -963,7 +963,7 @@ public class ArcadeDBServer {
     } else {
       // READ HOST FROM NETWORK INTERFACE
       hostAddress = configuration.getValueAsString(GlobalConfiguration.SERVER_HTTP_INCOMING_HOST);
-      if (hostAddress.equals("0.0.0.0")) {
+      if ("0.0.0.0".equals(hostAddress)) {
         try {
           hostAddress = ChannelBinary.getLocalIpAddress(true);
         } catch (Exception e) {

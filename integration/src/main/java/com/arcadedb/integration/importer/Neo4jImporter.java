@@ -731,30 +731,30 @@ public class Neo4jImporter {
 
     String state = null;
     for (final String arg : args) {
-      if (arg.equals("-?"))
+      if ("-?".equals(arg))
         printHelp();
-      else if (arg.equals("-d"))
+      else if ("-d".equals(arg))
         state = "databasePath";
-      else if (arg.equals("-i"))
+      else if ("-i".equals(arg))
         state = "inputFile";
-      else if (arg.equals("-o"))
+      else if ("-o".equals(arg))
         overwriteDatabase = true;
-      else if (arg.equals("-b"))
+      else if ("-b".equals(arg))
         state = "batchSize";
-      else if (arg.equals("-decimalType"))
+      else if ("-decimalType".equals(arg))
         state = "decimalType";
-      else if (arg.equals("-bucketBits"))
+      else if ("-bucketBits".equals(arg))
         state = "bucketBits";
       else if (state != null) {
-        if (state.equals("databasePath"))
+        if ("databasePath".equals(state))
           databasePath = arg;
-        else if (state.equals("inputFile"))
+        else if ("inputFile".equals(state))
           inputFile = arg;
-        else if (state.equals("batchSize"))
+        else if ("batchSize".equals(state))
           batchSize = Integer.parseInt(arg);
-        else if (state.equals("decimalType"))
+        else if ("decimalType".equals(state))
           typeForDecimals = Type.valueOf(arg.toUpperCase(Locale.ENGLISH));
-        else if (state.equals("bucketBits")) {
+        else if ("bucketBits".equals(state)) {
           bucketBits = Integer.parseInt(arg);
           if (bucketBits < 1 || bucketBits > 32)
             syntaxError("bucketBits must be between 1 and 32");

@@ -240,7 +240,7 @@ public class FunctionCall extends SimpleNode {
   }
 
   public boolean isExpand() {
-    return name.getStringValue().equals("expand");
+    return "expand".equals(name.getStringValue());
   }
 
   public boolean isAggregate(final CommandContext context) {
@@ -395,24 +395,24 @@ public class FunctionCall extends SimpleNode {
 
   private boolean isGraphFunction() {
     final String string = name.getStringValue();
-    if (string.equalsIgnoreCase("out"))
+    if ("out".equalsIgnoreCase(string))
       return true;
-    else if (string.equalsIgnoreCase("outE"))
+    else if ("outE".equalsIgnoreCase(string))
       return true;
-    else if (string.equalsIgnoreCase("outV"))
+    else if ("outV".equalsIgnoreCase(string))
       return true;
-    else if (string.equalsIgnoreCase("in"))
+    else if ("in".equalsIgnoreCase(string))
       return true;
-    else if (string.equalsIgnoreCase("inE"))
+    else if ("inE".equalsIgnoreCase(string))
       return true;
-    else if (string.equalsIgnoreCase("inV"))
+    else if ("inV".equalsIgnoreCase(string))
       return true;
-    else if (string.equalsIgnoreCase("both"))
+    else if ("both".equalsIgnoreCase(string))
       return true;
-    else if (string.equalsIgnoreCase("bothE"))
+    else if ("bothE".equalsIgnoreCase(string))
       return true;
     else
-      return string.equalsIgnoreCase("bothV");
+      return "bothV".equalsIgnoreCase(string);
   }
 
   private SQLFunction getFunction(final CommandContext context) {

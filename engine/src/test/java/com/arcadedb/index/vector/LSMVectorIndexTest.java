@@ -963,7 +963,7 @@ class LSMVectorIndexTest extends TestHelper {
         final var rid = cursor.next();
         final var doc = rid.asDocument();
         final String id = doc.get("id").toString();
-        if (id.equals("committed_0")) {
+        if ("committed_0".equals(id)) {
           found = true;
           break;
         }

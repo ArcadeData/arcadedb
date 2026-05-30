@@ -314,7 +314,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
         if (response.statusCode() != 200) {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);
-          if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received")) {
+          if (lastException instanceof RuntimeException && "Empty payload received".equals(lastException.getMessage())) {
             LogManager.instance()
                 .log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
             continue;
@@ -625,11 +625,11 @@ public class RemoteHttpComponent extends RWLockContext {
         return new NoSuchElementException(detail);
       } else if (exception.equals(SecurityException.class.getName())) {
         return new SecurityException(detail);
-      } else if (exception.equals("com.arcadedb.server.security.ServerSecurityException")) {
+      } else if ("com.arcadedb.server.security.ServerSecurityException".equals(exception)) {
         return new SecurityException(detail);
       } else if (exception.equals(ConnectException.class.getName())) {
         return new NeedRetryException(detail);
-      } else if (exception.equals("com.arcadedb.server.ha.ReplicationException")) {
+      } else if ("com.arcadedb.server.ha.ReplicationException".equals(exception)) {
         return new NeedRetryException(detail);
       } else if (exception.equals(NeedRetryException.class.getName())) {
         return new NeedRetryException(detail);

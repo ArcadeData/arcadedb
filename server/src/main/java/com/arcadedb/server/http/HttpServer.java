@@ -185,7 +185,7 @@ public class HttpServer implements ServerPlugin {
         LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)", host, httpPortListening,
             httpsPortListening > 0 ? httpsPortListening : "-");
 
-        listeningAddress = host.equals("0.0.0.0") ?
+        listeningAddress = "0.0.0.0".equals(host) ?
             server.getHostAddress() + ":" + httpPortListening :
             host + ":" + httpPortListening;
         return;
