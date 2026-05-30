@@ -272,7 +272,7 @@ public final class RaftLogEntryCodec {
 
       dos.writeByte(RaftLogEntryType.SECURITY_USERS_ENTRY.getId());
       dos.writeUTF("");
-      final byte[] bytes = usersJson.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+      final byte[] bytes = usersJson.getBytes(StandardCharsets.UTF_8);
       dos.writeInt(bytes.length);
       dos.write(bytes);
 
@@ -499,7 +499,7 @@ public final class RaftLogEntryCodec {
     checkByteLength(length, "SECURITY_USERS_ENTRY");
     final byte[] bytes = new byte[length];
     dis.readFully(bytes);
-    final String usersJson = new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+    final String usersJson = new String(bytes, StandardCharsets.UTF_8);
     return new DecodedEntry(RaftLogEntryType.SECURITY_USERS_ENTRY, "",
         null, null, null, null, null, null, null, usersJson, false, null, -1L, Collections.emptyList());
   }

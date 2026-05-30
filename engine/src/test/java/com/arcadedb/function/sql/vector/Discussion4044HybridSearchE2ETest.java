@@ -27,13 +27,7 @@ import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -263,7 +257,7 @@ class Discussion4044HybridSearchE2ETest extends TestHelper {
     //    rank #1 if sparse were broken (dense collapses both). Under hybrid retrieval it must rank
     //    *after* doc_0.xml.
     if (firstVariantPerSource.containsKey("doc_1.xml")) {
-      final List<String> ordered = new java.util.ArrayList<>(firstVariantPerSource.keySet());
+      final List<String> ordered = new ArrayList<>(firstVariantPerSource.keySet());
       assertThat(ordered.indexOf("doc_0.xml"))
           .as("doc_0 must rank before doc_1 (sparse breaks the tie)")
           .isLessThan(ordered.indexOf("doc_1.xml"));

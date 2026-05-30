@@ -20,10 +20,18 @@ package com.arcadedb.query;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+
+import com.arcadedb.log.LogManager;
+import com.arcadedb.log.Logger;
+import java.util.Collections;
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -138,27 +146,27 @@ class QueryEngineManagerPoolTest {
     final java.lang.reflect.Field throttleField =
         QueryEngineManager.class.getDeclaredField("lastSaturationWarnMs");
     throttleField.setAccessible(true);
-    final java.util.concurrent.atomic.AtomicLong throttle =
-        (java.util.concurrent.atomic.AtomicLong) throttleField.get(QueryEngineManager.getInstance());
+    final AtomicLong throttle =
+        (AtomicLong) throttleField.get(QueryEngineManager.getInstance());
     throttle.set(0L);
 
     // Capture WARNING logs via the LogManager logger swap. The production logger writes to the
     // server console (and routes through the slf4j chain in production); the test substitutes a
     // simple list-collector for the duration of the test, then restores.
-    final java.util.List<String> warnings = java.util.Collections.synchronizedList(new java.util.ArrayList<>());
-    final com.arcadedb.log.Logger originalLogger = readField(com.arcadedb.log.LogManager.instance(), "logger");
-    com.arcadedb.log.LogManager.instance().setLogger(new com.arcadedb.log.Logger() {
-      @Override public void log(final Object req, final java.util.logging.Level level, final String msg,
+    final List<String> warnings = Collections.synchronizedList(new ArrayList<>());
+    final Logger originalLogger = readField(LogManager.instance(), "logger");
+    LogManager.instance().setLogger(new Logger() {
+      @Override public void log(final Object req, final Level level, final String msg,
           final Throwable th, final String ctx, final Object a1, final Object a2, final Object a3, final Object a4,
           final Object a5, final Object a6, final Object a7, final Object a8, final Object a9, final Object a10,
           final Object a11, final Object a12, final Object a13, final Object a14, final Object a15, final Object a16,
           final Object a17) {
-        if (level.intValue() >= java.util.logging.Level.WARNING.intValue())
+        if (level.intValue() >= Level.WARNING.intValue())
           warnings.add(msg == null ? "" : msg);
       }
-      @Override public void log(final Object req, final java.util.logging.Level level, final String msg,
+      @Override public void log(final Object req, final Level level, final String msg,
           final Throwable th, final String ctx, final Object... args) {
-        if (level.intValue() >= java.util.logging.Level.WARNING.intValue())
+        if (level.intValue() >= Level.WARNING.intValue())
           warnings.add(msg == null ? "" : msg);
       }
       @Override public void flush() {}
@@ -203,7 +211,7 @@ class QueryEngineManagerPoolTest {
           .isEqualTo(5L);
     } finally {
       release.countDown();
-      com.arcadedb.log.LogManager.instance().setLogger(originalLogger);
+      LogManager.instance().setLogger(originalLogger);
     }
   }
 

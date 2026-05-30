@@ -97,6 +97,7 @@ import com.arcadedb.query.opencypher.executor.steps.VariableProjectionStep;
 import com.arcadedb.query.opencypher.executor.steps.WithStep;
 import com.arcadedb.query.opencypher.executor.steps.ZeroLengthPathStep;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
@@ -109,14 +110,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.parser.ExplainResultSet;
 
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 import java.util.function.Function;
 
 /**
@@ -3671,15 +3665,15 @@ public class CypherExecutionPlan {
     if (!database.getSchema().existsType(label1) || !database.getSchema().existsType(label2))
       return false; // Unknown type → conservative
 
-    final com.arcadedb.schema.DocumentType type1 = database.getSchema().getType(label1);
-    final com.arcadedb.schema.DocumentType type2 = database.getSchema().getType(label2);
+    final DocumentType type1 = database.getSchema().getType(label1);
+    final DocumentType type2 = database.getSchema().getType(label2);
 
     // Direct hierarchy check: if one extends the other, not disjoint
     if (type1.instanceOf(label2) || type2.instanceOf(label1))
       return false;
 
     // Check for common subtypes: if any type extends both, a vertex could match both labels
-    for (final com.arcadedb.schema.DocumentType schemaType : database.getSchema().getTypes())
+    for (final DocumentType schemaType : database.getSchema().getTypes())
       if (schemaType.instanceOf(label1) && schemaType.instanceOf(label2))
         return false;
 
@@ -3915,7 +3909,7 @@ public class CypherExecutionPlan {
 
     // Find the central variable: the one that appears in multiple path patterns.
     // First pass: count occurrences of each variable across all path patterns.
-    final java.util.HashMap<String, Integer> varCounts = new java.util.HashMap<>();
+    final HashMap<String, Integer> varCounts = new HashMap<>();
     for (final MatchClause mc : statement.getMatchClauses()) {
       if (!mc.hasPathPatterns())
         continue;
@@ -3953,7 +3947,7 @@ public class CypherExecutionPlan {
       if (centralLabel != null) break;
     }
 
-    final java.util.ArrayList<DegreeProductOp.Arm> armList = new java.util.ArrayList<>();
+    final ArrayList<DegreeProductOp.Arm> armList = new ArrayList<>();
 
     for (final MatchClause matchClause : statement.getMatchClauses()) {
       if (matchClause.hasWhereClause())
@@ -4045,7 +4039,7 @@ public class CypherExecutionPlan {
     MatchClause cycleMC = null;
     PathPattern cyclePP = null;
     String cycleEdgeType = null;
-    final java.util.ArrayList<String> cycleVars = new java.util.ArrayList<>();
+    final ArrayList<String> cycleVars = new ArrayList<>();
     for (final MatchClause mc : statement.getMatchClauses()) {
       if (!mc.hasPathPatterns() || mc.getPathPatterns().size() != 1)
         continue;
@@ -4258,9 +4252,9 @@ public class CypherExecutionPlan {
     // Each arm reaches one of the shared endpoint variables.
 
     // Walk backward from startNodeIdx to find endpoint reaching probeVar1 or probeVar2
-    final java.util.ArrayList<String> bwdET = new java.util.ArrayList<>();
-    final java.util.ArrayList<Vertex.DIRECTION> bwdDir = new java.util.ArrayList<>();
-    final java.util.ArrayList<String> bwdLabels = new java.util.ArrayList<>();
+    final ArrayList<String> bwdET = new ArrayList<>();
+    final ArrayList<Vertex.DIRECTION> bwdDir = new ArrayList<>();
+    final ArrayList<String> bwdLabels = new ArrayList<>();
     String bwdEndpointVar = null;
     for (int i = startNodeIdx - 1; i >= 0; i--) {
       final RelationshipPattern rel = buildPattern.getRelationship(i);
@@ -4281,9 +4275,9 @@ public class CypherExecutionPlan {
     }
 
     // Walk forward from startNodeIdx to find the other endpoint
-    final java.util.ArrayList<String> fwdET = new java.util.ArrayList<>();
-    final java.util.ArrayList<Vertex.DIRECTION> fwdDir = new java.util.ArrayList<>();
-    final java.util.ArrayList<String> fwdLabels = new java.util.ArrayList<>();
+    final ArrayList<String> fwdET = new ArrayList<>();
+    final ArrayList<Vertex.DIRECTION> fwdDir = new ArrayList<>();
+    final ArrayList<String> fwdLabels = new ArrayList<>();
     String fwdEndpointVar = null;
     for (int i = startNodeIdx; i < buildHops; i++) {
       final RelationshipPattern rel = buildPattern.getRelationship(i);

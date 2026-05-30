@@ -40,6 +40,7 @@ import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
+import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.plugin.PluginManager;
 import com.arcadedb.server.security.ServerSecurity;
@@ -70,6 +71,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Function;
 import java.util.logging.Level;
 
@@ -96,7 +98,7 @@ public class ArcadeDBServer {
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
-  private final       java.util.concurrent.atomic.AtomicBoolean snapshotInstallInProgress            = new java.util.concurrent.atomic.AtomicBoolean(false);
+  private final       AtomicBoolean snapshotInstallInProgress            = new AtomicBoolean(false);
   private             Function<LocalDatabase, DatabaseInternal> databaseWrapper;
 //  private             ServerMonitor                         serverMonitor;
 
@@ -205,7 +207,7 @@ public class ArcadeDBServer {
       new JvmThreadMetrics().bindTo(Metrics.globalRegistry);
       // Engine executor pools (query parallelism + sparse-vector scoring) - exposes
       // arcadedb.executor.pool.{size,active,...} gauges tagged with pool=<name>.
-      new com.arcadedb.server.monitor.PoolMetrics().bindTo(Metrics.globalRegistry);
+      new PoolMetrics().bindTo(Metrics.globalRegistry);
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_LOGGING)) {
         LogManager.instance().log(this, Level.INFO, "- Logging metrics enabled...");

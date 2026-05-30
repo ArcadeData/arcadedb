@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -89,7 +90,7 @@ class SQLFunctionPhase3Test extends TestHelper {
 
     // Pass k explicitly via options map, no disambiguation heuristic involved.
     final float result = (float) function.execute(null, null, null,
-        new Object[] { 1L, 5L, 10L, java.util.Map.of("k", 100L) },
+        new Object[] { 1L, 5L, 10L, Map.of("k", 100L) },
         context);
 
     final float expected = (1.0f / 101) + (1.0f / 105) + (1.0f / 110);
@@ -103,7 +104,7 @@ class SQLFunctionPhase3Test extends TestHelper {
     context.setDatabase(database);
 
     assertThatThrownBy(() -> function.execute(null, null, null,
-        new Object[] { 1L, java.util.Map.of("whoops", 1) }, context))
+        new Object[] { 1L, Map.of("whoops", 1) }, context))
         .hasMessageContaining("whoops")
         .hasMessageContaining("vector.rrfScore");
   }
@@ -239,7 +240,7 @@ class SQLFunctionPhase3Test extends TestHelper {
     context.setDatabase(database);
 
     final float result = (float) function.execute(null, null, null,
-        new Object[] { 0.8f, 0.4f, java.util.Map.of("alpha", 0.7) },
+        new Object[] { 0.8f, 0.4f, Map.of("alpha", 0.7) },
         context);
 
     assertThat(result).isCloseTo(0.68f, Offset.offset(0.001f));
@@ -252,7 +253,7 @@ class SQLFunctionPhase3Test extends TestHelper {
     context.setDatabase(database);
 
     assertThatThrownBy(() -> function.execute(null, null, null,
-        new Object[] { 0.8f, 0.4f, java.util.Map.of("whoops", 1) }, context))
+        new Object[] { 0.8f, 0.4f, Map.of("whoops", 1) }, context))
         .hasMessageContaining("whoops")
         .hasMessageContaining("vector.hybridScore");
   }

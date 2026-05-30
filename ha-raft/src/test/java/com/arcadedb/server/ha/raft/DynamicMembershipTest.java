@@ -20,9 +20,12 @@ package com.arcadedb.server.ha.raft;
 
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
+
+import com.arcadedb.exception.ConfigurationException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -65,8 +68,8 @@ class DynamicMembershipTest extends BaseRaftHATest {
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
 
     final RaftHAServer raftServer = getRaftPlugin(leaderIndex).getRaftHAServer();
-    org.assertj.core.api.Assertions.assertThatThrownBy(() -> raftServer.removePeer("nonexistent"))
-        .isInstanceOf(com.arcadedb.exception.ConfigurationException.class);
+    Assertions.assertThatThrownBy(() -> raftServer.removePeer("nonexistent"))
+        .isInstanceOf(ConfigurationException.class);
   }
 
   @Test

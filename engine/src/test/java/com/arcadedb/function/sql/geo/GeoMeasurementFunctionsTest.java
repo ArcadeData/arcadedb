@@ -22,6 +22,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Nested;
+
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,7 +99,7 @@ class GeoMeasurementFunctionsTest {
     @Test
     void optionsMap_rejectsUnknownKey() {
       assertThatThrownBy(() -> new SQLFunctionGeoBuffer()
-          .execute(null, null, null, new Object[] { "POINT (10 20)", 1.0, java.util.Map.of("whoops", 1) }, null))
+          .execute(null, null, null, new Object[] { "POINT (10 20)", 1.0, Map.of("whoops", 1) }, null))
           .hasMessageContaining("whoops")
           .hasMessageContaining("geo.buffer");
     }

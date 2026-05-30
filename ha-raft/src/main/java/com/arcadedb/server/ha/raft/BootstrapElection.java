@@ -45,6 +45,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.logging.Level;
 
 /**
@@ -194,10 +196,10 @@ class BootstrapElection {
     for (final CompletableFuture<Map<RaftPeerId, Map<String, PeerState>>> f : futures) {
       final long remaining = Math.max(0, deadline - System.currentTimeMillis());
       try {
-        final Map<RaftPeerId, Map<String, PeerState>> result = f.get(remaining, java.util.concurrent.TimeUnit.MILLISECONDS);
+        final Map<RaftPeerId, Map<String, PeerState>> result = f.get(remaining, TimeUnit.MILLISECONDS);
         if (result != null)
           remoteStates.putAll(result);
-      } catch (final java.util.concurrent.TimeoutException te) {
+      } catch (final TimeoutException te) {
         // Pending peer didn't respond by deadline; logged below.
         f.cancel(true);
       } catch (final Exception e) {

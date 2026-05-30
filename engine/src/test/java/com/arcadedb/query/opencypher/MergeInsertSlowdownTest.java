@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -133,7 +134,7 @@ class MergeInsertSlowdownTest {
       params.put("src", String.format("61%08d", srcIdx));
       params.put("dest", String.format("61%08d", destIdx));
       params.put("ts", baseTs + i);
-      params.put("amt", new java.math.BigDecimal(rnd.nextInt(10_000)));
+      params.put("amt", new BigDecimal(rnd.nextInt(10_000)));
       params.put("ccy", "ZAR");
 
       database.transaction(() -> {

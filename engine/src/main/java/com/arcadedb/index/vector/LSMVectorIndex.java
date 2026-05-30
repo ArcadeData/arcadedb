@@ -29,6 +29,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Component;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
@@ -1191,7 +1192,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
     boolean documentScanPerformed = false;
     if (metadata.associatedBucketId != -1) {
       try {
-        final com.arcadedb.engine.Bucket bucket = database.getSchema().getBucketById(metadata.associatedBucketId);
+        final Bucket bucket = database.getSchema().getBucketById(metadata.associatedBucketId);
         final long docCount = database.countBucket(bucket.getName());
         if (ridToLatestVector.size() < docCount * 8 / 10) {
           LogManager.instance().log(this, Level.WARNING,

@@ -4795,9 +4795,9 @@ public class SelectStatementExecutionTest extends TestHelper {
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
       final Object val = result.getProperty("$x");
-      assertThat(val).isInstanceOf(java.util.List.class);
+      assertThat(val).isInstanceOf(List.class);
       @SuppressWarnings("unchecked")
-      final java.util.List<Object> list = (java.util.List<Object>) val;
+      final List<Object> list = (List<Object>) val;
       assertThat(list).containsExactly(1);
     }
   }

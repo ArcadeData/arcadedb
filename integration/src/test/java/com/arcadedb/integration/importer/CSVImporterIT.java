@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.schema.EdgeType;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -467,7 +469,7 @@ class CSVImporterIT {
       assertThat(db.countType("Relationship", true)).as("All 3 edges should be imported").isEqualTo(3);
 
       // Verify edge type is non-bidirectional
-      assertThat(((com.arcadedb.schema.EdgeType) db.getSchema().getType("Relationship")).isBidirectional()).isFalse();
+      assertThat(((EdgeType) db.getSchema().getType("Relationship")).isBidirectional()).isFalse();
 
       // Verify outgoing edges exist
       var vertex0 = db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex();

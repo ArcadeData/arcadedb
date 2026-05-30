@@ -19,11 +19,7 @@
 package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.BasePage;
-import com.arcadedb.engine.ComponentFile;
-import com.arcadedb.engine.MutablePage;
-import com.arcadedb.engine.PageId;
-import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.engine.*;
 import com.arcadedb.index.IndexException;
 
 import java.io.IOException;
@@ -76,7 +72,7 @@ public class SparseSegmentComponent extends PaginatedComponent {
    * the database are reopened as {@code SparseSegmentComponent} instances at startup.
    */
   public static class PaginatedComponentFactoryHandler
-      implements com.arcadedb.engine.ComponentFactory.PaginatedComponentFactoryHandler {
+      implements ComponentFactory.PaginatedComponentFactoryHandler {
     @Override
     public PaginatedComponent createOnLoad(final DatabaseInternal database, final String name, final String filePath,
         final int id, final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {

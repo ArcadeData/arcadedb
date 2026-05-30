@@ -20,7 +20,9 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.WALVersionGapException;
@@ -54,9 +56,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -119,8 +124,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Populated when the entry is applied (locally on every peer), used by the catch-up decision
    * tree (locally bootstrapped vs leader-shipped vs late-newer-joiner refusal). Issue #4147.
    */
-  private final java.util.concurrent.ConcurrentHashMap<String, BootstrapBaseline> bootstrapBaselines =
-      new java.util.concurrent.ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, BootstrapBaseline> bootstrapBaselines =
+      new ConcurrentHashMap<>();
 
   /** Per-database bootstrap baseline as it appears in the committed Raft log entry. */
   public record BootstrapBaseline(String fingerprint, long lastTxId) {
@@ -705,7 +710,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return;
       final JSONObject types = root.getJSONObject("types");
 
-      final java.util.Set<String> shippedIndexNames = new java.util.HashSet<>();
+      final Set<String> shippedIndexNames = new HashSet<>();
       if (filesToAdd != null) {
         for (final String fullName : filesToAdd.values()) {
           final int firstDot = fullName.indexOf('.');
@@ -900,14 +905,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
     try {
       final ServerDatabase serverDb = server.getDatabase(dbName);
       final DatabaseInternal embedded = serverDb.getWrappedDatabaseInstance().getEmbedded();
-      if (!(embedded instanceof com.arcadedb.database.LocalDatabase localDb)) {
+      if (!(embedded instanceof LocalDatabase localDb)) {
         LogManager.instance().log(this, Level.WARNING,
             "BOOTSTRAP_FINGERPRINT_ENTRY for '%s': embedded database is not a LocalDatabase, skipping",
             dbName);
         return;
       }
       localPath = localDb.getDatabasePath();
-      localFingerprint = com.arcadedb.database.BootstrapFingerprint.compute(new File(localPath));
+      localFingerprint = BootstrapFingerprint.compute(new File(localPath));
       localLastTxId = localDb.getLastTransactionId();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -305,7 +306,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     while (!currentLayer.isEmpty()) {
       if (Thread.interrupted())
-        throw new com.arcadedb.exception.CommandExecutionException("The allShortestPaths() function has been interrupted");
+        throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
 
       // Stop expanding once we've completed the layer where target was first discovered: any further hop
       // would only produce strictly longer (non co-shortest) paths.

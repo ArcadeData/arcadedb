@@ -22,6 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.BeforeEach;
+
+import java.util.HashSet;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -120,8 +123,8 @@ class SQLFunctionSearchBareCallTest extends TestHelper {
     });
   }
 
-  private static java.util.Set<Object> toRids(final ResultSet rs) {
-    final java.util.Set<Object> ids = new java.util.HashSet<>();
+  private static Set<Object> toRids(final ResultSet rs) {
+    final Set<Object> ids = new HashSet<>();
     while (rs.hasNext())
       ids.add(rs.next().getProperty("rid"));
     return ids;

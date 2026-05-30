@@ -23,6 +23,9 @@ import com.arcadedb.network.binary.ReplicationQueueFullException;
 import org.apache.ratis.protocol.exceptions.AlreadyClosedException;
 import org.junit.jupiter.api.Test;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -37,7 +40,7 @@ class RaftGroupCommitterTest {
     final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 10_000);
 
     // Submit an entry in a background thread
-    final var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+    final var future = CompletableFuture.supplyAsync(() -> {
       try {
         committer.submitAndWait(new byte[] { 1, 2, 3 });
         return "success";
@@ -78,7 +81,7 @@ class RaftGroupCommitterTest {
 
     Thread.sleep(300);
 
-    final var future = java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+    final var future = CompletableFuture.supplyAsync(() -> {
       try {
         committer.submitAndWait(new byte[] { 4, 5, 6 });
         return "success";
@@ -168,8 +171,8 @@ class RaftGroupCommitterTest {
     final RaftGroupCommitter target = new RaftGroupCommitter(null, Quorum.MAJORITY, 30_000);
 
     // Submit an entry in a background thread. submitAndWait blocks until the future completes.
-    final java.util.concurrent.CompletableFuture<String> result =
-        java.util.concurrent.CompletableFuture.supplyAsync(() -> {
+    final CompletableFuture<String> result =
+        CompletableFuture.supplyAsync(() -> {
           try {
             source.submitAndWait(new byte[] { 1, 2, 3 });
             return "ok";
@@ -184,7 +187,7 @@ class RaftGroupCommitterTest {
     final int transferred = source.transferPendingTo(target);
     assertThat(transferred).isBetween(0, 1);
 
-    final String message = result.get(5, java.util.concurrent.TimeUnit.SECONDS);
+    final String message = result.get(5, TimeUnit.SECONDS);
     // Critical: must NOT be the "Group committer shutting down" message that would surface if we
     // failed pending entries on the source. The new committer (target) handles it instead.
     assertThat(message).doesNotContain("Group committer shutting down");
@@ -204,7 +207,7 @@ class RaftGroupCommitterTest {
     assertThat(RaftGroupCommitter.isClientClosed(new AlreadyClosedException("client X is closed"))).isTrue();
     // Wrapped, like the production path: CompletionException -> AlreadyClosedException
     assertThat(RaftGroupCommitter.isClientClosed(
-        new java.util.concurrent.CompletionException(new AlreadyClosedException("X is already CLOSED")))).isTrue();
+        new CompletionException(new AlreadyClosedException("X is already CLOSED")))).isTrue();
     // Pure message-based detection (matches the SlidingWindow text we see in customer logs).
     assertThat(RaftGroupCommitter.isClientClosed(
         new RuntimeException("SlidingWindow$Client:client-43D76C26FF37->RAFT is closed."))).isTrue();

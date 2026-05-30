@@ -24,6 +24,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -79,7 +80,7 @@ class LocalSchemaOrphanIndexLoadTest extends TestHelper {
     indexes.remove(firstName);
     indexes.put(renamedName, indexBody);
 
-    try (final java.io.FileWriter w = new java.io.FileWriter(schemaFile)) {
+    try (final FileWriter w = new FileWriter(schemaFile)) {
       w.write(schemaJson.toString());
     }
 

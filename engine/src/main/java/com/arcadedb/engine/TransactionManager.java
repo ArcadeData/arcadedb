@@ -561,7 +561,7 @@ public class TransactionManager {
     final File f = lastTxIdFile();
     if (f == null || !f.isFile())
       return -1L;
-    try (final java.io.DataInputStream in = new java.io.DataInputStream(new java.io.FileInputStream(f))) {
+    try (final DataInputStream in = new DataInputStream(new FileInputStream(f))) {
       return in.readLong();
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING,
@@ -582,7 +582,7 @@ public class TransactionManager {
     if (value < 0)
       return;
     final File tmp = new File(f.getParentFile(), f.getName() + ".tmp");
-    try (final java.io.DataOutputStream out = new java.io.DataOutputStream(new java.io.FileOutputStream(tmp))) {
+    try (final DataOutputStream out = new DataOutputStream(new FileOutputStream(tmp))) {
       out.writeLong(value);
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING,

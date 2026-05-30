@@ -25,6 +25,8 @@ import java.io.DataOutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -311,8 +313,8 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
       // JVM's default zone.
       final JSONObject query = executeCommand(serverIndex, "sql", "SELECT ts FROM E4142");
       final String ts = query.getJSONObject("result").getJSONArray("records").getJSONObject(0).getString("ts");
-      final java.time.ZonedDateTime input = java.time.ZonedDateTime.parse("2026-05-08T18:37:54Z");
-      final String expectedDate = input.withZoneSameInstant(java.time.ZoneId.systemDefault())
+      final ZonedDateTime input = ZonedDateTime.parse("2026-05-08T18:37:54Z");
+      final String expectedDate = input.withZoneSameInstant(ZoneId.systemDefault())
           .toLocalDateTime()
           .toLocalDate()
           .toString();

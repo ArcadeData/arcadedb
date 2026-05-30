@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.serializer.json.JSONObject;
@@ -162,7 +163,7 @@ class SchemaTest extends TestHelper {
     // Close and reopen database
     final String dbPath = database.getDatabasePath();
     database.close();
-    database = new com.arcadedb.database.DatabaseFactory(dbPath).open();
+    database = new DatabaseFactory(dbPath).open();
 
     // Verify data survives reopen
     assertThat(database.getSchema().existsType("ASKED")).isTrue();

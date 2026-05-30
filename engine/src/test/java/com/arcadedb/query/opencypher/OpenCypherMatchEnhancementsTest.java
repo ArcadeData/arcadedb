@@ -1143,7 +1143,7 @@ public class OpenCypherMatchEnhancementsTest {
     try {
       final ResultSet rs = db.query("opencypher",
           "MATCH (p:Person)-[:FRIEND]->(:Person {name: $fName}) RETURN p.name AS person",
-          java.util.Map.of("fName", "Bob"));
+          Map.of("fName", "Bob"));
 
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<String>getProperty("person")).isEqualTo("Alice");

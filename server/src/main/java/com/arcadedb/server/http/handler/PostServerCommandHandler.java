@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -59,6 +60,7 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -1025,7 +1027,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         restored.getEmbedded().drop();
         server.removeDatabase(databaseName);
       } catch (final Exception inner) {
-        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+        LogManager.instance().log(this, Level.SEVERE,
             "Compensating drop after failed restore replication failed for '%s'", inner, databaseName);
       }
       throw e;

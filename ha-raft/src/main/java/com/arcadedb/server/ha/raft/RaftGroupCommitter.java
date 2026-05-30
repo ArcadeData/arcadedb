@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -154,7 +155,7 @@ class RaftGroupCommitter {
       final Exception error = pending.future.get(timeoutMs, TimeUnit.MILLISECONDS);
       if (error != null)
         throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
-    } catch (final java.util.concurrent.TimeoutException e) {
+    } catch (final TimeoutException e) {
       if (pending.tryCancel())
         throw new QuorumNotReachedException("Group commit timed out after " + timeoutMs + "ms (cancelled before dispatch)");
 
@@ -162,7 +163,7 @@ class RaftGroupCommitter {
         final Exception error = pending.future.get(quorumTimeout, TimeUnit.MILLISECONDS);
         if (error != null)
           throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
-      } catch (final java.util.concurrent.TimeoutException e2) {
+      } catch (final TimeoutException e2) {
         throw new QuorumNotReachedException(
             "Group commit timed out after " + timeoutMs + "ms + " + quorumTimeout + "ms grace (entry was dispatched to Raft)");
       } catch (final RuntimeException re) {

@@ -23,6 +23,8 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -236,7 +238,7 @@ class FunctionTest extends TestHelper {
   @Test
   void functionDateRejectsUnknownOption() {
     database.transaction(() ->
-      org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+      Assertions.assertThatThrownBy(() ->
           database.query("SQL", "SELECT date(\"2023-03-04\", { whoops: 1 }) as date").next())
           .hasMessageContaining("whoops")
           .hasMessageContaining("date"));

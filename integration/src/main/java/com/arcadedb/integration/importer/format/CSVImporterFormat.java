@@ -34,7 +34,11 @@ import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+import com.arcadedb.schema.VertexType;
+
 import com.univocity.parsers.common.AbstractParser;
 import com.univocity.parsers.common.CommonParserSettings;
 import com.univocity.parsers.csv.CsvParser;
@@ -179,7 +183,7 @@ public class CSVImporterFormat extends AbstractImporterFormat {
       // Ensure the typeIdProperty has a unique index for edge resolution
       if (!database.getSchema().getType(settings.vertexTypeName).existsProperty(settings.typeIdProperty))
         database.transaction(
-            () -> database.getSchema().getType(settings.vertexTypeName).createProperty(settings.typeIdProperty, com.arcadedb.schema.Type.STRING));
+            () -> database.getSchema().getType(settings.vertexTypeName).createProperty(settings.typeIdProperty, Type.STRING));
       if (database.getSchema().getType(settings.vertexTypeName).getIndexesByProperties(settings.typeIdProperty).isEmpty())
         database.transaction(
             () -> database.getSchema().getType(settings.vertexTypeName).createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, settings.typeIdProperty));
@@ -422,8 +426,8 @@ public class CSVImporterFormat extends AbstractImporterFormat {
    * Needed because edges can connect different vertex types.
    */
   private Vertex findVertexByKey(final Database database, final String keyProperty, final Object keyValue) {
-    for (final com.arcadedb.schema.DocumentType type : database.getSchema().getTypes()) {
-      if (!(type instanceof com.arcadedb.schema.VertexType))
+    for (final DocumentType type : database.getSchema().getTypes()) {
+      if (!(type instanceof VertexType))
         continue;
       if (!type.existsProperty(keyProperty))
         continue;

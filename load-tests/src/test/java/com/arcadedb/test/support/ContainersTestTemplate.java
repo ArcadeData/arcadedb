@@ -23,6 +23,8 @@ import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.utility.FileUtils;
+
+import com.github.dockerjava.api.model.ContainerNetwork;
 import eu.rekawek.toxiproxy.ToxiproxyClient;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
@@ -218,8 +220,8 @@ public abstract class ContainersTestTemplate {
     final String networkId = network.getId();
     logger.info("Reconnecting container {} to network {}", container.getContainerName(), networkId);
 
-    final com.github.dockerjava.api.model.ContainerNetwork containerNetwork =
-        new com.github.dockerjava.api.model.ContainerNetwork().withAliases(container.getNetworkAliases());
+    final ContainerNetwork containerNetwork =
+        new ContainerNetwork().withAliases(container.getNetworkAliases());
 
     container.getDockerClient().connectToNetworkCmd()
         .withContainerId(containerId)

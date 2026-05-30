@@ -25,6 +25,9 @@ import com.arcadedb.schema.LocalDocumentType;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -137,7 +140,7 @@ class PartitionPruningCypherTest extends TestHelper {
     createPartitionedVertexTypeThenDropIndex();
     populate();
 
-    final java.util.Map<String, Object> params = new java.util.HashMap<>();
+    final Map<String, Object> params = new HashMap<>();
     params.put("t", "acme");
     final ResultSet rs = database.query("cypher",
         "PROFILE MATCH (n:" + TYPE_NAME + " {tenant_id: $t}) RETURN n.tenant_id AS x", params);

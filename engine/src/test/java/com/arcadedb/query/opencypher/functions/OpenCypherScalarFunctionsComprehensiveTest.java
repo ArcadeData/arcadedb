@@ -25,6 +25,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -763,7 +764,7 @@ class OpenCypherScalarFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "MATCH (n)-[r]->() WHERE n.name = 'Bob' RETURN DISTINCT type(r) AS result ORDER BY result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final var types = new java.util.ArrayList<String>();
+    final var types = new ArrayList<String>();
     while (result.hasNext()) {
       types.add((String) result.next().getProperty("result"));
     }
@@ -784,7 +785,7 @@ class OpenCypherScalarFunctionsComprehensiveTest {
     final ResultSet result = database.command("opencypher",
         "UNWIND ['abc', 1, 2.0, true] AS value RETURN valueType(value) AS result");
     Assertions.assertThat(result.hasNext() != false).isTrue();
-    final var types = new java.util.ArrayList<String>();
+    final var types = new ArrayList<String>();
     while (result.hasNext()) {
       types.add((String) result.next().getProperty("result"));
     }

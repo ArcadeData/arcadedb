@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
@@ -573,7 +574,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // TODO follow-up: hoist the bucket-list snapshot to step construction so high-fanout MATCH
     // loops (UNWIND list -> MATCH per element) don't pay {@code getBuckets(false)} per
     // iteration. See review note #8 (issue #4087 follow-up).
-    final List<? extends com.arcadedb.engine.Bucket> typeBuckets = type.getBuckets(false);
+    final List<? extends Bucket> typeBuckets = type.getBuckets(false);
     if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
       return null;
 

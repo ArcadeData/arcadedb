@@ -18,6 +18,8 @@
  */
 package com.arcadedb.utility;
 
+import java.util.Arrays;
+
 /**
  * Zero-boxing open-addressing hash map: primitive long keys → primitive long values.
  * <p>
@@ -52,7 +54,7 @@ public final class LongLongHashMap {
     keys = new long[capacity];
     values = new long[capacity];
     threshold = (int) (capacity * LOAD_FACTOR);
-    java.util.Arrays.fill(keys, EMPTY);
+    Arrays.fill(keys, EMPTY);
   }
 
   /**
@@ -157,7 +159,7 @@ public final class LongLongHashMap {
     final int newMask = newCapacity - 1;
     final long[] newKeys = new long[newCapacity];
     final long[] newValues = new long[newCapacity];
-    java.util.Arrays.fill(newKeys, EMPTY);
+    Arrays.fill(newKeys, EMPTY);
 
     for (int i = 0; i < capacity; i++) {
       final long k = keys[i];

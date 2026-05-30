@@ -50,6 +50,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -141,10 +143,10 @@ public class RemoteHttpComponent extends RWLockContext {
     final long watchdogMs = Math.max(timeout * 1000L, 30_000L);
     try {
       return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-          .get(watchdogMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+          .get(watchdogMs, TimeUnit.MILLISECONDS);
     } catch (final java.util.concurrent.TimeoutException e) {
       throw new IOException("HTTP request watchdog timeout after " + watchdogMs + "ms: " + request.uri(), e);
-    } catch (final java.util.concurrent.ExecutionException e) {
+    } catch (final ExecutionException e) {
       final Throwable cause = e.getCause();
       if (cause instanceof IOException ioe)
         throw ioe;

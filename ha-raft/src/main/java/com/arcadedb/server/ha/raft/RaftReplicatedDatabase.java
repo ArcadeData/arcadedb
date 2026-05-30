@@ -73,6 +73,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAReplicatedDatabase;
@@ -87,11 +88,14 @@ import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.ConcurrentModificationException;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -348,7 +352,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
-        if (e instanceof java.util.ConcurrentModificationException)
+        if (e instanceof ConcurrentModificationException)
           LogManager.instance().log(this, Level.SEVERE,
               """
               Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). \
@@ -1322,7 +1326,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // entries shipped in this SCHEMA_ENTRY. addFiles values are full file names like
       // "BulkRace_0_<nanos>.13.65536.v0.umtidx"; the schema "indexes" key strips the trailing
       // dot-separated tail so we compare on a stable prefix.
-      final java.util.Set<String> shippedIndexNames = new java.util.HashSet<>();
+      final Set<String> shippedIndexNames = new HashSet<>();
       for (final String fullName : addFiles.values()) {
         final int firstDot = fullName.indexOf('.');
         shippedIndexNames.add(firstDot > 0 ? fullName.substring(0, firstDot) : fullName);
@@ -1549,7 +1553,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     if (responseJson.has("result")) {
       final Object resultObj = responseJson.get("result");
-      if (resultObj instanceof com.arcadedb.serializer.json.JSONArray resultArray) {
+      if (resultObj instanceof JSONArray resultArray) {
         for (int i = 0; i < resultArray.length(); i++) {
           final Object item = resultArray.get(i);
           if (item instanceof JSONObject jsonObj)

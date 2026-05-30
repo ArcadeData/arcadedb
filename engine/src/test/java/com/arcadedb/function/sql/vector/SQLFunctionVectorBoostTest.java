@@ -20,9 +20,11 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -87,8 +89,8 @@ class SQLFunctionVectorBoostTest extends TestHelper {
 
     assertThat(names).containsExactly("near", "far");
     // The boosted score is the negated distance: -0.1 vs -0.9. Higher is closer.
-    assertThat(scores.get(0)).isCloseTo(-0.1f, org.assertj.core.data.Offset.offset(0.01f));
-    assertThat(scores.get(1)).isCloseTo(-0.9f, org.assertj.core.data.Offset.offset(0.01f));
+    assertThat(scores.get(0)).isCloseTo(-0.1f, Offset.offset(0.01f));
+    assertThat(scores.get(1)).isCloseTo(-0.9f, Offset.offset(0.01f));
   }
 
   @Test
@@ -146,8 +148,8 @@ class SQLFunctionVectorBoostTest extends TestHelper {
   @Test
   void unrecognisedRowShapeIsSilentlyDropped() {
     final SQLFunctionVectorBoost function = new SQLFunctionVectorBoost();
-    final com.arcadedb.query.sql.executor.BasicCommandContext ctx =
-        new com.arcadedb.query.sql.executor.BasicCommandContext();
+    final BasicCommandContext ctx =
+        new BasicCommandContext();
     ctx.setDatabase(database);
 
     final Map<String, Object> mapRow = row("A", 0.9f, 1.0f);

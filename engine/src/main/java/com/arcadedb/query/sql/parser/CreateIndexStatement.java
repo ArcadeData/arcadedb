@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -213,7 +214,7 @@ public class CreateIndexStatement extends DDLStatement {
 
       // Build the HNSW graph immediately unless explicitly disabled
       if (buildGraphNow)
-        for (final com.arcadedb.index.Index idx : typeIndex.getIndexesOnBuckets())
+        for (final Index idx : typeIndex.getIndexesOnBuckets())
           if (idx instanceof LSMVectorIndex)
             ((LSMVectorIndex) idx).buildVectorGraphNow();
 

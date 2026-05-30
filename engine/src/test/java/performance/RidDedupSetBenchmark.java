@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Locale;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Supplier;
+import java.util.function.ToLongFunction;
 
 /**
  * Decides when to use the bitmap-based {@link RidSet} vs the primitive-packed {@link RidHashSet} for RID deduplication. The two structures have opposite
@@ -200,7 +201,7 @@ class RidDedupSetBenchmark {
 
   // --- plumbing ---------------------------------------------------------------
 
-  private static void run(final String name, final Supplier<Object> build, final java.util.function.ToLongFunction<Object> contains) {
+  private static void run(final String name, final Supplier<Object> build, final ToLongFunction<Object> contains) {
     for (int i = 0; i < WARMUP; i++) {
       final Object s = build.get();
       contains.applyAsLong(s);

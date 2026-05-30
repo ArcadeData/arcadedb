@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -623,7 +624,7 @@ class GAVEligibilityTest {
   @Test
   void antiJoinWithGAVUsesOptimizer() {
     // Build a GAV and verify the optimizer handles anti-join with CSR acceleration
-    final var gav = com.arcadedb.graph.olap.GraphAnalyticalView.builder(database)
+    final var gav = GraphAnalyticalView.builder(database)
         .withName("test_antijoin_csr_check")
         .build();
 
@@ -650,7 +651,7 @@ class GAVEligibilityTest {
       database.command("opencypher",
           "MATCH (b:Person {name: 'Bob'}), (c:Person {name: 'Charlie'}) CREATE (b)-[:KNOWS]->(c)"));
 
-    final var gav = com.arcadedb.graph.olap.GraphAnalyticalView.builder(database)
+    final var gav = GraphAnalyticalView.builder(database)
         .withName("test_antijoin_gav")
         .build();
 
@@ -699,7 +700,7 @@ class GAVEligibilityTest {
     });
 
     // Build GAV to force CSR path
-    final var gav = com.arcadedb.graph.olap.GraphAnalyticalView.builder(database)
+    final var gav = GraphAnalyticalView.builder(database)
         .withName("test_dense_antijoin_gav")
         .build();
 
@@ -741,7 +742,7 @@ class GAVEligibilityTest {
       database.command("opencypher",
           "MATCH (c:Person {name: 'Charlie'}), (a:Person {name: 'Alice'}) CREATE (c)-[:KNOWS]->(a)"));
 
-    final var gav = com.arcadedb.graph.olap.GraphAnalyticalView.builder(database)
+    final var gav = GraphAnalyticalView.builder(database)
         .withName("test_antijoin_filter_gav")
         .build();
 
@@ -778,7 +779,7 @@ class GAVEligibilityTest {
   @Test
   void countPushDownWithGAV() {
     // Build a GAV and verify count-push-down uses CSR acceleration
-    final var gav = com.arcadedb.graph.olap.GraphAnalyticalView.builder(database)
+    final var gav = GraphAnalyticalView.builder(database)
         .withName("test_gav")
         .build();
 

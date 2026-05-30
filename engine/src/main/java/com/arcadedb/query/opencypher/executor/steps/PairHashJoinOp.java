@@ -29,11 +29,7 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LongLongHashMap;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
+import java.util.*;
 
 /**
  * Count operator for two-pattern pair-join queries (Q2).
@@ -275,7 +271,7 @@ public final class PairHashJoinOp implements CountOp {
             for (int k = a2h1Start; k < a2h1End; k++) {
               final int ep2 = arm2Nbrs1[k];
               if (arm2Filter1 != null && !arm2Filter1.contains(bucketIds[ep2])) continue;
-              if (java.util.Arrays.binarySearch(probeNbrs, pStart, pEnd, ep2) >= 0)
+              if (Arrays.binarySearch(probeNbrs, pStart, pEnd, ep2) >= 0)
                 total++;
             }
           }
@@ -300,7 +296,7 @@ public final class PairHashJoinOp implements CountOp {
         if (pStart == pEnd) continue;
 
         for (final int ep2 : ep2Ids) {
-          if (java.util.Arrays.binarySearch(probeNbrs, pStart, pEnd, ep2) >= 0)
+          if (Arrays.binarySearch(probeNbrs, pStart, pEnd, ep2) >= 0)
             total++;
         }
       }
@@ -405,9 +401,9 @@ public final class PairHashJoinOp implements CountOp {
         for (int i = 0; i < pos; i++)
           if (intermediateBuckets[hop].contains(bucketIds[next[i]]))
             next[writePos++] = next[i];
-        current = java.util.Arrays.copyOf(next, writePos);
+        current = Arrays.copyOf(next, writePos);
       } else {
-        current = pos < next.length ? java.util.Arrays.copyOf(next, pos) : next;
+        current = pos < next.length ? Arrays.copyOf(next, pos) : next;
       }
     }
     return current;

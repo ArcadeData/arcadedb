@@ -26,14 +26,11 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 
+import org.assertj.core.api.Assertions;
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
-import java.util.Set;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -209,7 +206,7 @@ class SQLFunctionVectorGroupByTest extends TestHelper {
 
     // limit=10000, groupSize=10000 would request 500M candidates without the cap. Expect a
     // CommandSQLParsingException with a helpful message (caller should reduce limit or groupSize).
-    org.assertj.core.api.Assertions.assertThatThrownBy(() -> {
+    Assertions.assertThatThrownBy(() -> {
       try (ResultSet rs = database.query("sql",
           "SELECT expand(`vector.neighbors`(?, ?, ?, { groupBy: 'source_file', groupSize: 10000 }))",
           DENSE_IDX, queryVec, 10000)) {
@@ -217,7 +214,7 @@ class SQLFunctionVectorGroupByTest extends TestHelper {
       }
     }).hasMessageContaining("over-fetch budget exceeded");
 
-    org.assertj.core.api.Assertions.assertThatThrownBy(() -> {
+    Assertions.assertThatThrownBy(() -> {
       try (ResultSet rs = database.query("sql",
           "SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?, { groupBy: 'source_file', groupSize: 10000 }))",
           SPARSE_IDX, new int[] { 1, 2, 3 }, new float[] { 1.0f, 1.0f, 1.0f }, 10000)) {
@@ -264,8 +261,8 @@ class SQLFunctionVectorGroupByTest extends TestHelper {
     assertThat(bestPerGroup.get("best_per_group_A")).isNotNull();
     assertThat(bestPerGroup.get("best_per_group_B")).isNotNull();
     // Top per group must be the highest weight (0.3f * 1.0f = 0.3f), not the first encountered.
-    assertThat(bestPerGroup.get("best_per_group_A")).isCloseTo(0.3f, org.assertj.core.data.Offset.offset(1e-3f));
-    assertThat(bestPerGroup.get("best_per_group_B")).isCloseTo(0.3f, org.assertj.core.data.Offset.offset(1e-3f));
+    assertThat(bestPerGroup.get("best_per_group_A")).isCloseTo(0.3f, Offset.offset(1e-3f));
+    assertThat(bestPerGroup.get("best_per_group_B")).isCloseTo(0.3f, Offset.offset(1e-3f));
   }
 
   @Test
@@ -288,15 +285,15 @@ class SQLFunctionVectorGroupByTest extends TestHelper {
         "SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?, { groupBy: 'source_file', groupSize: 2 }))",
         SPARSE_IDX, new int[] { 1 }, new float[] { 1.0f }, 1);
 
-    final java.util.ArrayList<Float> scores = new java.util.ArrayList<>();
+    final ArrayList<Float> scores = new ArrayList<>();
     while (rs.hasNext()) {
       final Result row = rs.next();
       scores.add(((Number) row.getProperty("score")).floatValue());
     }
     assertThat(scores).hasSize(2);
     scores.sort((a, b) -> Float.compare(b, a));
-    assertThat(scores.get(0)).isCloseTo(0.5f, org.assertj.core.data.Offset.offset(1e-3f));
-    assertThat(scores.get(1)).isCloseTo(0.4f, org.assertj.core.data.Offset.offset(1e-3f));
+    assertThat(scores.get(0)).isCloseTo(0.5f, Offset.offset(1e-3f));
+    assertThat(scores.get(1)).isCloseTo(0.4f, Offset.offset(1e-3f));
   }
 
   @Test
@@ -305,7 +302,7 @@ class SQLFunctionVectorGroupByTest extends TestHelper {
     seed100Across10Files();
 
     // Build a filter list that whitelists only the first half of file_0..file_4 (half the corpus).
-    final List<RID> whitelist = new java.util.ArrayList<>();
+    final List<RID> whitelist = new ArrayList<>();
     try (ResultSet rs = database.query("sql",
         "SELECT @rid AS rid FROM " + TYPE_NAME + " WHERE source_file IN ['file_0', 'file_1', 'file_2', 'file_3', 'file_4']")) {
       while (rs.hasNext())

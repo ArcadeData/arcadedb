@@ -46,7 +46,7 @@ public class CachedPage {
       // SAME array, which is not safe when the original page is still reachable (e.g. from the
       // async flush thread's queue).
       final byte[] srcArray = page.content.getContent();
-      final byte[] copied = java.util.Arrays.copyOf(srcArray, srcArray.length);
+      final byte[] copied = Arrays.copyOf(srcArray, srcArray.length);
       this.content = new Binary(copied, page.content.size());
     } else {
       this.content = page.content;

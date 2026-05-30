@@ -27,6 +27,7 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class FileManager {
   private final        ComponentFile.MODE                        mode;
@@ -158,7 +159,7 @@ public class FileManager {
   }
 
   public void stopRecordingChanges() {
-    if (recordedChanges != null && java.util.logging.Logger.getLogger(getClass().getName()).isLoggable(Level.FINE)) {
+    if (recordedChanges != null && Logger.getLogger(getClass().getName()).isLoggable(Level.FINE)) {
       final StringBuilder dump = new StringBuilder();
       for (final FileChange c : recordedChanges) {
         if (!dump.isEmpty())

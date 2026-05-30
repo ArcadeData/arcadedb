@@ -31,6 +31,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -1898,7 +1899,7 @@ public class SelectExecutionPlanner {
    */
   private boolean handleEdgeTypeWithVertexRidFilter(final SelectExecutionPlan plan, final DocumentType docType,
       final QueryPlanningInfo info, final CommandContext context) {
-    if (!(docType instanceof com.arcadedb.schema.EdgeType))
+    if (!(docType instanceof EdgeType))
       return false;
 
     if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() != 1)

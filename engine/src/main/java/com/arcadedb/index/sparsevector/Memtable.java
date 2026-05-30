@@ -20,10 +20,7 @@ package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.database.RID;
 
-import java.util.Arrays;
-import java.util.Iterator;
-import java.util.Map;
-import java.util.NoSuchElementException;
+import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentSkipListMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -175,7 +172,7 @@ public final class Memtable {
   public Iterator<MemtablePosting> iterateDim(final int dim) {
     final ConcurrentSkipListMap<RID, Float> dimMap = postings.get(dim);
     if (dimMap == null)
-      return java.util.Collections.emptyIterator();
+      return Collections.emptyIterator();
     return new DimIterator(dimMap.entrySet().iterator());
   }
 
@@ -188,7 +185,7 @@ public final class Memtable {
   public Iterator<MemtablePosting> iterateDimFrom(final int dim, final RID from) {
     final ConcurrentSkipListMap<RID, Float> dimMap = postings.get(dim);
     if (dimMap == null)
-      return java.util.Collections.emptyIterator();
+      return Collections.emptyIterator();
     return new DimIterator(dimMap.tailMap(from, /* inclusive */ true).entrySet().iterator());
   }
 

@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -35,11 +36,7 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Random;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -568,7 +565,7 @@ class OpenCypherBatchBenchmark {
       final long warm = Math.max(elapsedMs[1], 30L); // ignore first batch (JIT warmup)
       final long last = elapsedMs[batches - 1];
       assertThat(last)
-          .as("last-batch / warm-batch ratio must not grow linearly with parent degree (perBatchMs: " + java.util.Arrays.toString(elapsedMs) + ")")
+          .as("last-batch / warm-batch ratio must not grow linearly with parent degree (perBatchMs: " + Arrays.toString(elapsedMs) + ")")
           .isLessThan(warm * 2);
     }
 
@@ -602,7 +599,7 @@ class OpenCypherBatchBenchmark {
       final long warm = Math.max(elapsedMs[1], 30L);
       final long last = elapsedMs[batches - 1];
       assertThat(last)
-          .as("last-batch / warm-batch ratio must not grow linearly with parent's outgoing degree (perBatchMs: " + java.util.Arrays.toString(elapsedMs) + ")")
+          .as("last-batch / warm-batch ratio must not grow linearly with parent's outgoing degree (perBatchMs: " + Arrays.toString(elapsedMs) + ")")
           .isLessThan(warm * 2);
     }
 
@@ -612,7 +609,7 @@ class OpenCypherBatchBenchmark {
       final String[] parentRid = new String[1];
       database.transaction(() ->
           parentRid[0] = database.command("opencypher", "CREATE (p:DOCUMENT {name:'p'}) RETURN p AS p")
-              .next().<com.arcadedb.graph.Vertex>getProperty("p").getIdentity().toString());
+              .next().<Vertex>getProperty("p").getIdentity().toString());
 
       final int batches = 8;
       final int perBatch = 250;
@@ -654,7 +651,7 @@ class OpenCypherBatchBenchmark {
       final long warm = Math.max(elapsedMs[1], 30L);
       final long last = elapsedMs[batches - 1];
       assertThat(last)
-          .as("UNWIND+MATCH+MERGE batch time must not grow linearly with parent degree (perBatchMs: " + java.util.Arrays.toString(elapsedMs) + ")")
+          .as("UNWIND+MATCH+MERGE batch time must not grow linearly with parent degree (perBatchMs: " + Arrays.toString(elapsedMs) + ")")
           .isLessThan(warm * 2);
     }
   }

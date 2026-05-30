@@ -25,6 +25,8 @@ import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.IntHashSet;
 
+import java.util.Arrays;
+
 /**
  * Shared static utilities for CSR count-push-down operators.
  */
@@ -157,9 +159,9 @@ public final class CSRCountUtils {
           if (intermediateValidBuckets[hop].contains(rid.getBucketId()))
             next[writePos++] = next[i];
         }
-        current = java.util.Arrays.copyOf(next, writePos);
+        current = Arrays.copyOf(next, writePos);
       } else {
-        current = pos < next.length ? java.util.Arrays.copyOf(next, pos) : next;
+        current = pos < next.length ? Arrays.copyOf(next, pos) : next;
       }
     }
     return current;
