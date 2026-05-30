@@ -574,7 +574,7 @@ public final class PropagateChainOp implements CountOp {
       current.forEach((bucketId, offset, pathCount) -> {
         final RID rid = db.newRID(bucketId, offset);
         expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets,
-            (neighborRid) -> next.add(neighborRid, pathCount));
+            neighborRid -> next.add(neighborRid, pathCount));
       });
       current = next;
     }
@@ -654,7 +654,7 @@ public final class PropagateChainOp implements CountOp {
         cur.forEach((bucketId, offset, pathCount) -> {
           final RID rid = db.newRID(bucketId, offset);
           expandNeighbors(db, provider, rid, directions[hopIdx], edgeTypes[hopIdx], targetBuckets,
-              (neighborRid) -> next.add(neighborRid, pathCount));
+              neighborRid -> next.add(neighborRid, pathCount));
         });
         cur = next;
       }

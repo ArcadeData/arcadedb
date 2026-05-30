@@ -151,7 +151,7 @@ public class CreateStep extends AbstractExecutionStep {
                   }
                 } finally {
                   if (context.isProfiling())
-                    cost += (System.nanoTime() - begin);
+                    cost += System.nanoTime() - begin;
                 }
                 batchInputs.clear();
 
@@ -175,7 +175,7 @@ public class CreateStep extends AbstractExecutionStep {
                 buffer.add(createdResult);
               } finally {
                 if (context.isProfiling())
-                  cost += (System.nanoTime() - begin);
+                  cost += System.nanoTime() - begin;
               }
             }
           }
@@ -196,7 +196,7 @@ public class CreateStep extends AbstractExecutionStep {
               createdStandalone = true;
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
           }
           finished = true;
@@ -379,15 +379,15 @@ public class CreateStep extends AbstractExecutionStep {
       else
         setProperties(vertex, nodePattern.getProperties(), currentResult);
       if (context.isProfiling())
-        propertyEvaluationTime += (System.nanoTime() - startProps);
+        propertyEvaluationTime += System.nanoTime() - startProps;
     }
 
     final long startSave = context.isProfiling() ? System.nanoTime() : 0;
     vertex.save();
     if (context.isProfiling()) {
-      saveOperationTime += (System.nanoTime() - startSave);
+      saveOperationTime += System.nanoTime() - startSave;
       vertexCount++;
-      vertexCreationTime += (System.nanoTime() - startVertex);
+      vertexCreationTime += System.nanoTime() - startVertex;
     }
 
     return vertex;
@@ -419,16 +419,16 @@ public class CreateStep extends AbstractExecutionStep {
     } else
       edgeProperties = null;
     if (context.isProfiling())
-      propertyEvaluationTime += (System.nanoTime() - startProps);
+      propertyEvaluationTime += System.nanoTime() - startProps;
 
     final long startSave = context.isProfiling() ? System.nanoTime() : 0;
     final MutableEdge edge = edgeProperties != null
         ? fromVertex.newEdge(type, toVertex, edgeProperties)
         : fromVertex.newEdge(type, toVertex);
     if (context.isProfiling()) {
-      saveOperationTime += (System.nanoTime() - startSave);
+      saveOperationTime += System.nanoTime() - startSave;
       edgeCount++;
-      edgeCreationTime += (System.nanoTime() - startEdge);
+      edgeCreationTime += System.nanoTime() - startEdge;
     }
 
     return edge;

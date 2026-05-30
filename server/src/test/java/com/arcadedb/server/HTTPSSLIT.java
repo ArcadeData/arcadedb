@@ -55,7 +55,7 @@ public class HTTPSSLIT extends BaseGraphServerTest {
 
   @Test
   void serverInfo() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final ContextConfiguration configuration = getServer(serverIndex).getConfiguration();
 
       System.setProperty("javax.net.ssl.keyStoreType", "PKCS12");

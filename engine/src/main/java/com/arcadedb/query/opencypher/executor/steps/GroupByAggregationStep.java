@@ -182,7 +182,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         }
       } finally {
         if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
       }
     }
 
@@ -202,7 +202,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       }
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - beginBuild);
+        cost += System.nanoTime() - beginBuild;
     }
     return results;
   }
@@ -260,7 +260,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
         }
       } finally {
         if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
       }
     }
 
@@ -298,7 +298,7 @@ public class GroupByAggregationStep extends AbstractExecutionStep {
       }
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - beginBuild);
+        cost += System.nanoTime() - beginBuild;
     }
     return results;
   }

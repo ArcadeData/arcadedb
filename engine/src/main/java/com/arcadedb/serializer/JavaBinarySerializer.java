@@ -46,7 +46,7 @@ public class JavaBinarySerializer {
     out.writeInt(rid != null ? rid.getBucketId() : -1);
     out.writeLong(rid != null ? rid.getPosition() : -1);
 
-    final DatabaseInternal db = ((DatabaseInternal) document.getDatabase());
+    final DatabaseInternal db = (DatabaseInternal) document.getDatabase();
     final DocumentType documentType = document.getType();
 
     final BinarySerializer serializer = db.getSerializer();
@@ -113,7 +113,7 @@ public class JavaBinarySerializer {
 
     final MutableDocument mutable = (MutableDocument) document;
 
-    final DatabaseInternal db = ((DatabaseInternal) document.getDatabase());
+    final DatabaseInternal db = (DatabaseInternal) document.getDatabase();
 
     // RID
     final RID rid = db.newRID(in.readInt(), in.readLong());

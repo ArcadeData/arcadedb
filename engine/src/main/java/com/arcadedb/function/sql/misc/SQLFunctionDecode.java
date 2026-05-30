@@ -51,7 +51,7 @@ public class SQLFunctionDecode extends SQLFunctionAbstract {
     if (SQLFunctionEncode.FORMAT_BASE64.equalsIgnoreCase(format)) {
       return Base64.getDecoder().decode(candidate);
     } else if (SQLFunctionEncode.FORMAT_BASE64URL.equalsIgnoreCase(format)) {
-      final int padding = (candidate.length() % 4 == 2 ? 2 : (candidate.length() % 4 == 3 ? 1 : 0));
+      final int padding = candidate.length() % 4 == 2 ? 2 : (candidate.length() % 4 == 3 ? 1 : 0);
       return Base64.getDecoder().decode(candidate.replace('-','+').replace('_','/') + "=".repeat(padding));
     } else {
       throw new CommandSQLParsingException("Unknown format :" + format);

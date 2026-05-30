@@ -122,7 +122,7 @@ public class NestedProjectionItem extends SimpleNode {
 
   @Override
   public int hashCode() {
-    int result = (exclude ? 1 : 0);
+    int result = exclude ? 1 : 0;
     result = 31 * result + (star ? 1 : 0);
     result = 31 * result + (expression != null ? expression.hashCode() : 0);
     result = 31 * result + (rightWildcard ? 1 : 0);

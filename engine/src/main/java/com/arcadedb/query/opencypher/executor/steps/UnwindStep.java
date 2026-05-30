@@ -146,7 +146,7 @@ public class UnwindStep extends AbstractExecutionStep {
               buffer.add(unwoundResult);
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
             continue;
           }
@@ -219,7 +219,7 @@ public class UnwindStep extends AbstractExecutionStep {
             }
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
       }

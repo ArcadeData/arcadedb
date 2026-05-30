@@ -34,7 +34,7 @@ class QueryEndpointReadOnlyTest extends BaseGraphServerTest {
 
   @Test
   void queryEndpointRejectsSqlInsert() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE ReadOnlyTest IF NOT EXISTS");
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -62,7 +62,7 @@ class QueryEndpointReadOnlyTest extends BaseGraphServerTest {
 
   @Test
   void queryEndpointRejectsSqlScriptInsert() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE ReadOnlyTest2 IF NOT EXISTS");
 
       final HttpURLConnection connection = (HttpURLConnection) new URL(
@@ -90,7 +90,7 @@ class QueryEndpointReadOnlyTest extends BaseGraphServerTest {
 
   @Test
   void queryEndpointAllowsSqlSelect() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE ReadOnlyTest3 IF NOT EXISTS");
       executeCommand(serverIndex, "sql", "INSERT INTO ReadOnlyTest3 SET name='readable'");
 

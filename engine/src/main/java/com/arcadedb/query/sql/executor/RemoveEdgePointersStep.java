@@ -72,7 +72,7 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
           }
         } finally {
           if( context.isProfiling() ) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
         return elem;

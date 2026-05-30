@@ -127,7 +127,7 @@ class MergeInsertSlowdownTest {
       // Customers (sources): roughly uniform over the full pool.
       final int srcIdx = rnd.nextInt(ACCOUNTS_POOL);
       // Merchants (destinations): 80% land on the hot 1% of accounts, the rest spread out.
-      final int destIdx = (rnd.nextInt(100) < 80) ? rnd.nextInt(hotPool) : rnd.nextInt(ACCOUNTS_POOL);
+      final int destIdx = rnd.nextInt(100) < 80 ? rnd.nextInt(hotPool) : rnd.nextInt(ACCOUNTS_POOL);
 
       final Map<String, Object> params = new HashMap<>(8);
       params.put("bank", "flash");

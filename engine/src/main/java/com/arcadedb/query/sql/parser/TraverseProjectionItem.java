@@ -117,7 +117,7 @@ public class TraverseProjectionItem extends SimpleNode {
 
   @Override
   public int hashCode() {
-    int result = (base != null ? base.hashCode() : 0);
+    int result = base != null ? base.hashCode() : 0;
     result = 31 * result + (modifier != null ? modifier.hashCode() : 0);
     return result;
   }

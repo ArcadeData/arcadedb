@@ -97,7 +97,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
 
             nextItem = null;
           } finally {
-            cost = (System.nanoTime() - begin);
+            cost = System.nanoTime() - begin;
           }
         }
       }

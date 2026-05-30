@@ -65,7 +65,7 @@ class MVCCTest extends TestHelper {
       final AtomicLong mvccErrors = new AtomicLong();
       final AtomicLong txErrors = new AtomicLong();
 
-      database.async().onError((exception) -> {
+      database.async().onError(exception -> {
         if (exception instanceof ConcurrentModificationException) {
           mvccErrors.incrementAndGet();
         } else {
@@ -97,7 +97,7 @@ class MVCCTest extends TestHelper {
             final Identifiable account = accounts.next();
 
             ((MutableVertex) doc).newEdge("PurchasedBy", account, "date", new Date());
-          }, 0, null, (err) -> txErrors.incrementAndGet());
+          }, 0, null, err -> txErrors.incrementAndGet());
         }
 
         database.async().waitCompletion();
@@ -128,7 +128,7 @@ class MVCCTest extends TestHelper {
 
       final AtomicLong otherErrors = new AtomicLong();
       final AtomicLong mvccErrors = new AtomicLong();
-      database.async().onError((exception) -> {
+      database.async().onError(exception -> {
         if (exception instanceof ConcurrentModificationException) {
           mvccErrors.incrementAndGet();
         } else {

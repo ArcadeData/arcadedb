@@ -201,7 +201,7 @@ public final class PaginatedSegmentDimCursor implements SourceCursor {
       decodeBlockIfNeeded();
     }
 
-    final int startIdx = (oldBlock == targetBlock) ? Math.max(0, oldInBlock) : 0;
+    final int startIdx = oldBlock == targetBlock ? Math.max(0, oldInBlock) : 0;
     for (int i = startIdx; i < blockSize; i++) {
       if (SparseSegmentBuilder.compareRid(blockRids[i], target) >= 0) {
         materializePosting(i);

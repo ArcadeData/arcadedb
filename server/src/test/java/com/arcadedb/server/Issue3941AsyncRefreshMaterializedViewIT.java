@@ -55,7 +55,7 @@ class Issue3941AsyncRefreshMaterializedViewIT extends BaseGraphServerTest {
 
   @Test
   void refreshMaterializedViewAsyncUpdatesView() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
 
       // Setup: create document type, insert initial record, then create view
@@ -110,7 +110,7 @@ class Issue3941AsyncRefreshMaterializedViewIT extends BaseGraphServerTest {
 
   @Test
   void refreshMaterializedViewSyncUpdatesView() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
 
       final String syncDocType = DOC_TYPE_NAME + "Sync";

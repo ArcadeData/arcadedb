@@ -156,7 +156,7 @@ public class CallStep extends AbstractExecutionStep {
         allPairs.add(Map.entry(inputRow, iter));
       } finally {
         if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
       }
     }
 

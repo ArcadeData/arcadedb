@@ -63,7 +63,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = ((Boolean) value2) ? 1 : 0;
+        v2 = (Boolean) value2 ? 1 : 0;
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -95,7 +95,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = ((Boolean) value2) ? 1 : 0;
+        v2 = (Boolean) value2 ? 1 : 0;
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -127,7 +127,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (short) (((Boolean) value2) ? 1 : 0);
+        v2 = (short) ((Boolean) value2 ? 1 : 0);
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -171,7 +171,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = ((Boolean) value2) ? 1 : 0;
+        v2 = (Boolean) value2 ? 1 : 0;
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -203,7 +203,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (float) (((Boolean) value2) ? 1 : 0);
+        v2 = (float) ((Boolean) value2 ? 1 : 0);
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -235,7 +235,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (byte) (((Boolean) value2) ? 1 : 0);
+        v2 = (byte) ((Boolean) value2 ? 1 : 0);
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -250,7 +250,7 @@ public class BinaryComparator {
     }
 
     case BinaryTypes.TYPE_BOOLEAN: {
-      final int v1 = ((Boolean) value1) ? 1 : 0;
+      final int v1 = (Boolean) value1 ? 1 : 0;
       final int v2;
 
       switch (type2) {
@@ -267,7 +267,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = ((Boolean) value2) ? 1 : 0;
+        v2 = (Boolean) value2 ? 1 : 0;
         break;
 
       case BinaryTypes.TYPE_STRING:

@@ -91,7 +91,7 @@ public class FetchFromSchemaGraphAnalyticalViewsStep extends AbstractExecutionSt
         }
       } finally {
         if (context.isProfiling()) {
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
         }
       }
     }

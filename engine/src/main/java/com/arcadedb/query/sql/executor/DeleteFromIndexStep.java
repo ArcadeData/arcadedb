@@ -74,7 +74,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        return (localCount < nRecords && nextEntry != null);
+        return localCount < nRecords && nextEntry != null;
       }
 
       @Override
@@ -94,7 +94,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
           return result;
         } finally {
           if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
         }
       }
 
@@ -114,7 +114,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       e.printStackTrace();
     } finally {
       if (context.isProfiling()) {
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
       }
     }
   }
@@ -343,11 +343,11 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
-    result += (condition == null ?
+    result += condition == null ?
         "" :
         ("\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + condition + (additional == null ?
             "" :
-            " and " + additional)));
+            " and " + additional));
     return result;
   }
 

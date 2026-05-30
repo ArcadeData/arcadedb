@@ -415,7 +415,7 @@ public class LocalSchema implements Schema {
            renaming this bucket to avoid the collision.""",
           null, bucketName);
 
-    final String dir = (parentDirectory == null || parentDirectory.isEmpty()) ? databasePath : parentDirectory;
+    final String dir = parentDirectory == null || parentDirectory.isEmpty() ? databasePath : parentDirectory;
 
     return recordFileChanges(() -> {
       try {

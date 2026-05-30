@@ -43,7 +43,7 @@ public class RetryStep extends AbstractExecutionStep {
     this.body = statements;
     this.retries = retries;
     this.elseBody = elseStatements;
-    this.elseFail = !(Boolean.FALSE.equals(elseFail));
+    this.elseFail = !Boolean.FALSE.equals(elseFail);
     this.retryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
   }
 

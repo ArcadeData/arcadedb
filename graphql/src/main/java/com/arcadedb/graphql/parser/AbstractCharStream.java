@@ -331,7 +331,7 @@ public abstract class AbstractCharStream implements CharStream {
       break;
     case '\t':
       m_nColumnNo--;
-      m_nColumnNo += (m_nTabSize - (m_nColumnNo % m_nTabSize));
+      m_nColumnNo += m_nTabSize - (m_nColumnNo % m_nTabSize);
       break;
     }
 

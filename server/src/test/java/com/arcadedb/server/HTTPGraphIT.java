@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.fail;
 class HTTPGraphIT extends BaseGraphServerTest {
   @Test
   void checkAuthenticationError() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
 
@@ -61,7 +61,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void checkNoAuthentication() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
 
@@ -80,7 +80,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void checkQueryInGet() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
 
@@ -104,7 +104,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void checkQueryInPost() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph").openConnection();
 
@@ -128,7 +128,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void checkCommand() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
 
@@ -152,7 +152,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void checkCommandLoadByRIDWithParameters() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
 
@@ -176,7 +176,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void checkCommandLoadByRIDInWhereWithParameters() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
 
@@ -204,7 +204,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
    */
   @Test
   void checkCommandLoadByRIDIn() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
 
@@ -231,7 +231,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
    */
   @Test
   void checkCommandLet() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/command/graph").openConnection();
 
@@ -257,7 +257,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void checkCommandNoDuplication() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final JSONObject responseAsJson = executeCommand(serverIndex, "sql", "SELECT FROM E1");
 
       final List<Object> vertices = responseAsJson.getJSONObject("result").getJSONArray("vertices").toList();
@@ -282,7 +282,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void checkDatabaseExists() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/exists/graph/").openConnection();
 
@@ -305,7 +305,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void checkDatabaseList() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/databases").openConnection();
 
@@ -329,7 +329,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void createAndDropDatabase() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // CREATE THE DATABASE 'JUSTFORFUN'
       HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
@@ -409,7 +409,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void closeAndReopenDatabase() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // CREATE THE DATABASE 'JUSTFORFUN'
       HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
@@ -491,7 +491,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void emptyDatabaseName() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // CREATE THE DATABASE ''
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();
@@ -515,7 +515,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void oneEdgePerTx() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sqlscript",
           """
               CREATE VERTEX TYPE Photos;
@@ -576,7 +576,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
 
   @Test
   void oneEdgePerTxMultiThreads() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sqlscript", "create vertex type Photos;create vertex type Users;create edge type HasUploaded;");
 
       executeCommand(serverIndex, "sql", "create vertex Users set id = 'u1111'");
@@ -633,7 +633,7 @@ class HTTPGraphIT extends BaseGraphServerTest {
    */
   @Test
   void checkEdgeNoDuplicationInStudioSerializer() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Test with SQL query returning only vertices (edges should be auto-added)
       final JSONObject response1 = executeCommand(serverIndex, "sql",
           "SELECT FROM V1 WHERE out() IS NOT NULL OR in() IS NOT NULL LIMIT 20");

@@ -41,7 +41,7 @@ class RemoteTypesIT extends BaseGraphServerTest {
 
   @Test
   void documentType() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final RemoteDatabase db = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 

@@ -138,9 +138,9 @@ public class WithStep extends AbstractExecutionStep {
         }
 
         // Evaluate SKIP/LIMIT expressions (only when not deferred to downstream)
-        final Integer limit = (!skipLimitDeferred && withClause.getLimit() != null)
+        final Integer limit = !skipLimitDeferred && withClause.getLimit() != null
             ? evaluator.evaluateSkipLimit(withClause.getLimit(), new ResultInternal(), context) : null;
-        final Integer skipVal = (!skipLimitDeferred && withClause.getSkip() != null)
+        final Integer skipVal = !skipLimitDeferred && withClause.getSkip() != null
             ? evaluator.evaluateSkipLimit(withClause.getSkip(), new ResultInternal(), context) : null;
 
         // Check if LIMIT has been reached
@@ -208,7 +208,7 @@ public class WithStep extends AbstractExecutionStep {
             returned++;
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
 

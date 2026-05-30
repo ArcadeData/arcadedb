@@ -62,7 +62,7 @@ public class FileServerEventLog implements ServerEventLog {
       if (!logDirectory.mkdirs())
         LogManager.instance().log(this, Level.INFO, "Error on creating log directory tree " + logDirectory);
     } else {
-      final File[] files = logDirectory.listFiles((f) -> f.getName().startsWith(FILE_PREFIX) && f.getName().endsWith(FILE_EXT));
+      final File[] files = logDirectory.listFiles(f -> f.getName().startsWith(FILE_PREFIX) && f.getName().endsWith(FILE_EXT));
       if (files != null) {
         for (File f : files) {
           final String fileName = f.getName();

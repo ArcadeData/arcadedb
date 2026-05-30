@@ -103,7 +103,7 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
     final double[][] dist = new double[n][n];
     for (int i = 0; i < n; i++) {
       for (int j = 0; j < n; j++)
-        dist[i][j] = (i == j) ? 0.0 : INF;
+        dist[i][j] = i == j ? 0.0 : INF;
     }
 
     // Fill direct edges: try CSR edge properties first, fall back to OLTP

@@ -52,7 +52,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void serverInfo() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/server").openConnection();
 
@@ -78,7 +78,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
    */
   @Test
   void serverInfoReturnsLanguages() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/server").openConnection();
 
@@ -121,7 +121,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
    */
   @Test
   void serverInfoBasicModeReturnsLanguages() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/server?mode=basic").openConnection();
 
@@ -157,7 +157,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void serverClusterInfo() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/server?mode=cluster").openConnection();
 
@@ -184,7 +184,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void serverReady() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/ready").openConnection();
       connection.setRequestMethod("GET");
@@ -201,7 +201,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkAuthenticationError() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%20from%20Person%20limit%201").openConnection();
@@ -222,7 +222,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkQueryInGet() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%20from%20Person%20limit%201").openConnection();
@@ -251,7 +251,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkQueryInGetWithLimitAboveDefaultCut() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%20from%20Person%20limit%20" + (TOTAL - 1)).openConnection();
@@ -278,7 +278,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkQueryInGetWithDefaultLimit() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%20from%20Person").openConnection();
@@ -305,7 +305,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkQueryInGetWithSqlScript() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
               + "/sqlscript/select%20from%20Person%20limit%201").openConnection();
@@ -330,7 +330,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkQueryCommandEncoding() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME
               + "/sql/select%201%20%2B%201%20as%20result").openConnection();
@@ -355,7 +355,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkQueryInPost() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME).openConnection();
 
@@ -379,7 +379,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkCommand() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
@@ -403,7 +403,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkAsyncCommand() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       HttpURLConnection post = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
@@ -448,7 +448,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkCommandNoDuplication() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
 
@@ -478,7 +478,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
 
   @Test
   void checkRecordCreate() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // CREATE DOCUMENT
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
@@ -523,7 +523,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
    */
   @Test
   void checkSpecialCharactersInData() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Test value with special characters as described in issue #1602
       final String testValue = "LdhgfdY&hgff2&a";
 
@@ -619,7 +619,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
    */
   @Test
   void checkVariousSpecialCharacters() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create the document type (ignore error if already exists)
       HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
@@ -693,7 +693,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void parentCurrentInSubqueryViaHttpIssue1825() throws Exception {
     final String className = "TestParentCurrent1825";
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Setup: Create test type and document via HTTP commands
       HttpURLConnection setupConnection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
@@ -783,7 +783,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void unwindWithRidProjectionViaHttpIssue1582() throws Exception {
     final String className = "TestUnwindRid1582";
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Setup: Create test type with list property and insert document
       HttpURLConnection setupConnection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
@@ -865,7 +865,7 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   void unwindWithRidProjectionWithStudioSerializerIssue1582() throws Exception {
     final String className = "TestUnwindRidStudio1582";
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Setup: Create test type with list property and insert document
       HttpURLConnection setupConnection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();

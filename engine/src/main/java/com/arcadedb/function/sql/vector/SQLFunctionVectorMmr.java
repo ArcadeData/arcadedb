@@ -193,7 +193,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
         // First pick: no diversity penalty (no selected set), so the objective collapses to
         // {@code lambda * score} - i.e. the top-scored candidate wins, which matches the MMR
         // formal definition where the running-max is undefined / -inf.
-        final float diversityPenalty = (step == 0)
+        final float diversityPenalty = step == 0
             ? 0.0f
             : Math.max(0.0f, maxCosToSelected[i]);  // negative cos rounded up (no anti-bonus)
         final float objective = lambda * usable.get(i).score() - (1.0f - lambda) * diversityPenalty;

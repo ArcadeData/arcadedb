@@ -93,7 +93,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     saltIteration = configuration.getValueAsInteger(SERVER_SECURITY_SALT_ITERATIONS);
 
     usersRepository = new SecurityUserFileRepository(configPath);
-    groupRepository = new SecurityGroupFileRepository(configPath, checkConfigReloadEveryMs).onReload((latestConfiguration) -> {
+    groupRepository = new SecurityGroupFileRepository(configPath, checkConfigReloadEveryMs).onReload(latestConfiguration -> {
       for (final String databaseName : server.getDatabaseNames()) {
         updateSchema(server.getDatabase(databaseName));
       }

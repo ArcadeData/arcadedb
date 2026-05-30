@@ -50,7 +50,7 @@ public class MatchPathItemFirst extends MatchPathItem {
   protected Iterable<Identifiable> traversePatternEdge(final MatchStatement.MatchContext matchContext, final Identifiable startingPoint,
       final CommandContext iCommandContext) {
     final Object qR = this.function.execute(startingPoint, iCommandContext);
-    return (qR instanceof Iterable i) ? i : Set.of((Identifiable) qR);
+    return qR instanceof Iterable i ? i : Set.of((Identifiable) qR);
   }
 
   @Override

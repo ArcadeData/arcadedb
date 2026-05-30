@@ -40,7 +40,7 @@ class ConvertToUpdatableResultStepTest {
 
   @Test
   void shouldConvertUpdatableResult() throws Exception {
-    TestHelper.executeInNewDatabase((database) -> {
+    TestHelper.executeInNewDatabase(database -> {
       final String type = TestHelper.createRandomType(database).getName();
 
       final CommandContext context = new BasicCommandContext();
@@ -73,7 +73,7 @@ class ConvertToUpdatableResultStepTest {
       int counter = 0;
       while (result.hasNext()) {
         final Result currentItem = result.next();
-        if (!(currentItem.getClass().equals(UpdatableResult.class))) {
+        if (!currentItem.getClass().equals(UpdatableResult.class)) {
           fail("There is an item in result set that is not an instance of OUpdatableResult");
         }
         if (!currentItem.getElement().get().get(STRING_PROPERTY).equals(documents.get(counter).get(STRING_PROPERTY))) {

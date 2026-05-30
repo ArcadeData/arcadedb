@@ -170,7 +170,7 @@ public class OptionalMatchStep extends AbstractExecutionStep {
                 }
               } finally {
                 if (context.isProfiling())
-                  cost += (System.nanoTime() - begin);
+                  cost += System.nanoTime() - begin;
               }
             } else {
               // No more matches for current input, finalize it
@@ -234,7 +234,7 @@ public class OptionalMatchStep extends AbstractExecutionStep {
                 currentMatchResults = matchChainEnd.syncPull(context, Math.min(100, MAX_BUFFER_SIZE));
               } finally {
                 if (context.isProfiling())
-                  cost += (System.nanoTime() - begin);
+                  cost += System.nanoTime() - begin;
               }
             }
           }

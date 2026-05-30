@@ -38,7 +38,7 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
 
   @Test
   void healthEndpoint() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = openGet(serverIndex, "/api/v1/ts/graph/grafana/health");
       assertThat(connection.getResponseCode()).isEqualTo(200);
 
@@ -50,7 +50,7 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
 
   @Test
   void metadataEndpoint() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final HttpURLConnection connection = openGet(serverIndex, "/api/v1/ts/graph/grafana/metadata");
@@ -82,7 +82,7 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
 
   @Test
   void rawGrafanaQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final JSONObject request = new JSONObject();
@@ -123,7 +123,7 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
 
   @Test
   void aggregatedGrafanaQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final JSONObject request = new JSONObject();
@@ -173,7 +173,7 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
 
   @Test
   void multiTargetQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       // Create a second TS type
@@ -213,7 +213,7 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
 
   @Test
   void tagFilterInGrafanaQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final JSONObject request = new JSONObject();
@@ -244,7 +244,7 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
 
   @Test
   void autoMaxDataPoints() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final JSONObject request = new JSONObject();
@@ -283,7 +283,7 @@ class GrafanaTimeSeriesHandlerIT extends BaseGraphServerTest {
 
   @Test
   void missingTargets() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final JSONObject request = new JSONObject();
       // No "targets"
 

@@ -74,7 +74,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
           return result;
         } finally {
           if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
         }
       }
 
@@ -88,7 +88,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
         fullResult = functionCondition.executeIndexedFunction(queryTarget, context).iterator();
       } finally {
         if (context.isProfiling()) {
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
         }
       }
     }

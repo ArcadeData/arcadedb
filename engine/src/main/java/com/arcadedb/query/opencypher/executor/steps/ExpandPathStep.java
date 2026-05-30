@@ -239,7 +239,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
               buffer.add(result);
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
           } else {
             // Get next source vertex from previous step
@@ -257,7 +257,7 @@ public class ExpandPathStep extends AbstractExecutionStep {
 
             // Check if target variable is already bound (e.g., from a previous MATCH)
             final Object targetObj = lastResult.getProperty(targetVariable);
-            boundTarget = (targetObj instanceof Vertex) ? (Vertex) targetObj : null;
+            boundTarget = targetObj instanceof Vertex ? (Vertex) targetObj : null;
 
             if (sourceObj instanceof Vertex) {
               final Vertex sourceVertex = (Vertex) sourceObj;

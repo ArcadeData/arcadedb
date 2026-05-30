@@ -241,7 +241,7 @@ public final class TemporalUtil {
       }
       // When mixed with a zoned datetime, use the zoned datetime's timezone
       if (from instanceof CypherDateTime || to instanceof CypherDateTime) {
-        final CypherDateTime zoned = (from instanceof CypherDateTime) ? (CypherDateTime) from : (CypherDateTime) to;
+        final CypherDateTime zoned = from instanceof CypherDateTime ? (CypherDateTime) from : (CypherDateTime) to;
         final ZoneId zone = zoned.getValue().getZone();
         final LocalDate refDate = getReferenceDate(zoned);
         final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);
@@ -257,7 +257,7 @@ public final class TemporalUtil {
     }
     // Both have date components — handle DST-aware computation
     if (from instanceof CypherDateTime || to instanceof CypherDateTime) {
-      final CypherDateTime zoned = (from instanceof CypherDateTime) ? (CypherDateTime) from : (CypherDateTime) to;
+      final CypherDateTime zoned = from instanceof CypherDateTime ? (CypherDateTime) from : (CypherDateTime) to;
       final ZoneId zone = zoned.getValue().getZone();
       final LocalDate refDate = getReferenceDate(zoned);
       final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);
@@ -286,7 +286,7 @@ public final class TemporalUtil {
       }
       // When mixed with a zoned datetime, use the zoned datetime's timezone
       if (from instanceof CypherDateTime || to instanceof CypherDateTime) {
-        final CypherDateTime zoned = (from instanceof CypherDateTime) ? (CypherDateTime) from : (CypherDateTime) to;
+        final CypherDateTime zoned = from instanceof CypherDateTime ? (CypherDateTime) from : (CypherDateTime) to;
         final ZoneId zone = zoned.getValue().getZone();
         final LocalDate refDate = getReferenceDate(zoned);
         final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);

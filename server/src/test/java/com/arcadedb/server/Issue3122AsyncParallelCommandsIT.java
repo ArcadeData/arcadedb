@@ -58,7 +58,7 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
    */
   @Test
   void httpAsyncCommandsRunInParallel() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Verify the server has at least 2 async worker threads by default (fix for issue #3122)
       final Database database = getServer(0).getDatabase(getDatabaseName());
       final int parallelLevel = database.async().getParallelLevel();

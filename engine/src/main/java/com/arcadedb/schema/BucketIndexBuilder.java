@@ -135,7 +135,7 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
 
           schema.saveConfiguration();
 
-        }, false, maxAttempts, null, (error) -> {
+        }, false, maxAttempts, null, error -> {
           final Index indexToRemove = result1.get();
           if (indexToRemove != null) {
             ((IndexInternal) indexToRemove).drop();

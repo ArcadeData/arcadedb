@@ -44,7 +44,7 @@ public class SQLFunctionConvertTest {
 
   @Test
   void sqlConversions() throws Exception {
-    TestHelper.executeInNewDatabase("testSQLConvert", (db) -> db.transaction(() -> {
+    TestHelper.executeInNewDatabase("testSQLConvert", db -> db.transaction(() -> {
       db.command("sql", "create document type TestConversion");
 
       db.command("sql",

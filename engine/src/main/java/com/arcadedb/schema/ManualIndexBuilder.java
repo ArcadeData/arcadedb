@@ -78,7 +78,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
 
         schema.indexMap.put(indexName, index);
 
-      }, false, 1, null, (error) -> {
+      }, false, 1, null, error -> {
         final IndexInternal indexToRemove = result.get();
         if (indexToRemove != null) {
           indexToRemove.drop();

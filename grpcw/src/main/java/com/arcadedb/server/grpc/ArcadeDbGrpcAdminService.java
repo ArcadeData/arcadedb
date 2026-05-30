@@ -81,7 +81,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
       final String version = getServerVersion();
       final long startMs = getServerStartMs();
-      final long uptime = (startMs > 0) ? Math.max(0, System.currentTimeMillis() - startMs) : 0L;
+      final long uptime = startMs > 0 ? Math.max(0, System.currentTimeMillis() - startMs) : 0L;
 
       final int httpPort = getHttpPort();
       final int grpcPort = getGrpcPort();
@@ -243,7 +243,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       int indexes = 0;
       try {
         Index[] idx = schema.getIndexes();
-        indexes = (idx != null) ? idx.length : 0;
+        indexes = idx != null ? idx.length : 0;
       } catch (Throwable ignore) {
       }
 

@@ -76,7 +76,7 @@ class SQLFunctionBellmanFordTest {
 
   @Test
   void execute() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordTest", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordTest", graph -> {
       setUp(graph);
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
@@ -95,7 +95,7 @@ class SQLFunctionBellmanFordTest {
 
   @Test
   void executeWithNegativeWeight() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordNegTest", (graph) ->
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordNegTest", graph ->
       graph.transaction(() -> {
         graph.getSchema().createVertexType("node");
         graph.getSchema().createEdgeType("road");
@@ -136,7 +136,7 @@ class SQLFunctionBellmanFordTest {
 
   @Test
   void executeNoPath() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordNoPathTest", (graph) ->
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordNoPathTest", graph ->
       graph.transaction(() -> {
         graph.getSchema().createVertexType("node");
         graph.getSchema().createEdgeType("road");
@@ -159,7 +159,7 @@ class SQLFunctionBellmanFordTest {
 
   @Test
   void executeWithDirection() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordDirTest", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordDirTest", graph -> {
       setUp(graph);
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
@@ -174,7 +174,7 @@ class SQLFunctionBellmanFordTest {
 
   @Test
   void executeWithOptionsMap() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordOptionsMap", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordOptionsMap", graph -> {
       setUp(graph);
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);
@@ -192,7 +192,7 @@ class SQLFunctionBellmanFordTest {
 
   @Test
   void rejectsUnknownOption() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordUnknownOption", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionBellmanFordUnknownOption", graph -> {
       setUp(graph);
       final BasicCommandContext ctx = new BasicCommandContext();
       ctx.setDatabase(graph);

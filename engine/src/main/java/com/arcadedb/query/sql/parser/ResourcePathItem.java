@@ -70,7 +70,7 @@ public class ResourcePathItem extends SimpleNode {
 
   @Override
   public int hashCode() {
-    int result = (star ? 1 : 0);
+    int result = star ? 1 : 0;
     result = 31 * result + (identifier != null ? identifier.hashCode() : 0);
     result = 31 * result + (name != null ? name.hashCode() : 0);
     return result;

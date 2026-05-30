@@ -34,7 +34,7 @@ class RemoteGremlinIT extends AbstractGremlinServerIT {
 
   @Test
   void insert() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       assertThat(
           new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
               getDatabaseName())).isTrue();
@@ -66,7 +66,7 @@ class RemoteGremlinIT extends AbstractGremlinServerIT {
 
   @Test
   void dropVertex() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, getDatabaseName(), "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 

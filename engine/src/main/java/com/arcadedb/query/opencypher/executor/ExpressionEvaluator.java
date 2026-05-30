@@ -304,7 +304,7 @@ public class ExpressionEvaluator {
 
       if (expression.getWhereExpression() != null) {
         final Object filterValue = evaluate(expression.getWhereExpression(), iterResult, context);
-        if (filterValue == null || (filterValue instanceof Boolean && !((Boolean) filterValue)))
+        if (filterValue == null || (filterValue instanceof Boolean && !(Boolean) filterValue))
           continue;
       }
 

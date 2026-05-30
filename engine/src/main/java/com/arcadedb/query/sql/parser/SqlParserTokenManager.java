@@ -2579,7 +2579,7 @@ private int jjMoveStringLiteralDfa14_0(long old1, long active1, long old2, long 
    return jjMoveNfa_0(3, 14);
 }
 private int jjMoveStringLiteralDfa15_0(long old1, long active1){
-   if (((active1 &= old1)) == 0L)
+   if ((active1 &= old1) == 0L)
       return jjMoveNfa_0(3, 14);
    try { curChar = input_stream.readChar(); }
    catch(IOException e) {
@@ -2597,7 +2597,7 @@ private int jjMoveStringLiteralDfa15_0(long old1, long active1){
    return jjMoveNfa_0(3, 15);
 }
 private int jjMoveStringLiteralDfa16_0(long old1, long active1){
-   if (((active1 &= old1)) == 0L)
+   if ((active1 &= old1) == 0L)
       return jjMoveNfa_0(3, 15);
    try { curChar = input_stream.readChar(); }
    catch(IOException e) {
@@ -2615,7 +2615,7 @@ private int jjMoveStringLiteralDfa16_0(long old1, long active1){
    return jjMoveNfa_0(3, 16);
 }
 private int jjMoveStringLiteralDfa17_0(long old1, long active1){
-   if (((active1 &= old1)) == 0L)
+   if ((active1 &= old1) == 0L)
       return jjMoveNfa_0(3, 16);
    try { curChar = input_stream.readChar(); }
    catch(IOException e) {
@@ -2633,7 +2633,7 @@ private int jjMoveStringLiteralDfa17_0(long old1, long active1){
    return jjMoveNfa_0(3, 17);
 }
 private int jjMoveStringLiteralDfa18_0(long old1, long active1){
-   if (((active1 &= old1)) == 0L)
+   if ((active1 &= old1) == 0L)
       return jjMoveNfa_0(3, 17);
    try { curChar = input_stream.readChar(); }
    catch(IOException e) {
@@ -2651,7 +2651,7 @@ private int jjMoveStringLiteralDfa18_0(long old1, long active1){
    return jjMoveNfa_0(3, 18);
 }
 private int jjMoveStringLiteralDfa19_0(long old1, long active1){
-   if (((active1 &= old1)) == 0L)
+   if ((active1 &= old1) == 0L)
       return jjMoveNfa_0(3, 18);
    try { curChar = input_stream.readChar(); }
    catch(IOException e) {
@@ -2669,7 +2669,7 @@ private int jjMoveStringLiteralDfa19_0(long old1, long active1){
    return jjMoveNfa_0(3, 19);
 }
 private int jjMoveStringLiteralDfa20_0(long old1, long active1){
-   if (((active1 &= old1)) == 0L)
+   if ((active1 &= old1) == 0L)
       return jjMoveNfa_0(3, 19);
    try { curChar = input_stream.readChar(); }
    catch(IOException e) {
@@ -2687,7 +2687,7 @@ private int jjMoveStringLiteralDfa20_0(long old1, long active1){
    return jjMoveNfa_0(3, 20);
 }
 private int jjMoveStringLiteralDfa21_0(long old1, long active1){
-   if (((active1 &= old1)) == 0L)
+   if ((active1 &= old1) == 0L)
       return jjMoveNfa_0(3, 20);
    try { curChar = input_stream.readChar(); }
    catch(IOException e) {
@@ -2705,7 +2705,7 @@ private int jjMoveStringLiteralDfa21_0(long old1, long active1){
    return jjMoveNfa_0(3, 21);
 }
 private int jjMoveStringLiteralDfa22_0(long old1, long active1){
-   if (((active1 &= old1)) == 0L)
+   if ((active1 &= old1) == 0L)
       return jjMoveNfa_0(3, 21);
    try { curChar = input_stream.readChar(); }
    catch(IOException e) {
@@ -5228,7 +5228,7 @@ private int jjMoveNfa_0(int startState, int curPos)
       }
       else
       {
-         int hiByte = (curChar >> 8);
+         int hiByte = curChar >> 8;
          int i1 = hiByte >> 6;
          long l1 = 1L << (hiByte & 077);
          int i2 = (curChar & 0xff) >> 6;
@@ -5411,7 +5411,7 @@ protected Token jjFillToken()
    final int beginColumn;
    final int endColumn;
    String im = jjstrLiteralImages[jjmatchedKind];
-   curTokenImage = (im == null) ? input_stream.GetImage() : im;
+   curTokenImage = im == null ? input_stream.GetImage() : im;
    beginLine = input_stream.getBeginLine();
    beginColumn = input_stream.getBeginColumn();
    endLine = input_stream.getEndLine();
@@ -5445,7 +5445,7 @@ private static final boolean jjCanMove_0(int hiByte, int i1, int i2, long l1, lo
    switch(hiByte)
    {
       case 0:
-         return ((jjbitVec2[i2] & l2) != 0L);
+         return (jjbitVec2[i2] & l2) != 0L;
       default :
         return (jjbitVec0[i1] & l1) != 0L;
    }
@@ -5534,7 +5534,7 @@ public Token getNextToken()
               else
               {
                  matchedToken.specialToken = specialToken;
-                 specialToken = (specialToken.next = matchedToken);
+                 specialToken = specialToken.next = matchedToken;
               }
               SkipLexicalActions(matchedToken);
            }
@@ -5589,7 +5589,7 @@ void SkipLexicalActions(Token matchedToken)
 }
 void MoreLexicalActions()
 {
-   jjimageLen += (lengthOfMatch = jjmatchedPos + 1);
+   jjimageLen += lengthOfMatch = jjmatchedPos + 1;
    switch(jjmatchedKind)
    {
       case 6 :

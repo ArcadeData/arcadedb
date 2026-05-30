@@ -465,7 +465,7 @@ public class TransactionIndexContext {
               if (existent == null || entry.getValue().operation == IndexKey.IndexKeyOperation.REMOVE) {
                 // MULTIPLE OPERATIONS ON THE SAME KEY (DIFFERENT BUCKETS), PREFER THE REMOVE ONE.
                 // For REPLACE entries that originated from a same-bucket REMOVE→ADD merge, use the oldRid (the actual deleted RID).
-                final RID deletedRid = (entry.getValue().operation == IndexKey.IndexKeyOperation.REPLACE && entry.getValue().oldRid != null)
+                final RID deletedRid = entry.getValue().operation == IndexKey.IndexKeyOperation.REPLACE && entry.getValue().oldRid != null
                     ? entry.getValue().oldRid
                     : entry.getKey().rid;
                 entries.put(key, deletedRid);

@@ -121,7 +121,7 @@ class RaftGraphIngestionStabilityIT extends BaseRaftHATest {
           from.asVertex().newEdge("Link", to, "weight", i);
         }
       });
-      edgesCreated += (batchEnd - batchStart);
+      edgesCreated += batchEnd - batchStart;
     }
 
     final int totalEdges = edgesCreated;

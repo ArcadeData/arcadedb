@@ -57,7 +57,7 @@ public class TextRandom extends AbstractTextFunction {
       return "";
 
     final String chars = args.length > 1 ? asString(args[1]) : DEFAULT_CHARS;
-    final String charSet = (chars != null && !chars.isEmpty()) ? chars : DEFAULT_CHARS;
+    final String charSet = chars != null && !chars.isEmpty() ? chars : DEFAULT_CHARS;
 
     final ThreadLocalRandom random = ThreadLocalRandom.current();
     final StringBuilder result = new StringBuilder(length);

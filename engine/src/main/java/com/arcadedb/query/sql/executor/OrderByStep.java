@@ -88,7 +88,7 @@ public class OrderByStep extends AbstractExecutionStep {
           return result;
         } finally {
           if( context.isProfiling() ) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }
@@ -139,7 +139,7 @@ public class OrderByStep extends AbstractExecutionStep {
           }
         } finally {
           if( context.isProfiling() ) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }
@@ -156,7 +156,7 @@ public class OrderByStep extends AbstractExecutionStep {
         }
       } finally {
         if( context.isProfiling() ) {
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
         }
       }
     } while (true);
@@ -167,7 +167,7 @@ public class OrderByStep extends AbstractExecutionStep {
       }
     } finally {
       if( context.isProfiling() ) {
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
       }
     }
   }
@@ -178,7 +178,7 @@ public class OrderByStep extends AbstractExecutionStep {
     if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
-    result += (maxResults != null ? "\n  (buffer size: " + maxResults + ")" : "");
+    result += maxResults != null ? "\n  (buffer size: " + maxResults + ")" : "";
     return result;
   }
 

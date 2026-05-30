@@ -42,7 +42,7 @@ class Issue4350DuplicatedKeyHttpStatusIT extends BaseGraphServerTest {
 
   @Test
   void duplicateKeyReturns409Conflict() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create the type, unique index, and the first row in one script. We intentionally do not
       // include the duplicate insert here, so that the duplicate is committed by its own request
       // and the server reports the error synchronously (not as part of a sqlScript batch).
@@ -92,7 +92,7 @@ class Issue4350DuplicatedKeyHttpStatusIT extends BaseGraphServerTest {
    */
   @Test
   void duplicateKeyInScriptReturns409Conflict() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Prepare type + unique index in a successful script first so the duplicate below
       // executes against an existing schema.
       execCommand(serverIndex, "sqlScript", """

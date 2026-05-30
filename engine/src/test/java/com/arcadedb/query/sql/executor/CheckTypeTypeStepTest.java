@@ -31,7 +31,7 @@ class CheckTypeTypeStepTest {
 
   @Test
   void shouldCheckSubclasses() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       final DocumentType parentClass = TestHelper.createRandomType(db);
@@ -45,7 +45,7 @@ class CheckTypeTypeStepTest {
 
   @Test
   void shouldCheckOneType() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       final String className = TestHelper.createRandomType(db).getName();
@@ -58,7 +58,7 @@ class CheckTypeTypeStepTest {
 
   @Test
   void shouldThrowExceptionWhenClassIsNotParent() throws Exception {
-    assertThatThrownBy(() -> TestHelper.executeInNewDatabase((db) -> {
+    assertThatThrownBy(() -> TestHelper.executeInNewDatabase(db -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       final CheckTypeTypeStep step = new CheckTypeTypeStep(TestHelper.createRandomType(db).getName(),

@@ -88,7 +88,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 //            }
           } finally {
             if (context.isProfiling()) {
-              cost += (System.nanoTime() - begin1);
+              cost += System.nanoTime() - begin1;
             }
           }
         }
@@ -123,14 +123,14 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
           } finally {
             if (context.isProfiling()) {
-              cost += (System.nanoTime() - begin1);
+              cost += System.nanoTime() - begin1;
             }
           }
         }
       };
     } finally {
       if (context.isProfiling()) {
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
       }
     }
   }

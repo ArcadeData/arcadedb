@@ -626,7 +626,7 @@ class LSMVectorIndexStorageBenchmark {
             qualityMetrics.maxRecall * 100));
         System.out.println(String.format("  - Perfect matches:     %d/%d (%.2f%%)",
             qualityMetrics.perfectMatches, NUM_QUERIES,
-            (qualityMetrics.perfectMatches * 100.0 / NUM_QUERIES)));
+            qualityMetrics.perfectMatches * 100.0 / NUM_QUERIES));
         System.out.println();
         System.out.println(String.format("Vector Fetch Sources:"));
         System.out.println(String.format("  - From graph file:     %d", fetchFromGraph));

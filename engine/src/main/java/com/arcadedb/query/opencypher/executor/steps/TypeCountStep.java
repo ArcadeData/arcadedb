@@ -64,7 +64,7 @@ public final class TypeCountStep extends AbstractExecutionStep {
         count = 0;
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
 
     // Create result with the count

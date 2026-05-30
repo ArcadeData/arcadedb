@@ -2606,7 +2606,7 @@ public class SelectExecutionPlanner {
           // a different evaluation than the full-text index semantics.
           final BooleanExpression remaining = bestIndex.getRemainingCondition();
           if (remaining != null && !remaining.isEmpty()) {
-            if ((info.perRecordLetClause != null && refersToLet(Collections.singletonList(remaining)))) {
+            if (info.perRecordLetClause != null && refersToLet(Collections.singletonList(remaining))) {
               handleLet(subPlan, info, context);
             }
             subPlan.chain(new FilterStep(createWhereFrom(remaining), context));
@@ -2618,7 +2618,7 @@ public class SelectExecutionPlanner {
               statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
-            if ((info.perRecordLetClause != null && refersToLet(block.getSubBlocks()))) {
+            if (info.perRecordLetClause != null && refersToLet(block.getSubBlocks())) {
               handleLet(subPlan, info, context);
             }
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
@@ -2666,7 +2666,7 @@ public class SelectExecutionPlanner {
           plan.chain(step);
           plan.chain(new FilterByClustersStep(filterClusters, context));
           if (!block.getSubBlocks().isEmpty()) {
-            if ((info.perRecordLetClause != null && refersToLet(block.getSubBlocks()))) {
+            if (info.perRecordLetClause != null && refersToLet(block.getSubBlocks())) {
               handleLet(plan, info, context);
             }
             plan.chain(new FilterStep(createWhereFrom(block), context));
@@ -2990,8 +2990,8 @@ public class SelectExecutionPlanner {
         info.orderApplied = true;
 
         if (desc.getRemainingCondition() != null && !desc.getRemainingCondition().isEmpty()) {
-        if ((info.perRecordLetClause != null
-            && refersToLet(Collections.singletonList(desc.getRemainingCondition())))) {
+        if (info.perRecordLetClause != null
+            && refersToLet(Collections.singletonList(desc.getRemainingCondition()))) {
           SelectExecutionPlan stubPlan = new SelectExecutionPlan(context,
               statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           handleLet(stubPlan, info, context);

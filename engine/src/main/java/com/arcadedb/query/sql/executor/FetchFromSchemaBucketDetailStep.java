@@ -68,7 +68,7 @@ public class FetchFromSchemaBucketDetailStep extends AbstractExecutionStep {
       return new InternalResultSet(r);
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

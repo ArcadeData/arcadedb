@@ -141,7 +141,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
             if (outDegree[j] > 0)
               incoming += rank[j] / outDegree[j];
           }
-          final double personal = (i == sourceIdx) ? 1.0 : 0.0;
+          final double personal = i == sourceIdx ? 1.0 : 0.0;
           newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
         }
       } else {
@@ -150,7 +150,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
           for (final int j : inAdjFallback[i])
             if (outDegree[j] > 0)
               incoming += rank[j] / outDegree[j];
-          final double personal = (i == sourceIdx) ? 1.0 : 0.0;
+          final double personal = i == sourceIdx ? 1.0 : 0.0;
           newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
         }
       }
@@ -209,7 +209,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
         for (final int j : inAdj[i])
           if (outDegree[j] > 0)
             incoming += rank[j] / outDegree[j];
-        final double personal = (i == sourceIdx) ? 1.0 : 0.0;
+        final double personal = i == sourceIdx ? 1.0 : 0.0;
         newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
       }
 

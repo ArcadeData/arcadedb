@@ -57,7 +57,7 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         } finally {
           if (context.isProfiling()) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }

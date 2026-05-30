@@ -33,7 +33,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
 
   @Test
   public void useTypeDefinitionForReturn() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql",
@@ -61,7 +61,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
 
   @Test
   public void customDefinitionForReturn() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql",

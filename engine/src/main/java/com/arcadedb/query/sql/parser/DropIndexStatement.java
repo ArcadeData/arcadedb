@@ -109,7 +109,7 @@ public class DropIndexStatement extends DDLStatement {
 
   @Override
   public int hashCode() {
-    int result = (all ? 1 : 0);
+    int result = all ? 1 : 0;
     result = 31 * result + (name != null ? name.hashCode() : 0);
     return result;
   }

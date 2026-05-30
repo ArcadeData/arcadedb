@@ -129,7 +129,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
           groups.merge(key, count, Long::sum);
         } finally {
           if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
         }
       }
 
@@ -172,7 +172,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
         groups.merge(new GroupKey(keys), count, Long::sum);
       } finally {
         if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
       }
     }
 

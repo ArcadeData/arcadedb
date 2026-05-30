@@ -667,7 +667,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         final List<Map<Integer, Integer>> bucketDeltas = decoded.bucketDeltas();
         for (int i = 0; i < walEntries.size(); i++) {
           final byte[] walData = walEntries.get(i);
-          final Map<Integer, Integer> bucketDelta = (bucketDeltas != null && i < bucketDeltas.size())
+          final Map<Integer, Integer> bucketDelta = bucketDeltas != null && i < bucketDeltas.size()
               ? bucketDeltas.get(i)
               : Collections.emptyMap();
           final WALFile.WALTransaction walTx = deserializeWalTransaction(walData);
@@ -1119,7 +1119,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     tx.txId = buf.getLong();
     tx.timestamp = buf.getLong();
-    tx.forceApply = (tx.txId < 0); // negative txId signals compaction page replication
+    tx.forceApply = tx.txId < 0; // negative txId signals compaction page replication
     final int pageCount = buf.getInt();
     buf.getInt(); // segmentSize - not needed for deserialization
 

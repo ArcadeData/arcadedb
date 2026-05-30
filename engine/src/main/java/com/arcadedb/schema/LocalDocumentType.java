@@ -882,7 +882,7 @@ public class LocalDocumentType implements DocumentType {
     if (r != null && filterByProperties != null) {
       // FILTER BY PROPERTY NAMES
       r = new ArrayList<>(r);
-      r.removeIf((idx) -> !idx.getPropertyNames().equals(filterByProperties));
+      r.removeIf(idx -> !idx.getPropertyNames().equals(filterByProperties));
     }
 
     if (superTypes.isEmpty()) {

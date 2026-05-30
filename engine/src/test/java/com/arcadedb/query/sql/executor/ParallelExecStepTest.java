@@ -33,7 +33,7 @@ class ParallelExecStepTest {
 
   @Test
   void test() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final CommandContext ctx = new BasicCommandContext();
       final List<InternalExecutionPlan> subPlans = new ArrayList<>();
       for (int i = 0; i < 4; i++) {

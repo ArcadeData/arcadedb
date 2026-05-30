@@ -159,7 +159,7 @@ public final class Memtable {
         break;  // ConcurrentHashMap snapshot grew during iteration; ignore extras.
       out[i++] = d;
     }
-    final int[] trimmed = (i == out.length) ? out : Arrays.copyOf(out, i);
+    final int[] trimmed = i == out.length ? out : Arrays.copyOf(out, i);
     Arrays.sort(trimmed);
     return trimmed;
   }

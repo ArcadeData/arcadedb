@@ -103,7 +103,7 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
     final String weightProperty = extractString(args[3], "weightProperty");
 
     final Database db = context.getDatabase();
-    final String[] relTypes = (relType != null && !relType.isEmpty()) ? new String[] { relType } : null;
+    final String[] relTypes = relType != null && !relType.isEmpty() ? new String[] { relType } : null;
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
     final int n = graph.nodeCount;

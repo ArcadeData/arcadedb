@@ -586,7 +586,7 @@ public enum GlobalConfiguration {
 
   SERVER_HTTP_IO_THREADS("arcadedb.server.httpsIoThreads", SCOPE.SERVER,
       "Number of threads to use in the HTTP servers. The default number for most of the use cases is 2 threads per cpus (or 1 per virtual core)",
-      Integer.class, 0, null, (value) -> Runtime.getRuntime().availableProcessors()),
+      Integer.class, 0, null, value -> Runtime.getRuntime().availableProcessors()),
 
   SERVER_HTTP_WORKER_THREADS("arcadedb.server.httpWorkerThreads", SCOPE.SERVER,
       """

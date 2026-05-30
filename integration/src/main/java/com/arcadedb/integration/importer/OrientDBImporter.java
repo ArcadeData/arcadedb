@@ -543,7 +543,7 @@ public class OrientDBImporter {
       if (processedItems.get() > 0 && processedItems.get() % 1_000_000 == 0) {
         final long elapsed = System.currentTimeMillis() - beginTimeEdgeCreation;
         logger.logLine(2, "- Status update: created %,d edges %s (%,d edges/sec)", context.createdEdges.get(),
-            totalEdgesByVertexType, (context.createdEdges.get() / elapsed * 1000));
+            totalEdgesByVertexType, context.createdEdges.get() / elapsed * 1000);
       }
     }
   }
@@ -560,7 +560,7 @@ public class OrientDBImporter {
       final long elapsed = System.currentTimeMillis() - beginTimeRecordsCreation;
       logger.logLine(2, "- Status update: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec)",
           context.createdVertices.get(), context.createdDocuments.get(), context.skippedEdges.get(),
-          ((context.createdDocuments.get() + context.createdVertices.get()) / elapsed * 1000));
+          (context.createdDocuments.get() + context.createdVertices.get()) / elapsed * 1000);
     }
   }
 

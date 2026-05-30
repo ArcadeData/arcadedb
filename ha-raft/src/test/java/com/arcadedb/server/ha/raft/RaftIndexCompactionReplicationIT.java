@@ -92,7 +92,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverIdx = serverDb.getSchema().getIndexByName(indexName);
       assertThat(serverIdx.countEntries())
@@ -149,7 +149,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
       waitForReplicationIsCompleted(i);
 
     final String actualIndexName = vectorIndex.getName();
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
       assertThat(serverVectorIndex).as("Vector index should be replicated to server %d", serverIndex).isNotNull();
@@ -201,7 +201,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
       waitForReplicationIsCompleted(i);
 
     final String actualIndexName = vectorIndex.getName();
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
       assertThat(serverVectorIndex).as("Vector index should be replicated to server %d", serverIndex).isNotNull();
@@ -246,7 +246,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverIdx = serverDb.getSchema().getIndexByName(indexName);
       assertThat(serverIdx.countEntries()).as("Server %d index should have 2000 entries", serverIndex).isEqualTo(2000);
@@ -339,7 +339,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
 
     // nextId now equals total inserted records (seed + concurrent + post-compact)
     final long totalExpected = nextId.get();
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverIdx = serverDb.getSchema().getIndexByName(indexName);
       assertThat(serverIdx.countEntries())

@@ -135,7 +135,7 @@ public class JavaCharStream implements CharStream {
         System.arraycopy(bufcolumn, 0, newbufcolumn, bufsize - tokenBegin, bufpos);
         bufcolumn = newbufcolumn;
 
-        bufpos += (bufsize - tokenBegin);
+        bufpos += bufsize - tokenBegin;
       } else {
         System.arraycopy(buffer, tokenBegin, newbuffer, 0, bufsize - tokenBegin);
         buffer = newbuffer;
@@ -152,7 +152,7 @@ public class JavaCharStream implements CharStream {
       throw new Error(t.getMessage(), t);
     }
 
-    available = (bufsize += 2048);
+    available = bufsize += 2048;
     tokenBegin = 0;
   }
 
@@ -226,13 +226,13 @@ public class JavaCharStream implements CharStream {
 
     if (prevCharIsLF) {
       prevCharIsLF = false;
-      line += (column = 1);
+      line += column = 1;
     } else if (prevCharIsCR) {
       prevCharIsCR = false;
       if (c == '\n') {
         prevCharIsLF = true;
       } else
-        line += (column = 1);
+        line += column = 1;
     }
 
     switch (c) {
@@ -244,7 +244,7 @@ public class JavaCharStream implements CharStream {
       break;
     case '\t':
       column--;
-      column += (tabSize - (column % tabSize));
+      column += tabSize - (column % tabSize);
       break;
     default:
       break;

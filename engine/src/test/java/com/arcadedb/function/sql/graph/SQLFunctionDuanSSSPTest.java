@@ -77,7 +77,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void basicPath() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_basicPath", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_basicPath", graph -> {
       setUp(graph);
       final List<RID> result = functionDuanSSSP.execute(null, null, null, new Object[] { v1, v4, "weight" },
           new BasicCommandContext());
@@ -92,7 +92,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void sameVertex() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_sameVertex", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_sameVertex", graph -> {
       setUp(graph);
       final List<RID> result = functionDuanSSSP.execute(null, null, null, new Object[] { v1, v1, "weight" },
           new BasicCommandContext());
@@ -104,7 +104,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void noPath() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_noPath", (graph) ->
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_noPath", graph ->
       graph.transaction(() -> {
         graph.getSchema().createVertexType("isolated");
 
@@ -124,7 +124,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void sqlQuery() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_sqlQuery", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_sqlQuery", graph -> {
       setUp(graph);
 
       final ResultSet result = graph.query("sql",
@@ -143,7 +143,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void directionOut() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_directionOut", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_directionOut", graph -> {
       setUp(graph);
 
       final List<RID> result = functionDuanSSSP.execute(null, null, null,
@@ -157,7 +157,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void largerGraph() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_largerGraph", (graph) ->
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_largerGraph", graph ->
       graph.transaction(() -> {
         graph.getSchema().createVertexType("city");
         graph.getSchema().createEdgeType("road");

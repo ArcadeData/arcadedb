@@ -69,7 +69,7 @@ class LSMVectorIndexChunkedWriteTest {
       dbInternal.getTransaction().setUseWAL(false);
 
       // Chunk commit callback that mirrors the production code in LSMVectorIndex
-      final ChunkCommitCallback chunkCallback = (bytesWritten) -> {
+      final ChunkCommitCallback chunkCallback = bytesWritten -> {
         database.commit();
         database.begin();
         dbInternal.getTransaction().setUseWAL(false);
@@ -202,7 +202,7 @@ class LSMVectorIndexChunkedWriteTest {
       database.begin();
       dbInternal.getTransaction().setUseWAL(false);
 
-      final ChunkCommitCallback chunkCallback = (bytesWritten) -> {
+      final ChunkCommitCallback chunkCallback = bytesWritten -> {
         database.commit();
         database.begin();
         dbInternal.getTransaction().setUseWAL(false);

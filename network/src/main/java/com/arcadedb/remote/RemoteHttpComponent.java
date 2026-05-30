@@ -371,8 +371,8 @@ public class RemoteHttpComponent extends RWLockContext {
         throw new RemoteException("Request interrupted", e);
       } catch (final NeedRetryException e) {
         // Election in progress - retry with delay.
-        final int maxElectionRetries = (this instanceof RemoteDatabase db) ? db.getElectionRetryCount() : 3;
-        final long delayMs = (this instanceof RemoteDatabase db) ? db.getElectionRetryDelayMs() : 2000L;
+        final int maxElectionRetries = this instanceof RemoteDatabase db ? db.getElectionRetryCount() : 3;
+        final long delayMs = this instanceof RemoteDatabase db ? db.getElectionRetryDelayMs() : 2000L;
         if (retry + 1 >= maxRetry || retry >= maxElectionRetries) {
           lastException = e;
           break;
@@ -413,7 +413,7 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   public List<String> getReplicaAddresses() {
-    return replicaServerList.stream().map((e) -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
+    return replicaServerList.stream().map(e -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
   }
 
   HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {

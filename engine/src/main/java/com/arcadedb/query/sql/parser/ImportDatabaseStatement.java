@@ -64,7 +64,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
       // the importer's commit() calls are intercepted for replication. In non-HA mode,
       // getWrappedDatabaseInstance() returns the database itself, so there is no change in behaviour.
       final Database db = context.getDatabase();
-      final Database effectiveDb = (db instanceof DatabaseInternal di) ? di.getWrappedDatabaseInstance() : db;
+      final Database effectiveDb = db instanceof DatabaseInternal di ? di.getWrappedDatabaseInstance() : db;
       final Object importer = clazz.getConstructor(Database.class, String.class).newInstance(effectiveDb, url != null ? url.getUrlString() : null);
 
       // TRANSFORM SETTINGS

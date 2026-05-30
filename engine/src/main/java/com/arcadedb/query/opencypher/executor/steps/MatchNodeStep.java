@@ -123,7 +123,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     this.pattern = pattern;
     this.idFilter = idFilter;
     this.evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
-    this.dynamicIdExpression = (whereFilter != null) ? findIdValueExpression(whereFilter) : null;
+    this.dynamicIdExpression = whereFilter != null ? findIdValueExpression(whereFilter) : null;
     // When the dynamic ID expression handles {@code id(variable) = X} via runtime RID lookup, the
     // same predicate is still present in the WHERE pushdown filter. Re-evaluating it row-by-row
     // would be wasted work, and after id() became Neo4j-compatible (returns Long instead of an RID
@@ -131,7 +131,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // row entirely. Strip the predicate here so the pushdown only carries predicates that the
     // dynamic ID lookup does not already cover. The static idFilter case is handled upstream in
     // {@code CypherExecutionPlan.extractPushdownFilter}.
-    this.whereFilter = (dynamicIdExpression != null)
+    this.whereFilter = dynamicIdExpression != null
         ? stripIdEqualityForVariable(whereFilter, variable)
         : whereFilter;
   }
@@ -282,7 +282,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 }
               } finally {
                 if (context.isProfiling())
-                  cost += (System.nanoTime() - begin);
+                  cost += System.nanoTime() - begin;
               }
             }
           }
@@ -323,7 +323,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
               }
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
           }
 

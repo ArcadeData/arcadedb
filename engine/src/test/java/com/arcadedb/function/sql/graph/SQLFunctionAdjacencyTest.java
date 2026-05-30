@@ -40,7 +40,7 @@ class SQLFunctionAdjacencyTest {
 
   @Test
   void outE() throws Exception {
-    TestHelper.executeInNewDatabase("testOutE", (graph) -> {
+    TestHelper.executeInNewDatabase("testOutE", graph -> {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = ((Iterable<Identifiable>) new SQLFunctionOutE().execute(vertices.get(3), null, null,
@@ -62,7 +62,7 @@ class SQLFunctionAdjacencyTest {
 
   @Test
   void inE() throws Exception {
-    TestHelper.executeInNewDatabase("testInE", (graph) -> {
+    TestHelper.executeInNewDatabase("testInE", graph -> {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = ((Iterable<Identifiable>) new SQLFunctionInE().execute(vertices.get(3), null, null,
@@ -83,7 +83,7 @@ class SQLFunctionAdjacencyTest {
 
   @Test
   void bothE() throws Exception {
-    TestHelper.executeInNewDatabase("testBothE", (graph) -> {
+    TestHelper.executeInNewDatabase("testBothE", graph -> {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = ((Iterable<Identifiable>) new SQLFunctionBothE().execute(vertices.get(3), null, null,
@@ -106,7 +106,7 @@ class SQLFunctionAdjacencyTest {
 
   @Test
   void both() throws Exception {
-    TestHelper.executeInNewDatabase("testBoth", (graph) -> {
+    TestHelper.executeInNewDatabase("testBoth", graph -> {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = ((Iterable<Identifiable>) new SQLFunctionBoth().execute(vertices.get(3), null, null,
@@ -129,7 +129,7 @@ class SQLFunctionAdjacencyTest {
 
   @Test
   void out() throws Exception {
-    TestHelper.executeInNewDatabase("testOut", (graph) -> {
+    TestHelper.executeInNewDatabase("testOut", graph -> {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = ((Iterable<Identifiable>) new SQLFunctionOut().execute(vertices.get(3), null, null,
@@ -151,7 +151,7 @@ class SQLFunctionAdjacencyTest {
 
   @Test
   void in() throws Exception {
-    TestHelper.executeInNewDatabase("testIn", (graph) -> {
+    TestHelper.executeInNewDatabase("testIn", graph -> {
       setUpDatabase(graph);
 
       final Iterator<Identifiable> iterator = ((Iterable<Identifiable>) new SQLFunctionIn().execute(vertices.get(3), null, null,
@@ -172,7 +172,7 @@ class SQLFunctionAdjacencyTest {
 
   @Test
   void outV() throws Exception {
-    TestHelper.executeInNewDatabase("testOutV", (graph) -> {
+    TestHelper.executeInNewDatabase("testOutV", graph -> {
       setUpDatabase(graph);
 
       final Vertex v = (Vertex) new SQLFunctionOutV().execute(edges.get(3), null, null, new Object[] {},
@@ -184,7 +184,7 @@ class SQLFunctionAdjacencyTest {
 
   @Test
   void inV() throws Exception {
-    TestHelper.executeInNewDatabase("testInV", (graph) -> {
+    TestHelper.executeInNewDatabase("testInV", graph -> {
       setUpDatabase(graph);
 
       final Vertex v = (Vertex) new SQLFunctionInV().execute(edges.get(3), null, null, new Object[] {},
@@ -196,7 +196,7 @@ class SQLFunctionAdjacencyTest {
 
   @Test
   void bothV() throws Exception {
-    TestHelper.executeInNewDatabase("testBothV", (graph) -> {
+    TestHelper.executeInNewDatabase("testBothV", graph -> {
       setUpDatabase(graph);
 
       final ArrayList<Identifiable> iterator = (ArrayList<Identifiable>) new SQLFunctionBothV().execute(edges.get(3), null, null,

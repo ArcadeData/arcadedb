@@ -2652,11 +2652,11 @@ public class CypherExecutionPlan {
 
     // Edge types
     final List<String> firstRelTypes = firstRel.getTypes();
-    final String[] firstHopTypes = (firstRelTypes != null && !firstRelTypes.isEmpty())
+    final String[] firstHopTypes = firstRelTypes != null && !firstRelTypes.isEmpty()
         ? firstRelTypes.toArray(new String[0]) : null;
 
     final List<String> secondRelTypes = secondRel.getTypes();
-    final String[] secondHopTypes = (secondRelTypes != null && !secondRelTypes.isEmpty())
+    final String[] secondHopTypes = secondRelTypes != null && !secondRelTypes.isEmpty()
         ? secondRelTypes.toArray(new String[0]) : null;
 
     // Build pass-through aliases map
@@ -2864,7 +2864,7 @@ public class CypherExecutionPlan {
 
     // Edge types
     final List<String> relTypes = relPattern.getTypes();
-    final String[] edgeTypes = (relTypes != null && !relTypes.isEmpty())
+    final String[] edgeTypes = relTypes != null && !relTypes.isEmpty()
         ? relTypes.toArray(new String[0]) : null;
 
     // Build pass-through aliases map
@@ -3098,7 +3098,7 @@ public class CypherExecutionPlan {
 
     // Edge types
     final List<String> relTypes = relPattern.getTypes();
-    final String[] edgeTypes = (relTypes != null && !relTypes.isEmpty())
+    final String[] edgeTypes = relTypes != null && !relTypes.isEmpty()
         ? relTypes.toArray(new String[0]) : null;
 
     // Build grouping expressions and aliases

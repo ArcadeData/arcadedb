@@ -880,7 +880,7 @@ public class PostgresNetworkExecutor extends Thread {
     if (query == null || !query.toUpperCase(Locale.ENGLISH).trim().startsWith("SELECT"))
       return null;
     final Map<String, PostgresType> schemaColumns = getColumnsFromQuerySchema(query);
-    return (schemaColumns != null && !schemaColumns.isEmpty()) ? schemaColumns : null;
+    return schemaColumns != null && !schemaColumns.isEmpty() ? schemaColumns : null;
   }
 
   private void writeRowDescription(final Map<String, PostgresType> columns) {
@@ -1125,7 +1125,7 @@ public class PostgresNetworkExecutor extends Thread {
           }
 
           // Determine type code - use UNSPECIFIED (0) if not declared in PARSE
-          final long typeCode = (portal.parameterTypes != null && i < portal.parameterTypes.size())
+          final long typeCode = portal.parameterTypes != null && i < portal.parameterTypes.size()
               ? portal.parameterTypes.get(i)
               : 0L; // UNSPECIFIED type
 

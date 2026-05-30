@@ -202,8 +202,8 @@ class DuanSSSPBenchmark {
       // Only count if both found a path (or both didn't find a path)
       if ((dijkstraPath == null && duanPath.isEmpty()) ||
           (dijkstraPath != null && !duanPath.isEmpty())) {
-        dijkstraTotalTime += (dijkstraEnd - dijkstraStart);
-        duanSSSPTotalTime += (duanEnd - duanStart);
+        dijkstraTotalTime += dijkstraEnd - dijkstraStart;
+        duanSSSPTotalTime += duanEnd - duanStart;
         successfulRuns++;
 
         // Verify path lengths match (optional correctness check)
@@ -229,7 +229,7 @@ class DuanSSSPBenchmark {
 
   @Test
   void benchmarkSmallRandomGraph() throws Exception {
-    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_smallRandom", (db) ->
+    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_smallRandom", db ->
       db.transaction(() -> {
         db.getSchema().createVertexType("BenchNode");
         db.getSchema().createEdgeType("BenchEdge");
@@ -243,7 +243,7 @@ class DuanSSSPBenchmark {
 
   @Test
   void benchmarkMediumRandomGraph() throws Exception {
-    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_mediumRandom", (db) ->
+    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_mediumRandom", db ->
       db.transaction(() -> {
         db.getSchema().createVertexType("BenchNode");
         db.getSchema().createEdgeType("BenchEdge");
@@ -257,7 +257,7 @@ class DuanSSSPBenchmark {
 
   @Test
   void benchmarkGridGraph() throws Exception {
-    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_grid", (db) ->
+    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_grid", db ->
       db.transaction(() -> {
         db.getSchema().createVertexType("BenchNode");
         db.getSchema().createEdgeType("BenchEdge");
@@ -271,7 +271,7 @@ class DuanSSSPBenchmark {
 
   @Test
   void benchmarkScaleFreeGraph() throws Exception {
-    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_scaleFree", (db) ->
+    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_scaleFree", db ->
       db.transaction(() -> {
         db.getSchema().createVertexType("BenchNode");
         db.getSchema().createEdgeType("BenchEdge");
@@ -285,7 +285,7 @@ class DuanSSSPBenchmark {
 
   @Test
   void benchmarkComparison() throws Exception {
-    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_comparison", (db) ->
+    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_comparison", db ->
       db.transaction(() -> {
         db.getSchema().createVertexType("BenchNode");
         db.getSchema().createEdgeType("BenchEdge");

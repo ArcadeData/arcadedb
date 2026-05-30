@@ -1622,7 +1622,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
           database.getTransaction().setUseWAL(false);
         }
 
-        final ChunkCommitCallback chunkCallback = (bytesWritten) -> {
+        final ChunkCommitCallback chunkCallback = bytesWritten -> {
           LogManager.instance().log(this, Level.INFO,
               "Graph persistence chunk complete: %.1fMB written", bytesWritten / (1024.0 * 1024.0));
 
@@ -2230,7 +2230,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
       // CRITICAL FIX: Always write quantization type byte, even if NONE
       // This ensures readVectorFromOffset() can always read a consistent format
-      final VectorQuantizationType quantType = (qmeta != null) ? qmeta.getType() : VectorQuantizationType.NONE;
+      final VectorQuantizationType quantType = qmeta != null ? qmeta.getType() : VectorQuantizationType.NONE;
       final byte quantOrdinal = (byte) quantType.ordinal();
       bytesWritten += currentPage.writeByte(offsetFreeContent + bytesWritten, quantOrdinal);
 
@@ -2465,7 +2465,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Set bit to 1
         final int byteIndex = i / 8;
         final int bitIndex = i % 8;
-        packed[byteIndex] |= (1 << bitIndex);
+        packed[byteIndex] |= 1 << bitIndex;
       }
     }
 
@@ -2897,14 +2897,14 @@ public class LSMVectorIndex implements Index, IndexInternal {
         }
 
         // Perform search with optional RID filtering
-        final Bits bitsFilter = (allowedRIDs != null && !allowedRIDs.isEmpty()) ?
+        final Bits bitsFilter = allowedRIDs != null && !allowedRIDs.isEmpty() ?
             new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex) :
             Bits.ALL;
 
         // Use instance GraphSearcher with SearchScoreProvider for efSearch control
         final SearchResult searchResult;
         try (final GraphSearcher searcher = new GraphSearcher(graphIndex)) {
-          final ScoreFunction.ExactScoreFunction exactScoreFunction = (node) ->
+          final ScoreFunction.ExactScoreFunction exactScoreFunction = node ->
               metadata.similarityFunction.compare(queryVectorFloat, vectors.getVector(node));
 
           // Use exact scoring for graph traversal.
@@ -3099,7 +3099,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         final SearchResult searchResult;
         try (final GraphSearcher searcher = new GraphSearcher(graphIndex)) {
-          final ScoreFunction.ExactScoreFunction exactScoreFunction = (node) ->
+          final ScoreFunction.ExactScoreFunction exactScoreFunction = node ->
               metadata.similarityFunction.compare(queryVectorFloat, vectors.getVector(node));
           final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScoreFunction, exactScoreFunction);
 
@@ -3259,13 +3259,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         // Create a ReRanker that does NOT pull from disk - just returns PQ similarity
         // This is the critical optimization: we bypass RandomAccessVectorValues entirely
-        final ScoreFunction.ExactScoreFunction approxReranker = (ordinal) -> scoreFunction.similarityTo(ordinal);
+        final ScoreFunction.ExactScoreFunction approxReranker = ordinal -> scoreFunction.similarityTo(ordinal);
 
         // Wrap in a DefaultSearchScoreProvider (concrete implementation)
         final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(scoreFunction, approxReranker);
 
         // Create RID filter if needed
-        final Bits bitsFilter = (allowedRIDs != null && !allowedRIDs.isEmpty()) ?
+        final Bits bitsFilter = allowedRIDs != null && !allowedRIDs.isEmpty() ?
             new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex) :
             Bits.ALL;
 
@@ -4414,7 +4414,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       buildGraphFromScratchWithRetry(graphCallback);
 
       // Persist graph with chunking callback
-      final ChunkCommitCallback chunkCallback = (bytesWritten) -> {
+      final ChunkCommitCallback chunkCallback = bytesWritten -> {
         LogManager.instance().log(this, Level.INFO,
             "LSM Vector graph persistence chunk complete: %.1fMB written",
             bytesWritten / (1024.0 * 1024.0));
@@ -4623,7 +4623,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
       final int fileId = page.getPageId().getFileId();
 
       // Determine if this page is in the compacted or mutable file
-      final boolean isCompacted = (compactedSubIndex != null && fileId == compactedSubIndex.getFileId());
+      final boolean isCompacted = compactedSubIndex != null && fileId == compactedSubIndex.getFileId();
 
       // Read page header
       final int offsetFreeContent = page.readInt(OFFSET_FREE_CONTENT);

@@ -306,7 +306,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning
     // fewer than K items because the top-scored RIDs were filtered out. The fixed cap keeps
     // worst-case work bounded even when the filter is very selective.
-    final int fetchK = (allowedRIDs == null || allowedRIDs.isEmpty()) ? k : Math.min(k * 8, 100_000);
+    final int fetchK = allowedRIDs == null || allowedRIDs.isEmpty() ? k : Math.min(k * 8, 100_000);
 
     final List<RidScore> raw;
     try {

@@ -43,7 +43,7 @@ public class DumpCfgApp {
     System.out.printf("\n[%%header,cols=\"20%%,55%%,10%%,15%%\",stripes=even]");
     System.out.printf("\n|===");
     System.out.printf("\n|Name|Description|Type|Default Value");
-    final List<GlobalConfiguration> orderedList = Arrays.stream(GlobalConfiguration.values()).filter((c) -> c.getScope() == scope)
+    final List<GlobalConfiguration> orderedList = Arrays.stream(GlobalConfiguration.values()).filter(c -> c.getScope() == scope)
         .sorted(Comparator.comparing(Enum::name)).collect(Collectors.toList());
     orderedList.sort(Comparator.comparing(Enum::name));
 

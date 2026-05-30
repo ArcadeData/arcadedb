@@ -134,7 +134,7 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     final int[] hashB = new int[embDim];
     for (int d = 0; d < embDim; d++) {
       // Ensure a is odd (to guarantee full-period LCG-style coverage)
-      hashA[d] = (rng.nextInt(numFeatures / 2) * 2 + 1);
+      hashA[d] = rng.nextInt(numFeatures / 2) * 2 + 1;
       hashB[d] = rng.nextInt(numFeatures);
     }
 

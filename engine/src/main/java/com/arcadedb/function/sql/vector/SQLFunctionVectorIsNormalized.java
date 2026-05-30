@@ -55,7 +55,7 @@ public class SQLFunctionVectorIsNormalized extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException("Vector cannot be empty");
 
     // Default tolerance: 0.001
-    final float tolerance = (params.length == 2 && params[1] != null)
+    final float tolerance = params.length == 2 && params[1] != null
         ? (params[1] instanceof Number num ? num.floatValue() : 0.001f)
         : 0.001f;
 

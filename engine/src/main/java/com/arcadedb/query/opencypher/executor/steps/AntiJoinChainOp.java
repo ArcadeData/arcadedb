@@ -151,7 +151,7 @@ public final class AntiJoinChainOp implements CountOp {
     if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
       return 0;
 
-    final boolean anchorIsSource = (antiJoinSourceIdx == 0);
+    final boolean anchorIsSource = antiJoinSourceIdx == 0;
 
     // Pre-fetch NeighborViews for each hop up to the check position
     final NeighborView[] hopViews = new NeighborView[laterIdx];
@@ -442,7 +442,7 @@ public final class AntiJoinChainOp implements CountOp {
 
     final int hops = edgeTypes.length;
     final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
-    final boolean anchorIsSource = (antiJoinSourceIdx == 0);
+    final boolean anchorIsSource = antiJoinSourceIdx == 0;
 
     // Verify all labels up to checkPos are defined (needed for map construction)
     for (int i = 0; i <= checkPos; i++) {

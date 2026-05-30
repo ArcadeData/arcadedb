@@ -74,7 +74,7 @@ public class SelectExecutor {
   long executeCount() {
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
     final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
-    final Set<RID> filterOutRecords = (iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1)
+    final Set<RID> filterOutRecords = iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1
         ? ConcurrentHashMap.newKeySet() : null;
 
     long count = 0;

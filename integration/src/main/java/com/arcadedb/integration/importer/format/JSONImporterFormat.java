@@ -97,7 +97,7 @@ public class JSONImporterFormat implements FormatImporter {
           break;
         case NAME:
           final String tag = reader.nextName();
-          if ((mapping.has(tag) || mapping.has("*"))) {
+          if (mapping.has(tag) || mapping.has("*")) {
             tagValue = mapping.has(tag) ? mapping.get(tag) : mapping.get("*");
             if (tagValue instanceof JSONArray)
               waitFor = BEGIN_ARRAY;

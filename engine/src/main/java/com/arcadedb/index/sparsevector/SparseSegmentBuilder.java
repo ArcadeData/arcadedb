@@ -321,7 +321,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       weightMin = 0.0f;
       weightMax = 0.0f;
     }
-    final float blockMaxForBmw = (weightMax == Float.NEGATIVE_INFINITY) ? 0.0f : weightMax;
+    final float blockMaxForBmw = weightMax == Float.NEGATIVE_INFINITY ? 0.0f : weightMax;
 
     // Reuse the per-builder scratch buffer (sized at construction to the worst-case block
     // payload size). Saves an allocation per block - on a default-shaped 1M-posting flush that

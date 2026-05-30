@@ -142,7 +142,7 @@ public class AggregationStep extends AbstractExecutionStep {
         }
       } finally {
         if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
       }
     }
 
@@ -182,7 +182,7 @@ public class AggregationStep extends AbstractExecutionStep {
       }
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - beginFinal);
+        cost += System.nanoTime() - beginFinal;
     }
 
     // Return single aggregated row

@@ -146,7 +146,7 @@ public class ProjectReturnStep extends AbstractExecutionStep {
             buffer.add(projectedResult);
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
 

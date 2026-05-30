@@ -256,7 +256,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
             indexes[finalIdx] = createBucketIndex(schema, type, keyTypes, bucket);
 
-          }, false, maxAttempts, null, (error) -> {
+          }, false, maxAttempts, null, error -> {
             for (int j = 0; j < indexes.length; j++) {
               final IndexInternal indexToRemove = (IndexInternal) indexes[j];
               if (indexToRemove != null)

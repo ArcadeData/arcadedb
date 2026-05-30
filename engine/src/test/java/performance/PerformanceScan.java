@@ -44,7 +44,7 @@ public class PerformanceScan {
         final AtomicInteger row = new AtomicInteger();
 
         database.async().scanType(USERTYPE_NAME, true, record -> {
-          final ImmutableDocument document = ((ImmutableDocument) record);
+          final ImmutableDocument document = (ImmutableDocument) record;
 
           document.get("id");
 

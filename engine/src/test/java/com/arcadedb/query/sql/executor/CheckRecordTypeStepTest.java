@@ -32,7 +32,7 @@ class CheckRecordTypeStepTest {
 
   @Test
   void shouldCheckRecordsOfOneType() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String className = TestHelper.createRandomType(db).getName();
 
       final CommandContext context = new BasicCommandContext();
@@ -64,7 +64,7 @@ class CheckRecordTypeStepTest {
 
   @Test
   void shouldCheckRecordsOfSubclasses() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final CommandContext context = new BasicCommandContext();
       final DocumentType parentClass = TestHelper.createRandomType(db);
       final DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
@@ -96,7 +96,7 @@ class CheckRecordTypeStepTest {
 
   @Test
   void shouldThrowExceptionWhenTypeIsDifferent() throws Exception {
-    assertThatThrownBy(() -> TestHelper.executeInNewDatabase((db) -> {
+    assertThatThrownBy(() -> TestHelper.executeInNewDatabase(db -> {
       final CommandContext context = new BasicCommandContext();
       final String firstClassName = TestHelper.createRandomType(db).getName();
       final String secondClassName = TestHelper.createRandomType(db).getName();

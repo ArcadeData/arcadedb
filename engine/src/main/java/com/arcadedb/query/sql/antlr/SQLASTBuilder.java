@@ -6814,7 +6814,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     // Add statements to IF block (before ELSE) or all statements if no ELSE
-    final int endIndex = (elseIndex != -1) ? elseIndex : allStatements.size();
+    final int endIndex = elseIndex != -1 ? elseIndex : allStatements.size();
     for (int i = 0; i < endIndex; i++) {
       stmt.statements.add((Statement) visit(allStatements.get(i)));
     }

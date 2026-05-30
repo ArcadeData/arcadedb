@@ -40,7 +40,7 @@ class ContainsTextWithArrayTest {
 
   @Test
   void containsTextWithSingleString() throws Exception {
-    TestHelper.executeInNewDatabase("ContainsTextWithArrayTest_single", (db) -> {
+    TestHelper.executeInNewDatabase("ContainsTextWithArrayTest_single", db -> {
       db.transaction(() -> {
         db.getSchema().createDocumentType("TestDoc");
 
@@ -75,7 +75,7 @@ class ContainsTextWithArrayTest {
 
   @Test
   void containsTextWithArrayOfStrings() throws Exception {
-    TestHelper.executeInNewDatabase("ContainsTextWithArrayTest_array", (db) -> {
+    TestHelper.executeInNewDatabase("ContainsTextWithArrayTest_array", db -> {
       db.transaction(() -> {
         db.getSchema().createDocumentType("TestDoc");
 
@@ -109,7 +109,7 @@ class ContainsTextWithArrayTest {
 
   @Test
   void workaroundWithOrConditions() throws Exception {
-    TestHelper.executeInNewDatabase("ContainsTextWithArrayTest_workaround", (db) -> {
+    TestHelper.executeInNewDatabase("ContainsTextWithArrayTest_workaround", db -> {
       db.transaction(() -> {
         db.getSchema().createDocumentType("TestDoc");
 

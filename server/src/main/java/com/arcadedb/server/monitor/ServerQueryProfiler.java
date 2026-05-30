@@ -187,7 +187,7 @@ public class ServerQueryProfiler {
     if (!dir.exists())
       return result;
 
-    final File[] files = dir.listFiles((f) -> f.getName().startsWith("profiler-run-") && f.getName().endsWith(".json"));
+    final File[] files = dir.listFiles(f -> f.getName().startsWith("profiler-run-") && f.getName().endsWith(".json"));
     if (files == null)
       return result;
 
@@ -430,7 +430,7 @@ public class ServerQueryProfiler {
   }
 
   private void cleanOldFiles(final File dir) {
-    final File[] files = dir.listFiles((f) -> f.getName().startsWith("profiler-run-") && f.getName().endsWith(".json"));
+    final File[] files = dir.listFiles(f -> f.getName().startsWith("profiler-run-") && f.getName().endsWith(".json"));
     if (files == null || files.length <= MAX_PROFILER_FILES)
       return;
 

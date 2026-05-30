@@ -112,7 +112,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       fetchNextResults(context, nRecords);
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

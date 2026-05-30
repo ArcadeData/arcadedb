@@ -185,7 +185,7 @@ public final class RaftLogEntryCodec {
         dos.writeInt(compressedWal.length);   // compressed length
         dos.write(compressedWal);
 
-        final Map<Integer, Integer> delta = (bucketDeltas != null && i < bucketDeltas.size())
+        final Map<Integer, Integer> delta = bucketDeltas != null && i < bucketDeltas.size()
             ? bucketDeltas.get(i)
             : Collections.emptyMap();
         dos.writeInt(delta.size());

@@ -465,8 +465,8 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
   @Override
   public short getUnsignedShort() {
     checkForFetching(2);
-    final int firstByte = (0x000000FF & ((int) buffer.get()));
-    final int secondByte = (0x000000FF & ((int) buffer.get()));
+    final int firstByte = 0x000000FF & ((int) buffer.get());
+    final int secondByte = 0x000000FF & ((int) buffer.get());
     return (short) (firstByte << 8 | secondByte);
   }
 

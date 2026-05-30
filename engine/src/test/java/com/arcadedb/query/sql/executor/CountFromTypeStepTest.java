@@ -31,7 +31,7 @@ class CountFromTypeStepTest {
 
   @Test
   void shouldCountRecordsOfClass() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String className = TestHelper.createRandomType(db).getName();
       for (int i = 0; i < 20; i++) {
         final MutableDocument document = db.newDocument(className);
@@ -50,7 +50,7 @@ class CountFromTypeStepTest {
 
   @Test
   void countStarWithLimitShouldUseOptimizedPlan() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String className = TestHelper.createRandomType(db).getName();
       for (int i = 0; i < 100; i++)
         db.newDocument(className).save();

@@ -109,7 +109,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
           final long databaseCompressedSize = backupFile.length();
 
           logger.logLine(0, "Full backup completed in %d seconds %s -> %s (%,d%% compressed)", elapsedInSecs,
-              FileUtils.getSizeAsString(databaseOrigSize), FileUtils.getSizeAsString((databaseCompressedSize)),
+              FileUtils.getSizeAsString(databaseOrigSize), FileUtils.getSizeAsString(databaseCompressedSize),
               databaseOrigSize > 0 ? (databaseOrigSize - databaseCompressedSize) * 100 / databaseOrigSize : 0);
         });
         return null;

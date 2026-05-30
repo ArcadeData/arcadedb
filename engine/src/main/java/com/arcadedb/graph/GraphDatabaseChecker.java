@@ -75,7 +75,7 @@ public class GraphDatabaseChecker {
         }, null);
       }
 
-      database.scanType(typeName, false, (record) -> {
+      database.scanType(typeName, false, record -> {
         try {
           Vertex vertex = record.asVertex(true);
 
@@ -571,7 +571,7 @@ public class GraphDatabaseChecker {
         }, null);
       }
 
-      database.scanType(typeName, false, (record) -> {
+      database.scanType(typeName, false, record -> {
         final RID edgeRID = record.getIdentity();
 
         try {

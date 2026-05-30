@@ -1332,7 +1332,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (recordSize[0] == RECORD_PLACEHOLDER_POINTER)
           size = LONG_SERIALIZED_SIZE + (int) recordSize[1];
         else if (recordSize[0] == FIRST_CHUNK || recordSize[0] == NEXT_CHUNK) {
-          final int chunkSize = page.readInt((recordPositionInPage + (int) recordSize[1]));
+          final int chunkSize = page.readInt(recordPositionInPage + (int) recordSize[1]);
           size = chunkSize + (int) recordSize[1] + INT_SERIALIZED_SIZE + LONG_SERIALIZED_SIZE; // LONG = nextChunkPointer
         } else if (recordSize[0] < RECORD_PLACEHOLDER_CONTENT)
           // PLACEHOLDER CONTENT, CONSIDER THE RECORD SIZE (CONVERTED FROM NEGATIVE NUMBER) + VARINT SIZE

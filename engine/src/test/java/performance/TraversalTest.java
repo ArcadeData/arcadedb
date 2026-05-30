@@ -101,7 +101,7 @@ public class TraversalTest {
 
     db.commit();
 
-    traverseTime = (System.currentTimeMillis() - begin);
+    traverseTime = System.currentTimeMillis() - begin;
     System.out.println("---");
     System.out.println("traverse in " + traverseTime);
     System.out.println("traverse microsec per vertex: " + (traverseTime * 1000 / SIZE));

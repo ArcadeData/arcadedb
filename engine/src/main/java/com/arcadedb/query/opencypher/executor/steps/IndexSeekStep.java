@@ -159,7 +159,7 @@ public class IndexSeekStep extends AbstractExecutionStep {
                 buffer.add(result);
               } finally {
                 if (context.isProfiling())
-                  cost += (System.nanoTime() - begin);
+                  cost += System.nanoTime() - begin;
               }
             }
           }
@@ -182,7 +182,7 @@ public class IndexSeekStep extends AbstractExecutionStep {
               buffer.add(operatorResults.next());
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
           }
 

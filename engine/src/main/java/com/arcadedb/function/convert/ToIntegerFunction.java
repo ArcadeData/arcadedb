@@ -38,7 +38,7 @@ public class ToIntegerFunction implements StatelessFunction {
     if (args[0] == null)
       return null;
     if (args[0] instanceof Boolean)
-      return ((Boolean) args[0]) ? 1L : 0L;
+      return (Boolean) args[0] ? 1L : 0L;
     if (args[0] instanceof Number)
       return ((Number) args[0]).longValue();
     if (args[0] instanceof String) {

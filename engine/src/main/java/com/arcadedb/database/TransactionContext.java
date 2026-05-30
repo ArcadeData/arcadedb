@@ -957,7 +957,7 @@ public class TransactionContext implements Transaction {
       modifiedFiles.forEach(left::add);
       left.removeAll(explicitLockedFiles);
 
-      final Set<String> resourceNames = left.stream().map((fileId -> database.getSchema().getFileById(fileId).getName()))
+      final Set<String> resourceNames = left.stream().map(fileId -> database.getSchema().getFileById(fileId).getName())
           .collect(Collectors.toSet());
 
       throw new TransactionException(

@@ -72,7 +72,7 @@ public class CountFromIndexStep extends AbstractExecutionStep {
           result.setProperty(alias, size);
           return result;
         } finally {
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
         }
       }
 

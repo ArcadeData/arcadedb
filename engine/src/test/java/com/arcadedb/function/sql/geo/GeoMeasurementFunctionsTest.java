@@ -38,7 +38,7 @@ class GeoMeasurementFunctionsTest {
 
     @Test
     void sqlHappyPath() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase("GeoDatabase", db -> {
         final ResultSet result = db.query("sql", "select geo.buffer('POINT (10 20)', 1.0) as wkt");
         assertThat(result.hasNext()).isTrue();
         final String wkt = result.next().getProperty("wkt");
@@ -57,7 +57,7 @@ class GeoMeasurementFunctionsTest {
 
     @Test
     void nullGeometry_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase("GeoDatabase", db -> {
         final ResultSet result = db.query("sql", "select geo.buffer(null, 1.0) as wkt");
         assertThat(result.hasNext()).isTrue();
         final String wkt = result.next().getProperty("wkt");
@@ -86,7 +86,7 @@ class GeoMeasurementFunctionsTest {
 
     @Test
     void optionsMap_squareCap() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase("GeoDatabase", db -> {
         final ResultSet result = db.query("sql",
             "select geo.buffer('POINT (10 20)', 1.0, { endCapStyle: 'SQUARE', quadrantSegments: 4 }) as wkt");
         assertThat(result.hasNext()).isTrue();
@@ -112,7 +112,7 @@ class GeoMeasurementFunctionsTest {
 
     @Test
     void sqlHappyPath_meters() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase("GeoDatabase", db -> {
         final ResultSet result = db.query("sql", "select geo.distance('POINT (0 0)', 'POINT (1 0)') as dist");
         assertThat(result.hasNext()).isTrue();
         final Double dist = result.next().getProperty("dist");
@@ -123,7 +123,7 @@ class GeoMeasurementFunctionsTest {
 
     @Test
     void sqlHappyPath_km_lessThanMeters() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase("GeoDatabase", db -> {
         final ResultSet rMeters = db.query("sql", "select geo.distance('POINT (0 0)', 'POINT (1 0)') as dist");
         final Double distM = rMeters.next().getProperty("dist");
         final ResultSet rKm = db.query("sql", "select geo.distance('POINT (0 0)', 'POINT (1 0)', 'km') as dist");
@@ -152,7 +152,7 @@ class GeoMeasurementFunctionsTest {
 
     @Test
     void nullFirstArg_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase("GeoDatabase", db -> {
         final ResultSet result = db.query("sql", "select geo.distance(null, 'POINT (1 0)') as dist");
         assertThat(result.hasNext()).isTrue();
         final Double dist = result.next().getProperty("dist");
@@ -197,7 +197,7 @@ class GeoMeasurementFunctionsTest {
 
     @Test
     void sqlHappyPath() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase("GeoDatabase", db -> {
         final ResultSet result = db.query("sql",
             "select geo.area('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as area");
         assertThat(result.hasNext()).isTrue();
@@ -217,7 +217,7 @@ class GeoMeasurementFunctionsTest {
 
     @Test
     void nullInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase("GeoDatabase", db -> {
         final ResultSet result = db.query("sql", "select geo.area(null) as area");
         assertThat(result.hasNext()).isTrue();
         final Double area = result.next().getProperty("area");
@@ -248,7 +248,7 @@ class GeoMeasurementFunctionsTest {
 
     @Test
     void sqlHappyPath() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase("GeoDatabase", db -> {
         final ResultSet result = db.query("sql",
             "select geo.envelope('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))') as wkt");
         assertThat(result.hasNext()).isTrue();
@@ -270,7 +270,7 @@ class GeoMeasurementFunctionsTest {
 
     @Test
     void nullInput_sql_returnsNull() throws Exception {
-      TestHelper.executeInNewDatabase("GeoDatabase", (db) -> {
+      TestHelper.executeInNewDatabase("GeoDatabase", db -> {
         final ResultSet result = db.query("sql", "select geo.envelope(null) as wkt");
         assertThat(result.hasNext()).isTrue();
         final String wkt = result.next().getProperty("wkt");

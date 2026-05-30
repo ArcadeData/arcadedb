@@ -82,7 +82,7 @@ public class FilterByTypeStep extends AbstractExecutionStep {
             nextItem = null;
           } finally {
             if (context.isProfiling()) {
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
             }
           }
         }

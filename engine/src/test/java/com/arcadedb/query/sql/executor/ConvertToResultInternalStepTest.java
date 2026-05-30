@@ -40,7 +40,7 @@ class ConvertToResultInternalStepTest {
 
   @Test
   void shouldConvertUpdatableResult() throws Exception {
-    TestHelper.executeInNewDatabase((database) -> {
+    TestHelper.executeInNewDatabase(database -> {
       database.getSchema().createDocumentType("test");
 
       final CommandContext context = new BasicCommandContext();
@@ -72,7 +72,7 @@ class ConvertToResultInternalStepTest {
       int counter = 0;
       while (result.hasNext()) {
         final Result currentItem = result.next();
-        if (!(currentItem.getClass().equals(ResultInternal.class))) {
+        if (!currentItem.getClass().equals(ResultInternal.class)) {
           fail("There is an item in result set that is not an instance of ResultInternal");
         }
         if (!currentItem.getElement().get().get(STRING_PROPERTY).equals(documents.get(counter).get(STRING_PROPERTY))) {

@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ProfileStatementExecutionTest {
   @Test
   void profile() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       db.getSchema().createDocumentType("testProfile");
       db.command("sql", "insert into testProfile set name ='foo'");
       db.command("sql", "insert into testProfile set name ='bar'");

@@ -79,7 +79,7 @@ class TestVertexDelete extends TestHelper {
     final List<Vertex> mvs = new ArrayList<>(vs);
     // change order of vertices before deleting
     Collections.shuffle(mvs);
-    mvs.forEach((v) ->
+    mvs.forEach(v ->
       v.delete());
   }
 }

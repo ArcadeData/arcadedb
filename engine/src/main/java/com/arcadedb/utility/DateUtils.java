@@ -189,7 +189,7 @@ public class DateUtils {
             TimeUnit.MICROSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS) + (offsetDateTime.getNano() / 1000);
       else if (precisionToUse.equals(ChronoUnit.NANOS)) {
         long s2n = TimeUnit.NANOSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS);
-        timestamp = (s2n >= 0 && Long.MAX_VALUE - s2n < offsetDateTime.getNano()) ? Long.MAX_VALUE : s2n + offsetDateTime.getNano();
+        timestamp = s2n >= 0 && Long.MAX_VALUE - s2n < offsetDateTime.getNano() ? Long.MAX_VALUE : s2n + offsetDateTime.getNano();
       } else
         // NOT SUPPORTED
         timestamp = 0;
@@ -434,7 +434,7 @@ public class DateUtils {
 
   public static DateTimeFormatter getFormatter(final String format) {
     return CACHED_FORMATTERS.computeIfAbsent(format,
-        (f) -> new DateTimeFormatterBuilder().appendPattern(f).parseDefaulting(ChronoField.HOUR_OF_DAY, 0)
+        f -> new DateTimeFormatterBuilder().appendPattern(f).parseDefaulting(ChronoField.HOUR_OF_DAY, 0)
             .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0).parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0).toFormatter());
   }
 

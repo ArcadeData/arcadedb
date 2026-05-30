@@ -313,7 +313,7 @@ public class LSMTreeIndexCompactor {
       LogManager.instance().log(mainIndex, Level.FINE,
           "- compacted %d pages, remaining %d pages (totalKeys=%d totalValues=%d totalMergedKeys=%d totalMergedValues=%d, threadId=%d)",
           null, compactedPages,
-          (lastImmutablePage - compactedPages + 1), totalKeys, totalValues, totalMergedKeys, totalMergedValues,
+          lastImmutablePage - compactedPages + 1, totalKeys, totalValues, totalMergedKeys, totalMergedValues,
           Thread.currentThread().threadId());
 
       pageIndex += pagesToCompact;
@@ -326,7 +326,7 @@ public class LSMTreeIndexCompactor {
 
     LogManager.instance().log(mainIndex, Level.FINE,
         "Index '%s' compacted in %dms (keys=%d values=%d mutablePages=%d immutablePages=%d iterations=%d oldLevel0File=%s(%d) newLevel0File=%s(%d) newLevel1File=%s(%d) threadId=%d)".formatted(
-            mainIndex.getName(), (System.currentTimeMillis() - startTime), totalKeys, totalValues, newIndex.getTotalPages(),
+            mainIndex.getName(), System.currentTimeMillis() - startTime, totalKeys, totalValues, newIndex.getTotalPages(),
             compactedIndex.getTotalPages(),
             iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(),
             mainIndex.getMutableIndex().getFileId(),

@@ -320,7 +320,7 @@ public class Console {
         // AVOID BATCH IN ASYNC MODE BECAUSE IT IS NOT POSSIBLE TO RETRY THE OPERATION
         GlobalConfiguration.ASYNC_TX_BATCH_SIZE.setValue(1);
         if (!isRemoteDatabase())
-          ((Database) databaseProxy).async().onError((e) -> {
+          ((Database) databaseProxy).async().onError(e -> {
             outputError(e);
           });
       }

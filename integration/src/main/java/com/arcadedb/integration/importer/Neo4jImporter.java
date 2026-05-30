@@ -317,7 +317,7 @@ public class Neo4jImporter {
           if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
             final long elapsed = System.currentTimeMillis() - beginTimeVerticesCreation;
             log("- Status update: created %,d vertices, skipped %,d edges (%,d vertices/sec)", context.createdVertices.get(),
-                context.skippedEdges.get(), (context.createdVertices.get() / elapsed * 1000));
+                context.skippedEdges.get(), context.createdVertices.get() / elapsed * 1000);
           }
 
           final Pair<String, List<String>> type = typeNameFromLabels(json);
@@ -402,7 +402,7 @@ public class Neo4jImporter {
           if (context.parsed.get() > 0 && context.parsed.get() % 1_000_000 == 0) {
             final long elapsed = System.currentTimeMillis() - beginTimeEdgesCreation;
             log("- Status update: created %,d edges %s (%,d edges/sec)", context.createdEdges.get(), totalEdgesByType,
-                (context.createdEdges.get() / elapsed * 1000));
+                context.createdEdges.get() / elapsed * 1000);
           }
 
           final String type = validateLabel(json.getString("label"));
@@ -697,7 +697,7 @@ public class Neo4jImporter {
     if (args.length == 0)
       System.out.println(text);
     else
-      System.out.printf((text) + "%n", args);
+      System.out.printf(text + "%n", args);
   }
 
   private void error(final String text, final Object... args) {

@@ -162,8 +162,8 @@ public class JSONObject implements Map<String, Object> {
       if (dateFormatAsString == null)
         // SAVE AS TIMESTAMP
         object.addProperty(name,
-            (localDate.atStartOfDay().toInstant(ZoneId.systemDefault().getRules().getOffset(Instant.now()))
-                .toEpochMilli()));
+            localDate.atStartOfDay().toInstant(ZoneId.systemDefault().getRules().getOffset(Instant.now()))
+                .toEpochMilli());
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
@@ -397,7 +397,7 @@ public class JSONObject implements Map<String, Object> {
       else if (value instanceof JSONArray array) {
         if (optimizeNumericArrays) {
           final Object primitive = array.toPrimitiveNumericArrayOrNull();
-          value = (primitive != null) ? primitive : array.toList(true);
+          value = primitive != null ? primitive : array.toList(true);
         } else
           value = array.toList();
       }

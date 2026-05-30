@@ -556,7 +556,7 @@ public class TypeIndex implements RangeIndex, IndexInternal {
     }
 
     final int bucketIndex = type.getBucketIndexByKeys(keys,
-        DatabaseContext.INSTANCE.getContext((type.getSchema().getEmbedded().getDatabase()).getDatabasePath()).asyncMode);
+        DatabaseContext.INSTANCE.getContext(type.getSchema().getEmbedded().getDatabase().getDatabasePath()).asyncMode);
 
     if (bucketIndex > -1) {
       // USE THE SHARDED INDEX

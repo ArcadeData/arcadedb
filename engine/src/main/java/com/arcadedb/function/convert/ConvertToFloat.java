@@ -56,7 +56,7 @@ public class ConvertToFloat extends AbstractConvertFunction {
     }
 
     if (args[0] instanceof Boolean) {
-      return ((Boolean) args[0]) ? 1.0 : 0.0;
+      return (Boolean) args[0] ? 1.0 : 0.0;
     }
 
     if (args[0] instanceof String) {

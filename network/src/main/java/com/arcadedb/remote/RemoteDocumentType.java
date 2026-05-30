@@ -335,10 +335,10 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public List<Bucket> getBuckets(final boolean polymorphic) {
     if (!polymorphic)
-      return buckets.stream().map((bucketName) -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList());
+      return buckets.stream().map(bucketName -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList());
 
     final List<Bucket> result = new ArrayList<>();
-    result.addAll(buckets.stream().map((bucketName) -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList()));
+    result.addAll(buckets.stream().map(bucketName -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList()));
     for (String parent : parentTypes)
       result.addAll(getSchema().getType(parent).getBuckets(true));
     return result;

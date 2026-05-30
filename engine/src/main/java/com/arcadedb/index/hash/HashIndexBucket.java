@@ -872,7 +872,7 @@ public class HashIndexBucket extends PaginatedComponent {
     case 3: k1 ^= ((long) data[tail + 2] & 0xff) << 16;
     case 2: k1 ^= ((long) data[tail + 1] & 0xff) << 8;
     case 1:
-      k1 ^= ((long) data[tail] & 0xff);
+      k1 ^= (long) data[tail] & 0xff;
       k1 *= 0xff51afd7ed558ccdL;
       k1 = Long.rotateLeft(k1, 31);
       k1 *= 0xc4ceb9fe1a85ec53L;

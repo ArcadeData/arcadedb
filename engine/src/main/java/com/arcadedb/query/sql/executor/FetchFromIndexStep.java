@@ -125,7 +125,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           return result;
         } finally {
           if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
         }
       }
     };
@@ -241,7 +241,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       }
     } finally {
       if (context.isProfiling()) {
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
       }
     }
   }
@@ -631,9 +631,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
     if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
     if (condition != null) {
-      result += ("\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + condition + (additionalRangeCondition == null ?
+      result += "\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + condition + (additionalRangeCondition == null ?
           "" :
-          " and " + additionalRangeCondition));
+          " and " + additionalRangeCondition);
     }
 
     return result;

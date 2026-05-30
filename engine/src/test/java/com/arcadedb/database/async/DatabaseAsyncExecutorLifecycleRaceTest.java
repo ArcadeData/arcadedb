@@ -59,7 +59,7 @@ class DatabaseAsyncExecutorLifecycleRaceTest extends TestHelper {
             // workload the customer hit (one GraphBatch per ingest worker thread, all on the same
             // database).
             async.setTransactionUseWAL((seed + i) % 2 == 0);
-            async.setTransactionSync(((seed + i) % 2 == 0)
+            async.setTransactionSync((seed + i) % 2 == 0
                 ? WALFile.FlushType.NO
                 : WALFile.FlushType.YES_NOMETADATA);
             // Touch readers too so a half-published array would be observed as NPE here.

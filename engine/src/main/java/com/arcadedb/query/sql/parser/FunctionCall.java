@@ -143,7 +143,7 @@ public class FunctionCall extends SimpleNode {
 
   public boolean isIndexedFunctionCall(final CommandContext context) {
     final SQLFunction function = getCachedFunction(context);
-    return (function instanceof IndexableSQLFunction);
+    return function instanceof IndexableSQLFunction;
   }
 
   /**

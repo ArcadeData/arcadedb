@@ -565,9 +565,9 @@ public enum Type {
             return DateUtils.date(database, Long.parseLong(value.toString()), LocalDate.class);
           else if (database != null)
             try {
-              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
             } catch (final DateTimeParseException ignore) {
-              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
             }
           else {
             // GUESS FORMAT BY STRING LENGTH
@@ -599,9 +599,9 @@ public enum Type {
                 } catch (DateTimeParseException e2) {
                   try {
                     return LocalDateTime.parse(valueAsString,
-                        DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+                        DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
                   } catch (final DateTimeParseException ignore) {
-                    return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+                    return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
                   }
                 }
               }
@@ -630,9 +630,9 @@ public enum Type {
           if (!FileUtils.isLong(valueAsString)) {
             if (database != null)
               try {
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
               } catch (final DateTimeParseException ignore) {
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
               }
             else {
               // GUESS FORMAT BY STRING LENGTH

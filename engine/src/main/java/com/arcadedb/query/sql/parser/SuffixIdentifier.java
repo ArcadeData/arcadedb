@@ -289,7 +289,7 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public boolean isEarlyCalculated(final CommandContext ctx) {
-    return (identifier != null && identifier.isEarlyCalculated(ctx));
+    return identifier != null && identifier.isEarlyCalculated(ctx);
   }
 
   public void aggregate(final Object value, final CommandContext context) {

@@ -39,7 +39,7 @@ public class SubQueryStep extends AbstractExecutionStep {
   public SubQueryStep(final InternalExecutionPlan subExecutionPlan, final CommandContext context, final CommandContext subCtx) {
     super(context);
     this.subExecutionPlan = subExecutionPlan;
-    this.sameContextAsParent = (context == subCtx);
+    this.sameContextAsParent = context == subCtx;
   }
 
   @Override

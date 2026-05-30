@@ -83,7 +83,7 @@ public class CountFromTypeStep extends AbstractExecutionStep {
 
         } finally {
           if( context.isProfiling() ) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }

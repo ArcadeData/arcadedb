@@ -88,7 +88,7 @@ public class Exporter {
       logger.logLine(0,//
           "Database exported successfully: %,d records exported in %s secs (%,d records/secs %,d documents %,d vertices %,d edges)",
 //
-          totalRecords, elapsedInSecs, (totalRecords / elapsedInSecs), context.documents.get(), context.vertices.get(),
+          totalRecords, elapsedInSecs, totalRecords / elapsedInSecs, context.documents.get(), context.vertices.get(),
           context.edges.get());
 
       // RETURN STATISTICS

@@ -38,7 +38,7 @@ class GeoHashIndexTest {
   void geoManualIndexPoints() throws Exception {
     final int TOTAL = 1_000;
 
-    TestHelper.executeInNewDatabase("GeoDatabase", (db) ->
+    TestHelper.executeInNewDatabase("GeoDatabase", db ->
 
       db.transaction(() -> {
         final DocumentType type = db.getSchema().createDocumentType("Restaurant");
@@ -73,7 +73,7 @@ class GeoHashIndexTest {
   void geoManualIndexBoundingBoxes() throws Exception {
     final int TOTAL = 1_000;
 
-    TestHelper.executeInNewDatabase("GeoDatabase", (db) ->
+    TestHelper.executeInNewDatabase("GeoDatabase", db ->
 
       db.transaction(() -> {
         final DocumentType type = db.getSchema().createDocumentType("Restaurant");

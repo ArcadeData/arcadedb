@@ -72,7 +72,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
             allowCreateThread(false).//
             allowPolyglotAccess(PolyglotAccess.ALL).//
             allowHostClassLookup(
-            (s) -> this.allowedPackages.stream().map(e -> s.matches(e)).filter(f -> f).findFirst().isPresent());
+            s -> this.allowedPackages.stream().map(e -> s.matches(e)).filter(f -> f).findFirst().isPresent());
 
     if (output != null)
       builder.out(output);

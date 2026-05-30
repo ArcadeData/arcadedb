@@ -110,7 +110,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
     } catch (Exception e) {
       LogManager.instance()
-          .log(this, Level.SEVERE, "Error on rebuilding index '%s': %s", e, (indexName != null ? indexName : name.getValue()),
+          .log(this, Level.SEVERE, "Error on rebuilding index '%s': %s", e, indexName != null ? indexName : name.getValue(),
               e.getMessage());
       throw new IndexException(
           "Error on rebuilding index '" + (indexName != null ? indexName : name.getValue()) + "' (error=" + e.getMessage() + ")",
@@ -236,7 +236,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
   @Override
   public int hashCode() {
-    int result = (all ? 1 : 0);
+    int result = all ? 1 : 0;
     result = 31 * result + (name != null ? name.hashCode() : 0);
     return result;
   }

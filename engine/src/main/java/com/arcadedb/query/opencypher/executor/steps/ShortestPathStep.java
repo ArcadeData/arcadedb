@@ -152,7 +152,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
               paths = computeAllShortestPaths(sourceVertex, targetVertex, context);
             } else {
               final List<Object> single = computeShortestPath(sourceVertex, targetVertex, context);
-              paths = (single == null || single.isEmpty()) ? Collections.emptyList() : Collections.singletonList(single);
+              paths = single == null || single.isEmpty() ? Collections.emptyList() : Collections.singletonList(single);
             }
 
             for (final List<Object> path : paths) {
@@ -177,7 +177,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
             // If no path found, skip this result (similar to a failed MATCH)
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
       }
@@ -291,7 +291,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       return Collections.singletonList(singleNode);
     }
 
-    final String[] typesArray = (edgeTypes == null || edgeTypes.isEmpty()) ? null : edgeTypes.toArray(new String[0]);
+    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
 
     // distance from source. Acts as visited-set too.
     final Map<RID, Integer> distance = new HashMap<>();
@@ -418,7 +418,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
         new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
         new Vertex.DIRECTION[] { direction };
 
-    final String[] typesArray = (edgeTypes == null || edgeTypes.isEmpty()) ? null :
+    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null :
         edgeTypes.toArray(new String[0]);
 
     for (final Vertex.DIRECTION dir : directions) {
