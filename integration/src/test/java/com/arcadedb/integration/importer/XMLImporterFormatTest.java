@@ -114,6 +114,43 @@ class XMLImporterFormatTest extends TestHelper {
   }
 
   /**
+   * Security regression test: DTD processing must be disabled so an internal entity (Billion Laughs / XXE vector,
+   * CWE-776/CWE-611) is never expanded into imported data.
+   */
+  @Test
+  void dtdEntityExpansionIsDisabled() throws Exception {
+    final File xmlFile = createTempXMLFile("test-xxe.xml",
+        """
+        <?xml version="1.0"?>
+        <!DOCTYPE records [
+          <!ENTITY lol "LOL-EXPANDED-SECRET">
+        ]>
+        <records>
+          <record id="1" payload="&lol;"/>
+        </records>""");
+
+    try {
+      try {
+        database.command("sql",
+            "IMPORT DATABASE file://" + xmlFile.getAbsolutePath() + " WITH objectNestLevel=1, entityType='VERTEX'");
+      } catch (final Exception e) {
+        // ACCEPTABLE: THE PARSER REJECTS THE DTD. THE GUARANTEE WE ASSERT IS THAT NO ENTITY EXPANSION HAPPENED.
+      }
+
+      if (database.getSchema().existsType("v_record")) {
+        final ResultSet rs = database.query("sql", "SELECT FROM v_record");
+        while (rs.hasNext()) {
+          final Result r = rs.next();
+          assertThat(r.<String>getProperty("payload")).doesNotContain("LOL-EXPANDED-SECRET");
+        }
+        rs.close();
+      }
+    } finally {
+      xmlFile.delete();
+    }
+  }
+
+  /**
    * Helper method to create a temporary XML file for testing.
    */
   private File createTempXMLFile(final String fileName, final String content) throws IOException {
