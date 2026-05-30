@@ -26,20 +26,19 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.bucketselectionstrategy.ThreadBucketSelectionStrategy;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.ValidationException;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
-
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.time.*;
-import java.time.format.*;
-import java.util.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -560,7 +559,7 @@ public class UpdateStatementExecutionTest extends TestHelper {
       assertThat(item).isNotNull();
       assertThat(item.<String>getProperty("name")).isEqualTo("foo");
       assertThat(item.<String>getProperty("secondName")).isEqualTo("bar");
-      assertThat(item.<String>getProperty("surname").toString().startsWith("surname")).isTrue();
+      assertThat(item.<String>getProperty("surname").startsWith("surname")).isTrue();
     }
     assertThat(result.hasNext()).isFalse();
     result.close();
@@ -943,9 +942,9 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.command("sqlscript",
         """
-        LET $x = INSERT INTO Doc RETURN @rid;
-        UPDATE Doc SET b = 3 WHERE @rid = $x.@rid[0];\
-        """);
+            LET $x = INSERT INTO Doc RETURN @rid;
+            UPDATE Doc SET b = 3 WHERE @rid = $x.@rid[0];\
+            """);
     assertThat(result.hasNext()).isTrue();
     assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
 
@@ -962,9 +961,9 @@ public class UpdateStatementExecutionTest extends TestHelper {
 
     final ResultSet result = database.command("sqlscript",
         """
-        LET $x = INSERT INTO Doc RETURN @rid;
-        UPDATE $x.@rid[0] SET b = 3;\
-        """);
+            LET $x = INSERT INTO Doc RETURN @rid;
+            UPDATE $x.@rid[0] SET b = 3;\
+            """);
     assertThat(result.hasNext()).isTrue();
     assertThat((long) result.next().getProperty("count")).isEqualTo(1L);
 
