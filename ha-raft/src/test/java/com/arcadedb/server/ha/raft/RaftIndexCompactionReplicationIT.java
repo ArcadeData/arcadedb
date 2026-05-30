@@ -401,12 +401,14 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
     }
 
     assertThat(callbackInvoked.get())
-        .as("runWithCompactionReplication must NOT invoke the compaction callback when a recording session is in progress; "
-            + "running it locally would diverge the leader from followers and ultimately log 'Cannot find index ...' warnings")
+        .as("""
+            runWithCompactionReplication must NOT invoke the compaction callback when a recording session is in progress; \
+            running it locally would diverge the leader from followers and ultimately log 'Cannot find index ...' warnings""")
         .isFalse();
     assertThat(returnedValue)
-        .as("runWithCompactionReplication must return false (deferred) so the index status resets to AVAILABLE and the next "
-            + "onAfterCommit reschedules compaction once the contending session has released the file manager")
+        .as("""
+            runWithCompactionReplication must return false (deferred) so the index status resets to AVAILABLE and the next \
+            onAfterCommit reschedules compaction once the contending session has released the file manager""")
         .isFalse();
   }
 

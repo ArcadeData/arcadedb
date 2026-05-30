@@ -103,8 +103,9 @@ public class QueryEngineManager {
       final long last = lastSaturationWarnMs.get();
       if (now - last > SATURATION_WARN_INTERVAL_MS && lastSaturationWarnMs.compareAndSet(last, now)) {
         LogManager.instance().log(this, Level.WARNING,
-            "Query parallelism pool saturated: queue full (capacity=%d, threads=%d), running task on caller thread (cumulative caller-runs fallbacks=%d). "
-                + "Consider raising arcadedb.queryParallelismPoolThreads or arcadedb.queryParallelismQueueSize if this persists.",
+            """
+            Query parallelism pool saturated: queue full (capacity=%d, threads=%d), running task on caller thread (cumulative caller-runs fallbacks=%d). \
+            Consider raising arcadedb.queryParallelismPoolThreads or arcadedb.queryParallelismQueueSize if this persists.""",
             executor.getQueue().remainingCapacity() + executor.getQueue().size(), executor.getMaximumPoolSize(), fallbacks);
       }
       if (!executor.isShutdown())

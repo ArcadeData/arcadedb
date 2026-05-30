@@ -103,8 +103,9 @@ class PartitionPruningCypherTest extends TestHelper {
 
     final String plan = profilePlan("MATCH (n:" + TYPE_NAME + " {tenant_id: 'acme'}) RETURN n.tenant_id AS t");
     assertThat(plan)
-        .as("MATCH NODE prettyPrint must mark the partition-pruned bucket so a regression in "
-            + "tryPartitionPrunedIterator becomes visible")
+        .as("""
+            MATCH NODE prettyPrint must mark the partition-pruned bucket so a regression in \
+            tryPartitionPrunedIterator becomes visible""")
         .contains("[partition:");
   }
 

@@ -105,9 +105,10 @@ class MergeInsertSlowdownTest {
   @Test
   void mergeMergeCreateLatencyStaysStable() {
     final String cypher =
-        "MERGE (a:Account {bank: $bank, number: $src}) " +
-            "MERGE (b:Account {bank: $bank, number: $dest}) " +
-            "CREATE (a)-[:Transaction {timestamp: $ts, amount: $amt, currency: $ccy}]->(b)";
+        """
+        MERGE (a:Account {bank: $bank, number: $src}) \
+        MERGE (b:Account {bank: $bank, number: $dest}) \
+        CREATE (a)-[:Transaction {timestamp: $ts, amount: $amt, currency: $ccy}]->(b)""";
 
     final Random rnd = new Random(42);
     final long baseTs = 1779793007000L;

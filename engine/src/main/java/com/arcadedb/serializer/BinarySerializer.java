@@ -1287,8 +1287,9 @@ public class BinarySerializer {
       // but counting failures gives an early signal that something is corrupting record buffers.
       externalRidScanFailures.incrementAndGet();
       LogManager.instance().log(this, Level.WARNING,
-          "Could not parse old buffer to recover external RIDs for record %s: %s. External records linked to this "
-              + "record may be orphaned in the paired bucket. (cumulative scan failures since process start: %d)",
+          """
+          Could not parse old buffer to recover external RIDs for record %s: %s. External records linked to this \
+          record may be orphaned in the paired bucket. (cumulative scan failures since process start: %d)""",
           e, identity, e.getMessage(), externalRidScanFailures.get());
       return Collections.emptyMap();
     } finally {

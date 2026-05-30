@@ -373,8 +373,9 @@ class OpenCypherCypher25ClausesTest {
     });
 
     final ResultSet rs = database.query("opencypher",
-        "MATCH (m:Measurement) RETURN m.f32 IS TYPED FLOAT32 AS f32IsF32, m.f64 IS TYPED FLOAT32 AS f64IsF32, "
-            + "m.f32 IS TYPED FLOAT64 AS f32IsF64, m.f64 IS TYPED FLOAT64 AS f64IsF64");
+        """
+        MATCH (m:Measurement) RETURN m.f32 IS TYPED FLOAT32 AS f32IsF32, m.f64 IS TYPED FLOAT32 AS f64IsF32, \
+        m.f32 IS TYPED FLOAT64 AS f32IsF64, m.f64 IS TYPED FLOAT64 AS f64IsF64""");
     final var row = rs.next();
     assertThat((Boolean) row.getProperty("f32IsF32")).isTrue();
     assertThat((Boolean) row.getProperty("f64IsF32")).isFalse();
@@ -397,8 +398,9 @@ class OpenCypherCypher25ClausesTest {
     });
 
     final ResultSet rs = database.query("opencypher",
-        "MATCH (n:Sample) RETURN n.b IS TYPED INT8 AS bIs8, n.l IS TYPED INT8 AS lIs8, "
-            + "n.b IS TYPED INT64 AS bIs64, n.l IS TYPED INT64 AS lIs64");
+        """
+        MATCH (n:Sample) RETURN n.b IS TYPED INT8 AS bIs8, n.l IS TYPED INT8 AS lIs8, \
+        n.b IS TYPED INT64 AS bIs64, n.l IS TYPED INT64 AS lIs64""");
     final var row = rs.next();
     assertThat((Boolean) row.getProperty("bIs8")).isTrue();
     assertThat((Boolean) row.getProperty("lIs8")).isFalse();

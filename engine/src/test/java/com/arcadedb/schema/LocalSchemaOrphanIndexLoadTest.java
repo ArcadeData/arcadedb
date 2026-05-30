@@ -105,8 +105,9 @@ class LocalSchemaOrphanIndexLoadTest extends TestHelper {
         .filter(m -> m.contains("Cannot find index") || m.contains("Cannot find indexes"))
         .toList();
     assertThat(warningsAboutMissingIndexes)
-        .as("Renaming an index file (LSM compaction) must not surface a 'Cannot find index' "
-            + "warning when the orphan relinker can reattach by bucket prefix; got: %s",
+        .as("""
+            Renaming an index file (LSM compaction) must not surface a 'Cannot find index' \
+            warning when the orphan relinker can reattach by bucket prefix; got: %s""",
             warningsAboutMissingIndexes)
         .isEmpty();
   }

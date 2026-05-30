@@ -365,10 +365,11 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // a deliberate justification - silent double-processing is the failure mode we are blocking.
       if (vectorBuilder.encoding == VectorEncoding.INT8 && vectorBuilder.quantizationType == VectorQuantizationType.INT8)
         throw new IndexException(
-            "Combining encoding=INT8 with quantization=INT8 is redundant: the property is already byte-quantized "
-                + "at the wire level, so JVector's internal INT8 scalar quantization would re-quantize the "
-                + "dequantized floats. Pick one (encoding=INT8 for payload/storage savings, OR quantization=INT8 "
-                + "for index-internal compression) but not both.");
+            """
+            Combining encoding=INT8 with quantization=INT8 is redundant: the property is already byte-quantized \
+            at the wire level, so JVector's internal INT8 scalar quantization would re-quantize the \
+            dequantized floats. Pick one (encoding=INT8 for payload/storage savings, OR quantization=INT8 \
+            for index-internal compression) but not both.""");
 
       // Property-type / encoding consistency: the document property type is what callers actually
       // pass into put(); the encoding is what the index expects. A mismatch (e.g. ARRAY_OF_FLOATS

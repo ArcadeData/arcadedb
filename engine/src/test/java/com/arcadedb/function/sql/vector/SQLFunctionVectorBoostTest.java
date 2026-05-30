@@ -72,8 +72,9 @@ class SQLFunctionVectorBoostTest extends TestHelper {
 
     // No boost weight: the order should still be [near, far] - i.e. lower distance ranked higher.
     final ResultSet rs = database.query("sql",
-        "SELECT @rid AS r, name, score FROM (SELECT expand(`vector.boost`(?, "
-            + "{ boosts: [{ field: 'popularity', weight: 0 }] })))",
+        """
+        SELECT @rid AS r, name, score FROM (SELECT expand(`vector.boost`(?, \
+        { boosts: [{ field: 'popularity', weight: 0 }] })))""",
         distanceRows);
     final List<String> names = new ArrayList<>();
     final List<Float> scores = new ArrayList<>();
@@ -101,8 +102,9 @@ class SQLFunctionVectorBoostTest extends TestHelper {
     // B: 1.0 + 1.0*0 + 0.1*100 = 11.0
     // A wins narrowly.
     final ResultSet rs = database.query("sql",
-        "SELECT name FROM (SELECT expand(`vector.boost`(?, "
-            + "{ boosts: [{ field: 'popularity', weight: 1.0 }, { field: 'recency', weight: 0.1 }] })))",
+        """
+        SELECT name FROM (SELECT expand(`vector.boost`(?, \
+        { boosts: [{ field: 'popularity', weight: 1.0 }, { field: 'recency', weight: 0.1 }] })))""",
         candidates);
     final List<String> names = new ArrayList<>();
     while (rs.hasNext()) names.add(rs.next().getProperty("name"));
@@ -115,8 +117,9 @@ class SQLFunctionVectorBoostTest extends TestHelper {
     final List<Map<String, Object>> candidates = List.of(
         row("A", 0.9f, 1.0f), row("B", 0.85f, 1.0f), row("C", 0.8f, 1.0f));
     final ResultSet rs = database.query("sql",
-        "SELECT name FROM (SELECT expand(`vector.boost`(?, "
-            + "{ boosts: [{ field: 'popularity', weight: 0 }], limit: 2 })))",
+        """
+        SELECT name FROM (SELECT expand(`vector.boost`(?, \
+        { boosts: [{ field: 'popularity', weight: 0 }], limit: 2 })))""",
         candidates);
     final List<String> names = new ArrayList<>();
     while (rs.hasNext()) names.add(rs.next().getProperty("name"));
@@ -194,8 +197,9 @@ class SQLFunctionVectorBoostTest extends TestHelper {
 
   private List<String> boost(final List<Map<String, Object>> candidates, final String field, final float weight) {
     final ResultSet rs = database.query("sql",
-        "SELECT name FROM (SELECT expand(`vector.boost`(?, "
-            + "{ boosts: [{ field: ?, weight: ? }] })))",
+        """
+        SELECT name FROM (SELECT expand(`vector.boost`(?, \
+        { boosts: [{ field: ?, weight: ? }] })))""",
         candidates, field, weight);
     final List<String> names = new ArrayList<>();
     while (rs.hasNext()) names.add(rs.next().getProperty("name"));

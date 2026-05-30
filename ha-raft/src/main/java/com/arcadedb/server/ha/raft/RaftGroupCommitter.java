@@ -115,10 +115,11 @@ class RaftGroupCommitter {
     final int entrySize = entry.length;
     if (entrySize > messageSizeMax) {
       throw new ReplicationQueueFullException(String.format(
-          "Replicated entry size %d bytes exceeds raft.grpc.message.size.max=%d bytes. "
-              + "Reduce the batch size (e.g. fewer rows per GraphBatch / SQL transaction) or raise "
-              + "arcadedb.ha.grpcMessageSizeMax. Bigger batches also raise leader heartbeat latency and risk "
-              + "election churn under load.",
+          """
+          Replicated entry size %d bytes exceeds raft.grpc.message.size.max=%d bytes. \
+          Reduce the batch size (e.g. fewer rows per GraphBatch / SQL transaction) or raise \
+          arcadedb.ha.grpcMessageSizeMax. Bigger batches also raise leader heartbeat latency and risk \
+          election churn under load.""",
           entrySize, messageSizeMax));
     }
 
@@ -129,9 +130,10 @@ class RaftGroupCommitter {
       final long last = lastApproachingCapWarnAt.get();
       if (now - last >= WARN_THROTTLE_MS && lastApproachingCapWarnAt.compareAndSet(last, now)) {
         LogManager.instance().log(this, Level.WARNING,
-            "Replicated entry size %d bytes is approaching raft.grpc.message.size.max=%d bytes (>%d%%). "
-                + "Consider reducing the batch size, or raise arcadedb.ha.grpcMessageSizeMax. "
-                + "Large batches also raise leader heartbeat latency and risk election churn under load.",
+            """
+            Replicated entry size %d bytes is approaching raft.grpc.message.size.max=%d bytes (>%d%%). \
+            Consider reducing the batch size, or raise arcadedb.ha.grpcMessageSizeMax. \
+            Large batches also raise leader heartbeat latency and risk election churn under load.""",
             entrySize, messageSizeMax, (int) (entrySize * 100L / messageSizeMax));
       }
     }

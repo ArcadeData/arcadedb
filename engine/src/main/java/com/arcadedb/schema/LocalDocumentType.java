@@ -713,9 +713,10 @@ public class LocalDocumentType implements DocumentType {
     if (!lastRepartitionWarnMs.compareAndSet(last, now))
       return;
     LogManager.instance().log(this, Level.WARNING,
-        "Type '%s' has needsRepartition=true; partition-aware bucket pruning is disabled until "
-            + "`REBUILD TYPE %s WITH repartition = true` runs. Queries continue to return correct "
-            + "results but fan out across all %d buckets.",
+        """
+        Type '%s' has needsRepartition=true; partition-aware bucket pruning is disabled until \
+        `REBUILD TYPE %s WITH repartition = true` runs. Queries continue to return correct \
+        results but fan out across all %d buckets.""",
         null, name, name, buckets.size());
   }
 
@@ -1366,9 +1367,10 @@ public class LocalDocumentType implements DocumentType {
         // but was set when the bucket was created. Reads of EXTERNAL properties for records in this primary
         // bucket would silently fail - so we surface the configuration mismatch loudly and explicitly.
         LogManager.instance().log(this, Level.SEVERE,
-            "Cannot find external bucket '%s' for type '%s' primary bucket '%s'. If the bucket was tiered to a "
-                + "secondary path, set 'arcadedb.externalPropertyBucketPath' to the same value used at creation "
-                + "time before reopening the database. EXTERNAL property reads on this type will fail until fixed.",
+            """
+            Cannot find external bucket '%s' for type '%s' primary bucket '%s'. If the bucket was tiered to a \
+            secondary path, set 'arcadedb.externalPropertyBucketPath' to the same value used at creation \
+            time before reopening the database. EXTERNAL property reads on this type will fail until fixed.""",
             null, entry.getValue(), name, entry.getKey());
         continue;
       }
@@ -1391,17 +1393,19 @@ public class LocalDocumentType implements DocumentType {
       if (schema.getTypeByBucketId(candidate.getFileId()) != null) {
         // candidate is some other type's primary bucket; refuse to repurpose, just log so the operator sees it.
         LogManager.instance().log(this, Level.WARNING,
-            "Heuristic recovery for type '%s': bucket '%s' looks like a paired external bucket by name but is"
-                + " already a primary bucket of another user type. Skipping adoption.",
+            """
+            Heuristic recovery for type '%s': bucket '%s' looks like a paired external bucket by name but is\
+             already a primary bucket of another user type. Skipping adoption.""",
             null, name, candidateName);
         continue;
       }
       candidate.setPurpose(LocalBucket.Purpose.EXTERNAL_PROPERTY);
       externalBucketIdByPrimaryBucketId.put(primaryBucket.getFileId(), candidate.getFileId());
       LogManager.instance().log(this, Level.WARNING,
-          "Heuristic recovery for type '%s': adopted bucket '%s' as the external-property bucket for primary"
-              + " '%s'. The schema.json was missing the matching externalBuckets entry; it will be re-saved on"
-              + " the next schema mutation.",
+          """
+          Heuristic recovery for type '%s': adopted bucket '%s' as the external-property bucket for primary\
+           '%s'. The schema.json was missing the matching externalBuckets entry; it will be re-saved on\
+           the next schema mutation.""",
           null, name, candidateName, primaryBucket.getName());
     }
   }

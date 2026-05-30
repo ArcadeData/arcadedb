@@ -249,10 +249,11 @@ public class ArcadeDBServer {
     // ENABLES HA. WARN LOUDLY INSTEAD OF SILENTLY RUNNING STANDALONE.
     if ((configuration.getValueAsBoolean(GlobalConfiguration.HA_ENABLED) || configuration.isHAImplicitlyEnabled())
         && haServer == null) {
-      final String haWarning = "High availability was requested but no HA plugin was found on the classpath. "
-          + "The node will run STANDALONE (no replication). Since the Apache Ratis migration the HA implementation "
-          + "is in the separate 'arcadedb-ha-raft' module: add the 'arcadedb-ha-raft' dependency to your "
-          + "(embedded) application, or use the official server distribution/Docker image which bundles it.";
+      final String haWarning = """
+          High availability was requested but no HA plugin was found on the classpath. \
+          The node will run STANDALONE (no replication). Since the Apache Ratis migration the HA implementation \
+          is in the separate 'arcadedb-ha-raft' module: add the 'arcadedb-ha-raft' dependency to your \
+          (embedded) application, or use the official server distribution/Docker image which bundles it.""";
       LogManager.instance().log(this, Level.WARNING, haWarning);
       getEventLog().reportEvent(ServerEventLog.EVENT_TYPE.WARNING, "HA", null, haWarning);
     }

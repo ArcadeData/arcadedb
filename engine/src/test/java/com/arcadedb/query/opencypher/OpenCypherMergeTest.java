@@ -44,7 +44,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Tests for MERGE clause in OpenCypher queries.
  */
-public class OpenCypherMergeTest {
+class OpenCypherMergeTest {
   private Database database;
 
   @BeforeEach
@@ -612,10 +612,11 @@ public class OpenCypherMergeTest {
     // Issue #4089: MERGE on a UNIQUE HASH-indexed property must find the existing vertex on the second invocation instead of attempting a duplicate insert.
     @Test
     void mergeFindsExistingVertexThroughUniqueHashIndex() {
-      final String query = "MERGE (v:Experiment {pk: 'a'}) "
-          + "ON CREATE SET v.status = 'created' "
-          + "ON MATCH SET v.status = 'updated' "
-          + "RETURN v";
+      final String query = """
+          MERGE (v:Experiment {pk: 'a'}) \
+          ON CREATE SET v.status = 'created' \
+          ON MATCH SET v.status = 'updated' \
+          RETURN v""";
 
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher", query);
@@ -649,10 +650,11 @@ public class OpenCypherMergeTest {
         db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Experiment", "pk");
       });
 
-      final String query = "MERGE (v:Experiment {pk: 'b'}) "
-          + "ON CREATE SET v.status = 'created' "
-          + "ON MATCH SET v.status = 'updated' "
-          + "RETURN v";
+      final String query = """
+          MERGE (v:Experiment {pk: 'b'}) \
+          ON CREATE SET v.status = 'created' \
+          ON MATCH SET v.status = 'updated' \
+          RETURN v""";
 
       db.transaction(() -> db.command("opencypher", query));
       db.transaction(() -> db.command("opencypher", query));
@@ -696,13 +698,14 @@ public class OpenCypherMergeTest {
     void mergeOnMatchSetPersistsForAllRows() {
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
-            "MERGE (p:Traveler {name:'Alice'}) "
-                + "WITH p "
-                + "UNWIND [1, 2, 3] AS i "
-                + "MERGE (p)-[:VISITS]->(c:Town {name:'London'}) "
-                + "ON MATCH SET c.population = 9000000 "
-                + "RETURN i, c.population AS population "
-                + "ORDER BY i");
+            """
+            MERGE (p:Traveler {name:'Alice'}) \
+            WITH p \
+            UNWIND [1, 2, 3] AS i \
+            MERGE (p)-[:VISITS]->(c:Town {name:'London'}) \
+            ON MATCH SET c.population = 9000000 \
+            RETURN i, c.population AS population \
+            ORDER BY i""");
         final List<Long> populations = new ArrayList<>();
         while (rs.hasNext()) {
           final Result r = rs.next();
@@ -716,11 +719,12 @@ public class OpenCypherMergeTest {
     @Test
     void persistedValueIsCorrect() {
       db.transaction(() -> db.command("opencypher",
-          "MERGE (p:Traveler {name:'Alice'}) "
-              + "WITH p "
-              + "UNWIND [1, 2, 3] AS i "
-              + "MERGE (p)-[:VISITS]->(c:Town {name:'London'}) "
-              + "ON MATCH SET c.population = 9000000"));
+          """
+          MERGE (p:Traveler {name:'Alice'}) \
+          WITH p \
+          UNWIND [1, 2, 3] AS i \
+          MERGE (p)-[:VISITS]->(c:Town {name:'London'}) \
+          ON MATCH SET c.population = 9000000"""));
 
       final ResultSet rs = db.query("opencypher",
           "MATCH (:Traveler {name:'Alice'})-[:VISITS]->(c:Town {name:'London'}) RETURN c.population AS population");
@@ -756,12 +760,13 @@ public class OpenCypherMergeTest {
     void mergeCreatesOneEndpointPerUnmatchedRow() {
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
-            "MATCH (p:MergeP) "
-                + "WITH p, p.score / 2.0 AS halfScore "
-                + "MERGE (p)-[:FRIEND]->(f:MergeF {name:''}) "
-                + "ON CREATE SET f.score = halfScore + 5.0 "
-                + "RETURN p.name AS person_name, f.score AS friend_score "
-                + "ORDER BY person_name");
+            """
+            MATCH (p:MergeP) \
+            WITH p, p.score / 2.0 AS halfScore \
+            MERGE (p)-[:FRIEND]->(f:MergeF {name:''}) \
+            ON CREATE SET f.score = halfScore + 5.0 \
+            RETURN p.name AS person_name, f.score AS friend_score \
+            ORDER BY person_name""");
         final List<Double> scores = new ArrayList<>();
         while (rs.hasNext()) {
           final Result r = rs.next();
@@ -781,11 +786,12 @@ public class OpenCypherMergeTest {
     void singleRowMergeCreatesEndpoint() {
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
-            "MATCH (p:MergeP {name:'Alice'}) "
-                + "WITH p, p.score / 2.0 AS halfScore "
-                + "MERGE (p)-[:FRIEND]->(f:MergeF {name:''}) "
-                + "ON CREATE SET f.score = halfScore + 5.0 "
-                + "RETURN f.score AS friend_score");
+            """
+            MATCH (p:MergeP {name:'Alice'}) \
+            WITH p, p.score / 2.0 AS halfScore \
+            MERGE (p)-[:FRIEND]->(f:MergeF {name:''}) \
+            ON CREATE SET f.score = halfScore + 5.0 \
+            RETURN f.score AS friend_score""");
         assertThat(rs.hasNext()).isTrue();
         assertThat(rs.next().<Number>getProperty("friend_score").doubleValue()).isEqualTo(10.0);
       });
@@ -1042,11 +1048,12 @@ public class OpenCypherMergeTest {
     @Test
     void mergeWithNullEndpointFromOptionalMatchProducesNoRows() {
       final ResultSet rs = db.command("opencypher",
-          "MATCH (a:Node {id: 1}) "
-              + "OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) "
-              + "WITH a, b "
-              + "MERGE (a)-[:KNOWS]->(b) "
-              + "RETURN a.id AS aid, b.id AS bid");
+          """
+          MATCH (a:Node {id: 1}) \
+          OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) \
+          WITH a, b \
+          MERGE (a)-[:KNOWS]->(b) \
+          RETURN a.id AS aid, b.id AS bid""");
 
       assertThat(rs.hasNext())
           .as("MERGE with null endpoint from OPTIONAL MATCH must produce no rows")
@@ -1057,10 +1064,11 @@ public class OpenCypherMergeTest {
     @Test
     void optionalMatchAloneReturnsNullEndpoint() {
       final ResultSet rs = db.query("opencypher",
-          "MATCH (a:Node {id: 1}) "
-              + "OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) "
-              + "WITH a, b "
-              + "RETURN a.id AS aid, b.id AS bid");
+          """
+          MATCH (a:Node {id: 1}) \
+          OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) \
+          WITH a, b \
+          RETURN a.id AS aid, b.id AS bid""");
 
       assertThat(rs.hasNext()).isTrue();
       final var row = rs.next();
@@ -1073,12 +1081,13 @@ public class OpenCypherMergeTest {
     @Test
     void mergeAfterExplicitRebindSucceeds() {
       final ResultSet rs = db.command("opencypher",
-          "MATCH (a:Node {id: 1}) "
-              + "OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) "
-              + "WITH a, b "
-              + "MATCH (c:Node {id: 2}) "
-              + "MERGE (a)-[:KNOWS]->(c) "
-              + "RETURN a.id AS aid, c.id AS cid");
+          """
+          MATCH (a:Node {id: 1}) \
+          OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) \
+          WITH a, b \
+          MATCH (c:Node {id: 2}) \
+          MERGE (a)-[:KNOWS]->(c) \
+          RETURN a.id AS aid, c.id AS cid""");
 
       assertThat(rs.hasNext()).isTrue();
       final var row = rs.next();
@@ -1091,9 +1100,10 @@ public class OpenCypherMergeTest {
     @Test
     void mergeWithBothEndpointsBoundCreatesRelationship() {
       final ResultSet rs = db.command("opencypher",
-          "MATCH (a:Node {id: 1}), (b:Node {id: 2}) "
-              + "MERGE (a)-[:KNOWS]->(b) "
-              + "RETURN count(*) AS cnt");
+          """
+          MATCH (a:Node {id: 1}), (b:Node {id: 2}) \
+          MERGE (a)-[:KNOWS]->(b) \
+          RETURN count(*) AS cnt""");
 
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Number>getProperty("cnt").longValue()).isEqualTo(1L);
@@ -1108,11 +1118,12 @@ public class OpenCypherMergeTest {
               "MATCH (a:Node {id: 1}), (b:Node {id: 2}) CREATE (a)-[:KNOWS]->(b)"));
 
       final ResultSet rs = db.command("opencypher",
-          "MATCH (a:Node {id: 1}) "
-              + "OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) "
-              + "WITH a, b "
-              + "MERGE (a)-[:KNOWS]->(b) "
-              + "RETURN a.id AS aid, b.id AS bid");
+          """
+          MATCH (a:Node {id: 1}) \
+          OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) \
+          WITH a, b \
+          MERGE (a)-[:KNOWS]->(b) \
+          RETURN a.id AS aid, b.id AS bid""");
 
       assertThat(rs.hasNext()).isTrue();
       final var row = rs.next();
@@ -1126,11 +1137,12 @@ public class OpenCypherMergeTest {
     void mergeWithNullEndpointDoesNotCreateSpuriousVertex() {
       // Execute the buggy query (which must now produce 0 rows and no side effects).
       db.command("opencypher",
-          "MATCH (a:Node {id: 1}) "
-              + "OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) "
-              + "WITH a, b "
-              + "MERGE (a)-[:KNOWS]->(b) "
-              + "RETURN a.id AS aid, b.id AS bid");
+          """
+          MATCH (a:Node {id: 1}) \
+          OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 2}) \
+          WITH a, b \
+          MERGE (a)-[:KNOWS]->(b) \
+          RETURN a.id AS aid, b.id AS bid""");
 
       final ResultSet nodeCount = db.query("opencypher", "MATCH (n:Node) RETURN count(n) AS cnt");
       assertThat(nodeCount.next().<Number>getProperty("cnt").longValue())
@@ -1147,12 +1159,13 @@ public class OpenCypherMergeTest {
     @Test
     void mergeMultiHopPatternWithNullIntermediateProducesNoRows() {
       final ResultSet rs = db.command("opencypher",
-          "MATCH (a:Node {id: 1}) "
-              + "OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 99}) "
-              + "WITH a, b "
-              + "MATCH (c:Node {id: 2}) "
-              + "MERGE (a)-[:KNOWS]->(b)-[:KNOWS]->(c) "
-              + "RETURN a.id AS aid, b.id AS bid, c.id AS cid");
+          """
+          MATCH (a:Node {id: 1}) \
+          OPTIONAL MATCH (a)-[:KNOWS]->(b:Node {id: 99}) \
+          WITH a, b \
+          MATCH (c:Node {id: 2}) \
+          MERGE (a)-[:KNOWS]->(b)-[:KNOWS]->(c) \
+          RETURN a.id AS aid, b.id AS bid, c.id AS cid""");
 
       assertThat(rs.hasNext())
           .as("MERGE with null intermediate node must produce no rows")
@@ -1193,16 +1206,18 @@ public class OpenCypherMergeTest {
         db.command("opencypher", "CREATE (:DOCUMENT {name: 'parentB'})");
 
         db.command("opencypher",
-            "MATCH (b:DOCUMENT {name:'parentB'}) "
-                + "UNWIND range(1, 5) AS i "
-                + "CREATE (c:CHUNK {name:'B_'+toString(i)}) "
-                + "CREATE (c)-[:in]->(b)");
+            """
+            MATCH (b:DOCUMENT {name:'parentB'}) \
+            UNWIND range(1, 5) AS i \
+            CREATE (c:CHUNK {name:'B_'+toString(i)}) \
+            CREATE (c)-[:in]->(b)""");
       });
 
       db.transaction(() -> {
         db.command("opencypher",
-            "MATCH (a:DOCUMENT {name:'parentA'}) "
-                + "MERGE (n:CHUNK {name:'A_only'})-[:in]->(a)");
+            """
+            MATCH (a:DOCUMENT {name:'parentA'}) \
+            MERGE (n:CHUNK {name:'A_only'})-[:in]->(a)""");
       });
 
       final ResultSet rs = db.query("opencypher",
@@ -1224,15 +1239,17 @@ public class OpenCypherMergeTest {
 
         // Identical CHUNK property values, but anchored to parentB.
         db.command("opencypher",
-            "MATCH (b:DOCUMENT {name:'parentB'}) "
-                + "CREATE (c:CHUNK {name:'shared', subtype:'CHUNK'})-[:in]->(b)");
+            """
+            MATCH (b:DOCUMENT {name:'parentB'}) \
+            CREATE (c:CHUNK {name:'shared', subtype:'CHUNK'})-[:in]->(b)""");
       });
 
       db.transaction(() -> {
         // Should NOT match the parentB-attached chunk; should create a new one under parentA.
         db.command("opencypher",
-            "MATCH (a:DOCUMENT {name:'parentA'}) "
-                + "MERGE (n:CHUNK {name:'shared', subtype:'CHUNK'})-[:in]->(a)");
+            """
+            MATCH (a:DOCUMENT {name:'parentA'}) \
+            MERGE (n:CHUNK {name:'shared', subtype:'CHUNK'})-[:in]->(a)""");
       });
 
       // Two CHUNK nodes exist now: the original one under parentB and the new one under parentA.
@@ -1255,14 +1272,16 @@ public class OpenCypherMergeTest {
         db.command("opencypher", "CREATE (:DOCUMENT {name: 'parentA'})");
 
         db.command("opencypher",
-            "MATCH (a:DOCUMENT {name:'parentA'}) "
-                + "CREATE (c:CHUNK {name:'existing'})-[:in]->(a)");
+            """
+            MATCH (a:DOCUMENT {name:'parentA'}) \
+            CREATE (c:CHUNK {name:'existing'})-[:in]->(a)""");
       });
 
       db.transaction(() -> {
         db.command("opencypher",
-            "MATCH (a:DOCUMENT {name:'parentA'}) "
-                + "MERGE (n:CHUNK {name:'existing'})-[:in]->(a)");
+            """
+            MATCH (a:DOCUMENT {name:'parentA'}) \
+            MERGE (n:CHUNK {name:'existing'})-[:in]->(a)""");
       });
 
       final ResultSet rs = db.query("opencypher", "MATCH (n:CHUNK) RETURN count(n) AS cnt");
@@ -1280,14 +1299,16 @@ public class OpenCypherMergeTest {
         db.command("opencypher", "CREATE (:DOCUMENT {name: 'src'})");
         // Pre-existing chunk pointed to from src.
         db.command("opencypher",
-            "MATCH (s:DOCUMENT {name:'src'}) "
-                + "CREATE (s)-[:in]->(c:CHUNK {name:'target'})");
+            """
+            MATCH (s:DOCUMENT {name:'src'}) \
+            CREATE (s)-[:in]->(c:CHUNK {name:'target'})""");
       });
 
       db.transaction(() -> {
         db.command("opencypher",
-            "MATCH (s:DOCUMENT {name:'src'}) "
-                + "MERGE (s)-[:in]->(n:CHUNK {name:'target'})");
+            """
+            MATCH (s:DOCUMENT {name:'src'}) \
+            MERGE (s)-[:in]->(n:CHUNK {name:'target'})""");
       });
 
       // Must MATCH (not create) the existing chunk.
@@ -1304,16 +1325,18 @@ public class OpenCypherMergeTest {
 
         // 50 noise edges under parentB.
         db.command("opencypher",
-            "MATCH (b:DOCUMENT {name:'parentB'}) "
-                + "UNWIND range(1,50) AS i "
-                + "CREATE (c:CHUNK {name:'noise_'+toString(i)})-[:in]->(b)");
+            """
+            MATCH (b:DOCUMENT {name:'parentB'}) \
+            UNWIND range(1,50) AS i \
+            CREATE (c:CHUNK {name:'noise_'+toString(i)})-[:in]->(b)""");
       });
 
       db.transaction(() -> {
         db.command("opencypher",
-            "MATCH (a:DOCUMENT {name:'parentA'}) "
-                + "UNWIND range(1,10) AS i "
-                + "MERGE (n:CHUNK {name:'A_'+toString(i)})-[:in]->(a)");
+            """
+            MATCH (a:DOCUMENT {name:'parentA'}) \
+            UNWIND range(1,10) AS i \
+            MERGE (n:CHUNK {name:'A_'+toString(i)})-[:in]->(a)""");
       });
 
       final ResultSet underA = db.query("opencypher",
@@ -1327,9 +1350,10 @@ public class OpenCypherMergeTest {
       // Re-run MERGE: nothing new should be created.
       db.transaction(() -> {
         db.command("opencypher",
-            "MATCH (a:DOCUMENT {name:'parentA'}) "
-                + "UNWIND range(1,10) AS i "
-                + "MERGE (n:CHUNK {name:'A_'+toString(i)})-[:in]->(a)");
+            """
+            MATCH (a:DOCUMENT {name:'parentA'}) \
+            UNWIND range(1,10) AS i \
+            MERGE (n:CHUNK {name:'A_'+toString(i)})-[:in]->(a)""");
       });
 
       final ResultSet total = db.query("opencypher", "MATCH (n:CHUNK) RETURN count(n) AS cnt");
@@ -1346,9 +1370,10 @@ public class OpenCypherMergeTest {
 
         // Large noise under parentB to exaggerate the cost of a full edge-type scan.
         db.command("opencypher",
-            "MATCH (b:DOCUMENT {name:'parentB'}) "
-                + "UNWIND range(1,200000) AS i "
-                + "CREATE (c:CHUNK {name:'noise_'+toString(i)})-[:in]->(b)");
+            """
+            MATCH (b:DOCUMENT {name:'parentB'}) \
+            UNWIND range(1,200000) AS i \
+            CREATE (c:CHUNK {name:'noise_'+toString(i)})-[:in]->(b)""");
       });
 
       // Run a batch of MERGEs scoped to parentA; each must NOT touch parentB's edges.
@@ -1383,15 +1408,17 @@ public class OpenCypherMergeTest {
       db.transaction(() -> {
         db.command("opencypher", "CREATE (:DOCUMENT {name:'src'})");
         db.command("opencypher",
-            "MATCH (s:DOCUMENT {name:'src'}) "
-                + "CREATE (s)-[:in]->(:CHUNK {name:'pre'})");
+            """
+            MATCH (s:DOCUMENT {name:'src'}) \
+            CREATE (s)-[:in]->(:CHUNK {name:'pre'})""");
       });
 
       db.transaction(() -> {
         db.command("opencypher",
-            "MATCH (s:DOCUMENT {name:'src'}) "
-                + "MERGE (s)-[:in]->(n:CHUNK {name:'pre'}) "
-                + "RETURN n.name AS name");
+            """
+            MATCH (s:DOCUMENT {name:'src'}) \
+            MERGE (s)-[:in]->(n:CHUNK {name:'pre'}) \
+            RETURN n.name AS name""");
       });
 
       final ResultSet rs = db.query("opencypher", "MATCH (n:CHUNK) RETURN count(n) AS cnt");
@@ -1407,9 +1434,10 @@ public class OpenCypherMergeTest {
 
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
-            "MATCH (a:DOCUMENT {name:'parentA'}) "
-                + "MERGE (n:CHUNK {name:'A_1'})-[:in]->(a) "
-                + "RETURN a.name AS parent_name, n.name AS chunk_name");
+            """
+            MATCH (a:DOCUMENT {name:'parentA'}) \
+            MERGE (n:CHUNK {name:'A_1'})-[:in]->(a) \
+            RETURN a.name AS parent_name, n.name AS chunk_name""");
         assertThat(rs.hasNext()).isTrue();
         final Result r = rs.next();
         assertThat(r.<String>getProperty("parent_name")).isEqualTo("parentA");
@@ -1435,8 +1463,9 @@ public class OpenCypherMergeTest {
       db.transaction(() -> {
         // Bound anchor is b in the middle; the path should match the existing chain.
         db.command("opencypher",
-            "MATCH (b:B {name:'b1'}) "
-                + "MERGE (a:A {name:'a1'})-[:R1]->(b)-[:R2]->(c:C {name:'c1'})");
+            """
+            MATCH (b:B {name:'b1'}) \
+            MERGE (a:A {name:'a1'})-[:R1]->(b)-[:R2]->(c:C {name:'c1'})""");
       });
 
       final ResultSet rs = db.query("opencypher", "MATCH (b:B) RETURN count(b) AS cnt");

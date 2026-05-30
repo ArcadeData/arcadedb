@@ -639,10 +639,11 @@ class OpenCypherBatchBenchmark {
         final long start = System.nanoTime();
         database.transaction(() -> {
           try (final ResultSet ignored = database.command("opencypher",
-              "UNWIND $batch AS BatchEntry "
-                  + "MATCH (parent) WHERE ID(parent) = BatchEntry._parent_rid "
-                  + "MERGE (n:CHUNK {subtype: BatchEntry.subtype, name: BatchEntry.name, text: BatchEntry.text, index: BatchEntry.index})-[:`in`]->(parent) "
-                  + "RETURN ID(n) AS id", params)) {
+              """
+              UNWIND $batch AS BatchEntry \
+              MATCH (parent) WHERE ID(parent) = BatchEntry._parent_rid \
+              MERGE (n:CHUNK {subtype: BatchEntry.subtype, name: BatchEntry.name, text: BatchEntry.text, index: BatchEntry.index})-[:`in`]->(parent) \
+              RETURN ID(n) AS id""", params)) {
             while (ignored.hasNext()) ignored.next();
           }
         });

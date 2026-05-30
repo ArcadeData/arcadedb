@@ -309,8 +309,9 @@ public class GetServerHandler extends AbstractServerHttpHandler {
           byDatabase.put(dbName, indexes);
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.FINE,
-            "Skipping sparse-vector metrics for database '%s' (likely being dropped, reopened, or "
-                + "concurrently unloaded): %s",
+            """
+            Skipping sparse-vector metrics for database '%s' (likely being dropped, reopened, or \
+            concurrently unloaded): %s""",
             dbName, e.getMessage());
       }
     }

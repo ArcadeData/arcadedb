@@ -2111,8 +2111,9 @@ public class SelectExecutionPlanner {
       // for the type name and see that pruning + an explicit cluster filter intersected to empty.
       if (intersected.isEmpty())
         LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE,
-            "Partition pruning on type '%s' intersected to an empty set: derived buckets %s do not "
-                + "overlap the explicit cluster filter %s. Query will return zero rows.",
+            """
+            Partition pruning on type '%s' intersected to an empty set: derived buckets %s do not \
+            overlap the explicit cluster filter %s. Query will return zero rows.""",
             null, docType.getName(), derivedBuckets, filterClusters);
       result = intersected;
     }

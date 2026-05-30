@@ -385,9 +385,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // and Max, or reduce per-batch size.
       final long sinceLast = previousElectionTime > 0 ? now - previousElectionTime : -1;
       LogManager.instance().log(this, Level.WARNING,
-          "Leader churn: %s re-elected (term=%d, %d ms since last leader change). "
-              + "Likely cause: leader heartbeat blocked by bulk-load replication. "
-              + "Tune arcadedb.ha.electionTimeoutMin/Max higher or reduce batch size.",
+          """
+          Leader churn: %s re-elected (term=%d, %d ms since last leader change). \
+          Likely cause: leader heartbeat blocked by bulk-load replication. \
+          Tune arcadedb.ha.electionTimeoutMin/Max higher or reduce batch size.""",
           leaderName, currentTerm, sinceLast);
     } else {
       // Different node became leader. Normal failover (network, server restart, etc.).
@@ -885,8 +886,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // (or natural Raft replay) will create the database and install the leader's snapshot;
       // we just record the baseline.
       LogManager.instance().log(this, Level.INFO,
-          "Bootstrap baseline recorded for '%s' (lastTxId=%d); database not yet present locally, "
-              + "will be created via leader-shipped snapshot",
+          """
+          Bootstrap baseline recorded for '%s' (lastTxId=%d); database not yet present locally, \
+          will be created via leader-shipped snapshot""",
           dbName, chosenLastTxId);
       return;
     }
@@ -930,11 +932,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // transactions on a single pod by re-bootstrapping from older peers.
     if (localLastTxId > chosenLastTxId) {
       LogManager.instance().log(this, Level.SEVERE,
-          "Database '%s': local lastTxId=%d is GREATER than cluster bootstrap lastTxId=%d. "
-              + "This peer's data is fresher than the cluster's chosen baseline (committed "
-              + "BOOTSTRAP_FINGERPRINT_ENTRY). Refusing to overwrite local data. To preserve it, "
-              + "stop the cluster, copy this peer's database directory to every other peer, then "
-              + "restart all peers.",
+          """
+          Database '%s': local lastTxId=%d is GREATER than cluster bootstrap lastTxId=%d. \
+          This peer's data is fresher than the cluster's chosen baseline (committed \
+          BOOTSTRAP_FINGERPRINT_ENTRY). Refusing to overwrite local data. To preserve it, \
+          stop the cluster, copy this peer's database directory to every other peer, then \
+          restart all peers.""",
           dbName, localLastTxId, chosenLastTxId);
       return;
     }
@@ -944,8 +947,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // place; at bootstrap time the Ratis log is empty on every peer so a transaction-level
     // delta cannot be served from it.
     LogManager.instance().log(this, Level.INFO,
-        "Database '%s' bootstrap mismatch (local lastTxId=%d / fp=%s..., baseline lastTxId=%d / fp=%s...); "
-            + "reinstalling from leader-shipped full snapshot",
+        """
+        Database '%s' bootstrap mismatch (local lastTxId=%d / fp=%s..., baseline lastTxId=%d / fp=%s...); \
+        reinstalling from leader-shipped full snapshot""",
         dbName, localLastTxId, localFingerprint.substring(0, Math.min(8, localFingerprint.length())),
         chosenLastTxId, chosenFingerprint.substring(0, Math.min(8, chosenFingerprint.length())));
     installFromLeaderForBootstrap(dbName);

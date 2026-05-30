@@ -262,9 +262,10 @@ class CypherExistsTest {
     @Test
     void twoMatchBooleanOrExists() {
       final List<Result> rows = collect(database.query("opencypher",
-          "MATCH (u:Owner {id: 'u'}) MATCH (c:Item) " +
-              "WHERE c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) } " +
-              "RETURN c.id AS id"));
+          """
+          MATCH (u:Owner {id: 'u'}) MATCH (c:Item) \
+          WHERE c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) } \
+          RETURN c.id AS id"""));
       assertThat(rows).hasSize(1);
       assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
     }
@@ -273,10 +274,11 @@ class CypherExistsTest {
     @Test
     void twoMatchBooleanOrExistsAndNotExists() {
       final List<Result> rows = collect(database.query("opencypher",
-          "MATCH (u:Owner {id: 'u'}) MATCH (c:Item) " +
-              "WHERE (c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) }) " +
-              "  AND NOT EXISTS { MATCH (u)-[:excl]->(c) } " +
-              "RETURN c.id AS id"));
+          """
+          MATCH (u:Owner {id: 'u'}) MATCH (c:Item) \
+          WHERE (c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) }) \
+            AND NOT EXISTS { MATCH (u)-[:excl]->(c) } \
+          RETURN c.id AS id"""));
       assertThat(rows).hasSize(1);
       assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
     }
@@ -285,11 +287,12 @@ class CypherExistsTest {
     @Test
     void twoMatchBooleanOrExistsAndNotGroupedExclusion() {
       final List<Result> rows = collect(database.query("opencypher",
-          "MATCH (u:Owner {id: 'u'}) MATCH (c:Item) " +
-              "WHERE (c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) }) " +
-              "  AND NOT (EXISTS { MATCH (u)-[:excl]->(c) } " +
-              "        OR EXISTS { MATCH (u)-[:excl*1..3]->(c) }) " +
-              "RETURN c.id AS id"));
+          """
+          MATCH (u:Owner {id: 'u'}) MATCH (c:Item) \
+          WHERE (c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) }) \
+            AND NOT (EXISTS { MATCH (u)-[:excl]->(c) } \
+                  OR EXISTS { MATCH (u)-[:excl*1..3]->(c) }) \
+          RETURN c.id AS id"""));
       assertThat(rows).hasSize(1);
       assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
     }
@@ -298,14 +301,15 @@ class CypherExistsTest {
     @Test
     void singleMatchWithExistsWrappingMatchAndWhere() {
       final List<Result> rows = collect(database.query("opencypher",
-          "MATCH (c:Item) " +
-              "WHERE EXISTS { " +
-              "  MATCH (u:Owner {id: 'u'}) " +
-              "  WHERE (c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) }) " +
-              "    AND NOT (EXISTS { MATCH (u)-[:excl]->(c) } " +
-              "          OR EXISTS { MATCH (u)-[:excl*1..3]->(c) }) " +
-              "} " +
-              "RETURN c.id AS id"));
+          """
+          MATCH (c:Item) \
+          WHERE EXISTS { \
+            MATCH (u:Owner {id: 'u'}) \
+            WHERE (c.flag = true OR EXISTS { MATCH (u)-[:rel]->(c) }) \
+              AND NOT (EXISTS { MATCH (u)-[:excl]->(c) } \
+                    OR EXISTS { MATCH (u)-[:excl*1..3]->(c) }) \
+          } \
+          RETURN c.id AS id"""));
       assertThat(rows).hasSize(1);
       assertThat((String) rows.get(0).getProperty("id")).isEqualTo("c");
     }

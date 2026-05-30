@@ -244,55 +244,60 @@ public enum GlobalConfiguration {
       Runtime.getRuntime().availableProcessors() > 1 ? Runtime.getRuntime().availableProcessors() - 1 : 1),
 
   QUERY_PARALLELISM_POOL_THREADS("arcadedb.queryParallelismPoolThreads", SCOPE.JVM,
-      "Maximum number of threads in the JVM-wide pool that backs query-time parallelism "
-          + "(graph algorithms parallelForRange, parallel index scans, etc.). The same pool also "
-          + "serves any future feature that wants to fork query work; sizing it explicitly is the "
-          + "alternative to the JDK common ForkJoinPool, which is shared with user code and has no "
-          + "back-pressure. 0 = available cores (min 2)",
+      """
+      Maximum number of threads in the JVM-wide pool that backs query-time parallelism \
+      (graph algorithms parallelForRange, parallel index scans, etc.). The same pool also \
+      serves any future feature that wants to fork query work; sizing it explicitly is the \
+      alternative to the JDK common ForkJoinPool, which is shared with user code and has no \
+      back-pressure. 0 = available cores (min 2)""",
       Integer.class, 0),
 
   QUERY_PARALLELISM_QUEUE_SIZE("arcadedb.queryParallelismQueueSize", SCOPE.JVM,
-      "Maximum number of tasks that can wait in the QueryEngineManager pool's queue before the "
-          + "rejection policy fires. The default of 1024 lets bursts (e.g. dozens of concurrent graph "
-          + "algorithms forking thousands of chunks) absorb gracefully, while still bounding heap "
-          + "usage if a runaway producer overwhelms the workers. Once the queue is full, the "
-          + "rejection policy is CallerRuns: the submitter executes the task inline, which degrades "
-          + "parallelism but never fails the query.",
+      """
+      Maximum number of tasks that can wait in the QueryEngineManager pool's queue before the \
+      rejection policy fires. The default of 1024 lets bursts (e.g. dozens of concurrent graph \
+      algorithms forking thousands of chunks) absorb gracefully, while still bounding heap \
+      usage if a runaway producer overwhelms the workers. Once the queue is full, the \
+      rejection policy is CallerRuns: the submitter executes the task inline, which degrades \
+      parallelism but never fails the query.""",
       Integer.class, 1024),
 
   SPARSE_VECTOR_SCORING_POOL_THREADS("arcadedb.sparseVectorScoringPoolThreads", SCOPE.JVM,
-      "Maximum number of threads in the JVM-wide pool that backs LSM_SPARSE_VECTOR top-K "
-          + "fan-out (per-bucket parallel scoring on partitioned types and types with multiple "
-          + "buckets). Kept on its own pool rather than sharing the QueryEngineManager pool so "
-          + "long-running graph algorithms never queue scoring tasks behind seconds-long graph "
-          + "chunks. 0 = available cores (min 2). REQUIRES JVM RESTART: the pool is a lazy "
-          + "singleton constructed once on first use; later changes to this value have no effect "
-          + "until the JVM restarts.",
+      """
+      Maximum number of threads in the JVM-wide pool that backs LSM_SPARSE_VECTOR top-K \
+      fan-out (per-bucket parallel scoring on partitioned types and types with multiple \
+      buckets). Kept on its own pool rather than sharing the QueryEngineManager pool so \
+      long-running graph algorithms never queue scoring tasks behind seconds-long graph \
+      chunks. 0 = available cores (min 2). REQUIRES JVM RESTART: the pool is a lazy \
+      singleton constructed once on first use; later changes to this value have no effect \
+      until the JVM restarts.""",
       Integer.class, 0),
 
   SPARSE_VECTOR_SCORING_QUEUE_SIZE("arcadedb.sparseVectorScoringQueueSize", SCOPE.JVM,
-      "Maximum number of tasks that can wait in the sparse-vector scoring pool's queue before "
-          + "the CallerRuns rejection policy fires. Scoring fan-out is fine-grained (per-bucket "
-          + "topK calls), so the default of 1024 covers a wide range of workloads. Once the "
-          + "queue is full, the submitter executes the task inline, which degrades parallelism "
-          + "but never fails the query. REQUIRES JVM RESTART: same singleton lifecycle as "
-          + "SPARSE_VECTOR_SCORING_POOL_THREADS.",
+      """
+      Maximum number of tasks that can wait in the sparse-vector scoring pool's queue before \
+      the CallerRuns rejection policy fires. Scoring fan-out is fine-grained (per-bucket \
+      topK calls), so the default of 1024 covers a wide range of workloads. Once the \
+      queue is full, the submitter executes the task inline, which degrades parallelism \
+      but never fails the query. REQUIRES JVM RESTART: same singleton lifecycle as \
+      SPARSE_VECTOR_SCORING_POOL_THREADS.""",
       Integer.class, 1024),
 
   SPARSE_VECTOR_SCORING_TIMEOUT_SECONDS("arcadedb.sparseVectorScoringTimeoutSeconds", SCOPE.JVM,
-      "Wall-clock deadline for the parallel sparse-vector top-K fan-out. Computed once before "
-          + "the drain loop and shared across all per-bucket futures, so the worst case for N "
-          + "wedged buckets is a single timeoutSeconds (not N * timeoutSeconds). On expiry every "
-          + "still-pending future is cancelled and the query fails with a descriptive error. "
-          + "Catches the case where a bucket's index is stuck on a write lock during compaction, "
-          + "an HA replication race wedged a segment open, or a JVM-level pause stalled the worker "
-          + "thread. Set to 0 to disable the timeout (caller will block indefinitely; not "
-          + "recommended for production). Re-read on every query, so changes take effect without "
-          + "restart (unlike the pool sizing knobs above). Minimum recommended value: 5 seconds. "
-          + "Very short configured timeouts (e.g. 1-2s for integration tests) can produce "
-          + "spurious failures on a saturated host - a JVM GC pause or OS scheduling delay "
-          + "between deadline computation and the first future drain can consume the whole budget "
-          + "before any work runs.",
+      """
+      Wall-clock deadline for the parallel sparse-vector top-K fan-out. Computed once before \
+      the drain loop and shared across all per-bucket futures, so the worst case for N \
+      wedged buckets is a single timeoutSeconds (not N * timeoutSeconds). On expiry every \
+      still-pending future is cancelled and the query fails with a descriptive error. \
+      Catches the case where a bucket's index is stuck on a write lock during compaction, \
+      an HA replication race wedged a segment open, or a JVM-level pause stalled the worker \
+      thread. Set to 0 to disable the timeout (caller will block indefinitely; not \
+      recommended for production). Re-read on every query, so changes take effect without \
+      restart (unlike the pool sizing knobs above). Minimum recommended value: 5 seconds. \
+      Very short configured timeouts (e.g. 1-2s for integration tests) can produce \
+      spurious failures on a saturated host - a JVM GC pause or OS scheduling delay \
+      between deadline computation and the first future drain can consume the whole budget \
+      before any work runs.""",
       Integer.class, 30),
 
   ASYNC_OPERATIONS_QUEUE_IMPL("arcadedb.asyncOperationsQueueImpl", SCOPE.DATABASE,
@@ -404,11 +409,12 @@ public enum GlobalConfiguration {
       Long.class, 10_000),
 
   POLYGLOT_ENGINE_ENABLED("arcadedb.polyglotEngineEnabled", SCOPE.JVM,
-      "Enable the GraalVM Polyglot Engine used to register scripting languages (js, python, ...) as query engines. "
-          + "When true (default), the shared Engine is created lazily on first use and all GraalVM languages found on "
-          + "the classpath are registered. When false, the Polyglot engine is not initialised and no polyglot language "
-          + "is registered: this saves tens of MB of heap and class-loading work on small footprints. The 'low-ram' "
-          + "profile sets this to false.",
+      """
+      Enable the GraalVM Polyglot Engine used to register scripting languages (js, python, ...) as query engines. \
+      When true (default), the shared Engine is created lazily on first use and all GraalVM languages found on \
+      the classpath are registered. When false, the Polyglot engine is not initialised and no polyglot language \
+      is registered: this saves tens of MB of heap and class-loading work on small footprints. The 'low-ram' \
+      profile sets this to false.""",
       Boolean.class, true),
 
   QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP("arcadedb.queryMaxHeapElementsAllowedPerOp", SCOPE.DATABASE, """
@@ -529,8 +535,9 @@ public enum GlobalConfiguration {
       "development", Set.of((Object[]) new String[]{"development", "test", "production"})),
 
   STUDIO_ENABLED("arcadedb.studio.enabled", SCOPE.SERVER,
-      "Force-enable the Studio web tool (static content) even when the server runs in 'production' mode. In 'development' and "
-          + "'test' mode Studio is always served; in 'production' mode it is disabled by default and this setting can re-enable it",
+      """
+      Force-enable the Studio web tool (static content) even when the server runs in 'production' mode. In 'development' and \
+      'test' mode Studio is always served; in 'production' mode it is disabled by default and this setting can re-enable it""",
       Boolean.class, false),
 
   // Metrics
@@ -582,10 +589,11 @@ public enum GlobalConfiguration {
       Integer.class, 0, null, (value) -> Runtime.getRuntime().availableProcessors()),
 
   SERVER_HTTP_WORKER_THREADS("arcadedb.server.httpWorkerThreads", SCOPE.SERVER,
-      "Maximum number of worker threads used by the embedded Undertow HTTP server to process blocking requests. "
-          + "Each idle thread reserves a stack (~512KB-1MB) and Thread metadata in heap, so lowering the value reduces "
-          + "memory footprint on small deployments. Default is 500 to preserve the legacy behaviour; the 'low-ram' "
-          + "profile lowers it to 16.",
+      """
+      Maximum number of worker threads used by the embedded Undertow HTTP server to process blocking requests. \
+      Each idle thread reserves a stack (~512KB-1MB) and Thread metadata in heap, so lowering the value reduces \
+      memory footprint on small deployments. Default is 500 to preserve the legacy behaviour; the 'low-ram' \
+      profile lowers it to 16.""",
       Integer.class, 500),
 
   SERVER_HTTP_SESSION_EXPIRE_TIMEOUT("arcadedb.server.httpSessionExpireTimeout", SCOPE.SERVER,

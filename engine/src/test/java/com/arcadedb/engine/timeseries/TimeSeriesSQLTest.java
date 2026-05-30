@@ -121,8 +121,9 @@ class TimeSeriesSQLTest extends TestHelper {
 
     // Mixing = and LIKE in OR must return all 4 rows tagged with CI in any position.
     final ResultSet rs = database.query("sql",
-        "SELECT FROM TaggedMetric WHERE ts BETWEEN 0 AND 10000 AND ("
-            + "tags = 'CI' OR tags LIKE 'CI,%' OR tags LIKE '%,CI' OR tags LIKE '%,CI,%')");
+        """
+        SELECT FROM TaggedMetric WHERE ts BETWEEN 0 AND 10000 AND (\
+        tags = 'CI' OR tags LIKE 'CI,%' OR tags LIKE '%,CI' OR tags LIKE '%,CI,%')""");
     final List<Result> results = new ArrayList<>();
     while (rs.hasNext())
       results.add(rs.next());
@@ -131,8 +132,9 @@ class TimeSeriesSQLTest extends TestHelper {
 
     // Only-LIKE form (the workaround in the bug report) should also return 4 rows.
     final ResultSet rs2 = database.query("sql",
-        "SELECT FROM TaggedMetric WHERE ts BETWEEN 0 AND 10000 AND ("
-            + "tags LIKE 'CI' OR tags LIKE 'CI,%' OR tags LIKE '%,CI' OR tags LIKE '%,CI,%')");
+        """
+        SELECT FROM TaggedMetric WHERE ts BETWEEN 0 AND 10000 AND (\
+        tags LIKE 'CI' OR tags LIKE 'CI,%' OR tags LIKE '%,CI' OR tags LIKE '%,CI,%')""");
     final List<Result> results2 = new ArrayList<>();
     while (rs2.hasNext())
       results2.add(rs2.next());

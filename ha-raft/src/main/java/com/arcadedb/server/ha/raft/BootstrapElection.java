@@ -214,8 +214,9 @@ class BootstrapElection {
         missing.add(peer.getId().toString());
     if (!missing.isEmpty())
       LogManager.instance().log(this, Level.SEVERE,
-          "Bootstrap timeout: peers %s did not report state within %dms; proceeding with majority. " +
-              "Unreachable peers will catch up via leader-shipped snapshot when they reconnect.",
+          """
+          Bootstrap timeout: peers %s did not report state within %dms; proceeding with majority. \
+          Unreachable peers will catch up via leader-shipped snapshot when they reconnect.""",
           missing, timeoutMs);
 
     // Pivot: from peer→db→state to db→list of (peer, state).

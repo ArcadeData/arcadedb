@@ -218,8 +218,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // below; this branch is logged at WARNING so an unexpected caller (a future refactor of the
     // type-drop path, e.g.) does not silently leave stale entries behind.
     LogManager.instance().log(this, Level.WARNING,
-        "%s.remove(keys) called without a RID; sparse vector index needs the per-RID variant. "
-            + "No postings were removed. Caller should switch to remove(keys, rid).", null, getName());
+        """
+        %s.remove(keys) called without a RID; sparse vector index needs the per-RID variant. \
+        No postings were removed. Caller should switch to remove(keys, rid).""", null, getName());
   }
 
   @Override
@@ -507,8 +508,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // get a wrong answer. Fail loudly instead - callers should use the `vector.sparseNeighbors`
     // SQL function (or {@link PaginatedSparseVectorEngine#topK}) for retrieval.
     throw new UnsupportedOperationException(
-        "Direct posting lookup is not supported on LSM_SPARSE_VECTOR indexes; "
-            + "use vector.sparseNeighbors(...) for top-K retrieval");
+        """
+        Direct posting lookup is not supported on LSM_SPARSE_VECTOR indexes; \
+        use vector.sparseNeighbors(...) for top-K retrieval""");
   }
 
   @Override

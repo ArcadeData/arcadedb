@@ -118,14 +118,16 @@ public class ClusterMonitor {
 
     switch (status) {
       case STALLED -> LogManager.instance().log(this, Level.SEVERE,
-          "Replica '%s' STALLED: matchIndex stuck at %d while leader advanced by %d (current lag=%d). "
-              + "This will trigger a leader election if it continues. Likely cause: replica disk "
-              + "saturation or network stall. Check replica I/O, GC, and heartbeat connectivity.",
+          """
+          Replica '%s' STALLED: matchIndex stuck at %d while leader advanced by %d (current lag=%d). \
+          This will trigger a leader election if it continues. Likely cause: replica disk \
+          saturation or network stall. Check replica I/O, GC, and heartbeat connectivity.""",
           replicaId, matchIndex, leaderDelta, lag);
       case FALLING_BEHIND -> LogManager.instance().log(this, Level.WARNING,
-          "Replica '%s' falling behind: lag=%d (was %d, growing). Replica advanced %d entries; "
-              + "leader advanced %d. Reduce per-batch size or raise arcadedb.ha.electionTimeoutMin/Max "
-              + "to avoid churn under load.",
+          """
+          Replica '%s' falling behind: lag=%d (was %d, growing). Replica advanced %d entries; \
+          leader advanced %d. Reduce per-batch size or raise arcadedb.ha.electionTimeoutMin/Max \
+          to avoid churn under load.""",
           replicaId, lag, previousLag, replicaDelta, leaderDelta);
       case CATCHING_UP -> LogManager.instance().log(this, Level.INFO,
           "Replica '%s' catching up: lag=%d (was %d), advancing at %d entries/tick (leader: %d/tick).",

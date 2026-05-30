@@ -407,8 +407,9 @@ public class OpenCypherMatchEnhancementsTest {
       db.command("opencypher",
           "CREATE (:Person4092 {name:'Alice'}), (:City4092 {name:'New York'}), (:Country4092 {name:'USA'}), (:Region4092 {name:'North America'})");
       db.command("opencypher",
-          "MATCH (a:Person4092 {name:'Alice'}), (c:City4092 {name:'New York'}), (u:Country4092 {name:'USA'}), (r:Region4092 {name:'North America'}) " +
-              "CREATE (a)-[:KNOWS_4092]->(c), (c)-[:LOCATED_IN_4092]->(u), (u)-[:BELONGS_TO_4092]->(r)");
+          """
+          MATCH (a:Person4092 {name:'Alice'}), (c:City4092 {name:'New York'}), (u:Country4092 {name:'USA'}), (r:Region4092 {name:'North America'}) \
+          CREATE (a)-[:KNOWS_4092]->(c), (c)-[:LOCATED_IN_4092]->(u), (u)-[:BELONGS_TO_4092]->(r)""");
     });
     return db;
   }
@@ -418,8 +419,9 @@ public class OpenCypherMatchEnhancementsTest {
   void issue4092_twoHopChainWithAnonMiddleNode() {
     final Database db = createIssue4092Database("two-hop-anon");
     try (final ResultSet rs = db.query("opencypher",
-        "MATCH (a:Person4092)-[:KNOWS_4092]->(:City4092)-[:LOCATED_IN_4092]->(b:Country4092) " +
-            "RETURN a.name AS person_name, b.name AS country_name")) {
+        """
+        MATCH (a:Person4092)-[:KNOWS_4092]->(:City4092)-[:LOCATED_IN_4092]->(b:Country4092) \
+        RETURN a.name AS person_name, b.name AS country_name""")) {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
@@ -435,8 +437,9 @@ public class OpenCypherMatchEnhancementsTest {
   void issue4092_twoHopChainWithNamedMiddleNode() {
     final Database db = createIssue4092Database("two-hop-named");
     try (final ResultSet rs = db.query("opencypher",
-        "MATCH (a:Person4092)-[:KNOWS_4092]->(c:City4092)-[:LOCATED_IN_4092]->(b:Country4092) " +
-            "RETURN a.name AS person_name, b.name AS country_name")) {
+        """
+        MATCH (a:Person4092)-[:KNOWS_4092]->(c:City4092)-[:LOCATED_IN_4092]->(b:Country4092) \
+        RETURN a.name AS person_name, b.name AS country_name""")) {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
@@ -452,8 +455,9 @@ public class OpenCypherMatchEnhancementsTest {
   void issue4092_twoHopChainAnonMiddleNodeWithAggregation() {
     final Database db = createIssue4092Database("two-hop-aggregation");
     try (final ResultSet rs = db.query("opencypher",
-        "MATCH (a:Person4092)-[:KNOWS_4092]->(:City4092)-[:LOCATED_IN_4092]->(b:Country4092) " +
-            "RETURN b.name AS country_name, collect(a.name) AS people")) {
+        """
+        MATCH (a:Person4092)-[:KNOWS_4092]->(:City4092)-[:LOCATED_IN_4092]->(b:Country4092) \
+        RETURN b.name AS country_name, collect(a.name) AS people""")) {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
@@ -500,8 +504,9 @@ public class OpenCypherMatchEnhancementsTest {
   void issue4092_threeHopChainWithTwoConsecutiveAnonMiddleNodes() {
     final Database db = createIssue4092Database("three-hop-two-anon");
     try (final ResultSet rs = db.query("opencypher",
-        "MATCH (a:Person4092)-[:KNOWS_4092]->(:City4092)-[:LOCATED_IN_4092]->(:Country4092)-[:BELONGS_TO_4092]->(r:Region4092) " +
-            "RETURN a.name AS person_name, r.name AS region_name")) {
+        """
+        MATCH (a:Person4092)-[:KNOWS_4092]->(:City4092)-[:LOCATED_IN_4092]->(:Country4092)-[:BELONGS_TO_4092]->(r:Region4092) \
+        RETURN a.name AS person_name, r.name AS region_name""")) {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
@@ -517,9 +522,10 @@ public class OpenCypherMatchEnhancementsTest {
   void issue4092_optionalMatchWithAnonMiddleNode() {
     final Database db = createIssue4092Database("optional-match-anon");
     try (final ResultSet rs = db.query("opencypher",
-        "MATCH (a:Person4092) " +
-            "OPTIONAL MATCH (a)-[:KNOWS_4092]->(:City4092)-[:LOCATED_IN_4092]->(b:Country4092) " +
-            "RETURN a.name AS person_name, b.name AS country_name")) {
+        """
+        MATCH (a:Person4092) \
+        OPTIONAL MATCH (a)-[:KNOWS_4092]->(:City4092)-[:LOCATED_IN_4092]->(b:Country4092) \
+        RETURN a.name AS person_name, b.name AS country_name""")) {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
@@ -535,9 +541,10 @@ public class OpenCypherMatchEnhancementsTest {
   void issue4092_multipleMatchClausesEachWithAnonNodes() {
     final Database db = createIssue4092Database("multi-match-anon");
     try (final ResultSet rs = db.query("opencypher",
-        "MATCH (a:Person4092)-[:KNOWS_4092]->(:City4092) " +
-            "MATCH (:City4092)-[:LOCATED_IN_4092]->(b:Country4092) " +
-            "RETURN a.name AS person_name, b.name AS country_name")) {
+        """
+        MATCH (a:Person4092)-[:KNOWS_4092]->(:City4092) \
+        MATCH (:City4092)-[:LOCATED_IN_4092]->(b:Country4092) \
+        RETURN a.name AS person_name, b.name AS country_name""")) {
       final List<Result> rows = new ArrayList<>();
       rs.forEachRemaining(rows::add);
       assertThat(rows).hasSize(1);
@@ -576,9 +583,10 @@ public class OpenCypherMatchEnhancementsTest {
     try {
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
-            "CREATE (:Person4101 {name:'Charlie'}) "
-                + "MATCH (n:Person4101) "
-                + "RETURN count(*) AS c");
+            """
+            CREATE (:Person4101 {name:'Charlie'}) \
+            MATCH (n:Person4101) \
+            RETURN count(*) AS c""");
         assertThat(rs.hasNext()).isTrue();
         assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1L);
       });
@@ -594,9 +602,10 @@ public class OpenCypherMatchEnhancementsTest {
     try {
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
-            "CREATE (:Person4101 {name:'Charlie'}), (:Person4101 {name:'Diana'}) "
-                + "MATCH (n:Person4101) "
-                + "RETURN count(*) AS c");
+            """
+            CREATE (:Person4101 {name:'Charlie'}), (:Person4101 {name:'Diana'}) \
+            MATCH (n:Person4101) \
+            RETURN count(*) AS c""");
         assertThat(rs.hasNext()).isTrue();
         assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(2L);
       });
@@ -612,10 +621,11 @@ public class OpenCypherMatchEnhancementsTest {
     try {
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
-            "CREATE (:Person4101 {name:'Charlie'}) "
-                + "WITH 1 AS x "
-                + "MATCH (n:Person4101) "
-                + "RETURN count(*) AS c");
+            """
+            CREATE (:Person4101 {name:'Charlie'}) \
+            WITH 1 AS x \
+            MATCH (n:Person4101) \
+            RETURN count(*) AS c""");
         assertThat(rs.hasNext()).isTrue();
         assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1L);
       });
@@ -631,9 +641,10 @@ public class OpenCypherMatchEnhancementsTest {
     try {
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
-            "CREATE ({name:'Charlie'}) "
-                + "MATCH (n) "
-                + "RETURN count(*) AS c");
+            """
+            CREATE ({name:'Charlie'}) \
+            MATCH (n) \
+            RETURN count(*) AS c""");
         assertThat(rs.hasNext()).isTrue();
         assertThat(rs.next().<Number>getProperty("c").longValue()).isEqualTo(1L);
       });
@@ -653,10 +664,11 @@ public class OpenCypherMatchEnhancementsTest {
       });
       db.transaction(() -> {
         final ResultSet rs = db.command("opencypher",
-            "CREATE ({name:'Charlie'}), ({name:'Diana'}) "
-                + "MATCH (n) "
-                + "RETURN DISTINCT n.name AS name "
-                + "ORDER BY name DESC");
+            """
+            CREATE ({name:'Charlie'}), ({name:'Diana'}) \
+            MATCH (n) \
+            RETURN DISTINCT n.name AS name \
+            ORDER BY name DESC""");
         final List<String> names = new ArrayList<>();
         while (rs.hasNext()) {
           final Result r = rs.next();
@@ -678,11 +690,12 @@ public class OpenCypherMatchEnhancementsTest {
           "CREATE (:Person4102 {name:'Alice', city:'New York'}), (:City4102 {name:'New York', population:8000000})"));
 
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person4102 {city:'New York'}) "
-              + "OPTIONAL MATCH (p)-[:LIVES_IN_4102]->(c:City4102) "
-              + "WITH p, c "
-              + "MATCH (c:City4102 {population:8000000}) "
-              + "RETURN p.name AS p, c.name AS c");
+          """
+          MATCH (p:Person4102 {city:'New York'}) \
+          OPTIONAL MATCH (p)-[:LIVES_IN_4102]->(c:City4102) \
+          WITH p, c \
+          MATCH (c:City4102 {population:8000000}) \
+          RETURN p.name AS p, c.name AS c""");
       assertThat(rs.hasNext()).isFalse();
     } finally {
       db.drop();
@@ -698,11 +711,12 @@ public class OpenCypherMatchEnhancementsTest {
           "CREATE (:Person4102 {name:'Alice', city:'New York'}), (:City4102 {name:'New York', population:8000000})"));
 
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person4102 {city:'New York'}) "
-              + "OPTIONAL MATCH (p)-[r:LIVES_IN_4102]->(c:City4102) "
-              + "WITH p, c, r "
-              + "MATCH (c:City4102 {population:8000000}) "
-              + "RETURN p.name AS p, c.name AS c");
+          """
+          MATCH (p:Person4102 {city:'New York'}) \
+          OPTIONAL MATCH (p)-[r:LIVES_IN_4102]->(c:City4102) \
+          WITH p, c, r \
+          MATCH (c:City4102 {population:8000000}) \
+          RETURN p.name AS p, c.name AS c""");
       assertThat(rs.hasNext()).isFalse();
     } finally {
       db.drop();
@@ -718,10 +732,11 @@ public class OpenCypherMatchEnhancementsTest {
           "CREATE (:Person4102 {name:'Alice', city:'New York'}), (:City4102 {name:'New York', population:8000000})"));
 
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person4102 {city:'New York'}) "
-              + "OPTIONAL MATCH (p)-[:LIVES_IN_4102]->(c:City4102) "
-              + "WITH p, c "
-              + "RETURN p.name AS p, c.name AS c");
+          """
+          MATCH (p:Person4102 {city:'New York'}) \
+          OPTIONAL MATCH (p)-[:LIVES_IN_4102]->(c:City4102) \
+          WITH p, c \
+          RETURN p.name AS p, c.name AS c""");
       assertThat(rs.hasNext()).isTrue();
       final Result r = rs.next();
       assertThat(r.<String>getProperty("p")).isEqualTo("Alice");

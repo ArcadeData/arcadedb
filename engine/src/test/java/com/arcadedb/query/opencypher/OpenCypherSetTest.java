@@ -566,9 +566,10 @@ public class OpenCypherSetTest {
 
     database.transaction(() -> {
       database.command("opencypher",
-          "MATCH (p:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) "
-              + "UNWIND [1, 2, 3] AS i "
-              + "SET p.age = p.age + i, c.founded = c.founded - i");
+          """
+          MATCH (p:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) \
+          UNWIND [1, 2, 3] AS i \
+          SET p.age = p.age + i, c.founded = c.founded - i""");
     });
 
     final ResultSet result = database.query("opencypher",

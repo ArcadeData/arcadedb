@@ -404,10 +404,11 @@ public class LocalSchema implements Schema {
     // the later failure.
     if (version == LocalBucket.CURRENT_VERSION && bucketName.endsWith("_ext"))
       LogManager.instance().log(this, Level.WARNING,
-          "Bucket name '%s' ends with '_ext'. The engine reserves the '<primaryName>_ext' suffix for paired"
-              + " EXTERNAL-property buckets. If a primary bucket whose name + '_ext' equals this name later"
-              + " gains an EXTERNAL property, that property change will fail with a SchemaException. Consider"
-              + " renaming this bucket to avoid the collision.",
+          """
+          Bucket name '%s' ends with '_ext'. The engine reserves the '<primaryName>_ext' suffix for paired\
+           EXTERNAL-property buckets. If a primary bucket whose name + '_ext' equals this name later\
+           gains an EXTERNAL property, that property change will fail with a SchemaException. Consider\
+           renaming this bucket to avoid the collision.""",
           null, bucketName);
 
     final String dir = (parentDirectory == null || parentDirectory.isEmpty()) ? databasePath : parentDirectory;
