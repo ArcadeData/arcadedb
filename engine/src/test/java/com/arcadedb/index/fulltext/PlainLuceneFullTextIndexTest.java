@@ -36,9 +36,9 @@ import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.Sort;
 import org.apache.lucene.store.FSDirectory;
 
-import java.io.*;
+import java.io.IOException;
 import java.nio.file.Path;
-import java.util.stream.*;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

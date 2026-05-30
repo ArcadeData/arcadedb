@@ -18,7 +18,6 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;

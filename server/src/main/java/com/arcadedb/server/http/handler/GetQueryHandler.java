@@ -30,7 +30,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
+import java.io.UnsupportedEncodingException;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 

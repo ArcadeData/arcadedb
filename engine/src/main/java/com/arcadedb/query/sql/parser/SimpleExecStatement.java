@@ -25,7 +25,7 @@ import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SingleOpExecutionPlan;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Superclass for SQL statements that are too simple to deserve an execution planner.

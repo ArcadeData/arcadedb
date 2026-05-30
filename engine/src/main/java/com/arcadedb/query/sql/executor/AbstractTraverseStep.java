@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 26/10/16.

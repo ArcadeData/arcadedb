@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.WhereClause;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * Created by luigidellaquila on 12/07/16.

@@ -22,7 +22,9 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * This operator can work inline. Returns the DIFFERENCE between the collections received as parameters. Works also with no

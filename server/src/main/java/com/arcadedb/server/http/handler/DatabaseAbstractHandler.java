@@ -37,9 +37,9 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 import io.undertow.util.StatusCodes;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Deque;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler {
   private static final HttpString SESSION_ID_HEADER = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);

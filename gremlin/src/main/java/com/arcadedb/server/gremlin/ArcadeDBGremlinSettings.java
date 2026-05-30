@@ -24,8 +24,8 @@ import org.yaml.snakeyaml.TypeDescription;
 import org.yaml.snakeyaml.Yaml;
 import org.yaml.snakeyaml.constructor.Constructor;
 
-import java.io.*;
-import java.util.*;
+import java.io.InputStream;
+import java.util.Objects;
 
 /**
  * Extends the default Gremlin Setting class to support a more recent version of snakeyaml because of https://nvd.nist.gov/vuln/detail/CVE-2022-1471

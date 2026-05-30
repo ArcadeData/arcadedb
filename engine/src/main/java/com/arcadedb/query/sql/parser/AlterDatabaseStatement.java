@@ -34,8 +34,8 @@ import com.arcadedb.schema.LocalSchema;
 import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.Map;
 
 public class AlterDatabaseStatement extends DDLStatement {
 

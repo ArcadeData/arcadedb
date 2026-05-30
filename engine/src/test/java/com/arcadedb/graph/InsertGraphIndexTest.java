@@ -29,7 +29,7 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

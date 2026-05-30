@@ -24,8 +24,10 @@ import com.arcadedb.server.security.ApiTokenConfiguration;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
+import java.io.File;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.file.Files;
 import java.util.Base64;
 

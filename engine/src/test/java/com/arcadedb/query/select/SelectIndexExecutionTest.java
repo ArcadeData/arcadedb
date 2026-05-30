@@ -26,7 +26,7 @@ import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

@@ -28,7 +28,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Property;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class Json extends SimpleNode {
 

@@ -24,7 +24,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 public class Limit extends SimpleNode {
   public PInteger       num;

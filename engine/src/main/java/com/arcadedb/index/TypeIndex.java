@@ -32,7 +32,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
 
 /**

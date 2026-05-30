@@ -24,7 +24,6 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 
 import org.junit.jupiter.api.BeforeEach;

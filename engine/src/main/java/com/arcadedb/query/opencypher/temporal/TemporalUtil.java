@@ -19,11 +19,8 @@
 package com.arcadedb.query.opencypher.temporal;
 
 import java.time.*;
-import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
-import java.time.temporal.Temporal;
-import java.time.temporal.TemporalAdjusters;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
 import java.util.Collection;

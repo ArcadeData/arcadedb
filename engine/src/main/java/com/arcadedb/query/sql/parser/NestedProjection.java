@@ -28,7 +28,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.schema.Property;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;

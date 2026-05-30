@@ -29,11 +29,17 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.DateUtils;
 import org.locationtech.spatial4j.shape.Shape;
 
-import java.lang.reflect.*;
-import java.math.*;
-import java.time.*;
-import java.util.*;
-import java.util.logging.*;
+import java.lang.reflect.Array;
+import java.math.BigDecimal;
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.Map;
+import java.util.UUID;
+import java.util.logging.Level;
 
 public class BinaryTypes {
   public final static byte TYPE_NULL              = 0;

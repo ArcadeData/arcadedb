@@ -20,7 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.RID;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
 
 /**
  * Iterator that walks a {@link RidSet}'s bitmap and materialises a fresh {@link RID} per set bit. Sparse regions are skipped in O(1) per zero-word using

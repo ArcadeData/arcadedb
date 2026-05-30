@@ -35,7 +35,7 @@ import com.arcadedb.utility.Pair;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

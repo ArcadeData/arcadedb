@@ -32,7 +32,8 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 public class TruncateBucketStatement extends DDLStatement {
 

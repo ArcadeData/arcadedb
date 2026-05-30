@@ -32,12 +32,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LockManager;
 
 import java.io.*;
-import java.nio.channels.*;
+import java.nio.channels.ClosedByInterruptException;
+import java.nio.channels.ClosedChannelException;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
+import java.util.stream.Stream;
 
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;

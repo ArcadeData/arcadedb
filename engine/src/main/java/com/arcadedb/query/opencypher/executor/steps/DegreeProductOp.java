@@ -28,7 +28,6 @@ import com.arcadedb.graph.Vertex;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Count operator for star-join patterns (Q4, Q7).

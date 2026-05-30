@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Returns a single result document containing per-database runtime statistics.

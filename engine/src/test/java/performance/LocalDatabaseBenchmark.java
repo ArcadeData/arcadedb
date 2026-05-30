@@ -26,7 +26,8 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.select.SelectCompiled;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

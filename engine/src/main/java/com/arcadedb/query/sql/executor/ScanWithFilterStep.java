@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;

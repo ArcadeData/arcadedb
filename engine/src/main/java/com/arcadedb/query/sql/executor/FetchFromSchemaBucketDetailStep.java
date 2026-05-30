@@ -22,7 +22,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Returns a single result containing detailed information about a specific bucket, including

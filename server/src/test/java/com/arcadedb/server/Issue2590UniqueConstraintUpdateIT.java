@@ -21,7 +21,6 @@ package com.arcadedb.server;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
 import org.assertj.core.api.Assertions;

@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Returns a single result containing the database dictionary metadata.

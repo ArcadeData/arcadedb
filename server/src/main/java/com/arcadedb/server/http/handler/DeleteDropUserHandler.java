@@ -24,7 +24,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.*;
+import java.util.Deque;
 
 /**
  * Drops a server user.

@@ -32,7 +32,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class WhereClause extends SimpleNode {
   public BooleanExpression baseExpression;

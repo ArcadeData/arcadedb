@@ -45,8 +45,8 @@ import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
 

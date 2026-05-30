@@ -25,7 +25,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 
-import java.util.*;
+import java.util.Iterator;
 
 public class TraversalTest {
   private static final int             SIZE = 1000000;

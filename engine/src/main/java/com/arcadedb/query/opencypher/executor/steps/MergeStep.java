@@ -24,7 +24,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;

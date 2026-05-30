@@ -22,7 +22,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.UpdateItem;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 09/08/16.

@@ -41,10 +41,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.time.*;
-import java.time.format.*;
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.TestHelper.checkActiveDatabases;
 import static org.assertj.core.api.Assertions.assertThat;

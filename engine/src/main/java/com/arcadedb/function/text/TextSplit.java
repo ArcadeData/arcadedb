@@ -21,7 +21,6 @@ package com.arcadedb.function.text;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Arrays;
-import java.util.List;
 import java.util.regex.Pattern;
 
 /**

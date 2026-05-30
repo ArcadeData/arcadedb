@@ -22,14 +22,12 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.sparsevector.SegmentFormat.RidCompression;
-import com.arcadedb.log.LogManager;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.logging.Level;
 import java.util.zip.CRC32;
 
 /**

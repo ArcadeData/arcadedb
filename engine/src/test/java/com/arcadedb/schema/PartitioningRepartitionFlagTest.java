@@ -19,7 +19,6 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.partitioning.PartitioningTestFixture;
 import com.arcadedb.query.sql.executor.Result;

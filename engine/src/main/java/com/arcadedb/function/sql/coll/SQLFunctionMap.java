@@ -22,7 +22,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedCollectionFunction;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * This operator add an entry in a map. The entry is composed by a key and a value.

@@ -19,7 +19,8 @@
 package com.arcadedb.utility;
 
 import java.util.concurrent.Callable;
-import java.util.concurrent.locks.*;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class LockContext {
   private final Lock lock = new ReentrantLock();

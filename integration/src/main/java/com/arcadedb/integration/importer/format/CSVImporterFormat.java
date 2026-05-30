@@ -35,7 +35,6 @@ import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
-import com.arcadedb.utility.FileUtils;
 import com.univocity.parsers.common.AbstractParser;
 import com.univocity.parsers.common.CommonParserSettings;
 import com.univocity.parsers.csv.CsvParser;

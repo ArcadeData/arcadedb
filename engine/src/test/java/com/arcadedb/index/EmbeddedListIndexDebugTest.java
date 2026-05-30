@@ -19,13 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.RID;
-import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
-
-import java.util.Iterator;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Debug test to check if index is being populated correctly

@@ -22,7 +22,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.utility.MostUsedCache;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.Map;
 
 /**
  * Frequency-based cache for OpenCypher execution plans. Caches optimized physical plans to avoid

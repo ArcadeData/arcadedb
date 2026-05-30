@@ -33,8 +33,8 @@ import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;

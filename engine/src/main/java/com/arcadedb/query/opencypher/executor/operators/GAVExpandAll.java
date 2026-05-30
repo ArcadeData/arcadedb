@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.RID;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;

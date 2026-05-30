@@ -20,7 +20,6 @@ package com.arcadedb.server;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;

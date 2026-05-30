@@ -36,10 +36,10 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LongHashSet;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class DatabaseChecker {
   private final DatabaseInternal    database;

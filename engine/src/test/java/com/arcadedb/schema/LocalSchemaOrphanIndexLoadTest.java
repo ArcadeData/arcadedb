@@ -19,7 +19,6 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;

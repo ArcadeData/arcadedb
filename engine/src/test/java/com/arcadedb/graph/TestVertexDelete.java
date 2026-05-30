@@ -22,7 +22,9 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

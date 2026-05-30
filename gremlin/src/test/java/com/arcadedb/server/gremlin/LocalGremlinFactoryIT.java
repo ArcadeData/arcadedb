@@ -18,17 +18,12 @@
  */
 package com.arcadedb.server.gremlin;
 
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.gremlin.ArcadeGraphFactory;
-import com.arcadedb.remote.RemoteServer;
-import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.AfterEach;
 
 import org.junit.jupiter.api.BeforeAll;
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

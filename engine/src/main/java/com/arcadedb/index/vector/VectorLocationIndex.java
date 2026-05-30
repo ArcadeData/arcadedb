@@ -20,10 +20,12 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.RID;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.IntStream;
 
 /**
  * Lightweight index that stores only vector location metadata (absolute file offset, RID)

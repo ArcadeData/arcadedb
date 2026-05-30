@@ -21,9 +21,10 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Binary;
 import com.arcadedb.log.LogManager;
 
-import java.nio.*;
-import java.util.*;
-import java.util.logging.*;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.Objects;
+import java.util.logging.Level;
 
 /**
  * Contains the page content to be shared across threads.

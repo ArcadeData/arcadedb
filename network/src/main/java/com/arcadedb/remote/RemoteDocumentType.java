@@ -35,7 +35,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * Document type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or

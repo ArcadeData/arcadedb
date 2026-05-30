@@ -18,7 +18,8 @@
  */
 package com.arcadedb.utility;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
 
 /**
  * Allows to iterate over a single object

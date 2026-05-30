@@ -23,7 +23,6 @@ import java.util.Map;
 import java.util.Objects;
 
 import static com.arcadedb.query.opencypher.temporal.CypherDate.toInt;
-import static com.arcadedb.query.opencypher.temporal.CypherDate.toLong;
 
 /**
  * OpenCypher LocalTime value wrapping java.time.LocalTime.

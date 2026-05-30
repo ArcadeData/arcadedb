@@ -25,8 +25,9 @@ import com.arcadedb.exception.SchemaException;
 import com.arcadedb.graph.GraphEngine;
 import com.arcadedb.graph.MutableVertex;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 public class LocalVertexType extends LocalDocumentType implements VertexType {
   private final List<Bucket> additionalBuckets = new ArrayList<>();

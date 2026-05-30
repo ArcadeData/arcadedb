@@ -20,9 +20,10 @@ package com.arcadedb.utility;
 
 import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.schema.Property;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static com.arcadedb.schema.Property.TYPE_PROPERTY;

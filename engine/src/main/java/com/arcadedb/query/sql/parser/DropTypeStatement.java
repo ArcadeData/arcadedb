@@ -30,7 +30,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
+import java.util.Map;
 
 public class DropTypeStatement extends DDLStatement {
 

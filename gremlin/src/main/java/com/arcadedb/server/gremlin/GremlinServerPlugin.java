@@ -27,10 +27,13 @@ import com.arcadedb.server.ServerPlugin;
 import org.apache.tinkerpop.gremlin.server.GremlinServer;
 import org.apache.tinkerpop.gremlin.server.Settings;
 
-import java.io.*;
-import java.lang.reflect.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.lang.reflect.Field;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Properties;
+import java.util.logging.Level;
 
 public class GremlinServerPlugin implements ServerPlugin {
   private static final String               CONFIG_GREMLIN_SERVER_YAML = "/config/gremlin-server.yaml";

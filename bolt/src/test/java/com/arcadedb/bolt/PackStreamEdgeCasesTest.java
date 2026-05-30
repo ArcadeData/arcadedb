@@ -19,7 +19,6 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.bolt.packstream.PackStreamReader;
-import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltNode;
 
@@ -28,7 +27,10 @@ import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

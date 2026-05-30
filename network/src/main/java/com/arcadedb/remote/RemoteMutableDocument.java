@@ -29,7 +29,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 

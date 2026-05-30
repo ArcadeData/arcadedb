@@ -22,7 +22,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Identifier;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * Created by luigidellaquila on 01/03/17.

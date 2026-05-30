@@ -24,11 +24,9 @@ import com.arcadedb.database.Database;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -41,7 +39,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

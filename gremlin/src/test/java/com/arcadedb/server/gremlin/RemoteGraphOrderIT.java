@@ -24,10 +24,7 @@ import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
-
-import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

@@ -20,8 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 20/07/16.

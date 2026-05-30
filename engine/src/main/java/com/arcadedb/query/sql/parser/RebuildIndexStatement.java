@@ -41,8 +41,8 @@ import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class RebuildIndexStatement extends DDLStatement {
   private static final int                         MAX_ATTEMPTS = 5;

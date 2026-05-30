@@ -34,9 +34,9 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class PostCommandHandler extends AbstractQueryHandler {
 

@@ -27,7 +27,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

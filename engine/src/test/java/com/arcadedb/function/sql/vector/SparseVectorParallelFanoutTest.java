@@ -24,7 +24,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 

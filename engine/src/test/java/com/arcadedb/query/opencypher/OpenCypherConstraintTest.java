@@ -4,7 +4,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.Collection;
 import com.arcadedb.schema.EdgeType;

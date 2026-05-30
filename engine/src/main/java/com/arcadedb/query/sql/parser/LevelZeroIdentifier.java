@@ -27,7 +27,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.Property;
 
-import java.util.*;
+import java.util.Map;
 
 public class LevelZeroIdentifier extends SimpleNode {
   public FunctionCall functionCall;

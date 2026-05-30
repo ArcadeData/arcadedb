@@ -25,12 +25,10 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import org.assertj.core.api.Assertions;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Comprehensive tests for OpenCypher Scalar functions based on Neo4j Cypher documentation.

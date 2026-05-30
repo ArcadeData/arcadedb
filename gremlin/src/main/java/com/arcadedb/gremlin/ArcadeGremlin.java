@@ -50,8 +50,8 @@ import org.apache.tinkerpop.gremlin.process.traversal.step.sideEffect.AddPropert
 import javax.script.ScriptException;
 import javax.script.SimpleBindings;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 /**
  * Gremlin Expression builder.

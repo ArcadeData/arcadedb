@@ -19,7 +19,6 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Database;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;

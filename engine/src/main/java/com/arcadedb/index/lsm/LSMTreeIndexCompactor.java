@@ -31,10 +31,10 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 public class LSMTreeIndexCompactor {
   private boolean debug = false;

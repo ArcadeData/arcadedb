@@ -35,7 +35,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTTIMEOUT;

@@ -38,10 +38,9 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 public class GetServerHandler extends AbstractServerHttpHandler {
   private static final DefaultServerMetrics           profilerRateMetrics = new DefaultServerMetrics();

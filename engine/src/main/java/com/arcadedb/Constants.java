@@ -20,9 +20,10 @@ package com.arcadedb;
 
 import com.arcadedb.log.LogManager;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.Properties;
+import java.util.logging.Level;
 
 public class Constants {
   public static final String PRODUCT   = "ArcadeDB";

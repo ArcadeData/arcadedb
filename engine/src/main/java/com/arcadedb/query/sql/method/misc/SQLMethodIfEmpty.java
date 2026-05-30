@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
-import java.util.*;
+import java.util.Collection;
 
 /**
  * Returns argument if result is empty else return result.

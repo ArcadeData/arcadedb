@@ -19,11 +19,9 @@
 package com.arcadedb;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.DatabaseChecker;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -31,10 +29,8 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
-
-import org.assertj.core.api.Assertions;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

@@ -32,8 +32,9 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
 import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Java binary serializer. Used to serialize/deserialize Java objects. Null properties are excluded from serialization.

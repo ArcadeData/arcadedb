@@ -18,7 +18,7 @@
  */
 package com.arcadedb.exception;
 
-import java.io.*;
+import java.io.IOException;
 
 public class DatabaseIsClosedException extends ArcadeDBException {
   public DatabaseIsClosedException(final String s) {

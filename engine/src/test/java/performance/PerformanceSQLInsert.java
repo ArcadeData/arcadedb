@@ -23,7 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class PerformanceSQLInsert {
   private static final String TYPE_NAME = "Person";

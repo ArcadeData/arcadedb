@@ -30,7 +30,8 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * Builder class for type indexes.

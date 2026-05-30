@@ -45,9 +45,9 @@ import com.google.gson.Gson;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 import static com.google.gson.stream.JsonToken.BEGIN_ARRAY;
 import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;

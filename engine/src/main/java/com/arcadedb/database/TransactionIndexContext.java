@@ -34,7 +34,7 @@ import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class TransactionIndexContext {
   private final DatabaseInternal                                             database;

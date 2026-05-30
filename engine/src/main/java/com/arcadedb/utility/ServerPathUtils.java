@@ -21,7 +21,7 @@ package com.arcadedb.utility;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 
-import java.io.*;
+import java.io.File;
 
 /**
  * Utility class for server path configuration.

@@ -24,7 +24,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.Identifier;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 11/08/16.

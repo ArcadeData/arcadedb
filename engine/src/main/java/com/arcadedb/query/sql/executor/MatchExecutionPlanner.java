@@ -50,7 +50,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 20/09/16.

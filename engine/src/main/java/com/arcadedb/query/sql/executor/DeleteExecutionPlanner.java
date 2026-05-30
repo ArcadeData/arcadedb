@@ -30,7 +30,7 @@ import com.arcadedb.query.sql.parser.Limit;
 import com.arcadedb.query.sql.parser.SelectStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 08/08/16.

@@ -26,8 +26,11 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class CheckDatabaseStatement extends SimpleExecStatement {
   public final Set<BucketIdentifier> buckets  = new HashSet<>();

@@ -22,8 +22,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.parser.EqualsCompareOperator;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
-import java.util.*;
+import java.math.BigDecimal;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

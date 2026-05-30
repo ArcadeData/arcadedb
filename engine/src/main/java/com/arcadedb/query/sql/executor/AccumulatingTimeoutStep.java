@@ -22,8 +22,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Timeout;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Created by luigidellaquila on 08/08/16.

@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 22/07/16.

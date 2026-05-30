@@ -28,7 +28,7 @@ import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.Source;
 import com.arcadedb.integration.importer.SourceSchema;
 
-import java.io.*;
+import java.io.IOException;
 
 public interface FormatImporter {
   void load(SourceSchema sourceSchema, AnalyzedEntity.EntityType entityType, Parser parser, DatabaseInternal database, ImporterContext context,

@@ -30,7 +30,8 @@ import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.channels.FileChannel;
@@ -39,8 +40,6 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.*;
-
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Realistic benchmark using MSMARCO v2.1 embeddings (Cohere embed-english-v3, 1024-dim).

@@ -19,9 +19,12 @@ package com.arcadedb.function.java;/*
 
 import com.arcadedb.function.FunctionLibraryDefinition;
 
-import java.lang.reflect.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * Binds a Java class into a function library, where each method of the class are invokable functions. At construction time, the class is inspected to

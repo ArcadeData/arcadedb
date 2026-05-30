@@ -25,7 +25,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.Property;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 public class CreatePropertyAttributeStatement extends SimpleNode {
   public Identifier settingName;

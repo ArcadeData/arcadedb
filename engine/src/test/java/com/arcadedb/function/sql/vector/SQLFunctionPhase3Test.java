@@ -21,7 +21,6 @@ package com.arcadedb.function.sql.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;

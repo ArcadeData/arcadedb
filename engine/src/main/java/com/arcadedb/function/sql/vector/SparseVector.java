@@ -18,7 +18,8 @@
  */
 package com.arcadedb.function.sql.vector;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Represents a sparse vector using a map of non-zero indices to values.

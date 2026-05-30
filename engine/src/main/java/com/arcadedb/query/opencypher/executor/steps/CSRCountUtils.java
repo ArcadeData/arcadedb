@@ -23,7 +23,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 
 /**

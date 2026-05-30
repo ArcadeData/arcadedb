@@ -19,7 +19,6 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;

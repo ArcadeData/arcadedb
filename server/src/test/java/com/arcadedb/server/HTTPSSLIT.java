@@ -29,11 +29,11 @@ import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
-import java.net.*;
+import java.net.URL;
 import java.security.SecureRandom;
-import java.security.cert.*;
-import java.util.*;
-import java.util.logging.*;
+import java.security.cert.X509Certificate;
+import java.util.Base64;
+import java.util.logging.Level;
 
 public class HTTPSSLIT extends BaseGraphServerTest {
   public HTTPSSLIT() {

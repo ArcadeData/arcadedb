@@ -22,7 +22,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.database.DatabaseInternal;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.Iterator;
 
 public class InOperator extends SimpleNode implements BinaryCompareOperator {
   public InOperator(final int id) {

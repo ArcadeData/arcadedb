@@ -19,7 +19,6 @@
 package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 

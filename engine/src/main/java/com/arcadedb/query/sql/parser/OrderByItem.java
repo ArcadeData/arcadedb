@@ -23,8 +23,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.Map;
+import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 

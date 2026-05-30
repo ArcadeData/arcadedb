@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
@@ -32,8 +31,10 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.schema.Property;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 import static org.assertj.core.api.Assertions.assertThat;

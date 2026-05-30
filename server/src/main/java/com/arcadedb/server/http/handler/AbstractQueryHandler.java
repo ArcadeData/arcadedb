@@ -38,8 +38,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 
 import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 

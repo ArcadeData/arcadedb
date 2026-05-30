@@ -18,7 +18,6 @@
  */
 package com.arcadedb.index.vector;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 

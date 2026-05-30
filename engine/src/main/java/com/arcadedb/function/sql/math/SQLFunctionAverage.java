@@ -24,7 +24,8 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
-import java.math.*;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 
 /**
  * Compute the average value for a field. Uses the context to save the last average number. When different Number class are used,

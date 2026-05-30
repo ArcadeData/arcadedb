@@ -27,7 +27,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.utility.MultiIterator;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
+import java.math.BigDecimal;
 import java.time.*;
 import java.util.*;
 

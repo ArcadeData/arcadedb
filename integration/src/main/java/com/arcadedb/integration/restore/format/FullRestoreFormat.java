@@ -18,7 +18,6 @@
  */
 package com.arcadedb.integration.restore.format;
 
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.integration.restore.RestoreException;
@@ -35,11 +34,12 @@ import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
-import java.net.*;
-import java.nio.charset.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.spec.KeySpec;
-import java.util.*;
-import java.util.zip.*;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipInputStream;
 
 public class FullRestoreFormat extends AbstractRestoreFormat {
   private interface RestoreCallback {

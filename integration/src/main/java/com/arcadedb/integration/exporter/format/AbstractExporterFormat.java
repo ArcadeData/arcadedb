@@ -23,7 +23,8 @@ import com.arcadedb.integration.exporter.ExporterContext;
 import com.arcadedb.integration.exporter.ExporterSettings;
 import com.arcadedb.integration.importer.ConsoleLogger;
 
-import java.text.*;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
 
 public abstract class AbstractExporterFormat {
   protected final        ExporterSettings settings;

@@ -37,7 +37,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * Returns an Result containing metadata regarding the schema types.

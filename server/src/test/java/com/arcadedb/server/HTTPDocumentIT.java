@@ -19,7 +19,6 @@
 package com.arcadedb.server;
 
 import com.arcadedb.Constants;
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
@@ -28,18 +27,19 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
 import com.arcadedb.server.http.handler.AbstractQueryHandler;
-import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
+import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 class HTTPDocumentIT extends BaseGraphServerTest {
   private final static String DATABASE_NAME = "httpDocument";

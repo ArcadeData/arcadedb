@@ -22,7 +22,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 public class NestedProjectionItem extends SimpleNode {
   public boolean          exclude       = false;

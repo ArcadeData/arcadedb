@@ -25,7 +25,8 @@ import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

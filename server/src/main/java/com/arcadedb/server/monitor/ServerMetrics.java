@@ -18,7 +18,7 @@
  */
 package com.arcadedb.server.monitor;
 
-import java.util.*;
+import java.util.Map;
 
 public interface ServerMetrics {
   interface Meter {

@@ -18,13 +18,9 @@
  */
 package com.arcadedb.function.sql;
 
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.index.vector.VectorUtils;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.SQLFunction;
-
-import java.util.List;
 
 /**
  * Abstract class to extend to build Custom SQL Functions.

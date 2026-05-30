@@ -24,7 +24,6 @@ import com.arcadedb.engine.timeseries.TimeSeriesEngine;
 import com.arcadedb.engine.timeseries.promql.PromQLEvaluator;
 import com.arcadedb.engine.timeseries.promql.PromQLParser;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr;
-import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.LabelMatcher;
 import com.arcadedb.engine.timeseries.promql.ast.PromQLExpr.VectorSelector;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;

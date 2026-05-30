@@ -25,7 +25,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Basic Index interface.

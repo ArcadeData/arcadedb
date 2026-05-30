@@ -19,7 +19,7 @@ package com.arcadedb.function.polyglot;/*
 
 import com.arcadedb.database.Database;
 
-import java.util.*;
+import java.util.List;
 
 public class JavascriptFunctionLibraryDefinition extends PolyglotFunctionLibraryDefinition<JavascriptFunctionDefinition> {
   public JavascriptFunctionLibraryDefinition(final Database database, final String libraryName) {

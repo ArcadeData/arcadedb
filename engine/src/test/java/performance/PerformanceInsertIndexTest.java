@@ -28,7 +28,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class PerformanceInsertIndexTest extends TestHelper {
   private static final int    TOT       = 100_000_000;

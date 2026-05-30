@@ -40,7 +40,6 @@ import io.swagger.v3.oas.models.servers.Server;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Generates OpenAPI 3.0+ specification for ArcadeDB HTTP API endpoints.

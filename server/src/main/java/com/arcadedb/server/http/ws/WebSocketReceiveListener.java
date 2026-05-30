@@ -30,10 +30,12 @@ import io.undertow.websockets.core.StreamSourceFrameChannel;
 import io.undertow.websockets.core.WebSocketChannel;
 import io.undertow.websockets.core.WebSockets;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.io.IOException;
+import java.util.Locale;
+import java.util.Set;
+import java.util.UUID;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class WebSocketReceiveListener extends AbstractReceiveListener {
   private final HttpServer        httpServer;

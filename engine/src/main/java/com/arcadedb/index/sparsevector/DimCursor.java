@@ -21,7 +21,6 @@ package com.arcadedb.index.sparsevector;
 import com.arcadedb.database.RID;
 
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
 
 /**

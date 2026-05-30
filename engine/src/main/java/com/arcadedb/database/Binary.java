@@ -24,10 +24,11 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.UnsignedBytesComparator;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.io.*;
-import java.nio.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.logging.Level;
 
 /**
  * Binary data type. It is backed by Java Byte Buffers.

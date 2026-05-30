@@ -29,10 +29,15 @@ import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Imports Embeddings using LSMVector index instead of HNSW.

@@ -31,8 +31,8 @@ import com.arcadedb.query.sql.parser.UpdateOperations;
 import com.arcadedb.query.sql.parser.UpdateStatement;
 import com.arcadedb.query.sql.parser.WhereClause;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 08/08/16.

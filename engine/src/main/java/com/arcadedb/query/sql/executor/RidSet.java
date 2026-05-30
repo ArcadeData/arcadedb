@@ -20,7 +20,9 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.RID;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.Set;
 
 /**
  * Bitmap-based {@link Set} of RIDs. Stores presence as a bit per position per bucket ({@code content[bucket][block][word]}) so memory cost is proportional to

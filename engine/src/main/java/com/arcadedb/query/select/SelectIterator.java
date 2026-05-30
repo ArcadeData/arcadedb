@@ -25,8 +25,9 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.stream.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * Query iterator returned from queries. Extends the base Java iterator with convenient methods.

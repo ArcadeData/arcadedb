@@ -46,7 +46,6 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.util.concurrent.TimeUnit;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;

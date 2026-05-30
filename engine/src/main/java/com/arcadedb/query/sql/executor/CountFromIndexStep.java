@@ -22,7 +22,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.index.Index;
 import com.arcadedb.query.sql.parser.IndexIdentifier;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * Returns the number of records contained in an index
