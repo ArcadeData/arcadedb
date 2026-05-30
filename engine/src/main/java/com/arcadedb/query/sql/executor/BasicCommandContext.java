@@ -188,7 +188,7 @@ public class BasicCommandContext implements CommandContext {
     if (this.variables != null && variables.containsKey(name)) {
       return variables.get(name);
     }
-    if (parent != null && parent instanceof BasicCommandContext context) {
+    if (parent instanceof BasicCommandContext context) {
       return context.getVariableFromParentHierarchy(name);
     }
     return null;

@@ -4307,14 +4307,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // where expression → MathExprContext → mathExpression (BaseContext) → baseExpression (ParenthesizedExprContext)
     // → statement
     Statement statementFromExpr = null;
-    if (ctx.expression() != null && ctx.expression() instanceof final SQLParser.MathExprContext mathExprCtx) {
+    if (ctx.expression() instanceof final SQLParser.MathExprContext mathExprCtx) {
       // Navigate the parse tree to find if this is a parenthesizedExpr with a statement
       final SQLParser.MathExpressionContext mathCtx = mathExprCtx.mathExpression();
 
-      if (mathCtx != null && mathCtx instanceof final SQLParser.BaseContext baseCtx) {
+      if (mathCtx instanceof final SQLParser.BaseContext baseCtx) {
         final SQLParser.BaseExpressionContext baseExprCtx = baseCtx.baseExpression();
 
-        if (baseExprCtx != null && baseExprCtx instanceof final SQLParser.ParenthesizedStmtContext parenCtx) {
+        if (baseExprCtx instanceof final SQLParser.ParenthesizedStmtContext parenCtx) {
           if (parenCtx.statement() != null && CollectionUtils.isEmpty(parenCtx.modifier())) {
             // Found a statement inside parentheses with no trailing modifiers - visit it directly
             statementFromExpr = (Statement) visit(parenCtx.statement());
