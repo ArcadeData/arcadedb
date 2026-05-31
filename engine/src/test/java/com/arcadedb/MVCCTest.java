@@ -107,7 +107,9 @@ class MVCCTest extends TestHelper {
 
         assertThat(mvccErrors.get() > 0).isTrue();
         assertThat(otherErrors.get()).isEqualTo(0);
-        assertThat(txErrors.get()).isEqualTo(0);
+        // With retries=0 every conflict exhausts immediately and notifies both the global onError handler and the
+        // per-task error callback, so each detected conflict increments both counters in lockstep.
+        assertThat(txErrors.get()).isEqualTo(mvccErrors.get());
 
         database.drop();
         database = factory.create();
