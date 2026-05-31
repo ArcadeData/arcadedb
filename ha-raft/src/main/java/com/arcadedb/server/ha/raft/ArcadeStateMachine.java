@@ -1114,6 +1114,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final int pageCount = buf.getInt();
     buf.getInt(); // segmentSize - not needed for deserialization
 
+    // Reject a corrupted/misaligned entry instead of blowing up with a cryptic NegativeArraySizeException (issue #4420):
+    // every WAL page occupies at least its 24-byte fixed header, so a page count exceeding the remaining bytes is corruption.
+    if (pageCount < 0 || (long) pageCount * 6 * Integer.BYTES > buf.remaining())
+      throw new ReplicationException("Corrupted WAL transaction entry: invalid page count " + pageCount);
+
     tx.pages = new WALFile.WALPage[pageCount];
 
     for (int i = 0; i < pageCount; i++) {
@@ -1126,6 +1131,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       page.currentPageSize = buf.getInt();
 
       final int deltaSize = page.changesTo - page.changesFrom + 1;
+      if (deltaSize <= 0 || page.changesFrom < 0 || deltaSize > buf.remaining())
+        throw new ReplicationException("Corrupted WAL transaction entry: invalid delta range [" + page.changesFrom + ","
+            + page.changesTo + "] for page " + page.fileId + ":" + page.pageNumber);
       final byte[] content = new byte[deltaSize];
       buf.get(content);
       page.currentContent = new Binary(content);
