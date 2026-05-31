@@ -75,7 +75,10 @@ public class PostCommandHandler extends AbstractQueryHandler {
       throw new IllegalArgumentException("command missing");
 
     final String language = (String) requestMap.get("language");
-    String command = decode((String) requestMap.get("command"));
+    // Do NOT HTML-decode the command: the command is already transported losslessly as a JSON string,
+    // and a command can legitimately carry HTML entities (e.g. &quot;, &amp;) inside its data. Decoding
+    // them here corrupts the payload (e.g. breaks the embedded JSON of an INSERT ... CONTENT { ... }).
+    String command = (String) requestMap.get("command");
     final int limit = (int) requestMap.getOrDefault("limit", DEFAULT_LIMIT);
     final String serializer = (String) requestMap.getOrDefault("serializer", "record");
     final String profileExecution = (String) requestMap.getOrDefault("profileExecution", null);

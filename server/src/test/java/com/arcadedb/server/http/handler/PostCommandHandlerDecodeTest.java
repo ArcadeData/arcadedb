@@ -46,25 +46,4 @@ class PostCommandHandlerDecodeTest extends BaseGraphServerTest {
 
     assertThat(result.next().<Boolean>getProperty("result")).isTrue();
   }
-
-  @Test
-  void decodeMethodCorrectlyHandlesHtmlEntities() {
-    final var handler = new PostCommandHandler(getServer(0).getHttpServer()) {
-      public String testDecode(final String command) {
-        return decode(command);
-      }
-    };
-
-    // Test the decode method directly with HTML-encoded entities
-    String encoded = "return 1==1 &amp;&amp; 0==0";
-    String decoded = handler.testDecode(encoded);
-
-    // Should decode &amp; to & not to space
-    assertThat(decoded).isEqualTo("return 1==1 && 0==0");
-
-    // Test other HTML entities too
-    assertThat(handler.testDecode("&lt;script&gt;")).isEqualTo("<script>");
-    assertThat(handler.testDecode("&quot;quoted&quot;")).isEqualTo("\"quoted\"");
-    assertThat(handler.testDecode("&#039;apostrophe&#039;")).isEqualTo("'apostrophe'");
-  }
 }

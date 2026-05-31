@@ -2939,7 +2939,7 @@ function browseType(typeName) {
   jQuery.ajax({
     type: "POST",
     url: "api/v1/command/" + database,
-    data: JSON.stringify({ language: "sql", command: escapeHtml(query), limit: limit, serializer: "studio" }),
+    data: JSON.stringify({ language: "sql", command: query, limit: limit, serializer: "studio" }),
     beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
   }).done(function(data) {
     $("#executeSpinner").hide();
@@ -3012,7 +3012,6 @@ function executeCommandTable() {
 
   let command = editor.getSelection();
   if (command == null || command.length <= 4) command = editor.getValue();
-  command = escapeHtml(command);
 
   let limit = parseInt($("#inputLimit").val());
   let profileExecution = $("#profileCommand").prop("checked") ? "detailed" : "basic";
@@ -3066,7 +3065,6 @@ function executeCommandGraph() {
   let command = editor.getSelection();
 
   if (command == null || command.length <= 4) command = editor.getValue();
-  command = escapeHtml(command);
 
   let limit = parseInt($("#inputLimit").val());
   let profileExecution = $("#profileCommand").prop("checked") ? "detailed" : "basic";
