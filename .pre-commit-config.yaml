@@ -54,7 +54,7 @@ repos:
         types: [ java, xml ]
         additional_dependencies:
           - prettier@3.8.3
-          - prettier-plugin-java@2.9.4
+          - prettier-plugin-java@2.9.7
           - prettier-plugin-xml
         args:
           - --write
