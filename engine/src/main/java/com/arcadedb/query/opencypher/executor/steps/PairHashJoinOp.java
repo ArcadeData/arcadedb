@@ -29,7 +29,12 @@ import com.arcadedb.schema.VertexType;
 import com.arcadedb.utility.IntHashSet;
 import com.arcadedb.utility.LongLongHashMap;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
 
 /**
  * Count operator for two-pattern pair-join queries (Q2).

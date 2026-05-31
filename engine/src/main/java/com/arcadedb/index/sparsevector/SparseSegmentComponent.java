@@ -19,7 +19,12 @@
 package com.arcadedb.index.sparsevector;
 
 import com.arcadedb.database.DatabaseInternal;
-import com.arcadedb.engine.*;
+import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.ComponentFactory;
+import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexException;
 
 import java.io.IOException;
