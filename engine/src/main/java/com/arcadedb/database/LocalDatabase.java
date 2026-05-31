@@ -101,6 +101,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.io.UncheckedIOException;
+import java.nio.BufferUnderflowException;
 import java.nio.channels.ClosedChannelException;
 import java.nio.channels.FileChannel;
 import java.nio.channels.FileLock;
@@ -1149,11 +1150,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           // Cascade-delete EXTERNAL property values living in paired external buckets. This must run BEFORE the primary
           // record is deleted, so the buffer is still readable. Both deletes ride the same transaction.
           cascadeDeleteExternalValues(document);
-        } catch (final SerializationException | NegativeArraySizeException e) {
+        } catch (final SerializationException | NegativeArraySizeException | BufferUnderflowException
+                       | IndexOutOfBoundsException | IllegalArgumentException e) {
           // The record buffer is corrupted (e.g. written by a version affected by issue #4319 in HA), so its indexed
-          // keys and EXTERNAL pointers cannot be read for cleanup. Proceed with the physical deletion anyway so the
-          // stuck record can finally be removed (issue #4420); leftover index/external entries are best-effort and a
-          // database check can repair them afterwards.
+          // keys and EXTERNAL pointers cannot be read for cleanup. A malformed buffer surfaces as one of a small family
+          // of exceptions depending on which field decodes wrong: out-of-range length (SerializationException /
+          // NegativeArraySizeException), a content offset past the end (IllegalArgumentException "Invalid position"), or
+          // a truncated read (BufferUnderflowException / IndexOutOfBoundsException) - see issues #4420 and #4432.
+          // Proceed with the physical deletion anyway so the stuck record can finally be removed; leftover index/external
+          // entries are best-effort and a database check can repair them afterwards.
           LogManager.instance().log(this, Level.WARNING,
               "Cannot read record %s for index/external cleanup on delete (corrupted buffer): %s. Deleting the record anyway; "
                   + "run a database check to repair any dangling index entries.", record.getIdentity(), e.getMessage());

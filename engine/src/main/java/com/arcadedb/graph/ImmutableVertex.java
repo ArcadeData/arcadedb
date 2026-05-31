@@ -26,6 +26,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.DatabaseOperationException;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
@@ -49,16 +50,31 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
 
   public ImmutableVertex(final Database database, final DocumentType type, final RID rid, final Binary buffer) {
     super(database, type, rid, buffer);
-    if (buffer != null) {
-      buffer.position(1); // SKIP RECORD TYPE
-      outEdges = new RID(buffer.getInt(), buffer.getLong());
-      if (outEdges.getBucketId() == -1)
-        outEdges = null;
-      inEdges = new RID(buffer.getInt(), buffer.getLong());
-      if (inEdges.getBucketId() == -1)
-        inEdges = null;
-      propertiesStartingPosition = buffer.position();
-    }
+    if (buffer != null)
+      parseEdgePointers();
+  }
+
+  /**
+   * Reads the fixed vertex prefix - record type (1 byte) + out-edge RID (int+long) + in-edge RID (int+long) = 25 bytes -
+   * and positions the buffer at the start of the properties section. A truncated/corrupted record buffer (e.g. written
+   * by a version affected by issue #4319) would otherwise blow up with a cryptic {@link java.nio.BufferUnderflowException}
+   * during lazy loading; surface a clear, catchable {@link SerializationException} instead so a corrupted vertex can
+   * still be read/deleted (issue #4432).
+   */
+  private void parseEdgePointers() {
+    final int prefixSize = Binary.BYTE_SERIALIZED_SIZE + 2 * (Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE);
+    if (buffer.size() < prefixSize)
+      throw new SerializationException(
+          "Cannot read vertex " + rid + " edge pointers: record buffer is truncated or corrupted (size=" + buffer.size()
+              + ", expected at least " + prefixSize + ")");
+    buffer.position(1); // SKIP RECORD TYPE
+    outEdges = new RID(buffer.getInt(), buffer.getLong());
+    if (outEdges.getBucketId() == -1)
+      outEdges = null;
+    inEdges = new RID(buffer.getInt(), buffer.getLong());
+    if (inEdges.getBucketId() == -1)
+      inEdges = null;
+    propertiesStartingPosition = buffer.position();
   }
 
   @Override
@@ -233,14 +249,7 @@ public class ImmutableVertex extends ImmutableDocument implements VertexInternal
   @Override
   protected boolean checkForLazyLoading() {
     if (super.checkForLazyLoading() || buffer != null && buffer.position() == 1) {
-      buffer.position(1); // SKIP RECORD TYPE
-      outEdges = new RID(buffer.getInt(), buffer.getLong());
-      if (outEdges.getBucketId() == -1)
-        outEdges = null;
-      inEdges = new RID(buffer.getInt(), buffer.getLong());
-      if (inEdges.getBucketId() == -1)
-        inEdges = null;
-      propertiesStartingPosition = buffer.position();
+      parseEdgePointers();
       return true;
     }
     return false;
