@@ -409,10 +409,6 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       throw new ServerSecurityException("Only root user is authorized to execute server commands");
   }
 
-  protected String decode(final String command) {
-    return command.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#039;", "'");
-  }
-
   protected String error2json(final String error, final String detail, final Throwable exception, final String exceptionArgs,
                               final String help) {
     final JSONObject json = new JSONObject();

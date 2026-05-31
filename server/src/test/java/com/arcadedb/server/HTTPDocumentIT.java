@@ -514,8 +514,10 @@ class HTTPDocumentIT extends BaseGraphServerTest {
   /**
    * Test for GitHub issue #1602: Unable to add Data with Special Characters via The Studio
    * <p>
+   * The command is transported losslessly as a JSON string, so it is sent verbatim (the server no
+   * longer HTML-decodes it - that pass corrupted commands carrying literal HTML entities as data).
    * Verifies that special characters (like &, <, >, ", ') are correctly:
-   * 1. Stored when sent via the Studio API (with HTML-escaped command)
+   * 1. Stored when sent via the API (raw command)
    * 2. Returned correctly in JSON response
    * 3. Properly escaped for HTML display
    */
@@ -540,9 +542,9 @@ class HTTPDocumentIT extends BaseGraphServerTest {
         connection.disconnect();
       }
 
-      // Insert data with special characters using Studio serializer
-      // The Studio frontend escapes HTML before sending, so we simulate that behavior
-      final String escapedCommand = "INSERT INTO Field SET value = &#039;LdhgfdY&amp;hgff2&amp;a&#039;";
+      // Insert data with special characters. The command travels verbatim inside the JSON request
+      // body, so literal special characters in the data must be preserved end to end.
+      final String escapedCommand = "INSERT INTO Field SET value = 'LdhgfdY&hgff2&a'";
 
       connection = (HttpURLConnection) new URL(
           "http://localhost:248" + serverIndex + "/api/v1/command/" + DATABASE_NAME).openConnection();
