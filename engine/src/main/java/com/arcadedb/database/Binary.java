@@ -18,6 +18,7 @@
  */
 package com.arcadedb.database;
 
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.UnsignedBytesComparator;
@@ -530,11 +531,28 @@ public class Binary implements BinaryStructure, Comparable<Binary> {
 
   @Override
   public byte[] getBytes() {
-    final byte[] result = new byte[(int) getUnsignedNumber()];
-    if (result.length > 0) {
-      checkForFetching(result.length);
-      buffer.get(result);
+    final long len = getUnsignedNumber();
+    // A negative or out-of-int-range length means the buffer is misaligned or the underlying record is corrupted.
+    // Surface a clear, actionable error instead of a cryptic NegativeArraySizeException (issue #4420): when a record
+    // written by an older buggy version (or replicated as a corrupted page) is read back, the length prefix can decode
+    // to a value > Integer.MAX_VALUE that wraps to a small negative when cast to int (e.g. -51).
+    if (len < 0L || len > Integer.MAX_VALUE)
+      throw new SerializationException(
+          "Invalid byte array length " + len + " at position " + (buffer.position() - getUnsignedNumberSpace(len))
+              + " in buffer of size " + size + " (corrupted record or misaligned read)");
+
+    final int length = (int) len;
+    if (length > 0) {
+      checkForFetching(length);
+      final int available = size - buffer.position();
+      if (length > available)
+        throw new SerializationException(
+            "Byte array length " + length + " exceeds the " + available + " bytes available in buffer of size " + size
+                + " (corrupted record or misaligned read)");
     }
+    final byte[] result = new byte[length];
+    if (length > 0)
+      buffer.get(result);
     return result;
   }
 

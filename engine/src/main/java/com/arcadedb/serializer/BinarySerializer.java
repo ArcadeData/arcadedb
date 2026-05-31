@@ -784,7 +784,7 @@ public class BinarySerializer {
       value = new UUID(content.getNumber(), content.getNumber());
       break;
     case BinaryTypes.TYPE_LIST: {
-      final int count = (int) content.getUnsignedNumber();
+      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
       final List<Object> list = new ArrayList<>(count);
       for (int i = 0; i < count; ++i) {
         final byte entryType = content.getByte();
@@ -794,7 +794,7 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_MAP: {
-      final int count = (int) content.getUnsignedNumber();
+      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
       final Map<Object, Object> map = new LinkedHashMap<>(count);
       for (int i = 0; i < count; ++i) {
         final byte entryKeyType = content.getByte();
@@ -822,7 +822,7 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_SHORTS: {
-      final int count = (int) content.getUnsignedNumber();
+      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
       final short[] array = new short[count];
       for (int i = 0; i < count; ++i)
         array[i] = (short) content.getNumber();
@@ -830,7 +830,7 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_INTEGERS: {
-      final int count = (int) content.getUnsignedNumber();
+      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
       final int[] array = new int[count];
       for (int i = 0; i < count; ++i)
         array[i] = (int) content.getNumber();
@@ -838,7 +838,7 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_LONGS: {
-      final int count = (int) content.getUnsignedNumber();
+      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
       final long[] array = new long[count];
       for (int i = 0; i < count; ++i)
         array[i] = content.getNumber();
@@ -846,7 +846,7 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_FLOATS: {
-      final int count = (int) content.getUnsignedNumber();
+      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
       final float[] array = new float[count];
       for (int i = 0; i < count; ++i)
         array[i] = Float.intBitsToFloat((int) content.getNumber());
@@ -854,7 +854,7 @@ public class BinarySerializer {
       break;
     }
     case BinaryTypes.TYPE_ARRAY_OF_DOUBLES: {
-      final int count = (int) content.getUnsignedNumber();
+      final int count = checkDeserializedCount(content.getUnsignedNumber(), content);
       final double[] array = new double[count];
       for (int i = 0; i < count; ++i)
         array[i] = Double.longBitsToDouble(content.getNumber());
@@ -866,6 +866,20 @@ public class BinarySerializer {
       throw new SerializationException("Error on deserializing value of unknown type " + type);
     }
     return value;
+  }
+
+  /**
+   * Validates an element count/length decoded from a (possibly corrupted) record buffer. A misaligned or corrupted
+   * varint can decode to a value larger than {@link Integer#MAX_VALUE} that wraps to a negative int, producing a cryptic
+   * {@link NegativeArraySizeException} (or an oversized allocation) on the following collection/array creation. Convert
+   * it to a clear, actionable error instead (issue #4420). Every collection element consumes at least one byte, so a
+   * count exceeding the total buffer size is always corruption and this check never rejects valid data.
+   */
+  private static int checkDeserializedCount(final long count, final Binary buffer) {
+    if (count < 0L || count > Integer.MAX_VALUE || count > buffer.size())
+      throw new SerializationException("Invalid element count " + count + " in buffer of size " + buffer.size()
+          + " (corrupted record or misaligned read)");
+    return (int) count;
   }
 
   public Binary serializeProperties(final Database database, final Document record, final Binary header, final Binary content) {

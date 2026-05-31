@@ -47,6 +47,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.InvalidDatabaseInstanceException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.exception.SerializationException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
@@ -1143,10 +1144,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final LocalBucket bucket = schema.getBucketById(record.getIdentity().getBucketId());
 
       if (record instanceof Document document) {
-        indexer.deleteDocument(document);
-        // Cascade-delete EXTERNAL property values living in paired external buckets. This must run BEFORE the primary
-        // record is deleted, so the buffer is still readable. Both deletes ride the same transaction.
-        cascadeDeleteExternalValues(document);
+        try {
+          indexer.deleteDocument(document);
+          // Cascade-delete EXTERNAL property values living in paired external buckets. This must run BEFORE the primary
+          // record is deleted, so the buffer is still readable. Both deletes ride the same transaction.
+          cascadeDeleteExternalValues(document);
+        } catch (final SerializationException | NegativeArraySizeException e) {
+          // The record buffer is corrupted (e.g. written by a version affected by issue #4319 in HA), so its indexed
+          // keys and EXTERNAL pointers cannot be read for cleanup. Proceed with the physical deletion anyway so the
+          // stuck record can finally be removed (issue #4420); leftover index/external entries are best-effort and a
+          // database check can repair them afterwards.
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot read record %s for index/external cleanup on delete (corrupted buffer): %s. Deleting the record anyway; "
+                  + "run a database check to repair any dangling index entries.", record.getIdentity(), e.getMessage());
+        }
       }
 
       if (record instanceof Edge edge) {
