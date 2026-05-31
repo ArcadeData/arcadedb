@@ -772,6 +772,13 @@ public enum GlobalConfiguration {
       If empty, a random token is auto-generated and stored in raft-storage at startup.""",
       String.class, ""),
 
+  HA_CLUSTER_TOKEN_PATH("arcadedb.ha.clusterTokenPath", SCOPE.SERVER,
+      """
+      Path to a file containing the shared secret for inter-node request forwarding authentication. \
+      Used to keep the secret off the command line (e.g. a Kubernetes Secret mounted on tmpfs). \
+      Read only when arcadedb.ha.clusterToken is not set; the file content is trimmed of surrounding whitespace.""",
+      String.class, null),
+
   HA_HEALTH_CHECK_INTERVAL("arcadedb.ha.healthCheckInterval", SCOPE.SERVER,
       "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
       Long.class, 3000L),

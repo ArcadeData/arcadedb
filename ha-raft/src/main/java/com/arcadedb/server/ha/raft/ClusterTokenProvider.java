@@ -25,7 +25,10 @@ import com.arcadedb.log.LogManager;
 
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.logging.Level;
@@ -65,9 +68,9 @@ class ClusterTokenProvider {
   synchronized void initClusterToken() {
     if (clusterToken != null)
       return;
-    final String configured = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
-    if (configured != null && !configured.isEmpty()) {
-      this.clusterToken = configured;
+    final String resolved = resolveExplicitToken(configuration);
+    if (resolved != null) {
+      this.clusterToken = resolved;
       return;
     }
     final String clusterName = configuration.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
@@ -107,9 +110,11 @@ class ClusterTokenProvider {
    * method is a no-op.
    */
   static void initClusterTokenForTest(final ContextConfiguration config) {
-    final String configured = config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
-    if (configured != null && !configured.isEmpty())
+    final String resolved = resolveExplicitToken(config);
+    if (resolved != null) {
+      config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, resolved);
       return;
+    }
 
     final String clusterName = config.getValueAsString(GlobalConfiguration.HA_CLUSTER_NAME);
     if (clusterName == null || clusterName.isEmpty())
@@ -123,6 +128,42 @@ class ClusterTokenProvider {
           "Cannot derive cluster token without a root password. Set arcadedb.server.rootPassword or arcadedb.ha.clusterToken");
 
     config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, deriveTokenInternal(clusterName, rootPasswordStr));
+  }
+
+  /**
+   * Resolves an explicitly provided cluster token, in precedence order:
+   * <ol>
+   *   <li>{@link GlobalConfiguration#HA_CLUSTER_TOKEN} if set;</li>
+   *   <li>the trimmed content of the file at {@link GlobalConfiguration#HA_CLUSTER_TOKEN_PATH} if set.</li>
+   * </ol>
+   * Returns {@code null} when neither is configured, signalling that the token must be derived from
+   * the cluster name and root password. Reading the secret from a file keeps it off the command line
+   * (e.g. a Kubernetes Secret mounted on tmpfs); the content is trimmed because most tooling appends a
+   * trailing newline, which would otherwise break the constant-time token comparison between nodes.
+   *
+   * @throws ConfigurationException if the token-path file is configured but cannot be read, or is empty.
+   */
+  private static String resolveExplicitToken(final ContextConfiguration config) {
+    final String configured = config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN);
+    if (configured != null && !configured.isEmpty())
+      return configured;
+
+    final String tokenPath = config.getValueAsString(GlobalConfiguration.HA_CLUSTER_TOKEN_PATH);
+    if (tokenPath == null || tokenPath.isEmpty())
+      return null;
+
+    final Path path = Path.of(tokenPath);
+    if (!Files.isReadable(path))
+      throw new ConfigurationException("Error reading cluster token file at path '" + tokenPath + "'");
+    final String token;
+    try {
+      token = Files.readString(path).strip();
+    } catch (final IOException e) {
+      throw new ConfigurationException("Error reading cluster token file at path '" + tokenPath + "'", e);
+    }
+    if (token.isEmpty())
+      throw new ConfigurationException("Cluster token file at path '" + tokenPath + "' is empty");
+    return token;
   }
 
   /**
