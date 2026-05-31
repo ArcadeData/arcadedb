@@ -22,6 +22,10 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.exception.ConfigurationException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -75,5 +79,62 @@ class ClusterTokenProviderTest {
     config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "test-cluster");
     config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "test-password");
     assertThat(new ClusterTokenProvider(config).getClusterToken()).isEqualTo("explicit-token");
+  }
+
+  @Test
+  void tokenReadFromFile(@TempDir final Path tmp) throws Exception {
+    final Path tokenFile = tmp.resolve("cluster.token");
+    Files.writeString(tokenFile, "file-token");
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN_PATH, tokenFile.toString());
+    config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "test-cluster");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "test-password");
+    assertThat(new ClusterTokenProvider(config).getClusterToken()).isEqualTo("file-token");
+  }
+
+  @Test
+  void tokenFromFileIsTrimmed(@TempDir final Path tmp) throws Exception {
+    // Most tooling (echo, editors, k8s secrets) appends a trailing newline that must not leak into the token.
+    final Path tokenFile = tmp.resolve("cluster.token");
+    Files.writeString(tokenFile, "  file-token\n");
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN_PATH, tokenFile.toString());
+    config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "test-cluster");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "test-password");
+    assertThat(new ClusterTokenProvider(config).getClusterToken()).isEqualTo("file-token");
+  }
+
+  @Test
+  void explicitTokenTakesPrecedenceOverFile(@TempDir final Path tmp) throws Exception {
+    final Path tokenFile = tmp.resolve("cluster.token");
+    Files.writeString(tokenFile, "file-token");
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN, "explicit-token");
+    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN_PATH, tokenFile.toString());
+    config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "test-cluster");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "test-password");
+    assertThat(new ClusterTokenProvider(config).getClusterToken()).isEqualTo("explicit-token");
+  }
+
+  @Test
+  void unreadableTokenFileThrows() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN_PATH, "/non/existent/cluster.token");
+    config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "test-cluster");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "test-password");
+    assertThatThrownBy(() -> new ClusterTokenProvider(config).getClusterToken())
+        .isInstanceOf(ConfigurationException.class);
+  }
+
+  @Test
+  void emptyTokenFileThrows(@TempDir final Path tmp) throws Exception {
+    final Path tokenFile = tmp.resolve("cluster.token");
+    Files.writeString(tokenFile, "  \n");
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_CLUSTER_TOKEN_PATH, tokenFile.toString());
+    config.setValue(GlobalConfiguration.HA_CLUSTER_NAME, "test-cluster");
+    config.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, "test-password");
+    assertThatThrownBy(() -> new ClusterTokenProvider(config).getClusterToken())
+        .isInstanceOf(ConfigurationException.class);
   }
 }
