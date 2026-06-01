@@ -34,6 +34,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -102,30 +103,36 @@ public class TimeSeriesDatabaseWrapper {
    * is not yet propagated or the server is temporarily unavailable during election.
    */
   public void createDatabase() {
+    // RemoteServer owns its own HttpClient (RemoteHttpComponent), so close it to avoid leaking the
+    // client and its NIO thread - this is a separate connection from the long-lived query `db`.
     final RemoteServer httpServer = new RemoteServer(server.host(), server.httpPort(), "root", PASSWORD);
-    httpServer.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
+    try {
+      httpServer.setConnectionStrategy(RemoteHttpComponent.CONNECTION_STRATEGY.FIXED);
 
-    if (httpServer.exists(DATABASE)) {
-      logger.info("Dropping existing database {}", DATABASE);
-      httpServer.drop(DATABASE);
-    }
-    logger.info("Creating database {}", DATABASE);
-
-    final int maxAttempts = 30;
-    for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-      try {
-        httpServer.create(DATABASE);
-        return;
-      } catch (final ServerIsNotTheLeaderException e) {
-        if (e.getLeaderAddress() != null || attempt == maxAttempts)
-          throw e;
-        logger.info("Leader address not yet known (attempt {}/{}), retrying in 2s...", attempt, maxAttempts);
-      } catch (final Exception e) {
-        if (attempt == maxAttempts)
-          throw e;
-        logger.info("Database creation attempt {}/{} failed ({}), retrying in 2s...", attempt, maxAttempts, e.getMessage());
+      if (httpServer.exists(DATABASE)) {
+        logger.info("Dropping existing database {}", DATABASE);
+        httpServer.drop(DATABASE);
       }
-      sleep(2_000);
+      logger.info("Creating database {}", DATABASE);
+
+      final int maxAttempts = 30;
+      for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        try {
+          httpServer.create(DATABASE);
+          return;
+        } catch (final ServerIsNotTheLeaderException e) {
+          if (e.getLeaderAddress() != null || attempt == maxAttempts)
+            throw e;
+          logger.info("Leader address not yet known (attempt {}/{}), retrying in 2s...", attempt, maxAttempts);
+        } catch (final Exception e) {
+          if (attempt == maxAttempts)
+            throw e;
+          logger.info("Database creation attempt {}/{} failed ({}), retrying in 2s...", attempt, maxAttempts, e.getMessage());
+        }
+        sleep(2_000);
+      }
+    } finally {
+      httpServer.close();
     }
   }
 
@@ -260,8 +267,12 @@ public class TimeSeriesDatabaseWrapper {
       final int status = conn.getResponseCode();
       if (status != 204) {
         String err = "";
-        if (conn.getErrorStream() != null)
-          err = new String(conn.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
+        final InputStream errorStream = conn.getErrorStream();
+        if (errorStream != null) {
+          try (errorStream) {
+            err = new String(errorStream.readAllBytes(), StandardCharsets.UTF_8);
+          }
+        }
         throw new IOException("Line protocol write failed: HTTP " + status + " " + err);
       }
     } catch (final Exception e) {
@@ -344,7 +355,10 @@ public class TimeSeriesDatabaseWrapper {
     try {
       if (conn.getResponseCode() != 200)
         throw new IOException("Latest query failed: HTTP " + conn.getResponseCode());
-      final JSONObject json = new JSONObject(new String(conn.getInputStream().readAllBytes(), StandardCharsets.UTF_8));
+      final JSONObject json;
+      try (final InputStream is = conn.getInputStream()) {
+        json = new JSONObject(new String(is.readAllBytes(), StandardCharsets.UTF_8));
+      }
       final JSONArray latest = json.getJSONArray("latest");
       return latest.getLong(0);
     } finally {

@@ -94,9 +94,12 @@ class ThreeNodesTimeSeriesLoadTestIT extends ContainersTestTemplate {
       final int threadIndex = t;
       executor.submit(() -> {
         final TimeSeriesDatabaseWrapper w = new TimeSeriesDatabaseWrapper(servers.getFirst(), protocol);
-        final long base = 1_000_000_000L + threadIndex * 100_000_000L;
-        w.ingestSeries("sensor-" + threadIndex, "region-" + (threadIndex % 3), base, POINTS_PER_THREAD);
-        w.close();
+        try {
+          final long base = 1_000_000_000L + threadIndex * 100_000_000L;
+          w.ingestSeries("sensor-" + threadIndex, "region-" + (threadIndex % 3), base, POINTS_PER_THREAD);
+        } finally {
+          w.close();
+        }
       });
     }
     executor.shutdown();
