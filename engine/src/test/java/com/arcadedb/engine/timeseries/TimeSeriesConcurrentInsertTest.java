@@ -20,7 +20,6 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -42,10 +41,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 class TimeSeriesConcurrentInsertTest extends TestHelper {
 
   @Test
-  @Disabled("Reproduces a known sample-loss under many concurrent single-row INSERTs into a time "
-      + "series type: serialized per-shard appends can read a stale per-page sample count and write the "
-      + "same row slot, so one sample is overwritten. Enable once the time series append path makes the "
-      + "slot read-modify-write durable under the per-shard append lock.")
   void concurrentSingleRowInsertsDoNotLoseSamples() throws Exception {
     // One shard maximizes contention: every concurrent append serializes on the same shard and
     // contends for the same mutable-bucket data page, which is exactly where the lost update occurs.

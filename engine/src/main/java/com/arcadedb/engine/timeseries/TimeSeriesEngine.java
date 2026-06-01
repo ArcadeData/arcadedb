@@ -101,6 +101,16 @@ public class TimeSeriesEngine implements AutoCloseable {
   /**
    * Appends samples, routing to a shard using round-robin distribution.
    * <p>
+   * The write is dispatched to the shard executor so it runs on a thread that has no
+   * enclosing caller transaction.  This ensures that the internal {@code begin/commit}
+   * cycle in {@link TimeSeriesShard#appendSamples} operates as a true top-level
+   * transaction and immediately publishes the mutable-bucket page updates to the
+   * page-manager cache.  When called from inside an enclosing transaction (as happens
+   * on the SQL INSERT path), a nested begin/commit defers the page-cache update to the
+   * outer transaction commit, which occurs outside the per-shard {@code appendLock}; a
+   * following serialized append then reads a stale slot count and writes to the same
+   * slot, silently overwriting the preceding sample.
+   * <p>
    * Note: this method is not synchronized. When multiple threads call it concurrently,
    * they may be routed to the same shard. For contention-free writes, use the async API
    * which provides 1:1 slot-to-shard affinity.
@@ -112,7 +122,19 @@ public class TimeSeriesEngine implements AutoCloseable {
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
     final int shardIdx = (int) Math.floorMod(appendCounter.getAndIncrement(), (long) shardCount);
-    shards[shardIdx].appendSamples(timestamps, columnValues);
+    try {
+      CompletableFuture.runAsync(() -> {
+        try {
+          shards[shardIdx].appendSamples(timestamps, columnValues);
+        } catch (final IOException e) {
+          throw new CompletionException(e);
+        }
+      }, shardExecutor).join();
+    } catch (final CompletionException e) {
+      if (e.getCause() instanceof IOException ioe)
+        throw ioe;
+      throw new IOException("TimeSeries append failed", e.getCause());
+    }
   }
 
   /**
