@@ -738,6 +738,14 @@ public enum GlobalConfiguration {
       set to true for durable deployments.""",
       Boolean.class, false),
 
+  HA_RAFT_STORAGE_DIRECTORY("arcadedb.ha.raftStorageDirectory", SCOPE.SERVER,
+      """
+      Parent directory where Raft storage sub-folders (raft-storage-<nodeName>) are created. \
+      When empty (the default), the server root path is used, preserving the previous default layout. \
+      Set to an absolute path (e.g. /var/lib/arcadedb/raft) to decouple Raft persistence from \
+      the server installation directory, which is required for Kubernetes readOnlyRootFilesystem deployments.""",
+      String.class, ""),
+
   HA_SNAPSHOT_THRESHOLD("arcadedb.ha.snapshotThreshold", SCOPE.SERVER,
       """
       Number of Raft log entries after which the leader automatically takes a snapshot. \
