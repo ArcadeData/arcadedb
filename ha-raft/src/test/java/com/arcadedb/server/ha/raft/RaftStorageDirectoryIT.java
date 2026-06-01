@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.utility.FileUtils;
 
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Verifies that {@code HA_RAFT_STORAGE_DIRECTORY} correctly redirects the
  * Raft storage sub-folders to a user-configured parent directory.
  */
+@Tag("slow")
 class RaftStorageDirectoryIT extends BaseRaftHATest {
 
   private static final String CUSTOM_RAFT_DIR = "./target/custom-raft-storage";
