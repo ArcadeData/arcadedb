@@ -39,6 +39,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.List;
@@ -46,13 +47,14 @@ import java.util.List;
 import static com.arcadedb.test.support.ContainersTestTemplate.DATABASE;
 import static com.arcadedb.test.support.ContainersTestTemplate.PASSWORD;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Drives and verifies a time series workload against one ArcadeDB server over one ingestion protocol.
  * Ingestion goes through the InfluxDB Line Protocol HTTP endpoint or SQL INSERT (HTTP/gRPC);
  * verification queries use SQL and the latest-value HTTP endpoint.
  */
-public class TimeSeriesDatabaseWrapper {
+public class TimeSeriesDatabaseWrapper implements AutoCloseable {
 
   public enum Protocol {LINE_PROTOCOL, SQL_HTTP, SQL_GRPC}
 
@@ -94,6 +96,7 @@ public class TimeSeriesDatabaseWrapper {
     };
   }
 
+  @Override
   public void close() {
     db.close();
   }
@@ -185,6 +188,11 @@ public class TimeSeriesDatabaseWrapper {
   /**
    * Ingests {@code count} bulk points for one sensor with strictly increasing, unique timestamps
    * starting at {@code fromTs}. Field values are deterministic but irrelevant to assertions.
+   * <p>
+   * Note: the protocols are intentionally not throughput-comparable. {@code LINE_PROTOCOL} batches
+   * up to 500 points per HTTP call, while the SQL protocols send one {@code INSERT} per round-trip
+   * (one transaction per point) - the per-row SQL path is kept deliberately so it exercises the
+   * single-row append path under concurrency. Treat per-protocol timings as independent.
    */
   public void ingestSeries(final String sensorId, final String region, final long fromTs, final int count) {
     if (protocol == Protocol.LINE_PROTOCOL) {
@@ -290,52 +298,48 @@ public class TimeSeriesDatabaseWrapper {
   }
 
   /**
-   * Runs a single-bucket time-bucket aggregation over the given sensor and returns the first row.
-   * The time-series aggregation reads sealed data only, so this targets a fully-flushed sensor
-   * (a bulk series of {@code POINTS_PER_THREAD} points), not a tiny just-written series whose
-   * points may still sit in the unsealed mutable buffer. Retries briefly to absorb seal/replication
-   * lag (followers receive sealed segments after the leader commits).
+   * Runs a single-bucket time-bucket aggregation over the given sensor and returns the first row,
+   * or {@code null} if no rows are visible yet. The time-series aggregation reads sealed data only,
+   * so callers should target a fully-flushed sensor (a bulk series) and poll (see
+   * {@link #assertAggregateExtremes}) to absorb seal/replication lag. This is a single query with no
+   * internal retry, so the caller owns the single polling loop.
    */
   public AggResult aggregate(final String sensorId) {
     // 'bucket' is a reserved word in ArcadeDB SQL, so the time-bucket alias is 'tbucket'.
     final String sql = "SELECT ts.timeBucket('1h', ts) AS tbucket, avg(temperature) AS avgT, min(temperature) AS minT, "
         + "max(temperature) AS maxT, count(*) AS cnt FROM " + TYPE_NAME
         + " WHERE sensor_id = ? GROUP BY tbucket ORDER BY tbucket";
-    final long deadline = System.currentTimeMillis() + 30_000;
-    while (true) {
-      final ResultSet rs = db.query("sql", sql, sensorId);
-      if (rs.hasNext()) {
-        final Result r = rs.next();
-        return new AggResult(toDouble(r.getProperty("avgT")), toDouble(r.getProperty("minT")), toDouble(r.getProperty("maxT")),
-            ((Number) r.getProperty("cnt")).longValue());
-      }
-      if (System.currentTimeMillis() >= deadline)
-        throw new IllegalStateException("Time-series aggregation returned no rows for sensor_id=" + sensorId + " after 30s");
-      sleep(1_000);
-    }
+    final ResultSet rs = db.query("sql", sql, sensorId);
+    if (!rs.hasNext())
+      return null;
+    final Result r = rs.next();
+    return new AggResult(toDouble(r.getProperty("avgT")), toDouble(r.getProperty("minT")), toDouble(r.getProperty("maxT")),
+        ((Number) r.getProperty("cnt")).longValue());
   }
 
   /**
    * Asserts the time-bucket aggregation reports the expected min/max temperature extremes for the
-   * given (bulk) sensor, polling to absorb asynchronous sealing. The aggregation reflects only the
-   * sealed subset of points, which grows over time, so the exact aggregated count and average are
-   * not deterministic; the extremes are: the bulk temperature cycles 15.0..34.0 every 20 points, so
-   * as soon as one full cycle is sealed the min/max settle at their final values. The exact total is
-   * verified separately via {@link #countPoints()} (the unfiltered count, which sees all data,
-   * mutable and sealed - unlike tag-filtered queries, which see only the sealed subset).
+   * given (bulk) sensor, polling (single level, up to 60s) to absorb asynchronous sealing. The
+   * aggregation reflects only the sealed subset of points, which grows over time, so the exact
+   * aggregated count and average are not deterministic; the extremes are: the bulk temperature
+   * cycles 15.0..34.0 every 20 points, so as soon as one full cycle is sealed the min/max settle at
+   * their final values. The exact total is verified separately via {@link #countPoints()} (the
+   * unfiltered count, which sees all data, mutable and sealed - unlike tag-filtered queries, which
+   * see only the sealed subset).
    */
   public void assertAggregateExtremes(final String sensorId, final double expectedMin, final double expectedMax) {
+    final double tolerance = 1e-9;
     final long deadline = System.currentTimeMillis() + 60_000;
     AggResult agg = null;
     while (System.currentTimeMillis() < deadline) {
       agg = aggregate(sensorId);
-      if (agg.min() == expectedMin && agg.max() == expectedMax)
+      if (agg != null && Math.abs(agg.min() - expectedMin) < tolerance && Math.abs(agg.max() - expectedMax) < tolerance)
         return;
       sleep(2_000);
     }
-    assertThat(agg).isNotNull();
-    assertThat(agg.min()).isEqualTo(expectedMin);
-    assertThat(agg.max()).isEqualTo(expectedMax);
+    assertThat(agg).as("time-bucket aggregation returned rows for sensor_id=%s", sensorId).isNotNull();
+    assertThat(agg.min()).isCloseTo(expectedMin, within(tolerance));
+    assertThat(agg.max()).isCloseTo(expectedMax, within(tolerance));
   }
 
   /**
@@ -345,7 +349,7 @@ public class TimeSeriesDatabaseWrapper {
     final StringBuilder url = new StringBuilder(
         "http://" + server.host() + ":" + server.httpPort() + "/api/v1/ts/" + DATABASE + "/latest?type=" + TYPE_NAME);
     if (tag != null)
-      url.append("&tag=").append(tag);
+      url.append("&tag=").append(URLEncoder.encode(tag, StandardCharsets.UTF_8));
 
     final HttpURLConnection conn = (HttpURLConnection) URI.create(url.toString()).toURL().openConnection();
     conn.setRequestMethod("GET");
@@ -372,17 +376,23 @@ public class TimeSeriesDatabaseWrapper {
   public void assertThatPointCountIs(final long expected) {
     final long deadline = System.currentTimeMillis() + 30_000;
     long actual = -1;
+    Exception lastException = null;
     do {
       try {
         actual = countPoints();
         if (actual == expected)
           return;
-      } catch (final Exception ignored) {
-        // keep polling
+        lastException = null;
+      } catch (final Exception e) {
+        lastException = e;
       }
       if (System.currentTimeMillis() < deadline)
         sleep(2_000);
     } while (System.currentTimeMillis() < deadline);
+    if (lastException != null)
+      throw new AssertionError(
+          "Expected point count " + expected + " but the database was not available after 30s: " + lastException.getMessage(),
+          lastException);
     assertThat(actual).isEqualTo(expected);
   }
 
