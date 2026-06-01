@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
@@ -37,6 +38,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 
 /**
  * Test for LIST indexing BY ITEM feature (Issue #1593).
@@ -564,6 +566,79 @@ public class ListIndexByItemTest extends TestHelper {
         final long count = result.stream().count();
         assertThat(count).isEqualTo(1);
       });
+    }
+  }
+
+  /**
+   * Regression tests for #4448: REBUILD INDEX fails for indexes created with BY ITEM.
+   */
+  @Nested
+  class Issue4448RebuildIndexByItem {
+    private static final String DB_PATH = "target/databases/Issue4448RebuildIndexByItem";
+
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      database = new DatabaseFactory(DB_PATH).create();
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    @Test
+    void rebuildIndexWildcardDoesNotFailForByItemIndex() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE Doc");
+        database.command("sql", "CREATE PROPERTY Doc.lst LIST OF LONG");
+        database.command("sql", "CREATE INDEX ON Doc(lst BY ITEM) NOTUNIQUE");
+      });
+
+      assertThatNoException().isThrownBy(() -> database.command("sql", "REBUILD INDEX *"));
+    }
+
+    @Test
+    void rebuildIndexWildcardPreservesQueryabilityAfterRebuild() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE Doc");
+        database.command("sql", "CREATE PROPERTY Doc.lst LIST OF STRING");
+        database.command("sql", "CREATE INDEX ON Doc(lst BY ITEM) NOTUNIQUE");
+        database.command("sql", "INSERT INTO Doc SET lst = ['a', 'b', 'c']");
+        database.command("sql", "INSERT INTO Doc SET lst = ['b', 'd', 'e']");
+      });
+
+      database.command("sql", "REBUILD INDEX *");
+
+      database.transaction(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM Doc WHERE lst CONTAINS 'b'");
+        final long count = result.stream().count();
+        assertThat(count).isEqualTo(2);
+      });
+    }
+
+    @Test
+    void rebuildSpecificByItemIndexByBucketName() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE Doc");
+        database.command("sql", "CREATE PROPERTY Doc.lst LIST OF STRING");
+        database.command("sql", "CREATE INDEX ON Doc(lst BY ITEM) NOTUNIQUE");
+        database.command("sql", "INSERT INTO Doc SET lst = ['x', 'y']");
+      });
+
+      // Find the underlying bucket-level index name (not the TypeIndex wrapper)
+      final String bucketIndexName = Arrays.stream(database.getSchema().getIndexes())
+          .filter(idx -> idx.isAutomatic() && !(idx instanceof TypeIndex))
+          .filter(idx -> idx.getTypeName() != null && idx.getTypeName().equals("Doc"))
+          .findFirst()
+          .map(idx -> idx.getName())
+          .orElseThrow(() -> new AssertionError("No bucket-level index found for Doc"));
+
+      assertThatNoException().isThrownBy(
+          () -> database.command("sql", "REBUILD INDEX `" + bucketIndexName + "`"));
     }
   }
 

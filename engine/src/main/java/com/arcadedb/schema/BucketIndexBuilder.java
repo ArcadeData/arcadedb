@@ -104,12 +104,15 @@ public class BucketIndexBuilder extends IndexBuilder<Index> {
           continue;
         }
 
-        final Property property = type.getPolymorphicPropertyIfExists(propertyName);
+        final boolean isByItem = propertyName.endsWith(" by item");
+        final String actualPropertyName = isByItem ? propertyName.substring(0, propertyName.length() - 8) : propertyName;
+
+        final Property property = type.getPolymorphicPropertyIfExists(actualPropertyName);
         if (property == null)
           throw new SchemaException(
-              "Cannot create the index on type '" + typeName + "." + propertyName + "' because the property does not exist");
+              "Cannot create the index on type '" + typeName + "." + actualPropertyName + "' because the property does not exist");
 
-        keyTypes[i++] = property.getType();
+        keyTypes[i++] = isByItem ? Type.STRING : property.getType();
       }
 
       return schema.recordFileChanges(() -> {
