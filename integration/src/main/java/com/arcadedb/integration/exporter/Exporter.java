@@ -26,9 +26,9 @@ import com.arcadedb.integration.exporter.format.JsonlExporterFormat;
 import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.log.LogManager;
 
-import java.lang.reflect.*;
+import java.lang.reflect.InvocationTargetException;
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class Exporter {
   protected ExporterSettings       settings           = new ExporterSettings();
@@ -88,7 +88,7 @@ public class Exporter {
       logger.logLine(0,//
           "Database exported successfully: %,d records exported in %s secs (%,d records/secs %,d documents %,d vertices %,d edges)",
 //
-          totalRecords, elapsedInSecs, (totalRecords / elapsedInSecs), context.documents.get(), context.vertices.get(),
+          totalRecords, elapsedInSecs, totalRecords / elapsedInSecs, context.documents.get(), context.vertices.get(),
           context.edges.get());
 
       // RETURN STATISTICS

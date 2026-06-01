@@ -22,8 +22,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.index.Index;
-import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;

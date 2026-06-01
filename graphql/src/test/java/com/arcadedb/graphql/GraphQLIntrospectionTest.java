@@ -32,7 +32,7 @@ class GraphQLIntrospectionTest extends AbstractGraphQLTest {
 
   @Test
   void introspectionSchemaTypes() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql", "{ __schema { types { name } } }")) {
@@ -54,7 +54,7 @@ class GraphQLIntrospectionTest extends AbstractGraphQLTest {
 
   @Test
   void introspectionSchemaQueryType() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql", "{ __schema { queryType { name } } }")) {
@@ -74,7 +74,7 @@ class GraphQLIntrospectionTest extends AbstractGraphQLTest {
 
   @Test
   void introspectionTypeByName() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql", "{ __type(name: \"Book\") { name fields { name } } }")) {
@@ -98,7 +98,7 @@ class GraphQLIntrospectionTest extends AbstractGraphQLTest {
 
   @Test
   void introspectionTypename() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql", "{ __typename }")) {
@@ -114,7 +114,7 @@ class GraphQLIntrospectionTest extends AbstractGraphQLTest {
 
   @Test
   void introspectionTypeFields() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql",
@@ -146,7 +146,7 @@ class GraphQLIntrospectionTest extends AbstractGraphQLTest {
 
   @Test
   void introspectionSchemaWithDatabaseTypes() {
-    executeTest((database) -> {
+    executeTest(database -> {
       // Don't define GraphQL types - just check that database types are exposed
       try (final ResultSet resultSet = database.query("graphql", "{ __schema { types { name } } }")) {
         assertThat(resultSet.hasNext()).isTrue();

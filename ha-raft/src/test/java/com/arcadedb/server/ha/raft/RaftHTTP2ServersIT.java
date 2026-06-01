@@ -38,7 +38,7 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
 
   @Test
   void serverInfo() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server?mode=cluster").openConnection();
       connection.setRequestMethod("GET");
@@ -70,7 +70,7 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
 
   @Test
   void propagationOfSchema() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String response = command(serverIndex, "create vertex type RaftVertexType" + serverIndex);
       assertThat(response).withFailMessage("Type RaftVertexType" + serverIndex + " not found on server " + serverIndex)
           .contains("RaftVertexType" + serverIndex);
@@ -93,7 +93,7 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
 
   @Test
   void checkQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/query/graph/sql/select%20from%20V1%20limit%201").openConnection();
       connection.setRequestMethod("GET");
@@ -115,14 +115,14 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String v1 = new JSONObject(
           command(serverIndex, "create vertex V1 content {\"name\":\"Jay\",\"surname\":\"Miner\",\"age\":69}"))
           .getJSONArray("result").getJSONObject(0).getString(RID_PROPERTY);
 
       waitForAllServers();
 
-      testEachServer((checkServer) ->
+      testEachServer(checkServer ->
           assertThat(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result")).isNotEmpty());
 
       final String v2 = new JSONObject(
@@ -131,7 +131,7 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
 
       waitForAllServers();
 
-      testEachServer((checkServer) ->
+      testEachServer(checkServer ->
           assertThat(new JSONObject(command(checkServer, "select from " + v2)).getJSONArray("result")).isNotEmpty());
 
       final String e1 = new JSONObject(command(serverIndex, "create edge E1 from " + v1 + " to " + v2))
@@ -139,13 +139,13 @@ class RaftHTTP2ServersIT extends BaseRaftHATest {
 
       waitForAllServers();
 
-      testEachServer((checkServer) ->
+      testEachServer(checkServer ->
           assertThat(new JSONObject(command(checkServer, "select from " + e1)).getJSONArray("result")).isNotEmpty());
 
       command(serverIndex, "delete from " + v1);
       waitForAllServers();
 
-      testEachServer((checkServer) -> {
+      testEachServer(checkServer -> {
         try {
           final JSONObject jsonResponse = new JSONObject(command(checkServer, "select from " + v1));
           assertThat(jsonResponse.getJSONArray("result").length()).isEqualTo(0);

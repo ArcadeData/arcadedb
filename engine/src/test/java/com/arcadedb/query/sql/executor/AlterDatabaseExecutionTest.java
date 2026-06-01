@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class AlterDatabaseExecutionTest extends TestHelper {
   @Test
   void basicCreateProperty() {
-    final int defPageSize = ((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
+    final int defPageSize = (int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue();
     assertThat(database.getConfiguration().getValueAsInteger(GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE)).isEqualTo(defPageSize);
 
     database.command("sql", "ALTER DATABASE `arcadedb.bucketDefaultPageSize` 262144");

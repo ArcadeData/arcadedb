@@ -94,9 +94,8 @@ class OpenCypherRemoveTest {
   @Test
   void removeSingleProperty() {
     // Create a person with a property
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Alice', age: 30, temp: 'value'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Alice', age: 30, temp: 'value'})"));
 
     // Remove the temp property
     database.transaction(() -> {
@@ -121,10 +120,9 @@ class OpenCypherRemoveTest {
   @Test
   void removeMultipleProperties() {
     // Create a person with multiple properties
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (n:Person {name: 'Bob', age: 25, temp1: 'a', temp2: 'b'})");
-    });
+          "CREATE (n:Person {name: 'Bob', age: 25, temp1: 'a', temp2: 'b'})"));
 
     // Remove multiple properties
     database.transaction(() -> {
@@ -143,9 +141,8 @@ class OpenCypherRemoveTest {
   @Test
   void removeNonExistentProperty() {
     // Create a person without the property
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Charlie'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Charlie'})"));
 
     // Try to remove a non-existent property - should not fail
     database.transaction(() -> {
@@ -161,9 +158,8 @@ class OpenCypherRemoveTest {
   @Test
   void setThenRemove() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'David'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'David'})"));
 
     // SET then REMOVE in the same query
     database.transaction(() -> {
@@ -186,15 +182,13 @@ class OpenCypherRemoveTest {
   @Test
   void removeWithoutReturn() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Eve', temp: 'remove_me'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Eve', temp: 'remove_me'})"));
 
     // REMOVE without RETURN
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (n:Person {name: 'Eve'}) REMOVE n.temp");
-    });
+          "MATCH (n:Person {name: 'Eve'}) REMOVE n.temp"));
 
     // Verify property was removed
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Eve'}) RETURN n");
@@ -237,10 +231,9 @@ class OpenCypherRemoveTest {
   @Test
   void removePropertyOnRelationship() {
     // Create relationship with property
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name: 'Alice'})-[r:KNOWS {since: 2020, temp: 'remove_me'}]->(b:Person {name: 'Bob'})");
-    });
+          "CREATE (a:Person {name: 'Alice'})-[r:KNOWS {since: 2020, temp: 'remove_me'}]->(b:Person {name: 'Bob'})"));
 
     // Remove property from relationship
     database.transaction(() -> {

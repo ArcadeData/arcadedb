@@ -464,10 +464,9 @@ class ParameterTest {
     database.getSchema().createVertexType("A");
     database.getSchema().createVertexType("B");
     database.getSchema().createEdgeType("LINK");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:A {f: 'a'}), (b:B {f: 'x'}), (a)-[:LINK]->(b)");
-    });
+          "CREATE (a:A {f: 'a'}), (b:B {f: 'x'}), (a)-[:LINK]->(b)"));
     return database;
   }
 

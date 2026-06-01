@@ -29,7 +29,7 @@ class CheckSafeDeleteStepTest {
 
   @Test
   void shouldSafelyDeleteRecord() throws Exception {
-    TestHelper.executeInNewDatabase((database) -> {
+    TestHelper.executeInNewDatabase(database -> {
       final CommandContext context = new BasicCommandContext();
       final CheckSafeDeleteStep step = new CheckSafeDeleteStep(context);
       final AbstractExecutionStep previous = new AbstractExecutionStep(context) {

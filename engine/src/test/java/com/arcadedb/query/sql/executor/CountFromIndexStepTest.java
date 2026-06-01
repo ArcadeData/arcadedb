@@ -26,12 +26,11 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Arrays;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class CountFromIndexStepTest {
 
@@ -53,7 +52,7 @@ public class CountFromIndexStepTest {
 
   @Test
   void shouldCountRecordsOfIndex() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final DocumentType clazz = TestHelper.createRandomType(db);
       clazz.createProperty(PROPERTY_NAME, Type.STRING);
       String className = clazz.getName();

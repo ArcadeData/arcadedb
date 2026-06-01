@@ -21,7 +21,6 @@ package com.arcadedb.function.sql.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import java.util.List;
 
 /**
  * Calculates the L∞ norm (Chebyshev norm or infinity norm) of a vector.

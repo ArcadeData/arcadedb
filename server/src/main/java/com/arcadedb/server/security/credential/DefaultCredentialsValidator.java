@@ -20,7 +20,7 @@ package com.arcadedb.server.security.credential;
 
 import com.arcadedb.server.security.ServerSecurityException;
 
-import java.util.*;
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**

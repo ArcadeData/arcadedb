@@ -67,7 +67,7 @@ public class TextLpad extends AbstractTextFunction {
     }
 
     final String padStr = asString(args[2]);
-    final char padChar = (padStr != null && !padStr.isEmpty()) ? padStr.charAt(0) : ' ';
+    final char padChar = padStr != null && !padStr.isEmpty() ? padStr.charAt(0) : ' ';
 
     if (str.length() >= length)
       return str;

@@ -232,7 +232,7 @@ class FilterStepTest extends TestHelper {
       final Result item = result.next();
       final String status = item.getProperty("status");
       final String priority = item.getProperty("priority");
-      assertThat(status.equals("pending") || priority.equals("high")).isTrue();
+      assertThat("pending".equals(status) || "high".equals(priority)).isTrue();
       count++;
     }
 

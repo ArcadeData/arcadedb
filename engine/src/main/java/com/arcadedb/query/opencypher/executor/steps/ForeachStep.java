@@ -114,7 +114,7 @@ public class ForeachStep extends AbstractExecutionStep {
             buffer.add(inputRow);
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
 

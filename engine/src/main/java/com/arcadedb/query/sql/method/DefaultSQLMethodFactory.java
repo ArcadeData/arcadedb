@@ -79,7 +79,9 @@ import com.arcadedb.query.sql.method.string.SQLMethodToLowerCase;
 import com.arcadedb.query.sql.method.string.SQLMethodToUpperCase;
 import com.arcadedb.query.sql.method.string.SQLMethodTrim;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 
 /**
  * Default method factory.

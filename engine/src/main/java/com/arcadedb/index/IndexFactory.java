@@ -20,7 +20,8 @@ package com.arcadedb.index;
 
 import com.arcadedb.schema.IndexBuilder;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 public class IndexFactory {
   private final Map<String, IndexFactoryHandler> map = new HashMap<>();

@@ -38,10 +38,9 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 public class GetServerHandler extends AbstractServerHttpHandler {
   private static final DefaultServerMetrics           profilerRateMetrics = new DefaultServerMetrics();
@@ -232,7 +231,7 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       // MASK SENSITIVE DATA
       value = "*****";
 
-    if (key.equals("arcadedb.server.defaultDatabases")) {
+    if ("arcadedb.server.defaultDatabases".equals(key)) {
       final String defaultDatabases = (String) value;
       if (value != null && !defaultDatabases.isEmpty()) {
         // CREATE DEFAULT DATABASES
@@ -309,8 +308,9 @@ public class GetServerHandler extends AbstractServerHttpHandler {
           byDatabase.put(dbName, indexes);
       } catch (final RuntimeException e) {
         LogManager.instance().log(this, Level.FINE,
-            "Skipping sparse-vector metrics for database '%s' (likely being dropped, reopened, or "
-                + "concurrently unloaded): %s",
+            """
+            Skipping sparse-vector metrics for database '%s' (likely being dropped, reopened, or \
+            concurrently unloaded): %s""",
             dbName, e.getMessage());
       }
     }

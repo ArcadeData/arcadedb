@@ -21,6 +21,7 @@ package com.arcadedb.utility;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,25 +40,25 @@ class DateUtilsTest {
    */
   @Test
   void parsesIsoDateTimeWithZSuffix() {
-    final long expected = LocalDateTime.parse("2026-05-08T18:37:54").toEpochSecond(java.time.ZoneOffset.UTC);
+    final long expected = LocalDateTime.parse("2026-05-08T18:37:54").toEpochSecond(ZoneOffset.UTC);
     assertThat(DateUtils.dateTimeToTimestamp("2026-05-08T18:37:54Z", ChronoUnit.SECONDS)).isEqualTo(expected);
   }
 
   @Test
   void parsesIsoDateTimeWithMillisAndZSuffix() {
-    final long expected = LocalDateTime.parse("2026-05-08T18:37:54").toEpochSecond(java.time.ZoneOffset.UTC) * 1_000L;
+    final long expected = LocalDateTime.parse("2026-05-08T18:37:54").toEpochSecond(ZoneOffset.UTC) * 1_000L;
     assertThat(DateUtils.dateTimeToTimestamp("2026-05-08T18:37:54.000Z", ChronoUnit.MILLIS)).isEqualTo(expected);
   }
 
   @Test
   void parsesIsoDateTimeWithExplicitOffset() {
-    final long expected = LocalDateTime.parse("2026-05-08T18:37:54").toEpochSecond(java.time.ZoneOffset.UTC);
+    final long expected = LocalDateTime.parse("2026-05-08T18:37:54").toEpochSecond(ZoneOffset.UTC);
     assertThat(DateUtils.dateTimeToTimestamp("2026-05-08T18:37:54+00:00", ChronoUnit.SECONDS)).isEqualTo(expected);
   }
 
   @Test
   void parsesIsoDateTimeWithoutZone() {
-    final long expected = LocalDateTime.parse("2026-05-08T18:37:54").toEpochSecond(java.time.ZoneOffset.UTC);
+    final long expected = LocalDateTime.parse("2026-05-08T18:37:54").toEpochSecond(ZoneOffset.UTC);
     assertThat(DateUtils.dateTimeToTimestamp("2026-05-08T18:37:54", ChronoUnit.SECONDS)).isEqualTo(expected);
   }
 

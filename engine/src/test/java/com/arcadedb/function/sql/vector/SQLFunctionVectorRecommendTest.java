@@ -21,6 +21,7 @@ package com.arcadedb.function.sql.vector;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
@@ -129,7 +130,7 @@ class SQLFunctionVectorRecommendTest extends TestHelper {
     // records. A bare index name (no '[property]' suffix) is rejected with a clear message
     // rather than letting the bracketed-substring parse fail downstream.
     final SQLFunctionVectorRecommend function = new SQLFunctionVectorRecommend();
-    final com.arcadedb.query.sql.executor.BasicCommandContext ctx = new com.arcadedb.query.sql.executor.BasicCommandContext();
+    final BasicCommandContext ctx = new BasicCommandContext();
     ctx.setDatabase(database);
     assertThatThrownBy(() -> function.execute(null, null, null,
         new Object[] { "DocEmbeddingIdx", List.of(ridByName.get("A")), List.of(), 3 },

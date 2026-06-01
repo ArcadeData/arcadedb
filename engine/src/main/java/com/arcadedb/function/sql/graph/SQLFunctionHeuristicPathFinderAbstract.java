@@ -114,7 +114,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
   protected double getSimpleHeuristicCost(final double x, final double g, final double dFactor) {
     final double dx = Math.abs(x - g);
-    return dFactor * (dx);
+    return dFactor * dx;
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
@@ -148,14 +148,14 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     final double dx = Math.abs(x - gx);
     final double dy = Math.abs(y - gy);
 
-    return (dFactor * Math.sqrt(Math.pow(dx, 2) + Math.pow(dy, 2)));
+    return dFactor * Math.sqrt(Math.pow(dx, 2) + Math.pow(dy, 2));
   }
 
   protected double getEuclideanNoSQRHeuristicCost(final double x, final double y, final double gx, final double gy,
                                                   final double dFactor) {
     final double dx = Math.abs(x - gx);
     final double dy = Math.abs(y - gy);
-    return (dFactor * (Math.pow(dx, 2) + Math.pow(dy, 2)));
+    return dFactor * (Math.pow(dx, 2) + Math.pow(dy, 2));
   }
 
   // obtains from http://theory.stanford.edu/~amitp/GameProgramming/Heuristics.html
@@ -167,7 +167,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     final double dx2 = sx - gx;
     final double dy2 = sy - gy;
     final double cross = Math.abs(dx1 * dy2 - dx2 * dy1);
-    heuristic += (cross * 0.0001);
+    heuristic += cross * 0.0001;
     return heuristic;
   }
 
@@ -178,7 +178,7 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
     final double dx2 = sx - gx;
     final double dy2 = sy - gy;
     final double cross = Math.abs(dx1 * dy2 - dx2 * dy1) + ThreadLocalRandom.current().nextFloat();
-    heuristic += (cross * heuristic);
+    heuristic += cross * heuristic;
     return heuristic;
   }
 
@@ -266,17 +266,17 @@ public abstract class SQLFunctionHeuristicPathFinderAbstract extends SQLFunction
           0.0));
     }
     final double cross = res;
-    heuristic += (cross * 0.0001);
+    heuristic += cross * 0.0001;
     return heuristic;
   }
 
   protected String[] stringArray(final Object fromObject) {
     switch (fromObject) {
       case String s -> {
-        return (fromObject.toString().replace("},{", " ,").split(","));
+        return fromObject.toString().replace("},{", " ,").split(",");
       }
       case String[] o -> {
-        return ((String[]) fromObject);
+        return (String[]) fromObject;
       }
       case null, default -> {
         return new String[]{};

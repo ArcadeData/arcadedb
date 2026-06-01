@@ -20,7 +20,6 @@ package performance;
 
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.UnsignedBytesComparator;
-import org.junit.jupiter.api.Tag;
 
 import java.util.Comparator;
 import java.util.UUID;

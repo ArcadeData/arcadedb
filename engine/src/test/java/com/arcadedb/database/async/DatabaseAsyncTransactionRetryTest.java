@@ -51,7 +51,7 @@ class DatabaseAsyncTransactionRetryTest extends TestHelper {
    * database. Only the successful retry's writes should be committed.
    */
   @Test
-  void partialWriteFromFailedAttemptIsNotCommitted() throws InterruptedException {
+  void partialWriteFromFailedAttemptIsNotCommitted() throws Exception {
     database.getSchema().createDocumentType(TYPE);
 
     final AtomicInteger attempts = new AtomicInteger(0);

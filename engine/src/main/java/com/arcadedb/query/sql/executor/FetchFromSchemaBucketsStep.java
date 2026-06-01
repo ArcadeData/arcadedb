@@ -23,8 +23,9 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Returns a Result containing metadata regarding the available buckets in the database.
@@ -70,7 +71,7 @@ public class FetchFromSchemaBucketsStep extends AbstractExecutionStep {
         }
       } finally {
         if (context.isProfiling()) {
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
         }
       }
     }

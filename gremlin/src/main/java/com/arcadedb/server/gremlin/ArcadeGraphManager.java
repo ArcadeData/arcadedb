@@ -56,11 +56,10 @@ public class ArcadeGraphManager implements GraphManager {
   public ArcadeGraphManager(final Settings settings) {
     // Settings can define pre-configured graphs, but we primarily use dynamic registration
     if (settings.graphs != null) {
-      settings.graphs.forEach((name, path) -> {
+      settings.graphs.forEach((name, path) ->
         // For pre-configured graphs, we'll create them on first access
         LogManager.instance().log(this, Level.INFO,
-            "Graph '%s' configured in settings - will be created on first access", name);
-      });
+            "Graph '%s' configured in settings - will be created on first access", name));
     }
   }
 

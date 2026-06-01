@@ -20,19 +20,14 @@ package com.arcadedb.query.sql.functions.vector;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
-import java.util.HashMap;
-import java.util.Map;
-
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.data.Offset.*;
+import static org.assertj.core.data.Offset.offset;
 
 /**
  * Test suite for "Advanced Search & Reranking" examples from the JVector blog post.

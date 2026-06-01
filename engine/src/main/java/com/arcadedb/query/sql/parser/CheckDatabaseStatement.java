@@ -26,8 +26,11 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class CheckDatabaseStatement extends SimpleExecStatement {
   public final Set<BucketIdentifier> buckets  = new HashSet<>();
@@ -50,7 +53,7 @@ public class CheckDatabaseStatement extends SimpleExecStatement {
     final DatabaseChecker checker = new DatabaseChecker(context.getDatabase().getWrappedDatabaseInstance());
     checker.setVerboseLevel(0);
     checker.setBuckets(buckets.stream().map(x -> x.getValue()).collect(Collectors.toSet()));
-    checker.setTypes(types.stream().map(x -> (x.getStringValue().startsWith("\"") || x.getStringValue().startsWith("'")) ?
+    checker.setTypes(types.stream().map(x -> x.getStringValue().startsWith("\"") || x.getStringValue().startsWith("'") ?
         x.getStringValue().substring(1, x.getStringValue().length() - 1) :
         x.getStringValue()).collect(Collectors.toSet()));
     checker.setFix(fix);

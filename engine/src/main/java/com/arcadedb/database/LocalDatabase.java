@@ -1584,7 +1584,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Map<String, Object> params) {
-    if (!language.equalsIgnoreCase("sql"))
+    if (!"sql".equalsIgnoreCase(language))
       throw new CommandExecutionException("Language '" + language + "' does not support script");
     return command("sqlscript", script, params);
   }
@@ -1592,7 +1592,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   @Deprecated
   @Override
   public ResultSet execute(final String language, final String script, final Object... args) {
-    if (!language.equalsIgnoreCase("sqlscript") && !language.equalsIgnoreCase("sql"))
+    if (!"sqlscript".equalsIgnoreCase(language) && !"sql".equalsIgnoreCase(language))
       throw new CommandExecutionException("Language '" + language + "' does not support script");
     return command("sqlscript", script, args);
   }

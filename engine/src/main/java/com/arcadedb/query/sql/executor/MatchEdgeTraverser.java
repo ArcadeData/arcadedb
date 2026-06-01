@@ -132,7 +132,7 @@ public class MatchEdgeTraverser {
             final int tgtId = provider.getNodeId(targetElem.getIdentity());
             if (srcId >= 0 && tgtId >= 0) {
               // Determine direction from the edge traversal
-              final Vertex.DIRECTION direction = (edge != null && !edge.out) ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+              final Vertex.DIRECTION direction = edge != null && !edge.out ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
               if (provider.isConnectedTo(srcId, tgtId, direction)) {
                 // Connected: return the target as the single result
                 final Document doc = (Document) targetElem.getRecord();

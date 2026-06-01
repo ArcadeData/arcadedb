@@ -30,9 +30,12 @@ import org.graalvm.polyglot.Source;
 import org.graalvm.polyglot.Value;
 import org.graalvm.polyglot.io.IOAccess;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.io.OutputStream;
+import java.util.Collections;
+import java.util.List;
+import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Polyglot script engine based on GraalVM.
@@ -69,7 +72,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
             allowCreateThread(false).//
             allowPolyglotAccess(PolyglotAccess.ALL).//
             allowHostClassLookup(
-            (s) -> this.allowedPackages.stream().map(e -> s.matches(e)).filter(f -> f).findFirst().isPresent());
+            s -> this.allowedPackages.stream().map(e -> s.matches(e)).filter(f -> f).findFirst().isPresent());
 
     if (output != null)
       builder.out(output);

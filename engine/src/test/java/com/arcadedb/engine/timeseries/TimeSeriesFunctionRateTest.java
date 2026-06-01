@@ -78,9 +78,8 @@ class TimeSeriesFunctionRateTest extends TestHelper {
     database.command("sql",
         "CREATE TIMESERIES TYPE SingleRateSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO SingleRateSensor SET ts = 1000, value = 5.0");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO SingleRateSensor SET ts = 1000, value = 5.0"));
 
     final ResultSet rs = database.query("sql", "SELECT ts.rate(value, ts) AS r FROM SingleRateSensor");
     assertThat(rs.hasNext()).isTrue();

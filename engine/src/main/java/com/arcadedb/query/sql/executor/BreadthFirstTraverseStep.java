@@ -68,7 +68,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
       if (item.isElement() && !traversed.contains(item.getElement().get().getIdentity())) {
         tryAddEntryPointAtTheEnd(item, context);
         traversed.add(item.getElement().get().getIdentity());
-      } else if (item.getProperty(RID_PROPERTY) != null && item.getProperty(RID_PROPERTY) instanceof Identifiable) {
+      } else if (item.getProperty(RID_PROPERTY) instanceof Identifiable) {
         tryAddEntryPointAtTheEnd(item, context);
         traversed.add(((Identifiable) item.getProperty(RID_PROPERTY)).getIdentity());
       }
@@ -205,7 +205,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
 
     if (res.isElement()) {
       traversed.add(res.getElement().get().getIdentity());
-    } else if (res.getProperty(RID_PROPERTY) != null && res.getProperty(RID_PROPERTY) instanceof Identifiable) {
+    } else if (res.getProperty(RID_PROPERTY) instanceof Identifiable) {
       traversed.add(((Identifiable) res.getProperty(RID_PROPERTY)).getIdentity());
     }
   }
@@ -217,7 +217,7 @@ public class BreadthFirstTraverseStep extends AbstractTraverseStep {
 
     if (res.isElement()) {
       traversed.add(res.getElement().get().getIdentity());
-    } else if (res.getProperty(RID_PROPERTY) != null && res.getProperty(RID_PROPERTY) instanceof Identifiable) {
+    } else if (res.getProperty(RID_PROPERTY) instanceof Identifiable) {
       traversed.add(((Identifiable) res.getProperty(RID_PROPERTY)).getIdentity());
     }
   }

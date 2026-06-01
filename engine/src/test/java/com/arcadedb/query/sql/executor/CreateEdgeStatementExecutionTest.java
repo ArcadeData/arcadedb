@@ -103,7 +103,7 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
   @Test
   @DisplayName("createEdgeIfNotExists - test Issue #1763")
   void createEdgeIfNotExists() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           CREATE VERTEX TYPE vex;
           CREATE EDGE TYPE edg;
@@ -111,8 +111,7 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
           CREATE VERTEX vex;
           CREATE VERTEX vex;
           CREATE VERTEX vex;
-          """);
-    });
+          """));
 
     // CREATE EDGES FROM #1:0 TO [#1:1,#1:2]
     database.transaction(() -> {
@@ -253,11 +252,10 @@ public class CreateEdgeStatementExecutionTest extends TestHelper {
       rs.close();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       // Using LET with empty array should also work (already works per issue)
       database.command("sqlscript",
-          "LET $x = []; CREATE EDGE E3518 FROM (SELECT FROM V3518 LIMIT 1) TO $x;");
-    });
+          "LET $x = []; CREATE EDGE E3518 FROM (SELECT FROM V3518 LIMIT 1) TO $x;"));
 
     // Verify no edges were created
     final ResultSet check = database.query("sql", "SELECT FROM E3518");

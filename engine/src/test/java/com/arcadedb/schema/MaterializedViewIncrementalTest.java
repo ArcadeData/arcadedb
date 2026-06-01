@@ -30,21 +30,18 @@ class MaterializedViewIncrementalTest extends TestHelper {
 
   @Test
   void insertPropagatesAfterCommit() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Employee");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("Employee"));
 
-    database.transaction(() -> {
-      database.newDocument("Employee").set("name", "Alice").save();
-    });
+    database.transaction(() ->
+      database.newDocument("Employee").set("name", "Alice").save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("EmployeeView")
           .withQuery("SELECT name FROM Employee")
           .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
-          .create();
-    });
+          .create());
 
     // Initial refresh should have 1 record
     try (final ResultSet rs = database.query("sql", "SELECT FROM EmployeeView")) {
@@ -52,9 +49,8 @@ class MaterializedViewIncrementalTest extends TestHelper {
     }
 
     // Insert in a new transaction — should trigger post-commit refresh
-    database.transaction(() -> {
-      database.newDocument("Employee").set("name", "Bob").save();
-    });
+    database.transaction(() ->
+      database.newDocument("Employee").set("name", "Bob").save());
 
     // View should now have 2 records
     try (final ResultSet rs = database.query("sql", "SELECT FROM EmployeeView")) {
@@ -64,21 +60,18 @@ class MaterializedViewIncrementalTest extends TestHelper {
 
   @Test
   void rollbackDoesNotAffectView() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("RollbackTest");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("RollbackTest"));
 
-    database.transaction(() -> {
-      database.newDocument("RollbackTest").set("value", 1).save();
-    });
+    database.transaction(() ->
+      database.newDocument("RollbackTest").set("value", 1).save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("RollbackView")
           .withQuery("SELECT value FROM RollbackTest")
           .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
-          .create();
-    });
+          .create());
 
     // Insert and rollback
     database.begin();
@@ -93,52 +86,44 @@ class MaterializedViewIncrementalTest extends TestHelper {
 
   @Test
   void dropUnregistersListeners() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("UnregTest");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("UnregTest"));
 
-    database.transaction(() -> {
-      database.newDocument("UnregTest").set("v", 1).save();
-    });
+    database.transaction(() ->
+      database.newDocument("UnregTest").set("v", 1).save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("UnregView")
           .withQuery("SELECT v FROM UnregTest")
           .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
-          .create();
-    });
+          .create());
 
     // Drop the view
-    database.transaction(() -> {
-      database.getSchema().dropMaterializedView("UnregView");
-    });
+    database.transaction(() ->
+      database.getSchema().dropMaterializedView("UnregView"));
 
     // Insert after drop should not cause errors (listeners should be unregistered)
-    database.transaction(() -> {
-      database.newDocument("UnregTest").set("v", 2).save();
-    });
+    database.transaction(() ->
+      database.newDocument("UnregTest").set("v", 2).save());
 
     assertThat(database.getSchema().existsMaterializedView("UnregView")).isFalse();
   }
 
   @Test
   void incrementalRefreshWorksAfterRollback() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("PostRollback");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("PostRollback"));
 
-    database.transaction(() -> {
-      database.newDocument("PostRollback").set("v", 1).save();
-    });
+    database.transaction(() ->
+      database.newDocument("PostRollback").set("v", 1).save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("PostRollbackView")
           .withQuery("SELECT v FROM PostRollback")
           .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
-          .create();
-    });
+          .create());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM PostRollbackView")) {
       assertThat(rs.stream().count()).isEqualTo(1);
@@ -150,9 +135,8 @@ class MaterializedViewIncrementalTest extends TestHelper {
     database.rollback();
 
     // Now commit a new transaction — incremental refresh should still work
-    database.transaction(() -> {
-      database.newDocument("PostRollback").set("v", 3).save();
-    });
+    database.transaction(() ->
+      database.newDocument("PostRollback").set("v", 3).save());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM PostRollbackView")) {
       assertThat(rs.stream().count()).isEqualTo(2);
@@ -172,13 +156,12 @@ class MaterializedViewIncrementalTest extends TestHelper {
       database.newDocument("Staff").set("name", "Bob").set("dept", "Sales").save();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("StaffView")
           .withQuery("SELECT name, dept FROM Staff")
           .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
-          .create();
-    });
+          .create());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM StaffView")) {
       assertThat(rs.stream().count()).isEqualTo(2);
@@ -213,13 +196,12 @@ class MaterializedViewIncrementalTest extends TestHelper {
       database.newDocument("Ticket").set("title", "Bug 3").save();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("TicketView")
           .withQuery("SELECT title FROM Ticket")
           .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
-          .create();
-    });
+          .create());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM TicketView")) {
       assertThat(rs.stream().count()).isEqualTo(3);
@@ -235,17 +217,15 @@ class MaterializedViewIncrementalTest extends TestHelper {
 
   @Test
   void listenerNoOpWithoutActiveTransaction() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("NoTxSrc");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("NoTxSrc"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("NoTxView")
           .withQuery("SELECT FROM NoTxSrc")
           .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
-          .create();
-    });
+          .create());
 
     final MaterializedViewImpl view = (MaterializedViewImpl)
         database.getSchema().getMaterializedView("NoTxView");
@@ -266,9 +246,8 @@ class MaterializedViewIncrementalTest extends TestHelper {
 
   @Test
   void complexQueryFullRefreshAfterCommit() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Sale");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("Sale"));
 
     database.transaction(() -> {
       database.newDocument("Sale").set("product", "A").set("amount", 10).save();
@@ -276,13 +255,12 @@ class MaterializedViewIncrementalTest extends TestHelper {
       database.newDocument("Sale").set("product", "B").set("amount", 30).save();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("SaleSummary")
           .withQuery("SELECT product, sum(amount) as total FROM Sale GROUP BY product")
           .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
-          .create();
-    });
+          .create());
 
     // Initial refresh should have 2 groups
     try (final ResultSet rs = database.query("sql", "SELECT FROM SaleSummary")) {
@@ -290,9 +268,8 @@ class MaterializedViewIncrementalTest extends TestHelper {
     }
 
     // Add more data — complex query triggers full refresh
-    database.transaction(() -> {
-      database.newDocument("Sale").set("product", "C").set("amount", 50).save();
-    });
+    database.transaction(() ->
+      database.newDocument("Sale").set("product", "C").set("amount", 50).save());
 
     // Should have 3 groups now
     try (final ResultSet rs = database.query("sql", "SELECT FROM SaleSummary")) {

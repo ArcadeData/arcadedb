@@ -18,7 +18,6 @@
  */
 package com.arcadedb.engine;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import org.junit.jupiter.api.Test;

@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.utility.RidHashSet;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 26/10/16.
@@ -112,7 +112,7 @@ public abstract class AbstractTraverseStep extends AbstractExecutionStep {
       final long begin = context.isProfiling() ? System.nanoTime() : 0;
       fetchNextResults(context, nRecords);
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

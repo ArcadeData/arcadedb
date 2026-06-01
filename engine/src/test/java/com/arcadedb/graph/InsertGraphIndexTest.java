@@ -29,7 +29,7 @@ import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -55,11 +55,10 @@ class InsertGraphIndexTest extends TestHelper {
     {
       final Vertex[] cachedVertices = loadVertices();
       checkGraph(cachedVertices);
-      database.transaction(() -> {
+      database.transaction(() ->
         database.select().fromType(EDGE_TYPE_NAME).edges().toList().forEach(e -> {
           e.delete();
-        });
-      });
+        }));
     }
     database.close();
   }

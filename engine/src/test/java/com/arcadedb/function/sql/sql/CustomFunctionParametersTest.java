@@ -19,7 +19,6 @@
 package com.arcadedb.function.sql.sql;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
@@ -33,7 +32,7 @@ class CustomFunctionParametersTest {
 
   @Test
   void sqlFunctionWithStringParameter() throws Exception {
-    TestHelper.executeInNewDatabase("testSQLFunctionWithStringParameter", (db) -> {
+    TestHelper.executeInNewDatabase("testSQLFunctionWithStringParameter", db -> {
       // Create a type and add some test data
       db.command("sql", "CREATE DOCUMENT TYPE Beer");
       db.command("sql", "INSERT INTO Beer SET name = 'Hocus Pocus'");
@@ -55,7 +54,7 @@ class CustomFunctionParametersTest {
 
   @Test
   void sqlFunctionReturningInput() throws Exception {
-    TestHelper.executeInNewDatabase("testSQLFunctionReturningInput", (db) -> {
+    TestHelper.executeInNewDatabase("testSQLFunctionReturningInput", db -> {
       // Define a function that returns the input directly
       db.command("sql", "DEFINE FUNCTION my.returnInput \"SELECT :a AS result\" PARAMETERS [a] LANGUAGE sql");
 
@@ -70,7 +69,7 @@ class CustomFunctionParametersTest {
 
   @Test
   void sqlFunctionWithMultipleParameters() throws Exception {
-    TestHelper.executeInNewDatabase("testSQLFunctionWithMultipleParameters", (db) -> {
+    TestHelper.executeInNewDatabase("testSQLFunctionWithMultipleParameters", db -> {
       // Define a function that uses multiple parameters
       db.command("sql", "DEFINE FUNCTION my.add \"SELECT :a + :b AS result\" PARAMETERS [a, b] LANGUAGE sql");
 
@@ -85,7 +84,7 @@ class CustomFunctionParametersTest {
 
   @Test
   void javaScriptFunctionReturningInput() throws Exception {
-    TestHelper.executeInNewDatabase("testJavaScriptFunctionReturningInput", (db) -> {
+    TestHelper.executeInNewDatabase("testJavaScriptFunctionReturningInput", db -> {
       // Define a JavaScript function that returns the input
       db.command("sql", "DEFINE FUNCTION my.returnInputJS \"return a\" PARAMETERS [a] LANGUAGE js");
 
@@ -100,7 +99,7 @@ class CustomFunctionParametersTest {
 
   @Test
   void javaScriptFunctionWithStringParameter() throws Exception {
-    TestHelper.executeInNewDatabase("testJavaScriptFunctionWithStringParameter", (db) -> {
+    TestHelper.executeInNewDatabase("testJavaScriptFunctionWithStringParameter", db -> {
       // Define a JavaScript function that manipulates a string
       db.command("sql", "DEFINE FUNCTION my.uppercase \"return a.toUpperCase()\" PARAMETERS [a] LANGUAGE js");
 
@@ -115,7 +114,7 @@ class CustomFunctionParametersTest {
 
   @Test
   void javaScriptFunctionWithMultipleParameters() throws Exception {
-    TestHelper.executeInNewDatabase("testJavaScriptFunctionWithMultipleParameters", (db) -> {
+    TestHelper.executeInNewDatabase("testJavaScriptFunctionWithMultipleParameters", db -> {
       // Define a JavaScript function with multiple parameters
       db.command("sql", "DEFINE FUNCTION my.add \"return a + b\" PARAMETERS [a, b] LANGUAGE js");
 
@@ -130,7 +129,7 @@ class CustomFunctionParametersTest {
 
   @Test
   void javaScriptFunctionWithStringContainingQuotes() throws Exception {
-    TestHelper.executeInNewDatabase("testJavaScriptFunctionWithStringContainingQuotes", (db) -> {
+    TestHelper.executeInNewDatabase("testJavaScriptFunctionWithStringContainingQuotes", db -> {
       // Define a JavaScript function that handles strings
       db.command("sql", "DEFINE FUNCTION my.echo \"return a\" PARAMETERS [a] LANGUAGE js");
 
@@ -145,7 +144,7 @@ class CustomFunctionParametersTest {
 
   @Test
   void sqlFunctionWithNumericParameter() throws Exception {
-    TestHelper.executeInNewDatabase("testSQLFunctionWithNumericParameter", (db) -> {
+    TestHelper.executeInNewDatabase("testSQLFunctionWithNumericParameter", db -> {
       // Define a function that works with numbers
       db.command("sql", "DEFINE FUNCTION my.double \"SELECT :a * 2 AS result\" PARAMETERS [a] LANGUAGE sql");
 
@@ -160,7 +159,7 @@ class CustomFunctionParametersTest {
 
   @Test
   void javaScriptFunctionWithBooleanParameter() throws Exception {
-    TestHelper.executeInNewDatabase("testJavaScriptFunctionWithBooleanParameter", (db) -> {
+    TestHelper.executeInNewDatabase("testJavaScriptFunctionWithBooleanParameter", db -> {
       // Define a JavaScript function that works with booleans
       db.command("sql", "DEFINE FUNCTION my.negate \"return !a\" PARAMETERS [a] LANGUAGE js");
 

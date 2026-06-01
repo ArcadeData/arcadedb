@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * <p>
@@ -80,7 +80,7 @@ public class ConvertToResultInternalStep extends AbstractExecutionStep {
             }
           } finally {
             if ( context.isProfiling() )
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
           nextItem = null;
         }

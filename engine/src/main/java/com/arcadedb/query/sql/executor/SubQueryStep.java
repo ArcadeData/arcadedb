@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 22/07/16.
@@ -39,7 +39,7 @@ public class SubQueryStep extends AbstractExecutionStep {
   public SubQueryStep(final InternalExecutionPlan subExecutionPlan, final CommandContext context, final CommandContext subCtx) {
     super(context);
     this.subExecutionPlan = subExecutionPlan;
-    this.sameContextAsParent = (context == subCtx);
+    this.sameContextAsParent = context == subCtx;
   }
 
   @Override

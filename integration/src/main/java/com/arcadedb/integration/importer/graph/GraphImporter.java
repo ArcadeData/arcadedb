@@ -19,6 +19,7 @@
 package com.arcadedb.integration.importer.graph;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.MutableVertex;
@@ -27,8 +28,10 @@ import com.arcadedb.graph.olap.GraphAnalyticalViewRegistry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
+import java.nio.file.Files;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeFormatterBuilder;
@@ -39,6 +42,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -114,11 +118,11 @@ public class GraphImporter implements AutoCloseable {
     final String dbPath = args[1];
     final String baseDir = args.length > 2 ? args[2] : jsonFile.getParent();
 
-    final String json = new String(java.nio.file.Files.readAllBytes(jsonFile.toPath()));
+    final String json = new String(Files.readAllBytes(jsonFile.toPath()));
     final JSONObject config = new JSONObject(json);
 
-    com.arcadedb.utility.FileUtils.deleteRecursively(new File(dbPath));
-    final Database database = new com.arcadedb.database.DatabaseFactory(dbPath).create();
+    FileUtils.deleteRecursively(new File(dbPath));
+    final Database database = new DatabaseFactory(dbPath).create();
 
     try {
       // Auto-create schema from the JSON config
@@ -199,7 +203,7 @@ public class GraphImporter implements AutoCloseable {
     for (final GraphAnalyticalView gav : GraphAnalyticalViewRegistry.getAll(database).values()) {
       if (gav.getStatus() != GraphAnalyticalView.Status.READY) {
         LogManager.instance().log(GraphImporter.class, Level.INFO, "Waiting for GraphAnalyticalView '%s' to finish building...", gav.getName());
-        gav.awaitReady(10, java.util.concurrent.TimeUnit.MINUTES);
+        gav.awaitReady(10, TimeUnit.MINUTES);
         LogManager.instance().log(GraphImporter.class, Level.INFO, "GraphAnalyticalView '%s' is ready", gav.getName());
       }
     }

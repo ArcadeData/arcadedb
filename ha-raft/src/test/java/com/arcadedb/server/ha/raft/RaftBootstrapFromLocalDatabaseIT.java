@@ -123,8 +123,9 @@ class RaftBootstrapFromLocalDatabaseIT extends BaseRaftHATest {
       }
     }
     assertThat(atLeastOneMatched)
-        .as("at least one peer (the source) should have a fingerprint matching the committed baseline, "
-            + "proving the bootstrap-locally branch fired on it (no leader-shipped snapshot was needed)")
+        .as("""
+            at least one peer (the source) should have a fingerprint matching the committed baseline, \
+            proving the bootstrap-locally branch fired on it (no leader-shipped snapshot was needed)""")
         .isTrue();
   }
 }

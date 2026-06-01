@@ -35,7 +35,10 @@ import java.util.*;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Handler;
+import java.util.logging.Level;
 import java.util.logging.LogRecord;
+import java.util.logging.Logger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -2173,10 +2176,10 @@ class GraphAnalyticalViewTest extends TestHelper {
     final String dbPath = database.getDatabasePath();
 
     final List<LogRecord> severe = new ArrayList<>();
-    final java.util.logging.Logger root = java.util.logging.Logger.getLogger("");
-    final java.util.logging.Handler captureHandler = new java.util.logging.Handler() {
+    final Logger root = Logger.getLogger("");
+    final Handler captureHandler = new Handler() {
       @Override public void publish(final LogRecord r) {
-        if (r.getLevel().intValue() >= java.util.logging.Level.SEVERE.intValue()) {
+        if (r.getLevel().intValue() >= Level.SEVERE.intValue()) {
           final String msg = r.getMessage();
           if (msg != null && msg.contains("GraphAnalyticalView"))
             synchronized (severe) { severe.add(r); }

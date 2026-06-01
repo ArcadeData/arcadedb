@@ -22,7 +22,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 public class NestedProjectionItem extends SimpleNode {
   public boolean          exclude       = false;
@@ -121,7 +122,7 @@ public class NestedProjectionItem extends SimpleNode {
 
   @Override
   public int hashCode() {
-    int result = (exclude ? 1 : 0);
+    int result = exclude ? 1 : 0;
     result = 31 * result + (star ? 1 : 0);
     result = 31 * result + (expression != null ? expression.hashCode() : 0);
     result = 31 * result + (rightWildcard ? 1 : 0);

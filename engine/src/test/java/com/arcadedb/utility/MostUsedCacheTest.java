@@ -267,9 +267,9 @@ class MostUsedCacheTest {
     // Verify all entries are present
     boolean foundA = false, foundB = false, foundC = false;
     for (final var entry : cache.entrySet()) {
-      if (entry.getKey().equals("a") && entry.getValue().equals(1)) foundA = true;
-      if (entry.getKey().equals("b") && entry.getValue().equals(2)) foundB = true;
-      if (entry.getKey().equals("c") && entry.getValue().equals(3)) foundC = true;
+      if ("a".equals(entry.getKey()) && entry.getValue().equals(1)) foundA = true;
+      if ("b".equals(entry.getKey()) && entry.getValue().equals(2)) foundB = true;
+      if ("c".equals(entry.getKey()) && entry.getValue().equals(3)) foundC = true;
     }
 
     assertThat(foundA && foundB && foundC).as("All entries should be present in entrySet").isTrue();

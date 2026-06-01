@@ -21,6 +21,7 @@ package com.arcadedb.index.fulltext;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
@@ -300,9 +301,8 @@ class LSMTreeFullTextIndexTest extends TestHelper {
     });
 
     // Delete the document and verify it's removed from the index
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Article4 WHERE title = 'Java Programming'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Article4 WHERE title = 'Java Programming'"));
 
     database.transaction(() -> {
       final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("Article4[title,body]");
@@ -371,9 +371,8 @@ class LSMTreeFullTextIndexTest extends TestHelper {
     });
 
     // Verify we can insert new documents after restart
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Article5 SET title = 'Database Design', body = 'SQL and NoSQL databases'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Article5 SET title = 'Database Design', body = 'SQL and NoSQL databases'"));
 
     // Verify the new document is indexed correctly
     database.transaction(() -> {
@@ -605,9 +604,9 @@ class LSMTreeFullTextIndexTest extends TestHelper {
 
       // Three space-separated words; put() would tokenize into three postings.
       final String multiWord = "alpha beta gamma";
-      final com.arcadedb.database.RID rid = new com.arcadedb.database.RID(idx.getAssociatedBucketId(), 0);
+      final RID rid = new RID(idx.getAssociatedBucketId(), 0);
 
-      idx.putReplay(new Object[] { multiWord }, new com.arcadedb.database.RID[] { rid });
+      idx.putReplay(new Object[] { multiWord }, new RID[] { rid });
     });
 
     database.transaction(() -> {
@@ -638,9 +637,9 @@ class LSMTreeFullTextIndexTest extends TestHelper {
       final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("ReplayRemoveDoc[text]");
       final LSMTreeFullTextIndex idx = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
 
-      final com.arcadedb.database.RID rid = new com.arcadedb.database.RID(idx.getAssociatedBucketId(), 0);
+      final RID rid = new RID(idx.getAssociatedBucketId(), 0);
       // Single lowercase token survives StandardAnalyzer unchanged; this lets idx.get find it.
-      idx.putReplay(new Object[] { "alphabetagamma" }, new com.arcadedb.database.RID[] { rid });
+      idx.putReplay(new Object[] { "alphabetagamma" }, new RID[] { rid });
     });
 
     database.transaction(() -> {
@@ -649,7 +648,7 @@ class LSMTreeFullTextIndexTest extends TestHelper {
 
       assertThat(idx.get(new Object[] { "alphabetagamma" }).hasNext()).isTrue();
 
-      final com.arcadedb.database.RID rid = new com.arcadedb.database.RID(idx.getAssociatedBucketId(), 0);
+      final RID rid = new RID(idx.getAssociatedBucketId(), 0);
       idx.removeReplay(new Object[] { "alphabetagamma" }, rid);
     });
 

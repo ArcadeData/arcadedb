@@ -18,7 +18,6 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.database.RID;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -56,9 +55,8 @@ public class Issue2590Test extends TestHelper {
     assertThat(updateToNull.hasNext()).isTrue();
 
     // Update from LIC-CCC to duplicate existing value LIC-AAA (should fail)
-    assertThatThrownBy(() -> {
-      database.command("sql", "UPDATE NullRemoteTest SET licenseKey = 'LIC-AAA' WHERE licenseKey = 'LIC-CCC'");
-    }).isInstanceOf(DuplicatedKeyException.class)
+    assertThatThrownBy(() ->
+      database.command("sql", "UPDATE NullRemoteTest SET licenseKey = 'LIC-AAA' WHERE licenseKey = 'LIC-CCC'")).isInstanceOf(DuplicatedKeyException.class)
         .as("UPDATE to duplicate value should enforce unique constraint");
 
     database.rollback();

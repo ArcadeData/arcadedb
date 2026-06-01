@@ -20,7 +20,7 @@ package com.arcadedb.log;
 
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Logger interface that avoids using varargs to remove garbage on the GC

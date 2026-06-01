@@ -58,7 +58,7 @@ public class UtilValidate extends AbstractUtilFunction {
       valid = (Boolean) predicate;
     } else if (predicate instanceof String) {
       final String str = (String) predicate;
-      valid = !str.isEmpty() && !str.equalsIgnoreCase("false") && !str.equals("0");
+      valid = !str.isEmpty() && !"false".equalsIgnoreCase(str) && !"0".equals(str);
     } else if (predicate instanceof Number) {
       valid = ((Number) predicate).doubleValue() != 0.0;
     } else {

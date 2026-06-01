@@ -24,6 +24,10 @@ import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.util.Set;
+
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.http.handler.GetServerHandler;
+
 import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -101,13 +105,13 @@ class PoolMetricsTest {
     final SimpleMeterRegistry registry = new SimpleMeterRegistry();
     new PoolMetrics().bindTo(registry);
 
-    final com.arcadedb.serializer.json.JSONObject executors =
-        com.arcadedb.server.http.handler.GetServerHandler.buildExecutorsJSON(registry);
+    final JSONObject executors =
+        GetServerHandler.buildExecutorsJSON(registry);
 
     for (final String poolTag : new String[] { "query", "sparse_vector" }) {
       assertThat(executors.has(poolTag))
           .as("executors JSON must have key '%s' (Studio dashboard reads this exact tag)", poolTag).isTrue();
-      final com.arcadedb.serializer.json.JSONObject pool = executors.getJSONObject(poolTag);
+      final JSONObject pool = executors.getJSONObject(poolTag);
       for (final String gaugeName : EXPECTED_GAUGE_NAMES) {
         // Studio reads e.g. metrics.executors.query["pool.size"] - the post-prefix name.
         final String shortName = gaugeName.substring("arcadedb.executor.".length());

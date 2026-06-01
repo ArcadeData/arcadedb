@@ -22,7 +22,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -32,7 +31,7 @@ class CheckTypeTypeStepTest {
 
   @Test
   void shouldCheckSubclasses() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       final DocumentType parentClass = TestHelper.createRandomType(db);
@@ -46,7 +45,7 @@ class CheckTypeTypeStepTest {
 
   @Test
   void shouldCheckOneType() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       final String className = TestHelper.createRandomType(db).getName();
@@ -59,7 +58,7 @@ class CheckTypeTypeStepTest {
 
   @Test
   void shouldThrowExceptionWhenClassIsNotParent() throws Exception {
-    assertThatThrownBy(() -> TestHelper.executeInNewDatabase((db) -> {
+    assertThatThrownBy(() -> TestHelper.executeInNewDatabase(db -> {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       final CheckTypeTypeStep step = new CheckTypeTypeStep(TestHelper.createRandomType(db).getName(),

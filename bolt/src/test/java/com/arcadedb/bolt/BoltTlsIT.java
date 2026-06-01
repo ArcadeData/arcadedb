@@ -30,6 +30,7 @@ import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Config;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
+import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
 
@@ -150,7 +151,7 @@ public class BoltTlsIT extends BaseGraphServerTest {
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().build())) {
       try (final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-        final org.neo4j.driver.Result result = session.run("RETURN 1 AS value");
+        final Result result = session.run("RETURN 1 AS value");
         assertThat(result.hasNext()).isTrue();
         assertThat(result.next().get("value").asLong()).isEqualTo(1L);
       }
@@ -175,7 +176,7 @@ public class BoltTlsIT extends BaseGraphServerTest {
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder().withoutEncryption().build())) {
       try (final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
-        final org.neo4j.driver.Result result = session.run("RETURN 42 AS answer");
+        final Result result = session.run("RETURN 42 AS answer");
         assertThat(result.hasNext()).isTrue();
         assertThat(result.next().get("answer").asLong()).isEqualTo(42L);
       }

@@ -20,11 +20,10 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
-import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class CountFromTypeStepTest {
 
@@ -32,7 +31,7 @@ class CountFromTypeStepTest {
 
   @Test
   void shouldCountRecordsOfClass() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String className = TestHelper.createRandomType(db).getName();
       for (int i = 0; i < 20; i++) {
         final MutableDocument document = db.newDocument(className);
@@ -51,7 +50,7 @@ class CountFromTypeStepTest {
 
   @Test
   void countStarWithLimitShouldUseOptimizedPlan() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String className = TestHelper.createRandomType(db).getName();
       for (int i = 0; i < 100; i++)
         db.newDocument(className).save();

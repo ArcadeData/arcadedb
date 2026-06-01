@@ -60,10 +60,9 @@ class OpenCypherSpatialFunctionsTest {
   @Test
   void simplePointCreationAndRetrieval() {
     // Create a simple ping with a point location
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (ping:Ping {location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')})");
-    });
+          "CREATE (ping:Ping {location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')})"));
 
     // Retrieve the ping and check that location is stored correctly
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:Ping) RETURN p.location as loc")) {

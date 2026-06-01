@@ -31,7 +31,7 @@ import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Native Query engine is a simple query engine that covers most of the classic use cases, such as the retrieval of records
@@ -74,7 +74,7 @@ public class SelectExecutor {
   long executeCount() {
     final MultiIndexCursor iteratorFromIndexes = lookForIndexes();
     final Iterator<? extends Identifiable> iterator = buildIterator(iteratorFromIndexes);
-    final Set<RID> filterOutRecords = (iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1)
+    final Set<RID> filterOutRecords = iteratorFromIndexes != null && iteratorFromIndexes.getCursors() > 1
         ? ConcurrentHashMap.newKeySet() : null;
 
     long count = 0;

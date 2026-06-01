@@ -20,7 +20,7 @@ package com.arcadedb.security;
 
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.Set;
 
 /**
  * Security user at global level. The user can have access to multiple databases.

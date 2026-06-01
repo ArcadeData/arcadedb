@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * Created by luigidellaquila on 08/07/16.
@@ -57,7 +57,7 @@ public class EmptyDataGeneratorStep extends AbstractExecutionStep {
           throw new NoSuchElementException();
         } finally {
           if (context.isProfiling()) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }

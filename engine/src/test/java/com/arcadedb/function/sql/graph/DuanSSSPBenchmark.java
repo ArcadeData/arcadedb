@@ -202,8 +202,8 @@ class DuanSSSPBenchmark {
       // Only count if both found a path (or both didn't find a path)
       if ((dijkstraPath == null && duanPath.isEmpty()) ||
           (dijkstraPath != null && !duanPath.isEmpty())) {
-        dijkstraTotalTime += (dijkstraEnd - dijkstraStart);
-        duanSSSPTotalTime += (duanEnd - duanStart);
+        dijkstraTotalTime += dijkstraEnd - dijkstraStart;
+        duanSSSPTotalTime += duanEnd - duanStart;
         successfulRuns++;
 
         // Verify path lengths match (optional correctness check)
@@ -229,7 +229,7 @@ class DuanSSSPBenchmark {
 
   @Test
   void benchmarkSmallRandomGraph() throws Exception {
-    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_smallRandom", (db) -> {
+    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_smallRandom", db ->
       db.transaction(() -> {
         db.getSchema().createVertexType("BenchNode");
         db.getSchema().createEdgeType("BenchEdge");
@@ -238,13 +238,12 @@ class DuanSSSPBenchmark {
         final GraphData graph = generateRandomGraph(db, 50, 0.1); // 50 vertices, ~10% edge probability
         final BenchmarkResult result = runBenchmark(db, graph, "Random");
         System.out.println(result);
-      });
-    });
+      }));
   }
 
   @Test
   void benchmarkMediumRandomGraph() throws Exception {
-    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_mediumRandom", (db) -> {
+    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_mediumRandom", db ->
       db.transaction(() -> {
         db.getSchema().createVertexType("BenchNode");
         db.getSchema().createEdgeType("BenchEdge");
@@ -253,13 +252,12 @@ class DuanSSSPBenchmark {
         final GraphData graph = generateRandomGraph(db, 200, 0.05); // 200 vertices, ~5% edge probability
         final BenchmarkResult result = runBenchmark(db, graph, "Random");
         System.out.println(result);
-      });
-    });
+      }));
   }
 
   @Test
   void benchmarkGridGraph() throws Exception {
-    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_grid", (db) -> {
+    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_grid", db ->
       db.transaction(() -> {
         db.getSchema().createVertexType("BenchNode");
         db.getSchema().createEdgeType("BenchEdge");
@@ -268,13 +266,12 @@ class DuanSSSPBenchmark {
         final GraphData graph = generateGridGraph(db, 20); // 400 vertices, ~800 edges
         final BenchmarkResult result = runBenchmark(db, graph, "Grid");
         System.out.println(result);
-      });
-    });
+      }));
   }
 
   @Test
   void benchmarkScaleFreeGraph() throws Exception {
-    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_scaleFree", (db) -> {
+    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_scaleFree", db ->
       db.transaction(() -> {
         db.getSchema().createVertexType("BenchNode");
         db.getSchema().createEdgeType("BenchEdge");
@@ -283,13 +280,12 @@ class DuanSSSPBenchmark {
         final GraphData graph = generateScaleFreeGraph(db, 150, 3); // 150 vertices, ~3 edges per vertex
         final BenchmarkResult result = runBenchmark(db, graph, "Scale-Free");
         System.out.println(result);
-      });
-    });
+      }));
   }
 
   @Test
   void benchmarkComparison() throws Exception {
-    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_comparison", (db) -> {
+    TestHelper.executeInNewDatabase("DuanSSSPBenchmark_comparison", db ->
       db.transaction(() -> {
         db.getSchema().createVertexType("BenchNode");
         db.getSchema().createEdgeType("BenchEdge");
@@ -331,8 +327,7 @@ class DuanSSSPBenchmark {
         System.out.println("\nNote: Ratio > 1.0 means DuanSSSP is slower than Dijkstra");
         System.out.println("Expected: DuanSSSP slower on practical graphs due to constant factors");
         System.out.println("Theoretical: DuanSSSP has better asymptotic complexity O(m log^(2/3) n)");
-      });
-    });
+      }));
   }
 
   private static class GraphData {

@@ -111,7 +111,7 @@ public class RemoveStep extends AbstractExecutionStep {
             buffer.add(inputResult);
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
 

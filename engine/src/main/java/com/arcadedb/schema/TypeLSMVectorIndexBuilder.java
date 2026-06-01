@@ -302,7 +302,7 @@ public class TypeLSMVectorIndexBuilder extends TypeIndexBuilder {
   }
 
   public void withMetadata(final JSONObject json) {
-    final LSMVectorIndexMetadata meta = ((LSMVectorIndexMetadata) metadata);
+    final LSMVectorIndexMetadata meta = (LSMVectorIndexMetadata) metadata;
 
     if (json.has("dimensions"))
       meta.dimensions = json.getInt("dimensions");

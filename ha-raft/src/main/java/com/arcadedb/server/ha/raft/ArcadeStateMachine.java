@@ -20,7 +20,9 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Binary;
+import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.exception.WALVersionGapException;
@@ -54,9 +56,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -119,8 +124,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Populated when the entry is applied (locally on every peer), used by the catch-up decision
    * tree (locally bootstrapped vs leader-shipped vs late-newer-joiner refusal). Issue #4147.
    */
-  private final java.util.concurrent.ConcurrentHashMap<String, BootstrapBaseline> bootstrapBaselines =
-      new java.util.concurrent.ConcurrentHashMap<>();
+  private final ConcurrentHashMap<String, BootstrapBaseline> bootstrapBaselines =
+      new ConcurrentHashMap<>();
 
   /** Per-database bootstrap baseline as it appears in the committed Raft log entry. */
   public record BootstrapBaseline(String fingerprint, long lastTxId) {
@@ -385,9 +390,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // and Max, or reduce per-batch size.
       final long sinceLast = previousElectionTime > 0 ? now - previousElectionTime : -1;
       LogManager.instance().log(this, Level.WARNING,
-          "Leader churn: %s re-elected (term=%d, %d ms since last leader change). "
-              + "Likely cause: leader heartbeat blocked by bulk-load replication. "
-              + "Tune arcadedb.ha.electionTimeoutMin/Max higher or reduce batch size.",
+          """
+          Leader churn: %s re-elected (term=%d, %d ms since last leader change). \
+          Likely cause: leader heartbeat blocked by bulk-load replication. \
+          Tune arcadedb.ha.electionTimeoutMin/Max higher or reduce batch size.""",
           leaderName, currentTerm, sinceLast);
     } else {
       // Different node became leader. Normal failover (network, server restart, etc.).
@@ -661,7 +667,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         final List<Map<Integer, Integer>> bucketDeltas = decoded.bucketDeltas();
         for (int i = 0; i < walEntries.size(); i++) {
           final byte[] walData = walEntries.get(i);
-          final Map<Integer, Integer> bucketDelta = (bucketDeltas != null && i < bucketDeltas.size())
+          final Map<Integer, Integer> bucketDelta = bucketDeltas != null && i < bucketDeltas.size()
               ? bucketDeltas.get(i)
               : Collections.emptyMap();
           final WALFile.WALTransaction walTx = deserializeWalTransaction(walData);
@@ -704,7 +710,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return;
       final JSONObject types = root.getJSONObject("types");
 
-      final java.util.Set<String> shippedIndexNames = new java.util.HashSet<>();
+      final Set<String> shippedIndexNames = new HashSet<>();
       if (filesToAdd != null) {
         for (final String fullName : filesToAdd.values()) {
           final int firstDot = fullName.indexOf('.');
@@ -885,8 +891,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // (or natural Raft replay) will create the database and install the leader's snapshot;
       // we just record the baseline.
       LogManager.instance().log(this, Level.INFO,
-          "Bootstrap baseline recorded for '%s' (lastTxId=%d); database not yet present locally, "
-              + "will be created via leader-shipped snapshot",
+          """
+          Bootstrap baseline recorded for '%s' (lastTxId=%d); database not yet present locally, \
+          will be created via leader-shipped snapshot""",
           dbName, chosenLastTxId);
       return;
     }
@@ -898,14 +905,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
     try {
       final ServerDatabase serverDb = server.getDatabase(dbName);
       final DatabaseInternal embedded = serverDb.getWrappedDatabaseInstance().getEmbedded();
-      if (!(embedded instanceof com.arcadedb.database.LocalDatabase localDb)) {
+      if (!(embedded instanceof LocalDatabase localDb)) {
         LogManager.instance().log(this, Level.WARNING,
             "BOOTSTRAP_FINGERPRINT_ENTRY for '%s': embedded database is not a LocalDatabase, skipping",
             dbName);
         return;
       }
       localPath = localDb.getDatabasePath();
-      localFingerprint = com.arcadedb.database.BootstrapFingerprint.compute(new File(localPath));
+      localFingerprint = BootstrapFingerprint.compute(new File(localPath));
       localLastTxId = localDb.getLastTransactionId();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
@@ -930,11 +937,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // transactions on a single pod by re-bootstrapping from older peers.
     if (localLastTxId > chosenLastTxId) {
       LogManager.instance().log(this, Level.SEVERE,
-          "Database '%s': local lastTxId=%d is GREATER than cluster bootstrap lastTxId=%d. "
-              + "This peer's data is fresher than the cluster's chosen baseline (committed "
-              + "BOOTSTRAP_FINGERPRINT_ENTRY). Refusing to overwrite local data. To preserve it, "
-              + "stop the cluster, copy this peer's database directory to every other peer, then "
-              + "restart all peers.",
+          """
+          Database '%s': local lastTxId=%d is GREATER than cluster bootstrap lastTxId=%d. \
+          This peer's data is fresher than the cluster's chosen baseline (committed \
+          BOOTSTRAP_FINGERPRINT_ENTRY). Refusing to overwrite local data. To preserve it, \
+          stop the cluster, copy this peer's database directory to every other peer, then \
+          restart all peers.""",
           dbName, localLastTxId, chosenLastTxId);
       return;
     }
@@ -944,8 +952,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // place; at bootstrap time the Ratis log is empty on every peer so a transaction-level
     // delta cannot be served from it.
     LogManager.instance().log(this, Level.INFO,
-        "Database '%s' bootstrap mismatch (local lastTxId=%d / fp=%s..., baseline lastTxId=%d / fp=%s...); "
-            + "reinstalling from leader-shipped full snapshot",
+        """
+        Database '%s' bootstrap mismatch (local lastTxId=%d / fp=%s..., baseline lastTxId=%d / fp=%s...); \
+        reinstalling from leader-shipped full snapshot""",
         dbName, localLastTxId, localFingerprint.substring(0, Math.min(8, localFingerprint.length())),
         chosenLastTxId, chosenFingerprint.substring(0, Math.min(8, chosenFingerprint.length())));
     installFromLeaderForBootstrap(dbName);
@@ -1110,7 +1119,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     tx.txId = buf.getLong();
     tx.timestamp = buf.getLong();
-    tx.forceApply = (tx.txId < 0); // negative txId signals compaction page replication
+    tx.forceApply = tx.txId < 0; // negative txId signals compaction page replication
     final int pageCount = buf.getInt();
     buf.getInt(); // segmentSize - not needed for deserialization
 

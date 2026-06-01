@@ -102,7 +102,7 @@ class AlgoBellmanFordTest {
 
     final Map<String, Object> path = result.getProperty("path");
     assertThat(path).isNotNull();
-    assertThat(((List<?>) path.get("nodes"))).hasSize(4);
+    assertThat((List<?>) path.get("nodes")).hasSize(4);
   }
 
   @Test

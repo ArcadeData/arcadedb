@@ -35,12 +35,17 @@ import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.PBEKeySpec;
 import javax.crypto.spec.SecretKeySpec;
 
-import java.io.*;
-import java.nio.charset.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
-import java.security.spec.*;
-import java.util.*;
-import java.util.zip.*;
+import java.security.spec.KeySpec;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 public class FullBackupFormat extends AbstractBackupFormat {
   private interface BackupCallback {
@@ -79,7 +84,7 @@ public class FullBackupFormat extends AbstractBackupFormat {
 
     logger.logLine(0, "Executing full backup of database to '%s'...", backupFile);
 
-    encryptFile(backupFile, zipFile -> {
+    encryptFile(backupFile, zipFile ->
       // ACQUIRE A READ LOCK. TRANSACTION CAN STILL RUN, BUT CREATION OF NEW FILES (BUCKETS, TYPES, INDEXES) WILL BE PUT ON PAUSE UNTIL THIS LOCK IS RELEASED
       database.executeInReadLock(() -> {
         // FORCE FLUSHING BEFORE THE BACKUP AND AVOID FLUSHING OF DATA PAGES TO DISK
@@ -104,12 +109,11 @@ public class FullBackupFormat extends AbstractBackupFormat {
           final long databaseCompressedSize = backupFile.length();
 
           logger.logLine(0, "Full backup completed in %d seconds %s -> %s (%,d%% compressed)", elapsedInSecs,
-              FileUtils.getSizeAsString(databaseOrigSize), FileUtils.getSizeAsString((databaseCompressedSize)),
+              FileUtils.getSizeAsString(databaseOrigSize), FileUtils.getSizeAsString(databaseCompressedSize),
               databaseOrigSize > 0 ? (databaseOrigSize - databaseCompressedSize) * 100 / databaseOrigSize : 0);
         });
         return null;
-      });
-    });
+      }));
   }
 
   private long compressFile(final ZipOutputStream zipFile, final File inputFile) throws IOException {

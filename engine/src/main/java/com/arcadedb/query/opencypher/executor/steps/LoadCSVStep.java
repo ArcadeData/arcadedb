@@ -163,7 +163,7 @@ public class LoadCSVStep extends AbstractExecutionStep {
               throw new CommandExecutionException("Error reading CSV file: " + currentUrl, e);
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
           }
 
@@ -200,7 +200,7 @@ public class LoadCSVStep extends AbstractExecutionStep {
             throw new CommandExecutionException("Error opening CSV file: " + currentUrl, e);
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
       }

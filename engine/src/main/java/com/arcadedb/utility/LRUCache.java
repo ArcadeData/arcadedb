@@ -18,8 +18,9 @@
  */
 package com.arcadedb.utility;
 
-import java.io.*;
-import java.util.*;
+import java.io.Serial;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 /**
  * The simplest LRU cache implementation in Java. Not thread safe, wrap it in Collections.synchronizedMap() for thread-safety.

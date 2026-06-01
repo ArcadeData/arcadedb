@@ -23,7 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Returns the record from an Identifiable (a RID).

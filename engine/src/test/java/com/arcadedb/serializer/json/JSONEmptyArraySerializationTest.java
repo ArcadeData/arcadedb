@@ -203,7 +203,7 @@ class JSONEmptyArraySerializationTest extends TestHelper {
 
     Map<String, Object> map = json.toMap();
     assertThat(map.get("empty")).isInstanceOf(List.class);
-    assertThat(((List<?>) map.get("empty"))).isEmpty();
+    assertThat((List<?>) map.get("empty")).isEmpty();
     assertThat(map.get("data")).isEqualTo("value");
   }
 

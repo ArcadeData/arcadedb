@@ -27,11 +27,14 @@ import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URISyntaxException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -315,7 +318,7 @@ public final class SnapshotInstaller {
     final HttpURLConnection connection;
     try {
       connection = (HttpURLConnection) new URI(snapshotUrl).toURL().openConnection();
-    } catch (final java.net.URISyntaxException e) {
+    } catch (final URISyntaxException e) {
       throw new IOException("Invalid snapshot URL: " + snapshotUrl, e);
     }
 
@@ -366,7 +369,7 @@ public final class SnapshotInstaller {
             throw new ReplicationException("Symlink detected at extraction target: " + targetFile);
 
           final long compressedStart = rawCounter.getCount();
-          try (final java.io.FileOutputStream fos = new java.io.FileOutputStream(targetFile.toFile())) {
+          try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile())) {
             final long uncompressedBytes = copyWithLimit(zipIn, fos, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES, zipEntry.getName());
 
             // Decompression-bomb defense: check ratio for entries large enough to matter.
@@ -437,7 +440,7 @@ public final class SnapshotInstaller {
    * and therefore under-estimates the ratio, which is the safe direction for the check.
    * Package-private for unit testing.
    */
-  static final class CountingInputStream extends java.io.FilterInputStream {
+  static final class CountingInputStream extends FilterInputStream {
     private long count;
 
     CountingInputStream(final InputStream in) {
@@ -507,7 +510,7 @@ public final class SnapshotInstaller {
       try (final DirectoryStream<Path> stream = Files.newDirectoryStream(newDir)) {
         for (final Path entry : stream) {
           final String name = entry.getFileName().toString();
-          if (name.equals(SNAPSHOT_COMPLETE_FILE))
+          if (SNAPSHOT_COMPLETE_FILE.equals(name))
             continue;
           Files.move(entry, dbDir.resolve(name), StandardCopyOption.REPLACE_EXISTING);
         }

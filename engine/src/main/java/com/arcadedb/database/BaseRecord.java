@@ -18,12 +18,11 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
-import java.util.*;
+import java.util.Objects;
 
 public abstract class BaseRecord implements Record {
   protected final DatabaseInternal database;

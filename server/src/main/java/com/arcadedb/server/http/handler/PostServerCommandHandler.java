@@ -23,6 +23,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
@@ -33,32 +34,35 @@ import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.backup.AutoBackupConfig;
 import com.arcadedb.server.backup.AutoBackupSchedulerPlugin;
 import com.arcadedb.server.backup.BackupRetentionManager;
-import com.arcadedb.server.backup.DatabaseBackupConfig;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
-import com.arcadedb.utility.FileUtils;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
-import io.undertow.util.StatusCodes;
 
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
+import java.io.OutputStream;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
-import java.rmi.*;
-import java.time.*;
-import java.time.format.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.regex.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final HttpClient HTTP_CLIENT           = HttpClient.newHttpClient();
@@ -105,7 +109,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     final String command_lc = command.toLowerCase(Locale.ENGLISH).trim();
 
-    if (command_lc.equals(LIST_DATABASES))
+    if (LIST_DATABASES.equals(command_lc))
       return listDatabases(user);
     else
       checkRootUser(user);
@@ -136,7 +140,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     else if (command_lc.startsWith(CONNECT_CLUSTER)) {
       if (!connectCluster(extractTarget(command, CONNECT_CLUSTER), exchange))
         return null;
-    } else if (command_lc.equals(DISCONNECT_CLUSTER))
+    } else if (DISCONNECT_CLUSTER.equals(command_lc))
       disconnectCluster();
     else if (command_lc.startsWith(SET_DATABASE_SETTING))
       setDatabaseSetting(extractTarget(command, SET_DATABASE_SETTING));
@@ -146,9 +150,9 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       response.put("result", getServerEvents(extractTarget(command, GET_SERVER_EVENTS)));
     else if (command_lc.startsWith(ALIGN_DATABASE))
       alignDatabase(extractTarget(command, ALIGN_DATABASE));
-    else if (command_lc.equals(GET_BACKUP_CONFIG))
+    else if (GET_BACKUP_CONFIG.equals(command_lc))
       return getBackupConfig();
-    else if (command_lc.equals(SET_BACKUP_CONFIG))
+    else if (SET_BACKUP_CONFIG.equals(command_lc))
       return setBackupConfig(payload);
     else if (command_lc.startsWith(LIST_BACKUPS))
       return listBackups(extractTarget(command, LIST_BACKUPS));
@@ -900,7 +904,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     final ServerQueryProfiler profiler = httpServer.getServer().getQueryProfiler();
     final String sub = subCommand.toLowerCase(Locale.ENGLISH).trim();
 
-    if (sub.equals("start") || sub.startsWith("start ")) {
+    if ("start".equals(sub) || sub.startsWith("start ")) {
       final String timeoutStr = sub.substring(5).trim();
       if (!timeoutStr.isEmpty()) {
         try {
@@ -912,19 +916,19 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         profiler.start();
       return new ExecutionResponse(200, new JSONObject().put("result", "ok").put("recording", true).toString());
 
-    } else if (sub.equals("stop")) {
+    } else if ("stop".equals(sub)) {
       final JSONObject results = profiler.stop();
       return new ExecutionResponse(200, results != null ? results.toString() : new JSONObject().put("result", "ok").toString());
 
-    } else if (sub.equals("reset")) {
+    } else if ("reset".equals(sub)) {
       profiler.reset();
       return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
 
-    } else if (sub.equals("results")) {
+    } else if ("results".equals(sub)) {
       final JSONObject results = profiler.getResults();
       return new ExecutionResponse(200, results != null ? results.toString() : new JSONObject().put("result", "ok").toString());
 
-    } else if (sub.equals("list")) {
+    } else if ("list".equals(sub)) {
       final JSONArray files = profiler.listSavedRuns();
       return new ExecutionResponse(200, new JSONObject().put("result", files).toString());
 
@@ -1023,7 +1027,7 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
         restored.getEmbedded().drop();
         server.removeDatabase(databaseName);
       } catch (final Exception inner) {
-        com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+        LogManager.instance().log(this, Level.SEVERE,
             "Compensating drop after failed restore replication failed for '%s'", inner, databaseName);
       }
       throw e;

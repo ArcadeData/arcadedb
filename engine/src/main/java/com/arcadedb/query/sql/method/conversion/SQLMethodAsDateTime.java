@@ -23,8 +23,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
-import java.util.Date;
-
 /**
  * Transforms a value to datetime. If the conversion is not possible, null is returned.
  *

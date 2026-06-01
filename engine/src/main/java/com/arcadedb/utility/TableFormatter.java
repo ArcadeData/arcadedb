@@ -308,7 +308,7 @@ public class TableFormatter {
   protected Object getFieldValue(final int iIndex, final TableRow row, final String iColumnName) {
     Object value = null;
 
-    if (iColumnName.equals("#"))
+    if ("#".equals(iColumnName))
       // RECORD NUMBER
       value = iIndex > -1 ? iIndex : "";
     else
@@ -521,7 +521,7 @@ public class TableFormatter {
 
       // PARSE ALL THE DOCUMENT'S FIELDS
       for (final String fieldName : row.getFields()) {
-        if (fieldName.equals(RID_PROPERTY) || fieldName.equals(TYPE_PROPERTY))
+        if (RID_PROPERTY.equals(fieldName) || TYPE_PROPERTY.equals(fieldName))
           continue;
 
         columns.put(fieldName, getColumnSize(fetched, row, fieldName, columns.get(fieldName)));

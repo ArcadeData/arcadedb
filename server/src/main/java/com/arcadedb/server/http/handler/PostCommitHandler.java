@@ -26,7 +26,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
+import java.io.IOException;
 
 public class PostCommitHandler extends DatabaseAbstractHandler {
 

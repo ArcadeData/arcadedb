@@ -21,6 +21,8 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -143,7 +145,7 @@ class TimeSeriesFunctionMovingAvgTest extends TestHelper {
         "CREATE TIMESERIES TYPE MaBad TIMESTAMP ts FIELDS (value DOUBLE)");
     database.transaction(() -> database.command("sql", "INSERT INTO MaBad SET ts = 1000, value = 1.0"));
 
-    org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+    Assertions.assertThatThrownBy(() ->
         database.query("sql", "SELECT ts.movingAvg(value, { whoops: 1 }) AS ma FROM MaBad").next())
       .hasMessageContaining("whoops")
       .hasMessageContaining("ts.movingAvg");

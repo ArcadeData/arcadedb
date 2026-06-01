@@ -31,10 +31,10 @@ import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 public class LSMTreeIndexCompactor {
   private boolean debug = false;
@@ -313,7 +313,7 @@ public class LSMTreeIndexCompactor {
       LogManager.instance().log(mainIndex, Level.FINE,
           "- compacted %d pages, remaining %d pages (totalKeys=%d totalValues=%d totalMergedKeys=%d totalMergedValues=%d, threadId=%d)",
           null, compactedPages,
-          (lastImmutablePage - compactedPages + 1), totalKeys, totalValues, totalMergedKeys, totalMergedValues,
+          lastImmutablePage - compactedPages + 1, totalKeys, totalValues, totalMergedKeys, totalMergedValues,
           Thread.currentThread().threadId());
 
       pageIndex += pagesToCompact;
@@ -326,7 +326,7 @@ public class LSMTreeIndexCompactor {
 
     LogManager.instance().log(mainIndex, Level.FINE,
         "Index '%s' compacted in %dms (keys=%d values=%d mutablePages=%d immutablePages=%d iterations=%d oldLevel0File=%s(%d) newLevel0File=%s(%d) newLevel1File=%s(%d) threadId=%d)".formatted(
-            mainIndex.getName(), (System.currentTimeMillis() - startTime), totalKeys, totalValues, newIndex.getTotalPages(),
+            mainIndex.getName(), System.currentTimeMillis() - startTime, totalKeys, totalValues, newIndex.getTotalPages(),
             compactedIndex.getTotalPages(),
             iterations, oldMutableFileName, oldMutableFileId, mainIndex.getMutableIndex().getName(),
             mainIndex.getMutableIndex().getFileId(),

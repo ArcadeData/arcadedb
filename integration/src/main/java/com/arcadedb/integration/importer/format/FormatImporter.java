@@ -28,7 +28,7 @@ import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.Source;
 import com.arcadedb.integration.importer.SourceSchema;
 
-import java.io.*;
+import java.io.IOException;
 
 public interface FormatImporter {
   void load(SourceSchema sourceSchema, AnalyzedEntity.EntityType entityType, Parser parser, DatabaseInternal database, ImporterContext context,
@@ -52,7 +52,7 @@ public interface FormatImporter {
         logger.logLine(2,//
             "- Parsed %,d (%,d/sec) %,d documents (%,d/sec) %,d vertices (%,d/sec) %,d edges (%,d/sec %,d skipped) %,d linked edges (%,d/sec %,d%%) updated documents %,d (%,d%%)",
 //
-            context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), context.createdDocuments.get(),
+            context.parsed.get(), (context.parsed.get() - context.lastParsed) / deltaInSecs, context.createdDocuments.get(),
             (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
             (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
             (context.createdEdges.get() - context.lastEdges) / deltaInSecs, context.skippedEdges.get(), context.linkedEdges.get(),
@@ -64,7 +64,7 @@ public interface FormatImporter {
         final int progressPerc = (int) (parser.getPosition() * 100 / source.totalSize);
         logger.logLine(2,//
             "Parsed %,d (%,d/sec %,d%%) %,d records (%,d/sec) %,d vertices (%,d/sec) %,d edges (%,d/sec %,d skipped) %,d linked edges (%,d/sec %,d%%) updated documents %,d (%,d%%)",
-            context.parsed.get(), ((context.parsed.get() - context.lastParsed) / deltaInSecs), progressPerc, context.createdDocuments.get(),
+            context.parsed.get(), (context.parsed.get() - context.lastParsed) / deltaInSecs, progressPerc, context.createdDocuments.get(),
             (context.createdDocuments.get() - context.lastDocuments) / deltaInSecs, context.createdVertices.get(),
             (context.createdVertices.get() - context.lastVertices) / deltaInSecs, context.createdEdges.get(),
             (context.createdEdges.get() - context.lastEdges) / deltaInSecs, context.skippedEdges.get(), context.linkedEdges.get(),

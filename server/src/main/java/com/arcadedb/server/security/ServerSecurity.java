@@ -39,15 +39,17 @@ import com.arcadedb.utility.LRUCache;
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
 import javax.crypto.spec.PBEKeySpec;
-import java.io.*;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.charset.*;
-import java.security.*;
-import java.security.spec.*;
+import java.nio.charset.StandardCharsets;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.KeySpec;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_ALGORITHM;
 import static com.arcadedb.GlobalConfiguration.SERVER_SECURITY_RELOAD_EVERY;
@@ -91,7 +93,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     saltIteration = configuration.getValueAsInteger(SERVER_SECURITY_SALT_ITERATIONS);
 
     usersRepository = new SecurityUserFileRepository(configPath);
-    groupRepository = new SecurityGroupFileRepository(configPath, checkConfigReloadEveryMs).onReload((latestConfiguration) -> {
+    groupRepository = new SecurityGroupFileRepository(configPath, checkConfigReloadEveryMs).onReload(latestConfiguration -> {
       for (final String databaseName : server.getDatabaseNames()) {
         updateSchema(server.getDatabase(databaseName));
       }

@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -27,9 +26,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Stream;
 
 /**
@@ -106,7 +103,7 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
     final double[][] dist = new double[n][n];
     for (int i = 0; i < n; i++) {
       for (int j = 0; j < n; j++)
-        dist[i][j] = (i == j) ? 0.0 : INF;
+        dist[i][j] = i == j ? 0.0 : INF;
     }
 
     // Fill direct edges: try CSR edge properties first, fall back to OLTP

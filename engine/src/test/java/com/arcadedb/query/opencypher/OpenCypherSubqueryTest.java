@@ -533,8 +533,9 @@ class OpenCypherSubqueryTest {
 
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "MATCH (n:Node) WITH n, 42 AS k CALL { WITH n SET n.score = 7 RETURN 1 AS ok } "
-              + "RETURN k, n.score AS score");
+          """
+          MATCH (n:Node) WITH n, 42 AS k CALL { WITH n SET n.score = 7 RETURN 1 AS ok } \
+          RETURN k, n.score AS score""");
 
       final List<Result> rows = drainResults(rs);
       assertThat(rows).hasSize(1);
@@ -551,8 +552,9 @@ class OpenCypherSubqueryTest {
 
     database.transaction(() -> {
       final ResultSet rs = database.command("opencypher",
-          "MATCH (n:Node) CALL { WITH n SET n.score = n.score + 100 RETURN 1 AS ok } "
-              + "RETURN n.id AS id, n.score AS score ORDER BY id");
+          """
+          MATCH (n:Node) CALL { WITH n SET n.score = n.score + 100 RETURN 1 AS ok } \
+          RETURN n.id AS id, n.score AS score ORDER BY id""");
 
       final List<Result> rows = drainResults(rs);
       assertThat(rows).hasSize(3);

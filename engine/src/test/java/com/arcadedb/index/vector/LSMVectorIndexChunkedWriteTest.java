@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ComponentFile;
+import com.arcadedb.engine.PageId;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -68,7 +69,7 @@ class LSMVectorIndexChunkedWriteTest {
       dbInternal.getTransaction().setUseWAL(false);
 
       // Chunk commit callback that mirrors the production code in LSMVectorIndex
-      final ChunkCommitCallback chunkCallback = (bytesWritten) -> {
+      final ChunkCommitCallback chunkCallback = bytesWritten -> {
         database.commit();
         database.begin();
         dbInternal.getTransaction().setUseWAL(false);
@@ -151,7 +152,7 @@ class LSMVectorIndexChunkedWriteTest {
       // Now corrupt the content size on disk by writing a value > pageSize at offset 4
       // of page 0. We do this by modifying a page directly.
       database.begin();
-      final var pageId = new com.arcadedb.engine.PageId(dbInternal, graphFile.getFileId(), 0);
+      final var pageId = new PageId(dbInternal, graphFile.getFileId(), 0);
       final var page = dbInternal.getTransaction().getPage(pageId, pageSize);
       final var mutablePage = dbInternal.getTransaction().getPageToModify(page);
 
@@ -201,7 +202,7 @@ class LSMVectorIndexChunkedWriteTest {
       database.begin();
       dbInternal.getTransaction().setUseWAL(false);
 
-      final ChunkCommitCallback chunkCallback = (bytesWritten) -> {
+      final ChunkCommitCallback chunkCallback = bytesWritten -> {
         database.commit();
         database.begin();
         dbInternal.getTransaction().setUseWAL(false);

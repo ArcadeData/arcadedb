@@ -25,7 +25,7 @@ import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ErrorRecordCallback;
 import com.arcadedb.engine.RawRecordCallback;
 
-import java.util.*;
+import java.util.Iterator;
 
 /**
  * Document type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or

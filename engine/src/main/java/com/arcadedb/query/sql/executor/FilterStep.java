@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.WhereClause;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * Created by luigidellaquila on 12/07/16.
@@ -79,7 +79,7 @@ public class FilterStep extends AbstractExecutionStep {
             nextItem = null;
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
       }

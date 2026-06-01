@@ -34,9 +34,10 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.Timer;
+import java.util.TimerTask;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Fail.fail;

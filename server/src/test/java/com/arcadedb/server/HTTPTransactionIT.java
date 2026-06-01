@@ -42,7 +42,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
   @Test
   void simpleTx() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // BEGIN
       HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();
@@ -166,7 +166,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
   @Test
   void checkUnique() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // BEGIN
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/graph").openConnection();
@@ -261,7 +261,7 @@ public class HTTPTransactionIT extends BaseGraphServerTest {
 
   @Test
   void errorMissingIsolationLevel() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // BEGIN
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/begin/" + DATABASE_NAME).openConnection();

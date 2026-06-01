@@ -37,7 +37,6 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.SerializationException;
@@ -66,13 +65,14 @@ import org.locationtech.spatial4j.shape.Point;
 import org.locationtech.spatial4j.shape.Rectangle;
 import org.locationtech.spatial4j.shape.Shape;
 
-import java.lang.reflect.*;
-import java.math.*;
-import java.time.*;
-import java.time.temporal.*;
+import java.lang.reflect.Array;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 /**
  * Default serializer implementation.
@@ -1287,8 +1287,9 @@ public class BinarySerializer {
       // but counting failures gives an early signal that something is corrupting record buffers.
       externalRidScanFailures.incrementAndGet();
       LogManager.instance().log(this, Level.WARNING,
-          "Could not parse old buffer to recover external RIDs for record %s: %s. External records linked to this "
-              + "record may be orphaned in the paired bucket. (cumulative scan failures since process start: %d)",
+          """
+          Could not parse old buffer to recover external RIDs for record %s: %s. External records linked to this \
+          record may be orphaned in the paired bucket. (cumulative scan failures since process start: %d)""",
           e, identity, e.getMessage(), externalRidScanFailures.get());
       return Collections.emptyMap();
     } finally {

@@ -80,7 +80,7 @@ public class PatternComprehensionExpression implements Expression {
       // All hops matched - apply WHERE filter and map expression
       if (whereExpression != null) {
         final Object filterValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(whereExpression, currentResult, context);
-        if (filterValue == null || (filterValue instanceof Boolean && !((Boolean) filterValue)))
+        if (filterValue == null || (filterValue instanceof Boolean b && !b))
           return;
       }
       // Bind path variable if present (e.g., [p = (n)-->() | p])

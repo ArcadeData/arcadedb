@@ -132,7 +132,7 @@ class OpenCypherFunctionTest {
     final String relType = result.getProperty("relType");
 
     assertThat(relType).isNotNull();
-    assertThat(relType.equals("KNOWS") || relType.equals("WORKS_AT")).isTrue();
+    assertThat("KNOWS".equals(relType) || "WORKS_AT".equals(relType)).isTrue();
   }
 
   @Test
@@ -574,10 +574,11 @@ class OpenCypherFunctionTest {
       db.transaction(() -> db.command("opencypher",
           "CREATE (:Person {name:'Alice', scores:[85,92,78]})"));
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person {name:'Alice'}) "
-              + "OPTIONAL MATCH (p)-[:HAS_FRIEND]->(f:Person) "
-              + "WITH p, collect(f) AS friends "
-              + "RETURN p.scores[toInteger(avg(size(friends)))] AS selectedScore");
+          """
+          MATCH (p:Person {name:'Alice'}) \
+          OPTIONAL MATCH (p)-[:HAS_FRIEND]->(f:Person) \
+          WITH p, collect(f) AS friends \
+          RETURN p.scores[toInteger(avg(size(friends)))] AS selectedScore""");
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Number>getProperty("selectedScore").longValue()).isEqualTo(85L);
     } finally {
@@ -593,10 +594,11 @@ class OpenCypherFunctionTest {
       db.transaction(() -> db.command("opencypher",
           "CREATE (:Person {name:'Alice', scores:[85,92,78]})"));
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person {name:'Alice'}) "
-              + "OPTIONAL MATCH (p)-[:HAS_FRIEND]->(f:Person) "
-              + "WITH p, collect(f) AS friends "
-              + "RETURN p.scores[size(friends)] AS selectedScore");
+          """
+          MATCH (p:Person {name:'Alice'}) \
+          OPTIONAL MATCH (p)-[:HAS_FRIEND]->(f:Person) \
+          WITH p, collect(f) AS friends \
+          RETURN p.scores[size(friends)] AS selectedScore""");
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Number>getProperty("selectedScore").longValue()).isEqualTo(85L);
     } finally {
@@ -611,10 +613,11 @@ class OpenCypherFunctionTest {
     try {
       seedThreePersons(db);
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person) "
-              + "RETURN p.name AS name, "
-              + "       reduce(total = 0, n IN collect(p.age) | total + n) AS total_age_sum "
-              + "ORDER BY name");
+          """
+          MATCH (p:Person) \
+          RETURN p.name AS name, \
+                 reduce(total = 0, n IN collect(p.age) | total + n) AS total_age_sum \
+          ORDER BY name""");
       final List<Long> values = new ArrayList<>();
       while (rs.hasNext()) {
         final Result r = rs.next();
@@ -633,10 +636,11 @@ class OpenCypherFunctionTest {
     try {
       seedThreePersons(db);
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person) "
-              + "RETURN p.name AS name, "
-              + "       reduce(total = 0, n IN [sum(p.age)] | total + n) AS s "
-              + "ORDER BY name");
+          """
+          MATCH (p:Person) \
+          RETURN p.name AS name, \
+                 reduce(total = 0, n IN [sum(p.age)] | total + n) AS s \
+          ORDER BY name""");
       final List<Long> values = new ArrayList<>();
       while (rs.hasNext()) {
         final Result r = rs.next();
@@ -655,10 +659,11 @@ class OpenCypherFunctionTest {
     try {
       seedThreePersons(db);
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person) "
-              + "RETURN p.name AS name, "
-              + "       reduce(total = 0, n IN [count(*)] | total + n) AS s "
-              + "ORDER BY name");
+          """
+          MATCH (p:Person) \
+          RETURN p.name AS name, \
+                 reduce(total = 0, n IN [count(*)] | total + n) AS s \
+          ORDER BY name""");
       final List<Long> values = new ArrayList<>();
       while (rs.hasNext()) {
         final Result r = rs.next();
@@ -677,8 +682,9 @@ class OpenCypherFunctionTest {
     try {
       seedThreePersons(db);
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p:Person) "
-              + "RETURN reduce(total = 0, n IN collect(p.age) | total + n) AS total_age_sum");
+          """
+          MATCH (p:Person) \
+          RETURN reduce(total = 0, n IN collect(p.age) | total + n) AS total_age_sum""");
       assertThat(rs.hasNext()).isTrue();
       assertThat(rs.next().<Number>getProperty("total_age_sum").longValue()).isEqualTo(90L);
     } finally {

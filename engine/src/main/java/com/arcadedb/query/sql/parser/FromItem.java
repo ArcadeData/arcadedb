@@ -24,8 +24,10 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 
 public class FromItem extends SimpleNode {
   public List<Rid>            rids;

@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.method.collection;
 
 import com.arcadedb.query.sql.executor.SQLMethod;
-import com.arcadedb.query.sql.method.string.SQLMethodSplit;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -27,7 +26,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 class SQLMethodJoinTest {
 

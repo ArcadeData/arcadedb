@@ -32,8 +32,9 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
 import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Java binary serializer. Used to serialize/deserialize Java objects. Null properties are excluded from serialization.
@@ -45,7 +46,7 @@ public class JavaBinarySerializer {
     out.writeInt(rid != null ? rid.getBucketId() : -1);
     out.writeLong(rid != null ? rid.getPosition() : -1);
 
-    final DatabaseInternal db = ((DatabaseInternal) document.getDatabase());
+    final DatabaseInternal db = (DatabaseInternal) document.getDatabase();
     final DocumentType documentType = document.getType();
 
     final BinarySerializer serializer = db.getSerializer();
@@ -112,7 +113,7 @@ public class JavaBinarySerializer {
 
     final MutableDocument mutable = (MutableDocument) document;
 
-    final DatabaseInternal db = ((DatabaseInternal) document.getDatabase());
+    final DatabaseInternal db = (DatabaseInternal) document.getDatabase();
 
     // RID
     final RID rid = db.newRID(in.readInt(), in.readLong());

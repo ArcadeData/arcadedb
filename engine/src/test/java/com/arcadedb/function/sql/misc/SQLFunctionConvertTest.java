@@ -26,7 +26,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
-import java.time.*;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
@@ -43,7 +44,7 @@ public class SQLFunctionConvertTest {
 
   @Test
   void sqlConversions() throws Exception {
-    TestHelper.executeInNewDatabase("testSQLConvert", (db) -> db.transaction(() -> {
+    TestHelper.executeInNewDatabase("testSQLConvert", db -> db.transaction(() -> {
       db.command("sql", "create document type TestConversion");
 
       db.command("sql",

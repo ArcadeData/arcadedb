@@ -32,12 +32,13 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.LockManager;
 
 import java.io.*;
-import java.nio.channels.*;
+import java.nio.channels.ClosedByInterruptException;
+import java.nio.channels.ClosedChannelException;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
+import java.util.stream.Stream;
 
 public class TransactionManager {
   private static final long MAX_LOG_FILE_SIZE = 64 * 1024 * 1024;
@@ -560,7 +561,7 @@ public class TransactionManager {
     final File f = lastTxIdFile();
     if (f == null || !f.isFile())
       return -1L;
-    try (final java.io.DataInputStream in = new java.io.DataInputStream(new java.io.FileInputStream(f))) {
+    try (final DataInputStream in = new DataInputStream(new FileInputStream(f))) {
       return in.readLong();
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING,
@@ -581,7 +582,7 @@ public class TransactionManager {
     if (value < 0)
       return;
     final File tmp = new File(f.getParentFile(), f.getName() + ".tmp");
-    try (final java.io.DataOutputStream out = new java.io.DataOutputStream(new java.io.FileOutputStream(tmp))) {
+    try (final DataOutputStream out = new DataOutputStream(new FileOutputStream(tmp))) {
       out.writeLong(value);
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING,

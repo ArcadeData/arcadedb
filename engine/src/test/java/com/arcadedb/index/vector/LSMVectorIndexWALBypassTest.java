@@ -59,9 +59,8 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
     });
 
     // Rebuild index (uses WAL bypass)
-    database.transaction(() -> {
-      database.command("sql", "REBUILD INDEX `Movie[embedding]`");
-    });
+    database.transaction(() ->
+      database.command("sql", "REBUILD INDEX `Movie[embedding]`"));
 
     // Verify index is valid - find the LSMVectorIndex
     final Index[] indexes = database.getSchema().getIndexes();
@@ -221,9 +220,8 @@ class LSMVectorIndexWALBypassTest extends TestHelper {
     });
 
     // Build index
-    database.transaction(() -> {
-      database.command("sql", "REBUILD INDEX `Movie[embedding]`");
-    });
+    database.transaction(() ->
+      database.command("sql", "REBUILD INDEX `Movie[embedding]`"));
 
     // WAL should still be enabled
     final boolean walAfterBuild = database.getConfiguration().getValueAsBoolean(GlobalConfiguration.TX_WAL);

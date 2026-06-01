@@ -328,7 +328,7 @@ public class FullTextQueryExecutor {
     // Compute the literal prefix (everything up to the first wildcard char)
     final String literalPrefix = extractLiteralPrefix(pattern);
     final String searchPrefix = buildSearchKey(field, literalPrefix);
-    final String fieldPrefix = (field != null && !field.isEmpty() && !"content".equals(field)) ? field + ":" : "";
+    final String fieldPrefix = field != null && !field.isEmpty() && !"content".equals(field) ? field + ":" : "";
     final Pattern regex = wildcardToRegex(pattern);
 
     if (literalPrefix.isEmpty()) {
@@ -364,7 +364,7 @@ public class FullTextQueryExecutor {
     final int maxEdits = query.getMaxEdits();
     final int prefixLen = Math.min(query.getPrefixLength(), term.length());
     final String requiredPrefix = term.substring(0, prefixLen);
-    final String fieldPrefix = (field != null && !field.isEmpty() && !"content".equals(field)) ? field + ":" : "";
+    final String fieldPrefix = field != null && !field.isEmpty() && !"content".equals(field) ? field + ":" : "";
     final String searchPrefix = fieldPrefix + requiredPrefix;
 
     iterateAndMatch(searchPrefix.isEmpty() ? null : searchPrefix, key -> {
@@ -390,7 +390,7 @@ public class FullTextQueryExecutor {
       return;
     }
 
-    final String fieldPrefix = (field != null && !field.isEmpty() && !"content".equals(field)) ? field + ":" : "";
+    final String fieldPrefix = field != null && !field.isEmpty() && !"content".equals(field) ? field + ":" : "";
 
     iterateAndMatch(null, key -> {
       if (!key.startsWith(fieldPrefix))

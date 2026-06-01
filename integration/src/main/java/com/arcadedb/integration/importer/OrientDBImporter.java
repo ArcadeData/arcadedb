@@ -138,19 +138,19 @@ public class OrientDBImporter {
 
     String state = null;
     for (final String arg : args) {
-      if (arg.equals("-?"))
+      if ("-?".equals(arg))
         printHelp();
-      else if (arg.equals("-d"))
+      else if ("-d".equals(arg))
         state = "databasePath";
-      else if (arg.equals("-i"))
+      else if ("-i".equals(arg))
         state = "inputFile";
-      else if (arg.equals("-s"))
+      else if ("-s".equals(arg))
         createSecurityFiles = true;
-      else if (arg.equals("-o"))
+      else if ("-o".equals(arg))
         overwriteDatabase = true;
-      else if (arg.equals("-b"))
+      else if ("-b".equals(arg))
         state = "batchSize";
-      else if (arg.equals("-v"))
+      else if ("-v".equals(arg))
         state = "verboseLevel";
       else if (state != null) {
         switch (state) {
@@ -543,7 +543,7 @@ public class OrientDBImporter {
       if (processedItems.get() > 0 && processedItems.get() % 1_000_000 == 0) {
         final long elapsed = System.currentTimeMillis() - beginTimeEdgeCreation;
         logger.logLine(2, "- Status update: created %,d edges %s (%,d edges/sec)", context.createdEdges.get(),
-            totalEdgesByVertexType, (context.createdEdges.get() / elapsed * 1000));
+            totalEdgesByVertexType, context.createdEdges.get() / elapsed * 1000);
       }
     }
   }
@@ -560,7 +560,7 @@ public class OrientDBImporter {
       final long elapsed = System.currentTimeMillis() - beginTimeRecordsCreation;
       logger.logLine(2, "- Status update: created %,d vertices and %,d documents, skipped %,d edges (%,d records/sec)",
           context.createdVertices.get(), context.createdDocuments.get(), context.skippedEdges.get(),
-          ((context.createdDocuments.get() + context.createdVertices.get()) / elapsed * 1000));
+          (context.createdDocuments.get() + context.createdVertices.get()) / elapsed * 1000);
     }
   }
 
@@ -607,7 +607,7 @@ public class OrientDBImporter {
               ++warnings;
             }
           } else {
-            if (className.equals("OUser"))
+            if ("OUser".equals(className))
               parsedUsers.add(attributes);
 
             incrementRecordByClass(className);
@@ -746,7 +746,7 @@ public class OrientDBImporter {
 
   private void createEdges(final Map<String, Object> attributes) {
     final String recordType = (String) attributes.get(Property.TYPE_PROPERTY);
-    if (recordType == null || !recordType.equals("d"))
+    if (recordType == null || !"d".equals(recordType))
       return;
 
     // DOCUMENT, VERTEX, EDGE
@@ -766,7 +766,7 @@ public class OrientDBImporter {
 
     final Map<String, Object> properties = new LinkedHashMap<>();
     for (final Map.Entry<String, Object> attr : attributes.entrySet())
-      if (!attr.getKey().startsWith("@") && !attr.getKey().equals("out") && !attr.getKey().equals("in")) {
+      if (!attr.getKey().startsWith("@") && !"out".equals(attr.getKey()) && !"in".equals(attr.getKey())) {
         properties.put(attr.getKey(), attr.getValue());
       }
 
@@ -1080,9 +1080,9 @@ public class OrientDBImporter {
     final OrientDBClass classInfo = classes.get(className);
 
     int type;
-    if (className.equals("V")) {
+    if ("V".equals(className)) {
       type = 1;
-    } else if (className.equals("E")) {
+    } else if ("E".equals(className)) {
       type = 2;
     } else
       type = 0;
@@ -1192,10 +1192,10 @@ public class OrientDBImporter {
     int type = 0;
     for (int i = 0; type == 0 && i < list.size(); ++i) {
       final String su = list.get(i);
-      if (su.equals("V")) {
+      if ("V".equals(su)) {
         type = 1;
         break;
-      } else if (su.equals("E")) {
+      } else if ("E".equals(su)) {
         type = 2;
         break;
       }

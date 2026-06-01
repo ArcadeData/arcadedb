@@ -38,7 +38,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.IntHashSet;
 
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;

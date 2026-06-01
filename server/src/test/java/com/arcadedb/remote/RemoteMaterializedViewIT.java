@@ -40,7 +40,7 @@ class RemoteMaterializedViewIT extends BaseGraphServerTest {
 
   @Test
   void createAndQueryViaSql() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -105,7 +105,7 @@ class RemoteMaterializedViewIT extends BaseGraphServerTest {
 
   @Test
   void buildMaterializedViewThrowsUnsupported() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 

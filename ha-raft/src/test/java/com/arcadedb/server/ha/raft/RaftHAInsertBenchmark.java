@@ -34,6 +34,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -91,7 +92,7 @@ class RaftHAInsertBenchmark {
     final File reportDir = new File("./target/reports");
     reportDir.mkdirs();
     final File reportFile = new File(reportDir, "RaftHAInsertBenchmark.txt");
-    try (final java.io.FileWriter fw = new java.io.FileWriter(reportFile)) {
+    try (final FileWriter fw = new FileWriter(reportFile)) {
       fw.write(report.toString());
     }
     LogManager.instance().log(this, Level.INFO, "Benchmark report written to %s", reportFile.getAbsolutePath());

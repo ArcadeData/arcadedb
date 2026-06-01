@@ -29,7 +29,7 @@ class HTTPMaterializedViewIT extends BaseGraphServerTest {
   // Test 1: Create a view, query it, verify results
   @Test
   void createViewViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE DOCUMENT TYPE Sensor");
       command(serverIndex, "INSERT INTO Sensor SET name = 'temp1', value = 22.5, active = true");
       command(serverIndex, "INSERT INTO Sensor SET name = 'temp2', value = 25.0, active = false");
@@ -52,7 +52,7 @@ class HTTPMaterializedViewIT extends BaseGraphServerTest {
   // Test 2: Refresh a view via HTTP after adding data
   @Test
   void refreshViewViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE DOCUMENT TYPE Inventory");
       command(serverIndex, "INSERT INTO Inventory SET label = 'A'");
 
@@ -74,7 +74,7 @@ class HTTPMaterializedViewIT extends BaseGraphServerTest {
   // Test 3: Drop a view via HTTP
   @Test
   void dropViewViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE DOCUMENT TYPE LogEntry");
       command(serverIndex, "INSERT INTO LogEntry SET msg = 'hello'");
       command(serverIndex, "CREATE MATERIALIZED VIEW LogView AS SELECT FROM LogEntry");
@@ -95,15 +95,14 @@ class HTTPMaterializedViewIT extends BaseGraphServerTest {
   // Test 4: DROP IF EXISTS doesn't throw
   @Test
   void dropIfExistsViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
-      command(serverIndex, "DROP MATERIALIZED VIEW IF EXISTS NonExistentView");
-    });
+    testEachServer(serverIndex ->
+      command(serverIndex, "DROP MATERIALIZED VIEW IF EXISTS NonExistentView"));
   }
 
   // Test 5: CREATE IF NOT EXISTS is idempotent
   @Test
   void createIfNotExistsViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE DOCUMENT TYPE DataRecord");
       command(serverIndex, "INSERT INTO DataRecord SET v = 1");
 
@@ -119,7 +118,7 @@ class HTTPMaterializedViewIT extends BaseGraphServerTest {
   // Test 6: Create with REFRESH INCREMENTAL mode
   @Test
   void createWithRefreshModeViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE DOCUMENT TYPE Event");
       command(serverIndex, "INSERT INTO Event SET type = 'click'");
 
@@ -139,7 +138,7 @@ class HTTPMaterializedViewIT extends BaseGraphServerTest {
   // Test 7: Query schema:materializedViews via HTTP
   @Test
   void querySchemaMetadataViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE DOCUMENT TYPE Metric");
       command(serverIndex, "INSERT INTO Metric SET name = 'cpu', value = 80");
 

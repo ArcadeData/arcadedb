@@ -31,6 +31,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLongArray;
 import java.util.function.BiConsumer;
 
 /**
@@ -1317,7 +1318,7 @@ public final class GraphAlgorithms {
     // Each triangle {u, v, w} is found exactly once (u < v < w), then credited to all 3 nodes.
     // This halves the intersection work compared to counting from both directions.
     // Uses AtomicLongArray for thread-safe increments on shared triangle counts.
-    final java.util.concurrent.atomic.AtomicLongArray triangles = new java.util.concurrent.atomic.AtomicLongArray(n);
+    final AtomicLongArray triangles = new AtomicLongArray(n);
     parallelForRange(n, (start, end) -> {
       for (int u = start; u < end; u++) {
         final int uStart = offsets[u];

@@ -50,7 +50,7 @@ class SQLFunctionStrcmpciTest {
 
   @Test
   void query() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionStrcmpci", (db) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionStrcmpci", db -> {
       ResultSet result = db.query("sql", "select strcmpci('ThisIsATest', 'THISISATEST') as strcmpci");
       assertThat(result.hasNext()).isTrue();
       assertThat((Integer) result.next().getProperty("strcmpci")).isEqualTo(0);

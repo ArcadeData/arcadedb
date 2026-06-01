@@ -43,13 +43,12 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   @Test
   void scriptWithLetVariables() {
     database.getSchema().createDocumentType("ScriptLet");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET $name = 'testName';
           INSERT INTO ScriptLet SET name = $name, val = 1;
           LET $result = SELECT count(*) as cnt FROM ScriptLet;
-          """);
-    });
+          """));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM ScriptLet");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(1L);
     rs.close();
@@ -61,7 +60,7 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
     database.getSchema().createDocumentType("ScriptRetry");
     ((SQLQueryEngine) database.getQueryEngine("sql")).getFunctionFactory().register(defineThrowCME());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET $retries = 0;
           BEGIN;
@@ -71,8 +70,7 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
               SELECT throwCME(#-1:-1, 1, 1, 1);
           }
           COMMIT RETRY 10;
-          """);
-    });
+          """));
 
     final ResultSet rs = database.query("sql", "SELECT FROM ScriptRetry");
     assertThat(rs.hasNext()).isTrue();
@@ -108,7 +106,7 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   @Test
   void scriptIfElse() {
     database.getSchema().createDocumentType("ScriptIfElse");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET $val = 10;
           IF ($val > 5) {
@@ -116,8 +114,7 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
           } ELSE {
             INSERT INTO ScriptIfElse SET result = 'lesser';
           }
-          """);
-    });
+          """));
     final ResultSet rs = database.query("sql", "SELECT FROM ScriptIfElse");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("result")).isEqualTo("greater");
@@ -127,7 +124,7 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   @Test
   void scriptIfElseFalseCondition() {
     database.getSchema().createDocumentType("ScriptIfElse2");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET $val = 3;
           IF ($val > 5) {
@@ -135,8 +132,7 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
           } ELSE {
             INSERT INTO ScriptIfElse2 SET result = 'lesser';
           }
-          """);
-    });
+          """));
     final ResultSet rs = database.query("sql", "SELECT FROM ScriptIfElse2");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("result")).isEqualTo("lesser");
@@ -147,15 +143,14 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   @Test
   void scriptWhileLoop() {
     database.getSchema().createDocumentType("ScriptWhile");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET $i = 0;
           WHILE ($i < 4) {
             INSERT INTO ScriptWhile SET idx = $i;
             LET $i = $i + 1;
           }
-          """);
-    });
+          """));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM ScriptWhile");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(4L);
     rs.close();
@@ -165,13 +160,12 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   @Test
   void scriptForeach() {
     database.getSchema().createDocumentType("ScriptForEach");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           FOREACH ($item IN [10, 20, 30]) {
             INSERT INTO ScriptForEach SET val = $item;
           }
-          """);
-    });
+          """));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM ScriptForEach");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(3L);
     rs.close();
@@ -289,10 +283,9 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
     final PrintStream originalOut = System.out;
     try {
       System.setOut(new PrintStream(outputStream));
-      database.transaction(() -> {
+      database.transaction(() ->
         // Just verify it doesn't throw
-        database.command("sqlscript", "CONSOLE.OUTPUT 'test log message';");
-      });
+        database.command("sqlscript", "CONSOLE.OUTPUT 'test log message';"));
 
       final String output = outputStream.toString().trim();
       assertThat(output).isEqualTo("test log message");
@@ -305,13 +298,12 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   @Test
   void multiStatementScript() {
     database.getSchema().createDocumentType("MultiStmt");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           INSERT INTO MultiStmt SET name = 'a';
           INSERT INTO MultiStmt SET name = 'b';
           INSERT INTO MultiStmt SET name = 'c';
-          """);
-    });
+          """));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM MultiStmt");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(3L);
     rs.close();
@@ -337,9 +329,8 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   @Test
   void scriptLetWithQuery() {
     database.getSchema().createDocumentType("LetQuery");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO LetQuery SET val = 100");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO LetQuery SET val = 100"));
     database.transaction(() -> {
       final ResultSet rs = database.command("sqlscript", """
           LET $items = SELECT val FROM LetQuery;
@@ -354,14 +345,13 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   @Test
   void scriptIfWithLet() {
     database.getSchema().createDocumentType("IfLet");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET $count = SELECT count(*) as cnt FROM IfLet;
           IF ($count.size() > 0 AND $count[0].cnt = 0) {
             INSERT INTO IfLet SET state = 'initialized';
           }
-          """);
-    });
+          """));
     final ResultSet rs = database.query("sql", "SELECT FROM IfLet");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("state")).isEqualTo("initialized");
@@ -381,9 +371,8 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   @Test
   void antlrConcatInWhere() {
     database.getSchema().createDocumentType("AntlrTest");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO AntlrTest SET first = 'John', last = 'Doe'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO AntlrTest SET first = 'John', last = 'Doe'"));
     final ResultSet rs = database.query("sql",
         "SELECT FROM AntlrTest WHERE first + ' ' + last = 'John Doe'");
     assertThat(rs.hasNext()).isTrue();
@@ -492,7 +481,7 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
   @Test
   void complexScript() {
     database.getSchema().createDocumentType("ComplexScript");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET $count = 0;
           FOREACH ($i IN [1, 2, 3, 4, 5]) {
@@ -503,8 +492,7 @@ class SQLScriptAdditionalCoverageTest extends TestHelper {
           IF ($total[0].cnt = 5) {
             INSERT INTO ComplexScript SET idx = 99, marker = 'complete';
           }
-          """);
-    });
+          """));
     final ResultSet rs = database.query("sql", "SELECT FROM ComplexScript WHERE marker = 'complete'");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Integer>getProperty("idx")).isEqualTo(99);

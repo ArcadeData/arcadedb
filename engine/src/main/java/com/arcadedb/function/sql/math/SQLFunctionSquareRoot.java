@@ -21,8 +21,9 @@ package com.arcadedb.function.sql.math;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.math.*;
-import java.time.*;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.math.MathContext;
 
 public class SQLFunctionSquareRoot extends SQLFunctionMathAbstract {
   public static final String NAME = "sqrt";

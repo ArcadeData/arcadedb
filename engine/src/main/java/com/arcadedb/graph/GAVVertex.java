@@ -33,8 +33,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
 import java.util.Calendar;
-import java.util.Collections;
 import java.util.Date;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -237,7 +237,7 @@ public final class GAVVertex implements Vertex {
   public Iterable<RID> getConnectedVertexRIDs(final DIRECTION direction, final String... edgeTypes) {
     // Use CSR for RID-only traversal — no OLTP
     final int[] neighborIds = provider.getNeighborIds(nodeId, direction, edgeTypes);
-    return () -> new java.util.Iterator<>() {
+    return () -> new Iterator<>() {
       private int idx = 0;
 
       @Override

@@ -24,17 +24,16 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.utility.CallableNoReturn;
 
-import org.assertj.core.api.Assertions;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 import org.xnio.http.UpgradeFailedException;
 
 import java.util.concurrent.TimeUnit;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WebSocketEventBusIT extends BaseGraphServerTest {
   @Test
@@ -102,13 +101,11 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
 
   @Test
   void authenticationFailureReturns403() throws Throwable {
-    execute(() -> {
+    execute(() ->
       assertThatThrownBy(() -> {
         new WebSocketClientHelper("ws://localhost:2480/ws", "root", "bad");
       }).isInstanceOf(UpgradeFailedException.class)
-          .hasMessageContaining("403");
-
-    }, "authenticationFailureReturns403");
+          .hasMessageContaining("403"), "authenticationFailureReturns403");
   }
 
   @Test

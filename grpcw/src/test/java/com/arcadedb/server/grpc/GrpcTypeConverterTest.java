@@ -24,6 +24,7 @@ import com.google.protobuf.Timestamp;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -120,9 +121,9 @@ class GrpcTypeConverterTest {
     final Timestamp ts = Timestamp.newBuilder().setSeconds(1000).setNanos(0).build();
     final GrpcValue v = GrpcValue.newBuilder().setTimestampValue(ts).build();
     final Object result = GrpcTypeConverter.fromGrpcValue(v);
-    assertThat(result).isInstanceOf(java.time.Instant.class);
-    assertThat(((java.time.Instant) result).getEpochSecond()).isEqualTo(1000L);
-    assertThat(((java.time.Instant) result).getNano()).isEqualTo(0);
+    assertThat(result).isInstanceOf(Instant.class);
+    assertThat(((Instant) result).getEpochSecond()).isEqualTo(1000L);
+    assertThat(((Instant) result).getNano()).isEqualTo(0);
   }
 
   @Test

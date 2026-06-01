@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 
@@ -30,6 +31,7 @@ import com.arcadedb.utility.RidLongHashMap;
 
 import java.util.Arrays;
 import java.util.Iterator;
+import java.util.function.Consumer;
 
 /**
  * Count operator for linear chain patterns (Q1, Q5, Q6).
@@ -543,7 +545,7 @@ public final class PropagateChainOp implements CountOp {
   @Override
   public long executeOLTP(final Database db) {
     // Try to find a GAV provider for accelerated neighbor lookups even in the OLTP path
-    final GraphTraversalProvider provider = com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+    final GraphTraversalProvider provider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
 
     final String anchorLabel = nodeLabels[0];
     if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
@@ -572,7 +574,7 @@ public final class PropagateChainOp implements CountOp {
       current.forEach((bucketId, offset, pathCount) -> {
         final RID rid = db.newRID(bucketId, offset);
         expandNeighbors(db, provider, rid, directions[h], edgeTypes[h], targetBuckets,
-            (neighborRid) -> next.add(neighborRid, pathCount));
+            neighborRid -> next.add(neighborRid, pathCount));
       });
       current = next;
     }
@@ -596,7 +598,7 @@ public final class PropagateChainOp implements CountOp {
    */
   private static void expandNeighbors(final Database db, final GraphTraversalProvider provider,
       final RID vertexRid, final Vertex.DIRECTION direction, final String edgeType,
-      final IntHashSet targetBuckets, final java.util.function.Consumer<RID> consumer) {
+      final IntHashSet targetBuckets, final Consumer<RID> consumer) {
     if (provider != null) {
       final int nodeId = provider.getNodeId(vertexRid);
       if (nodeId >= 0) {
@@ -652,7 +654,7 @@ public final class PropagateChainOp implements CountOp {
         cur.forEach((bucketId, offset, pathCount) -> {
           final RID rid = db.newRID(bucketId, offset);
           expandNeighbors(db, provider, rid, directions[hopIdx], edgeTypes[hopIdx], targetBuckets,
-              (neighborRid) -> next.add(neighborRid, pathCount));
+              neighborRid -> next.add(neighborRid, pathCount));
         });
         cur = next;
       }

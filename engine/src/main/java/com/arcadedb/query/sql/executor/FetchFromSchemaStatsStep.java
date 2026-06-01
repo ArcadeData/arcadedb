@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Returns a single result document containing per-database runtime statistics.
@@ -59,7 +59,7 @@ public class FetchFromSchemaStatsStep extends AbstractExecutionStep {
       return new InternalResultSet(r);
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

@@ -25,9 +25,10 @@ import com.arcadedb.exception.SchemaException;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class DropTypeTest extends TestHelper {
   private static final int    TOT        = 10;

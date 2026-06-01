@@ -21,7 +21,6 @@ package com.arcadedb.function.sql.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import java.util.List;
 
 /**
  * Checks if a vector contains any NaN (Not a Number) values.

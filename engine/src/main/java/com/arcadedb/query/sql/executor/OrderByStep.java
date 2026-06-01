@@ -23,7 +23,9 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.OrderBy;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.NoSuchElementException;
 
 /**
  * Created by luigidellaquila on 11/07/16.
@@ -86,7 +88,7 @@ public class OrderByStep extends AbstractExecutionStep {
           return result;
         } finally {
           if( context.isProfiling() ) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }
@@ -137,7 +139,7 @@ public class OrderByStep extends AbstractExecutionStep {
           }
         } finally {
           if( context.isProfiling() ) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }
@@ -154,7 +156,7 @@ public class OrderByStep extends AbstractExecutionStep {
         }
       } finally {
         if( context.isProfiling() ) {
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
         }
       }
     } while (true);
@@ -165,7 +167,7 @@ public class OrderByStep extends AbstractExecutionStep {
       }
     } finally {
       if( context.isProfiling() ) {
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
       }
     }
   }
@@ -176,7 +178,7 @@ public class OrderByStep extends AbstractExecutionStep {
     if( context.isProfiling() ) {
       result += " (" + getCostFormatted() + ")";
     }
-    result += (maxResults != null ? "\n  (buffer size: " + maxResults + ")" : "");
+    result += maxResults != null ? "\n  (buffer size: " + maxResults + ")" : "";
     return result;
   }
 

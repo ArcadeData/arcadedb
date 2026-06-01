@@ -22,8 +22,8 @@ import com.arcadedb.database.Document;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.LocalEdgeType;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * <p>This is intended for INSERT FROM SELECT. This step removes existing edge pointers so that the resulting graph is still
@@ -72,7 +72,7 @@ public class RemoveEdgePointersStep extends AbstractExecutionStep {
           }
         } finally {
           if( context.isProfiling() ) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
         return elem;

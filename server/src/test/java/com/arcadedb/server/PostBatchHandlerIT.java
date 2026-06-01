@@ -19,14 +19,14 @@
 package com.arcadedb.server;
 
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;
-import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,7 +35,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
 
   @Test
   void jsonlVerticesAndEdges() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = """
           {"@type":"vertex","@class":"V1","@id":"a","id":100}
           {"@type":"vertex","@class":"V1","@id":"b","id":101}
@@ -60,7 +60,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
 
   @Test
   void csvVerticesAndEdges() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = """
           @type,@class,@id,id
           vertex,V1,c1,200
@@ -82,7 +82,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
 
   @Test
   void vertexOnlyImport() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = """
           {"@type":"vertex","@class":"V1","id":300}
           {"@type":"vertex","@class":"V1","id":301}
@@ -97,7 +97,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
 
   @Test
   void edgeWithExistingRid() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // First create some vertices and get their RIDs
       final String createBody = """
           {"@type":"vertex","@class":"V1","@id":"x1","id":400}
@@ -119,7 +119,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
 
   @Test
   void unknownTempIdReturnsError() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = """
           {"@type":"edge","@class":"E1","@from":"nonexistent","@to":"also_nonexistent"}
           """;
@@ -141,7 +141,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
    */
   @Test
   void missingTypeReturnsHttp400() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = "{\"@class\":\"V1\",\"id\":700}\n";
 
       final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "");
@@ -163,7 +163,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
    */
   @Test
   void missingClassReturnsHttp400() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = "{\"@type\":\"vertex\",\"id\":701}\n";
 
       final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "");
@@ -184,7 +184,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
    */
   @Test
   void malformedJsonReturnsHttp400() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = "this is not json\n";
 
       final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "");
@@ -203,7 +203,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
    */
   @Test
   void jsonArrayBodyReturnsHttp400WithGuidance() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = "[{\"@type\":\"vertex\",\"@class\":\"V1\",\"id\":702}]\n";
 
       final HttpURLConnection conn = openBatchConnection(serverIndex, "application/x-ndjson", "");
@@ -220,7 +220,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
 
   @Test
   void lightEdgesParameter() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = """
           {"@type":"vertex","@class":"V1","@id":"le1","id":500}
           {"@type":"vertex","@class":"V1","@id":"le2","id":501}
@@ -242,7 +242,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
    */
   @Test
   void listOfStringPropertyFromJsonl() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sql", "CREATE VERTEX TYPE EntityA IF NOT EXISTS");
       executeCommand(serverIndex, "sql", "CREATE PROPERTY EntityA.names IF NOT EXISTS LIST OF STRING");
 
@@ -264,7 +264,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
 
   @Test
   void edgeWithProperties() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String body = """
           {"@type":"vertex","@class":"V1","@id":"ep1","id":600}
           {"@type":"vertex","@class":"V1","@id":"ep2","id":601}
@@ -286,7 +286,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
    */
   @Test
   void edgeIsoDateTimeWithZSuffix() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sql", "CREATE VERTEX TYPE V4142 IF NOT EXISTS");
       executeCommand(serverIndex, "sql", "CREATE EDGE TYPE E4142 IF NOT EXISTS");
       executeCommand(serverIndex, "sql", "CREATE PROPERTY V4142.ts IF NOT EXISTS DATETIME");
@@ -313,8 +313,8 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
       // JVM's default zone.
       final JSONObject query = executeCommand(serverIndex, "sql", "SELECT ts FROM E4142");
       final String ts = query.getJSONObject("result").getJSONArray("records").getJSONObject(0).getString("ts");
-      final java.time.ZonedDateTime input = java.time.ZonedDateTime.parse("2026-05-08T18:37:54Z");
-      final String expectedDate = input.withZoneSameInstant(java.time.ZoneId.systemDefault())
+      final ZonedDateTime input = ZonedDateTime.parse("2026-05-08T18:37:54Z");
+      final String expectedDate = input.withZoneSameInstant(ZoneId.systemDefault())
           .toLocalDateTime()
           .toLocalDate()
           .toString();
@@ -329,7 +329,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
    */
   @Test
   void edgeIsoDateTimeWithMillisAndZSuffix() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sql", "CREATE VERTEX TYPE V4142b IF NOT EXISTS");
       executeCommand(serverIndex, "sql", "CREATE EDGE TYPE E4142b IF NOT EXISTS");
       executeCommand(serverIndex, "sql", "CREATE PROPERTY E4142b.ts IF NOT EXISTS DATETIME");
@@ -351,7 +351,7 @@ class PostBatchHandlerIT extends BaseGraphServerTest {
    */
   @Test
   void edgeIsoDateTimeWithExplicitOffset() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sql", "CREATE VERTEX TYPE V4142c IF NOT EXISTS");
       executeCommand(serverIndex, "sql", "CREATE EDGE TYPE E4142c IF NOT EXISTS");
       executeCommand(serverIndex, "sql", "CREATE PROPERTY E4142c.ts IF NOT EXISTS DATETIME");

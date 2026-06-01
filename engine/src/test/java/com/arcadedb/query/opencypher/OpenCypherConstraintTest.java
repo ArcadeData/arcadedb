@@ -4,7 +4,6 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.query.sql.executor.ResultSet;
 
 import java.util.Collection;
 import com.arcadedb.schema.EdgeType;
@@ -136,13 +135,11 @@ class OpenCypherConstraintTest {
   void createUniqueConstraintEnforcesUniqueness() {
     database.command("opencypher", "CREATE CONSTRAINT FOR (p:Person) REQUIRE p.email IS UNIQUE");
 
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (p:Person {email: 'alice@test.com'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (p:Person {email: 'alice@test.com'})"));
 
-    assertThatThrownBy(() -> database.transaction(() -> {
-      database.command("opencypher", "CREATE (p:Person {email: 'alice@test.com'})");
-    })).isInstanceOf(DuplicatedKeyException.class);
+    assertThatThrownBy(() -> database.transaction(() ->
+      database.command("opencypher", "CREATE (p:Person {email: 'alice@test.com'})"))).isInstanceOf(DuplicatedKeyException.class);
   }
 
   @Test

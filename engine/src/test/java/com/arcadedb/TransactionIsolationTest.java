@@ -20,7 +20,6 @@ package com.arcadedb;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CountDownLatch;
@@ -43,7 +42,7 @@ class TransactionIsolationTest extends TestHelper {
     final CountDownLatch sem1 = new CountDownLatch(1);
     final CountDownLatch sem2 = new CountDownLatch(1);
 
-    final Thread thread1 = new Thread(() -> {
+    final Thread thread1 = new Thread(() ->
       database.transaction(() -> {
         try {
           assertThat(database.countType("Node", true)).isEqualTo(0);
@@ -65,10 +64,9 @@ class TransactionIsolationTest extends TestHelper {
           fail("InterruptedException occurred");
           throw new RuntimeException(e);
         }
-      });
-    });
+      }));
 
-    final Thread thread2 = new Thread(() -> {
+    final Thread thread2 = new Thread(() ->
       database.transaction(() -> {
         try {
           sem1.await();
@@ -88,8 +86,7 @@ class TransactionIsolationTest extends TestHelper {
           fail("InterruptedException occurred");
           throw new RuntimeException(e);
         }
-      });
-    });
+      }));
 
     thread1.setDaemon(true);
     thread2.setDaemon(true);

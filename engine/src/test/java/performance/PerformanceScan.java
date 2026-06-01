@@ -22,7 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.ImmutableDocument;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class PerformanceScan {
   private static final String USERTYPE_NAME = "Person";
@@ -44,7 +44,7 @@ public class PerformanceScan {
         final AtomicInteger row = new AtomicInteger();
 
         database.async().scanType(USERTYPE_NAME, true, record -> {
-          final ImmutableDocument document = ((ImmutableDocument) record);
+          final ImmutableDocument document = (ImmutableDocument) record;
 
           document.get("id");
 

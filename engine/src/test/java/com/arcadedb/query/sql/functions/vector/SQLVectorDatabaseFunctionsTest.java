@@ -35,7 +35,7 @@ import com.arcadedb.utility.Pair;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -616,11 +616,10 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
       doc.save();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       // Value clipping (blog post example)
       database.command("sql",
-          "UPDATE documents SET embedding = `vector.clip`(embedding, -3.0, 3.0) WHERE `vector.lInfNorm`(embedding) > 3.0");
-    });
+          "UPDATE documents SET embedding = `vector.clip`(embedding, -3.0, 3.0) WHERE `vector.lInfNorm`(embedding) > 3.0"));
 
     database.transaction(() -> {
       final ResultSet rs = database.query("sql", "SELECT embedding FROM documents");

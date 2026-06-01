@@ -241,12 +241,11 @@ class OpenCypherPatternPredicateTest {
     @Test
     void patternComprehensionFromIssue() {
       // Exact scenario from issue #3331
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
-            (a)-[:KNOWS]->(:Person {name:'C'})""");
-      });
+            (a)-[:KNOWS]->(:Person {name:'C'})"""));
 
       try (final ResultSet rs = database.query("opencypher",
           """
@@ -265,12 +264,11 @@ class OpenCypherPatternPredicateTest {
     @Test
     void patternComprehensionNoFilter() {
       // Pattern comprehension without WHERE clause
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
-            (a)-[:KNOWS]->(:Person {name:'C'})""");
-      });
+            (a)-[:KNOWS]->(:Person {name:'C'})"""));
 
       try (final ResultSet rs = database.query("opencypher",
           """
@@ -289,12 +287,11 @@ class OpenCypherPatternPredicateTest {
     @Test
     void patternComprehensionWithRelType() {
       // Pattern comprehension with specific relationship type
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             CREATE (a:Person {name:'A'})-[:KNOWS]->(:Person {name:'B'}), \
-            (a)-[:LIKES]->(:Person {name:'C'})""");
-      });
+            (a)-[:LIKES]->(:Person {name:'C'})"""));
 
       try (final ResultSet rs = database.query("opencypher",
           """
@@ -313,10 +310,9 @@ class OpenCypherPatternPredicateTest {
     @Test
     void patternComprehensionEmptyResult() {
       // Pattern comprehension that matches nothing
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
-            "CREATE (:Person {name:'A'})");
-      });
+            "CREATE (:Person {name:'A'})"));
 
       try (final ResultSet rs = database.query("opencypher",
           """

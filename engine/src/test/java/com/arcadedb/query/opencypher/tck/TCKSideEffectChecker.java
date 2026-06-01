@@ -20,16 +20,12 @@ package com.arcadedb.query.opencypher.tck;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
-import com.arcadedb.graph.Edge;
-import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.VertexType;
 
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

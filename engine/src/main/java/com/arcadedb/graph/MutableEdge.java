@@ -77,9 +77,9 @@ public class MutableEdge extends MutableDocument implements Edge {
 
   @Override
   public Object get(final String propertyName) {
-    if (propertyName.equals("@in"))
+    if ("@in".equals(propertyName))
       return in;
-    else if (propertyName.equals("@out"))
+    else if ("@out".equals(propertyName))
       return out;
     return super.get(propertyName);
   }

@@ -104,10 +104,9 @@ public class OpenCypherStringEscapeTest {
    */
   @Test
   void variousEscapeSequences() {
-    database.transaction(() -> {
+    database.transaction(() ->
       // Test tab escape
-      database.command("opencypher", "CREATE (n:CHUNK {text: 'hello\\tworld'}) RETURN n");
-    });
+      database.command("opencypher", "CREATE (n:CHUNK {text: 'hello\\tworld'}) RETURN n"));
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:CHUNK) RETURN n.text AS text");
     assertThat(verify.hasNext()).isTrue();
@@ -121,9 +120,8 @@ public class OpenCypherStringEscapeTest {
    */
   @Test
   void escapedSingleQuote() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:CHUNK {text: 'it\\'s working'}) RETURN n");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:CHUNK {text: 'it\\'s working'}) RETURN n"));
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:CHUNK) RETURN n.text AS text");
     assertThat(verify.hasNext()).isTrue();
@@ -137,9 +135,8 @@ public class OpenCypherStringEscapeTest {
    */
   @Test
   void escapedBackslash() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:CHUNK {text: 'path\\\\to\\\\file'}) RETURN n");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:CHUNK {text: 'path\\\\to\\\\file'}) RETURN n"));
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:CHUNK) RETURN n.text AS text");
     assertThat(verify.hasNext()).isTrue();
@@ -153,9 +150,8 @@ public class OpenCypherStringEscapeTest {
    */
   @Test
   void carriageReturnEscape() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:CHUNK {text: 'line1\\rline2'}) RETURN n");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:CHUNK {text: 'line1\\rline2'}) RETURN n"));
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:CHUNK) RETURN n.text AS text");
     assertThat(verify.hasNext()).isTrue();
@@ -169,9 +165,8 @@ public class OpenCypherStringEscapeTest {
    */
   @Test
   void doubleQuotedStringWithEscapes() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:CHUNK {text: \"hello\\nworld\"}) RETURN n");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:CHUNK {text: \"hello\\nworld\"}) RETURN n"));
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:CHUNK) RETURN n.text AS text");
     assertThat(verify.hasNext()).isTrue();
@@ -238,9 +233,8 @@ public class OpenCypherStringEscapeTest {
     void stringMatchingWithPropertyInReturn() {
       // Test with node property access
       database.getSchema().createVertexType("Person");
-      database.transaction(() -> {
-        database.command("opencypher", "CREATE (:Person {name: 'Alice Johnson'})");
-      });
+      database.transaction(() ->
+        database.command("opencypher", "CREATE (:Person {name: 'Alice Johnson'})"));
 
       try (final ResultSet rs = database.query("opencypher",
           """

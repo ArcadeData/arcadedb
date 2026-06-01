@@ -34,9 +34,8 @@ class DeleteExecutionStepTest extends TestHelper {
       database.newDocument("Customer").set("name", "Bob").set("age", 25).save();
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Customer WHERE name = 'Alice'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Customer WHERE name = 'Alice'"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as total FROM Customer");
     assertThat(result.hasNext()).isTrue();
@@ -54,9 +53,8 @@ class DeleteExecutionStepTest extends TestHelper {
       database.newDocument("Product").set("category", "Books").set("price", 50).save();
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Product WHERE category = 'Electronics'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Product WHERE category = 'Electronics'"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as total FROM Product");
     assertThat(result.hasNext()).isTrue();
@@ -74,9 +72,8 @@ class DeleteExecutionStepTest extends TestHelper {
       database.newDocument("Task").set("title", "Task3").set("priority", 3).save();
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Task WHERE priority > 1");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Task WHERE priority > 1"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as total FROM Task");
     assertThat(result.hasNext()).isTrue();
@@ -94,9 +91,8 @@ class DeleteExecutionStepTest extends TestHelper {
       database.newDocument("Order").set("customer", "C").set("amount", 150).set("status", "pending").save();
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Order WHERE amount < 180 AND status = 'pending'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Order WHERE amount < 180 AND status = 'pending'"));
 
     // Should delete orders with amount < 180 AND status = pending
     // This deletes: A (100, pending) and C (150, pending)
@@ -117,9 +113,8 @@ class DeleteExecutionStepTest extends TestHelper {
       database.newDocument("Temp").set("data", "value3").save();
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Temp");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Temp"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as total FROM Temp");
     assertThat(result.hasNext()).isTrue();
@@ -137,9 +132,8 @@ class DeleteExecutionStepTest extends TestHelper {
       database.newDocument("Score").set("player", "Charlie").set("points", 75).save();
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Score WHERE points < 80");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Score WHERE points < 80"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as total FROM Score");
     assertThat(result.hasNext()).isTrue();
@@ -157,9 +151,8 @@ class DeleteExecutionStepTest extends TestHelper {
       database.newDocument("User").set("name", "Charlie").set("role", "user").save();
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM User WHERE role = 'user'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM User WHERE role = 'user'"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as total FROM User");
     assertThat(result.hasNext()).isTrue();
@@ -177,9 +170,8 @@ class DeleteExecutionStepTest extends TestHelper {
       database.newDocument("Account").set("username", "user3").set("active", false).save();
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Account WHERE active = false");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Account WHERE active = false"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as total FROM Account");
     assertThat(result.hasNext()).isTrue();
@@ -196,9 +188,8 @@ class DeleteExecutionStepTest extends TestHelper {
       database.newDocument("Document").set("name", "Doc2").save();
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Document WHERE name = 'NonExistent'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Document WHERE name = 'NonExistent'"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as total FROM Document");
     assertThat(result.hasNext()).isTrue();
@@ -210,9 +201,8 @@ class DeleteExecutionStepTest extends TestHelper {
   void shouldDeleteFromEmptyType() {
     database.getSchema().createDocumentType("Empty");
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Empty WHERE name = 'test'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Empty WHERE name = 'test'"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as total FROM Empty");
     assertThat(result.hasNext()).isTrue();

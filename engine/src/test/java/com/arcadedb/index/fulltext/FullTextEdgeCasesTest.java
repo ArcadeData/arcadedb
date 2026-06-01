@@ -49,10 +49,9 @@ class FullTextEdgeCasesTest extends TestHelper {
     });
 
     // Empty query throws a parse exception from Lucene QueryParser
-    assertThatThrownBy(() -> database.transaction(() -> {
+    assertThatThrownBy(() -> database.transaction(() ->
       database.query("sql",
-          "SELECT FROM Article WHERE SEARCH_INDEX('Article[content]', '') = true");
-    })).hasMessageContaining("Invalid search query");
+          "SELECT FROM Article WHERE SEARCH_INDEX('Article[content]', '') = true"))).hasMessageContaining("Invalid search query");
   }
 
   @Test
@@ -65,10 +64,9 @@ class FullTextEdgeCasesTest extends TestHelper {
     });
 
     // Non-existent index throws SchemaException (not CommandExecutionException)
-    assertThatThrownBy(() -> database.transaction(() -> {
+    assertThatThrownBy(() -> database.transaction(() ->
       database.query("sql",
-          "SELECT FROM Article WHERE SEARCH_INDEX('NonExistent[content]', 'java') = true");
-    })).isInstanceOf(SchemaException.class)
+          "SELECT FROM Article WHERE SEARCH_INDEX('NonExistent[content]', 'java') = true"))).isInstanceOf(SchemaException.class)
         .hasMessageContaining("was not found");
   }
 
@@ -84,10 +82,9 @@ class FullTextEdgeCasesTest extends TestHelper {
       database.command("sql", "INSERT INTO Article SET id = 1, content = 'test document'");
     });
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    assertThatThrownBy(() -> database.transaction(() ->
       database.query("sql",
-          "SELECT FROM Article WHERE SEARCH_INDEX('Article[id]', 'java') = true");
-    })).isInstanceOf(CommandExecutionException.class);
+          "SELECT FROM Article WHERE SEARCH_INDEX('Article[id]', 'java') = true"))).isInstanceOf(CommandExecutionException.class);
   }
 
   @Test

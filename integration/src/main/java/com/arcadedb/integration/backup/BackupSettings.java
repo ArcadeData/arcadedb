@@ -18,9 +18,12 @@
  */
 package com.arcadedb.integration.backup;
 
-import java.io.*;
-import java.text.*;
-import java.util.*;
+import java.io.File;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 
 public class BackupSettings {
   public       String              format              = "full";
@@ -58,7 +61,7 @@ public class BackupSettings {
 
     if (file == null)
       // ASSIGN DEFAULT FILENAME
-      if (format.equals("full")) {
+      if ("full".equals(format)) {
         final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
         file = "%s-backup-%s.zip".formatted(databaseName, dateFormat.format(System.currentTimeMillis()));
       }

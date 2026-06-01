@@ -25,7 +25,8 @@ import com.arcadedb.query.sql.parser.BinaryCompareOperator;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.BooleanExpression;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 26/07/16.

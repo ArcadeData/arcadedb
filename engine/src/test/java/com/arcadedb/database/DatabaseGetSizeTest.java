@@ -151,9 +151,8 @@ class DatabaseGetSizeTest extends TestHelper {
 
   @Test
   void getSizeAfterDelete() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("TempDoc");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("TempDoc"));
 
     // Insert documents
     database.transaction(() -> {
@@ -167,9 +166,8 @@ class DatabaseGetSizeTest extends TestHelper {
     final long sizeAfterInsert = database.getSize();
 
     // Delete some documents
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM TempDoc WHERE value LIKE 'Data5%'").close();
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM TempDoc WHERE value LIKE 'Data5%'").close());
 
     final long sizeAfterDelete = database.getSize();
 

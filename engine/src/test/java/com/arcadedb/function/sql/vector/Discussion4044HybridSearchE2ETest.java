@@ -27,6 +27,7 @@ import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -168,13 +169,13 @@ class Discussion4044HybridSearchE2ETest extends TestHelper {
   }
 
   private static int[] buildTokens(final String variant, final int specificToken) {
-    if (variant.equals("interest_rates") || variant.equals("loyalty_points"))
+    if ("interest_rates".equals(variant) || "loyalty_points".equals(variant))
       return new int[] { TOKEN_NACHISLENIE, specificToken, 23 };
     return new int[] { specificToken, 47, 91 };
   }
 
   private static float[] buildWeights(final String variant) {
-    if (variant.equals("interest_rates") || variant.equals("loyalty_points"))
+    if ("interest_rates".equals(variant) || "loyalty_points".equals(variant))
       return new float[] { 0.6f, 0.9f, 0.2f };
     return new float[] { 0.3f, 0.2f, 0.1f };
   }
@@ -263,7 +264,7 @@ class Discussion4044HybridSearchE2ETest extends TestHelper {
     //    rank #1 if sparse were broken (dense collapses both). Under hybrid retrieval it must rank
     //    *after* doc_0.xml.
     if (firstVariantPerSource.containsKey("doc_1.xml")) {
-      final List<String> ordered = new java.util.ArrayList<>(firstVariantPerSource.keySet());
+      final List<String> ordered = new ArrayList<>(firstVariantPerSource.keySet());
       assertThat(ordered.indexOf("doc_0.xml"))
           .as("doc_0 must rank before doc_1 (sparse breaks the tie)")
           .isLessThan(ordered.indexOf("doc_1.xml"));

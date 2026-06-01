@@ -27,8 +27,10 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.logging.Level;
 
 public class ServerSecurityDatabaseUser implements SecurityDatabaseUser {
   private static final JSONObject  NO_ACCESS_GROUP   = new JSONObject().put("types",

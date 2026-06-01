@@ -21,8 +21,9 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.NoSuchElementException;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 01/03/17.

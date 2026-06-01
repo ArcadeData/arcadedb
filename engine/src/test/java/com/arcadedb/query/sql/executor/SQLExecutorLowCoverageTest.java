@@ -19,13 +19,11 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.Schema;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * SQL integration tests for low-coverage execution steps.
@@ -181,9 +179,8 @@ class SQLExecutorLowCoverageTest extends TestHelper {
         database.command("sql", "INSERT INTO Indexed SET uid = ?", i);
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM Indexed WHERE uid BETWEEN 5 AND 10");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM Indexed WHERE uid BETWEEN 5 AND 10"));
 
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM Indexed");
     assertThat(rs.next().<Long>getProperty("cnt")).isLessThan(20L);
@@ -202,9 +199,8 @@ class SQLExecutorLowCoverageTest extends TestHelper {
       database.command("sql", "INSERT INTO IndexedEq SET code = 'C'");
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM IndexedEq WHERE code = 'B'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM IndexedEq WHERE code = 'B'"));
 
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM IndexedEq");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(2L);
@@ -261,13 +257,12 @@ class SQLExecutorLowCoverageTest extends TestHelper {
   @Test
   void scriptWithMultipleStatements() {
     database.getSchema().createDocumentType("ScriptTest");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET $a = 1;
           LET $b = 2;
           INSERT INTO ScriptTest SET val = $a + $b;
-          """);
-    });
+          """));
 
     final ResultSet rs = database.query("sql", "SELECT FROM ScriptTest");
     assertThat(rs.hasNext()).isTrue();
@@ -278,14 +273,13 @@ class SQLExecutorLowCoverageTest extends TestHelper {
   @Test
   void scriptWithIfStatement() {
     database.getSchema().createDocumentType("IfTest");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET $x = 5;
           IF ($x > 3) {
             INSERT INTO IfTest SET status = 'high';
           }
-          """);
-    });
+          """));
 
     final ResultSet rs = database.query("sql", "SELECT FROM IfTest");
     assertThat(rs.hasNext()).isTrue();
@@ -354,11 +348,10 @@ class SQLExecutorLowCoverageTest extends TestHelper {
   @Test
   void insertFromSelectRemovesEdgePointers() {
     database.getSchema().createVertexType("VertexCopy");
-    database.transaction(() -> {
+    database.transaction(() ->
       // This should trigger RemoveEdgePointersStep
       database.command("sql",
-          "INSERT INTO VertexCopy FROM (SELECT FROM Person WHERE name = 'Person0')");
-    });
+          "INSERT INTO VertexCopy FROM (SELECT FROM Person WHERE name = 'Person0')"));
 
     final ResultSet rs = database.query("sql", "SELECT FROM VertexCopy");
     assertThat(rs.hasNext()).isTrue();
@@ -483,12 +476,10 @@ class SQLExecutorLowCoverageTest extends TestHelper {
   @Test
   void updateWithRemove() {
     database.getSchema().createDocumentType("RemoveTest");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO RemoveTest SET a = 1, b = 2, c = 3");
-    });
-    database.transaction(() -> {
-      database.command("sql", "UPDATE RemoveTest REMOVE b");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO RemoveTest SET a = 1, b = 2, c = 3"));
+    database.transaction(() ->
+      database.command("sql", "UPDATE RemoveTest REMOVE b"));
     final ResultSet rs = database.query("sql", "SELECT FROM RemoveTest");
     assertThat(rs.hasNext()).isTrue();
     final Result item = rs.next();
@@ -501,9 +492,8 @@ class SQLExecutorLowCoverageTest extends TestHelper {
   @Test
   void copyDocumentStep() {
     database.getSchema().createDocumentType("CopyTest");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO CopyTest SET name = 'original'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO CopyTest SET name = 'original'"));
     database.transaction(() -> {
       // UPDATE triggers CopyRecordContentBeforeUpdateStep for RETURN BEFORE
       final ResultSet rs = database.command("sql",

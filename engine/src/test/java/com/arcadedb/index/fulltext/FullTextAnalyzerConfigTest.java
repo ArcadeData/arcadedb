@@ -151,10 +151,9 @@ class FullTextAnalyzerConfigTest extends TestHelper {
     });
 
     // Leading wildcard should throw exception when disabled (default)
-    assertThatThrownBy(() -> database.transaction(() -> {
+    assertThatThrownBy(() -> database.transaction(() ->
       database.query("sql",
-          "SELECT FROM Article WHERE SEARCH_INDEX('Article[content]', '*base') = true");
-    })).isInstanceOf(IndexException.class)
+          "SELECT FROM Article WHERE SEARCH_INDEX('Article[content]', '*base') = true"))).isInstanceOf(IndexException.class)
         .hasMessageContaining("Invalid search query");
   }
 

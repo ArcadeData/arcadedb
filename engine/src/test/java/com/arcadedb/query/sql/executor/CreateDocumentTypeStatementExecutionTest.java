@@ -27,7 +27,7 @@ import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * @author Luigi Dell'Aquila (l.dellaquila-(at)-orientdb.com)
@@ -35,7 +35,7 @@ import static org.assertj.core.api.Assertions.*;
 class CreateDocumentTypeStatementExecutionTest {
   @Test
   void plain() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String className = "testPlain";
       final ResultSet result = db.command("sql", "create document type " + className);
       final Schema schema = db.getSchema();
@@ -47,7 +47,7 @@ class CreateDocumentTypeStatementExecutionTest {
 
   @Test
   void clusters() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String className = "testClusters";
       final ResultSet result = db.command("sql", "create document type " + className + " buckets 32");
       final Schema schema = db.getSchema();
@@ -60,7 +60,7 @@ class CreateDocumentTypeStatementExecutionTest {
 
   @Test
   void ifNotExists() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String className = "testIfNotExists";
       ResultSet result = db.command("sql", "create document type " + className + " if not exists");
       final Schema schema = db.getSchema();
@@ -77,7 +77,7 @@ class CreateDocumentTypeStatementExecutionTest {
 
   @Test
   void pageSize() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String typeName = "testPageSize";
       final int customPageSize = 32768; // 32KB
       final ResultSet result = db.command("sql", "create document type " + typeName + " pagesize " + customPageSize);
@@ -94,7 +94,7 @@ class CreateDocumentTypeStatementExecutionTest {
 
   @Test
   void pageSizeWithBuckets() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String typeName = "testPageSizeWithBuckets";
       final int customPageSize = 16384; // 16KB
       final ResultSet result = db.command("sql", "create document type " + typeName + " buckets 4 pagesize " + customPageSize);
@@ -112,7 +112,7 @@ class CreateDocumentTypeStatementExecutionTest {
 
   @Test
   void vertexTypePageSize() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String typeName = "testVertexPageSize";
       final int customPageSize = 131072; // 128KB
       final ResultSet result = db.command("sql", "create vertex type " + typeName + " pagesize " + customPageSize);
@@ -128,7 +128,7 @@ class CreateDocumentTypeStatementExecutionTest {
 
   @Test
   void edgeTypePageSize() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String typeName = "testEdgePageSize";
       final int customPageSize = 8192; // 8KB
       final ResultSet result = db.command("sql", "create edge type " + typeName + " pagesize " + customPageSize);
@@ -144,7 +144,7 @@ class CreateDocumentTypeStatementExecutionTest {
 
   @Test
   void edgeTypePageSizeWithUnidirectional() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String typeName = "testEdgePageSizeUnidirectional";
       final int customPageSize = 65536; // 64KB
       final ResultSet result = db.command("sql", "create edge type " + typeName + " unidirectional pagesize " + customPageSize);

@@ -22,7 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.parser.NullSafeEqualsCompareOperator;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
+import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

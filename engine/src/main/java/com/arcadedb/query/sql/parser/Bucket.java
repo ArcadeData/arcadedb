@@ -20,7 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import java.util.*;
+import java.util.Map;
 
 public class Bucket extends SimpleNode {
   public String         bucketName;
@@ -34,11 +34,6 @@ public class Bucket extends SimpleNode {
 
   public Bucket(final int id) {
     super(id);
-  }
-
-  @Override
-  public String toString(final String prefix) {
-    return super.toString(prefix);
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {

@@ -816,8 +816,8 @@ class GraphOLAPBenchmark {
     System.out.println();
     System.out.println("  The OLAP engine dominates across the board, especially on full-graph algorithms");
     System.out.printf("  like PageRank (%s faster) and Connected Components (%s faster).%n%n",
-        results.stream().filter(r -> r[0].equals("PageRank (20 iter)")).map(r -> r[3]).findFirst().orElse("N/A"),
-        results.stream().filter(r -> r[0].equals("Connected Components")).map(r -> r[3]).findFirst().orElse("N/A"));
+        results.stream().filter(r -> "PageRank (20 iter)".equals(r[0])).map(r -> r[3]).findFirst().orElse("N/A"),
+        results.stream().filter(r -> "Connected Components".equals(r[0])).map(r -> r[3]).findFirst().orElse("N/A"));
   }
 
   private static String corner(final char left, final char mid, final char right, final int[] widths) {

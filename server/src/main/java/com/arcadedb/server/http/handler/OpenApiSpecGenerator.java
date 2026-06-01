@@ -40,7 +40,6 @@ import io.swagger.v3.oas.models.servers.Server;
 
 import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Generates OpenAPI 3.0+ specification for ArcadeDB HTTP API endpoints.
@@ -716,10 +715,11 @@ public class OpenApiSpecGenerator {
     schema.addProperty("command", new Schema<>().type("string").description("Query or command to execute"));
     schema.addProperty("language", new Schema<>().type("string").description("Query language").example("sql"));
     schema.addProperty("params", new Schema<>().type("object").description(
-        "Query parameters. Values may be JSON primitives, arrays, or typed-marker objects: "
-            + "{\"$bytes\": \"<base64>\"} for byte[] (standard or URL-safe base64), "
-            + "{\"$int8\": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send "
-            + "INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip)."));
+        """
+        Query parameters. Values may be JSON primitives, arrays, or typed-marker objects: \
+        {"$bytes": "<base64>"} for byte[] (standard or URL-safe base64), \
+        {"$int8": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send \
+        INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip)."""));
     schema.addProperty("serializer", new Schema<>().type("string").description("Response serializer").example("json"));
     schema.addProperty("limit", new Schema<>().type("integer").description("Maximum number of results").example(100));
     schema.setRequired(Arrays.asList("command"));
@@ -732,10 +732,11 @@ public class OpenApiSpecGenerator {
     schema.setDescription("Command request object");
     schema.addProperty("command", new Schema<>().type("string").description("Command to execute"));
     schema.addProperty("params", new Schema<>().type("object").description(
-        "Command parameters. Values may be JSON primitives, arrays, or typed-marker objects: "
-            + "{\"$bytes\": \"<base64>\"} for byte[] (standard or URL-safe base64), "
-            + "{\"$int8\": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send "
-            + "INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip)."));
+        """
+        Command parameters. Values may be JSON primitives, arrays, or typed-marker objects: \
+        {"$bytes": "<base64>"} for byte[] (standard or URL-safe base64), \
+        {"$int8": [v0, v1, ...]} for byte[] from integers in [-128, 127] (used to send \
+        INT8-encoded vectors to LSM_VECTOR indexes without a float32 round-trip)."""));
     schema.setRequired(Arrays.asList("command"));
     return schema;
   }

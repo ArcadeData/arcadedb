@@ -741,7 +741,7 @@ public class RemoteSchema implements Schema {
     for (Result record : cached) {
       final List<String> typeBucketNames = record.getProperty("buckets");
       for (String typeBucketName : typeBucketNames)
-        newBuckets.computeIfAbsent(typeBucketName, (name) -> new RemoteBucket(name));
+        newBuckets.computeIfAbsent(typeBucketName, name -> new RemoteBucket(name));
     }
 
     for (Result record : cached) {

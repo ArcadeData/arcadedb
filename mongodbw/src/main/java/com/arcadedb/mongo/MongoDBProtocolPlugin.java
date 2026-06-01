@@ -26,8 +26,8 @@ import de.bwaldvogel.mongo.MongoDatabase;
 import de.bwaldvogel.mongo.MongoServer;
 import de.bwaldvogel.mongo.backend.DatabaseResolver;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class MongoDBProtocolPlugin implements ServerPlugin, DatabaseResolver {
   private MongoServer                         mongoDBServer;

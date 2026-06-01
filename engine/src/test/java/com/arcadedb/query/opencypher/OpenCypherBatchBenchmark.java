@@ -23,6 +23,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.vector.LSMVectorIndex;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -36,6 +37,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -271,15 +273,14 @@ class OpenCypherBatchBenchmark {
 
       // Execute the UNWIND + MATCH + CREATE query
       final long start = System.currentTimeMillis();
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             UNWIND $batch AS BatchEntry \
             MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
             CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
             CREATE (p)-[:embb]->(b)""",
-            params);
-      });
+            params));
       final long elapsed = System.currentTimeMillis() - start;
 
       // Verify correctness: BATCH_SIZE embeddings and BATCH_SIZE edges created
@@ -326,15 +327,14 @@ class OpenCypherBatchBenchmark {
       final Map<String, Object> params = new HashMap<>();
       params.put("batch", batch);
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             UNWIND $batch AS BatchEntry \
             MATCH (b:CHUNK) WHERE ID(b) = BatchEntry.destRID \
             CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
             CREATE (p)-[:embb]->(b)""",
-            params);
-      });
+            params));
 
       // Verify each edge connects CHUNK_EMBEDDING to the correct CHUNK.
       // Use elementId() (Neo4j-compatible string identifier) to compare with the RID strings captured
@@ -376,15 +376,14 @@ class OpenCypherBatchBenchmark {
         batch.add(entry);
       }
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             """
             UNWIND $batch AS BatchEntry \
             MATCH (b:CHUNK) WHERE elementId(b) = BatchEntry.destRID \
             CREATE (p:CHUNK_EMBEDDING {vector: BatchEntry.vector}) \
             CREATE (p)-[:embb]->(b)""",
-            Map.of("batch", batch));
-      });
+            Map.of("batch", batch)));
 
       // Verify correctness: same number of embeddings and edges as batch entries
       database.transaction(() -> {
@@ -571,7 +570,7 @@ class OpenCypherBatchBenchmark {
       final long warm = Math.max(elapsedMs[1], 30L); // ignore first batch (JIT warmup)
       final long last = elapsedMs[batches - 1];
       assertThat(last)
-          .as("last-batch / warm-batch ratio must not grow linearly with parent degree (perBatchMs: " + java.util.Arrays.toString(elapsedMs) + ")")
+          .as("last-batch / warm-batch ratio must not grow linearly with parent degree (perBatchMs: " + Arrays.toString(elapsedMs) + ")")
           .isLessThan(warm * 2);
     }
 
@@ -605,7 +604,7 @@ class OpenCypherBatchBenchmark {
       final long warm = Math.max(elapsedMs[1], 30L);
       final long last = elapsedMs[batches - 1];
       assertThat(last)
-          .as("last-batch / warm-batch ratio must not grow linearly with parent's outgoing degree (perBatchMs: " + java.util.Arrays.toString(elapsedMs) + ")")
+          .as("last-batch / warm-batch ratio must not grow linearly with parent's outgoing degree (perBatchMs: " + Arrays.toString(elapsedMs) + ")")
           .isLessThan(warm * 2);
     }
 
@@ -615,7 +614,7 @@ class OpenCypherBatchBenchmark {
       final String[] parentRid = new String[1];
       database.transaction(() ->
           parentRid[0] = database.command("opencypher", "CREATE (p:DOCUMENT {name:'p'}) RETURN p AS p")
-              .next().<com.arcadedb.graph.Vertex>getProperty("p").getIdentity().toString());
+              .next().<Vertex>getProperty("p").getIdentity().toString());
 
       final int batches = 8;
       final int perBatch = 250;
@@ -639,10 +638,11 @@ class OpenCypherBatchBenchmark {
         final long start = System.nanoTime();
         database.transaction(() -> {
           try (final ResultSet ignored = database.command("opencypher",
-              "UNWIND $batch AS BatchEntry "
-                  + "MATCH (parent) WHERE ID(parent) = BatchEntry._parent_rid "
-                  + "MERGE (n:CHUNK {subtype: BatchEntry.subtype, name: BatchEntry.name, text: BatchEntry.text, index: BatchEntry.index})-[:`in`]->(parent) "
-                  + "RETURN ID(n) AS id", params)) {
+              """
+              UNWIND $batch AS BatchEntry \
+              MATCH (parent) WHERE ID(parent) = BatchEntry._parent_rid \
+              MERGE (n:CHUNK {subtype: BatchEntry.subtype, name: BatchEntry.name, text: BatchEntry.text, index: BatchEntry.index})-[:`in`]->(parent) \
+              RETURN ID(n) AS id""", params)) {
             while (ignored.hasNext()) ignored.next();
           }
         });
@@ -656,7 +656,7 @@ class OpenCypherBatchBenchmark {
       final long warm = Math.max(elapsedMs[1], 30L);
       final long last = elapsedMs[batches - 1];
       assertThat(last)
-          .as("UNWIND+MATCH+MERGE batch time must not grow linearly with parent degree (perBatchMs: " + java.util.Arrays.toString(elapsedMs) + ")")
+          .as("UNWIND+MATCH+MERGE batch time must not grow linearly with parent degree (perBatchMs: " + Arrays.toString(elapsedMs) + ")")
           .isLessThan(warm * 2);
     }
   }

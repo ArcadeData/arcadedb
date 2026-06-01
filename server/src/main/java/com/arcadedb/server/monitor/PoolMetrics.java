@@ -21,7 +21,12 @@ package com.arcadedb.server.monitor;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.QueryEngineManager;
 
+import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+
+import java.util.function.IntSupplier;
+import java.util.function.LongSupplier;
+
 import io.micrometer.core.instrument.Tag;
 import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.binder.MeterBinder;
@@ -73,22 +78,22 @@ public final class PoolMetrics implements MeterBinder {
   }
 
   private static void bindPool(final MeterRegistry registry, final String poolTag, final String description,
-      final java.util.function.IntSupplier poolSize, final java.util.function.IntSupplier activeThreads,
-      final java.util.function.IntSupplier queueDepth, final java.util.function.IntSupplier queueCapacityRemaining,
-      final java.util.function.LongSupplier completedTasks, final java.util.function.LongSupplier callerRunFallbacks) {
+      final IntSupplier poolSize, final IntSupplier activeThreads,
+      final IntSupplier queueDepth, final IntSupplier queueCapacityRemaining,
+      final LongSupplier completedTasks, final LongSupplier callerRunFallbacks) {
     final Tags tags = Tags.of(Tag.of("pool", poolTag));
-    io.micrometer.core.instrument.Gauge.builder("arcadedb.executor.pool.size", poolSize::getAsInt)
+    Gauge.builder("arcadedb.executor.pool.size", poolSize::getAsInt)
         .description(description + ": currently allocated worker threads").tags(tags).register(registry);
-    io.micrometer.core.instrument.Gauge.builder("arcadedb.executor.pool.active", activeThreads::getAsInt)
+    Gauge.builder("arcadedb.executor.pool.active", activeThreads::getAsInt)
         .description(description + ": worker threads currently running a task").tags(tags).register(registry);
-    io.micrometer.core.instrument.Gauge.builder("arcadedb.executor.queue.depth", queueDepth::getAsInt)
+    Gauge.builder("arcadedb.executor.queue.depth", queueDepth::getAsInt)
         .description(description + ": tasks waiting in the queue").tags(tags).register(registry);
-    io.micrometer.core.instrument.Gauge.builder("arcadedb.executor.queue.capacity_remaining", queueCapacityRemaining::getAsInt)
+    Gauge.builder("arcadedb.executor.queue.capacity_remaining", queueCapacityRemaining::getAsInt)
         .description(description + ": queue slots free before saturation triggers caller-runs fallback").tags(tags)
         .register(registry);
-    io.micrometer.core.instrument.Gauge.builder("arcadedb.executor.tasks.completed", completedTasks::getAsLong)
+    Gauge.builder("arcadedb.executor.tasks.completed", completedTasks::getAsLong)
         .description(description + ": cumulative tasks finished by pool threads").tags(tags).register(registry);
-    io.micrometer.core.instrument.Gauge.builder("arcadedb.executor.tasks.caller_run_fallbacks", callerRunFallbacks::getAsLong)
+    Gauge.builder("arcadedb.executor.tasks.caller_run_fallbacks", callerRunFallbacks::getAsLong)
         .description(
             description + ": cumulative tasks that ran on the submitter's thread because the queue was full. Sustained growth means the pool is undersized for the workload.")
         .tags(tags).register(registry);

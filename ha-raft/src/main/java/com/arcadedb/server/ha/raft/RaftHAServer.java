@@ -85,19 +85,19 @@ import java.util.logging.Logger;
  */
 public class RaftHAServer implements HealthMonitor.HealthTarget {
 
-  private final ArcadeDBServer          arcadeServer;
-  private final ContextConfiguration    configuration;
-  private volatile ArcadeStateMachine    stateMachine;
-  private final ClusterMonitor          clusterMonitor;
-  private final Quorum                  quorum;
-  private final long                    quorumTimeout;
-  private final RaftGroup               raftGroup;
-  private final RaftPeerId              localPeerId;
-  private final Map<RaftPeerId, String> httpAddresses = new HashMap<>();
+  private final    ArcadeDBServer          arcadeServer;
+  private final    ContextConfiguration    configuration;
+  private volatile ArcadeStateMachine      stateMachine;
+  private final    ClusterMonitor          clusterMonitor;
+  private final    Quorum                  quorum;
+  private final    long                    quorumTimeout;
+  private final    RaftGroup               raftGroup;
+  private final    RaftPeerId              localPeerId;
+  private final    Map<RaftPeerId, String> httpAddresses      = new HashMap<>();
   // Logged at most once: warns operators that HTTP addresses are derived (not explicitly configured).
-  private final AtomicBoolean httpFallbackWarned = new AtomicBoolean(false);
-  private final Map<RaftPeerId, String> peerDisplayNames = new ConcurrentHashMap<>();
-  private final String                  clusterName;
+  private final    AtomicBoolean           httpFallbackWarned = new AtomicBoolean(false);
+  private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
+  private final    String                  clusterName;
 
   private          RaftServer                raftServer;
   private          RaftClient                raftClient;
@@ -250,7 +250,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // When persistent storage is requested and the storage directory already has data,
     // use RECOVER mode so Ratis loads the existing Raft log instead of trying to format
     // (which would fail if the group directory already exists).
-    final File[] storageDirs = storageDir.listFiles(f -> f.isDirectory() && !f.getName().equals("lost+found"));
+    final File[] storageDirs = storageDir.listFiles(f -> f.isDirectory() && !"lost+found".equals(f.getName()));
     final boolean hasExistingStorage = persistStorage && storageDir.exists()
         && storageDirs != null && storageDirs.length > 0;
     final RaftStorage.StartupOption startupOption = hasExistingStorage
@@ -364,7 +364,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
             "Ratis restart failed %d consecutive times (max=%d). Stopping server for cluster-level recovery",
             restartFailureCount, maxRetries);
         final Thread stopThread = new Thread(() -> {
-          try { arcadeServer.stop(); } catch (final Exception ignored) {}
+          try {
+            arcadeServer.stop();
+          } catch (final Exception ignored) {
+          }
         }, "arcadedb-restart-failure-stop");
         stopThread.setDaemon(true);
         stopThread.start();
@@ -677,7 +680,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       if (!peer.getId().equals(statsExcludeId)) {
         final Map<String, String> replicaInfo = new HashMap<>();
         replicaInfo.put("id", peer.getId().toString());
-        replicaInfo.put("address", peer.getAddress().toString());
+        replicaInfo.put("address", peer.getAddress());
         final String httpAddr = resolveHttpAddress(peer);
         if (httpAddr != null)
           replicaInfo.put("httpAddress", httpAddr);
@@ -995,7 +998,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final var suggestedLeader = nle.getSuggestedLeader();
         if (expectSelfIsLeader) {
           final String leaderAddr = suggestedLeader != null ? suggestedLeader.getId().toString() : null;
-          throw new ReplicationException("Lost leadership during ReadIndex" + (leaderAddr != null ? ", new leader: " + leaderAddr : ""));
+          throw new ReplicationException(
+              "Lost leadership during ReadIndex" + (leaderAddr != null ? ", new leader: " + leaderAddr : ""));
         }
         throw new ReplicationException("ReadIndex failed: leader unavailable");
       }
@@ -1087,7 +1091,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final File storageDir = getRaftStorageDir();
     if (!storageDir.exists())
       return false;
-    final File[] subdirs = storageDir.listFiles(f -> f.isDirectory() && !f.getName().equals("lost+found"));
+    final File[] subdirs = storageDir.listFiles(f -> f.isDirectory() && !"lost+found".equals(f.getName()));
     return subdirs != null && subdirs.length > 0;
   }
 
