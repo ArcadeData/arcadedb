@@ -157,7 +157,7 @@ class RemoteGrpcDatabaseRegressionTest extends BaseGraphServerTest {
         Result r = rs.next();
         // System.out.println("Count all: r = " + r);
         Number n = r.getProperty("c");
-        c = (n == null) ? 0 : n.longValue();
+        c = n == null ? 0 : n.longValue();
       }
       return c;
     }

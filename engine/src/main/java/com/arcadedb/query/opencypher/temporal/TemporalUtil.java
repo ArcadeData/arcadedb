@@ -19,11 +19,8 @@
 package com.arcadedb.query.opencypher.temporal;
 
 import java.time.*;
-import java.time.temporal.ChronoField;
 import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
-import java.time.temporal.Temporal;
-import java.time.temporal.TemporalAdjusters;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -244,7 +241,7 @@ public final class TemporalUtil {
       }
       // When mixed with a zoned datetime, use the zoned datetime's timezone
       if (from instanceof CypherDateTime || to instanceof CypherDateTime) {
-        final CypherDateTime zoned = (from instanceof CypherDateTime) ? (CypherDateTime) from : (CypherDateTime) to;
+        final CypherDateTime zoned = from instanceof CypherDateTime ? (CypherDateTime) from : (CypherDateTime) to;
         final ZoneId zone = zoned.getValue().getZone();
         final LocalDate refDate = getReferenceDate(zoned);
         final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);
@@ -260,7 +257,7 @@ public final class TemporalUtil {
     }
     // Both have date components — handle DST-aware computation
     if (from instanceof CypherDateTime || to instanceof CypherDateTime) {
-      final CypherDateTime zoned = (from instanceof CypherDateTime) ? (CypherDateTime) from : (CypherDateTime) to;
+      final CypherDateTime zoned = from instanceof CypherDateTime ? (CypherDateTime) from : (CypherDateTime) to;
       final ZoneId zone = zoned.getValue().getZone();
       final LocalDate refDate = getReferenceDate(zoned);
       final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);
@@ -289,7 +286,7 @@ public final class TemporalUtil {
       }
       // When mixed with a zoned datetime, use the zoned datetime's timezone
       if (from instanceof CypherDateTime || to instanceof CypherDateTime) {
-        final CypherDateTime zoned = (from instanceof CypherDateTime) ? (CypherDateTime) from : (CypherDateTime) to;
+        final CypherDateTime zoned = from instanceof CypherDateTime ? (CypherDateTime) from : (CypherDateTime) to;
         final ZoneId zone = zoned.getValue().getZone();
         final LocalDate refDate = getReferenceDate(zoned);
         final ZonedDateTime fromZDT = toZonedDateTime(from, zone, refDate);

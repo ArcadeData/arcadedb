@@ -26,9 +26,11 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.logging.Level;
 
 /**
  * Returns an OResult containing metadata regarding the schema indexes.
@@ -96,7 +98,7 @@ public class FetchFromSchemaIndexesStep extends AbstractExecutionStep {
         }
       } finally {
         if( context.isProfiling() ) {
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
         }
       }
     }

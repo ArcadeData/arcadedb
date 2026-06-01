@@ -58,7 +58,7 @@ class GrpcAuthInterceptor implements ServerInterceptor {
     this.security = security;
     this.authSessionManager = authSessionManager;
     // Check if security is enabled by checking if it's not null and has users configured
-    this.securityEnabled = (security != null && security.getUsers() != null && !security.getUsers().isEmpty());
+    this.securityEnabled = security != null && security.getUsers() != null && !security.getUsers().isEmpty();
   }
 
   @Override

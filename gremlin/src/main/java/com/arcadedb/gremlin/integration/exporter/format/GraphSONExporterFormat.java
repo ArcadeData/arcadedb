@@ -28,8 +28,9 @@ import com.arcadedb.integration.importer.ConsoleLogger;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
-import java.io.*;
-import java.util.zip.*;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.util.zip.GZIPOutputStream;
 
 public class GraphSONExporterFormat extends AbstractExporterFormat {
   public static final String     NAME       = "graphson";

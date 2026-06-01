@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
@@ -30,9 +31,11 @@ import com.arcadedb.utility.RidHashSet;
 
 import com.arcadedb.query.QueryEngineManager;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
@@ -241,7 +244,7 @@ public final class PartitionedTriangleOp implements CountOp {
     }
 
     // Try GAV provider for accelerated neighbor lookups
-    final GraphTraversalProvider gavProvider = com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(db, triangleEdgeType);
+    final GraphTraversalProvider gavProvider = GraphTraversalProviderRegistry.findProvider(db, triangleEdgeType);
 
     long total = 0;
     for (final Map.Entry<RID, RID> entry : personToPartition.entrySet()) {
@@ -287,7 +290,7 @@ public final class PartitionedTriangleOp implements CountOp {
     }
     // OLTP fallback
     final Vertex v = (Vertex) db.lookupByRID(vertexRid, true);
-    final java.util.List<RID> list = new java.util.ArrayList<>();
+    final List<RID> list = new ArrayList<>();
     for (final RID rid : v.getConnectedVertexRIDs(direction, edgeType))
       list.add(rid);
     return list.toArray(new RID[0]);

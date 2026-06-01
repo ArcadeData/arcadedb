@@ -25,8 +25,8 @@ import com.arcadedb.integration.TestHelper;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
+import java.io.File;
+import java.net.URL;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

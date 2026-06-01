@@ -35,6 +35,7 @@ import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.concurrent.locks.ReentrantLock;
@@ -351,7 +352,7 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
    * @see BmwScorer#topKGrouped
    */
   public List<RidScore> topKGrouped(final int[] queryDims, final float[] queryWeights, final int limit,
-      final int groupSize, final Function<RID, Object> groupKeyResolver, final java.util.Set<RID> allowedRIDs) throws IOException {
+      final int groupSize, final Function<RID, Object> groupKeyResolver, final Set<RID> allowedRIDs) throws IOException {
     ensureOpen();
     if (limit <= 0 || groupSize <= 0)
       return List.of();

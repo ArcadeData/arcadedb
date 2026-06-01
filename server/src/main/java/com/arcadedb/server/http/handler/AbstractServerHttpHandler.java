@@ -34,8 +34,10 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
+import io.undertow.util.HttpString;
 import io.undertow.util.StatusCodes;
 
+import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Deque;
 import java.util.concurrent.atomic.AtomicReference;
@@ -84,7 +86,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // Return 503 during snapshot installation to prevent cryptic errors
     if (httpServer.getServer().isSnapshotInstallInProgress()) {
       exchange.setStatusCode(503);
-      exchange.getResponseHeaders().put(io.undertow.util.HttpString.tryFromString("Retry-After"), "5");
+      exchange.getResponseHeaders().put(HttpString.tryFromString("Retry-After"), "5");
       exchange.getResponseSender().send(
           error2json("Server is installing a snapshot, please retry", "", null, null, null));
       return;
@@ -385,7 +387,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
       return false;
     final byte[] aBytes = a.getBytes(DatabaseFactory.getDefaultCharset());
     final byte[] bBytes = b.getBytes(DatabaseFactory.getDefaultCharset());
-    return java.security.MessageDigest.isEqual(aBytes, bBytes);
+    return MessageDigest.isEqual(aBytes, bBytes);
   }
 
   /**

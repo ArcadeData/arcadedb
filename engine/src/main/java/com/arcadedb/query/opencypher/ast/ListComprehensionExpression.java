@@ -78,7 +78,7 @@ public class ListComprehensionExpression implements Expression {
       // Apply WHERE filter if present
       if (whereExpression != null) {
         final Object filterValue = OpenCypherQueryEngine.getExpressionEvaluator().evaluate(whereExpression, iterResult, context);
-        if (filterValue == null || (filterValue instanceof Boolean && !((Boolean) filterValue)))
+        if (filterValue == null || (filterValue instanceof Boolean b && !b))
           continue; // Skip items that don't match the filter
       }
 

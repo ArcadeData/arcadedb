@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
@@ -28,7 +29,6 @@ import com.arcadedb.graph.Vertex;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * Count operator for star-join patterns (Q4, Q7).
@@ -242,7 +242,7 @@ public final class DegreeProductOp implements CountOp {
       final Vertex.DIRECTION dir = arms[a].directions[0];
 
       for (final Iterator<? extends Identifiable> it = db.iterateType(edgeType, true); it.hasNext(); ) {
-        final com.arcadedb.graph.Edge edge = it.next().asEdge();
+        final Edge edge = it.next().asEdge();
         // The central vertex is the vertex on the "source" side of the arm direction:
         // If arm direction is OUT, the central vertex is the OUT vertex of the edge.
         // If arm direction is IN, the central vertex is the IN vertex of the edge.

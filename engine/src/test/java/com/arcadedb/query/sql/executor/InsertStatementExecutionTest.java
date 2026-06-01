@@ -22,10 +22,14 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
-
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -289,7 +293,7 @@ public class InsertStatementExecutionTest extends TestHelper {
       assertThat(result.hasNext()).isTrue();
       final Result item = result.next();
       assertThat(item).isNotNull();
-      assertThat(item.<String>getProperty("name").toString()).isEqualTo("name" + i);
+      assertThat(item.<String>getProperty("name")).isEqualTo("name" + i);
       assertThat(item.getProperty("surname").toString()).isEqualTo("surname" + i);
     }
     assertThat(result.hasNext()).isFalse();
@@ -300,7 +304,7 @@ public class InsertStatementExecutionTest extends TestHelper {
       assertThat(result.hasNext()).isTrue();
       Result item = result.next();
       assertThat(item).isNotNull();
-      assertThat(item.<String>getProperty("name").toString()).isEqualTo("name" + i);
+      assertThat(item.<String>getProperty("name")).isEqualTo("name" + i);
       assertThat(item.getProperty("surname").toString()).isEqualTo("surname" + i);
     }
 
@@ -483,7 +487,7 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     for (int i = 0; i < 2; i++) {
       final Result item = result.next();
-      if (item.<String>getProperty("name").equals("parent")) {
+      if ("parent".equals(item.<String>getProperty("name"))) {
         assertThat(item.getProperty("children") instanceof Collection).isTrue();
         assertThat(((Collection) item.getProperty("children")).size()).isEqualTo(1);
       }
@@ -538,7 +542,9 @@ public class InsertStatementExecutionTest extends TestHelper {
   void insertEdgeMustFail() {
     final String className = "testInsertEdge";
     database.getSchema().createEdgeType(className);
-    assertThatThrownBy(() -> database.command("sql", "insert into " + className + " set `@out` = #1:10, `@in` = #1:11")).isInstanceOf(IllegalArgumentException.class);
+    assertThatThrownBy(
+        () -> database.command("sql", "insert into " + className + " set `@out` = #1:10, `@in` = #1:11")).isInstanceOf(
+        IllegalArgumentException.class);
   }
 
   @Test
@@ -585,25 +591,26 @@ public class InsertStatementExecutionTest extends TestHelper {
     final ResultSet result = database.command("sql",
         "insert into RegInfoDoc set payload = \"(Pn/m)*1000kg/kW, with \\\"Pn\\\" being the\\n\\np  and \\\"m\\\" (kg)\"");
     assertThat(result.hasNext()).isTrue();
-    assertThat(result.next().<String>getProperty("payload")).isEqualTo("(Pn/m)*1000kg/kW, with \"Pn\" being the\n\np  and \"m\" (kg)");
+    assertThat(result.next().<String>getProperty("payload")).isEqualTo(
+        "(Pn/m)*1000kg/kW, with \"Pn\" being the\n\np  and \"m\" (kg)");
   }
 
   @Test
   void insertFromSelect() {
     database.command("sqlscript",
         """
-        CREATE DOCUMENT TYPE src;
-        CREATE DOCUMENT TYPE dst;
-        """
+            CREATE DOCUMENT TYPE src;
+            CREATE DOCUMENT TYPE dst;
+            """
     );
 
     final ResultSet result = database.command("sqlscript",
         """
-        INSERT INTO src SET a = 1;
-        INSERT INTO src SET a = 2;
-        INSERT INTO src SET a = 3;
-        INSERT INTO dst FROM SELECT a FROM src;\
-        """
+            INSERT INTO src SET a = 1;
+            INSERT INTO src SET a = 2;
+            INSERT INTO src SET a = 3;
+            INSERT INTO dst FROM SELECT a FROM src;\
+            """
     );
     int i = 0;
     for (; result.hasNext(); i++)
@@ -729,7 +736,7 @@ public class InsertStatementExecutionTest extends TestHelper {
     params.put("language", "es");
     ResultSet result = database.command("sqlscript",
         "LET $newRecord = INSERT INTO " + className + " SET hash = :hash, language = :language RETURN @rid;\n" +
-        "RETURN { \"created\": true, \"rid\": $newRecord['@rid'] };",
+            "RETURN { \"created\": true, \"rid\": $newRecord['@rid'] };",
         params);
     assertThat(result.hasNext()).isTrue();
     Result item = result.next();
@@ -766,9 +773,9 @@ public class InsertStatementExecutionTest extends TestHelper {
 
     ResultSet result = database.command("sqlscript",
         """
-        LET $newRecord = INSERT INTO `DOCUMENT` SET hash = :hash, language = :language RETURN @rid;
-        RETURN { "created": true, "rid": $newRecord['@rid'] };\
-        """,
+            LET $newRecord = INSERT INTO `DOCUMENT` SET hash = :hash, language = :language RETURN @rid;
+            RETURN { "created": true, "rid": $newRecord['@rid'] };\
+            """,
         params);
 
     assertThat(result.hasNext()).isTrue();

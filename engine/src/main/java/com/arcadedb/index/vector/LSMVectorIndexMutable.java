@@ -26,7 +26,7 @@ import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.IndexException;
 
-import java.io.*;
+import java.io.IOException;
 
 /**
  * PaginatedComponent for LSM-based vector index storage.

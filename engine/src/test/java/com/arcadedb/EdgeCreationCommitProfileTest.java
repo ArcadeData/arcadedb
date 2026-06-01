@@ -59,9 +59,8 @@ class EdgeCreationCommitProfileTest extends TestHelper {
         database.getSchema().createEdgeType("PROF_KNOWS");
       }
     });
-    database.transaction(() -> {
-      database.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "ProfPerson", "id");
-    });
+    database.transaction(() ->
+      database.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "ProfPerson", "id"));
     database.transaction(() -> {
       for (int i = 0; i < VERTEX_COUNT; i++) {
         final MutableVertex v = database.newVertex("ProfPerson");
@@ -161,11 +160,10 @@ class EdgeCreationCommitProfileTest extends TestHelper {
       final int src = i % VERTEX_COUNT;
       final int dst = (i + 1) % VERTEX_COUNT;
       final long start = System.nanoTime();
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("sql",
             "CREATE EDGE PROF_KNOWS FROM (SELECT FROM ProfPerson WHERE id = ?) TO (SELECT FROM ProfPerson WHERE id = ?) SET weight = ?",
-            src, dst, 0.5);
-      });
+            src, dst, 0.5));
       sqlTimes[i] = System.nanoTime() - start;
     }
 

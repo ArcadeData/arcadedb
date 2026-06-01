@@ -100,9 +100,8 @@ class TimeSeriesFunctionFirstLastTest extends TestHelper {
     database.command("sql",
         "CREATE TIMESERIES TYPE SingleSensor TIMESTAMP ts FIELDS (value DOUBLE)");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO SingleSensor SET ts = 1000, value = 42.0");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO SingleSensor SET ts = 1000, value = 42.0"));
 
     final ResultSet rs = database.query("sql",
         "SELECT ts.first(value, ts) AS first_val, ts.last(value, ts) AS last_val FROM SingleSensor");

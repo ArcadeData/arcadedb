@@ -67,7 +67,8 @@ public class ExternalValueRecord extends BaseRecord implements RecordInternal {
     // BinarySerializer.deserializeProperty which materialises the value inline. If a generic record dumper hits
     // this method directly, it's a bug: failing loud surfaces it instead of returning silent empty data.
     throw new UnsupportedOperationException(
-        "ExternalValueRecord is an internal payload of an EXTERNAL property and has no JSON representation; "
-            + "read the value through its owning Document instead of dereferencing the external RID directly");
+        """
+        ExternalValueRecord is an internal payload of an EXTERNAL property and has no JSON representation; \
+        read the value through its owning Document instead of dereferencing the external RID directly""");
   }
 }

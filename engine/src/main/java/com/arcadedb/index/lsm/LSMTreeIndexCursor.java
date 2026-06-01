@@ -32,7 +32,7 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinarySerializer;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
 
 /**

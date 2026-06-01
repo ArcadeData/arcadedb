@@ -26,7 +26,10 @@ import org.postgresql.util.PGobject;
 import org.postgresql.util.PSQLException;
 
 import java.sql.*;
+import java.util.HashSet;
+import java.util.Locale;
 import java.util.Properties;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -992,10 +995,10 @@ class PostgresProtocolIT extends BaseGraphServerTest {
 
   // ==================== Empty Result Schema Tests (issue #3971) ====================
 
-  private static java.util.Set<String> columnNames(ResultSetMetaData meta) throws SQLException {
-    final java.util.Set<String> names = new java.util.HashSet<>();
+  private static Set<String> columnNames(ResultSetMetaData meta) throws SQLException {
+    final Set<String> names = new HashSet<>();
     for (int i = 1; i <= meta.getColumnCount(); i++)
-      names.add(meta.getColumnName(i).toLowerCase(java.util.Locale.ENGLISH));
+      names.add(meta.getColumnName(i).toLowerCase(Locale.ENGLISH));
     return names;
   }
 

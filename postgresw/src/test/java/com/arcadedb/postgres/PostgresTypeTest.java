@@ -25,7 +25,9 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -467,8 +469,8 @@ class PostgresTypeTest {
     // After advertising DATE columns natively, clients send dates as "YYYY-MM-DD" text
     Object result = PostgresType.deserialize(PostgresType.DATE.code, 0, "2024-08-22".getBytes());
     assertThat(result).isInstanceOf(Date.class);
-    final long expectedMillis = java.time.LocalDate.of(2024, 8, 22)
-        .atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+    final long expectedMillis = LocalDate.of(2024, 8, 22)
+        .atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
     assertThat(((Date) result).getTime()).isEqualTo(expectedMillis);
   }
 
@@ -479,8 +481,8 @@ class PostgresTypeTest {
     ByteBuffer buffer = ByteBuffer.allocate(8).order(ByteOrder.BIG_ENDIAN);
     buffer.putLong(microsSince2000);
     Object result = PostgresType.deserialize(PostgresType.TIMESTAMP.code, 1, buffer.array());
-    assertThat(result).isInstanceOf(java.time.LocalDateTime.class);
-    assertThat((java.time.LocalDateTime) result).isEqualTo(java.time.LocalDateTime.of(2000, 1, 10, 0, 0, 0));
+    assertThat(result).isInstanceOf(LocalDateTime.class);
+    assertThat((LocalDateTime) result).isEqualTo(LocalDateTime.of(2000, 1, 10, 0, 0, 0));
   }
 
   @Test
@@ -725,8 +727,8 @@ class PostgresTypeTest {
     buffer.putInt(daysSince2000);
     Object result = PostgresType.deserialize(PostgresType.DATE.code, 1, buffer.array());
     assertThat(result).isInstanceOf(Date.class);
-    final long expectedMillis = java.time.LocalDate.of(2000, 1, 1).plusDays(daysSince2000)
-        .atStartOfDay(java.time.ZoneOffset.UTC).toInstant().toEpochMilli();
+    final long expectedMillis = LocalDate.of(2000, 1, 1).plusDays(daysSince2000)
+        .atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli();
     assertThat(((Date) result).getTime()).isEqualTo(expectedMillis);
   }
 
@@ -744,7 +746,7 @@ class PostgresTypeTest {
   void deserializeBinaryArrayText() {
     // PostgreSQL binary format for text[] {'foo','bar'}:
     // ndim=1, hasnull=0, elemOid=25 (text), dim=2, lb=1, then two elements
-    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(256).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(1);        // ndim
     buf.putInt(0);        // hasnull
     buf.putInt(25);       // elemOid: text
@@ -767,7 +769,7 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArrayLong() {
     // PostgreSQL binary format for int8[] {100, 200, 300}
-    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(256).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(1);        // ndim
     buf.putInt(0);        // hasnull
     buf.putInt(20);       // elemOid: int8
@@ -788,7 +790,7 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArrayInt() {
     // PostgreSQL binary format for int4[] {1, 2, 3}
-    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(256).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(1);        // ndim
     buf.putInt(0);        // hasnull
     buf.putInt(23);       // elemOid: int4
@@ -809,7 +811,7 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArrayEmpty() {
     // ndim=0 should return an empty list
-    ByteBuffer buf = ByteBuffer.allocate(12).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(12).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(0);   // ndim
     buf.putInt(0);   // hasnull
     buf.putInt(25);  // elemOid: text
@@ -821,7 +823,7 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArrayBool() {
     // bool[] {true, false, true}
-    ByteBuffer buf = ByteBuffer.allocate(64).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(64).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(1);   // ndim
     buf.putInt(0);   // hasnull
     buf.putInt(16);  // elemOid: bool
@@ -840,7 +842,7 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArrayInt2() {
     // int2[] (smallint) {10, 20, 30}
-    ByteBuffer buf = ByteBuffer.allocate(64).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(64).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(1);   // ndim
     buf.putInt(0);   // hasnull
     buf.putInt(21);  // elemOid: int2
@@ -859,7 +861,7 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArrayFloat4() {
     // float4[] {1.5, 2.5, 3.5}
-    ByteBuffer buf = ByteBuffer.allocate(64).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(64).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(1);   // ndim
     buf.putInt(0);   // hasnull
     buf.putInt(700); // elemOid: float4
@@ -878,7 +880,7 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArrayFloat8() {
     // float8[] {1.1, 2.2, 3.3}
-    ByteBuffer buf = ByteBuffer.allocate(96).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(96).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(1);   // ndim
     buf.putInt(0);   // hasnull
     buf.putInt(701); // elemOid: float8
@@ -900,7 +902,7 @@ class PostgresTypeTest {
     // Multi-dimensional arrays are flattened into a single List - the query engine consumes
     // the result as a flat collection for IN-parameter binding, so the dimensionality is
     // intentionally not preserved.
-    ByteBuffer buf = ByteBuffer.allocate(96).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(96).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(2);   // ndim
     buf.putInt(0);   // hasnull
     buf.putInt(23);  // elemOid: int4
@@ -921,7 +923,7 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArrayRejectsNegativeDimension() {
     // ndim header with a negative dimension size must be rejected, not silently mis-read.
-    ByteBuffer buf = ByteBuffer.allocate(32).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(32).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(1);    // ndim
     buf.putInt(0);    // hasnull
     buf.putInt(25);   // elemOid: text
@@ -936,7 +938,7 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArrayRejectsTooManyDimensions() {
     // PostgreSQL caps ndim at 6 (MAXDIM). Anything larger is rejected without allocating.
-    ByteBuffer buf = ByteBuffer.allocate(16).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(16).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(7);    // ndim > MAXDIM
     buf.putInt(0);    // hasnull
     buf.putInt(25);   // elemOid: text
@@ -950,7 +952,7 @@ class PostgresTypeTest {
   void deserializeBinaryArrayRejectsOversizedElementCount() {
     // dim_size large enough that totalElements*4 exceeds remaining buffer bytes - rejected
     // before the result ArrayList is over-allocated.
-    ByteBuffer buf = ByteBuffer.allocate(32).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(32).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(1);                 // ndim
     buf.putInt(0);                 // hasnull
     buf.putInt(25);                // elemOid: text
@@ -966,7 +968,7 @@ class PostgresTypeTest {
   void deserializeBinaryArrayRejectsOverflowAcrossDimensions() {
     // Two dimensions of ~65000 each: product overflows Integer.MAX_VALUE. Must be rejected
     // instead of silently wrapping to a small loop count (the original bug class).
-    ByteBuffer buf = ByteBuffer.allocate(40).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(40).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(2);      // ndim
     buf.putInt(0);      // hasnull
     buf.putInt(23);     // elemOid: int4
@@ -983,7 +985,7 @@ class PostgresTypeTest {
   @Test
   void deserializeBinaryArrayWithNullElement() {
     // text[] {'foo', NULL, 'baz'} - null elements have elemLen == -1
-    ByteBuffer buf = ByteBuffer.allocate(256).order(java.nio.ByteOrder.BIG_ENDIAN);
+    ByteBuffer buf = ByteBuffer.allocate(256).order(ByteOrder.BIG_ENDIAN);
     buf.putInt(1);   // ndim
     buf.putInt(1);   // hasnull
     buf.putInt(25);  // elemOid: text
@@ -1174,8 +1176,8 @@ class PostgresTypeTest {
   @Test
   void serializeAsBinaryDateRoundTrip() {
     // Round-trip: binary serialize -> binary deserialize must preserve the date portion
-    final java.time.LocalDate ld = java.time.LocalDate.of(2024, 8, 22);
-    final Date input = Date.from(ld.atStartOfDay(java.time.ZoneOffset.UTC).toInstant());
+    final LocalDate ld = LocalDate.of(2024, 8, 22);
+    final Date input = Date.from(ld.atStartOfDay(ZoneOffset.UTC).toInstant());
 
     final Binary buffer = new Binary();
     PostgresType.DATE.serializeAsBinary(PostgresType.DATE, buffer, input);
@@ -1186,12 +1188,12 @@ class PostgresTypeTest {
     buffer.getByteBuffer().get(bytes);
     final Object decoded = PostgresType.deserialize(PostgresType.DATE.code, 1, bytes);
     assertThat(decoded).isInstanceOf(Date.class);
-    assertThat(((Date) decoded).toInstant().atZone(java.time.ZoneOffset.UTC).toLocalDate()).isEqualTo(ld);
+    assertThat(((Date) decoded).toInstant().atZone(ZoneOffset.UTC).toLocalDate()).isEqualTo(ld);
   }
 
   @Test
   void serializeAsBinaryTimestampRoundTrip() {
-    final java.time.LocalDateTime ldt = java.time.LocalDateTime.of(2024, 8, 22, 14, 30, 45, 123_456_000);
+    final LocalDateTime ldt = LocalDateTime.of(2024, 8, 22, 14, 30, 45, 123_456_000);
     final Binary buffer = new Binary();
     PostgresType.TIMESTAMP.serializeAsBinary(PostgresType.TIMESTAMP, buffer, ldt);
     buffer.flip();
@@ -1729,8 +1731,8 @@ class PostgresTypeTest {
     buffer.getByteBuffer().get(bytes);
     final Object decoded = PostgresType.deserialize(PostgresType.DATE.code, 1, bytes);
     assertThat(decoded).isInstanceOf(Date.class);
-    assertThat(((Date) decoded).toInstant().atZone(java.time.ZoneOffset.UTC).toLocalDate())
-        .isEqualTo(java.time.LocalDate.of(2024, 8, 22));
+    assertThat(((Date) decoded).toInstant().atZone(ZoneOffset.UTC).toLocalDate())
+        .isEqualTo(LocalDate.of(2024, 8, 22));
   }
 
   @Test

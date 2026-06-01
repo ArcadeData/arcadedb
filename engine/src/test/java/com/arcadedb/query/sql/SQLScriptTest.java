@@ -27,12 +27,11 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
 import java.util.HashMap;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 public class SQLScriptTest extends TestHelper {
   public void beginTest() {
@@ -159,7 +158,7 @@ public class SQLScriptTest extends TestHelper {
           LET counter = SELECT count(*) as count FROM TestCounter;
           UPDATE TestCounter SET weight += $counter[0].count RETURN AFTER @this;
           """;
-      ResultSet qResult = database.command("SQLScript", script.toString());
+      ResultSet qResult = database.command("SQLScript", script);
 
       assertThat(qResult.hasNext()).isTrue();
       Result result = qResult.next();
@@ -176,7 +175,7 @@ public class SQLScriptTest extends TestHelper {
         }
         return 'FAIL';
         """;
-    ResultSet qResult = database.command("SQLScript", script.toString());
+    ResultSet qResult = database.command("SQLScript", script);
 
     assertThat(Optional.ofNullable(qResult)).isNotNull();
     assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
@@ -242,7 +241,7 @@ public class SQLScriptTest extends TestHelper {
         }
         return 'OK';
         """;
-    ResultSet qResult = database.command("SQLScript", script.toString());
+    ResultSet qResult = database.command("SQLScript", script);
 
     assertThat(Optional.ofNullable(qResult)).isNotNull();
     assertThat(qResult.next().<String>getProperty("value")).isEqualTo("OK");
@@ -257,7 +256,7 @@ public class SQLScriptTest extends TestHelper {
         }
         return 'FAIL';
         """;
-    ResultSet qResult = database.command("SQLScript", script.toString());
+    ResultSet qResult = database.command("SQLScript", script);
 
     assertThat(Optional.ofNullable(qResult)).isNotNull();
     assertThat(CollectionUtils.countEntries(qResult)).isEqualTo(3);
@@ -292,7 +291,7 @@ public class SQLScriptTest extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE QuotedRegex2");
       String batch = "INSERT INTO QuotedRegex2 SET regexp=\"'';\"";
 
-      database.command("SQLScript", batch.toString());
+      database.command("SQLScript", batch);
 
       ResultSet result = database.query("sql", "SELECT FROM QuotedRegex2");
       Document doc = result.next().toElement();

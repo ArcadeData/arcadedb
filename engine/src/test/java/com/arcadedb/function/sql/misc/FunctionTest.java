@@ -23,13 +23,16 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.InstanceOfAssertFactories.LIST;
 
 class FunctionTest extends TestHelper {
   private static final int TOT = 10000;
@@ -234,11 +237,10 @@ class FunctionTest extends TestHelper {
 
   @Test
   void functionDateRejectsUnknownOption() {
-    database.transaction(() -> {
-      org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+    database.transaction(() ->
+      Assertions.assertThatThrownBy(() ->
           database.query("SQL", "SELECT date(\"2023-03-04\", { whoops: 1 }) as date").next())
           .hasMessageContaining("whoops")
-          .hasMessageContaining("date");
-    });
+          .hasMessageContaining("date"));
   }
 }

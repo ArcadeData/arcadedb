@@ -21,7 +21,10 @@ package com.arcadedb.query.sql.parser.operators;
 import com.arcadedb.query.sql.parser.ContainsAllCondition;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

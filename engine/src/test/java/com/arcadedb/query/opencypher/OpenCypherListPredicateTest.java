@@ -253,7 +253,7 @@ class OpenCypherListPredicateTest {
   @Test
   void triadicSelectionDebug() {
     // Create the binary-tree-1 graph (exact TCK setup)
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           """
           CREATE (a:A {name: 'a'}), (b1:X {name: 'b1'}), (b2:X {name: 'b2'}), \
@@ -269,8 +269,7 @@ class OpenCypherListPredicateTest {
           (b3)-[:FRIEND]->(c31), (b3)-[:FRIEND]->(c32), \
           (b4)-[:FRIEND]->(c41), (b4)-[:FRIEND]->(c42) \
           CREATE (b1)-[:FRIEND]->(b2), (b2)-[:FRIEND]->(b3), \
-          (b3)-[:FRIEND]->(b4), (b4)-[:FRIEND]->(b1)""");
-    });
+          (b3)-[:FRIEND]->(b4), (b4)-[:FRIEND]->(b1)"""));
 
     // TCK Scenario [2]: friend of a friend that is not a friend
     final ResultSet rs = database.query("opencypher",

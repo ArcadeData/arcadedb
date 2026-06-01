@@ -23,9 +23,11 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
+import com.arcadedb.schema.LocalSchema;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Random;
@@ -297,16 +299,16 @@ class SparseSegmentComponentTest extends TestHelper {
     try {
       final SparseSegmentComponent c = new SparseSegmentComponent(db, name, filePath, ComponentFile.MODE.READ_WRITE,
           SparseSegmentComponent.DEFAULT_PAGE_SIZE);
-      ((com.arcadedb.schema.LocalSchema) db.getSchema().getEmbedded()).registerFile(c);
+      ((LocalSchema) db.getSchema().getEmbedded()).registerFile(c);
       return c;
-    } catch (final java.io.IOException e) {
+    } catch (final IOException e) {
       throw new RuntimeException("failed to create sparse segment component '" + name + "'", e);
     }
   }
 
   private SparseSegmentComponent lookupComponent(final String name) {
     final DatabaseInternal db = (DatabaseInternal) database;
-    return (SparseSegmentComponent) ((com.arcadedb.schema.LocalSchema) db.getSchema().getEmbedded()).getFileByName(name);
+    return (SparseSegmentComponent) ((LocalSchema) db.getSchema().getEmbedded()).getFileByName(name);
   }
 
   private static List<RID> ridSequence(final int bucket, final long startOffset, final int n) {

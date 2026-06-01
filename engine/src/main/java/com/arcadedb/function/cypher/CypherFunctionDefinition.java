@@ -23,7 +23,9 @@ import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Function defined using Cypher query language.

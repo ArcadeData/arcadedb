@@ -77,7 +77,7 @@ public class CheckClusterTypeStep extends AbstractExecutionStep {
       return new InternalResultSet();
     } finally {
       if ( context.isProfiling() )
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

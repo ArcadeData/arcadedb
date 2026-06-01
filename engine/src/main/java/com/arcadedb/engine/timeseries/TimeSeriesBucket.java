@@ -28,7 +28,6 @@ import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.DatabaseOperationException;
-import com.arcadedb.schema.Type;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;

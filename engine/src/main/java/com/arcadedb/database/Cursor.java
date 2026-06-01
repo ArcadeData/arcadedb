@@ -20,7 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.Iterator;
 
 /**
  * Cursor to browse a result set.

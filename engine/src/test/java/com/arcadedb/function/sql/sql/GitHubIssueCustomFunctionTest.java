@@ -32,7 +32,7 @@ class GitHubIssueCustomFunctionTest {
 
   @Test
   void case1SQLFunctionWithStringParameterBeerExample() throws Exception {
-    TestHelper.executeInNewDatabase("testCase1", (db) -> {
+    TestHelper.executeInNewDatabase("testCase1", db -> {
       // Create the Beer type and add Hocus Pocus
       db.command("sql", "CREATE DOCUMENT TYPE Beer");
       db.command("sql", "INSERT INTO Beer SET name = 'Hocus Pocus'");
@@ -53,7 +53,7 @@ class GitHubIssueCustomFunctionTest {
 
   @Test
   void case2SQLFunctionReturningInput() throws Exception {
-    TestHelper.executeInNewDatabase("testCase2", (db) -> {
+    TestHelper.executeInNewDatabase("testCase2", db -> {
       // Define function as in the issue
       db.command("sql", "DEFINE FUNCTION my.returnInput \"SELECT :a AS result\" PARAMETERS [a] LANGUAGE sql");
 
@@ -70,7 +70,7 @@ class GitHubIssueCustomFunctionTest {
 
   @Test
   void case3JavaScriptFunctionReturningInput() throws Exception {
-    TestHelper.executeInNewDatabase("testCase3", (db) -> {
+    TestHelper.executeInNewDatabase("testCase3", db -> {
       // Define JS function as in the issue - should NOT cause ClassCastException
       db.command("sql", "DEFINE FUNCTION my.returnInputJS \"return a\" PARAMETERS [a] LANGUAGE js");
 
@@ -87,7 +87,7 @@ class GitHubIssueCustomFunctionTest {
 
   @Test
   void issueObservationNoDoubleQuotingNeeded() throws Exception {
-    TestHelper.executeInNewDatabase("testObservation", (db) -> {
+    TestHelper.executeInNewDatabase("testObservation", db -> {
       // Test that strings don't need to be double quoted
       db.command("sql", "DEFINE FUNCTION my.echo \"SELECT :a AS result\" PARAMETERS [a] LANGUAGE sql");
 

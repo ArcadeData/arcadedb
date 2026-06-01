@@ -27,7 +27,8 @@ import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 public class ExplainStatement extends Statement {
 

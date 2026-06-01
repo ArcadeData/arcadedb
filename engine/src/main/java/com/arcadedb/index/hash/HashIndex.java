@@ -28,7 +28,6 @@ import com.arcadedb.database.TransactionIndexContext;
 import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.index.IndexCursor;

@@ -176,7 +176,7 @@ class SQLFunctionAbsoluteValueTest {
 
   @Test
   void fromQuery() throws Exception {
-    TestHelper.executeInNewDatabase("./target/databases/testAbsFunction", (db) -> {
+    TestHelper.executeInNewDatabase("./target/databases/testAbsFunction", db -> {
       final ResultSet result = db.query("sql", "select abs(-45.4) as abs");
       assertThat(((Number) result.next().getProperty("abs")).floatValue()).isEqualTo(45.4F);
     });

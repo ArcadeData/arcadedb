@@ -89,7 +89,7 @@ public class AlgoSameCommunity extends AbstractAlgoProcedure {
 
     final Object c1 = node1.get(communityProperty);
     final Object c2 = node2.get(communityProperty);
-    final double coefficient = (c1 != null && Objects.equals(c1, c2)) ? 1.0 : 0.0;
+    final double coefficient = c1 != null && Objects.equals(c1, c2) ? 1.0 : 0.0;
 
     final ResultInternal r = new ResultInternal();
     r.setProperty("node1", node1);

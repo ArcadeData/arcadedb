@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SQLMathTest {
   @Test
   void sum() throws Exception {
-    TestHelper.executeInNewDatabase("sql-math", (graph) -> {
+    TestHelper.executeInNewDatabase("sql-math", graph -> {
       try (final ResultSet rs = graph.query("sql", "select (1+1+1) as math")) {
         assertThat(rs.next().<Integer>getProperty("math")).isEqualTo(3);
       }

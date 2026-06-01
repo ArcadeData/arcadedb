@@ -34,9 +34,10 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.logging.*;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 public class PostCommandHandler extends AbstractQueryHandler {
 
@@ -119,7 +120,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     paramMap = AbstractQueryHandler.decodeTypedJsonMarkers(paramMap);
 
     if (limit != -1) {
-      if (language.equalsIgnoreCase("sql") || language.equalsIgnoreCase("sqlScript")) {
+      if ("sql".equalsIgnoreCase(language) || "sqlScript".equalsIgnoreCase(language)) {
         final String commandLC = command.toLowerCase(Locale.ENGLISH).trim();
         if ((commandLC.startsWith("select") || commandLC.startsWith("match")) && !commandLC.endsWith(";")) {
           if (!commandLC.contains(" limit ") && !commandLC.contains("\nlimit ")) {
@@ -137,7 +138,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
       }
     }
 
-    if (language.equalsIgnoreCase("sqlScript") && !command.endsWith(";"))
+    if ("sqlScript".equalsIgnoreCase(language) && !command.endsWith(";"))
       command += ";";
 
     if ("detailed".equalsIgnoreCase(profileExecution))
@@ -240,9 +241,9 @@ public class PostCommandHandler extends AbstractQueryHandler {
   }
 
   protected static void recordProfilerMetrics(final String prefix, final QueryProfile profile) {
-    Metrics.timer(prefix + ".deserialization").record(profile.getDeserializationNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
-    Metrics.timer(prefix + ".engine").record(profile.getEngineNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
-    Metrics.timer(prefix + ".serialization").record(profile.getSerializationNanos(), java.util.concurrent.TimeUnit.NANOSECONDS);
+    Metrics.timer(prefix + ".deserialization").record(profile.getDeserializationNanos(), TimeUnit.NANOSECONDS);
+    Metrics.timer(prefix + ".engine").record(profile.getEngineNanos(), TimeUnit.NANOSECONDS);
+    Metrics.timer(prefix + ".serialization").record(profile.getSerializationNanos(), TimeUnit.NANOSECONDS);
   }
 
   /**

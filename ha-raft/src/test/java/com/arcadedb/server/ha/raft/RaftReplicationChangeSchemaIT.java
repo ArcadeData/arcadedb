@@ -78,16 +78,16 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
 
     // CREATE NEW TYPE on the leader
     final VertexType type1 = databases[leaderIndex].getSchema().createVertexType("RaftRuntimeVertex0");
-    testOnAllServers((database) -> isInSchemaFile(database, "RaftRuntimeVertex0"));
+    testOnAllServers(database -> isInSchemaFile(database, "RaftRuntimeVertex0"));
 
     // CREATE NEW PROPERTY
     type1.createProperty("nameNotFoundInDictionary", Type.STRING);
-    testOnAllServers((database) -> isInSchemaFile(database, "nameNotFoundInDictionary"));
+    testOnAllServers(database -> isInSchemaFile(database, "nameNotFoundInDictionary"));
 
     // CREATE NEW BUCKET and add to type
     final Bucket newBucket = databases[leaderIndex].getSchema().createBucket("raftNewBucket");
     type1.addBucket(newBucket);
-    testOnAllServers((database) -> isInSchemaFile(database, "raftNewBucket"));
+    testOnAllServers(database -> isInSchemaFile(database, "raftNewBucket"));
 
     // Verify in-memory schema on all servers after replication
     for (final Database database : databases)
@@ -99,17 +99,17 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
     final int followerIndex = (leaderIndex + 1) % getServerCount();
     assertThatThrownBy(() -> databases[followerIndex].getSchema().createVertexType("RaftRuntimeVertex1"))
         .isInstanceOf(ServerIsNotTheLeaderException.class);
-    testOnAllServers((database) -> isNotInSchemaFile(database, "RaftRuntimeVertex1"));
+    testOnAllServers(database -> isNotInSchemaFile(database, "RaftRuntimeVertex1"));
 
     // DROP PROPERTY
     type1.dropProperty("nameNotFoundInDictionary");
-    testOnAllServers((database) -> isNotInSchemaFile(database, "nameNotFoundInDictionary"));
+    testOnAllServers(database -> isNotInSchemaFile(database, "nameNotFoundInDictionary"));
 
     // REMOVE BUCKET FROM TYPE THEN DROP BUCKET
     databases[leaderIndex].getSchema().getType("RaftRuntimeVertex0").removeBucket(
         databases[leaderIndex].getSchema().getBucketByName("raftNewBucket"));
     databases[leaderIndex].getSchema().dropBucket("raftNewBucket");
-    testOnAllServers((database) -> isNotInSchemaFile(database, "raftNewBucket"));
+    testOnAllServers(database -> isNotInSchemaFile(database, "raftNewBucket"));
 
     // Verify bucket is gone from all servers' in-memory schema
     for (final Database database : databases)
@@ -118,18 +118,18 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
 
     // DROP TYPE
     databases[leaderIndex].getSchema().dropType("RaftRuntimeVertex0");
-    testOnAllServers((database) -> isNotInSchemaFile(database, "RaftRuntimeVertex0"));
+    testOnAllServers(database -> isNotInSchemaFile(database, "RaftRuntimeVertex0"));
 
     // CREATE INDEXED TYPE
     final VertexType indexedType = databases[leaderIndex].getSchema().createVertexType("RaftIndexedVertex0");
-    testOnAllServers((database) -> isInSchemaFile(database, "RaftIndexedVertex0"));
+    testOnAllServers(database -> isInSchemaFile(database, "RaftIndexedVertex0"));
 
     final Property indexedProperty = indexedType.createProperty("propertyIndexed", Type.INTEGER);
-    testOnAllServers((database) -> isInSchemaFile(database, "propertyIndexed"));
+    testOnAllServers(database -> isInSchemaFile(database, "propertyIndexed"));
 
     final Index idx = indexedProperty.createIndex(Schema.INDEX_TYPE.LSM_TREE, true);
-    testOnAllServers((database) -> isInSchemaFile(database, "\"RaftIndexedVertex0\""));
-    testOnAllServers((database) -> isInSchemaFile(database, "\"indexes\":{\"RaftIndexedVertex0_"));
+    testOnAllServers(database -> isInSchemaFile(database, "\"RaftIndexedVertex0\""));
+    testOnAllServers(database -> isInSchemaFile(database, "\"indexes\":{\"RaftIndexedVertex0_"));
 
     // Write some data to the indexed type via the leader
     databases[leaderIndex].transaction(() -> {
@@ -145,13 +145,13 @@ class RaftReplicationChangeSchemaIT extends BaseRaftHATest {
 
     // DROP INDEX
     databases[leaderIndex].getSchema().dropIndex(idx.getName());
-    testOnAllServers((database) -> isNotInSchemaFile(database, idx.getName()));
+    testOnAllServers(database -> isNotInSchemaFile(database, idx.getName()));
 
     // CREATE NEW TYPE IN TRANSACTION
     databases[leaderIndex].transaction(() ->
         assertThatCode(
             () -> databases[leaderIndex].getSchema().createVertexType("RaftRuntimeVertexTx0")).doesNotThrowAnyException());
-    testOnAllServers((database) -> isInSchemaFile(database, "RaftRuntimeVertexTx0"));
+    testOnAllServers(database -> isInSchemaFile(database, "RaftRuntimeVertexTx0"));
   }
 
   private void testOnAllServers(final Callable<String, Database> callback) {

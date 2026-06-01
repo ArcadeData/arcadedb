@@ -28,7 +28,8 @@ import com.arcadedb.integration.importer.Neo4jImporter;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 
-import java.io.*;
+import java.io.IOException;
+import java.io.InputStream;
 
 public class Neo4jImporterFormat extends AbstractImporterFormat {
   @Override

@@ -6,7 +6,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Map;
 
 public class BreakStatement extends SimpleExecStatement {
   public static final ResultSet BREAK_RESULTSET = new ResultSet() {

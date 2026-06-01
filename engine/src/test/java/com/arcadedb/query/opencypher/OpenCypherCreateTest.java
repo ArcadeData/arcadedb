@@ -210,9 +210,8 @@ class OpenCypherCreateTest {
   @Test
   void createWithMatchContext() {
     // Create a person first
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (a:Person {name: 'Alice'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (a:Person {name: 'Alice'})"));
 
     // Match the person and create a relationship to a new person
     database.transaction(() -> {

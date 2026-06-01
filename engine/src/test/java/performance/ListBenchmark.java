@@ -18,7 +18,8 @@
  */
 package performance;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 public class ListBenchmark {
   private final static int REPEAT = 100;

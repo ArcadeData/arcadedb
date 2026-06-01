@@ -84,7 +84,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
    */
   @Test
   void unwindMatchMergeWithNestedPropertyAccessViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String query = """
           UNWIND $batch as row \
           MATCH (a) WHERE ID(a) = row.source_id \
@@ -147,7 +147,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
    */
   @Test
   void unwindMatchMergeIdempotentViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String query = """
           UNWIND $batch as row \
           MATCH (a) WHERE ID(a) = row.source_id \
@@ -227,7 +227,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
    */
   @Test
   void unwindMatchMergeAutoCreatesEdgeTypeViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String query = """
           UNWIND $batch as row \
           MATCH (a) WHERE ID(a) = row.source_id \
@@ -288,7 +288,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
    */
   @Test
   void mergeEdgeTypeNamedAccessDoesNotCrashSecurity() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String query = """
           UNWIND $batch as row \
           MATCH (a) WHERE ID(a) = row.source_id \
@@ -347,7 +347,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
    */
   @Test
   void rapidMergeAutoCreatesMultipleEdgeTypesViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final int typeCount = 10;
       for (int i = 0; i < typeCount; i++) {
         final String edgeType = "auto_edge_" + i;
@@ -398,7 +398,7 @@ class Issue3514UnwindMergeNestedPropsIT extends BaseGraphServerTest {
    */
   @Test
   void unwindMatchMergeNestedPropertyValueIsStoredOnEdge() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String query = """
           UNWIND $batch as row \
           MATCH (a) WHERE ID(a) = row.source_id \

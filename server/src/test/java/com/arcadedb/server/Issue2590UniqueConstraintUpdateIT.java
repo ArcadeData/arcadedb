@@ -21,7 +21,6 @@ package com.arcadedb.server;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.graph.MutableVertex;
-import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.serializer.json.JSONObject;
 import org.assertj.core.api.Assertions;
@@ -105,15 +104,13 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
       database.command("sql", "INSERT INTO RemoteTestVertex SET uniqueField = 'B', name = 'Second'");
 
       // Verify INSERT of duplicate value is correctly prevented
-      assertThatThrownBy(() -> {
-        database.command("sql", "INSERT INTO RemoteTestVertex SET uniqueField = 'A', name = 'Third'");
-      }).isInstanceOf(DuplicatedKeyException.class)
+      assertThatThrownBy(() ->
+        database.command("sql", "INSERT INTO RemoteTestVertex SET uniqueField = 'A', name = 'Third'")).isInstanceOf(DuplicatedKeyException.class)
           .as("INSERT should prevent duplicate unique values");
 
       // Attempt to UPDATE second vertex to use value "A" (should fail but currently succeeds - BUG)
-      assertThatThrownBy(() -> {
-        database.command("sql", "UPDATE RemoteTestVertex SET uniqueField = 'A' WHERE uniqueField = 'B'");
-      }).isInstanceOf(DuplicatedKeyException.class)
+      assertThatThrownBy(() ->
+        database.command("sql", "UPDATE RemoteTestVertex SET uniqueField = 'A' WHERE uniqueField = 'B'")).isInstanceOf(DuplicatedKeyException.class)
           .as("UPDATE via RemoteDatabase should enforce unique constraint but currently does not - this is the BUG");
     }
   }
@@ -173,14 +170,12 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
       database.command("sql", "INSERT INTO IntegerRemoteTest SET employeeId = 1002, name = 'Employee B'");
 
       // Verify INSERT duplicate is prevented
-      assertThatThrownBy(() -> {
-        database.command("sql", "INSERT INTO IntegerRemoteTest SET employeeId = 1001, name = 'Employee C'");
-      }).isInstanceOf(DuplicatedKeyException.class);
+      assertThatThrownBy(() ->
+        database.command("sql", "INSERT INTO IntegerRemoteTest SET employeeId = 1001, name = 'Employee C'")).isInstanceOf(DuplicatedKeyException.class);
 
       // UPDATE to duplicate (should fail but currently succeeds - BUG)
-      assertThatThrownBy(() -> {
-        database.command("sql", "UPDATE IntegerRemoteTest SET employeeId = 1001 WHERE employeeId = 1002");
-      }).isInstanceOf(DuplicatedKeyException.class)
+      assertThatThrownBy(() ->
+        database.command("sql", "UPDATE IntegerRemoteTest SET employeeId = 1001 WHERE employeeId = 1002")).isInstanceOf(DuplicatedKeyException.class)
           .as("UPDATE with Integer type via RemoteDatabase should enforce unique constraint");
     }
   }
@@ -234,10 +229,9 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
           "INSERT INTO MultiFieldRemoteTest SET username = 'bob', email = 'bob@test.com', age = 25");
 
       // UPDATE multiple fields including unique field to duplicate (should fail but currently succeeds - BUG)
-      assertThatThrownBy(() -> {
+      assertThatThrownBy(() ->
         database.command("sql",
-            "UPDATE MultiFieldRemoteTest SET username = 'alice', email = 'bob_updated@test.com', age = 26 WHERE username = 'bob'");
-      }).isInstanceOf(DuplicatedKeyException.class)
+            "UPDATE MultiFieldRemoteTest SET username = 'alice', email = 'bob_updated@test.com', age = 26 WHERE username = 'bob'")).isInstanceOf(DuplicatedKeyException.class)
           .as("UPDATE of multiple fields should enforce unique constraint on unique field");
     }
   }
@@ -359,9 +353,8 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
       database.command("sql", "INSERT INTO SwapRemoteTest SET position = 'SECOND', data = 'Data 2'");
 
       // Attempt to swap values (should fail on first update - BUG)
-      assertThatThrownBy(() -> {
-        database.command("sql", "UPDATE SwapRemoteTest SET position = 'SECOND' WHERE position = 'FIRST'");
-      }).isInstanceOf(DuplicatedKeyException.class)
+      assertThatThrownBy(() ->
+        database.command("sql", "UPDATE SwapRemoteTest SET position = 'SECOND' WHERE position = 'FIRST'")).isInstanceOf(DuplicatedKeyException.class)
           .as("Swapping unique values should fail on first update due to constraint violation");
     }
   }
@@ -417,9 +410,8 @@ class Issue2590UniqueConstraintUpdateIT extends BaseGraphServerTest {
       database.command("sql", "UPDATE ConcurrentRemoteTest SET ticketId = 'TICKET-400' WHERE ticketId = 'TICKET-200'");
 
       // Second update to duplicate should fail (BUG - currently succeeds)
-      assertThatThrownBy(() -> {
-        database.command("sql", "UPDATE ConcurrentRemoteTest SET ticketId = 'TICKET-100' WHERE ticketId = 'TICKET-300'");
-      }).isInstanceOf(DuplicatedKeyException.class)
+      assertThatThrownBy(() ->
+        database.command("sql", "UPDATE ConcurrentRemoteTest SET ticketId = 'TICKET-100' WHERE ticketId = 'TICKET-300'")).isInstanceOf(DuplicatedKeyException.class)
           .as("Concurrent UPDATE should enforce unique constraint");
     }
   }

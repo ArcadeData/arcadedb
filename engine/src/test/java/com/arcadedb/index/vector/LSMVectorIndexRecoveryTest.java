@@ -1660,8 +1660,9 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
       reopenDatabase();
 
       assertThat(hasNullFileSlot((DatabaseInternal) database))
-          .as("After reopen FileManager.getFiles() must still expose the null slot - otherwise the "
-              + "test is not actually exercising the buggy code path")
+          .as("""
+              After reopen FileManager.getFiles() must still expose the null slot - otherwise the \
+              test is not actually exercising the buggy code path""")
           .isTrue();
 
       final List<String> matching = captured.stream()
@@ -1669,8 +1670,9 @@ class LSMVectorIndexRecoveryTest extends TestHelper {
           .toList();
 
       assertThat(matching)
-          .as("The discovery loop must not throw NPE on null slots in FileManager.getFiles(). "
-              + "Captured logs at WARNING+ during reopen: %s", captured)
+          .as("""
+              The discovery loop must not throw NPE on null slots in FileManager.getFiles(). \
+              Captured logs at WARNING+ during reopen: %s""", captured)
           .isEmpty();
     } finally {
       LogManager.instance().setLogger(originalLogger);

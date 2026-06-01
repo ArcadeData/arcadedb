@@ -95,7 +95,7 @@ public abstract class AbstractPathProcedure implements CypherProcedure {
   }
 
   protected Vertex.DIRECTION parseDirection(final String direction) {
-    if (direction == null || direction.isEmpty() || direction.equalsIgnoreCase("BOTH"))
+    if (direction == null || direction.isEmpty() || "BOTH".equalsIgnoreCase(direction))
       return Vertex.DIRECTION.BOTH;
 
     return Vertex.DIRECTION.valueOf(direction.toUpperCase(Locale.ENGLISH));

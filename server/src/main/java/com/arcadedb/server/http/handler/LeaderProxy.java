@@ -118,7 +118,7 @@ public final class LeaderProxy {
     exchange.getRequestHeaders().forEach(hv -> {
       final String name = hv.getHeaderName().toString();
       final String lower = name.toLowerCase();
-      if (HOP_BY_HOP_HEADERS.contains(lower) || lower.equals("authorization"))
+      if (HOP_BY_HOP_HEADERS.contains(lower) || "authorization".equals(lower))
         return;
       builder.header(name, hv.getFirst());
     });
@@ -161,7 +161,7 @@ public final class LeaderProxy {
     exchange.setStatusCode(response.statusCode());
     response.headers().map().forEach((name, values) -> {
       final String lower = name.toLowerCase();
-      if (HOP_BY_HOP_HEADERS.contains(lower) || lower.equals("content-length"))
+      if (HOP_BY_HOP_HEADERS.contains(lower) || "content-length".equals(lower))
         return;
       for (final String value : values)
         exchange.getResponseHeaders().add(new HttpString(name), value);

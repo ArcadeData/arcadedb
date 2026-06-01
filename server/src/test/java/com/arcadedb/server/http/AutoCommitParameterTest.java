@@ -40,7 +40,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
 
   @Test
   void explicitAutoCommitTrueWithCommand() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create test document type
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE TestDoc");
 
@@ -76,7 +76,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
 
   @Test
   void explicitAutoCommitFalseWithCommand() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create test document type if not exists
       try {
         executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE TestDoc2");
@@ -115,7 +115,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
 
   @Test
   void defaultBehaviorWithCommand() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create test document type
       try {
         executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE TestDoc3");
@@ -154,7 +154,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
 
   @Test
   void autoCommitTrueWithQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create test data
       executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE TestDoc4");
       executeCommand(serverIndex, "sql", "INSERT INTO TestDoc4 SET name='query_test', value=555");
@@ -189,7 +189,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
 
   @Test
   void autoCommitParameterWithSessionId() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create test document type
       try {
         executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE TestDoc5");
@@ -263,7 +263,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
 
   @Test
   void autoCommitTrueWithRetries() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create test document type
       try {
         executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE TestDoc6");
@@ -303,7 +303,7 @@ class AutoCommitParameterTest extends BaseGraphServerTest {
 
   @Test
   void autoCommitFalseForReadOperation() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create test data
       try {
         executeCommand(serverIndex, "sql", "CREATE DOCUMENT TYPE TestDoc7");

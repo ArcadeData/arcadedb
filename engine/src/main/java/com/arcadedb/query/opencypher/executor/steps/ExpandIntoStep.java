@@ -183,7 +183,7 @@ public class ExpandIntoStep extends AbstractExecutionStep {
             buffer.add(operatorResults.next());
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
 

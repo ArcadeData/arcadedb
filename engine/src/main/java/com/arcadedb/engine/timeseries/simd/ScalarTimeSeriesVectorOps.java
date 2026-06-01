@@ -107,7 +107,7 @@ public final class ScalarTimeSeriesVectorOps implements TimeSeriesVectorOps {
       final int maskWord = (offset + i) >> 6;
       final int maskBit = (offset + i) & 63;
       if (data[offset + i] > threshold)
-        out[maskWord] |= (1L << maskBit);
+        out[maskWord] |= 1L << maskBit;
       else
         out[maskWord] &= ~(1L << maskBit);
     }

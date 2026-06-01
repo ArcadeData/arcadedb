@@ -22,15 +22,19 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.index.IndexInternal;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Random;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -101,7 +105,7 @@ class RaftSparseVectorReplicationIT extends BaseRaftHATest {
     // below the threshold should call {@code Index.flush()} before relying on followers seeing
     // the data, which is the contract this test exercises.
     leaderDb.transaction(() -> {
-      final java.util.Random rnd = new java.util.Random(0xCAFEL);
+      final Random rnd = new Random(0xCAFEL);
       for (int i = 0; i < DOC_COUNT; i++) {
         final int[] tokens = new int[NNZ];
         final float[] weights = new float[NNZ];
@@ -124,9 +128,9 @@ class RaftSparseVectorReplicationIT extends BaseRaftHATest {
     // Force every per-bucket sparse-vector index to flush its memtable into a sealed segment.
     // Replication ships sealed component pages, so until a flush happens the leader's writes are
     // memtable-resident only and don't propagate to followers.
-    final com.arcadedb.index.TypeIndex typeIndex =
-        (com.arcadedb.index.TypeIndex) leaderDb.getSchema().getIndexByName(IDX_NAME);
-    for (final com.arcadedb.index.IndexInternal sub : typeIndex.getIndexesOnBuckets())
+    final TypeIndex typeIndex =
+        (TypeIndex) leaderDb.getSchema().getIndexByName(IDX_NAME);
+    for (final IndexInternal sub : typeIndex.getIndexesOnBuckets())
       sub.flush();
 
     // Wait for replication to complete on every server.
@@ -156,13 +160,13 @@ class RaftSparseVectorReplicationIT extends BaseRaftHATest {
     // parity. A weaker "non-empty result set" check would mask a class of bugs where the WAL
     // replay corrupts a few weights silently - we capture the leader's full (rid, score) list
     // first, then assert each follower returns exactly the same sequence.
-    final java.util.List<java.util.List<Object[]>> perServer = new java.util.ArrayList<>(getServerCount());
+    final List<List<Object[]>> perServer = new ArrayList<>(getServerCount());
     for (int i = 0; i < getServerCount(); i++) {
       final Database serverDb = getServerDatabase(i, getDatabaseName());
       final ResultSet rs = serverDb.query("sql",
           "SELECT expand(`vector.sparseNeighbors`(?, ?, ?, ?))",
           IDX_NAME, queryTokens, queryWeights, 5);
-      final java.util.List<Object[]> rows = new java.util.ArrayList<>();
+      final List<Object[]> rows = new ArrayList<>();
       while (rs.hasNext()) {
         final Result row = rs.next();
         final Object rid = row.getProperty("@rid");
@@ -175,11 +179,11 @@ class RaftSparseVectorReplicationIT extends BaseRaftHATest {
       perServer.add(rows);
     }
 
-    final java.util.List<Object[]> leaderRows = perServer.get(leaderIndex);
+    final List<Object[]> leaderRows = perServer.get(leaderIndex);
     for (int i = 0; i < getServerCount(); i++) {
       if (i == leaderIndex)
         continue;
-      final java.util.List<Object[]> rows = perServer.get(i);
+      final List<Object[]> rows = perServer.get(i);
       assertThat(rows.size())
           .as("server %d row count must match leader (%d)", i, leaderRows.size())
           .isEqualTo(leaderRows.size());

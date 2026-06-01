@@ -100,7 +100,7 @@ public final class CountEdgesStep extends AbstractExecutionStep {
         results.add(result);
       } finally {
         if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
       }
     }
 

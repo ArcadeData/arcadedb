@@ -20,7 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
 
-import java.util.*;
+import java.util.Arrays;
 
 /**
  * Low level immutable (read-only) page implementation of 65536 bytes (2 exp 16 = 65Kb). The first 8 bytes (the header) are reserved

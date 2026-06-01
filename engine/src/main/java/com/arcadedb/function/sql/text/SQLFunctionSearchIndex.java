@@ -40,7 +40,10 @@ import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * SQL function to search a full-text index.

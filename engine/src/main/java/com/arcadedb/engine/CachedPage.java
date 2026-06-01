@@ -21,9 +21,10 @@ package com.arcadedb.engine;
 import com.arcadedb.database.Binary;
 import com.arcadedb.log.LogManager;
 
-import java.nio.*;
-import java.util.*;
-import java.util.logging.*;
+import java.nio.ByteBuffer;
+import java.util.Arrays;
+import java.util.Objects;
+import java.util.logging.Level;
 
 /**
  * Contains the page content to be shared across threads.
@@ -45,7 +46,7 @@ public class CachedPage {
       // SAME array, which is not safe when the original page is still reachable (e.g. from the
       // async flush thread's queue).
       final byte[] srcArray = page.content.getContent();
-      final byte[] copied = java.util.Arrays.copyOf(srcArray, srcArray.length);
+      final byte[] copied = Arrays.copyOf(srcArray, srcArray.length);
       this.content = new Binary(copied, page.content.size());
     } else {
       this.content = page.content;

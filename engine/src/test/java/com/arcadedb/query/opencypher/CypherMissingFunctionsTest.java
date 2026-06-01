@@ -343,7 +343,7 @@ class CypherMissingFunctionsTest {
     assertThat(rs.hasNext()).isTrue();
     final Object result = rs.next().getProperty("result");
     assertThat(result).isInstanceOf(float[].class);
-    assertThat(((float[]) result)).hasSize(3);
+    assertThat((float[]) result).hasSize(3);
   }
 
   // ========== vector_dimension_count ==========

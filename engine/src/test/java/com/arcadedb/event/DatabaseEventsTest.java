@@ -23,10 +23,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

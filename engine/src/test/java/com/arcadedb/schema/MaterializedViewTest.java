@@ -19,7 +19,6 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -91,13 +90,12 @@ class MaterializedViewTest extends TestHelper {
       database.newDocument("Order").set("customer", "Alice").set("amount", 150).save();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("OrderView")
           .withQuery("SELECT customer, amount FROM Order")
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
-          .create();
-    });
+          .create());
 
     // Query the view
     try (final ResultSet rs = database.query("sql", "SELECT FROM OrderView")) {
@@ -112,21 +110,18 @@ class MaterializedViewTest extends TestHelper {
       database.getSchema().getType("Product").createProperty("name", Type.STRING);
     });
 
-    database.transaction(() -> {
-      database.newDocument("Product").set("name", "Widget").save();
-    });
+    database.transaction(() ->
+      database.newDocument("Product").set("name", "Widget").save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("ProductView")
           .withQuery("SELECT name FROM Product")
-          .create();
-    });
+          .create());
 
     // Add more data
-    database.transaction(() -> {
-      database.newDocument("Product").set("name", "Gadget").save();
-    });
+    database.transaction(() ->
+      database.newDocument("Product").set("name", "Gadget").save());
 
     // View is stale — still has 1 record
     try (final ResultSet rs = database.query("sql", "SELECT FROM ProductView")) {
@@ -144,16 +139,14 @@ class MaterializedViewTest extends TestHelper {
 
   @Test
   void dropView() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Inventory");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("Inventory"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("InventoryView")
           .withQuery("SELECT FROM Inventory")
-          .create();
-    });
+          .create());
 
     assertThat(database.getSchema().existsMaterializedView("InventoryView")).isTrue();
     assertThat(database.getSchema().existsType("InventoryView")).isTrue();
@@ -166,16 +159,14 @@ class MaterializedViewTest extends TestHelper {
 
   @Test
   void cannotDropBackingType() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Thing");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("Thing"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("ThingView")
           .withQuery("SELECT FROM Thing")
-          .create();
-    });
+          .create());
 
     assertThatThrownBy(() -> database.getSchema().dropType("ThingView"))
         .isInstanceOf(SchemaException.class)
@@ -189,12 +180,11 @@ class MaterializedViewTest extends TestHelper {
       database.newDocument("Persisted").set("value", 42).save();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("PersistedView")
           .withQuery("SELECT value FROM Persisted")
-          .create();
-    });
+          .create());
 
     // Close and reopen database
     database.close();
@@ -278,16 +268,14 @@ class MaterializedViewTest extends TestHelper {
 
   @Test
   void getBackingTypeReturnsSchemaType() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("BackingSource");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("BackingSource"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("BackingView")
           .withQuery("SELECT FROM BackingSource")
-          .create();
-    });
+          .create());
 
     final MaterializedView view = database.getSchema().getMaterializedView("BackingView");
     assertThat(view.getBackingType()).isNotNull();
@@ -296,16 +284,14 @@ class MaterializedViewTest extends TestHelper {
 
   @Test
   void concurrentRefreshSkipped() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("ConcSource");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("ConcSource"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("ConcView")
           .withQuery("SELECT FROM ConcSource")
-          .create();
-    });
+          .create());
 
     final MaterializedViewImpl view = (MaterializedViewImpl)
         database.getSchema().getMaterializedView("ConcView");
@@ -325,34 +311,30 @@ class MaterializedViewTest extends TestHelper {
 
   @Test
   void builderWithPageSize() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("PagedSource");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("PagedSource"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("PagedView")
           .withQuery("SELECT FROM PagedSource")
           .withTotalBuckets(2)
           .withPageSize(65536)
-          .create();
-    });
+          .create());
 
     assertThat(database.getSchema().existsMaterializedView("PagedView")).isTrue();
   }
 
   @Test
   void emptySourceType() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Empty");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("Empty"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("EmptyView")
           .withQuery("SELECT FROM Empty")
-          .create();
-    });
+          .create());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM EmptyView")) {
       assertThat(rs.stream().count()).isEqualTo(0);

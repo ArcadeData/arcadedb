@@ -25,6 +25,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Tag;
+
+import java.nio.charset.StandardCharsets;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -87,7 +89,7 @@ class RaftLargeSchemaReplicationIT extends BaseRaftHATest {
 
     // Confirm the schema JSON we produced actually exceeds the 64KB limit that used to break encoding.
     final int schemaSize = leaderDb.getSchema().getEmbedded().toJSON().toString()
-        .getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+        .getBytes(StandardCharsets.UTF_8).length;
     assertThat(schemaSize)
         .as("Schema JSON size should exceed the legacy DataOutputStream.writeUTF 64KB cap to exercise the regression")
         .isGreaterThan(65_535);

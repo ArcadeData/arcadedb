@@ -27,9 +27,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -105,7 +103,7 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
     final String weightProperty = extractString(args[3], "weightProperty");
 
     final Database db = context.getDatabase();
-    final String[] relTypes = (relType != null && !relType.isEmpty()) ? new String[] { relType } : null;
+    final String[] relTypes = relType != null && !relType.isEmpty() ? new String[] { relType } : null;
 
     final GraphData graph = loadGraph(db, null, relTypes, context);
     final int n = graph.nodeCount;

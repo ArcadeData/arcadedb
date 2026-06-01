@@ -21,7 +21,7 @@ package com.arcadedb.query.select;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Vertex;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Fluent builder for vector k-NN search. Provides options for approximate search and optional WHERE post-filtering.

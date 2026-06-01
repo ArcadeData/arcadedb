@@ -21,7 +21,9 @@ package com.arcadedb.graph;
 import com.arcadedb.database.Document;
 import com.arcadedb.utility.MultiIterator;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 
 /**
  * Iterable implementation with utility methods to browse and count elements.

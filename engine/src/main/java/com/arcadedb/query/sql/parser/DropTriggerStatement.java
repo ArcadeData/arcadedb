@@ -104,7 +104,7 @@ public class DropTriggerStatement extends DDLStatement {
 
   @Override
   public int hashCode() {
-    int result = (ifExists ? 1 : 0);
+    int result = ifExists ? 1 : 0;
     result = 31 * result + (name != null ? name.hashCode() : 0);
     return result;
   }

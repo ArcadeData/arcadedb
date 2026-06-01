@@ -25,7 +25,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -83,7 +83,7 @@ public class CreateRecordStep extends AbstractExecutionStep {
           return new UpdatableResult(instance);
         } finally {
           if (context.isProfiling()) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }

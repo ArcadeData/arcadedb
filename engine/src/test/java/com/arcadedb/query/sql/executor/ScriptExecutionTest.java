@@ -67,10 +67,9 @@ class ScriptExecutionTest extends TestHelper {
   void twoInserts() {
     String typeName = "testTwoInserts";
     database.getSchema().createDocumentType(typeName);
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript",
-          "INSERT INTO " + typeName + " SET name = 'foo';INSERT INTO " + typeName + " SET name = 'bar';");
-    });
+          "INSERT INTO " + typeName + " SET name = 'foo';INSERT INTO " + typeName + " SET name = 'bar';"));
     ResultSet rs = database.query("sql", "SELECT count(*) as count from " + typeName);
     assertThat(rs.next().<Long>getProperty("count")).isEqualTo((Object) 2L);
   }
@@ -220,9 +219,8 @@ class ScriptExecutionTest extends TestHelper {
     database.getSchema().createDocumentType(typeName, 8);
 
     // AVOID RETRY, EXPECTING TO MISS SOME UPDATES
-    database.transaction(() -> {
-      database.newDocument(typeName).set("id", 0).save();
-    });
+    database.transaction(() ->
+      database.newDocument(typeName).set("id", 0).save());
 
     final int TOTAL = 1000;
     String script = """
@@ -243,9 +241,8 @@ class ScriptExecutionTest extends TestHelper {
     result.close();
 
     // USE RETRY, EXPECTING NO MISS OF UPDATES
-    database.transaction(() -> {
-      database.newDocument(typeName).set("id", 1).save();
-    });
+    database.transaction(() ->
+      database.newDocument(typeName).set("id", 1).save());
 
     //database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
 
@@ -278,9 +275,8 @@ class ScriptExecutionTest extends TestHelper {
         .create();
 
     // AVOID RETRY, EXPECTING TO MISS SOME UPDATES
-    database.transaction(() -> {
-      database.newDocument(typeName).set("id", 0).save();
-    });
+    database.transaction(() ->
+      database.newDocument(typeName).set("id", 0).save());
 
     String script = """
         LET $retries = 0;
@@ -303,9 +299,8 @@ class ScriptExecutionTest extends TestHelper {
     result.close();
 
     // USE RETRY, EXPECTING NO MISS OF UPDATES
-    database.transaction(() -> {
-      database.newDocument(typeName).set("id", 1).save();
-    });
+    database.transaction(() ->
+      database.newDocument(typeName).set("id", 1).save());
 
     database.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
 

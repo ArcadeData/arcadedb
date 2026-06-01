@@ -255,7 +255,7 @@ class RaftClusterManager {
         try {
           final int httpPort = Integer.parseInt(httpAddr.substring(httpAddr.lastIndexOf(':') + 1));
           final int raftPort = Integer.parseInt(
-              peer.getAddress().toString().substring(peer.getAddress().toString().lastIndexOf(':') + 1));
+              peer.getAddress().substring(peer.getAddress().lastIndexOf(':') + 1));
           return httpPort - raftPort;
         } catch (final NumberFormatException ignored) {
         }

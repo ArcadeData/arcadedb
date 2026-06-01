@@ -21,8 +21,8 @@ package com.arcadedb.function.cypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.function.FunctionLibraryDefinition;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Library of functions defined using Cypher query language.

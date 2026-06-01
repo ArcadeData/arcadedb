@@ -24,12 +24,11 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.AfterEach;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
+import java.io.File;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

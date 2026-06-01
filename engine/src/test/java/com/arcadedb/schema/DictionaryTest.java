@@ -113,7 +113,7 @@ class DictionaryTest extends TestHelper {
         final MutableVertex v = database.newVertex("Babylonia");
         for (int k = 0; k < 10; k++) {
           v.set("origin", finalI);
-          v.set("p" + ((finalI * 10) + k), ((finalI * 10) + k));
+          v.set("p" + ((finalI * 10) + k), (finalI * 10) + k);
         }
         v.save();
       });
@@ -146,7 +146,7 @@ class DictionaryTest extends TestHelper {
         final MutableVertex v = database.newVertex("Babylonia");
         for (int k = 0; k < 10; k++) {
           v.set("origin", finalI);
-          v.set("p" + ((finalI * 10) + k), ((finalI * 10) + k));
+          v.set("p" + ((finalI * 10) + k), (finalI * 10) + k);
         }
         v.save();
       });
@@ -179,7 +179,7 @@ class DictionaryTest extends TestHelper {
         final MutableVertex v = database.newVertex("Babylonia");
         for (int k = 0; k < 10; k++) {
           v.set("origin", finalI);
-          v.set("p" + ((finalI * 10) + k), ((finalI * 10) + k));
+          v.set("p" + ((finalI * 10) + k), (finalI * 10) + k);
         }
         v.save();
       });
@@ -213,7 +213,7 @@ class DictionaryTest extends TestHelper {
           final MutableVertex v = database.newVertex("Babylonia");
           for (int k = 0; k < 10; k++) {
             v.set("origin", finalI);
-            v.set("p" + ((finalI * 10) + k), ((finalI * 10) + k));
+            v.set("p" + ((finalI * 10) + k), (finalI * 10) + k);
           }
           v.save();
         });

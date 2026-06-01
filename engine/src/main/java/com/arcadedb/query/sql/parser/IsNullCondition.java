@@ -25,7 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.IndexSearchInfo;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 
 public class IsNullCondition extends BooleanExpression {
 

@@ -33,6 +33,7 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -115,10 +116,11 @@ class RaftGroupCommitter {
     final int entrySize = entry.length;
     if (entrySize > messageSizeMax) {
       throw new ReplicationQueueFullException(String.format(
-          "Replicated entry size %d bytes exceeds raft.grpc.message.size.max=%d bytes. "
-              + "Reduce the batch size (e.g. fewer rows per GraphBatch / SQL transaction) or raise "
-              + "arcadedb.ha.grpcMessageSizeMax. Bigger batches also raise leader heartbeat latency and risk "
-              + "election churn under load.",
+          """
+          Replicated entry size %d bytes exceeds raft.grpc.message.size.max=%d bytes. \
+          Reduce the batch size (e.g. fewer rows per GraphBatch / SQL transaction) or raise \
+          arcadedb.ha.grpcMessageSizeMax. Bigger batches also raise leader heartbeat latency and risk \
+          election churn under load.""",
           entrySize, messageSizeMax));
     }
 
@@ -129,9 +131,10 @@ class RaftGroupCommitter {
       final long last = lastApproachingCapWarnAt.get();
       if (now - last >= WARN_THROTTLE_MS && lastApproachingCapWarnAt.compareAndSet(last, now)) {
         LogManager.instance().log(this, Level.WARNING,
-            "Replicated entry size %d bytes is approaching raft.grpc.message.size.max=%d bytes (>%d%%). "
-                + "Consider reducing the batch size, or raise arcadedb.ha.grpcMessageSizeMax. "
-                + "Large batches also raise leader heartbeat latency and risk election churn under load.",
+            """
+            Replicated entry size %d bytes is approaching raft.grpc.message.size.max=%d bytes (>%d%%). \
+            Consider reducing the batch size, or raise arcadedb.ha.grpcMessageSizeMax. \
+            Large batches also raise leader heartbeat latency and risk election churn under load.""",
             entrySize, messageSizeMax, (int) (entrySize * 100L / messageSizeMax));
       }
     }
@@ -152,7 +155,7 @@ class RaftGroupCommitter {
       final Exception error = pending.future.get(timeoutMs, TimeUnit.MILLISECONDS);
       if (error != null)
         throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
-    } catch (final java.util.concurrent.TimeoutException e) {
+    } catch (final TimeoutException e) {
       if (pending.tryCancel())
         throw new QuorumNotReachedException("Group commit timed out after " + timeoutMs + "ms (cancelled before dispatch)");
 
@@ -160,7 +163,7 @@ class RaftGroupCommitter {
         final Exception error = pending.future.get(quorumTimeout, TimeUnit.MILLISECONDS);
         if (error != null)
           throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
-      } catch (final java.util.concurrent.TimeoutException e2) {
+      } catch (final TimeoutException e2) {
         throw new QuorumNotReachedException(
             "Group commit timed out after " + timeoutMs + "ms + " + quorumTimeout + "ms grace (entry was dispatched to Raft)");
       } catch (final RuntimeException re) {

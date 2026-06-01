@@ -41,10 +41,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.time.*;
-import java.time.format.*;
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.TestHelper.checkActiveDatabases;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -432,9 +430,8 @@ class SQLFunctionsTest {
     final String fixedTimestamp = "2025-10-09T12:00:00.000Z";
     final String pattern = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'";
 
-    database.transaction(() -> {
-      database.command("sql", "update Account set created = date('" + fixedTimestamp + "', \"" + pattern + "\")");
-    });
+    database.transaction(() ->
+      database.command("sql", "update Account set created = date('" + fixedTimestamp + "', \"" + pattern + "\")"));
 
     result = database.command("sql", "select count(*) as tot from Account where created is not null");
     assertThat(result.hasNext()).isTrue();
@@ -543,14 +540,13 @@ class SQLFunctionsTest {
 
   @Test
   void firstAndLastFunctionsWithMultipleValues() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript",//
           "CREATE DOCUMENT TYPE mytype;\n" +//
               "INSERT INTO mytype SET value = 1;\n" +//
               "INSERT INTO mytype SET value = [1,2,3];\n" +//
               "INSERT INTO mytype SET value = [1];\n" +//
-              "INSERT INTO mytype SET value = map(\"a\",1,\"b\",2);");
-    });
+              "INSERT INTO mytype SET value = map(\"a\",1,\"b\",2);"));
 
     final ResultSet result = database.query("sql", "SELECT first(value) as first, last(value) as last FROM mytype");
 

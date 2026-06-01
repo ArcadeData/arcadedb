@@ -22,12 +22,14 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.index.sparsevector.SegmentFormat.RidCompression;
 import com.arcadedb.index.sparsevector.SegmentFormat.WeightQuantization;
+import com.arcadedb.log.LogManager;
 
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicReferenceArray;
+import java.util.logging.Level;
 import java.util.zip.CRC32;
 
 /**
@@ -138,7 +140,7 @@ public final class PaginatedSegmentReader implements AutoCloseable {
     final CRC32 manifestCrc = new CRC32();
     manifestCrc.update(manifestBytes, 0, manifestSize - 4);
     if ((int) manifestCrc.getValue() != storedManifestCrc) {
-      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.SEVERE,
+      LogManager.instance().log(this, Level.SEVERE,
           "Manifest CRC mismatch in segment '%s' (expected %d, got %d). The segment is being opened anyway, but parentSegments may be corrupt.",
           component.getName(), storedManifestCrc, (int) manifestCrc.getValue());
     }

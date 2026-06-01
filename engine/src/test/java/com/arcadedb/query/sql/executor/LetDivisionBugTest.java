@@ -1,8 +1,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.query.sql.executor.Result;
-import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.assertj.core.data.Offset;
 import org.assertj.core.data.Percentage;

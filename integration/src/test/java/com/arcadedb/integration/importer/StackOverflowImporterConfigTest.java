@@ -20,6 +20,7 @@ package com.arcadedb.integration.importer;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.importer.graph.GraphImporter;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
@@ -143,7 +144,7 @@ class StackOverflowImporterConfigTest {
         assertThat(rs.hasNext()).isTrue();
         final var question = rs.next().getVertex().get();
         // Follow HAS_ANSWER edge to verify it reaches an Answer
-        for (final var e : question.getEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "HAS_ANSWER"))
+        for (final var e : question.getEdges(Vertex.DIRECTION.OUT, "HAS_ANSWER"))
           assertThat(e.getInVertex().asVertex().getTypeName()).isEqualTo("Answer");
       }
     });

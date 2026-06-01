@@ -73,7 +73,7 @@ public class ProtoUtils {
 
   private static String ctx() {
     String c = LOG_CTX.get();
-    return (c == null || c.isEmpty()) ? "" : " " + c;
+    return c == null || c.isEmpty() ? "" : " " + c;
   }
 
   private static String summarizeJava(Object o) {

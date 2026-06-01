@@ -23,7 +23,6 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -33,7 +32,7 @@ class CheckRecordTypeStepTest {
 
   @Test
   void shouldCheckRecordsOfOneType() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final String className = TestHelper.createRandomType(db).getName();
 
       final CommandContext context = new BasicCommandContext();
@@ -65,7 +64,7 @@ class CheckRecordTypeStepTest {
 
   @Test
   void shouldCheckRecordsOfSubclasses() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final CommandContext context = new BasicCommandContext();
       final DocumentType parentClass = TestHelper.createRandomType(db);
       final DocumentType childClass = TestHelper.createRandomType(db).addSuperType(parentClass);
@@ -97,7 +96,7 @@ class CheckRecordTypeStepTest {
 
   @Test
   void shouldThrowExceptionWhenTypeIsDifferent() throws Exception {
-    assertThatThrownBy(() -> TestHelper.executeInNewDatabase((db) -> {
+    assertThatThrownBy(() -> TestHelper.executeInNewDatabase(db -> {
       final CommandContext context = new BasicCommandContext();
       final String firstClassName = TestHelper.createRandomType(db).getName();
       final String secondClassName = TestHelper.createRandomType(db).getName();

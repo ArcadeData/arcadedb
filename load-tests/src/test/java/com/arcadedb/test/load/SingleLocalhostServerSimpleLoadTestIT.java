@@ -40,7 +40,6 @@ import java.time.format.DateTimeFormatter;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Supplier;
@@ -203,9 +202,8 @@ class SingleLocalhostServerSimpleLoadTestIT {
     logger.info("Finishing at {}", DateTimeFormatter.ISO_LOCAL_DATE_TIME.format(finishedAt));
     logger.info("Total time: {} minutes", Duration.between(startedAt, finishedAt).toMinutes());
 
-    Metrics.globalRegistry.getMeters().forEach(meter -> {
-      logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure());
-    });
+    Metrics.globalRegistry.getMeters().forEach(meter ->
+      logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure()));
 
     db.assertThatUserCountIs(expectedUsersCount);
     db.assertThatPhotoCountIs(expectedPhotoCount);

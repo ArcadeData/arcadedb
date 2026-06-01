@@ -23,8 +23,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
-import java.time.temporal.*;
-import java.util.*;
+import java.time.temporal.ChronoUnit;
+import java.util.Date;
 
 /**
  * Returns a number as a long (signed 32 bit representation).

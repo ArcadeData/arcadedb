@@ -135,9 +135,9 @@ class CypherCaseTest {
       final Object statusCodeObj = result.getProperty("statusCode");
       final int statusCode = ((Number) statusCodeObj).intValue();
 
-      if (name.equals("Eve")) {
+      if ("Eve".equals(name)) {
         assertThat(statusCode).isEqualTo(1);
-      } else if (name.equals("Frank")) {
+      } else if ("Frank".equals(name)) {
         assertThat(statusCode).isEqualTo(0);
       }
       count++;
@@ -168,9 +168,8 @@ class CypherCaseTest {
   @Test
   void caseWithNullHandling() {
     // Test CASE with null values
-    database.transaction(() -> {
-      database.newVertex("Person").set("name", "NoAge").save(); // No age property
-    });
+    database.transaction(() ->
+      database.newVertex("Person").set("name", "NoAge").save());
 
     final ResultSet results = database.query("opencypher",
         """

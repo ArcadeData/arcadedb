@@ -18,15 +18,13 @@
  */
 package com.arcadedb;
 
-import com.arcadedb.database.DatabaseStats;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
-import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

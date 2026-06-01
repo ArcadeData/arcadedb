@@ -27,7 +27,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 
 public class InstanceofCondition extends BooleanExpression {
 

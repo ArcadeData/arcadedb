@@ -139,7 +139,7 @@ public class DeleteStep extends AbstractExecutionStep {
             buffer.add(inputResult);
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
 

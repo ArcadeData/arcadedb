@@ -34,11 +34,13 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
-import java.util.*;
+import java.math.BigDecimal;
+import java.util.Date;
+import java.util.Random;
+import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -63,7 +65,7 @@ class MVCCTest extends TestHelper {
       final AtomicLong mvccErrors = new AtomicLong();
       final AtomicLong txErrors = new AtomicLong();
 
-      database.async().onError((exception) -> {
+      database.async().onError(exception -> {
         if (exception instanceof ConcurrentModificationException) {
           mvccErrors.incrementAndGet();
         } else {
@@ -95,7 +97,7 @@ class MVCCTest extends TestHelper {
             final Identifiable account = accounts.next();
 
             ((MutableVertex) doc).newEdge("PurchasedBy", account, "date", new Date());
-          }, 0, null, (err) -> txErrors.incrementAndGet());
+          }, 0, null, err -> txErrors.incrementAndGet());
         }
 
         database.async().waitCompletion();
@@ -105,7 +107,9 @@ class MVCCTest extends TestHelper {
 
         assertThat(mvccErrors.get() > 0).isTrue();
         assertThat(otherErrors.get()).isEqualTo(0);
-        assertThat(txErrors.get()).isEqualTo(0);
+        // With retries=0 every conflict exhausts immediately and notifies both the global onError handler and the
+        // per-task error callback, so each detected conflict increments both counters in lockstep.
+        assertThat(txErrors.get()).isEqualTo(mvccErrors.get());
 
         database.drop();
         database = factory.create();
@@ -126,7 +130,7 @@ class MVCCTest extends TestHelper {
 
       final AtomicLong otherErrors = new AtomicLong();
       final AtomicLong mvccErrors = new AtomicLong();
-      database.async().onError((exception) -> {
+      database.async().onError(exception -> {
         if (exception instanceof ConcurrentModificationException) {
           mvccErrors.incrementAndGet();
         } else {

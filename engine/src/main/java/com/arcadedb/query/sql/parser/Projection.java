@@ -105,7 +105,7 @@ public class Projection extends SimpleNode {
 
     if (items.size() == 1 &&
         items.get(0).getExpression() != null &&
-        items.get(0).getExpression().toString().equals(Property.THIS_PROPERTY) &&
+        Property.THIS_PROPERTY.equals(items.get(0).getExpression().toString()) &&
         items.get(0).nestedProjection == null)
       return record;
 

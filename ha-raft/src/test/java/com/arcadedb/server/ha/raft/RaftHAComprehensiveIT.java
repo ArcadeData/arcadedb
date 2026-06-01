@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.CodeUtils;
@@ -43,6 +44,7 @@ import org.junit.jupiter.api.Timeout;
 import java.io.File;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
 
@@ -80,7 +82,7 @@ class RaftHAComprehensiveIT {
         final var vType = db.getSchema().buildVertexType().withName("TestV").withTotalBuckets(3).create();
         vType.createProperty("id", Long.class);
         vType.createProperty("name", String.class);
-        db.getSchema().createTypeIndex(com.arcadedb.schema.Schema.INDEX_TYPE.LSM_TREE, true, "TestV", "id");
+        db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "TestV", "id");
         db.getSchema().createEdgeType("TestE");
       });
     }
@@ -630,7 +632,7 @@ class RaftHAComprehensiveIT {
     // Start concurrent writes in background
     final AtomicInteger writeCount = new AtomicInteger();
     final AtomicInteger errorCount = new AtomicInteger();
-    final var running = new java.util.concurrent.atomic.AtomicBoolean(true);
+    final var running = new AtomicBoolean(true);
 
     final Thread writer = new Thread(() -> {
       while (running.get()) {

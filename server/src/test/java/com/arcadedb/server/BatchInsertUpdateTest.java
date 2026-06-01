@@ -35,10 +35,13 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -123,9 +126,9 @@ class BatchInsertUpdateTest {
         int updated = 0;
         for (Iterator<Record> it = database.iterateType("Order", false); it.hasNext(); ) {
           final String status = it.next().asDocument().getString("status");
-          if (status.equals("created"))
+          if ("created".equals(status))
             ++created;
-          else if (status.equals("updated"))
+          else if ("updated".equals(status))
             ++updated;
         }
         assertThat(created).isEqualTo(TOTAL);
@@ -167,9 +170,8 @@ class BatchInsertUpdateTest {
         database.async().updateRecord(record, newRecord -> {
           counter.incrementAndGet();
           countDownLatch.countDown();
-        }, exception -> {
-          exception.printStackTrace();
-        });
+        }, exception ->
+          exception.printStackTrace());
       } else {
         record = database.newDocument("Order");
         record.set("id", autoIncrementOrderId.incrementAndGet());

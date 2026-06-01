@@ -77,7 +77,7 @@ public class FileUtils {
     final int size = text.length();
     for (int i = 0; i < size && isLong; i++) {
       final char c = text.charAt(i);
-      isLong = isLong & ((c >= '0' && c <= '9'));
+      isLong = isLong & (c >= '0' && c <= '9');
     }
     return isLong;
   }

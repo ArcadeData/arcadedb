@@ -38,8 +38,8 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 
 import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 
@@ -221,7 +221,7 @@ public abstract class AbstractQueryHandler extends DatabaseAbstractHandler {
         if (limit > 0 && vertices.length() + edges.length() >= limit)
           break;
 
-        if (prop.equals(RID_PROPERTY) && RID.is(value)) {
+        if (RID_PROPERTY.equals(prop) && RID.is(value)) {
           analyzePropertyValue(database, serializerImpl, includedVertices, includedEdges, vertices, edges,
               database.newRID(value.toString()), limit);
         } else

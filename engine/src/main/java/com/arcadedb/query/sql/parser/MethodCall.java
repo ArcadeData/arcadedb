@@ -30,7 +30,7 @@ import com.arcadedb.query.sql.executor.SQLFunctionFiltered;
 import com.arcadedb.query.sql.executor.SQLMethod;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class MethodCall extends SimpleNode {
 

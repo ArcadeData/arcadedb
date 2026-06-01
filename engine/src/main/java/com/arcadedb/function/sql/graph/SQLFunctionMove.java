@@ -21,7 +21,6 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.CSRVertexIterable;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -33,7 +32,7 @@ import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.function.sql.SQLFunctionConfigurableAbstract;
 import com.arcadedb.utility.FileUtils;
 
-import java.util.*;
+import java.util.ArrayList;
 
 /**
  * Created by luigidellaquila on 03/01/17.

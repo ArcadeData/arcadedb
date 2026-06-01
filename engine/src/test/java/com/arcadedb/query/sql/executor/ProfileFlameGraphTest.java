@@ -35,7 +35,7 @@ class ProfileFlameGraphTest {
 
   @Test
   void subqueryProfileIncludesInnerPlanSteps() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       db.getSchema().createDocumentType("TestSubQuery");
       db.command("sql", "INSERT INTO TestSubQuery SET name = 'a'");
       db.command("sql", "INSERT INTO TestSubQuery SET name = 'b'");
@@ -69,7 +69,7 @@ class ProfileFlameGraphTest {
 
   @Test
   void selectFromSubqueryLiteralProfileIncludesInnerSteps() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final ResultSet result = db.query("sql", "PROFILE SELECT FROM (SELECT 1)");
 
       assertThat(result.getExecutionPlan()).isPresent();
@@ -99,7 +99,7 @@ class ProfileFlameGraphTest {
 
   @Test
   void letSubqueryProfileIncludesInnerPlanSteps() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       db.getSchema().createDocumentType("TestLet");
       db.command("sql", "INSERT INTO TestLet SET name = 'x'");
       db.command("sql", "INSERT INTO TestLet SET name = 'y'");
@@ -133,7 +133,7 @@ class ProfileFlameGraphTest {
 
   @Test
   void profilePlanStepsCostIsPositive() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       db.getSchema().createDocumentType("TestCost");
       db.command("sql", "INSERT INTO TestCost SET name = 'test'");
 

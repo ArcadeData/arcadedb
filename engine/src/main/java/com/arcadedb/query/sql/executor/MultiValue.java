@@ -228,7 +228,7 @@ public class MultiValue {
 
     try {
       if (iObject instanceof List<?> list)
-        return (list.get(iIndex));
+        return list.get(iIndex);
       else if (iObject instanceof Set<?> set) {
         int i = 0;
         for (final Object o : set) {
@@ -249,7 +249,7 @@ public class MultiValue {
         return Array.get(iObject, iIndex);
       } else if (iObject instanceof Iterator<?> || iObject instanceof Iterable<?>) {
 
-        final Iterator<Object> it = (iObject instanceof Iterable<?>) ?
+        final Iterator<Object> it = iObject instanceof Iterable<?> ?
             ((Iterable<Object>) iObject).iterator() :
             (Iterator<Object>) iObject;
         if (it.hasNext()) {
@@ -332,7 +332,7 @@ public class MultiValue {
     if (iObject instanceof Iterable<?>)
       return (Iterable<Object>) iObject;
     else if (iObject instanceof Collection<?>)
-      return ((Collection<Object>) iObject);
+      return (Collection<Object>) iObject;
     else if (iObject instanceof Map<?, ?>)
       return ((Map<?, Object>) iObject).values();
     else if (iObject.getClass().isArray())

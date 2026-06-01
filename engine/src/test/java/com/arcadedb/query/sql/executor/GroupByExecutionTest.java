@@ -21,7 +21,6 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
-import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 

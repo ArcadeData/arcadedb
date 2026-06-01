@@ -111,7 +111,7 @@ class MathFunctionLargeDoubleTest {
 
   @Test
   void cypherFloorLargeDoubleReturnsDouble() throws Exception {
-    TestHelper.executeInNewDatabase("./target/databases/testMathLargeDouble", (db) -> {
+    TestHelper.executeInNewDatabase("./target/databases/testMathLargeDouble", db -> {
       try (final ResultSet rs = db.query("opencypher", "RETURN floor(1e30) AS v")) {
         assertThat(rs.hasNext()).isTrue();
         final Object v = rs.next().getProperty("v");
@@ -123,7 +123,7 @@ class MathFunctionLargeDoubleTest {
 
   @Test
   void cypherCeilLargeDoubleReturnsDouble() throws Exception {
-    TestHelper.executeInNewDatabase("./target/databases/testMathLargeDoubleCeil", (db) -> {
+    TestHelper.executeInNewDatabase("./target/databases/testMathLargeDoubleCeil", db -> {
       try (final ResultSet rs = db.query("opencypher", "RETURN ceil(-1e30) AS v")) {
         assertThat(rs.hasNext()).isTrue();
         final Object v = rs.next().getProperty("v");

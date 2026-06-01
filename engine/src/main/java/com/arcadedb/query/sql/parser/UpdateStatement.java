@@ -31,7 +31,7 @@ import com.arcadedb.query.OperationType;
 import com.arcadedb.utility.CollectionUtils;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class UpdateStatement extends Statement {
   public FromClause             target;

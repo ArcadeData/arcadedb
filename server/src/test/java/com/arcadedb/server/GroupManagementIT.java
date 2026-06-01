@@ -22,8 +22,8 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -35,7 +35,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
   @Test
   void listDefaultGroups() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups").openConnection();
       connection.setRequestMethod("GET");
@@ -64,7 +64,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
   @Test
   void createGroup() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final JSONObject payload = new JSONObject();
       payload.put("database", "*");
       payload.put("name", "reader");
@@ -114,7 +114,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
   @Test
   void updateGroup() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // First create the group
       final JSONObject createPayload = new JSONObject();
       createPayload.put("database", "*");
@@ -166,7 +166,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
   @Test
   void deleteGroup() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create group first
       final JSONObject payload = new JSONObject();
       payload.put("database", "*");
@@ -212,7 +212,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
   @Test
   void cannotDeleteAdminFromWildcard() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server/groups?database=*&name=admin").openConnection();
       connection.setRequestMethod("DELETE");
@@ -229,7 +229,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
   @Test
   void nonRootCannotManageGroups() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       if (!getServer(serverIndex).getSecurity().existsUser("testuser"))
         getServer(serverIndex).getSecurity().createUser("testuser", "testpass");
 
@@ -269,7 +269,7 @@ class GroupManagementIT extends BaseGraphServerTest {
 
   @Test
   void databaseSpecificGroupDoesNotBreakWildcardGroups() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create a test database
       final HttpURLConnection createDb = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/server").openConnection();

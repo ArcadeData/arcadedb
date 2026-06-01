@@ -62,9 +62,8 @@ public class OpenCypherSetTest {
   @Test
   void setSingleProperty() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Alice', age: 30})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Alice', age: 30})"));
 
     // Update age
     database.transaction(() -> {
@@ -86,9 +85,8 @@ public class OpenCypherSetTest {
   @Test
   void setMultipleProperties() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Bob', age: 25})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Bob', age: 25})"));
 
     // Update multiple properties
     database.transaction(() -> {
@@ -147,9 +145,8 @@ public class OpenCypherSetTest {
   @Test
   void setStringValue() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Alice'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Alice'})"));
 
     // Set string property
     database.transaction(() -> {
@@ -165,9 +162,8 @@ public class OpenCypherSetTest {
   @Test
   void setNumericValue() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Bob'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Bob'})"));
 
     // Set numeric properties
     database.transaction(() -> {
@@ -184,9 +180,8 @@ public class OpenCypherSetTest {
   @Test
   void setBooleanValue() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Charlie'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Charlie'})"));
 
     // Set boolean property
     database.transaction(() -> {
@@ -212,9 +207,8 @@ public class OpenCypherSetTest {
   @Test
   void setNullValue() {
     // Create a person with age
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'David', age: 30})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'David', age: 30})"));
 
     // Set age to null (remove property)
     database.transaction(() -> {
@@ -270,14 +264,12 @@ public class OpenCypherSetTest {
   @Test
   void setWithoutReturn() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Eve', age: 28})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Eve', age: 28})"));
 
     // Update without RETURN
-    database.transaction(() -> {
-      database.command("opencypher", "MATCH (n:Person {name: 'Eve'}) SET n.age = 29");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MATCH (n:Person {name: 'Eve'}) SET n.age = 29"));
 
     // Verify update persisted
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Eve'}) RETURN n");
@@ -289,10 +281,9 @@ public class OpenCypherSetTest {
   @Test
   void setOnRelationship() {
     // Create two people and a relationship
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name: 'Alice'})-[r:WORKS_AT {since: 2020}]->(c:Company {name: 'ArcadeDB'})");
-    });
+          "CREATE (a:Person {name: 'Alice'})-[r:WORKS_AT {since: 2020}]->(c:Company {name: 'ArcadeDB'})"));
 
     // Update relationship property
     database.transaction(() -> {
@@ -325,19 +316,17 @@ public class OpenCypherSetTest {
     database.getSchema().createVertexType("Thing");
 
     // Create a node with only propA set
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (t:Thing {id: 'thing1', propA: 'valueA'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (t:Thing {id: 'thing1', propA: 'valueA'})"));
 
     // Use CASE subclause to conditionally set properties
     // propA is not null, so it should be set; propB is not present, so it should be skipped
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           """
           MATCH (t:Thing {id: 'thing1'}) \
           SET (CASE WHEN t.propA IS NOT NULL THEN t END).propA = 'updatedA' \
-          SET (CASE WHEN t.propB IS NOT NULL THEN t END).propB = 'updatedB'""");
-    });
+          SET (CASE WHEN t.propB IS NOT NULL THEN t END).propB = 'updatedB'"""));
 
     // Verify: propA should be updated, propB should not exist
     final ResultSet verify = database.query("opencypher", "MATCH (t:Thing {id: 'thing1'}) RETURN t");
@@ -355,14 +344,13 @@ public class OpenCypherSetTest {
     database.getSchema().createVertexType("Thing");
 
     // Use UNWIND with CASE subclause SET pattern
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           """
           UNWIND [{id: 'a', propA: 'A1', propB: 'B1'}, {id: 'b', propA: 'A2'}] AS thing \
           MERGE (t:Thing {id: thing.id}) \
           SET (CASE WHEN thing.propA IS NOT NULL THEN t END).propA = thing.propA \
-          SET (CASE WHEN thing.propB IS NOT NULL THEN t END).propB = thing.propB""");
-    });
+          SET (CASE WHEN thing.propB IS NOT NULL THEN t END).propB = thing.propB"""));
 
     // Verify thing 'a': both propA and propB set
     final ResultSet verifyA = database.query("opencypher", "MATCH (t:Thing {id: 'a'}) RETURN t");
@@ -384,9 +372,8 @@ public class OpenCypherSetTest {
    */
   @Test
   void setThroughOneAliasPropagatestoOtherAliasOnSameNode() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25})"));
 
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person {name: 'Alice'}), (m:Person {name: 'Alice'}) SET n.age = 35 RETURN n.age AS n_age, m.age AS m_age");
@@ -402,9 +389,8 @@ public class OpenCypherSetTest {
    */
   @Test
   void setThroughOneAliasPropagatestoOtherAliasOnSameNodeFullNode() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30})"));
 
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person {name: 'Alice'}) WITH n MATCH (m:Person {name: 'Alice'}) SET n.age = 35 RETURN n.age AS n_age, m.age AS m_age");
@@ -417,9 +403,8 @@ public class OpenCypherSetTest {
 
   @Test
   void setLabelThroughOneAliasPropagatestoOtherAliasOnSameNode() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30})"));
 
     final ResultSet result = database.command("opencypher",
         "MATCH (n:Person {name: 'Alice'}), (m:Person {name: 'Alice'}) SET n:Employee RETURN n.name AS n_name, m.name AS m_name");
@@ -437,10 +422,9 @@ public class OpenCypherSetTest {
    */
   @Test
   void setLabelIdempotentOnSameNodeAcrossRowFanout() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25}), (:Person {name: 'Charlie', age: 35})");
-    });
+          "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25}), (:Person {name: 'Charlie', age: 35})"));
 
     final List<String> names = new ArrayList<>();
     final ResultSet rs = database.command("opencypher",
@@ -456,10 +440,9 @@ public class OpenCypherSetTest {
    */
   @Test
   void setMultipleLabelsIdempotentOnSameNodeAcrossRowFanout() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25}), (:Person {name: 'Charlie', age: 35})");
-    });
+          "CREATE (:Person {name: 'Alice', age: 30}), (:Person {name: 'Bob', age: 25}), (:Person {name: 'Charlie', age: 35})"));
 
     final List<String> names = new ArrayList<>();
     final ResultSet rs = database.command("opencypher",
@@ -519,14 +502,12 @@ public class OpenCypherSetTest {
    */
   @Test
   void setSelfReferentialPropertyAccumulatesAcrossUnwindRows() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Person {name: 'Alice', age: 30})"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (p:Person {name: 'Alice'}) UNWIND [1, 2, 3] AS i SET p.age = p.age + i");
-    });
+          "MATCH (p:Person {name: 'Alice'}) UNWIND [1, 2, 3] AS i SET p.age = p.age + i"));
 
     final ResultSet result = database.query("opencypher", "MATCH (p:Person {name: 'Alice'}) RETURN p.age AS age");
     assertThat(result.hasNext()).isTrue();
@@ -539,14 +520,12 @@ public class OpenCypherSetTest {
    */
   @Test
   void setSelfReferentialConstantIncrementAccumulatesAcrossUnwindRows() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Person {name: 'Bob', age: 30})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Person {name: 'Bob', age: 30})"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (p:Person {name: 'Bob'}) UNWIND [1, 2, 3] AS i SET p.age = p.age + 1");
-    });
+          "MATCH (p:Person {name: 'Bob'}) UNWIND [1, 2, 3] AS i SET p.age = p.age + 1"));
 
     final ResultSet result = database.query("opencypher", "MATCH (p:Person {name: 'Bob'}) RETURN p.age AS age");
     assertThat(result.hasNext()).isTrue();
@@ -559,17 +538,16 @@ public class OpenCypherSetTest {
    */
   @Test
   void setSelfReferentialTwoNodesAccumulateAcrossUnwindRows() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (:Person {name: 'Alice', age: 30}), (:Company {name: 'TechCorp', founded: 2000})");
-    });
+          "CREATE (:Person {name: 'Alice', age: 30}), (:Company {name: 'TechCorp', founded: 2000})"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (p:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) "
-              + "UNWIND [1, 2, 3] AS i "
-              + "SET p.age = p.age + i, c.founded = c.founded - i");
-    });
+          """
+          MATCH (p:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) \
+          UNWIND [1, 2, 3] AS i \
+          SET p.age = p.age + i, c.founded = c.founded - i"""));
 
     final ResultSet result = database.query("opencypher",
         "MATCH (p:Person {name: 'Alice'}), (c:Company {name: 'TechCorp'}) RETURN p.age AS age, c.founded AS founded");

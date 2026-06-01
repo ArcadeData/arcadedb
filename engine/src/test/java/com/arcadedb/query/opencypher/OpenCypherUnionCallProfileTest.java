@@ -386,9 +386,8 @@ class OpenCypherUnionCallProfileTest {
     // Setup
     database.getSchema().createVertexType("Counter");
 
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Counter {count: 0})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Counter {count: 0})"));
 
     // EXPLAIN should not execute the query, just show plan via getExecutionPlan()
     final ResultSet result = database.query("opencypher", "EXPLAIN MATCH (n:Counter) RETURN n.count");
@@ -430,15 +429,14 @@ class OpenCypherUnionCallProfileTest {
       nestedDatabase.getSchema().createEdgeType("OWNS");
       nestedDatabase.getSchema().createEdgeType("GENERATED");
 
-      nestedDatabase.transaction(() -> {
+      nestedDatabase.transaction(() ->
         nestedDatabase.command("opencypher",
             """
             CREATE (p:Person {name: 'Suspect_1'})
             CREATE (d:Device {imei: 'IMEI_1', num: '0612345678'})
             CREATE (p)-[:OWNS]->(d)
             CREATE (ping:Ping {location: point(48.85, 2.35), time: datetime('2024-01-01T12:00:00')})
-            CREATE (d)-[:GENERATED]->(ping)""");
-      });
+            CREATE (d)-[:GENERATED]->(ping)"""));
 
       // Test PROFILE with a query that uses traditional execution
       // (queries with UNWIND, WITH, or complex patterns often use traditional execution)

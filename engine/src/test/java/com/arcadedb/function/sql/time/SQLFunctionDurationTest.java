@@ -40,7 +40,7 @@ class SQLFunctionDurationTest {
 
   @Test
   void durationWithValidParameters() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       db.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
       db.command("sql", "alter database `arcadedb.dateImplementation` `java.time.LocalDate`");
 

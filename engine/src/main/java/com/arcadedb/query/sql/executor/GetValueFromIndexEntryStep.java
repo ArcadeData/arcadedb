@@ -26,9 +26,10 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 
-import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.util.List;
+import java.util.NoSuchElementException;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 16/03/17.
@@ -160,7 +161,7 @@ public class GetValueFromIndexEntryStep extends AbstractExecutionStep {
             break;
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
       }

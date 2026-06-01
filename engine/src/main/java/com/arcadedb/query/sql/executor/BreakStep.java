@@ -20,7 +20,6 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.BreakStatement;
-import com.arcadedb.query.sql.parser.SimpleExecStatement;
 
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)

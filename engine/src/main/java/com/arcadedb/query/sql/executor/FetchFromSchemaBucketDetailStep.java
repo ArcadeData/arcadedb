@@ -22,7 +22,7 @@ import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Returns a single result containing detailed information about a specific bucket, including
@@ -68,7 +68,7 @@ public class FetchFromSchemaBucketDetailStep extends AbstractExecutionStep {
       return new InternalResultSet(r);
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

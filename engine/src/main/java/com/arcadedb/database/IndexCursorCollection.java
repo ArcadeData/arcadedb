@@ -21,7 +21,8 @@ package com.arcadedb.database;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.Iterator;
 
 public class IndexCursorCollection implements IndexCursor {
   private final Collection<Identifiable> collection;

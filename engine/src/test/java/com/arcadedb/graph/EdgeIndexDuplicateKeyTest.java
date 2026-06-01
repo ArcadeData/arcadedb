@@ -35,7 +35,7 @@ class EdgeIndexDuplicateKeyTest extends TestHelper {
   @Test
   void edgeDeleteAndRecreateMultipleTimes() {
     // Transaction #1: Create schema
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           CREATE VERTEX TYPE duct;
           CREATE VERTEX TYPE trs;
@@ -51,11 +51,10 @@ class EdgeIndexDuplicateKeyTest extends TestHelper {
           CREATE PROPERTY trs_duct.swap STRING;
           CREATE PROPERTY trs_duct.order_number INTEGER;
           CREATE INDEX ON trs_duct (from_id,to_id,swap,order_number) UNIQUE;
-          """);
-    });
+          """));
 
     // Transaction #2: Insert vertices and create edge
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           INSERT INTO duct (id) VALUES ('duct_1');
           INSERT INTO trs (id) VALUES ('trs_1');
@@ -63,31 +62,28 @@ class EdgeIndexDuplicateKeyTest extends TestHelper {
           CREATE EDGE trs_duct
           from (SELECT FROM trs WHERE id='trs_1')
           to (SELECT FROM duct WHERE id='duct_1')
-          SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1""");
-    });
+          SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1"""));
 
     // Transaction #3: Delete and recreate edge (first time - should work)
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           DELETE FROM trs_duct WHERE (from_id='trs_1') AND (to_id='duct_1') AND (swap='N') AND (order_number=1);
 
           CREATE EDGE trs_duct
           from (SELECT FROM trs WHERE id='trs_1')
           to (SELECT FROM duct WHERE id='duct_1')
-          SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1""");
-    });
+          SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1"""));
 
     // Transaction #4: Delete and recreate edge (second time - this should NOT throw DuplicatedKeyException)
     for (int i = 0; i < 10; i++) {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("sqlscript", """
             DELETE FROM trs_duct WHERE (from_id='trs_1') AND (to_id='duct_1') AND (swap='N') AND (order_number=1);
 
             CREATE EDGE trs_duct
             from (SELECT FROM trs WHERE id='trs_1')
             to (SELECT FROM duct WHERE id='duct_1')
-            SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1""");
-      });
+            SET from_id='trs_1', to_id='duct_1', swap='N', order_number=1"""));
     }
 
     Result result = database.query("sql",

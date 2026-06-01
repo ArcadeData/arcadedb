@@ -24,7 +24,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.QueryHelper;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.Locale;
 
 public class ILikeOperator extends SimpleNode implements BinaryCompareOperator {
   public ILikeOperator(final int id) {

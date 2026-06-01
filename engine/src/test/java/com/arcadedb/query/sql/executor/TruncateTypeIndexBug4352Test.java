@@ -40,26 +40,23 @@ class TruncateTypeIndexBug4352Test extends TestHelper {
     database.command("sql", "CREATE PROPERTY Worker.name STRING");
     database.command("sql", "CREATE INDEX ON Worker(name) UNIQUE");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Worker SET name = 'John'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Worker SET name = 'John'"));
 
     // sanity check: 1 record and 1 index entry
     assertCount("Worker", 1);
     assertIndexSize("Worker[name]", 1);
 
-    database.transaction(() -> {
-      database.command("sql", "TRUNCATE TYPE Worker UNSAFE");
-    });
+    database.transaction(() ->
+      database.command("sql", "TRUNCATE TYPE Worker UNSAFE"));
 
     assertCount("Worker", 0);
     assertIndexSize("Worker[name]", 0);
 
     // this used to fail with "Duplicated key 'John' found on index" because the index still pointed
     // to the (now deleted) record
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Worker SET name = 'John'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Worker SET name = 'John'"));
 
     assertCount("Worker", 1);
     assertIndexSize("Worker[name]", 1);
@@ -79,9 +76,8 @@ class TruncateTypeIndexBug4352Test extends TestHelper {
     assertCount("Tag", 2);
     assertIndexSize("Tag[code]", 2);
 
-    database.transaction(() -> {
-      database.command("sql", "TRUNCATE TYPE Tag");
-    });
+    database.transaction(() ->
+      database.command("sql", "TRUNCATE TYPE Tag"));
 
     assertCount("Tag", 0);
     assertIndexSize("Tag[code]", 0);
@@ -148,9 +144,8 @@ class TruncateTypeIndexBug4352Test extends TestHelper {
 
     assertCount("Worker", total);
 
-    database.transaction(() -> {
-      database.command("sql", "TRUNCATE TYPE Worker UNSAFE");
-    });
+    database.transaction(() ->
+      database.command("sql", "TRUNCATE TYPE Worker UNSAFE"));
 
     assertCount("Worker", 0);
     // index must be empty too (was failing: infinite-loop iteration on stale tombstones)
@@ -186,9 +181,8 @@ class TruncateTypeIndexBug4352Test extends TestHelper {
 
     assertCount("Worker", 2);
 
-    database.transaction(() -> {
-      database.command("sql", "TRUNCATE TYPE Worker POLYMORPHIC UNSAFE");
-    });
+    database.transaction(() ->
+      database.command("sql", "TRUNCATE TYPE Worker POLYMORPHIC UNSAFE"));
 
     assertCount("Worker", 0);
 

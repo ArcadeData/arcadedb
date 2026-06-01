@@ -25,6 +25,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.schema.Schema;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.utility.FileUtils;
@@ -77,7 +78,7 @@ class RaftReplicationIT {
             final var type = db.getSchema().buildVertexType().withName("TestVertex").withTotalBuckets(3).create();
             type.createProperty("id", Long.class);
             type.createProperty("name", String.class);
-            db.getSchema().createTypeIndex(com.arcadedb.schema.Schema.INDEX_TYPE.LSM_TREE, true, "TestVertex", "id");
+            db.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "TestVertex", "id");
           });
         }
       } else {

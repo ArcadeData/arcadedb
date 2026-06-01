@@ -22,7 +22,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 public class GuaranteeEmptyCountStep extends AbstractExecutionStep {
 

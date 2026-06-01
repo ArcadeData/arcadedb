@@ -283,8 +283,8 @@ class GraphOlapVectorOpsTest {
   @MethodSource("implementations")
   void extractNullMaskSequentialWithOffset(final GraphOlapVectorOps ops) {
     final long[] nullBitset = new long[2];
-    nullBitset[0] = (1L << 60); // node 60 is null
-    nullBitset[1] = (1L << 5);  // node 69 is null
+    nullBitset[0] = 1L << 60; // node 60 is null
+    nullBitset[1] = 1L << 5;  // node 69 is null
 
     // Extract starting from node 58, length 15 (covers nodes 58-72)
     final boolean[] dst = new boolean[15];
@@ -302,7 +302,7 @@ class GraphOlapVectorOpsTest {
   void extractNullMaskGather(final GraphOlapVectorOps ops) {
     final long[] nullBitset = new long[2];
     nullBitset[0] = (1L << 3) | (1L << 10);
-    nullBitset[1] = (1L << 0); // node 64
+    nullBitset[1] = 1L << 0; // node 64
 
     final int[] indices = { 3, 10, 20, 64, 0 };
     final boolean[] dst = new boolean[5];

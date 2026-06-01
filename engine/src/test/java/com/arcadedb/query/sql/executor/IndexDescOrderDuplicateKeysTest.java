@@ -51,12 +51,11 @@ class IndexDescOrderDuplicateKeysTest extends TestHelper {
     // in the index page (rather than being merged into a single key with multiple values).
     for (int i = 0; i < 10; i++) {
       final int idx = i;
-      database.transaction(() -> {
+      database.transaction(() ->
         database.newDocument("ProcessExecution")
             .set("executionId", "exec-" + idx)
             .set("startTime", 1000L)
-            .save();
-      });
+            .save());
     }
 
     // Verify that the index is used for the ORDER BY (otherwise we won't exercise the bug)

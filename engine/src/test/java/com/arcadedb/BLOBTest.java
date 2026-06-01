@@ -23,7 +23,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;

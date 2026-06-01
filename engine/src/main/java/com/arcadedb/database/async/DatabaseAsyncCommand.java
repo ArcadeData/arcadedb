@@ -23,8 +23,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.Map;
+import java.util.logging.Level;
 
 public class DatabaseAsyncCommand implements DatabaseAsyncTask {
   public final boolean                idempotent;

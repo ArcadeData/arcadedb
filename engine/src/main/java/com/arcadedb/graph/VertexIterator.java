@@ -22,7 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 public class VertexIterator extends ResettableIteratorBase<Vertex> {
 

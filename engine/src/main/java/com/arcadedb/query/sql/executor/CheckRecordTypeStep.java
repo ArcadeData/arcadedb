@@ -64,7 +64,7 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
           return result;
         } finally {
           if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
         }
       }
 
@@ -81,7 +81,7 @@ public class CheckRecordTypeStep extends AbstractExecutionStep {
     if (context.isProfiling())
       result += " (" + getCostFormatted() + ")";
 
-    result += (ExecutionStepInternal.getIndent(depth, indent) + "  " + typez);
+    result += ExecutionStepInternal.getIndent(depth, indent) + "  " + typez;
     return result;
   }
 

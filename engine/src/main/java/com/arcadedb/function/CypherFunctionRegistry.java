@@ -18,19 +18,26 @@
  */
 package com.arcadedb.function;
 
-import com.arcadedb.function.FunctionRegistry;
-import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.function.agg.*;
 import com.arcadedb.function.coll.*;
 import com.arcadedb.function.convert.*;
-import com.arcadedb.function.create.*;
+import com.arcadedb.function.create.CreateUuid;
+import com.arcadedb.function.create.CreateUuidBase64;
+import com.arcadedb.function.create.CreateVNode;
+import com.arcadedb.function.create.CreateVRelationship;
 import com.arcadedb.function.date.*;
 import com.arcadedb.function.map.*;
 import com.arcadedb.function.math.*;
 import com.arcadedb.function.node.*;
-import com.arcadedb.function.path.*;
-import com.arcadedb.function.rel.*;
+import com.arcadedb.function.path.PathCombine;
+import com.arcadedb.function.path.PathCreate;
+import com.arcadedb.function.path.PathElements;
+import com.arcadedb.function.path.PathSlice;
+import com.arcadedb.function.rel.RelEndNode;
+import com.arcadedb.function.rel.RelId;
+import com.arcadedb.function.rel.RelStartNode;
+import com.arcadedb.function.rel.RelType;
 import com.arcadedb.function.text.*;
 import com.arcadedb.function.util.*;
 

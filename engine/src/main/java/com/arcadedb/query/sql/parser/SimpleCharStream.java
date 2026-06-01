@@ -82,7 +82,7 @@ public class SimpleCharStream {
         System.arraycopy(bufcolumn, 0, newbufcolumn, bufsize - tokenBegin, bufpos);
         bufcolumn = newbufcolumn;
 
-        maxNextCharInd = (bufpos += (bufsize - tokenBegin));
+        maxNextCharInd = bufpos += bufsize - tokenBegin;
       } else {
         System.arraycopy(buffer, tokenBegin, newbuffer, 0, bufsize - tokenBegin);
         buffer = newbuffer;
@@ -93,7 +93,7 @@ public class SimpleCharStream {
         System.arraycopy(bufcolumn, tokenBegin, newbufcolumn, 0, bufsize - tokenBegin);
         bufcolumn = newbufcolumn;
 
-        maxNextCharInd = (bufpos -= tokenBegin);
+        maxNextCharInd = bufpos -= tokenBegin;
       }
     } catch (final Throwable t) {
       throw new Error(t.getMessage(), t);
@@ -154,13 +154,13 @@ public class SimpleCharStream {
 
     if (prevCharIsLF) {
       prevCharIsLF = false;
-      line += (column = 1);
+      line += column = 1;
     } else if (prevCharIsCR) {
       prevCharIsCR = false;
       if (c == '\n') {
         prevCharIsLF = true;
       } else
-        line += (column = 1);
+        line += column = 1;
     }
 
     switch (c) {
@@ -172,7 +172,7 @@ public class SimpleCharStream {
       break;
     case '\t':
       column--;
-      column += (tabSize - (column % tabSize));
+      column += tabSize - (column % tabSize);
       break;
     default:
       break;

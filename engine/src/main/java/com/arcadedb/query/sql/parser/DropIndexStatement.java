@@ -28,7 +28,8 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 public class DropIndexStatement extends DDLStatement {
 
@@ -108,7 +109,7 @@ public class DropIndexStatement extends DDLStatement {
 
   @Override
   public int hashCode() {
-    int result = (all ? 1 : 0);
+    int result = all ? 1 : 0;
     result = 31 * result + (name != null ? name.hashCode() : 0);
     return result;
   }

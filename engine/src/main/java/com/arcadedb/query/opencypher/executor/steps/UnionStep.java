@@ -136,7 +136,7 @@ public class UnionStep extends AbstractExecutionStep {
               buffer.add(result);
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
           }
         }

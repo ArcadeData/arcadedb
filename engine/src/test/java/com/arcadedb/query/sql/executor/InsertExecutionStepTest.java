@@ -29,9 +29,8 @@ class InsertExecutionStepTest extends TestHelper {
   void shouldInsertSingleDocument() {
     database.getSchema().createDocumentType("Customer");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Customer SET name = 'Alice', age = 30");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Customer SET name = 'Alice', age = 30"));
 
     final ResultSet result = database.query("sql", "SELECT FROM Customer WHERE name = 'Alice'");
     assertThat(result.hasNext()).isTrue();
@@ -61,9 +60,8 @@ class InsertExecutionStepTest extends TestHelper {
   void shouldInsertWithMultipleFields() {
     database.getSchema().createDocumentType("Employee");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Employee SET name = 'Bob', department = 'Engineering', salary = 75000, active = true");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Employee SET name = 'Bob', department = 'Engineering', salary = 75000, active = true"));
 
     final ResultSet result = database.query("sql", "SELECT FROM Employee");
     assertThat(result.hasNext()).isTrue();
@@ -96,9 +94,8 @@ class InsertExecutionStepTest extends TestHelper {
   void shouldInsertWithNullValues() {
     database.getSchema().createDocumentType("Document");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Document SET name = 'Doc1', description = null");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Document SET name = 'Doc1', description = null"));
 
     final ResultSet result = database.query("sql", "SELECT FROM Document WHERE name = 'Doc1'");
     assertThat(result.hasNext()).isTrue();
@@ -113,9 +110,8 @@ class InsertExecutionStepTest extends TestHelper {
   void shouldInsertWithStringValues() {
     database.getSchema().createDocumentType("Message");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Message SET text = 'Hello World', author = 'Alice'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Message SET text = 'Hello World', author = 'Alice'"));
 
     final ResultSet result = database.query("sql", "SELECT FROM Message");
     assertThat(result.hasNext()).isTrue();
@@ -129,9 +125,8 @@ class InsertExecutionStepTest extends TestHelper {
   void shouldInsertWithNumericValues() {
     database.getSchema().createDocumentType("Measurement");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Measurement SET temperature = 25.5, humidity = 60, pressure = 1013");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Measurement SET temperature = 25.5, humidity = 60, pressure = 1013"));
 
     final ResultSet result = database.query("sql", "SELECT FROM Measurement");
     assertThat(result.hasNext()).isTrue();
@@ -146,9 +141,8 @@ class InsertExecutionStepTest extends TestHelper {
   void shouldInsertWithBooleanValues() {
     database.getSchema().createDocumentType("Setting");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Setting SET feature = 'notifications', enabled = true");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Setting SET feature = 'notifications', enabled = true"));
 
     final ResultSet result = database.query("sql", "SELECT FROM Setting WHERE feature = 'notifications'");
     assertThat(result.hasNext()).isTrue();
@@ -161,9 +155,8 @@ class InsertExecutionStepTest extends TestHelper {
   void shouldInsertIntoNewType() {
     database.getSchema().createDocumentType("NewType");
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO NewType SET data = 'test'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO NewType SET data = 'test'"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as total FROM NewType");
     assertThat(result.hasNext()).isTrue();

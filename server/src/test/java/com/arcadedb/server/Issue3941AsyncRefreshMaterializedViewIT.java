@@ -23,10 +23,11 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import org.junit.jupiter.api.Test;
 
-import java.net.*;
-import java.util.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Base64;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Regression test for GitHub Issue #3941: REFRESH MATERIALIZED VIEW not working in async HTTP commands.
@@ -54,7 +55,7 @@ class Issue3941AsyncRefreshMaterializedViewIT extends BaseGraphServerTest {
 
   @Test
   void refreshMaterializedViewAsyncUpdatesView() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
 
       // Setup: create document type, insert initial record, then create view
@@ -109,7 +110,7 @@ class Issue3941AsyncRefreshMaterializedViewIT extends BaseGraphServerTest {
 
   @Test
   void refreshMaterializedViewSyncUpdatesView() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
 
       final String syncDocType = DOC_TYPE_NAME + "Sync";

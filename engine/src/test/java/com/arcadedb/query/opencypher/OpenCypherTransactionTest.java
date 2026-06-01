@@ -180,7 +180,7 @@ public class OpenCypherTransactionTest {
     database.command("opencypher", "CREATE (n:Person {name: 'Henry', age: 45})");
 
     // Try to perform operations in a transaction that will fail
-    assertThatThrownBy(() -> {
+    assertThatThrownBy(() ->
       database.transaction(() -> {
         // This should work
         database.command("opencypher", "MATCH (n:Person {name: 'Henry'}) SET n.age = 46");
@@ -188,8 +188,7 @@ public class OpenCypherTransactionTest {
         // Simulate an error by trying to delete a non-existent type
         // This will cause the transaction to rollback
         throw new RuntimeException("Simulated error");
-      });
-    }).isInstanceOf(RuntimeException.class);
+      })).isInstanceOf(RuntimeException.class);
 
     // Verify rollback - age should still be 45
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Henry'}) RETURN n");
@@ -200,9 +199,8 @@ public class OpenCypherTransactionTest {
   @Test
   void detachDeleteWithTransaction() {
     // Create vertices with relationships
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (a:Person {name: 'Isaac'})-[:KNOWS]->(b:Person {name: 'Julia'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (a:Person {name: 'Isaac'})-[:KNOWS]->(b:Person {name: 'Julia'})"));
 
     // DETACH DELETE should automatically handle transaction
     database.command("opencypher", "MATCH (n:Person {name: 'Isaac'}) DETACH DELETE n");

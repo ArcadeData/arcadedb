@@ -146,7 +146,7 @@ final class RaftPeerAddressResolver {
     boolean hasNonLocalhost = false;
     for (final RaftPeer peer : peers) {
       final String host = peer.getAddress().split(":")[0].trim();
-      if (host.equals("localhost") || host.equals("127.0.0.1"))
+      if ("localhost".equals(host) || "127.0.0.1".equals(host))
         hasLocalhost = true;
       else
         hasNonLocalhost = true;

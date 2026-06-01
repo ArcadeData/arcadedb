@@ -44,9 +44,8 @@ class FunctionCachingTest {
     FileUtils.deleteRecursively(new File(DB_PATH));
     database = new DatabaseFactory(DB_PATH).create();
 
-    database.transaction(() -> {
-      database.getSchema().createVertexType("Node");
-    });
+    database.transaction(() ->
+      database.getSchema().createVertexType("Node"));
   }
 
   @AfterEach
@@ -104,9 +103,8 @@ class FunctionCachingTest {
    */
   @Test
   void functionCachingWithPointAndDuration() {
-    database.transaction(() -> {
-      database.getSchema().createVertexType("Ping");
-    });
+    database.transaction(() ->
+      database.getSchema().createVertexType("Ping"));
 
     final String query = """
         WITH

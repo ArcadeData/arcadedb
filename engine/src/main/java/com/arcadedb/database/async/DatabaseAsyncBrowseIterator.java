@@ -22,8 +22,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.DocumentCallback;
 import com.arcadedb.database.Identifiable;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Iterator;
+import java.util.concurrent.CountDownLatch;
 
 public class DatabaseAsyncBrowseIterator implements DatabaseAsyncTask {
   public final CountDownLatch                   semaphore;

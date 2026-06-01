@@ -55,7 +55,7 @@ public class DocumentValidator {
     } else {
       if (p.getRegexp() != null)
         // REGEXP
-        if (!(fieldValue.toString()).matches(p.getRegexp()))
+        if (!fieldValue.toString().matches(p.getRegexp()))
           throwValidationException(document.getType(), p,
               "does not match the regular expression '" + p.getRegexp() + "'. Field value is: " + fieldValue + ", record: "
                   + document);

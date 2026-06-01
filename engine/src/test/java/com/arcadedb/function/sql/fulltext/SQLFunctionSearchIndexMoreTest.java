@@ -28,7 +28,8 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class SQLFunctionSearchIndexMoreTest extends TestHelper {
   private Database database;
@@ -104,23 +105,20 @@ class SQLFunctionSearchIndexMoreTest extends TestHelper {
 
   @Test
   void invalidIndexName() {
-    assertThatThrownBy(() -> {
-      database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX_MORE('NonExistent', [#1:0]) = true");
-    }).hasMessageContaining("Index with name 'NonExistent' was not found");
+    assertThatThrownBy(() ->
+      database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX_MORE('NonExistent', [#1:0]) = true")).hasMessageContaining("Index with name 'NonExistent' was not found");
   }
 
   @Test
   void emptySourceRIDs() {
-    assertThatThrownBy(() -> {
-      database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX_MORE('Article[title,body]', []) = true");
-    }).hasMessageContaining("requires at least one source RID");
+    assertThatThrownBy(() ->
+      database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX_MORE('Article[title,body]', []) = true")).hasMessageContaining("requires at least one source RID");
   }
 
   @Test
   void nonExistentRID() {
-    assertThatThrownBy(() -> {
-      database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX_MORE('Article[title,body]', [#1:999]) = true");
-    }).hasMessageContaining("Record #1:999 not found");
+    assertThatThrownBy(() ->
+      database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX_MORE('Article[title,body]', [#1:999]) = true")).hasMessageContaining("Record #1:999 not found");
   }
 
   @Test
@@ -143,9 +141,8 @@ class SQLFunctionSearchIndexMoreTest extends TestHelper {
     }
     rids.append("]");
 
-    assertThatThrownBy(() -> {
-      database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX_MORE('Article[title,body]', " + rids + ") = true");
-    }).hasMessageContaining("exceeds maxSourceDocs limit");
+    assertThatThrownBy(() ->
+      database.query("sql", "SELECT FROM Article WHERE SEARCH_INDEX_MORE('Article[title,body]', " + rids + ") = true")).hasMessageContaining("exceeds maxSourceDocs limit");
   }
 
   @Test

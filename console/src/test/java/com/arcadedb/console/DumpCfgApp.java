@@ -20,8 +20,10 @@ package com.arcadedb.console;
 
 import com.arcadedb.GlobalConfiguration;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
+import java.util.stream.Collectors;
 
 public class DumpCfgApp {
   public static void main(final String[] args) {
@@ -41,7 +43,7 @@ public class DumpCfgApp {
     System.out.printf("\n[%%header,cols=\"20%%,55%%,10%%,15%%\",stripes=even]");
     System.out.printf("\n|===");
     System.out.printf("\n|Name|Description|Type|Default Value");
-    final List<GlobalConfiguration> orderedList = Arrays.stream(GlobalConfiguration.values()).filter((c) -> c.getScope() == scope)
+    final List<GlobalConfiguration> orderedList = Arrays.stream(GlobalConfiguration.values()).filter(c -> c.getScope() == scope)
         .sorted(Comparator.comparing(Enum::name)).collect(Collectors.toList());
     orderedList.sort(Comparator.comparing(Enum::name));
 

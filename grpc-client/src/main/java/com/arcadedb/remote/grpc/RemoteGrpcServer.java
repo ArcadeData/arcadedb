@@ -196,7 +196,7 @@ public class RemoteGrpcServer implements AutoCloseable {
   }
 
   private <S extends AbstractStub<S>> S withDeadline(S stub, long timeoutMs) {
-    long t = (timeoutMs > 0) ? timeoutMs : defaultTimeoutMs;
+    long t = timeoutMs > 0 ? timeoutMs : defaultTimeoutMs;
     return stub.withDeadlineAfter(t, TimeUnit.MILLISECONDS);
   }
 

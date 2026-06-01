@@ -20,14 +20,13 @@ package com.arcadedb.schema;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PaginatedComponent;
-import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.io.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Builder class for manual indexes.
@@ -79,7 +78,7 @@ public class ManualIndexBuilder extends IndexBuilder<Index> {
 
         schema.indexMap.put(indexName, index);
 
-      }, false, 1, null, (error) -> {
+      }, false, 1, null, error -> {
         final IndexInternal indexToRemove = result.get();
         if (indexToRemove != null) {
           indexToRemove.drop();

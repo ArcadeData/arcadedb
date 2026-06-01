@@ -65,9 +65,8 @@ class LSMVectorIndexInheritanceTest extends TestHelper {
     });
 
     // Step 3: Create child vertex type that extends parent
-    database.transaction(() -> {
-      database.command("sql", "CREATE VERTEX TYPE CHUNK_EMBEDDING EXTENDS EMBEDDING");
-    });
+    database.transaction(() ->
+      database.command("sql", "CREATE VERTEX TYPE CHUNK_EMBEDDING EXTENDS EMBEDDING"));
 
     // Step 4: Insert into child class (this is where the bug occurs)
     database.transaction(() -> {

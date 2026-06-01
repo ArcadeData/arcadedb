@@ -31,7 +31,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class BeginStatementExecutionTest {
   @Test
   void begin() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       assertThat(db.isTransactionActive()).isTrue();
       final ResultSet result = db.command("sql", "begin");
       //printExecutionPlan(null, result);

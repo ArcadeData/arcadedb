@@ -27,10 +27,13 @@ import com.arcadedb.query.sql.SQLQueryEngine;
 import com.arcadedb.query.sql.SQLScriptQueryEngine;
 
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * JVM-wide registry of query-language engines plus the default executor any query-time
@@ -103,8 +106,9 @@ public class QueryEngineManager {
       final long last = lastSaturationWarnMs.get();
       if (now - last > SATURATION_WARN_INTERVAL_MS && lastSaturationWarnMs.compareAndSet(last, now)) {
         LogManager.instance().log(this, Level.WARNING,
-            "Query parallelism pool saturated: queue full (capacity=%d, threads=%d), running task on caller thread (cumulative caller-runs fallbacks=%d). "
-                + "Consider raising arcadedb.queryParallelismPoolThreads or arcadedb.queryParallelismQueueSize if this persists.",
+            """
+            Query parallelism pool saturated: queue full (capacity=%d, threads=%d), running task on caller thread (cumulative caller-runs fallbacks=%d). \
+            Consider raising arcadedb.queryParallelismPoolThreads or arcadedb.queryParallelismQueueSize if this persists.""",
             executor.getQueue().remainingCapacity() + executor.getQueue().size(), executor.getMaximumPoolSize(), fallbacks);
       }
       if (!executor.isShutdown())

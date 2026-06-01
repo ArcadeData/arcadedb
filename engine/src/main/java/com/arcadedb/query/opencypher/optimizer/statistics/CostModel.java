@@ -241,7 +241,7 @@ public class CostModel {
     // For multiple OR predicates, use: 1 - product(1 - P(i))
     double result = 1.0;
     for (final double selectivity : selectivities) {
-      result *= (1.0 - selectivity);
+      result *= 1.0 - selectivity;
     }
     return 1.0 - result;
   }

@@ -18,7 +18,7 @@
  */
 package com.arcadedb.utility;
 
-import java.util.regex.*;
+import java.util.regex.Pattern;
 
 public final class PatternConst {
   /**

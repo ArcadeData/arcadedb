@@ -28,6 +28,7 @@ import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZonedDateTime;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Map;
 
@@ -112,7 +113,7 @@ public class IsTypedExpression implements BooleanExpression {
     if (value instanceof Collection<?> coll)
       elements = coll;
     else if (value instanceof Object[] arr)
-      elements = java.util.Arrays.asList(arr);
+      elements = Arrays.asList(arr);
     else
       return false;
     final IsTypedExpression elementCheck = new IsTypedExpression(null, listElementTypeName, null, false, false);

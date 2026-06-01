@@ -22,7 +22,8 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * Iterator that lazily expands source vertices to adjacent edges in a given direction.

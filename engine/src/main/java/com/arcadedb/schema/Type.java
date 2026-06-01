@@ -34,14 +34,18 @@ import com.arcadedb.utility.DateUtils;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.MultiIterator;
 
-import java.math.*;
-import java.text.*;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.text.ParseException;
+import java.text.SimpleDateFormat;
 import java.time.*;
-import java.time.format.*;
-import java.time.temporal.*;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoField;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 /**
  * Generic representation of a type.<br>
@@ -490,9 +494,9 @@ public enum Type {
         if (value instanceof Boolean)
           return value;
         else if (value instanceof String string) {
-          if (string.equalsIgnoreCase("true"))
+          if ("true".equalsIgnoreCase(string))
             return Boolean.TRUE;
-          else if (string.equalsIgnoreCase("false"))
+          else if ("false".equalsIgnoreCase(string))
             return Boolean.FALSE;
           throw new IllegalArgumentException("Value is not boolean. Expected true or false but received '" + value + "'");
         } else if (value instanceof Number number)
@@ -561,9 +565,9 @@ public enum Type {
             return DateUtils.date(database, Long.parseLong(value.toString()), LocalDate.class);
           else if (database != null)
             try {
-              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
             } catch (final DateTimeParseException ignore) {
-              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+              return LocalDate.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
             }
           else {
             // GUESS FORMAT BY STRING LENGTH
@@ -595,9 +599,9 @@ public enum Type {
                 } catch (DateTimeParseException e2) {
                   try {
                     return LocalDateTime.parse(valueAsString,
-                        DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+                        DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
                   } catch (final DateTimeParseException ignore) {
-                    return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+                    return LocalDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
                   }
                 }
               }
@@ -626,9 +630,9 @@ public enum Type {
           if (!FileUtils.isLong(valueAsString)) {
             if (database != null)
               try {
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateTimeFormat())));
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateTimeFormat()));
               } catch (final DateTimeParseException ignore) {
-                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern((database.getSchema().getDateFormat())));
+                return ZonedDateTime.parse(valueAsString, DateTimeFormatter.ofPattern(database.getSchema().getDateFormat()));
               }
             else {
               // GUESS FORMAT BY STRING LENGTH

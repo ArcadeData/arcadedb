@@ -236,9 +236,8 @@ class PolymorphicTest extends TestHelper {
   @Test
   void brokenInheritanceAfterTypeDropFirst() {
     assertThat(database.countType("Vehicle", true)).isEqualTo(3);
-    database.transaction(() -> {
-      database.getSchema().dropType("Vehicle");
-    });
+    database.transaction(() ->
+      database.getSchema().dropType("Vehicle"));
     assertThat(database.countType("Car", true)).isEqualTo(2);
     assertThat(database.countType("Supercar", true)).isEqualTo(1);
     assertThat(database.countType("Motorcycle", true)).isEqualTo(1);

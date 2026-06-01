@@ -29,7 +29,8 @@ import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.UpdateExecutionPlan;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 public class ProfileStatement extends Statement {
 

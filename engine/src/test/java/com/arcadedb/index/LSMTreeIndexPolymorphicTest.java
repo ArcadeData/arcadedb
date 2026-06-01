@@ -148,9 +148,9 @@ class LSMTreeIndexPolymorphicTest extends TestHelper {
       assertThat(rs.hasNext()).isTrue();
       final Document doc2Retrieved = rs.next().getElement().orElse(null);
 
-      if (doc1Retrieved.getTypeName().equals("TestRoot"))
+      if ("TestRoot".equals(doc1Retrieved.getTypeName()))
         assertThat(doc1Retrieved.get("name")).isEqualTo("Root");
-      else if (doc2Retrieved.getTypeName().equals("TestChild"))
+      else if ("TestChild".equals(doc2Retrieved.getTypeName()))
         assertThat(doc2Retrieved.get("name")).isEqualTo("Child");
       else
         fail("");

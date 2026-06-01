@@ -79,7 +79,7 @@ public class SQLFunctionVectorQuantizeBinary extends SQLFunctionVectorAbstract {
         // Set bit to 1
         final int byteIndex = i / 8;
         final int bitIndex = i % 8;
-        packed[byteIndex] |= (1 << bitIndex);
+        packed[byteIndex] |= 1 << bitIndex;
       }
     }
 

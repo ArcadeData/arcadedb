@@ -101,8 +101,8 @@ class CypherLabelCheckInWhereTest {
       // Should only get NER (2) and CHUNK (1) nodes, not OTHER (2) nodes
       assertThat(types).hasSize(3);
       assertThat(types).containsOnly("NER", "CHUNK");
-      assertThat(types.stream().filter(t -> t.equals("NER")).count()).isEqualTo(2);
-      assertThat(types.stream().filter(t -> t.equals("CHUNK")).count()).isEqualTo(1);
+      assertThat(types.stream().filter(t -> "NER".equals(t)).count()).isEqualTo(2);
+      assertThat(types.stream().filter(t -> "CHUNK".equals(t)).count()).isEqualTo(1);
     });
   }
 

@@ -224,11 +224,11 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
         int i = 0;
         while (rs.next()) {
-          if (rs.getString(1).equalsIgnoreCase("Jay")) {
+          if ("Jay".equalsIgnoreCase(rs.getString(1))) {
             assertThat(rs.getString(1)).isEqualTo("Jay");
             assertThat(rs.getString(2)).isEqualTo("Miner");
             ++i;
-          } else if (rs.getString(1).equalsIgnoreCase("Rocky")) {
+          } else if ("Rocky".equalsIgnoreCase(rs.getString(1))) {
             assertThat(rs.getString(2)).isEqualTo("Balboa");
             assertThat(rs.getShort(3)).isEqualTo((short) 3);
             assertThat(rs.getInt(4)).isEqualTo(4);
@@ -291,11 +291,11 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
 
         int i = 0;
         while (rs.next()) {
-          if (rs.getString(1).equalsIgnoreCase("Jay")) {
+          if ("Jay".equalsIgnoreCase(rs.getString(1))) {
             assertThat(rs.getString(1)).isEqualTo("Jay");
             assertThat(rs.getString(2)).isEqualTo("Miner");
             ++i;
-          } else if (rs.getString(1).equalsIgnoreCase("Rocky")) {
+          } else if ("Rocky".equalsIgnoreCase(rs.getString(1))) {
             assertThat(rs.getString(1)).isEqualTo("Rocky");
             assertThat(rs.getString(2)).isEqualTo("Balboa");
             ++i;
@@ -333,9 +333,9 @@ public class PostgresWJdbcIT extends BaseGraphServerTest {
           while (rs.next()) {
             assertThat(rs.getString("name")).isNotNull();
 
-            if (rs.getString("name").equals("James"))
+            if ("James".equals(rs.getString("name")))
               assertThat(rs.getFloat("height")).isEqualTo(1.9F);
-            else if (rs.getString("name").equals("Henry"))
+            else if ("Henry".equals(rs.getString("name")))
               assertThat(rs.getString("height")).isNull();
             else
               fail("");

@@ -29,7 +29,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.List;
 
 /**
  * Declarative multi-stage retrieval (Qdrant-style "prefetch + rerank"). Takes a stage-1

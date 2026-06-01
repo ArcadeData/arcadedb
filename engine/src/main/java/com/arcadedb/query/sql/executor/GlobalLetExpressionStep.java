@@ -58,7 +58,7 @@ public class GlobalLetExpressionStep extends AbstractExecutionStep {
       executed = true;
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

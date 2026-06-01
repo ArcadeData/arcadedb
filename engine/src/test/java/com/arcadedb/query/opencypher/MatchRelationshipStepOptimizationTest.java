@@ -268,10 +268,9 @@ class MatchRelationshipStepOptimizationTest {
   @Test
   void bothDirectionSelfLoopDedup() {
     // Create a self-loop
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(a)");
-    });
+          "MATCH (a:Person {name: 'Alice'}) CREATE (a)-[:KNOWS]->(a)"));
 
     // BOTH from Alice: Bob (OUT KNOWS), Dave (OUT FOLLOWS), Alice (self-loop, should appear once)
     final ResultSet result = database.query("opencypher",

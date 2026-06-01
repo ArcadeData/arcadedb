@@ -47,11 +47,10 @@ public class EmbeddedListIndexByItemTest extends TestHelper {
   @Test
   void embeddedPropertyIndexByItem() {
     // This should work but currently doesn't - it's the main issue to fix
-    database.transaction(() -> {
+    database.transaction(() ->
       // Attempt to create an index on tags.id (nested property in list of embedded documents)
       // Using backticks to quote the dotted identifier
-      database.command("sql", "CREATE INDEX ON Photo (`tags.id` BY ITEM) NOTUNIQUE");
-    });
+      database.command("sql", "CREATE INDEX ON Photo (`tags.id` BY ITEM) NOTUNIQUE"));
 
     // Insert test data
     database.transaction(() -> {
@@ -118,9 +117,8 @@ public class EmbeddedListIndexByItemTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON doc (`nums.a` BY ITEM) NOTUNIQUE");
     });
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO doc SET nums = [{'a':1},{'a':2}]");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO doc SET nums = [{'a':1},{'a':2}]"));
 
     // Query the indexed data
     database.transaction(() -> {
@@ -146,9 +144,8 @@ public class EmbeddedListIndexByItemTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON doc (`nums.a` BY ITEM) NOTUNIQUE");
     });
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO doc SET nums = [{'@type':'num','a':1},{'@type':'num','a':2}]");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO doc SET nums = [{'@type':'num','a':1},{'@type':'num','a':2}]"));
 
     // Query the indexed data via CONTAINS
     database.transaction(() -> {

@@ -28,7 +28,7 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
 
   @Test
   void createAndDropGraphAnalyticalViewViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE VERTEX TYPE City");
       command(serverIndex, "CREATE EDGE TYPE ROAD");
       command(serverIndex, "CREATE VERTEX City SET name = 'Rome'");
@@ -74,7 +74,7 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
 
   @Test
   void createGraphAnalyticalViewWithAutoUpdateViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE VERTEX TYPE Sensor");
       command(serverIndex, "CREATE EDGE TYPE READS");
 
@@ -99,7 +99,7 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
 
   @Test
   void createIfNotExistsViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE VERTEX TYPE Node");
       command(serverIndex, "CREATE EDGE TYPE LINK");
 
@@ -118,7 +118,7 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
 
   @Test
   void cypherQueryUsesGavViaServer() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE VERTEX TYPE GavPerson");
       command(serverIndex, "CREATE EDGE TYPE GAV_KNOWS");
       command(serverIndex, "CREATE VERTEX GavPerson SET name = 'Alice'");
@@ -154,7 +154,7 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
 
   @Test
   void dropIfExistsViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Should not throw for non-existent view
       final String response = command(serverIndex, "DROP GRAPH ANALYTICAL VIEW IF EXISTS nonExistentGav");
       assertThat(response).contains("\"dropped\":false");
@@ -163,7 +163,7 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
 
   @Test
   void createWithPropertiesViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE VERTEX TYPE Device");
       command(serverIndex, "CREATE EDGE TYPE CONNECTS");
 
@@ -190,7 +190,7 @@ class HTTPGraphAnalyticalViewIT extends BaseGraphServerTest {
 
   @Test
   void querySchemaGraphAnalyticalViewsViaHttp() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE VERTEX TYPE Employee");
       command(serverIndex, "CREATE EDGE TYPE MANAGES");
 

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -122,7 +123,7 @@ class AlgoAllSimplePathsTest {
       final Map<String, Object> path = (Map<String, Object>) r.getProperty("path");
       final List<Object> rels = (List<Object>) path.get("relationships");
       for (final Object rel : rels) {
-        final String typeName = rel instanceof com.arcadedb.graph.Edge edge ? edge.getTypeName() : null;
+        final String typeName = rel instanceof Edge edge ? edge.getTypeName() : null;
         assertThat(typeName).isNotEqualTo("FRIEND");
       }
     }
@@ -148,7 +149,7 @@ class AlgoAllSimplePathsTest {
       final Map<String, Object> path = (Map<String, Object>) r.getProperty("path");
       final List<Object> rels = (List<Object>) path.get("relationships");
       for (final Object rel : rels) {
-        final String typeName = rel instanceof com.arcadedb.graph.Edge edge ? edge.getTypeName() : null;
+        final String typeName = rel instanceof Edge edge ? edge.getTypeName() : null;
         assertThat(typeName).isEqualTo("KNOWS");
       }
     }

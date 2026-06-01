@@ -632,9 +632,8 @@ class DocumentValidationTest extends TestHelper {
     d.set("embeddedList", new ArrayList<>());
     d.set("embeddedMap", new HashMap<>());
 
-    database.transaction(() -> {
-      d.save();
-    });
+    database.transaction(() ->
+      d.save());
 
     checkFieldValue(d, "int", null);
     checkFieldValue(d, "long", null);
@@ -693,9 +692,8 @@ class DocumentValidationTest extends TestHelper {
     final MutableDocument d = database.newDocument(clazz.getName());
     d.set("string", "yeah");
 
-    database.transaction(() -> {
-      d.save();
-    });
+    database.transaction(() ->
+      d.save());
 
     checkFieldValue(d, "string", null);
     checkRequireField(d, "string");

@@ -23,7 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.PageId;
 
-import java.util.*;
+import java.util.Arrays;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 

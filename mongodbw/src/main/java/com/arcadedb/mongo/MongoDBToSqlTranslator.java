@@ -23,7 +23,10 @@ import de.bwaldvogel.mongo.backend.Utils;
 import de.bwaldvogel.mongo.bson.Document;
 import de.bwaldvogel.mongo.bson.ObjectId;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
 public class MongoDBToSqlTranslator {
 
@@ -37,7 +40,7 @@ public class MongoDBToSqlTranslator {
       else if (value instanceof Document) {
         buildAnd(buffer, key, value);
       } else if (value instanceof List list) {
-        if (key.equals("$or")) {
+        if ("$or".equals(key)) {
           buildOr(buffer, list);
         } else
           throw new IllegalArgumentException("Invalid operator " + key);
@@ -81,46 +84,46 @@ public class MongoDBToSqlTranslator {
   }
 
   protected static void buildExpression(final StringBuilder sql, final String key, final Object value) {
-    if (key.equals("$in")) {
+    if ("$in".equals(key)) {
       if (value instanceof Collection collection) {
         sql.append(" IN ");
         buildCollection(sql, collection);
       } else
         throw new IllegalArgumentException("Operator $in was expecting a collection");
-    } else if (key.equals("$nin")) {
+    } else if ("$nin".equals(key)) {
       if (value instanceof Collection collection) {
         sql.append(" NOT IN ");
         buildCollection(sql, collection);
       } else
         throw new IllegalArgumentException("Operator $in was expecting a collection");
-    } else if (key.equals("$eq")) {
+    } else if ("$eq".equals(key)) {
       sql.append(" = ");
       buildValue(sql, value);
-    } else if (key.equals("$ne")) {
+    } else if ("$ne".equals(key)) {
       sql.append(" <> ");
       buildValue(sql, value);
-    } else if (key.equals("$lt")) {
+    } else if ("$lt".equals(key)) {
       sql.append(" < ");
       buildValue(sql, value);
-    } else if (key.equals("$lte")) {
+    } else if ("$lte".equals(key)) {
       sql.append(" <= ");
       buildValue(sql, value);
-    } else if (key.equals("$gt")) {
+    } else if ("$gt".equals(key)) {
       sql.append(" > ");
       buildValue(sql, value);
-    } else if (key.equals("$gte")) {
+    } else if ("$gte".equals(key)) {
       sql.append(" >= ");
       buildValue(sql, value);
-    } else if (key.equals("$exists")) {
+    } else if ("$exists".equals(key)) {
       sql.append(" IS DEFINED ");
-    } else if (key.equals("$size")) {
+    } else if ("$size".equals(key)) {
       sql.append(".size() = ");
       buildValue(sql, value);
-    } else if (key.equals("$or")) {
+    } else if ("$or".equals(key)) {
       buildOr(sql, (List) value);
-    } else if (key.equals("$and")) {
+    } else if ("$and".equals(key)) {
       buildAnd(sql, key, value);
-    } else if (key.equals("$not")) {
+    } else if ("$not".equals(key)) {
       sql.append(" NOT ");
       buildExpression(sql, (Document) value);
     } else

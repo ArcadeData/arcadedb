@@ -21,7 +21,6 @@ package com.arcadedb.server.gremlin;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.gremlin.io.ArcadeIoRegistry;
 import com.arcadedb.server.BaseGraphServerTest;
-import com.arcadedb.utility.FileUtils;
 import org.apache.tinkerpop.gremlin.driver.Cluster;
 import org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection;
 import org.apache.tinkerpop.gremlin.process.traversal.AnonymousTraversalSource;
@@ -30,8 +29,6 @@ import org.apache.tinkerpop.gremlin.structure.io.binary.TypeSerializerRegistry;
 import org.apache.tinkerpop.gremlin.util.ser.GraphBinaryMessageSerializerV1;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
-
-import java.io.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

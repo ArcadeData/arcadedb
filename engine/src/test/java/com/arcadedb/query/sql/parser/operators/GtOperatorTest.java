@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.parser.operators;
 import com.arcadedb.query.sql.parser.GtOperator;
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
+import java.math.BigDecimal;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

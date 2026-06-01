@@ -23,8 +23,8 @@ import com.arcadedb.engine.BasePage;
 import com.arcadedb.engine.ImmutablePage;
 import com.arcadedb.engine.PageId;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.Arrays;
 
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;
 

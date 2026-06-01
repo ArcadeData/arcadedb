@@ -30,7 +30,7 @@ import com.arcadedb.integration.importer.Source;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.integration.importer.vector.TextEmbeddingsImporterLSM;
 
-import java.io.*;
+import java.io.IOException;
 
 /**
  * Imports GloVe text embedding format using LSMVector index.

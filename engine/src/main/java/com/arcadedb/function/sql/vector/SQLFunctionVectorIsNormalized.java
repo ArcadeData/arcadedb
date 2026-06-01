@@ -21,7 +21,6 @@ package com.arcadedb.function.sql.vector;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
-import java.util.List;
 
 /**
  * Checks if a vector is normalized (has unit length).
@@ -56,7 +55,7 @@ public class SQLFunctionVectorIsNormalized extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException("Vector cannot be empty");
 
     // Default tolerance: 0.001
-    final float tolerance = (params.length == 2 && params[1] != null)
+    final float tolerance = params.length == 2 && params[1] != null
         ? (params[1] instanceof Number num ? num.floatValue() : 0.001f)
         : 0.001f;
 

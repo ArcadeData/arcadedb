@@ -30,12 +30,14 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.time.*;
-import java.time.format.*;
-import java.util.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -81,9 +83,8 @@ public class UpsertStatementExecutionTest extends TestHelper {
 
   @Override
   protected void endTest() {
-    database.transaction(() -> {
-      database.command("sql", "delete from UpsertStatementExecutionTest");
-    });
+    database.transaction(() ->
+      database.command("sql", "delete from UpsertStatementExecutionTest"));
   }
 
   @Test

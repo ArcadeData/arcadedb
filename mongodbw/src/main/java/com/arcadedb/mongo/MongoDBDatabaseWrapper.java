@@ -45,8 +45,8 @@ import de.bwaldvogel.mongo.wire.message.MongoQuery;
 import io.netty.channel.Channel;
 
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 import static de.bwaldvogel.mongo.backend.Utils.markOkay;
 
@@ -85,15 +85,15 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       final DatabaseResolver databaseResolver,
       final Oplog opLog) {
     try {
-      if (command.equalsIgnoreCase("find"))
+      if ("find".equalsIgnoreCase(command))
         return find(document);
-      else if (command.equalsIgnoreCase("create"))
+      else if ("create".equalsIgnoreCase(command))
         return createCollection(document);
-      else if (command.equalsIgnoreCase("count"))
+      else if ("count".equalsIgnoreCase(command))
         return countCollection(document);
-      else if (command.equalsIgnoreCase("insert"))
+      else if ("insert".equalsIgnoreCase(command))
         return insertDocument(channel, document);
-      else if (command.equalsIgnoreCase("aggregate"))
+      else if ("aggregate".equalsIgnoreCase(command))
         return aggregateCollection(command, document, opLog);
       else {
         LogManager.instance()

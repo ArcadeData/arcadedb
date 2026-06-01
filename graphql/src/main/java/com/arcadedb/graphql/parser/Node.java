@@ -23,7 +23,7 @@ package com.arcadedb.graphql.parser;
    machinery for constructing the parent and child relationships
    between nodes. */
 
-import java.io.*;
+import java.io.Serializable;
 
 public
 interface Node extends Serializable {

@@ -22,7 +22,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.io.*;
+import java.io.IOException;
 
 /**
  * This interface describes a character stream that maintains line and

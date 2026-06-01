@@ -27,7 +27,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 public class ServerSecurityUser implements SecurityUser {
   private final ArcadeDBServer                                        server;

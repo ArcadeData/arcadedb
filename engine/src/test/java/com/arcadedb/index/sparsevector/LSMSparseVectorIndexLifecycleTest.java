@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import com.arcadedb.engine.BasePage;
+import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
@@ -32,7 +33,21 @@ import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+import java.io.FilenameFilter;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+import java.nio.channels.FileChannel;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
+import java.util.Random;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -160,8 +175,8 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
 
       assertThat(mergedId).isGreaterThan(0L);
       // Distinct segment count: one entry per id, no duplicates.
-      final java.util.Set<Long> ids = new java.util.HashSet<>();
-      final java.util.List<Long> seen = new java.util.ArrayList<>();
+      final Set<Long> ids = new HashSet<>();
+      final List<Long> seen = new ArrayList<>();
       // segmentCount() walks the AtomicReference directly; correlate with totalPostings to make
       // sure the published array is what queries actually read.
       final int published = engine.segmentCount();
@@ -197,9 +212,9 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
       engine.flush();
 
       final int flushes = 30;
-      final java.util.concurrent.atomic.AtomicReference<Throwable> readerErr = new java.util.concurrent.atomic.AtomicReference<>();
-      final java.util.concurrent.atomic.AtomicBoolean stopReader = new java.util.concurrent.atomic.AtomicBoolean(false);
-      final java.util.Set<Long> writerIds = java.util.Collections.synchronizedSet(new java.util.HashSet<>());
+      final AtomicReference<Throwable> readerErr = new AtomicReference<>();
+      final AtomicBoolean stopReader = new AtomicBoolean(false);
+      final Set<Long> writerIds = Collections.synchronizedSet(new HashSet<>());
 
       final Thread reader = new Thread(() -> {
         try {
@@ -229,7 +244,7 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
       if (readerErr.get() != null)
         throw new AssertionError("topK reader threw concurrently with flush", readerErr.get());
 
-      final java.util.Set<Long> engineIds = new java.util.HashSet<>();
+      final Set<Long> engineIds = new HashSet<>();
       for (final long id : engine.segmentIds())
         engineIds.add(id);
       assertThat(engineIds)
@@ -302,7 +317,7 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
           .findFirst()
           .orElseThrow(() -> new AssertionError("Expected a sparse segment file after flush"));
       segmentFilePath = componentFile.getFilePath();
-      pageSize = ((com.arcadedb.engine.PaginatedComponentFile) componentFile).getPageSize();
+      pageSize = ((PaginatedComponentFile) componentFile).getPageSize();
     }
 
     // The engine is closed; the file is still on disk. Read the segment header to find the
@@ -310,22 +325,22 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
     // (defined by SparseSegmentBuilder.writeManifest): segmentId(8) + parentCount(4) +
     // parents[parentCount * 8] + tombstoneCount(8) + reserved(8) + crc(4). With no compaction
     // history the segment has parentCount = 0, so manifest size = 28.
-    final java.nio.file.Path path = java.nio.file.Path.of(segmentFilePath);
+    final Path path = Path.of(segmentFilePath);
     final int manifestPageNum;
-    try (final java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(path,
-        java.nio.file.StandardOpenOption.READ)) {
+    try (final FileChannel ch = FileChannel.open(path,
+        StandardOpenOption.READ)) {
       // HEADER_OFFSET_MANIFEST_PAGE_NUM is in logical-page space; on disk it sits past the
       // page-header prefix that {@link com.arcadedb.engine.BasePage} writes.
-      final java.nio.ByteBuffer hdr = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN);
+      final ByteBuffer hdr = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN);
       ch.read(hdr, (long) BasePage.PAGE_HEADER_SIZE + PaginatedSegmentFormat.HEADER_OFFSET_MANIFEST_PAGE_NUM);
       hdr.flip();
       manifestPageNum = hdr.getInt();
     }
     final long manifestStart = manifestPageNum * (long) pageSize + BasePage.PAGE_HEADER_SIZE;
     final long manifestCrcOffset = manifestStart + 28L - 4L; // manifest size - 4 (the CRC)
-    try (final java.nio.channels.FileChannel ch = java.nio.channels.FileChannel.open(path,
-        java.nio.file.StandardOpenOption.WRITE)) {
-      final java.nio.ByteBuffer garbage = java.nio.ByteBuffer.allocate(4).order(java.nio.ByteOrder.BIG_ENDIAN);
+    try (final FileChannel ch = FileChannel.open(path,
+        StandardOpenOption.WRITE)) {
+      final ByteBuffer garbage = ByteBuffer.allocate(4).order(ByteOrder.BIG_ENDIAN);
       garbage.putInt(0xDEADBEEF);
       garbage.flip();
       ch.write(garbage, manifestCrcOffset);
@@ -446,14 +461,14 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
     engine.put(99, new RID(0, 9999L), 0.5f); // memtable resident
     assertThat(engine.segmentCount()).isEqualTo(3);
 
-    final java.io.File dbDir = new java.io.File(database.getDatabasePath());
+    final File dbDir = new File(database.getDatabasePath());
     // Match any sparseseg file. The component-name pattern (`<sanitized-index-name>_seg<digits>`)
     // is owned by {@link PaginatedSparseVectorEngine#segmentComponentName}; the test only needs
     // to count files in the database directory and does not need to mirror that pattern. If a
     // future change adds a second sparse-vector index in the same database, scope the filter via
     // {@link FileManager#getFiles} + the engine's own {@code isOurSegmentFile} helper instead of
     // a string-mirrored prefix.
-    final java.io.FilenameFilter sparseFilter = (d, name) -> name.contains("_seg") && name.endsWith(".sparseseg");
+    final FilenameFilter sparseFilter = (d, name) -> name.contains("_seg") && name.endsWith(".sparseseg");
     final String[] beforeDrop = dbDir.list(sparseFilter);
     assertThat(beforeDrop).as("3 sealed segments must have a .sparseseg file each").isNotNull();
     assertThat(beforeDrop.length).isGreaterThanOrEqualTo(3);
@@ -485,7 +500,7 @@ class LSMSparseVectorIndexLifecycleTest extends TestHelper {
   /** Insert {@code n} documents with deterministic 8-nnz vectors so queries are reproducible. */
   private void insertDocs(final int n) {
     database.transaction(() -> {
-      final java.util.Random rnd = new java.util.Random(0xCAFEL);
+      final Random rnd = new Random(0xCAFEL);
       for (int i = 0; i < n; i++) {
         final int[] tokens = new int[8];
         final float[] weights = new float[8];

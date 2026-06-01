@@ -25,8 +25,9 @@ import com.arcadedb.log.LogManager;
 
 import java.util.logging.Level;
 
-import java.io.*;
-import java.util.concurrent.atomic.*;
+import java.io.File;
+import java.io.IOException;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Extends a FileComponent by supporting pages.

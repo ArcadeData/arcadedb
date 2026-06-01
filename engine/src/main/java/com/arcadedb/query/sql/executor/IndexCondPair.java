@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 
-import java.util.*;
+import java.util.Objects;
 
 /**
  * For internal use.

@@ -32,10 +32,10 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 import static com.arcadedb.database.Binary.BYTE_SERIALIZED_SIZE;
 import static com.arcadedb.database.Binary.INT_SERIALIZED_SIZE;

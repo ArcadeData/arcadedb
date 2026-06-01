@@ -24,7 +24,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.CommandExecutionException;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 import static com.arcadedb.query.sql.executor.AbstractExecutionStep.DEFAULT_FETCH_RECORDS_PER_PULL;
 

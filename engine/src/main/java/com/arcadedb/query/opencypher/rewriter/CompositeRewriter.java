@@ -18,8 +18,6 @@
  */
 package com.arcadedb.query.opencypher.rewriter;
 
-import com.arcadedb.query.opencypher.ast.Expression;
-
 import java.util.Arrays;
 import java.util.List;
 

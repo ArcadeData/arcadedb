@@ -35,7 +35,7 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * Document type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
@@ -335,10 +335,10 @@ public class RemoteDocumentType implements DocumentType {
   @Override
   public List<Bucket> getBuckets(final boolean polymorphic) {
     if (!polymorphic)
-      return buckets.stream().map((bucketName) -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList());
+      return buckets.stream().map(bucketName -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList());
 
     final List<Bucket> result = new ArrayList<>();
-    result.addAll(buckets.stream().map((bucketName) -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList()));
+    result.addAll(buckets.stream().map(bucketName -> getSchema().getBucketByName(bucketName)).collect(Collectors.toList()));
     for (String parent : parentTypes)
       result.addAll(getSchema().getType(parent).getBuckets(true));
     return result;

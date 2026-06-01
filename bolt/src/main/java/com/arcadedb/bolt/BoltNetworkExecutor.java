@@ -231,7 +231,7 @@ public class BoltNetworkExecutor extends Thread {
       final Map<String, String> headers = readHttpHeaders();
       final String upgrade = headers.get("upgrade");
 
-      if (upgrade != null && "websocket".equalsIgnoreCase(upgrade)) {
+      if ("websocket".equalsIgnoreCase(upgrade)) {
         // WebSocket upgrade - Neo4j Desktop/Browser uses WebSocket transport for Bolt
         completeWebSocketUpgrade(headers);
 

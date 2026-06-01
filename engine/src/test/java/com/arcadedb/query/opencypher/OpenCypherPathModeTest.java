@@ -135,13 +135,12 @@ class OpenCypherPathModeTest {
   @Test
   void walkRequiresMaxHops() {
     // WALK without explicit max hops should throw an error (would be infinite on cycles).
-    database.transaction(() -> {
+    database.transaction(() ->
       assertThatThrownBy(() -> {
         try (ResultSet rs = database.query("opencypher", "MATCH WALK (a:Node {name: 'A'})-[:LINK*]->(b) RETURN b")) {
           while (rs.hasNext()) rs.next();
         }
-      }).hasMessageContaining("WALK");
-    });
+      }).hasMessageContaining("WALK"));
   }
 
   @Test

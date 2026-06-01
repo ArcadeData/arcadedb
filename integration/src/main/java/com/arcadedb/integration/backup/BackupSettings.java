@@ -61,7 +61,7 @@ public class BackupSettings {
 
     if (file == null)
       // ASSIGN DEFAULT FILENAME
-      if (format.equals("full")) {
+      if ("full".equals(format)) {
         final DateFormat dateFormat = new SimpleDateFormat("yyyyMMdd-HHmmssSSS");
         file = "%s-backup-%s.zip".formatted(databaseName, dateFormat.format(System.currentTimeMillis()));
       }

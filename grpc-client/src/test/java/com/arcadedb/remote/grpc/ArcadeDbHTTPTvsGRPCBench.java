@@ -272,8 +272,8 @@ public class ArcadeDbHTTPTvsGRPCBench {
   private static List<Map<String, Object>> buildFeedbackRows(int n) throws Exception {
     // optional: shared embedded image payload
     byte[] png = loadDefaultPNG();
-    String b64 = (png != null) ? Base64.getEncoder().encodeToString(png) : null;
-    Map<String, Object> embeddedImage = (b64 != null) ? Map.of("mime", "image/png", "data", b64) : null;
+    String b64 = png != null ? Base64.getEncoder().encodeToString(png) : null;
+    Map<String, Object> embeddedImage = b64 != null ? Map.of("mime", "image/png", "data", b64) : null;
 
     List<Map<String, Object>> out = new ArrayList<>(n);
     for (int i = 1; i <= n; i++) {

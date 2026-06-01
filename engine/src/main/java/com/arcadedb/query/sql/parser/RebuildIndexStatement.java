@@ -41,8 +41,8 @@ import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 public class RebuildIndexStatement extends DDLStatement {
   private static final int                         MAX_ATTEMPTS = 5;
@@ -65,9 +65,9 @@ public class RebuildIndexStatement extends DDLStatement {
     int maxAttempts = MAX_ATTEMPTS;
     if (!settings.isEmpty()) {
       for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
-        if (entry.getKey().toString().equalsIgnoreCase("batchSize"))
+        if ("batchSize".equalsIgnoreCase(entry.getKey().toString()))
           batchSize = Integer.parseInt(entry.getValue().value.toString());
-        else if (entry.getKey().toString().equalsIgnoreCase("maxAttempts"))
+        else if ("maxAttempts".equalsIgnoreCase(entry.getKey().toString()))
           maxAttempts = Integer.parseInt(entry.getValue().value.toString());
         else
           throw new CommandSQLParsingException("Unrecognized setting '" + entry.getKey() + "' in rebuild index statement");
@@ -110,7 +110,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
     } catch (Exception e) {
       LogManager.instance()
-          .log(this, Level.SEVERE, "Error on rebuilding index '%s': %s", e, (indexName != null ? indexName : name.getValue()),
+          .log(this, Level.SEVERE, "Error on rebuilding index '%s': %s", e, indexName != null ? indexName : name.getValue(),
               e.getMessage());
       throw new IndexException(
           "Error on rebuilding index '" + (indexName != null ? indexName : name.getValue()) + "' (error=" + e.getMessage() + ")",
@@ -236,7 +236,7 @@ public class RebuildIndexStatement extends DDLStatement {
 
   @Override
   public int hashCode() {
-    int result = (all ? 1 : 0);
+    int result = all ? 1 : 0;
     result = 31 * result + (name != null ? name.hashCode() : 0);
     return result;
   }

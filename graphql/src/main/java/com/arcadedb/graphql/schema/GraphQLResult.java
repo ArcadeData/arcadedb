@@ -21,7 +21,8 @@ package com.arcadedb.graphql.schema;
 import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Optional;
 
 import static com.arcadedb.schema.Property.RID_PROPERTY;
 

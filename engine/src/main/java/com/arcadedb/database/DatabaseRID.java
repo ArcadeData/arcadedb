@@ -24,7 +24,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 
-import java.io.*;
+import java.io.Serial;
 
 /**
  * {@link RID} variant that carries a reference to its originating {@link BasicDatabase}. Used at API boundaries (record identity, query results, user-supplied

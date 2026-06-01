@@ -50,7 +50,7 @@ class GrpcLoggingInterceptor implements ServerInterceptor {
     // Check if client sent compressed request
     String requestEncoding = headers.get(GRPC_ENCODING_KEY);
     String acceptEncoding = headers.get(GRPC_ACCEPT_ENCODING_KEY);
-    boolean requestCompressed = requestEncoding != null && !requestEncoding.equals("identity");
+    boolean requestCompressed = requestEncoding != null && !"identity".equals(requestEncoding);
     boolean clientAcceptsCompression = acceptEncoding != null && acceptEncoding.contains("gzip");
 
     LogManager.instance().log(this, Level.FINE, "gRPC call started: %s (request compression: %s, client accepts: %s)",
@@ -65,7 +65,7 @@ class GrpcLoggingInterceptor implements ServerInterceptor {
       public void sendHeaders(Metadata headers) {
         // Check if we're sending compressed response
         String encoding = headers.get(GRPC_ENCODING_KEY);
-        if (encoding != null && !encoding.equals("identity")) {
+        if (encoding != null && !"identity".equals(encoding)) {
           responseCompression = encoding;
         }
         super.sendHeaders(headers);

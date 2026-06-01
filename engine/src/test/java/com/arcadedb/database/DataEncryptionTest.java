@@ -144,9 +144,8 @@ class DataEncryptionTest extends TestHelper {
       t.createProperty("name", Type.STRING).setMandatory(true).setNotNull(true);
       t.createTypeIndex(Schema.INDEX_TYPE.HASH, true, "name");
     });
-    database.transaction(() -> {
-      database.newDocument("EntryStr").set("name", "alice").save();
-    });
+    database.transaction(() ->
+      database.newDocument("EntryStr").set("name", "alice").save());
 
     database.transaction(() -> {
       try (final ResultSet rs = database.query("sql", "SELECT FROM EntryStr WHERE name = :name", Map.of("name", "alice"))) {

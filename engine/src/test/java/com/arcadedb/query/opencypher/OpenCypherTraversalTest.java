@@ -215,9 +215,8 @@ class OpenCypherTraversalTest {
     // Add a different edge type
     database.getSchema().createEdgeType("LIKES");
 
-    database.transaction(() -> {
-      ((MutableVertex) alice).newEdge("LIKES", charlie, true, (Object[]) null).save();
-    });
+    database.transaction(() ->
+      ((MutableVertex) alice).newEdge("LIKES", charlie, true, (Object[]) null).save());
 
     // Traverse only KNOWS relationships
     final BreadthFirstTraverser traverser = new BreadthFirstTraverser(Direction.OUT, new String[]{"KNOWS"}, 1, 3, false, true);
@@ -235,9 +234,8 @@ class OpenCypherTraversalTest {
     // Add a different edge type
     database.getSchema().createEdgeType("LIKES");
 
-    database.transaction(() -> {
-      ((MutableVertex) alice).newEdge("LIKES", charlie, true, (Object[]) null).save();
-    });
+    database.transaction(() ->
+      ((MutableVertex) alice).newEdge("LIKES", charlie, true, (Object[]) null).save());
 
     // Traverse all relationship types
     final BreadthFirstTraverser traverser = new BreadthFirstTraverser(Direction.OUT, null, 1, 2, false, true);

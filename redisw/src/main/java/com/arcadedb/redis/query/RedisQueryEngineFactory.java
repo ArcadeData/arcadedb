@@ -23,7 +23,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngine;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Factory for creating RedisQueryEngine instances.

@@ -18,7 +18,6 @@
  */
 package com.arcadedb.gremlin.service;
 
-import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.gremlin.ArcadeGraph;
 import com.arcadedb.index.TypeIndex;

@@ -22,6 +22,7 @@ import com.arcadedb.log.LogFormatter;
 import com.arcadedb.utility.AnsiLogFormatter;
 import org.junit.jupiter.api.Test;
 
+import java.util.Date;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
 
@@ -166,7 +167,7 @@ class LogFormatterMessageFormatTest {
   @Test
   void unsafePrintfConversionsAreNotApplied() {
     final LogRecord record = new LogRecord(Level.INFO, "line%nseparator and %tY year");
-    record.setParameters(new Object[]{ new java.util.Date() });
+    record.setParameters(new Object[]{ new Date() });
     record.setLoggerName("com.example.LegacyJulCaller");
 
     final String formatted = new LogFormatter().format(record);

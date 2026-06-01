@@ -25,8 +25,10 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.IntHashSet;
 
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -170,7 +172,7 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
    * call {@link #isFull(int)} to decide whether the loop can stop, discard.
    */
   protected static final class GroupAdmissionState {
-    private final java.util.HashMap<Object, Integer> perGroup = new java.util.HashMap<>();
+    private final HashMap<Object, Integer> perGroup = new HashMap<>();
     private final int                                 limit;
     private final int                                 groupSize;
     private       int                                 filledGroups = 0;
@@ -263,7 +265,7 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
       if (v instanceof Identifiable id) return id.getIdentity();
       return null;
     }
-    if (row instanceof com.arcadedb.query.sql.executor.Result r) {
+    if (row instanceof Result r) {
       if (r.getIdentity().isPresent())
         return r.getIdentity().get();
       Object v = r.getProperty("@rid");
@@ -300,7 +302,7 @@ public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
       if (distance instanceof Number n) return -n.floatValue();
       return Float.NaN;
     }
-    if (row instanceof com.arcadedb.query.sql.executor.Result r) {
+    if (row instanceof Result r) {
       final Object score = r.getProperty("score");
       if (score instanceof Number n) return n.floatValue();
       final Object dollar = r.getProperty("$score");

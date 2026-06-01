@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import java.text.*;
+import java.text.DecimalFormat;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

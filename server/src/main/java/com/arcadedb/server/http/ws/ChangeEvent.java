@@ -21,7 +21,7 @@ package com.arcadedb.server.http.ws;
 import com.arcadedb.database.Record;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.Locale;
 
 public class ChangeEvent {
   private final TYPE   type;

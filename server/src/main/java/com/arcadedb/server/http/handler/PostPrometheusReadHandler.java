@@ -26,7 +26,6 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;

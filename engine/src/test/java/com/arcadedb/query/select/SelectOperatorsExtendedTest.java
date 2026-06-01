@@ -26,7 +26,7 @@ import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -122,9 +122,8 @@ public class SelectOperatorsExtendedTest extends TestHelper {
 
     final List<Vertex> list = result.toList();
     assertThat(list).hasSize(11);
-    list.forEach(r -> {
-      assertThat(r.getInteger("id")).isBetween(10, 20);
-    });
+    list.forEach(r ->
+      assertThat(r.getInteger("id")).isBetween(10, 20));
     assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
   }
 

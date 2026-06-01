@@ -97,7 +97,7 @@ public class SQLFunctionRate extends SQLAggregatedFunction {
           // Counter reset detected: treat the current value as the increase from 0
           totalIncrease += currentValue;
         else
-          totalIncrease += (currentValue - prevValue);
+          totalIncrease += currentValue - prevValue;
         prevValue = currentValue;
       }
 

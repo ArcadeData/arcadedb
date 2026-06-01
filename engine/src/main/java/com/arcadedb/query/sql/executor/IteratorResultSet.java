@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Document;
 
-import java.util.*;
+import java.util.Iterator;
 
 /**
  * Created by luigidellaquila on 07/07/16.

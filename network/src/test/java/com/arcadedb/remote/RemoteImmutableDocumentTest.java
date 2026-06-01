@@ -19,13 +19,14 @@
 package com.arcadedb.remote;
 
 import com.arcadedb.database.RID;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentMatchers;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;

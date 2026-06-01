@@ -22,7 +22,10 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.function.FunctionRegistry;
 import com.arcadedb.query.sql.executor.SQLFunction;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Template for SQL function factories.

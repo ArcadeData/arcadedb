@@ -41,7 +41,7 @@ import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 import org.apache.tinkerpop.gremlin.util.iterator.EmptyIterator;
 
 import java.util.*;
-import java.util.function.*;
+import java.util.function.Supplier;
 
 public class ArcadeFilterByIndexStep<S, E extends Element> extends AbstractStep<S, E> implements AutoCloseable, Configuring {
   private final       List<IndexCursor>     indexCursors;

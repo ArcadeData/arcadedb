@@ -43,7 +43,8 @@ import java.io.File;
 import java.time.LocalDateTime;
 import java.util.List;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.fail;
 
 
 /**
@@ -110,14 +111,13 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
     });
 
     // Create composite index AFTER data exists (client's scenario)
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildTypeIndex("InteliVertex", new String[] { "Name", "ModifiedOn" })
           .withType(Schema.INDEX_TYPE.LSM_TREE)
           .withUnique(false)
           .withPageSize(LSMTreeIndexAbstract.DEF_PAGE_SIZE)
           .withNullStrategy(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP)
-          .create();
-    });
+          .create());
   }
 
   @Test
@@ -158,14 +158,13 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
   @Test
   void selectWithNullSecondFieldInCompositeIndex() {
     // Insert a record without ModifiedOn (null second index field)
-    database.transaction(() -> {
+    database.transaction(() ->
       database.newVertex("Study")
           .set("ID", "id-nodate")
           .set("Name", "StudyNoDate")
           .set("_isDeleted", false)
           .set("_isDisabled", false)
-          .save();
-    });
+          .save());
 
     database.transaction(() -> {
       final ResultSet result = database.query("sql",

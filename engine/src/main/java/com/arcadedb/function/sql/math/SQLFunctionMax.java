@@ -23,7 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
 import com.arcadedb.schema.Type;
 
-import java.util.*;
+import java.util.Collection;
 
 /**
  * Compute the maximum value for a field. Uses the context to save the last maximum number. When different Number class are used,

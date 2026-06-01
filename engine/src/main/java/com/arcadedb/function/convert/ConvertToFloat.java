@@ -55,8 +55,8 @@ public class ConvertToFloat extends AbstractConvertFunction {
       return ((Number) args[0]).doubleValue();
     }
 
-    if (args[0] instanceof Boolean) {
-      return ((Boolean) args[0]) ? 1.0 : 0.0;
+    if (args[0] instanceof Boolean b) {
+      return b ? 1.0 : 0.0;
     }
 
     if (args[0] instanceof String) {

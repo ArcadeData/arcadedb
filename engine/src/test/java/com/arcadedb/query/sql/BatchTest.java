@@ -25,8 +25,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -100,7 +98,7 @@ class BatchTest extends TestHelper {
   void whileWithReturn() {
     database.command("sql", "CREATE DOCUMENT TYPE TestWhileWithReturn");
 
-    database.transaction(() -> {
+    database.transaction(() ->
 
       database.command("sqlscript", """
           LET $i = 0;
@@ -110,8 +108,7 @@ class BatchTest extends TestHelper {
               RETURN;
             }
             LET $i = $i + 1;
-          }""");
-    });
+          }"""));
 
     final ResultSet result = database.query("sql", "select from TestWhileWithReturn order by id");
     for (int i = 0; i < 5; i++) {
@@ -262,9 +259,8 @@ class BatchTest extends TestHelper {
   @Test
   void fromSingleResultReadValueFromField() {
     database.command("sql", "CREATE DOCUMENT TYPE DocumentType");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO DocumentType set field = 'aaaa' ");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO DocumentType set field = 'aaaa' "));
 
     final ResultSet result = database.command("sqlscript", """
         LET row = select from DocumentType;
@@ -279,12 +275,11 @@ class BatchTest extends TestHelper {
   void dynamicDocumentTypeName() {
     database.command("sql", "CREATE DOCUMENT TYPE TheDoc");
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET docType = 'TheDoc';
           LET d =INSERT INTO $docType SET id = 1;
-          """);
-    });
+          """));
 
     assertThat(database.query("sql", "SELECT count() AS value FROM TheDoc").next().<Long>getProperty("value")).isEqualTo(1);
   }
@@ -295,7 +290,7 @@ class BatchTest extends TestHelper {
     database.command("sql", "CREATE VERTEX TYPE V2");
     database.command("sql", "CREATE EDGE TYPE HasSource");
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET numbers = [1, 2, 3];
           LET vTypes = ['V1', 'V2'];
@@ -304,8 +299,7 @@ class BatchTest extends TestHelper {
                  CREATE VERTEX $vType SET id = $i, vType = 'V2';
             }
           }
-          """);
-    });
+          """));
 
     assertThat(database.query("sql", "SELECT count() AS value FROM V1").next().<Long>getProperty("value")).isEqualTo(3);
     assertThat(database.query("sql", "SELECT count() AS value FROM V2").next().<Long>getProperty("value")).isEqualTo(3);

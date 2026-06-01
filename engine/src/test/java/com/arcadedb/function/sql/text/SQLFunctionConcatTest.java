@@ -66,7 +66,7 @@ class SQLFunctionConcatTest {
 
   @Test
   void query() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionConcat", (db) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionConcat", db -> {
       setUpDatabase(db);
       ResultSet result = db.query("sql", "select concat(name, ' ') as concat from Person");
       assertThat(result.hasNext()).isTrue();

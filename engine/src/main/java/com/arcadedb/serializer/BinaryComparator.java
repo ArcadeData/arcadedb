@@ -25,10 +25,12 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.utility.DateUtils;
 
-import java.math.*;
-import java.time.chrono.*;
-import java.time.temporal.*;
-import java.util.*;
+import java.math.BigDecimal;
+import java.time.chrono.ChronoLocalDate;
+import java.time.chrono.ChronoLocalDateTime;
+import java.time.temporal.ChronoUnit;
+import java.util.List;
+import java.util.Map;
 
 import static com.arcadedb.utility.CollectionUtils.arrayToList;
 
@@ -61,7 +63,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = ((Boolean) value2) ? 1 : 0;
+        v2 = (Boolean) value2 ? 1 : 0;
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -93,7 +95,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = ((Boolean) value2) ? 1 : 0;
+        v2 = (Boolean) value2 ? 1 : 0;
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -125,7 +127,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (short) (((Boolean) value2) ? 1 : 0);
+        v2 = (short) ((Boolean) value2 ? 1 : 0);
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -169,7 +171,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = ((Boolean) value2) ? 1 : 0;
+        v2 = (Boolean) value2 ? 1 : 0;
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -201,7 +203,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (float) (((Boolean) value2) ? 1 : 0);
+        v2 = (float) ((Boolean) value2 ? 1 : 0);
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -233,7 +235,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = (byte) (((Boolean) value2) ? 1 : 0);
+        v2 = (byte) ((Boolean) value2 ? 1 : 0);
         break;
 
       case BinaryTypes.TYPE_STRING:
@@ -248,7 +250,7 @@ public class BinaryComparator {
     }
 
     case BinaryTypes.TYPE_BOOLEAN: {
-      final int v1 = ((Boolean) value1) ? 1 : 0;
+      final int v1 = (Boolean) value1 ? 1 : 0;
       final int v2;
 
       switch (type2) {
@@ -265,7 +267,7 @@ public class BinaryComparator {
         break;
 
       case BinaryTypes.TYPE_BOOLEAN:
-        v2 = ((Boolean) value2) ? 1 : 0;
+        v2 = (Boolean) value2 ? 1 : 0;
         break;
 
       case BinaryTypes.TYPE_STRING:

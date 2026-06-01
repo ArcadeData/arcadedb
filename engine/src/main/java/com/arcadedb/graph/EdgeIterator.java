@@ -24,8 +24,8 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.NoSuchElementException;
+import java.util.logging.Level;
 
 public class EdgeIterator extends ResettableIteratorBase<Edge> {
   private final RID              vertex;

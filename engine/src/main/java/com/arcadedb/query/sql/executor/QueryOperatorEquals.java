@@ -25,7 +25,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.Set;
 
 public class QueryOperatorEquals {
   public static boolean equals(Object left, Object right) {

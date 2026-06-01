@@ -26,7 +26,7 @@ import com.arcadedb.query.sql.executor.DDLExecutionPlan;
 import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Created by luigidellaquila on 12/08/16.

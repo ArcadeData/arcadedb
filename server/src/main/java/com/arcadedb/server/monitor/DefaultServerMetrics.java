@@ -18,8 +18,8 @@
  */
 package com.arcadedb.server.monitor;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Stores the metrics in RAM.

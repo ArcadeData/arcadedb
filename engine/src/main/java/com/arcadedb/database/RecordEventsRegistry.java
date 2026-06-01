@@ -18,7 +18,6 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
 import com.arcadedb.event.AfterRecordReadListener;
@@ -28,8 +27,8 @@ import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.event.BeforeRecordReadListener;
 import com.arcadedb.event.BeforeRecordUpdateListener;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class RecordEventsRegistry implements RecordEvents {
   private final List<BeforeRecordCreateListener> beforeCreateListeners = new CopyOnWriteArrayList<>();

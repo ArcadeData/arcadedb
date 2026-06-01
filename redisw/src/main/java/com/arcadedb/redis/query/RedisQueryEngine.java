@@ -19,7 +19,6 @@
 package com.arcadedb.redis.query;
 
 import com.arcadedb.ContextConfiguration;
-import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.MutableDocument;
@@ -47,8 +46,9 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.NumberUtils;
 
 import java.util.*;
-import java.util.logging.*;
-import java.util.regex.*;
+import java.util.logging.Level;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Query engine for executing Redis commands via the HTTP API.
@@ -203,13 +203,13 @@ public class RedisQueryEngine implements QueryEngine {
       }
 
       final String upperCmd = trimmed.toUpperCase(Locale.ENGLISH);
-      if (upperCmd.equals("MULTI")) {
+      if ("MULTI".equals(upperCmd)) {
         inTransaction = true;
         continue;
-      } else if (upperCmd.equals("EXEC")) {
+      } else if ("EXEC".equals(upperCmd)) {
         // Execute all queued commands in a transaction
         return executeTransaction(commands);
-      } else if (upperCmd.equals("DISCARD")) {
+      } else if ("DISCARD".equals(upperCmd)) {
         // Discard all queued commands
         commands.clear();
         return createResultSet("OK");

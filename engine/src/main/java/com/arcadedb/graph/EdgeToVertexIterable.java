@@ -18,7 +18,7 @@
  */
 package com.arcadedb.graph;
 
-import java.util.*;
+import java.util.Iterator;
 
 /**
  * Created by luigidellaquila on 02/07/16.

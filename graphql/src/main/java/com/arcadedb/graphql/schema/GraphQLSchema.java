@@ -42,6 +42,7 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
+import com.arcadedb.schema.Type;
 
 import java.util.*;
 
@@ -438,7 +439,7 @@ public class GraphQLSchema {
     return result;
   }
 
-  private static String mapDatabaseTypeToGraphQL(final com.arcadedb.schema.Type type) {
+  private static String mapDatabaseTypeToGraphQL(final Type type) {
     if (type == null)
       return "String";
     return switch (type) {

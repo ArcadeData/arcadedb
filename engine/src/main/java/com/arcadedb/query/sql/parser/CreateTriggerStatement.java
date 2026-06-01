@@ -60,7 +60,7 @@ public class CreateTriggerStatement extends DDLStatement {
     }
 
     final String timingStr = timing.getStringValue().toUpperCase();
-    if (!timingStr.equals("BEFORE") && !timingStr.equals("AFTER")) {
+    if (!"BEFORE".equals(timingStr) && !"AFTER".equals(timingStr)) {
       throw new CommandSQLParsingException("Trigger timing must be BEFORE or AFTER");
     }
 
@@ -69,8 +69,8 @@ public class CreateTriggerStatement extends DDLStatement {
     }
 
     final String eventStr = event.getStringValue().toUpperCase();
-    if (!eventStr.equals("CREATE") && !eventStr.equals("READ") &&
-        !eventStr.equals("UPDATE") && !eventStr.equals("DELETE")) {
+    if (!"CREATE".equals(eventStr) && !"READ".equals(eventStr) &&
+        !"UPDATE".equals(eventStr) && !"DELETE".equals(eventStr)) {
       throw new CommandSQLParsingException("Trigger event must be CREATE, READ, UPDATE, or DELETE");
     }
 
@@ -83,7 +83,7 @@ public class CreateTriggerStatement extends DDLStatement {
     }
 
     final String actionTypeStr = actionType.getStringValue().toUpperCase();
-    if (!actionTypeStr.equals("SQL") && !actionTypeStr.equals("JAVASCRIPT") && !actionTypeStr.equals("JAVA")) {
+    if (!"SQL".equals(actionTypeStr) && !"JAVASCRIPT".equals(actionTypeStr) && !"JAVA".equals(actionTypeStr)) {
       throw new CommandSQLParsingException("Trigger action type must be SQL, JAVASCRIPT, or JAVA");
     }
 

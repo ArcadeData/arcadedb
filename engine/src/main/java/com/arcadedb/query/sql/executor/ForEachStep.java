@@ -26,7 +26,8 @@ import com.arcadedb.query.sql.parser.IfStatement;
 import com.arcadedb.query.sql.parser.ReturnStatement;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 19/09/16.

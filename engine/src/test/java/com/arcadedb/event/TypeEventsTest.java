@@ -21,12 +21,10 @@ package com.arcadedb.event;
 import com.arcadedb.TestHelper;
 import com.arcadedb.graph.MutableVertex;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
-import org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 /**
  * @author Luca Garulli (l.garulli@arcadedata.com)

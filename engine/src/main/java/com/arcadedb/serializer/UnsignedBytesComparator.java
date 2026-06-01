@@ -20,7 +20,7 @@ package com.arcadedb.serializer;
 
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.VarHandle;
-import java.nio.*;
+import java.nio.ByteOrder;
 
 /**
  * This class was inspired by Guava's UnsignedBytes, under Apache 2 license.

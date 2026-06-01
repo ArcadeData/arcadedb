@@ -65,14 +65,14 @@ public class BasicCommandContext implements CommandContext {
     if (firstPart.startsWith("$"))
       firstPart = firstPart.substring(1);
 
-    if (firstPart.equalsIgnoreCase("CONTEXT"))
+    if ("CONTEXT".equalsIgnoreCase(firstPart))
       result = getVariables();
-    else if (firstPart.equalsIgnoreCase("PARENT")) {
+    else if ("PARENT".equalsIgnoreCase(firstPart)) {
       if (parent != null && !otherParts.isEmpty())
         return parent.getVariablePath(otherParts);
       result = parent;
 
-    } else if (firstPart.equalsIgnoreCase("ROOT")) {
+    } else if ("ROOT".equalsIgnoreCase(firstPart)) {
       CommandContext p = this;
       while (p.getParent() != null)
         p = p.getParent();
@@ -152,11 +152,11 @@ public class BasicCommandContext implements CommandContext {
       }
     }
 
-    if (name.equalsIgnoreCase("CONTEXT"))
+    if ("CONTEXT".equalsIgnoreCase(name))
       result = getVariables();
-    else if (name.equalsIgnoreCase("PARENT"))
+    else if ("PARENT".equalsIgnoreCase(name))
       result = parent;
-    else if (name.equalsIgnoreCase("ROOT")) {
+    else if ("ROOT".equalsIgnoreCase(name)) {
       CommandContext p = this;
       while (p.getParent() != null)
         p = p.getParent();
@@ -188,7 +188,7 @@ public class BasicCommandContext implements CommandContext {
     if (this.variables != null && variables.containsKey(name)) {
       return variables.get(name);
     }
-    if (parent != null && parent instanceof BasicCommandContext context) {
+    if (parent instanceof BasicCommandContext context) {
       return context.getVariableFromParentHierarchy(name);
     }
     return null;

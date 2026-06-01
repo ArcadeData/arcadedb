@@ -26,7 +26,7 @@ import com.arcadedb.engine.WALFile;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 
-import java.util.*;
+import java.util.UUID;
 
 public class PerformanceComplexIndexTest {
   private static final int    TOT       = 10_000_000;

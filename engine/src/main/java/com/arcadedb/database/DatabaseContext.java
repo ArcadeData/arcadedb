@@ -23,8 +23,8 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Thread local to store transaction data.

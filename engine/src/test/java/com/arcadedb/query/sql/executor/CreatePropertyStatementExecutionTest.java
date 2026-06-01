@@ -148,22 +148,19 @@ class CreatePropertyStatementExecutionTest extends TestHelper {
       validInvoice[0].save();
     });
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    assertThatThrownBy(() -> database.transaction(() ->
       database.newDocument("Invoice").set("products",//
-        List.of(database.newDocument("Invoice").save())).save();
-    })).isInstanceOf(ValidationException.class);
+        List.of(database.newDocument("Invoice").save())).save())).isInstanceOf(ValidationException.class);
 
     assertThatThrownBy(() -> validInvoice[0].set("tags", List.of(3, "hard to close")).save()).isInstanceOf(ValidationException.class);
 
     assertThatThrownBy(() -> validInvoice[0].set("settings", Map.of("test", 10F)).save()).isInstanceOf(ValidationException.class);
 
-    assertThatThrownBy(() -> database.transaction(() -> {
-      validInvoice[0].set("mainProduct", database.newDocument("Invoice").save()).save();
-    })).isInstanceOf(ValidationException.class);
+    assertThatThrownBy(() -> database.transaction(() ->
+      validInvoice[0].set("mainProduct", database.newDocument("Invoice").save()).save())).isInstanceOf(ValidationException.class);
 
-    assertThatThrownBy(() -> database.transaction(() -> {
-      validInvoice[0].newEmbeddedDocument("Invoice", "embedded").save();
-    })).isInstanceOf(ValidationException.class);
+    assertThatThrownBy(() -> database.transaction(() ->
+      validInvoice[0].newEmbeddedDocument("Invoice", "embedded").save())).isInstanceOf(ValidationException.class);
   }
 
   @Test
@@ -216,9 +213,8 @@ class CreatePropertyStatementExecutionTest extends TestHelper {
     assertThat(nameProperty.getType()).isEqualTo(Type.STRING);
     assertThat(nameProperty.isHidden()).isTrue();
 
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO testHiddenProperty SET name = 'hidden' , no_secret = 'seeme' ").close();
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO testHiddenProperty SET name = 'hidden' , no_secret = 'seeme' ").close());
 
     ResultSet result = database.query("sql", "SELECT * FROM testHiddenProperty");
     assertThat(result.hasNext()).isTrue();

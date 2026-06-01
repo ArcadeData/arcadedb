@@ -24,7 +24,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.PatternConst;
 
-import java.text.*;
+import java.text.Normalizer;
 
 /**
  * @author Johann Sorel (Geomatys)

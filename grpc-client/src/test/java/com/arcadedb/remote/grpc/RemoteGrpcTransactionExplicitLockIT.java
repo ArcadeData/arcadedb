@@ -139,10 +139,9 @@ class RemoteGrpcTransactionExplicitLockIT extends BaseGraphServerTest {
   @Test
   void shouldRequireTypeOrBucketForLock() {
     // LOCK command requires TYPE or BUCKET - empty lock is not valid
-    database.transaction(() -> {
+    database.transaction(() ->
       // Just perform operations without explicit locking
-      database.command("sql", "CREATE VERTEX TestVertex SET id = 5");
-    });
+      database.command("sql", "CREATE VERTEX TestVertex SET id = 5"));
   }
 
   @Test

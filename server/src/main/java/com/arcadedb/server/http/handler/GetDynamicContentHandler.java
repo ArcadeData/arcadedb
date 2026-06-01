@@ -30,9 +30,13 @@ import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.Headers;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
+import java.util.UUID;
+import java.util.logging.Level;
 
 public class GetDynamicContentHandler extends AbstractServerHttpHandler {
 
@@ -54,7 +58,7 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
       // UNAUTHORIZED ACCESS TO RELATIVE PATH
       return new ExecutionResponse(404, "Not Found");
 
-    if (uri.isEmpty() || uri.equals("/"))
+    if (uri.isEmpty() || "/".equals(uri))
       uri = "/index.html";
 
     if (!uri.contains("."))
@@ -174,11 +178,11 @@ public class GetDynamicContentHandler extends AbstractServerHttpHandler {
         if (assignmentPos < 0) {
           // READ
           final String variableName = command.substring("var:".length());
-          if (variableName.equalsIgnoreCase("swVersion"))
+          if ("swVersion".equalsIgnoreCase(variableName))
             buffer.append(Constants.getVersion());
-          else if (variableName.equalsIgnoreCase("now"))
+          else if ("now".equalsIgnoreCase(variableName))
             buffer.append(System.currentTimeMillis());
-          else if (variableName.equalsIgnoreCase("uuid"))
+          else if ("uuid".equalsIgnoreCase(variableName))
             buffer.append(UUID.randomUUID());
           else
             buffer.append(variables.get(variableName));

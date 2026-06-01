@@ -19,7 +19,7 @@
 /* ParserGeneratorCCOptions:SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import java.io.*;
+import java.io.IOException;
 
 /**
  * An implementation of interface CharStream, where the stream is assumed to
@@ -331,7 +331,7 @@ public abstract class AbstractCharStream implements CharStream {
       break;
     case '\t':
       m_nColumnNo--;
-      m_nColumnNo += (m_nTabSize - (m_nColumnNo % m_nTabSize));
+      m_nColumnNo += m_nTabSize - (m_nColumnNo % m_nTabSize);
       break;
     }
 

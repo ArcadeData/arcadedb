@@ -268,7 +268,7 @@ public final class IntIntHashMap {
   private void resize() {
     // Grow when the table is half live entries and half tombstones, to bound probe length.
     // If most of the threshold is tombstones, keep the same capacity and just rebuild.
-    final int newCapacity = (size > (threshold >>> 1)) ? capacity << 1 : capacity;
+    final int newCapacity = size > (threshold >>> 1) ? capacity << 1 : capacity;
     final int newMask = newCapacity - 1;
     final int[] newKeys = new int[newCapacity];
     final int[] newValues = new int[newCapacity];

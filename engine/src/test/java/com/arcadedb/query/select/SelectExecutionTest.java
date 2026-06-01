@@ -29,9 +29,12 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.stream.*;
+import java.util.List;
+import java.util.Spliterator;
+import java.util.Spliterators;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
+import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.fail;
@@ -148,7 +151,7 @@ public class SelectExecutionTest extends TestHelper {
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(3) || v.getString("name").equals("John")).isTrue();
+        assertThat(v.getInteger("id").equals(3) || "John".equals(v.getString("name"))).isTrue();
       }
     }
 
@@ -159,7 +162,7 @@ public class SelectExecutionTest extends TestHelper {
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(3) || v.getString("name").equals("John2")).isTrue();
+        assertThat(v.getInteger("id").equals(3) || "John2".equals(v.getString("name"))).isTrue();
       }
     }
 
@@ -170,7 +173,7 @@ public class SelectExecutionTest extends TestHelper {
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(-1) || v.getString("name").equals("John")).isTrue();
+        assertThat(v.getInteger("id").equals(-1) || "John".equals(v.getString("name"))).isTrue();
       }
     }
   }
@@ -185,8 +188,8 @@ public class SelectExecutionTest extends TestHelper {
 
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
-        assertThat(v.getInteger("id").equals(3) && v.getString("name").equals("John2") ||//
-            v.getString("name").equals("John")).isTrue();
+        assertThat(v.getInteger("id").equals(3) && "John2".equals(v.getString("name")) ||//
+            "John".equals(v.getString("name"))).isTrue();
       }
     }
 
@@ -199,7 +202,7 @@ public class SelectExecutionTest extends TestHelper {
       for (SelectIterator<Vertex> result = select.parameter("value", 3).vertices(); result.hasNext(); ) {
         final Vertex v = result.next();
         assertThat(v.getInteger("id").equals(3) ||//
-            v.getString("name").equals("John2") && v.getString("name").equals("John")).isTrue();
+            "John2".equals(v.getString("name")) && "John".equals(v.getString("name"))).isTrue();
       }
     }
   }
@@ -260,13 +263,12 @@ public class SelectExecutionTest extends TestHelper {
 
   @Test
   void okUpdate() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.select().fromType("Vertex")//
           .where().property("id").lt().value(10)//
           .and().property("name").eq().value("John")//
           .limit(10).vertices()//
-          .forEachRemaining(a -> a.modify().set("modified", true).save());
-    });
+          .forEachRemaining(a -> a.modify().set("modified", true).save()));
 
     database.select().fromType("Vertex")//
         .where().property("id").lt().value(10)//
@@ -389,11 +391,10 @@ public class SelectExecutionTest extends TestHelper {
 
   @Test
   void errorMissingParameter() {
-    expectingException(() -> {
+    expectingException(() ->
       database.select().fromType("Vertex")//
           .where().property("id").eq().parameter("value")//
-          .vertices().nextOrNull();
-    }, IllegalArgumentException.class, "Missing parameter 'value'");
+          .vertices().nextOrNull(), IllegalArgumentException.class, "Missing parameter 'value'");
   }
 
   @Test

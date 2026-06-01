@@ -37,6 +37,7 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
+import java.util.logging.Level;
 
 /**
  * REBUILD TYPE typeName [POLYMORPHIC] [WITH batchSize = N, repartition = true] - re-serialises records to apply
@@ -83,7 +84,7 @@ public class RebuildTypeStatement extends DDLStatement {
     boolean repartition = false;
     for (final Map.Entry<Expression, Expression> e : settings.entrySet()) {
       final String key = e.getKey().toString();
-      if (key.equalsIgnoreCase("batchSize")) {
+      if ("batchSize".equalsIgnoreCase(key)) {
         final Object raw = e.getValue().value;
         try {
           batchSize = Integer.parseInt(raw == null ? "null" : raw.toString());
@@ -97,7 +98,7 @@ public class RebuildTypeStatement extends DDLStatement {
         if (batchSize <= 0)
           throw new CommandSQLParsingException(
               "REBUILD TYPE setting 'batchSize' must be a positive integer, got: " + batchSize);
-      } else if (key.equalsIgnoreCase("repartition")) {
+      } else if ("repartition".equalsIgnoreCase(key)) {
         // Boolean opt-in. When true, every record whose current bucket no longer matches its
         // partition strategy's hash is deleted from its current bucket and re-inserted into the
         // target bucket - which gives it a NEW RID. The flag is cleared on full success only.
@@ -244,7 +245,7 @@ public class RebuildTypeStatement extends DDLStatement {
           // it alone would overstate progress until the move phase runs.
           final long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
           final long pendingMoves = finalRepartition ? count[0] - scanCommittedSaves[0] : 0L;
-          LogManager.instance().log(this, java.util.logging.Level.INFO,
+          LogManager.instance().log(this, Level.INFO,
               "REBUILD TYPE '%s': %,d records visited, %,d saved-and-committed, %,d buffered for move (last batch=%,d, elapsed=%,d ms)",
               null, typeName.getStringValue(), count[0], scanCommittedSaves[0], pendingMoves, finalBatchSize, elapsedMs);
           db.begin();
@@ -303,7 +304,7 @@ public class RebuildTypeStatement extends DDLStatement {
       if (finalRepartition && type instanceof LocalDocumentType ldt)
         ldt.setNeedsRepartition(false);
       final long elapsedMs = (System.nanoTime() - startNanos) / 1_000_000L;
-      LogManager.instance().log(this, java.util.logging.Level.INFO,
+      LogManager.instance().log(this, Level.INFO,
           "REBUILD TYPE '%s' completed: %,d records re-serialised (repartition moves=%,d) in %,d ms",
           null, typeName.getStringValue(), count[0], moved[0], elapsedMs);
     } catch (Exception e) {
@@ -357,7 +358,7 @@ public class RebuildTypeStatement extends DDLStatement {
           + "queued record updates haven't been flushed yet. Re-run REBUILD TYPE outside a transaction (or "
           + "commit and re-run) to drop the now-empty paired buckets.";
       result.setProperty("warning", warning);
-      LogManager.instance().log(this, java.util.logging.Level.WARNING, warning);
+      LogManager.instance().log(this, Level.WARNING, warning);
     }
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);

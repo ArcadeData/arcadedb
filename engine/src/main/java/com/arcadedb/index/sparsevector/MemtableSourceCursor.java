@@ -22,7 +22,6 @@ import com.arcadedb.database.RID;
 
 import java.io.IOException;
 import java.util.Iterator;
-import java.util.NoSuchElementException;
 
 /**
  * {@link SourceCursor} backed by an in-memory {@link Memtable}. Iterates one dim's postings in

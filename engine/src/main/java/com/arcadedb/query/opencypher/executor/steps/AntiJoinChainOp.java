@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.IntHashSet;
@@ -150,7 +151,7 @@ public final class AntiJoinChainOp implements CountOp {
     if (anchorLabel == null || !db.getSchema().existsType(anchorLabel))
       return 0;
 
-    final boolean anchorIsSource = (antiJoinSourceIdx == 0);
+    final boolean anchorIsSource = antiJoinSourceIdx == 0;
 
     // Pre-fetch NeighborViews for each hop up to the check position
     final NeighborView[] hopViews = new NeighborView[laterIdx];
@@ -441,7 +442,7 @@ public final class AntiJoinChainOp implements CountOp {
 
     final int hops = edgeTypes.length;
     final int checkPos = Math.max(antiJoinSourceIdx, antiJoinTargetIdx);
-    final boolean anchorIsSource = (antiJoinSourceIdx == 0);
+    final boolean anchorIsSource = antiJoinSourceIdx == 0;
 
     // Verify all labels up to checkPos are defined (needed for map construction)
     for (int i = 0; i <= checkPos; i++) {
@@ -571,7 +572,7 @@ public final class AntiJoinChainOp implements CountOp {
       return map;
 
     // Try GAV provider for accelerated neighbor lookups
-    final GraphTraversalProvider gavProvider = com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(db, edgeType);
+    final GraphTraversalProvider gavProvider = GraphTraversalProviderRegistry.findProvider(db, edgeType);
 
     for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
       final RID vertexRid = it.next().getIdentity();
@@ -611,7 +612,7 @@ public final class AntiJoinChainOp implements CountOp {
       return counts;
 
     // Try GAV provider for accelerated degree counting
-    final GraphTraversalProvider gavProvider = com.arcadedb.graph.GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
+    final GraphTraversalProvider gavProvider = GraphTraversalProviderRegistry.findProvider(db, edgeTypes);
 
     for (final Iterator<? extends Identifiable> it = db.iterateType(sourceLabel, true); it.hasNext(); ) {
       final RID vertexRid = it.next().getIdentity();

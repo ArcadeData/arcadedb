@@ -24,16 +24,21 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
 import java.io.*;
-import java.nio.file.*;
-import java.nio.file.attribute.*;
-import java.security.*;
-import java.util.*;
-import java.util.concurrent.*;
-import java.util.logging.*;
+import java.nio.file.Files;
+import java.nio.file.Paths;
+import java.nio.file.attribute.PosixFileAttributeView;
+import java.nio.file.attribute.PosixFilePermission;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.security.SecureRandom;
+import java.util.ArrayList;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.logging.Level;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-
-import java.util.HexFormat;
 
 public class ApiTokenConfiguration {
   public static final  String                                FILE_NAME    = "server-api-tokens.json";

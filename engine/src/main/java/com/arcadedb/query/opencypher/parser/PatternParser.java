@@ -145,7 +145,7 @@ public class PatternParser {
         if (value.startsWith("'") || value.startsWith("\"")) {
           // String literal - keep quotes for later processing
           parsedValue = value;
-        } else if (value.equalsIgnoreCase("true") || value.equalsIgnoreCase("false")) {
+        } else if ("true".equalsIgnoreCase(value) || "false".equalsIgnoreCase(value)) {
           // Boolean
           parsedValue = Boolean.parseBoolean(value);
         } else {

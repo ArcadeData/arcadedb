@@ -96,6 +96,6 @@ public class PostLoginHandler extends AbstractServerHttpHandler {
    */
   private String getHeaderValue(final HttpServerExchange exchange, final String headerName) {
     final HeaderValues values = exchange.getRequestHeaders().get(headerName);
-    return (values != null && !values.isEmpty()) ? values.getFirst() : null;
+    return values != null && !values.isEmpty() ? values.getFirst() : null;
   }
 }

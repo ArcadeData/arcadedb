@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.log.LogManager;
@@ -27,14 +26,16 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.*;
-import java.net.*;
-import java.util.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
+import java.util.Base64;
+import java.util.List;
 import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test for GitHub Issue #3122: Async commands should run in parallel.
@@ -57,7 +58,7 @@ class Issue3122AsyncParallelCommandsIT extends BaseGraphServerTest {
    */
   @Test
   void httpAsyncCommandsRunInParallel() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Verify the server has at least 2 async worker threads by default (fix for issue #3122)
       final Database database = getServer(0).getDatabase(getDatabaseName());
       final int parallelLevel = database.async().getParallelLevel();

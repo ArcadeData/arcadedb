@@ -41,7 +41,7 @@ import java.io.File;
  * baseline captures the current cost so future engine changes have something to compare against.
  */
 @Tag("benchmark")
-public class SelectCacheHitsBenchmark {
+class SelectCacheHitsBenchmark {
 
   private static final String DB_PATH = "target/databases/select-cache-hits-bench";
   private static final int    DOC_COUNT = 200;
@@ -125,9 +125,10 @@ public class SelectCacheHitsBenchmark {
         final long hitsPerRecord = hitsPerExecution / LIMIT;
 
         System.out.printf(
-            "[SelectCacheHitsBenchmark/%s] iterations=%d limit=%d %n" +
-            "  total cacheHits delta = %d (avg %d per execution, ~%d per returned record) %n" +
-            "  total cacheMiss delta = %d %n",
+            """
+            [SelectCacheHitsBenchmark/%s] iterations=%d limit=%d %n\
+              total cacheHits delta = %d (avg %d per execution, ~%d per returned record) %n\
+              total cacheMiss delta = %d %n""",
             label, MEASURED_ITERATIONS, LIMIT, deltaHits, hitsPerExecution, hitsPerRecord,
             deltaMiss);
       }

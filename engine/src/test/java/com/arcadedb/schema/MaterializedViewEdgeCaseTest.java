@@ -44,21 +44,19 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
       database.newDocument("Sensor").set("name", "temp3").set("value", 15).set("active", true).save();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("SensorAll")
           .withQuery("SELECT name, value FROM Sensor")
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
-          .create();
-    });
+          .create());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("SensorActive")
           .withQuery("SELECT name, value FROM Sensor WHERE active = true")
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
-          .create();
-    });
+          .create());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM SensorAll")) {
       assertThat(rs.stream().count()).isEqualTo(3);
@@ -74,54 +72,47 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
 
   @Test
   void cannotCreateViewWithExistingTypeName() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Conflict");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("Conflict"));
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    assertThatThrownBy(() -> database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("Conflict")
           .withQuery("SELECT FROM Conflict")
-          .create();
-    })).isInstanceOf(SchemaException.class)
+          .create())).isInstanceOf(SchemaException.class)
         .hasMessageContaining("Conflict");
   }
 
   @Test
   void cannotCreateViewWithDuplicateName() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Product");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("Product"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("ProductView")
           .withQuery("SELECT FROM Product")
-          .create();
-    });
+          .create());
 
-    assertThatThrownBy(() -> database.transaction(() -> {
+    assertThatThrownBy(() -> database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("ProductView")
           .withQuery("SELECT FROM Product")
-          .create();
-    })).isInstanceOf(SchemaException.class)
+          .create())).isInstanceOf(SchemaException.class)
         .hasMessageContaining("already exists");
   }
 
   @Test
   void viewWithEmptyResult() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("EmptySource");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("EmptySource"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("EmptySourceView")
           .withQuery("SELECT FROM EmptySource")
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
-          .create();
-    });
+          .create());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM EmptySourceView")) {
       assertThat(rs.stream().count()).isEqualTo(0);
@@ -145,19 +136,17 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
       database.newDocument("Inventory").set("sku", "C3").set("qty", 5).save();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("InvAll")
           .withQuery("SELECT sku, qty FROM Inventory")
-          .create();
-    });
+          .create());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("InvLowStock")
           .withQuery("SELECT sku, qty FROM Inventory WHERE qty < 15")
-          .create();
-    });
+          .create());
 
     // Close and reopen database
     database.close();
@@ -192,13 +181,12 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
             .save();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("EvenMeasurements")
           .withQuery("SELECT sensorId FROM Measurement WHERE even = true")
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
-          .create();
-    });
+          .create());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM EvenMeasurements")) {
       assertThat(rs.stream().count()).isEqualTo(500);
@@ -212,13 +200,12 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
       database.getSchema().getType("LogEntry").createProperty("message", Type.STRING);
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("LogEntryView")
           .withQuery("SELECT message FROM LogEntry")
           .withRefreshMode(MaterializedViewRefreshMode.INCREMENTAL)
-          .create();
-    });
+          .create());
 
     // Insert 3 records in one transaction
     database.transaction(() -> {
@@ -239,27 +226,24 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
       database.getSchema().getType("PeriodicSrc").createProperty("val", Type.INTEGER);
     });
 
-    database.transaction(() -> {
-      database.newDocument("PeriodicSrc").set("val", 1).save();
-    });
+    database.transaction(() ->
+      database.newDocument("PeriodicSrc").set("val", 1).save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("PeriodicView")
           .withQuery("SELECT val FROM PeriodicSrc")
           .withRefreshMode(MaterializedViewRefreshMode.PERIODIC)
           .withRefreshInterval(200)
-          .create();
-    });
+          .create());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM PeriodicView")) {
       assertThat(rs.stream().count()).isEqualTo(1);
     }
 
     // Add data after view creation
-    database.transaction(() -> {
-      database.newDocument("PeriodicSrc").set("val", 2).save();
-    });
+    database.transaction(() ->
+      database.newDocument("PeriodicSrc").set("val", 2).save());
 
     // Wait for the scheduler to trigger a refresh (interval = 200ms, wait 1s)
     Thread.sleep(1_000);
@@ -277,28 +261,25 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
       database.getSchema().getType("Transaction").createProperty("amount", Type.INTEGER);
     });
 
-    database.transaction(() -> {
-      database.newDocument("Transaction").set("category", "food").set("amount", 50).save();
-    });
+    database.transaction(() ->
+      database.newDocument("Transaction").set("category", "food").set("amount", 50).save());
 
     // Complex query with GROUP BY
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("TransactionSummary")
           .withQuery("SELECT category, sum(amount) as total FROM Transaction GROUP BY category")
-          .create();
-    });
+          .create());
 
     final MaterializedView complexView = database.getSchema().getMaterializedView("TransactionSummary");
     assertThat(complexView.isSimpleQuery()).isFalse();
 
     // Simple query with WHERE
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("TransactionFiltered")
           .withQuery("SELECT category, amount FROM Transaction WHERE amount > 10")
-          .create();
-    });
+          .create());
 
     final MaterializedView simpleView = database.getSchema().getMaterializedView("TransactionFiltered");
     assertThat(simpleView.isSimpleQuery()).isTrue();
@@ -311,17 +292,15 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
       database.getSchema().getType("Order").createProperty("amount", Type.INTEGER);
     });
 
-    database.transaction(() -> {
-      database.newDocument("Order").set("amount", 100).save();
-    });
+    database.transaction(() ->
+      database.newDocument("Order").set("amount", 100).save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("OrderSummary")
           .withQuery("SELECT amount FROM Order")
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
-          .create();
-    });
+          .create());
 
     // Dropping the source type must be blocked while the materialized view exists
     assertThatThrownBy(() -> database.transaction(() ->
@@ -338,9 +317,8 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
 
   @Test
   void queryClassifierHandlesAllComplexBranches() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("ClassifierTest");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("ClassifierTest"));
 
     // GROUP BY → complex
     assertThat(MaterializedViewQueryClassifier.isSimple(
@@ -380,17 +358,15 @@ class MaterializedViewEdgeCaseTest extends TestHelper {
       database.getSchema().getType("Report").createProperty("title", Type.STRING);
     });
 
-    database.transaction(() -> {
-      database.newDocument("Report").set("title", "Q1").save();
-    });
+    database.transaction(() ->
+      database.newDocument("Report").set("title", "Q1").save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("ReportView")
           .withQuery("SELECT title FROM Report")
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
-          .create();
-    });
+          .create());
 
     try (final ResultSet rs = database.query("sql", "SELECT FROM schema:materializedViews")) {
       assertThat(rs.hasNext()).isTrue();

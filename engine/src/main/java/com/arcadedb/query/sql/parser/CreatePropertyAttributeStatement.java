@@ -25,7 +25,8 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.schema.Property;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 public class CreatePropertyAttributeStatement extends SimpleNode {
   public Identifier settingName;
@@ -56,34 +57,34 @@ public class CreatePropertyAttributeStatement extends SimpleNode {
     final Object attrValue;
     if (this.settingValue == null) {
       attrValue = true;
-    } else if (attrName.equalsIgnoreCase("default")) {
+    } else if ("default".equalsIgnoreCase(attrName)) {
       attrValue = this.settingValue.toString();
     } else {
       attrValue = this.settingValue.execute((Identifiable) null, context);
     }
 
     try {
-      if (attrName.equalsIgnoreCase("readonly")) {
+      if ("readonly".equalsIgnoreCase(attrName)) {
         internalProp.setReadonly((boolean) attrValue);
-      } else if (attrName.equalsIgnoreCase("mandatory")) {
+      } else if ("mandatory".equalsIgnoreCase(attrName)) {
         internalProp.setMandatory((boolean) attrValue);
-      } else if (attrName.equalsIgnoreCase("notnull")) {
+      } else if ("notnull".equalsIgnoreCase(attrName)) {
         internalProp.setNotNull((boolean) attrValue);
-      } else if (attrName.equalsIgnoreCase("hidden")) {
+      } else if ("hidden".equalsIgnoreCase(attrName)) {
         internalProp.setHidden((boolean) attrValue);
-      } else if (attrName.equalsIgnoreCase("external")) {
+      } else if ("external".equalsIgnoreCase(attrName)) {
         internalProp.setExternal((boolean) attrValue);
-      } else if (attrName.equalsIgnoreCase("compression")) {
+      } else if ("compression".equalsIgnoreCase(attrName)) {
         internalProp.setCompression(String.valueOf(attrValue));
-      } else if (attrName.equalsIgnoreCase("max")) {
+      } else if ("max".equalsIgnoreCase(attrName)) {
         internalProp.setMax("" + attrValue);
-      } else if (attrName.equalsIgnoreCase("min")) {
+      } else if ("min".equalsIgnoreCase(attrName)) {
         internalProp.setMin("" + attrValue);
-      } else if (attrName.equalsIgnoreCase("default")) {
+      } else if ("default".equalsIgnoreCase(attrName)) {
         if (this.settingValue == null)
           throw new CommandExecutionException("Default value not set");
         internalProp.setDefaultValue("" + attrValue);
-      } else if (attrName.equalsIgnoreCase("regexp")) {
+      } else if ("regexp".equalsIgnoreCase(attrName)) {
         internalProp.setRegexp("" + attrValue);
       } else {
         throw new CommandExecutionException("Invalid attribute definition: '" + attrName + "'");

@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -171,7 +170,7 @@ public class OptionalMatchStep extends AbstractExecutionStep {
                 }
               } finally {
                 if (context.isProfiling())
-                  cost += (System.nanoTime() - begin);
+                  cost += System.nanoTime() - begin;
               }
             } else {
               // No more matches for current input, finalize it
@@ -235,7 +234,7 @@ public class OptionalMatchStep extends AbstractExecutionStep {
                 currentMatchResults = matchChainEnd.syncPull(context, Math.min(100, MAX_BUFFER_SIZE));
               } finally {
                 if (context.isProfiling())
-                  cost += (System.nanoTime() - begin);
+                  cost += System.nanoTime() - begin;
               }
             }
           }

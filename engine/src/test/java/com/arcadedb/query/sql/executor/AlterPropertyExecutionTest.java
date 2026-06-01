@@ -23,13 +23,12 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
-import java.time.*;
-import java.util.*;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 
-import static org.assertj.core.api.Assertions.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**

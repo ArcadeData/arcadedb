@@ -25,9 +25,9 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.Statement;
 
-import java.util.*;
+import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class RetryStep extends AbstractExecutionStep {
   public        List<Statement>       body;
@@ -43,7 +43,7 @@ public class RetryStep extends AbstractExecutionStep {
     this.body = statements;
     this.retries = retries;
     this.elseBody = elseStatements;
-    this.elseFail = !(Boolean.FALSE.equals(elseFail));
+    this.elseFail = !Boolean.FALSE.equals(elseFail);
     this.retryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
   }
 

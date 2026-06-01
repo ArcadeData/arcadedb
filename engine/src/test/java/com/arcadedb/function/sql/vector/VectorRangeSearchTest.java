@@ -23,6 +23,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 
+import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
@@ -116,8 +117,8 @@ class VectorRangeSearchTest extends TestHelper {
     final List<Float> scoresFiltered = readScores(filtered);
     // Only docs with score >= 0.5 are kept (1.0 and 0.7).
     assertThat(scoresFiltered).hasSize(2);
-    assertThat(scoresFiltered.get(0)).isCloseTo(1.0f, org.assertj.core.data.Offset.offset(0.01f));
-    assertThat(scoresFiltered.get(1)).isCloseTo(0.7f, org.assertj.core.data.Offset.offset(0.01f));
+    assertThat(scoresFiltered.get(0)).isCloseTo(1.0f, Offset.offset(0.01f));
+    assertThat(scoresFiltered.get(1)).isCloseTo(0.7f, Offset.offset(0.01f));
   }
 
   // --- helpers ---

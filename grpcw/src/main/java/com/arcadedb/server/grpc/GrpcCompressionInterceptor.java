@@ -58,7 +58,7 @@ class GrpcCompressionInterceptor implements ServerInterceptor {
 
     // Check if request is compressed
     String requestEncoding = headers.get(Metadata.Key.of("grpc-encoding", Metadata.ASCII_STRING_MARSHALLER));
-    boolean requestCompressed = requestEncoding != null && !requestEncoding.equals("identity");
+    boolean requestCompressed = requestEncoding != null && !"identity".equals(requestEncoding);
 
     final boolean clientAcceptsGzip =
         headers.get(GRPC_ACCEPT_ENCODING) != null && headers.get(GRPC_ACCEPT_ENCODING).contains("gzip");

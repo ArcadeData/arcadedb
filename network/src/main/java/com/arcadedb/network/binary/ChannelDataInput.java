@@ -21,7 +21,8 @@ package com.arcadedb.network.binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 
-import java.io.*;
+import java.io.IOException;
+import java.io.InputStream;
 
 public interface ChannelDataInput {
 

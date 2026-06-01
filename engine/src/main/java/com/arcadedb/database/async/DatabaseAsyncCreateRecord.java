@@ -23,7 +23,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class DatabaseAsyncCreateRecord implements DatabaseAsyncTask {
   public final Record            record;

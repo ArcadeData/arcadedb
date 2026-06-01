@@ -89,9 +89,8 @@ class LSMVectorIndexConcurrentMultiPageUpdateTest extends TestHelper {
     for (int i = 0; i < NUM_RECORDS; i++) {
       final String id = "record_" + i;
       final float[] zeroEmbedding = new float[EMBEDDING_DIM];
-      database.transaction(() -> {
-        database.command("sql", "INSERT INTO RecordV SET id=?, embedding=?", id, zeroEmbedding);
-      }, false, 3);
+      database.transaction(() ->
+        database.command("sql", "INSERT INTO RecordV SET id=?, embedding=?", id, zeroEmbedding), false, 3);
     }
 
     // Verify all records were created

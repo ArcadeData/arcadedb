@@ -41,6 +41,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.parallel.Isolated;
 
+import java.util.List;
 import java.util.Locale;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -316,7 +317,7 @@ class LocaleSensitivityTest {
   void multiVectorScoreMinMethodUnderTurkishLocale() {
     // "min".toUpperCase(tr_TR) -> "MİN" (i -> İ) != "MIN"
     final SQLFunctionMultiVectorScore fn = new SQLFunctionMultiVectorScore();
-    final java.util.List<Double> scores = java.util.List.of(0.9, 0.7, 0.8);
+    final List<Double> scores = List.of(0.9, 0.7, 0.8);
     final Object resultLower = fn.execute(null, null, null, new Object[]{scores, "min"}, null);
     final Object resultUpper = fn.execute(null, null, null, new Object[]{scores, "MIN"}, null);
     assertThat(resultLower).isEqualTo(resultUpper);

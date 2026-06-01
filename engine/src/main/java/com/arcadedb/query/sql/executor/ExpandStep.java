@@ -118,7 +118,7 @@ public class ExpandStep extends AbstractExecutionStep {
           break;
         } finally {
           if (context.isProfiling()) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }
@@ -166,7 +166,7 @@ public class ExpandStep extends AbstractExecutionStep {
         }
       } finally {
         if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
       }
     } while (true);
   }

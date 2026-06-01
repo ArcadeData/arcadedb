@@ -27,8 +27,10 @@ import com.arcadedb.utility.FileUtils;
 import org.awaitility.Awaitility;
 import org.junit.jupiter.api.Test;
 
+import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
@@ -173,7 +175,7 @@ class RaftBootstrapLateNewerJoinerIT extends BaseRaftHATest {
         .as("server 2's last-tx-id.bin must still exist (no snapshot reinstall happened)")
         .isTrue();
     final long onDiskLastTxId;
-    try (final java.io.DataInputStream in = new java.io.DataInputStream(new java.io.FileInputStream(lastTxIdFile))) {
+    try (final DataInputStream in = new DataInputStream(new FileInputStream(lastTxIdFile))) {
       onDiskLastTxId = in.readLong();
     }
     assertThat(onDiskLastTxId)

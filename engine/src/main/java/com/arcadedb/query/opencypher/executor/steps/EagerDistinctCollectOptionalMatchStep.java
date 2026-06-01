@@ -162,7 +162,7 @@ public class EagerDistinctCollectOptionalMatchStep extends AbstractExecutionStep
           results.add(resultRow);
         } finally {
           if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
         }
       }
     } else {

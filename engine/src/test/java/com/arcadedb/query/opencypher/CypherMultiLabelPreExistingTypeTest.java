@@ -61,10 +61,9 @@ class CypherMultiLabelPreExistingTypeTest {
   @Test
   void preExistingCompositeTypeDoesNotPreventLabelCreation() {
     // First, create a type with the composite name manually
-    database.transaction(() -> {
+    database.transaction(() ->
       // Use the new separator (tilde) for composite type name
-      database.getSchema().createVertexType("Kebab~Person");
-    });
+      database.getSchema().createVertexType("Kebab~Person"));
 
     // Now try to create a multi-label node
     database.transaction(() -> {
@@ -96,14 +95,12 @@ class CypherMultiLabelPreExistingTypeTest {
   @Test
   void preExistingCompositeTypeAllowsMatchByIndividualLabel() {
     // First, create a type with the composite name manually
-    database.transaction(() -> {
-      database.getSchema().createVertexType("Developer~Person");
-    });
+    database.transaction(() ->
+      database.getSchema().createVertexType("Developer~Person"));
 
     // Create a multi-label node
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Developer:Person {name: 'Alice'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Developer:Person {name: 'Alice'})"));
 
     // Match by Person should find the vertex
     final ResultSet personResult = database.query("opencypher",
@@ -159,14 +156,12 @@ class CypherMultiLabelPreExistingTypeTest {
   @Test
   void labelsFunctionWithPreExistingCompositeType() {
     // Create composite type first
-    database.transaction(() -> {
-      database.getSchema().createVertexType("Manager~Worker");
-    });
+    database.transaction(() ->
+      database.getSchema().createVertexType("Manager~Worker"));
 
     // Create multi-label node
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Manager:Worker {name: 'Bob'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Manager:Worker {name: 'Bob'})"));
 
     // Test labels() function
     final ResultSet result = database.query("opencypher",

@@ -417,7 +417,7 @@ public enum PostgresType {
     case CHAR -> {
       // Postgres "char" (OID 18) is a single byte on the wire.
       typeBuffer.putInt(1);
-      final char c = (value instanceof Character ch) ? ch : value.toString().charAt(0);
+      final char c = value instanceof Character ch ? ch : value.toString().charAt(0);
       typeBuffer.putByte((byte) c);
     }
     case DATE -> {

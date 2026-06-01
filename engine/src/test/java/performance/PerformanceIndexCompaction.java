@@ -28,8 +28,8 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.log.LogManager;
 
-import java.io.*;
-import java.util.logging.*;
+import java.io.IOException;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

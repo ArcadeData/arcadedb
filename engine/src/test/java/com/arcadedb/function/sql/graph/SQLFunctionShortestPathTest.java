@@ -41,7 +41,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void execute() throws Exception {
-    TestHelper.executeInNewDatabase("testExecute", (graph) -> {
+    TestHelper.executeInNewDatabase("testExecute", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
@@ -56,7 +56,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void executeOut() throws Exception {
-    TestHelper.executeInNewDatabase("testExecuteOut", (graph) -> {
+    TestHelper.executeInNewDatabase("testExecuteOut", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
@@ -73,7 +73,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void executeOnlyEdge1() throws Exception {
-    TestHelper.executeInNewDatabase("testExecuteOnlyEdge1", (graph) -> {
+    TestHelper.executeInNewDatabase("testExecuteOnlyEdge1", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
@@ -90,7 +90,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void executeOnlyEdge1AndEdge2() throws Exception {
-    TestHelper.executeInNewDatabase("testExecuteOnlyEdge1AndEdge2", (graph) -> {
+    TestHelper.executeInNewDatabase("testExecuteOnlyEdge1AndEdge2", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
@@ -106,7 +106,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void testLong() throws Exception {
-    TestHelper.executeInNewDatabase("testLong", (graph) -> {
+    TestHelper.executeInNewDatabase("testLong", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
@@ -125,7 +125,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void maxDepth1() throws Exception {
-    TestHelper.executeInNewDatabase("testMaxDepth1", (graph) -> {
+    TestHelper.executeInNewDatabase("testMaxDepth1", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
@@ -140,7 +140,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void maxDepth2() throws Exception {
-    TestHelper.executeInNewDatabase("testMaxDepth2", (graph) -> {
+    TestHelper.executeInNewDatabase("testMaxDepth2", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
@@ -155,7 +155,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void maxDepth3() throws Exception {
-    TestHelper.executeInNewDatabase("testMaxDepth3", (graph) -> {
+    TestHelper.executeInNewDatabase("testMaxDepth3", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
@@ -170,7 +170,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void maxDepth4() throws Exception {
-    TestHelper.executeInNewDatabase("testMaxDepth4", (graph) -> {
+    TestHelper.executeInNewDatabase("testMaxDepth4", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
@@ -185,7 +185,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void consolidatedOptionsMap() throws Exception {
-    TestHelper.executeInNewDatabase("testConsolidatedOptions", (graph) -> {
+    TestHelper.executeInNewDatabase("testConsolidatedOptions", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 
@@ -205,7 +205,7 @@ class SQLFunctionShortestPathTest {
 
   @Test
   void rejectsUnknownOption() throws Exception {
-    TestHelper.executeInNewDatabase("testShortestPathUnknownOption", (graph) -> {
+    TestHelper.executeInNewDatabase("testShortestPathUnknownOption", graph -> {
       setUpDatabase(graph);
       function = new SQLFunctionShortestPath();
 

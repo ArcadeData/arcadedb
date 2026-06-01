@@ -113,7 +113,7 @@ public class Column {
   }
 
   public void setNull(final int nodeId) {
-    nullBitset[nodeId >>> 6] |= (1L << (nodeId & 63));
+    nullBitset[nodeId >>> 6] |= 1L << (nodeId & 63);
   }
 
   private void clearNull(final int nodeId) {

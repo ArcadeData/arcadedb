@@ -27,8 +27,7 @@ import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
 import java.io.*;
 import java.net.*;
-import java.security.*;
-import java.security.SecureRandom;
+import java.security.KeyStore;
 
 public class SocketFactory {
   private       javax.net.SocketFactory socketFactory;

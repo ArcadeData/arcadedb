@@ -18,7 +18,7 @@
  */
 package com.arcadedb.utility;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Container for pair of non null objects.

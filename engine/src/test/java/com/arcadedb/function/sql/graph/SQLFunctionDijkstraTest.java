@@ -27,7 +27,9 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -41,7 +43,7 @@ public class SQLFunctionDijkstraTest {
   private SQLFunctionDijkstra functionDijkstra;
 
   public void setUp(final Database graph) throws Exception {
-    graph.transaction((() -> {
+    graph.transaction(() -> {
       graph.getSchema().createVertexType("node");
       graph.getSchema().createEdgeType("weight");
 
@@ -72,12 +74,12 @@ public class SQLFunctionDijkstraTest {
       e4.save();
 
       functionDijkstra = new SQLFunctionDijkstra();
-    }));
+    });
   }
 
   @Test
   void execute() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDijkstraTest", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDijkstraTest", graph -> {
       setUp(graph);
       final List<RID> result = functionDijkstra.execute(null, null, null, new Object[] { v1, v4, "'weight'" },
           new BasicCommandContext());
@@ -92,7 +94,7 @@ public class SQLFunctionDijkstraTest {
 
   @Test
   void executeWithOptionsMap() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDijkstraOptionsMap", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDijkstraOptionsMap", graph -> {
       setUp(graph);
 
       final Map<String, Object> options = new HashMap<>();
@@ -109,7 +111,7 @@ public class SQLFunctionDijkstraTest {
 
   @Test
   void rejectsUnknownOption() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDijkstraUnknownOption", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDijkstraUnknownOption", graph -> {
       setUp(graph);
 
       final Map<String, Object> options = new HashMap<>();

@@ -216,8 +216,9 @@ class RaftLeaderCrashWithExternalPropertyIT extends BaseRaftHATest {
           .as("server %d: primary bucket count for '%s'", i, VERTEX_TYPE)
           .isEqualTo(expectedRecordCount);
       assertThat(externalTotal)
-          .as("server %d: external bucket count must equal primary bucket count for '%s' "
-              + "(half-record indicates WAL replay applied only one half of the transaction)", i, VERTEX_TYPE)
+          .as("""
+              server %d: external bucket count must equal primary bucket count for '%s' \
+              (half-record indicates WAL replay applied only one half of the transaction)""", i, VERTEX_TYPE)
           .isEqualTo(expectedRecordCount);
     }
   }

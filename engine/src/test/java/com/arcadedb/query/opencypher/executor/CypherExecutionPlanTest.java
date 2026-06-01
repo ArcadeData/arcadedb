@@ -20,7 +20,6 @@ package com.arcadedb.query.opencypher.executor;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -343,10 +342,9 @@ class CypherExecutionPlanTest {
 
   @Test
   void shouldExecuteCreateQuery() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (p:Person {name: 'Dave', age: 40})");
-    });
+          "CREATE (p:Person {name: 'Dave', age: 40})"));
 
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name = 'Dave' RETURN p.age AS age");
@@ -359,10 +357,9 @@ class CypherExecutionPlanTest {
 
   @Test
   void shouldExecuteUpdateQuery() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (p:Person) WHERE p.name = 'Alice' SET p.age = 31");
-    });
+          "MATCH (p:Person) WHERE p.name = 'Alice' SET p.age = 31"));
 
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.age AS age");
@@ -375,10 +372,9 @@ class CypherExecutionPlanTest {
 
   @Test
   void shouldExecuteDeleteQuery() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (p:Person) WHERE p.name = 'Bob' DETACH DELETE p");
-    });
+          "MATCH (p:Person) WHERE p.name = 'Bob' DETACH DELETE p"));
 
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (p:Person) RETURN count(p) AS total");
@@ -391,10 +387,9 @@ class CypherExecutionPlanTest {
 
   @Test
   void shouldExecuteMergeQuery() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MERGE (p:Person {name: 'Eve'}) ON CREATE SET p.age = 28");
-    });
+          "MERGE (p:Person {name: 'Eve'}) ON CREATE SET p.age = 28"));
 
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name = 'Eve' RETURN p.age AS age");
@@ -407,10 +402,9 @@ class CypherExecutionPlanTest {
 
   @Test
   void shouldExecuteRemoveQuery() {
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (p:Person) WHERE p.name = 'Alice' REMOVE p.city");
-    });
+          "MATCH (p:Person) WHERE p.name = 'Alice' REMOVE p.city"));
 
     final ResultSet resultSet = database.query("opencypher",
         "MATCH (p:Person) WHERE p.name = 'Alice' RETURN p.city AS city");

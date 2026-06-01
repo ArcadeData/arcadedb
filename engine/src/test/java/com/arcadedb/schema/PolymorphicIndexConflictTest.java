@@ -89,9 +89,10 @@ class PolymorphicIndexConflictTest {
         // identifying the inheritance conflict, so the operator can fix the schema instead of
         // discovering a broken database hours later.
         assertThatThrownBy(() -> db.command("sql", "CREATE INDEX IF NOT EXISTS ON Legajo (cuij) UNIQUE"))
-            .as("creating a UNIQUE index on a sub-type whose parent already has a FULL_TEXT index "
-                + "on the same inherited property must raise a clear conflict error rather than silently "
-                + "dropping the parent's index")
+            .as("""
+                creating a UNIQUE index on a sub-type whose parent already has a FULL_TEXT index \
+                on the same inherited property must raise a clear conflict error rather than silently \
+                dropping the parent's index""")
             .isInstanceOf(IllegalArgumentException.class)
             .hasMessageContaining("Investigacion")
             .hasMessageContaining("cuij");

@@ -18,10 +18,14 @@
  */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.query.sql.antlr.SQLAntlrParser;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.*;
 
@@ -237,7 +241,7 @@ class SelectStatementTest extends AbstractParserTest {
   void emptyCollection() {
     final String query = "select from bar where name not in :param1";
     try {
-      final SelectStatement stm = (SelectStatement) new com.arcadedb.query.sql.antlr.SQLAntlrParser(null).parse(query);
+      final SelectStatement stm = (SelectStatement) new SQLAntlrParser(null).parse(query);
       final Map<String, Object> params = new HashMap<>();
       params.put("param1", new HashSet<>());
 

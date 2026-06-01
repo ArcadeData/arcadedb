@@ -24,7 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.util.*;
+import java.util.Map;
 
 public class ArrayNumberSelector extends SimpleNode {
   public InputParameter inputValue;

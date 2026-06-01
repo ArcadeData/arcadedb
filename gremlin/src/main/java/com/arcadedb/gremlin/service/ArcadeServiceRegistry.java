@@ -29,7 +29,7 @@ import org.apache.tinkerpop.gremlin.util.function.TriFunction;
 import org.apache.tinkerpop.gremlin.util.iterator.IteratorUtils;
 
 import java.util.*;
-import java.util.function.*;
+import java.util.function.BiFunction;
 
 /**
  * ArcadeGraph services are currently just "toy" services, used to demonstrate and to test.

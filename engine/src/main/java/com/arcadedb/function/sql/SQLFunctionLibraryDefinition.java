@@ -20,8 +20,9 @@ package com.arcadedb.function.sql;/*
 import com.arcadedb.database.Database;
 import com.arcadedb.function.FunctionLibraryDefinition;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 public class SQLFunctionLibraryDefinition implements FunctionLibraryDefinition<SQLFunctionDefinition> {
   protected final Database                                     database;

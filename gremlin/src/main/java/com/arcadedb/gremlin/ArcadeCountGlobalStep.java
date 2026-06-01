@@ -30,7 +30,7 @@ import org.apache.tinkerpop.gremlin.structure.Element;
 import org.apache.tinkerpop.gremlin.structure.Vertex;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * ArcadeDB's optimized version to count vertices and edges

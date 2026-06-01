@@ -118,10 +118,10 @@ public class BackupTask implements Runnable {
   private boolean shouldRunOnThisServer() {
     final String runOnServer = config.getRunOnServer();
 
-    if (runOnServer == null || runOnServer.equals("*"))
+    if (runOnServer == null || "*".equals(runOnServer))
       return true; // Run on all servers
 
-    if (runOnServer.equals("$leader")) {
+    if ("$leader".equals(runOnServer)) {
       // Run only on the leader node
       final HAServerPlugin ha = server.getHA();
       if (ha == null)

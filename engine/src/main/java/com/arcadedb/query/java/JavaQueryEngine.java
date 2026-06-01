@@ -30,8 +30,13 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.lang.reflect.*;
-import java.util.*;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
+import java.lang.reflect.Parameter;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.*;
 
 public class JavaQueryEngine implements QueryEngine {
@@ -246,9 +251,7 @@ public class JavaQueryEngine implements QueryEngine {
   @Override
   public AnalyzedQuery analyze(final String query) {
     try {
-      executeUserCode(() -> {
-        return null;
-      }, timeout);
+      executeUserCode(() -> null, timeout);
     } catch (final CommandExecutionException e) {
       throw e;
     } catch (final ExecutionException e) {

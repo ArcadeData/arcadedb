@@ -28,11 +28,12 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.io.*;
-import java.lang.reflect.*;
-import java.time.*;
-import java.time.format.*;
-import java.util.*;
+import java.io.File;
+import java.lang.reflect.InvocationTargetException;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.HashMap;
+import java.util.Map;
 
 public class ExportDatabaseStatement extends SimpleExecStatement {
 

@@ -324,7 +324,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
         // FOUND MOVE THE ENTIRE BUFFER FROM THE NEXT ITEM TO THE CURRENT ONE
         buffer.move(buffer.position(), lastPos, used - buffer.position());
 
-        used -= (buffer.position() - lastPos);
+        used -= buffer.position() - lastPos;
         setUsed(used);
 
         buffer.position(lastPos);
@@ -361,7 +361,7 @@ public class MutableEdgeSegment extends BaseRecord implements EdgeSegment, Recor
         // FOUND MOVE THE ENTIRE BUFFER FROM THE NEXT ITEM TO THE CURRENT ONE
         buffer.move(buffer.position(), lastPos, used - buffer.position());
 
-        used -= (buffer.position() - lastPos);
+        used -= buffer.position() - lastPos;
         setUsed(used);
 
         buffer.position(lastPos);

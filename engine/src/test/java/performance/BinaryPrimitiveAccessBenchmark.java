@@ -27,6 +27,7 @@ import java.lang.invoke.VarHandle;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.Locale;
+import java.util.function.LongSupplier;
 
 /**
  * Compares the three paths available for packing primitive ints / longs into a {@code byte[]}:
@@ -110,7 +111,7 @@ class BinaryPrimitiveAccessBenchmark {
 
   // --- plumbing ---------------------------------------------------------------
 
-  private static void measure(final String label, final java.util.function.LongSupplier op) {
+  private static void measure(final String label, final LongSupplier op) {
     for (int i = 0; i < WARMUP; i++) blackhole(op.getAsLong());
     long best = Long.MAX_VALUE;
     long sink = 0;

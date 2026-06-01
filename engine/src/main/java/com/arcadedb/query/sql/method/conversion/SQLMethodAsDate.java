@@ -23,8 +23,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.utility.DateUtils;
 
-import java.time.*;
-import java.time.temporal.*;
+import java.time.temporal.Temporal;
 import java.util.Date;
 
 /**

@@ -62,7 +62,7 @@ class PaginatedComponentFileRoundTripTest {
   }
 
   @Test
-  void writeThenReadRoundTripPreservesContent() throws IOException {
+  void writeThenReadRoundTripPreservesContent() throws Exception {
     final PageId     pageId = new PageId(db, FILE_ID, 0);
     final byte[]     data   = new byte[PAGE_SIZE];
     Arrays.fill(data, (byte) 0x42);
@@ -82,7 +82,7 @@ class PaginatedComponentFileRoundTripTest {
   }
 
   @Test
-  void multiplePagesAreAddressedIndependently() throws IOException {
+  void multiplePagesAreAddressedIndependently() throws Exception {
     final byte[] dataPage0 = new byte[PAGE_SIZE];
     Arrays.fill(dataPage0, (byte) 0xAA);
     final byte[] dataPage1 = new byte[PAGE_SIZE];
@@ -116,7 +116,7 @@ class PaginatedComponentFileRoundTripTest {
   }
 
   @Test
-  void overwrittenPageReflectsLatestContent() throws IOException {
+  void overwrittenPageReflectsLatestContent() throws Exception {
     final PageId pageId = new PageId(db, FILE_ID, 0);
 
     final byte[] firstData = new byte[PAGE_SIZE];

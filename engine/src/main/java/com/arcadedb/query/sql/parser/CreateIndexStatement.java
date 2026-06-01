@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.vector.LSMVectorIndex;
@@ -120,26 +121,26 @@ public class CreateIndexStatement extends DDLStatement {
           "Index type is required (UNIQUE | NOTUNIQUE | FULL_TEXT | LSM_VECTOR | LSM_SPARSE_VECTOR | GEOSPATIAL | UNIQUE_HASH | NOTUNIQUE_HASH)");
 
     final String typeAsString = type.getStringValue();
-    if (typeAsString.equalsIgnoreCase("FULL_TEXT"))
+    if ("FULL_TEXT".equalsIgnoreCase(typeAsString))
       indexType = Schema.INDEX_TYPE.FULL_TEXT;
-    else if (typeAsString.equalsIgnoreCase("UNIQUE")) {
+    else if ("UNIQUE".equalsIgnoreCase(typeAsString)) {
       indexType = Schema.INDEX_TYPE.LSM_TREE;
       unique = true;
-    } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE")) {
+    } else if ("NOTUNIQUE".equalsIgnoreCase(typeAsString)) {
       indexType = Schema.INDEX_TYPE.LSM_TREE;
-    } else if (typeAsString.equalsIgnoreCase("LSM_VECTOR")) {
+    } else if ("LSM_VECTOR".equalsIgnoreCase(typeAsString)) {
       indexType = Schema.INDEX_TYPE.LSM_VECTOR;
       unique = false;
-    } else if (typeAsString.equalsIgnoreCase("LSM_SPARSE_VECTOR")) {
+    } else if ("LSM_SPARSE_VECTOR".equalsIgnoreCase(typeAsString)) {
       indexType = Schema.INDEX_TYPE.LSM_SPARSE_VECTOR;
       unique = false;
-    } else if (typeAsString.equalsIgnoreCase("GEOSPATIAL")) {
+    } else if ("GEOSPATIAL".equalsIgnoreCase(typeAsString)) {
       indexType = Schema.INDEX_TYPE.GEOSPATIAL;
       unique = false;
-    } else if (typeAsString.equalsIgnoreCase("UNIQUE_HASH")) {
+    } else if ("UNIQUE_HASH".equalsIgnoreCase(typeAsString)) {
       indexType = Schema.INDEX_TYPE.HASH;
       unique = true;
-    } else if (typeAsString.equalsIgnoreCase("NOTUNIQUE_HASH")) {
+    } else if ("NOTUNIQUE_HASH".equalsIgnoreCase(typeAsString)) {
       indexType = Schema.INDEX_TYPE.HASH;
       unique = false;
     } else
@@ -213,7 +214,7 @@ public class CreateIndexStatement extends DDLStatement {
 
       // Build the HNSW graph immediately unless explicitly disabled
       if (buildGraphNow)
-        for (final com.arcadedb.index.Index idx : typeIndex.getIndexesOnBuckets())
+        for (final Index idx : typeIndex.getIndexesOnBuckets())
           if (idx instanceof LSMVectorIndex)
             ((LSMVectorIndex) idx).buildVectorGraphNow();
 

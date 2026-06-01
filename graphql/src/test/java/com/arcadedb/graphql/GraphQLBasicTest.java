@@ -29,13 +29,12 @@ import java.util.Collection;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.assertj.core.api.Assertions.fail;
 
 class GraphQLBasicTest extends AbstractGraphQLTest {
 
   @Test
   void ridMapping() {
-    executeTest((database) -> {
+    executeTest(database -> {
       final String types = """
           type Query {
             bookById(id: String): Book
@@ -90,7 +89,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
 
   @Test
   void bookByName() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql",
@@ -118,7 +117,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
 
   @Test
   void bookByNameWrongParams() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       assertThatThrownBy(() -> database.query("graphql", "{ bookByName(wrong: \"Mr. brain\") }"))
@@ -130,7 +129,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
 
   @Test
   void allBooks() {
-    executeTest((database) -> {
+    executeTest(database -> {
       final String types = """
           type Query {
             bookById(id: String): Book
@@ -172,7 +171,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
 
   @Test
   void embeddedAddresses() {
-    executeTest((database) -> {
+    executeTest(database -> {
       final String types = """
           type Query {
             bookById(id: String): Book
@@ -208,7 +207,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
         final GraphQLResult address = record.getProperty("address");
         assertThat(address).isNotNull();
 
-        assertThat(address.getProperty("city").equals("Rome")).isTrue();
+        assertThat("Rome".equals(address.getProperty("city"))).isTrue();
 
         assertThat(resultSet.hasNext()).isFalse();
       }
@@ -219,7 +218,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
 
   @Test
   void allBooksWrongRelationshipDirective() {
-    executeTest((database) -> {
+    executeTest(database -> {
       final String types = """
           type Query {
             bookById(id: String): Book
@@ -267,7 +266,7 @@ class GraphQLBasicTest extends AbstractGraphQLTest {
 
   @Test
   void queryWhereCondition() {
-    executeTest((database) -> {
+    executeTest(database -> {
       final String types = """
           type Query {
             bookById(id: String): Book

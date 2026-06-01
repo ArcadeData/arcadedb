@@ -21,23 +21,6 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.StatelessFunction;
 import com.arcadedb.query.opencypher.ast.*;
-import com.arcadedb.query.opencypher.ast.ArithmeticExpression;
-import com.arcadedb.query.opencypher.ast.BooleanExpression;
-import com.arcadedb.query.opencypher.ast.BooleanWrapperExpression;
-import com.arcadedb.query.opencypher.ast.CaseExpression;
-import com.arcadedb.query.opencypher.ast.ComparisonExpression;
-import com.arcadedb.query.opencypher.ast.ComparisonExpressionWrapper;
-import com.arcadedb.query.opencypher.ast.Expression;
-import com.arcadedb.query.opencypher.ast.LogicalExpression;
-import com.arcadedb.query.opencypher.ast.FunctionCallExpression;
-import com.arcadedb.query.opencypher.ast.ListComprehensionExpression;
-import com.arcadedb.query.opencypher.ast.ListExpression;
-import com.arcadedb.query.opencypher.ast.ListIndexExpression;
-import com.arcadedb.query.opencypher.ast.ListPredicateExpression;
-import com.arcadedb.query.opencypher.ast.ListSliceExpression;
-import com.arcadedb.query.opencypher.ast.MapExpression;
-import com.arcadedb.query.opencypher.ast.ReduceExpression;
-import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -159,7 +142,7 @@ public class AggregationStep extends AbstractExecutionStep {
         }
       } finally {
         if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
       }
     }
 
@@ -199,7 +182,7 @@ public class AggregationStep extends AbstractExecutionStep {
       }
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - beginFinal);
+        cost += System.nanoTime() - beginFinal;
     }
 
     // Return single aggregated row

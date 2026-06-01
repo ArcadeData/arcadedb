@@ -27,7 +27,7 @@ import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import java.time.*;
+import java.time.LocalDateTime;
 
 /**
  * Tests dates by using server and/or remote connection.

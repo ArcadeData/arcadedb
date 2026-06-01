@@ -21,7 +21,6 @@ package com.arcadedb.gremlin;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 

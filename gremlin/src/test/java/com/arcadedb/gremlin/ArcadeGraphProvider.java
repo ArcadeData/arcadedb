@@ -33,7 +33,7 @@ import org.apache.tinkerpop.gremlin.structure.VertexTest;
 import org.apache.tinkerpop.gremlin.structure.io.IoGraphTest;
 import org.junit.AssumptionViolatedException;
 
-import java.io.*;
+import java.io.File;
 import java.util.*;
 
 import static org.apache.tinkerpop.gremlin.util.iterator.IteratorUtils.asList;

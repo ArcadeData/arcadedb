@@ -83,18 +83,14 @@ class ServerProfilingIT {
       expectedSecurityException(() -> database.iterateType("Document1", true));
       expectedSecurityException(() -> database.lookupByRID(validRID, true));
 
-      expectedSecurityException(() -> {
-        executeRemoteCommand("INSERT INTO Vertex1 set name = 'invalid'", "albert", "einstein");
-      });
-      expectedSecurityException(() -> {
-        executeRemoteCommand("INSERT INTO Document1 set name = 'invalid'", "albert", "einstein");
-      });
-      expectedSecurityException(() -> {
-        executeRemoteCommand("SELECT FROM Document1", "albert", "einstein");
-      });
-      expectedSecurityException(() -> {
-        executeRemoteCommand("SELECT FROM " + validRID, "albert", "einstein");
-      });
+      expectedSecurityException(() ->
+        executeRemoteCommand("INSERT INTO Vertex1 set name = 'invalid'", "albert", "einstein"));
+      expectedSecurityException(() ->
+        executeRemoteCommand("INSERT INTO Document1 set name = 'invalid'", "albert", "einstein"));
+      expectedSecurityException(() ->
+        executeRemoteCommand("SELECT FROM Document1", "albert", "einstein"));
+      expectedSecurityException(() ->
+        executeRemoteCommand("SELECT FROM " + validRID, "albert", "einstein"));
 
       // SWITCH TO ROOT TO DROP THE SCHEMA
       setCurrentUser("root", database);

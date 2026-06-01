@@ -20,7 +20,7 @@ package com.arcadedb.engine;
 
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.io.*;
+import java.io.FileNotFoundException;
 
 @ExcludeFromJacocoGeneratedReport
 public interface WALFileFactory {

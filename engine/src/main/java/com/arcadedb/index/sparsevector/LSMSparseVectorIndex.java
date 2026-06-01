@@ -41,10 +41,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.io.File;
 import java.io.IOException;
-import java.nio.file.Files;
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -218,8 +215,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // below; this branch is logged at WARNING so an unexpected caller (a future refactor of the
     // type-drop path, e.g.) does not silently leave stale entries behind.
     LogManager.instance().log(this, Level.WARNING,
-        "%s.remove(keys) called without a RID; sparse vector index needs the per-RID variant. "
-            + "No postings were removed. Caller should switch to remove(keys, rid).", null, getName());
+        """
+        %s.remove(keys) called without a RID; sparse vector index needs the per-RID variant. \
+        No postings were removed. Caller should switch to remove(keys, rid).""", null, getName());
   }
 
   @Override
@@ -308,7 +306,7 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // Over-fetch when an allowedRIDs whitelist is in play to reduce the chance of returning
     // fewer than K items because the top-scored RIDs were filtered out. The fixed cap keeps
     // worst-case work bounded even when the filter is very selective.
-    final int fetchK = (allowedRIDs == null || allowedRIDs.isEmpty()) ? k : Math.min(k * 8, 100_000);
+    final int fetchK = allowedRIDs == null || allowedRIDs.isEmpty() ? k : Math.min(k * 8, 100_000);
 
     final List<RidScore> raw;
     try {
@@ -507,8 +505,9 @@ public class LSMSparseVectorIndex implements Index, IndexInternal {
     // get a wrong answer. Fail loudly instead - callers should use the `vector.sparseNeighbors`
     // SQL function (or {@link PaginatedSparseVectorEngine#topK}) for retrieval.
     throw new UnsupportedOperationException(
-        "Direct posting lookup is not supported on LSM_SPARSE_VECTOR indexes; "
-            + "use vector.sparseNeighbors(...) for top-K retrieval");
+        """
+        Direct posting lookup is not supported on LSM_SPARSE_VECTOR indexes; \
+        use vector.sparseNeighbors(...) for top-K retrieval""");
   }
 
   @Override

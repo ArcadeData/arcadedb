@@ -51,7 +51,7 @@ class SQLFunctionUUIDTest {
 
   @Test
   void query() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionUUIDTest", (db) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionUUIDTest", db -> {
       final ResultSet result = db.query("sql", "select uuid() as uuid");
       assertThat((Iterator<? extends Result>) result).isNotNull();
       assertThat(result.next().<String>getProperty("uuid")).isNotNull();

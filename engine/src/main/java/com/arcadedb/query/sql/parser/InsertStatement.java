@@ -30,7 +30,9 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.OperationType;
 import com.arcadedb.utility.CollectionUtils;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Set;
 
 public class InsertStatement extends Statement {
 

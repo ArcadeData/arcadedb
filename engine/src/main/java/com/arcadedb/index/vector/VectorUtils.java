@@ -94,9 +94,10 @@ public final class VectorUtils {
     }
     if (sawMin128 && DEQUANTIZE_MIN128_WARNED.compareAndSet(false, true))
       LogManager.instance().log(VectorUtils.class, Level.WARNING,
-          "INT8 dequantization encountered byte value -128 and clamped it to -127 "
-              + "(Cohere/OpenAI calibration emits [-127, 127] only). Subsequent occurrences will not be logged. "
-              + "Verify the byte source if precise [-128, 127] handling is required.");
+          """
+          INT8 dequantization encountered byte value -128 and clamped it to -127 \
+          (Cohere/OpenAI calibration emits [-127, 127] only). Subsequent occurrences will not be logged. \
+          Verify the byte source if precise [-128, 127] handling is required.""");
     return result;
   }
 
@@ -126,9 +127,10 @@ public final class VectorUtils {
       return f;
     if (vectorObj instanceof byte[])
       throw new IllegalArgumentException(
-          "byte[] vector is only supported in an INT8-encoded index context. Use "
-              + "VectorUtils.toFloatArray(value, VectorEncoding.INT8) or "
-              + "VectorUtils.dequantizeInt8ToFloat(byte[]) explicitly.");
+          """
+          byte[] vector is only supported in an INT8-encoded index context. Use \
+          VectorUtils.toFloatArray(value, VectorEncoding.INT8) or \
+          VectorUtils.dequantizeInt8ToFloat(byte[]) explicitly.""");
     if (vectorObj instanceof double[] d) {
       final float[] result = new float[d.length];
       for (int i = 0; i < d.length; i++)

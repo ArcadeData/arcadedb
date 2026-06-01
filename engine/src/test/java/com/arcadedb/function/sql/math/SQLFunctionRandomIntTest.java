@@ -59,7 +59,7 @@ class SQLFunctionRandomIntTest {
 
   @Test
   void query() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionRandomInt", (db) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionRandomInt", db -> {
       final ResultSet result = db.query("sql", "select randomInt(1000) as random");
       assertThat((Iterator<? extends Result>) result).isNotNull();
       assertThat(result.next().<Integer>getProperty("random")).isNotNull();

@@ -70,7 +70,7 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
 
     database.transaction(() -> insertRecords(database));
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       LogManager.instance().log(this, Level.FINE, "Rebuild RaftPerson[id] on server %s",
           getServer(serverIndex).getServerName());
       final String response1 = command(serverIndex, "rebuild index `RaftPerson[id]`");
@@ -113,7 +113,7 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
     v.createProperty("uuid", String.class);
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "RaftPerson", "uuid");
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String response1 = command(serverIndex, "rebuild index `RaftPerson[id]`");
       assertThat(new JSONObject(response1).getJSONArray("result").getJSONObject(0).getLong("totalIndexed"))
           .isEqualTo(TOTAL_RECORDS);
@@ -139,7 +139,7 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
     final Database database = getServerDatabase(leaderIndex, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("RaftPerson").withTotalBuckets(3).create();
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       database.transaction(() -> insertRecords(database));
 
       v.createProperty("id", Long.class);
@@ -179,7 +179,7 @@ class RaftIndexOperations3ServersIT extends BaseRaftHATest {
     final Database database = getServerDatabase(leaderIndex, getDatabaseName());
     final VertexType v = database.getSchema().buildVertexType().withName("RaftPerson").withTotalBuckets(3).create();
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       database.transaction(() -> {
         insertRecords(database);
         insertRecords(database);

@@ -18,7 +18,8 @@
  */
 package com.arcadedb.query.sql.method.conversion;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.List;
 
 class TestIterable<T> implements Iterable<T> {
     private final List<T> values;

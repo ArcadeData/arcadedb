@@ -30,7 +30,8 @@ import com.arcadedb.integration.importer.SourceSchema;
 import com.arcadedb.integration.importer.format.CSVImporterFormat;
 import org.apache.tinkerpop.gremlin.structure.io.IoCore;
 
-import java.io.*;
+import java.io.IOException;
+import java.io.InputStream;
 
 public class GraphMLImporterFormat extends CSVImporterFormat {
   @Override

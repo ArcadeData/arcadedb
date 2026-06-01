@@ -165,9 +165,8 @@ class ThreeNodesLoadTestIT extends ContainersTestTemplate {
           }
         });
 
-    Metrics.globalRegistry.getMeters().forEach(meter -> {
-      logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure());
-    });
+    Metrics.globalRegistry.getMeters().forEach(meter ->
+      logger.info("Meter: {} - {}", meter.getId().getName(), meter.measure()));
 
     db1.assertThatUserCountIs(expectedUsersCount);
     db1.assertThatPhotoCountIs(expectedPhotoCount);

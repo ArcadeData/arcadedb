@@ -77,9 +77,8 @@ class RemoteStickyConnectionStrategyIT extends BaseRaftHATest {
       createTypeIfMissing(db);
 
       // The transaction must complete without "Remote transaction not found" errors.
-      db.transaction(() -> {
-        db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'sticky-follower-write'");
-      });
+      db.transaction(() ->
+        db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'sticky-follower-write'"));
 
       try (final ResultSet rs = db.query("sql",
           "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE tag = 'sticky-follower-write'")) {
@@ -109,9 +108,8 @@ class RemoteStickyConnectionStrategyIT extends BaseRaftHATest {
       // here is to verify the negative-control path still executes when given an
       // explicit ROUND_ROBIN strategy without throwing.
       try {
-        db.transaction(() -> {
-          db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'round-robin-smoke'");
-        });
+        db.transaction(() ->
+          db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'round-robin-smoke'"));
       } catch (final Exception e) {
         LogManager.instance()
             .log(this, Level.INFO, "TEST: ROUND_ROBIN smoke run raised %s (acceptable, documented behaviour)",
@@ -133,9 +131,8 @@ class RemoteStickyConnectionStrategyIT extends BaseRaftHATest {
       createTypeIfMissing(db);
 
       // First transaction commits cleanly.
-      db.transaction(() -> {
-        db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'first-commit'");
-      });
+      db.transaction(() ->
+        db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'first-commit'"));
       assertThat(db.isTransactionActive())
           .as("Session must be released after the first commit so the pin can be reset").isFalse();
 
@@ -144,9 +141,8 @@ class RemoteStickyConnectionStrategyIT extends BaseRaftHATest {
       // on the same node again. If the pin were sticky across the gap (the pre-fix
       // ROUND_ROBIN behaviour) the second begin's session would not be visible to a
       // later command.
-      db.transaction(() -> {
-        db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'second-commit'");
-      });
+      db.transaction(() ->
+        db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'second-commit'"));
 
       try (final ResultSet rs = db.query("sql",
           "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE tag IN ['first-commit', 'second-commit']")) {
@@ -178,9 +174,8 @@ class RemoteStickyConnectionStrategyIT extends BaseRaftHATest {
           .as("Rollback must clear the session and the sticky pin").isFalse();
 
       // Second STICKY transaction must succeed; it repins fresh.
-      db.transaction(() -> {
-        db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'after-rollback'");
-      });
+      db.transaction(() ->
+        db.command("sql", "INSERT INTO " + TYPE_NAME + " SET tag = 'after-rollback'"));
 
       try (final ResultSet rs = db.query("sql",
           "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE tag = 'after-rollback'")) {

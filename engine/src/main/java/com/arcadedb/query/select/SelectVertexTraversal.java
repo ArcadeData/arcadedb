@@ -21,7 +21,8 @@ package com.arcadedb.query.select;
 import com.arcadedb.graph.Vertex;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 /**
  * Iterator that lazily expands source vertices to adjacent vertices in a given direction.

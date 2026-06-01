@@ -23,6 +23,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.GraphDatabaseChecker;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
@@ -33,13 +34,14 @@ import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalEdgeType;
 import com.arcadedb.schema.LocalVertexType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.LongHashSet;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.logging.*;
-import java.util.stream.*;
+import java.util.logging.Level;
+import java.util.stream.Collectors;
 
 public class DatabaseChecker {
   private final DatabaseInternal    database;
@@ -347,7 +349,7 @@ public class DatabaseChecker {
             fixedCount += localFixed;
           }
         } else if (anyFailure) {
-          throw new com.arcadedb.exception.DatabaseOperationException(
+          throw new DatabaseOperationException(
               "Failed to delete orphan external records in bucket '" + extBucket.getName()
                   + "'; aborting CHECK DATABASE FIX so the caller's transaction is not silently committed in a partial state");
         } else {
@@ -363,7 +365,7 @@ public class DatabaseChecker {
     // operator notice corruption-driven leak rates climbing without having to grep WARN logs. The counter is
     // process-static, so re-runs of CHECK report the running total since startup.
     result.put("externalRidScanFailuresCumulative",
-        com.arcadedb.serializer.BinarySerializer.getExternalRidScanFailures());
+        BinarySerializer.getExternalRidScanFailures());
     ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
     if (fix)
       ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).addAll(orphanedExternalRecords);

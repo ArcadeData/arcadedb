@@ -20,7 +20,8 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 public class ResourcePathItem extends SimpleNode {
   protected boolean    star = false;
@@ -69,7 +70,7 @@ public class ResourcePathItem extends SimpleNode {
 
   @Override
   public int hashCode() {
-    int result = (star ? 1 : 0);
+    int result = star ? 1 : 0;
     result = 31 * result + (identifier != null ? identifier.hashCode() : 0);
     result = 31 * result + (name != null ? name.hashCode() : 0);
     return result;

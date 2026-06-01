@@ -3479,13 +3479,13 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
   private static boolean isRecordAttributeName(final String name) {
     if (name == null)
       return false;
-    return name.equalsIgnoreCase(Property.RID_PROPERTY) ||
-        name.equalsIgnoreCase(Property.TYPE_PROPERTY) ||
-        name.equalsIgnoreCase(Property.IN_PROPERTY) ||
-        name.equalsIgnoreCase(Property.OUT_PROPERTY) ||
-        name.equalsIgnoreCase(Property.CAT_PROPERTY) ||
-        name.equalsIgnoreCase(Property.PROPERTY_TYPES_PROPERTY) ||
-        name.equalsIgnoreCase(Property.THIS_PROPERTY);
+    return Property.RID_PROPERTY.equalsIgnoreCase(name) ||
+        Property.TYPE_PROPERTY.equalsIgnoreCase(name) ||
+        Property.IN_PROPERTY.equalsIgnoreCase(name) ||
+        Property.OUT_PROPERTY.equalsIgnoreCase(name) ||
+        Property.CAT_PROPERTY.equalsIgnoreCase(name) ||
+        Property.PROPERTY_TYPES_PROPERTY.equalsIgnoreCase(name) ||
+        Property.THIS_PROPERTY.equalsIgnoreCase(name);
   }
 
   /**
@@ -4307,14 +4307,14 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // where expression → MathExprContext → mathExpression (BaseContext) → baseExpression (ParenthesizedExprContext)
     // → statement
     Statement statementFromExpr = null;
-    if (ctx.expression() != null && ctx.expression() instanceof final SQLParser.MathExprContext mathExprCtx) {
+    if (ctx.expression() instanceof final SQLParser.MathExprContext mathExprCtx) {
       // Navigate the parse tree to find if this is a parenthesizedExpr with a statement
       final SQLParser.MathExpressionContext mathCtx = mathExprCtx.mathExpression();
 
-      if (mathCtx != null && mathCtx instanceof final SQLParser.BaseContext baseCtx) {
+      if (mathCtx instanceof final SQLParser.BaseContext baseCtx) {
         final SQLParser.BaseExpressionContext baseExprCtx = baseCtx.baseExpression();
 
-        if (baseExprCtx != null && baseExprCtx instanceof final SQLParser.ParenthesizedStmtContext parenCtx) {
+        if (baseExprCtx instanceof final SQLParser.ParenthesizedStmtContext parenCtx) {
           if (parenCtx.statement() != null && CollectionUtils.isEmpty(parenCtx.modifier())) {
             // Found a statement inside parentheses with no trailing modifiers - visit it directly
             statementFromExpr = (Statement) visit(parenCtx.statement());
@@ -6814,7 +6814,7 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
 
     // Add statements to IF block (before ELSE) or all statements if no ELSE
-    final int endIndex = (elseIndex != -1) ? elseIndex : allStatements.size();
+    final int endIndex = elseIndex != -1 ? elseIndex : allStatements.size();
     for (int i = 0; i < endIndex; i++) {
       stmt.statements.add((Statement) visit(allStatements.get(i)));
     }

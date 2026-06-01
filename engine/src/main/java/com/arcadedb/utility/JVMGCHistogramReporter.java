@@ -26,11 +26,12 @@ import jdk.jfr.consumer.RecordingStream;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
-import java.lang.management.*;
+import java.lang.management.ManagementFactory;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.regex.*;
-import java.util.stream.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 public class JVMGCHistogramReporter {
   private              RecordingStream                     rs;

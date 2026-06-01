@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.UpdateRemoveItem;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 09/08/16.

@@ -205,7 +205,7 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
       }
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

@@ -44,14 +44,12 @@ class ReusingSpaceTest extends TestHelper {
           // CREATE
           v[0] = database.newVertex("CreateAndDelete").set("id", "0").save();
         });
-        db.transaction(() -> {
+        db.transaction(() ->
           // UPDATE
-          v[0].set("id", "is an update").save();
-        });
-        db.transaction(() -> {
+          v[0].set("id", "is an update").save());
+        db.transaction(() ->
           // DELETE
-          v[0].delete();
-        });
+          v[0].delete());
       }
 
       assertThat(db.countType("CreateAndDelete", true)).isEqualTo(0);

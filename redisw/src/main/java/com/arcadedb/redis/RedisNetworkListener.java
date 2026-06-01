@@ -24,9 +24,9 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerException;
 import com.arcadedb.server.network.ServerSocketFactory;
 
-import java.io.*;
+import java.io.IOException;
 import java.net.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class RedisNetworkListener extends Thread {
   private final        ArcadeDBServer      server;

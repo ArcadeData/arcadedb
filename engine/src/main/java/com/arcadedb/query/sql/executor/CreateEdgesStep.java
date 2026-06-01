@@ -26,7 +26,6 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableEdge;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.VertexInternal;
 import com.arcadedb.index.Index;
@@ -89,8 +88,8 @@ public class CreateEdgesStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        return (currentBatch < nRecords && currentFrom != null && !toList.isEmpty()
-            && (toIterator.hasNext() || fromIter.hasNext()));
+        return currentBatch < nRecords && currentFrom != null && !toList.isEmpty()
+            && (toIterator.hasNext() || fromIter.hasNext());
       }
 
       @Override
@@ -165,7 +164,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
           return result;
         } finally {
           if (context.isProfiling()) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }
@@ -269,7 +268,7 @@ public class CreateEdgesStep extends AbstractExecutionStep {
       }
     } finally {
       if (context.isProfiling()) {
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
       }
     }
   }

@@ -31,7 +31,7 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class CreatePropertyStatement extends DDLStatement {
   public Identifier                             typeName;

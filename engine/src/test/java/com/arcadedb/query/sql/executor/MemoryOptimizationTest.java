@@ -19,7 +19,6 @@
 package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.Database;
 import com.arcadedb.schema.DocumentType;
 import org.junit.jupiter.api.Test;
 

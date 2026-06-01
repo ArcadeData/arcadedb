@@ -41,18 +41,16 @@ class OpenCypherForeachTest {
   @Test
   void foreachCreateEdges_issue3328() {
     // Regression test for issue #3328: FOREACH creating edges from matched nodes
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:TestNode {name: 'Root'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:TestNode {name: 'Root'})"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           """
           MATCH (root:TestNode {name: 'Root'})
           FOREACH (i IN [1, 2, 3] |
             CREATE (root)-[:HAS_ITEM]->(:Item {id: i})
-          )""");
-    });
+          )"""));
 
     // Verify: 3 items should have been created
     final ResultSet verify = database.query("opencypher",
@@ -65,13 +63,12 @@ class OpenCypherForeachTest {
   @Test
   void foreachCreateNodes() {
     // Simple FOREACH creating standalone nodes
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           """
           FOREACH (name IN ['Alice', 'Bob', 'Charlie'] |
             CREATE (:Person {name: name})
-          )""");
-    });
+          )"""));
 
     final ResultSet verify = database.query("opencypher",
         "MATCH (p:Person) RETURN p.name AS name ORDER BY name");
@@ -92,14 +89,13 @@ class OpenCypherForeachTest {
     });
 
     // Use FOREACH inside a query with MATCH context
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           """
           MATCH (p:Person)
           FOREACH (tag IN ['developer', 'tester'] |
             CREATE (p)-[:HAS_TAG]->(:Tag {value: tag})
-          )""");
-    });
+          )"""));
 
     // Each person should have 2 tags = 4 total
     final ResultSet verify = database.query("opencypher",
@@ -138,15 +134,14 @@ class OpenCypherForeachTest {
     });
 
     // Use FOREACH with SET to update nodes
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           """
           MATCH (item:Item)
           WITH collect(item) AS items
           FOREACH (item IN items |
             SET item.status = 'done'
-          )""");
-    });
+          )"""));
 
     // All items should be 'done'
     final ResultSet verify = database.query("opencypher",
@@ -160,10 +155,9 @@ class OpenCypherForeachTest {
   void laterMatchDoesNotSeeNodeDeletedInForeach() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("REL");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})");
-    });
+          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})"));
 
     final ResultSet rs = database.command("opencypher",
         """
@@ -188,10 +182,9 @@ class OpenCypherForeachTest {
   void detachDeleteInsideForeachClearsBothEndsAndEdge() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("REL");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})");
-    });
+          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})"));
 
     database.command("opencypher",
         """
@@ -213,10 +206,9 @@ class OpenCypherForeachTest {
   void nestedForeachDeleteWorks() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("REL");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (:Node {name:'X'}), (:Node {name:'Y'}), (:Node {name:'Z'})");
-    });
+          "CREATE (:Node {name:'X'}), (:Node {name:'Y'}), (:Node {name:'Z'})"));
 
     database.command("opencypher",
         """
@@ -237,10 +229,9 @@ class OpenCypherForeachTest {
   void mixedSetAndDeleteInsideForeach() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("REL");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})");
-    });
+          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})"));
 
     database.command("opencypher",
         """
@@ -268,18 +259,16 @@ class OpenCypherForeachTest {
   void foreachDeleteInsideOuterTransaction() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("REL");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})");
-    });
+          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})"));
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
           """
               MATCH p = ()-[*]->()
               WITH relationships(p) AS rels
-              FOREACH (r IN rels | DELETE endNode(r) DELETE r)""");
-    });
+              FOREACH (r IN rels | DELETE endNode(r) DELETE r)"""));
 
     final ResultSet verify = database.query("opencypher", "MATCH (n:Node) RETURN n.name AS name ORDER BY name");
     final List<String> names = new ArrayList<>();
@@ -294,10 +283,9 @@ class OpenCypherForeachTest {
   void foreachDeleteAloneStillWorks() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("REL");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})");
-    });
+          "CREATE (a:Node {name:'A'})-[:REL]->(b:Node {name:'B'})"));
 
     database.command("opencypher",
         """

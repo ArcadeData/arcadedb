@@ -22,7 +22,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Collection;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,7 +33,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
 
   @Test
   public void useTypeDefinitionForReturn() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql",
@@ -61,7 +61,7 @@ public abstract class AbstractGraphQLNativeLanguageDirectivesTest extends Abstra
 
   @Test
   public void customDefinitionForReturn() {
-    executeTest((database) -> {
+    executeTest(database -> {
       defineTypes(database);
 
       try (final ResultSet resultSet = database.query("graphql",

@@ -46,7 +46,6 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.util.concurrent.TimeUnit;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -1467,10 +1466,9 @@ class LSMTreeIndexTest extends TestHelper {
         }
       });
 
-      database.transaction(() -> {
+      database.transaction(() ->
         database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false,
-            MOVIE_TYPE, new String[] { "title" }, MOVIE_PAGE_SIZE);
-      });
+            MOVIE_TYPE, new String[] { "title" }, MOVIE_PAGE_SIZE));
 
       waitForIndexCompaction();
 
@@ -1498,10 +1496,9 @@ class LSMTreeIndexTest extends TestHelper {
     // Issue #2757: LIKE keeps returning exact matches after the same compacted NOTUNIQUE index (control case)
     @Test
     void likeOperatorStillWorksAfterIndexCreation() {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false,
-            MOVIE_TYPE, new String[] { "title" }, MOVIE_PAGE_SIZE);
-      });
+            MOVIE_TYPE, new String[] { "title" }, MOVIE_PAGE_SIZE));
 
       waitForIndexCompaction();
 

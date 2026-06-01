@@ -27,8 +27,8 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.NumberUtils;
 
-import java.io.*;
-import java.util.*;
+import java.io.Serializable;
+import java.util.List;
 
 /**
  * It represents the logical address of a record in the database. The record id is composed by the bucket id (the bucket containing the record) and the offset

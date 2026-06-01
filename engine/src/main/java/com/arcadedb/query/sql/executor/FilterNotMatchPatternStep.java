@@ -20,7 +20,8 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.List;
+import java.util.NoSuchElementException;
 
 public class FilterNotMatchPatternStep extends AbstractExecutionStep {
 
@@ -73,7 +74,7 @@ public class FilterNotMatchPatternStep extends AbstractExecutionStep {
             nextItem = null;
           } finally {
             if (context.isProfiling()) {
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
             }
           }
         }

@@ -120,11 +120,10 @@ class SQLFunctionVectorMmrTest extends TestHelper {
   void composesWithVectorNeighborsDistanceField() {
     // Set up a vector index and the same A/B/C cluster fixture used by setupClusterFixture.
     final List<RID> rids = setupClusterFixture();
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sql", """
           CREATE INDEX IF NOT EXISTS ON %s (embedding) LSM_VECTOR
-          METADATA { dimensions: 3, similarity: 'COSINE' }""".formatted(TYPE));
-    });
+          METADATA { dimensions: 3, similarity: 'COSINE' }""".formatted(TYPE)));
 
     // Query at A's location. vector.neighbors returns rows with {@code distance}, not
     // {@code score}. mmr must accept this shape.

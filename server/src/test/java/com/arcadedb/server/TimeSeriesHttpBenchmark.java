@@ -45,7 +45,7 @@ class TimeSeriesHttpBenchmark extends BaseGraphServerTest {
 
   @Test
   void run() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create TimeSeries type
       command(serverIndex,
           "CREATE TIMESERIES TYPE SensorData TIMESTAMP ts TAGS (sensor_id STRING) FIELDS (temperature DOUBLE, humidity DOUBLE)");

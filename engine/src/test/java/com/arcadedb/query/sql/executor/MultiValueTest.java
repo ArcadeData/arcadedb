@@ -22,7 +22,10 @@ import com.arcadedb.index.EmptyIndexCursor;
 import com.arcadedb.utility.MultiIterator;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

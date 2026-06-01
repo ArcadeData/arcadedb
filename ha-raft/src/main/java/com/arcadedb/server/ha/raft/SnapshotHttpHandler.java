@@ -37,6 +37,7 @@ import java.io.FileInputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
@@ -218,7 +219,7 @@ public class SnapshotHttpHandler implements HttpHandler {
       final RaftHAServer raftHAServer = haPlugin != null ? haPlugin.getRaftHAServer() : null;
       final String expectedToken = raftHAServer != null ? raftHAServer.getClusterToken() : null;
       if (expectedToken != null && !expectedToken.isEmpty()
-          && java.security.MessageDigest.isEqual(
+          && MessageDigest.isEqual(
           expectedToken.getBytes(), clusterTokenHeader.getFirst().getBytes())) {
         final ServerSecurityUser rootUser = server.getSecurity().getUser("root");
         if (rootUser == null) {

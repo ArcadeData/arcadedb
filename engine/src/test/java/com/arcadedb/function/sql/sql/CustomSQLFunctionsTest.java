@@ -30,7 +30,7 @@ import static org.assertj.core.api.AssertionsForClassTypes.within;
 class CustomSQLFunctionsTest {
   @Test
   void random() throws Exception {
-    TestHelper.executeInNewDatabase("testRandom", (db) -> {
+    TestHelper.executeInNewDatabase("testRandom", db -> {
       final ResultSet result = db.query("sql", "select math_random() as random");
       assertThat(result.next().<Double>getProperty("random")).isGreaterThan(0);
     });
@@ -38,7 +38,7 @@ class CustomSQLFunctionsTest {
 
   @Test
   void log10() throws Exception {
-    TestHelper.executeInNewDatabase("testRandom", (db) -> {
+    TestHelper.executeInNewDatabase("testRandom", db -> {
       final ResultSet result = db.query("sql", "select math_log10(10000) as log10");
       assertThat(result.next().<Double>getProperty("log10")).isCloseTo(4.0, within(0.0001));
     });
@@ -46,7 +46,7 @@ class CustomSQLFunctionsTest {
 
   @Test
   void absInt() throws Exception {
-    TestHelper.executeInNewDatabase("testRandom", (db) -> {
+    TestHelper.executeInNewDatabase("testRandom", db -> {
       final ResultSet result = db.query("sql", "select math_abs(-5) as abs");
       assertThat(result.next().<Integer>getProperty("abs")).isEqualTo(5);
     });
@@ -54,7 +54,7 @@ class CustomSQLFunctionsTest {
 
   @Test
   void absDouble() throws Exception {
-    TestHelper.executeInNewDatabase("testRandom", (db) -> {
+    TestHelper.executeInNewDatabase("testRandom", db -> {
       final ResultSet result = db.query("sql", "select math_abs(-5.0d) as abs");
       assertThat(result.next().<Double>getProperty("abs")).isEqualTo(5.0);
     });
@@ -62,7 +62,7 @@ class CustomSQLFunctionsTest {
 
   @Test
   void absFloat() throws Exception {
-    TestHelper.executeInNewDatabase("testRandom", (db) -> {
+    TestHelper.executeInNewDatabase("testRandom", db -> {
       final ResultSet result = db.query("sql", "select math_abs(-5.0f) as abs");
       assertThat(result.next().<Float>getProperty("abs")).isEqualTo(5.0f);
     });
@@ -71,7 +71,7 @@ class CustomSQLFunctionsTest {
   @Test
   void nonExistingFunction() {
     assertThatExceptionOfType(CommandParsingException.class).isThrownBy(
-        () -> TestHelper.executeInNewDatabase("testRandom", (db) -> {
+        () -> TestHelper.executeInNewDatabase("testRandom", db -> {
           final ResultSet result = db.query("sql", "select math_min('boom', 'boom') as boom");
           result.next();
         }));

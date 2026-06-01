@@ -180,12 +180,11 @@ class TruncateBucketStatementExecutionTest extends TestHelper {
 
   @Test
   void truncateNonExistentBucket() {
-    database.transaction(() -> {
+    database.transaction(() ->
       // Try to truncate a non-existent bucket
       assertThatThrownBy(() -> database.command("sql", "TRUNCATE BUCKET NonExistentBucket"))
           .isInstanceOf(CommandExecutionException.class)
-          .hasMessageContaining("not found");
-    });
+          .hasMessageContaining("not found"));
   }
 
   @Test

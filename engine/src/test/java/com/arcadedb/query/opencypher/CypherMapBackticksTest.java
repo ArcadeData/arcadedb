@@ -57,10 +57,9 @@ class CypherMapBackticksTest {
   @Test
   void mapLiteralWithBacktickedKeys() {
     // Create test data
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-        "CREATE (d:DOCUMENT {name: 'Doc1'})-[:HAS_CHUNK]->(c:CHUNK {text: 'Content', llm_flag: true})");
-    });
+        "CREATE (d:DOCUMENT {name: 'Doc1'})-[:HAS_CHUNK]->(c:CHUNK {text: 'Content', llm_flag: true})"));
 
     // Query with map literal using backticked key (fixed direction to match CREATE)
     final ResultSet result = database.query("opencypher",
@@ -87,10 +86,9 @@ class CypherMapBackticksTest {
   @Test
   void mapLiteralWithMultipleBacktickedKeys() {
     // Create test data
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-        "CREATE (d:DOCUMENT {name: 'Doc1'})-[:HAS_CHUNK]->(c:CHUNK {text: 'Content'})");
-    });
+        "CREATE (d:DOCUMENT {name: 'Doc1'})-[:HAS_CHUNK]->(c:CHUNK {text: 'Content'})"));
 
     // Query with multiple backticked keys (fixed direction to match CREATE)
     final ResultSet result = database.query("opencypher",
@@ -117,10 +115,9 @@ class CypherMapBackticksTest {
   @Test
   void mapLiteralWithEscapedBackticks() {
     // Create test data
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-        "CREATE (n:DOCUMENT {name: 'Test'})");
-    });
+        "CREATE (n:DOCUMENT {name: 'Test'})"));
 
     // Query with escaped backticks (`` -> `) in key name
     final ResultSet result = database.query("opencypher",
@@ -142,10 +139,9 @@ class CypherMapBackticksTest {
   @Test
   void createWithBacktickedMapKeys() {
     // Test CREATE clause with backticked keys in map literal
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-        "CREATE (n:DOCUMENT {`@special`: 'value1', normalKey: 'value2'})");
-    });
+        "CREATE (n:DOCUMENT {`@special`: 'value1', normalKey: 'value2'})"));
 
     // Verify the properties were stored with correct key names (without backticks)
     final ResultSet result = database.query("opencypher",
@@ -160,10 +156,9 @@ class CypherMapBackticksTest {
   @Test
   void mapProjectionWithBacktickedKeys() {
     // Test map projection with backticked keys
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-        "CREATE (n:DOCUMENT {name: 'Doc1', id: 123})");
-    });
+        "CREATE (n:DOCUMENT {name: 'Doc1', id: 123})"));
 
     // Query with map projection using backticked key
     final ResultSet result = database.query("opencypher",
@@ -188,10 +183,9 @@ class CypherMapBackticksTest {
   @Test
   void propertyAccessWithBackticks() {
     // Test that property access with backticks works correctly
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-        "CREATE (n:DOCUMENT {`@id`: 'test123', `@type`: 'document', name: 'Test'})");
-    });
+        "CREATE (n:DOCUMENT {`@id`: 'test123', `@type`: 'document', name: 'Test'})"));
 
     // Access properties using backticks
     final ResultSet result = database.query("opencypher",

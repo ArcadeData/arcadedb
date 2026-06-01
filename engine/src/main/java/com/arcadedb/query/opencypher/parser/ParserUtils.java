@@ -288,7 +288,7 @@ public class ParserUtils {
           case 'u':
           case 'U':
             // Unicode escape: 4 or 8 hex digits
-            final int hexLen = (c == 'u') ? 4 : 8;
+            final int hexLen = c == 'u' ? 4 : 8;
             if (i + hexLen <= input.length()) {
               final String hex = input.substring(i + 1, i + 1 + hexLen);
               try {

@@ -37,9 +37,10 @@ import io.undertow.util.HeaderValues;
 import io.undertow.util.HttpString;
 import io.undertow.util.StatusCodes;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.Deque;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.logging.Level;
 
 public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler {
   private static final HttpString SESSION_ID_HEADER = new HttpString(HttpSessionManager.ARCADEDB_SESSION_ID);
@@ -130,7 +131,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
             ? Long.parseLong(bookmarkHeader.getFirst()) : -1;
 
         try {
-          final Database.READ_CONSISTENCY consistency = Database.READ_CONSISTENCY.valueOf(consistencyStr.toUpperCase(java.util.Locale.ROOT));
+          final Database.READ_CONSISTENCY consistency = Database.READ_CONSISTENCY.valueOf(consistencyStr.toUpperCase(Locale.ROOT));
           haDbForRead.setReadConsistencyContext(consistency, bookmarkIndex);
         } catch (final IllegalArgumentException ignored) {
           // Invalid consistency level, skip

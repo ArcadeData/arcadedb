@@ -18,7 +18,7 @@
  */
 package com.arcadedb.engine;
 
-import java.io.*;
+import java.io.FileNotFoundException;
 
 public class WALFileFactoryEmbedded implements WALFileFactory {
   public WALFile newInstance(final String filePath) throws FileNotFoundException {

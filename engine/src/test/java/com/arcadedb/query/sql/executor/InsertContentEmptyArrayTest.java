@@ -135,7 +135,7 @@ public class InsertContentEmptyArrayTest extends TestHelper {
       assertThat(item.<Object>getProperty("nested")).isInstanceOf(Map.class);
       Map<?, ?> nested = item.<Map<?, ?>>getProperty("nested");
       assertThat(nested.get("inner")).isInstanceOf(List.class);
-      assertThat(((List<?>) nested.get("inner"))).isEmpty();
+      assertThat((List<?>) nested.get("inner")).isEmpty();
       assertThat(nested.get("value")).isEqualTo(42);
 
       result.close();

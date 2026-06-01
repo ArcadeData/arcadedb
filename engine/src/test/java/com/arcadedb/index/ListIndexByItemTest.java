@@ -107,9 +107,8 @@ public class ListIndexByItemTest extends TestHelper {
   @Test
   void listIndexByItemUpdate() {
     // Test that index is updated when list items are added/removed
-    database.transaction(() -> {
-      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
-    });
+    database.transaction(() ->
+      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE"));
 
     database.transaction(() -> {
       MutableDocument doc = database.newDocument("SimpleListDoc");
@@ -149,10 +148,9 @@ public class ListIndexByItemTest extends TestHelper {
   void nestedListIndexByItem() {
     // Test indexing nested property in a list using dot notation
     // Simplified version using maps instead of embedded documents for ease of testing
-    database.transaction(() -> {
+    database.transaction(() ->
       // Create index using nested property access via SQL
-      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
-    });
+      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE"));
 
     database.transaction(() -> {
       // Insert documents with nested list data using SQL INSERT
@@ -188,9 +186,8 @@ public class ListIndexByItemTest extends TestHelper {
   @Test
   void listIndexByItemDelete() {
     // Test that index entries are removed when documents are deleted
-    database.transaction(() -> {
-      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
-    });
+    database.transaction(() ->
+      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE"));
 
     database.transaction(() -> {
       MutableDocument doc = database.newDocument("SimpleListDoc");
@@ -206,9 +203,8 @@ public class ListIndexByItemTest extends TestHelper {
     });
 
     // Delete the document
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM SimpleListDoc WHERE id = 999");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM SimpleListDoc WHERE id = 999"));
 
     // Verify index entries are removed
     database.transaction(() -> {
@@ -223,9 +219,8 @@ public class ListIndexByItemTest extends TestHelper {
   @Test
   void emptyListIndexByItem() {
     // Test behavior with empty lists
-    database.transaction(() -> {
-      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
-    });
+    database.transaction(() ->
+      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE"));
 
     database.transaction(() -> {
       MutableDocument doc = database.newDocument("SimpleListDoc");
@@ -248,9 +243,8 @@ public class ListIndexByItemTest extends TestHelper {
   @Test
   void nullListIndexByItem() {
     // Test behavior with null lists
-    database.transaction(() -> {
-      database.command("sql", "CREATE INDEX  ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
-    });
+    database.transaction(() ->
+      database.command("sql", "CREATE INDEX  ON SimpleListDoc (tags BY ITEM) NOTUNIQUE"));
 
     database.transaction(() -> {
       MutableDocument doc = database.newDocument("SimpleListDoc");
@@ -274,9 +268,8 @@ public class ListIndexByItemTest extends TestHelper {
   void listIndexByItemUpdateWithEqualitySearch() {
     // Test that searching for old values returns no results after update
     // Uses equality operator (=) instead of CONTAINS to verify index is properly updated
-    database.transaction(() -> {
-      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE");
-    });
+    database.transaction(() ->
+      database.command("sql", "CREATE INDEX ON SimpleListDoc (tags BY ITEM) NOTUNIQUE"));
 
     // Insert document with initial tags
     database.transaction(() -> {
@@ -341,14 +334,13 @@ public class ListIndexByItemTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON SimpleListDoc (id) UNIQUE");
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript",
           """
                 INSERT INTO SimpleListDoc SET id = 1, tags = ['java', 'database', 'nosql'];
                 INSERT INTO SimpleListDoc SET id = 2, tags = ['python', 'database', 'ml'];
                 INSERT INTO SimpleListDoc SET id = 3, tags = ['java', 'spring', 'web'];
-              """);
-    });
+              """));
 
     database.transaction(() -> {
       // Query documents containing "java" in tags list
@@ -383,14 +375,13 @@ public class ListIndexByItemTest extends TestHelper {
       database.command("sql", "CREATE INDEX ON SimpleListDoc (id) UNIQUE");
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript",
           """
                 INSERT INTO SimpleListDoc SET id = 1, tags = ['java', 'database', 'nosql'];
                 INSERT INTO SimpleListDoc SET id = 2, tags = ['python', 'database', 'ml'];
                 INSERT INTO SimpleListDoc SET id = 3, tags = ['java', 'spring', 'web'];
-              """);
-    });
+              """));
 
     database.transaction(() -> {
       // Query documents containing "java" in tags list

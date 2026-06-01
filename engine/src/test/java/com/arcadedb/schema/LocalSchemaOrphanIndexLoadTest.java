@@ -19,12 +19,12 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -80,7 +80,7 @@ class LocalSchemaOrphanIndexLoadTest extends TestHelper {
     indexes.remove(firstName);
     indexes.put(renamedName, indexBody);
 
-    try (final java.io.FileWriter w = new java.io.FileWriter(schemaFile)) {
+    try (final FileWriter w = new FileWriter(schemaFile)) {
       w.write(schemaJson.toString());
     }
 
@@ -105,8 +105,9 @@ class LocalSchemaOrphanIndexLoadTest extends TestHelper {
         .filter(m -> m.contains("Cannot find index") || m.contains("Cannot find indexes"))
         .toList();
     assertThat(warningsAboutMissingIndexes)
-        .as("Renaming an index file (LSM compaction) must not surface a 'Cannot find index' "
-            + "warning when the orphan relinker can reattach by bucket prefix; got: %s",
+        .as("""
+            Renaming an index file (LSM compaction) must not surface a 'Cannot find index' \
+            warning when the orphan relinker can reattach by bucket prefix; got: %s""",
             warningsAboutMissingIndexes)
         .isEmpty();
   }

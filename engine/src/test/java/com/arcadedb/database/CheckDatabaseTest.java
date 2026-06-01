@@ -192,10 +192,9 @@ class CheckDatabaseTest extends TestHelper {
 
   @Test
   void checkBrokenDeletedVertex() {
-    database.transaction(() -> {
+    database.transaction(() ->
       // DELETE THE VERTEX AT LOW LEVEL
-      database.getSchema().getBucketById(root.getIdentity().getBucketId()).deleteRecord(root.getIdentity());
-    });
+      database.getSchema().getBucketById(root.getIdentity().getBucketId()).deleteRecord(root.getIdentity()));
 
     ResultSet result = database.command("sql", "check database");
     assertThat(result.hasNext()).isTrue();

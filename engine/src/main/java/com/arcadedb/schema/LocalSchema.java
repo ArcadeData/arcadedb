@@ -69,12 +69,16 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.time.*;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.time.ZoneId;
 import java.util.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 /**
  * Local implementation of the database schema.
@@ -404,13 +408,14 @@ public class LocalSchema implements Schema {
     // the later failure.
     if (version == LocalBucket.CURRENT_VERSION && bucketName.endsWith("_ext"))
       LogManager.instance().log(this, Level.WARNING,
-          "Bucket name '%s' ends with '_ext'. The engine reserves the '<primaryName>_ext' suffix for paired"
-              + " EXTERNAL-property buckets. If a primary bucket whose name + '_ext' equals this name later"
-              + " gains an EXTERNAL property, that property change will fail with a SchemaException. Consider"
-              + " renaming this bucket to avoid the collision.",
+          """
+          Bucket name '%s' ends with '_ext'. The engine reserves the '<primaryName>_ext' suffix for paired\
+           EXTERNAL-property buckets. If a primary bucket whose name + '_ext' equals this name later\
+           gains an EXTERNAL property, that property change will fail with a SchemaException. Consider\
+           renaming this bucket to avoid the collision.""",
           null, bucketName);
 
-    final String dir = (parentDirectory == null || parentDirectory.isEmpty()) ? databasePath : parentDirectory;
+    final String dir = parentDirectory == null || parentDirectory.isEmpty() ? databasePath : parentDirectory;
 
     return recordFileChanges(() -> {
       try {

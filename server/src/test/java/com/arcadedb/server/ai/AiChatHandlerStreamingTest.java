@@ -31,9 +31,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.DataOutputStream;
+import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
+import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -132,7 +134,7 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
     // Wipe the chats this test wrote so the next test that asserts an empty chat
     // list (AiServerTest.listChatsReturnsEmpty) is not polluted; SERVER_ROOT_PATH is
     // shared across all tests in this module.
-    final var rootDir = new java.io.File("./target/chats/root");
+    final var rootDir = new File("./target/chats/root");
     if (rootDir.exists()) {
       final var files = rootDir.listFiles();
       if (files != null)
@@ -149,7 +151,7 @@ class AiChatHandlerStreamingTest extends BaseGraphServerTest {
   }
 
   private int fakeGatewayPort() {
-    return ((java.net.InetSocketAddress) fakeGateway.getListenerInfo().get(0).getAddress()).getPort();
+    return ((InetSocketAddress) fakeGateway.getListenerInfo().get(0).getAddress()).getPort();
   }
 
   @Test

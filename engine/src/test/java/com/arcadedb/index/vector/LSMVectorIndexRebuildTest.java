@@ -306,9 +306,8 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     assertThat(stats.get("mutationsSinceRebuild")).isEqualTo(0L);
 
     // Now add a SINGLE new vector (below the threshold)
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random)));
 
     // Verify mutation counter is 1 before search
     stats = lsmIndex.getStats();
@@ -431,9 +430,8 @@ class LSMVectorIndexRebuildTest extends TestHelper {
     assertThat(stats.get("mutationsSinceRebuild")).isEqualTo(0L);
 
     // Add a single vector (below threshold)
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random));
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Embedding SET vector = ?", (Object) generateRandomVector(random)));
 
     // Verify mutation counter is 1
     stats = lsmIndex.getStats();

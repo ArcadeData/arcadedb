@@ -56,9 +56,8 @@ class OpenCypherZeroLengthPathTest {
   @Test
   void zeroLengthPathOnIsolatedNode() {
     // Issue #3337: zero-length path on a node with no relationships
-    database.transaction(() -> {
-      database.newVertex("SoloNode").save();
-    });
+    database.transaction(() ->
+      database.newVertex("SoloNode").save());
 
     final ResultSet result = database.query("opencypher",
         """

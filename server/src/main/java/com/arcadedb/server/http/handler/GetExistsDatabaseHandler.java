@@ -25,7 +25,9 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.*;
+import java.util.Deque;
+import java.util.HashSet;
+import java.util.Set;
 
 public class GetExistsDatabaseHandler extends AbstractServerHttpHandler {
   public GetExistsDatabaseHandler(final HttpServer httpServer) {

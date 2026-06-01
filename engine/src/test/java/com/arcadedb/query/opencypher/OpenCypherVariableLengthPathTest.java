@@ -40,7 +40,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Note: Variable-length path queries currently have a duplication bug (pre-existing issue).
  * These tests verify that path variables ARE being stored correctly.
  */
-public class OpenCypherVariableLengthPathTest {
+class OpenCypherVariableLengthPathTest {
   private Database database;
   private Vertex  alice, bob, charlie;
 
@@ -120,13 +120,12 @@ public class OpenCypherVariableLengthPathTest {
     // Create a separate database for this test with the TCK scenario
     final Database db2 = new DatabaseFactory("./target/databases/testopencypher-vlp-prop").create();
     try {
-      db2.transaction(() -> {
+      db2.transaction(() ->
         db2.command("opencypher",
             """
             CREATE (a:Artist:A), (b:Artist:B), (c:Artist:C) \
             CREATE (a)-[:WORKED_WITH {year: 1987}]->(b), \
-            (b)-[:WORKED_WITH {year: 1988}]->(c)""");
-      });
+            (b)-[:WORKED_WITH {year: 1988}]->(c)"""));
 
       db2.transaction(() -> {
         // First: check all artists exist
@@ -683,9 +682,10 @@ public class OpenCypherVariableLengthPathTest {
           "CREATE (:Person {name:'Alice'})<-[:KNOWS]-(:Person {name:'Bob'})-[:KNOWS]->(:Person {name:'Charlie'})"));
 
       final ResultSet rs = db.query("opencypher",
-          "MATCH (s:Person)<-[:KNOWS]-(f:Person)-[:KNOWS]->(d:Person) "
-              + "RETURN s.name AS s, f.name AS f, d.name AS d "
-              + "ORDER BY s, f, d");
+          """
+          MATCH (s:Person)<-[:KNOWS]-(f:Person)-[:KNOWS]->(d:Person) \
+          RETURN s.name AS s, f.name AS f, d.name AS d \
+          ORDER BY s, f, d""");
       final List<String> rows = new ArrayList<>();
       while (rs.hasNext()) {
         final Result r = rs.next();
@@ -942,8 +942,9 @@ public class OpenCypherVariableLengthPathTest {
       db.getSchema().createVertexType("Person4096");
       db.getSchema().createEdgeType("KNOWS4096");
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person4096 {name:'Alice'}), (b:Person4096 {name:'Bob'}), (c:Person4096 {name:'Charlie'}),"
-              + " (a)-[:KNOWS4096]->(b), (b)-[:KNOWS4096]->(c)"));
+          """
+          CREATE (a:Person4096 {name:'Alice'}), (b:Person4096 {name:'Bob'}), (c:Person4096 {name:'Charlie'}),\
+           (a)-[:KNOWS4096]->(b), (b)-[:KNOWS4096]->(c)"""));
 
       final ResultSet result = db.query("opencypher",
           """
@@ -976,8 +977,9 @@ public class OpenCypherVariableLengthPathTest {
       db.getSchema().createVertexType("Person4096");
       db.getSchema().createEdgeType("KNOWS4096");
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person4096 {name:'Alice'}), (b:Person4096 {name:'Bob'}), (c:Person4096 {name:'Charlie'}),"
-              + " (a)-[:KNOWS4096]->(b), (b)-[:KNOWS4096]->(c)"));
+          """
+          CREATE (a:Person4096 {name:'Alice'}), (b:Person4096 {name:'Bob'}), (c:Person4096 {name:'Charlie'}),\
+           (a)-[:KNOWS4096]->(b), (b)-[:KNOWS4096]->(c)"""));
 
       final ResultSet result = db.query("opencypher",
           """
@@ -1000,8 +1002,9 @@ public class OpenCypherVariableLengthPathTest {
       db.getSchema().createVertexType("Person4096");
       db.getSchema().createEdgeType("KNOWS4096");
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person4096 {name:'Alice'}), (b:Person4096 {name:'Bob'}), (c:Person4096 {name:'Charlie'}),"
-              + " (a)-[:KNOWS4096]->(b), (b)-[:KNOWS4096]->(c)"));
+          """
+          CREATE (a:Person4096 {name:'Alice'}), (b:Person4096 {name:'Bob'}), (c:Person4096 {name:'Charlie'}),\
+           (a)-[:KNOWS4096]->(b), (b)-[:KNOWS4096]->(c)"""));
 
       final ResultSet result = db.query("opencypher",
           """
@@ -1025,8 +1028,9 @@ public class OpenCypherVariableLengthPathTest {
       db.getSchema().createVertexType("Person4096");
       db.getSchema().createEdgeType("KNOWS4096");
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person4096 {name:'Alice'}), (b:Person4096 {name:'Bob'}), (c:Person4096 {name:'Charlie'}),"
-              + " (a)-[:KNOWS4096]->(b), (b)-[:KNOWS4096]->(c)"));
+          """
+          CREATE (a:Person4096 {name:'Alice'}), (b:Person4096 {name:'Bob'}), (c:Person4096 {name:'Charlie'}),\
+           (a)-[:KNOWS4096]->(b), (b)-[:KNOWS4096]->(c)"""));
 
       final ResultSet result = db.query("opencypher",
           """
@@ -1053,12 +1057,13 @@ public class OpenCypherVariableLengthPathTest {
     final Database db = new DatabaseFactory("./target/databases/issue-4106-pattern-comp").create();
     try {
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person {name:'Alice', age:30}), "
-              + "(b:Person {name:'Bob', age:25}), "
-              + "(c:Person {name:'Charlie', age:35}), "
-              + "(a)-[:KNOWS {since:2020}]->(b), "
-              + "(b)-[:KNOWS {since:2019}]->(c), "
-              + "(a)-[:KNOWS {since:2021}]->(c)"));
+          """
+          CREATE (a:Person {name:'Alice', age:30}), \
+          (b:Person {name:'Bob', age:25}), \
+          (c:Person {name:'Charlie', age:35}), \
+          (a)-[:KNOWS {since:2020}]->(b), \
+          (b)-[:KNOWS {since:2019}]->(c), \
+          (a)-[:KNOWS {since:2021}]->(c)"""));
 
       final ResultSet rs = db.query("opencypher",
           "RETURN [(p:Person)-[r:KNOWS]->(q:Person) | q.name] AS xs");
@@ -1077,12 +1082,13 @@ public class OpenCypherVariableLengthPathTest {
     final Database db = new DatabaseFactory("./target/databases/issue-4106-pattern-comp").create();
     try {
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person {name:'Alice', age:30}), "
-              + "(b:Person {name:'Bob', age:25}), "
-              + "(c:Person {name:'Charlie', age:35}), "
-              + "(a)-[:KNOWS {since:2020}]->(b), "
-              + "(b)-[:KNOWS {since:2019}]->(c), "
-              + "(a)-[:KNOWS {since:2021}]->(c)"));
+          """
+          CREATE (a:Person {name:'Alice', age:30}), \
+          (b:Person {name:'Bob', age:25}), \
+          (c:Person {name:'Charlie', age:35}), \
+          (a)-[:KNOWS {since:2020}]->(b), \
+          (b)-[:KNOWS {since:2019}]->(c), \
+          (a)-[:KNOWS {since:2021}]->(c)"""));
 
       final ResultSet rs = db.query("opencypher",
           "RETURN [(p:Person)-[r:KNOWS]->(q:Person) WHERE r.since > 2019 | q.name] AS xs");
@@ -1100,12 +1106,13 @@ public class OpenCypherVariableLengthPathTest {
     final Database db = new DatabaseFactory("./target/databases/issue-4106-pattern-comp").create();
     try {
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person {name:'Alice', age:30}), "
-              + "(b:Person {name:'Bob', age:25}), "
-              + "(c:Person {name:'Charlie', age:35}), "
-              + "(a)-[:KNOWS {since:2020}]->(b), "
-              + "(b)-[:KNOWS {since:2019}]->(c), "
-              + "(a)-[:KNOWS {since:2021}]->(c)"));
+          """
+          CREATE (a:Person {name:'Alice', age:30}), \
+          (b:Person {name:'Bob', age:25}), \
+          (c:Person {name:'Charlie', age:35}), \
+          (a)-[:KNOWS {since:2020}]->(b), \
+          (b)-[:KNOWS {since:2019}]->(c), \
+          (a)-[:KNOWS {since:2021}]->(c)"""));
 
       final ResultSet rs = db.query("opencypher",
           "RETURN size([(p:Person)-[r:KNOWS]->(q:Person) | q.name]) AS s");
@@ -1182,12 +1189,14 @@ public class OpenCypherVariableLengthPathTest {
     final Database db = new DatabaseFactory("./target/databases/issue-4111-varlength-comp").create();
     try {
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Charlie'}), "
-              + "(a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)"));
+          """
+          CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Charlie'}), \
+          (a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)"""));
 
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p1:Person {name:'Alice'}), (p2:Person {name:'Bob'}) "
-              + "RETURN [(p1)-[:KNOWS*1..3]->(p2) | 'X'] AS vals");
+          """
+          MATCH (p1:Person {name:'Alice'}), (p2:Person {name:'Bob'}) \
+          RETURN [(p1)-[:KNOWS*1..3]->(p2) | 'X'] AS vals""");
       assertThat(rs.hasNext()).isTrue();
       final List<Object> list = (List<Object>) rs.next().getProperty("vals");
       assertThat(list).containsExactly("X");
@@ -1203,12 +1212,14 @@ public class OpenCypherVariableLengthPathTest {
     final Database db = new DatabaseFactory("./target/databases/issue-4111-varlength-comp").create();
     try {
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Charlie'}), "
-              + "(a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)"));
+          """
+          CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Charlie'}), \
+          (a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)"""));
 
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p1:Person {name:'Alice'}), (p2:Person {name:'Bob'}) "
-              + "RETURN [(p1)-[:KNOWS]->(p2) | 'X'] AS vals");
+          """
+          MATCH (p1:Person {name:'Alice'}), (p2:Person {name:'Bob'}) \
+          RETURN [(p1)-[:KNOWS]->(p2) | 'X'] AS vals""");
       assertThat(rs.hasNext()).isTrue();
       final List<Object> list = (List<Object>) rs.next().getProperty("vals");
       assertThat(list).containsExactly("X");
@@ -1224,12 +1235,14 @@ public class OpenCypherVariableLengthPathTest {
     final Database db = new DatabaseFactory("./target/databases/issue-4111-varlength-comp").create();
     try {
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Charlie'}), "
-              + "(a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)"));
+          """
+          CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Charlie'}), \
+          (a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)"""));
 
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p1:Person {name:'Charlie'}), (p2:Person {name:'Bob'}) "
-              + "RETURN [(p1)-[:KNOWS*1..3]->(p2) | 'X'] AS vals");
+          """
+          MATCH (p1:Person {name:'Charlie'}), (p2:Person {name:'Bob'}) \
+          RETURN [(p1)-[:KNOWS*1..3]->(p2) | 'X'] AS vals""");
       assertThat(rs.hasNext()).isTrue();
       final List<Object> list = (List<Object>) rs.next().getProperty("vals");
       assertThat(list).isEmpty();
@@ -1245,12 +1258,14 @@ public class OpenCypherVariableLengthPathTest {
     final Database db = new DatabaseFactory("./target/databases/issue-4111-varlength-comp").create();
     try {
       db.transaction(() -> db.command("opencypher",
-          "CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Charlie'}), "
-              + "(a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)"));
+          """
+          CREATE (a:Person {name:'Alice'}), (b:Person {name:'Bob'}), (c:Person {name:'Charlie'}), \
+          (a)-[:KNOWS]->(b), (b)-[:KNOWS]->(c)"""));
 
       final ResultSet rs = db.query("opencypher",
-          "MATCH (p1:Person {name:'Alice'}), (p2:Person {name:'Bob'}) "
-              + "RETURN [(p1)-[:KNOWS*1..3]->(p2) | p1.name] AS vals");
+          """
+          MATCH (p1:Person {name:'Alice'}), (p2:Person {name:'Bob'}) \
+          RETURN [(p1)-[:KNOWS*1..3]->(p2) | p1.name] AS vals""");
       assertThat(rs.hasNext()).isTrue();
       final List<Object> list = (List<Object>) rs.next().getProperty("vals");
       assertThat(list).containsExactly("Alice");

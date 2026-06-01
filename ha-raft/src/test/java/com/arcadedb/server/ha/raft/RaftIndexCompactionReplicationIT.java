@@ -21,14 +21,13 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
-import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.schema.VertexType;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -40,8 +39,8 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -93,7 +92,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverIdx = serverDb.getSchema().getIndexByName(indexName);
       assertThat(serverIdx.countEntries())
@@ -150,7 +149,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
       waitForReplicationIsCompleted(i);
 
     final String actualIndexName = vectorIndex.getName();
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
       assertThat(serverVectorIndex).as("Vector index should be replicated to server %d", serverIndex).isNotNull();
@@ -202,7 +201,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
       waitForReplicationIsCompleted(i);
 
     final String actualIndexName = vectorIndex.getName();
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverVectorIndex = serverDb.getSchema().getIndexByName(actualIndexName);
       assertThat(serverVectorIndex).as("Vector index should be replicated to server %d", serverIndex).isNotNull();
@@ -247,7 +246,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
     for (int i = 0; i < getServerCount(); i++)
       waitForReplicationIsCompleted(i);
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverIdx = serverDb.getSchema().getIndexByName(indexName);
       assertThat(serverIdx.countEntries()).as("Server %d index should have 2000 entries", serverIndex).isEqualTo(2000);
@@ -340,7 +339,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
 
     // nextId now equals total inserted records (seed + concurrent + post-compact)
     final long totalExpected = nextId.get();
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database serverDb = getServerDatabase(serverIndex, getDatabaseName());
       final Index serverIdx = serverDb.getSchema().getIndexByName(indexName);
       assertThat(serverIdx.countEntries())
@@ -367,8 +366,8 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
 
-    final com.arcadedb.database.DatabaseInternal leaderDb =
-        (com.arcadedb.database.DatabaseInternal) getServerDatabase(leaderIndex, getDatabaseName());
+    final DatabaseInternal leaderDb =
+        (DatabaseInternal) getServerDatabase(leaderIndex, getDatabaseName());
 
     leaderDb.getSchema().buildVertexType().withName("RaftDeferred").withTotalBuckets(1).create();
 
@@ -386,7 +385,7 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
     }
     assertThat(started).as("Test must own the recording session for the assertion to be meaningful").isTrue();
 
-    final java.util.concurrent.atomic.AtomicBoolean callbackInvoked = new java.util.concurrent.atomic.AtomicBoolean(false);
+    final AtomicBoolean callbackInvoked = new AtomicBoolean(false);
     final boolean returnedValue;
     try {
       // The production call site is LSMTreeIndex.compact() which goes through
@@ -401,12 +400,14 @@ class RaftIndexCompactionReplicationIT extends BaseRaftHATest {
     }
 
     assertThat(callbackInvoked.get())
-        .as("runWithCompactionReplication must NOT invoke the compaction callback when a recording session is in progress; "
-            + "running it locally would diverge the leader from followers and ultimately log 'Cannot find index ...' warnings")
+        .as("""
+            runWithCompactionReplication must NOT invoke the compaction callback when a recording session is in progress; \
+            running it locally would diverge the leader from followers and ultimately log 'Cannot find index ...' warnings""")
         .isFalse();
     assertThat(returnedValue)
-        .as("runWithCompactionReplication must return false (deferred) so the index status resets to AVAILABLE and the next "
-            + "onAfterCommit reschedules compaction once the contending session has released the file manager")
+        .as("""
+            runWithCompactionReplication must return false (deferred) so the index status resets to AVAILABLE and the next \
+            onAfterCommit reschedules compaction once the contending session has released the file manager""")
         .isFalse();
   }
 

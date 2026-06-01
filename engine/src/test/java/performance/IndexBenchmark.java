@@ -34,7 +34,6 @@ import com.arcadedb.utility.FileUtils;
 import java.io.File;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.logging.Level;
 
 /**
  * Benchmark comparing LSM Tree index vs Hash index for CRUD operations.

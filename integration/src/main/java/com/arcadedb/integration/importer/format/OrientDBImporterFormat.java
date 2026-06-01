@@ -28,8 +28,8 @@ import com.arcadedb.integration.importer.OrientDBImporter;
 import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 
-import java.io.*;
-import java.util.zip.*;
+import java.io.IOException;
+import java.util.zip.GZIPInputStream;
 
 public class OrientDBImporterFormat extends AbstractImporterFormat {
   @Override

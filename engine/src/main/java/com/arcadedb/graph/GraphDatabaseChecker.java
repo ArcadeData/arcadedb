@@ -30,8 +30,8 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.logging.*;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 
 /**
  * Check graph integrity. If fix mode is enabled, it tries to fix the graph by removing corrupted records and
@@ -75,7 +75,7 @@ public class GraphDatabaseChecker {
         }, null);
       }
 
-      database.scanType(typeName, false, (record) -> {
+      database.scanType(typeName, false, record -> {
         try {
           Vertex vertex = record.asVertex(true);
 
@@ -571,7 +571,7 @@ public class GraphDatabaseChecker {
         }, null);
       }
 
-      database.scanType(typeName, false, (record) -> {
+      database.scanType(typeName, false, record -> {
         final RID edgeRID = record.getIdentity();
 
         try {

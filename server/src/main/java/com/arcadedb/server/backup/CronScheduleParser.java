@@ -18,10 +18,8 @@
  */
 package com.arcadedb.server.backup;
 
-import java.time.DayOfWeek;
 import java.time.Duration;
 import java.time.LocalDateTime;
-import java.time.temporal.TemporalAdjusters;
 import java.util.BitSet;
 
 /**
@@ -85,7 +83,7 @@ public class CronScheduleParser {
   }
 
   private void parseField(final String field, final BitSet bitSet, final int min, final int max, final String[] names) {
-    if (field.equals("*") || field.equals("?")) {
+    if ("*".equals(field) || "?".equals(field)) {
       bitSet.set(min, max + 1);
       return;
     }
@@ -100,7 +98,7 @@ public class CronScheduleParser {
     // Handle increments (e.g., 0/15)
     if (field.contains("/")) {
       final String[] parts = field.split("/");
-      final int start = parts[0].equals("*") ? min : parseValue(parts[0], min, names);
+      final int start = "*".equals(parts[0]) ? min : parseValue(parts[0], min, names);
       final int increment = Integer.parseInt(parts[1]);
       for (int i = start; i <= max; i += increment)
         bitSet.set(i);

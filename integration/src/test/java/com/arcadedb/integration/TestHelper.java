@@ -22,8 +22,8 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.log.LogManager;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.Collection;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

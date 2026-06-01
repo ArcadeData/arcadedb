@@ -37,8 +37,8 @@ public class ToIntegerFunction implements StatelessFunction {
       throw new CommandExecutionException("toInteger() requires exactly one argument");
     if (args[0] == null)
       return null;
-    if (args[0] instanceof Boolean)
-      return ((Boolean) args[0]) ? 1L : 0L;
+    if (args[0] instanceof Boolean b)
+      return b ? 1L : 0L;
     if (args[0] instanceof Number)
       return ((Number) args[0]).longValue();
     if (args[0] instanceof String) {

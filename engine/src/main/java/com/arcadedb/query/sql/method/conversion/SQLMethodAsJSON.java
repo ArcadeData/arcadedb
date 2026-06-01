@@ -27,7 +27,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Converts a document in JSON string.

@@ -19,8 +19,9 @@
 /* ParserGeneratorCCOptions:MULTI=false,NODE_USES_PARSER=false,VISITOR=false,TRACK_TOKENS=false,NODE_PREFIX=AST,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_CLASS_VISIBILITY_PUBLIC=true */
 package com.arcadedb.graphql.parser;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.Arrays;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 public class SimpleNode implements Node {
   protected Node   parent;

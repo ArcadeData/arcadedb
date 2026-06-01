@@ -23,7 +23,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * <p>
@@ -97,7 +97,7 @@ public class ConvertToUpdatableResultStep extends AbstractExecutionStep {
 
             nextItem = null;
           } finally {
-            cost = (System.nanoTime() - begin);
+            cost = System.nanoTime() - begin;
           }
         }
       }

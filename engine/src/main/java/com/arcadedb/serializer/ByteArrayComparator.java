@@ -18,7 +18,7 @@
  */
 package com.arcadedb.serializer;
 
-import java.util.*;
+import java.util.Comparator;
 
 public interface ByteArrayComparator extends Comparator<byte[]> {
   boolean equals(byte[] a, byte[] b, int length);

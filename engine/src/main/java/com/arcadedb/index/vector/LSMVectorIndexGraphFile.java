@@ -20,8 +20,6 @@ package com.arcadedb.index.vector;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.BasePage;
-import com.arcadedb.engine.Component;
-import com.arcadedb.engine.ComponentFactory;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponent;
@@ -41,11 +39,11 @@ import io.github.jbellis.jvector.quantization.ProductQuantization;
 import io.github.jbellis.jvector.vector.JVectorUtils;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
-import java.io.*;
-import java.util.*;
-import java.util.function.*;
-import java.util.logging.*;
-import io.github.jbellis.jvector.vector.types.ByteSequence;
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.IntFunction;
+import java.util.logging.Level;
 
 /**
  * PaginatedComponent for storing JVector graph topology in ArcadeDB pages.

@@ -347,7 +347,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               }
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
           }
         }
@@ -404,7 +404,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               gavPathCount++;
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
         // Exhausted — clear state so the outer loop fetches the next source
@@ -461,7 +461,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               fastPathCount++;
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
       }
@@ -580,7 +580,7 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
               standardPathCount++;
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
       }

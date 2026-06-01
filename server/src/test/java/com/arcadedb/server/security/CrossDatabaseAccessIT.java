@@ -43,7 +43,7 @@ class CrossDatabaseAccessIT extends BaseGraphServerTest {
 
   @Test
   void scopedUserCannotReadOtherDatabase() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createDatabase(serverIndex, OTHER_DB);
       try {
         createType(serverIndex, OTHER_DB, "Memory");
@@ -60,7 +60,7 @@ class CrossDatabaseAccessIT extends BaseGraphServerTest {
 
   @Test
   void scopedUserCannotWriteOtherDatabase() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createDatabase(serverIndex, OTHER_DB);
       try {
         createType(serverIndex, OTHER_DB, "Memory");
@@ -78,7 +78,7 @@ class CrossDatabaseAccessIT extends BaseGraphServerTest {
 
   @Test
   void scopedApiTokenCannotReadOtherDatabase() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createDatabase(serverIndex, OTHER_DB);
       try {
         createType(serverIndex, OTHER_DB, "Memory");
@@ -98,7 +98,7 @@ class CrossDatabaseAccessIT extends BaseGraphServerTest {
     // Mirrors the exact repro sent by the reporter (Art): a read-only token scoped to 'live' must not be able to
     // INSERT INTO Memory on the very same 'live' database. Token payload uses no 'database' key inside permissions,
     // matching the reporter's minimised token-only repro.
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createDatabase(serverIndex, OTHER_DB);
       try {
         createType(serverIndex, OTHER_DB, "Memory");
@@ -128,7 +128,7 @@ class CrossDatabaseAccessIT extends BaseGraphServerTest {
 
   @Test
   void scopedApiTokenCannotWriteOtherDatabase() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createDatabase(serverIndex, OTHER_DB);
       try {
         createType(serverIndex, OTHER_DB, "Memory");

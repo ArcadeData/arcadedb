@@ -30,7 +30,8 @@ import com.arcadedb.query.sql.parser.Timeout;
 import com.arcadedb.query.sql.parser.Unwind;
 import com.arcadedb.query.sql.parser.WhereClause;
 
-import java.util.*;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Created by luigidellaquila on 19/06/17.

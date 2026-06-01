@@ -43,9 +43,8 @@ class OpenCypherStDevTest {
   void setup() {
     database = new DatabaseFactory("./databases/test-stdev").create();
     database.getSchema().createVertexType("Val");
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Val {v: 10.0}), (:Val {v: 20.0}), (:Val {v: 30.0})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Val {v: 10.0}), (:Val {v: 20.0}), (:Val {v: 30.0})"));
   }
 
   @AfterEach
@@ -98,17 +97,15 @@ class OpenCypherStDevTest {
 
   @Test
   void stDevWithSingleValue() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Val {v: 999.0})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Val {v: 999.0})"));
 
     // Drop and recreate with single value
     database.drop();
     database = new DatabaseFactory("./databases/test-stdev").create();
     database.getSchema().createVertexType("Val");
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Val {v: 42.0})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Val {v: 42.0})"));
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Val) RETURN stDev(n.v) as result")) {
       assertThat(rs.hasNext()).isTrue();

@@ -25,6 +25,7 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.query.sql.parser.AndBlock;
 import com.arcadedb.query.sql.parser.Bucket;
 import com.arcadedb.query.sql.parser.Expression;
+import com.arcadedb.query.sql.parser.FieldMatchPathItem;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.FromItem;
 import com.arcadedb.query.sql.parser.GroupBy;
@@ -50,7 +51,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.utility.Pair;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * Created by luigidellaquila on 20/09/16.
@@ -360,7 +361,7 @@ public class MatchExecutionPlanner {
   private static boolean isFusibleEdge(final EdgeTraversal et) {
     if (et.edge.item instanceof MultiMatchPathItem)
       return false;
-    if (et.edge.item instanceof com.arcadedb.query.sql.parser.FieldMatchPathItem)
+    if (et.edge.item instanceof FieldMatchPathItem)
       return false;
     if (et.edge.in.isOptionalNode())
       return false;
@@ -375,7 +376,7 @@ public class MatchExecutionPlanner {
 
     // Check that the method is a simple out/in (not outE/inE/bothE/outV/inV)
     final String methodName = et.edge.item.getMethod().methodName.getStringValue().toLowerCase(Locale.ENGLISH);
-    return methodName.equals("out") || methodName.equals("in") || methodName.equals("both");
+    return "out".equals(methodName) || "in".equals(methodName) || "both".equals(methodName);
   }
 
   /**

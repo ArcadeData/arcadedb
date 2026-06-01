@@ -21,8 +21,10 @@ import com.arcadedb.database.Document;
 import com.arcadedb.query.sql.executor.QueryHelper;
 import com.arcadedb.serializer.BinaryComparator;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Collection;
+import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Native condition with support for simple operators through inheritance.

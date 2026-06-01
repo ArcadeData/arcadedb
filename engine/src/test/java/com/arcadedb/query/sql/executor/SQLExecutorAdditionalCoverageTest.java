@@ -239,10 +239,9 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void insertMultipleValues() {
     database.getSchema().createDocumentType("InsertValuesTest");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sql",
-          "INSERT INTO InsertValuesTest (a, b) VALUES (1, 'x'), (2, 'y'), (3, 'z')");
-    });
+          "INSERT INTO InsertValuesTest (a, b) VALUES (1, 'x'), (2, 'y'), (3, 'z')"));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM InsertValuesTest");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(3L);
     rs.close();
@@ -258,9 +257,8 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
       for (int i = 0; i < 5; i++)
         database.command("sql", "INSERT INTO IndexedDoc SET uid = ?", i);
     });
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM IndexedDoc WHERE uid = 3");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM IndexedDoc WHERE uid = 3"));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM IndexedDoc");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(4L);
     rs.close();
@@ -309,9 +307,8 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   void applyDefaults() {
     database.command("sql", "CREATE DOCUMENT TYPE DefaultsTest");
     database.command("sql", "CREATE PROPERTY DefaultsTest.status STRING (default 'active')");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO DefaultsTest SET name = 'test'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO DefaultsTest SET name = 'test'"));
     final ResultSet rs = database.query("sql", "SELECT FROM DefaultsTest WHERE name = 'test'");
     assertThat(rs.hasNext()).isTrue();
     final Result item = rs.next();
@@ -323,9 +320,8 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void updateReturnBefore() {
     database.getSchema().createDocumentType("ReturnBeforeTest");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO ReturnBeforeTest SET name = 'original', val = 1");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO ReturnBeforeTest SET name = 'original', val = 1"));
     database.transaction(() -> {
       final ResultSet rs = database.command("sql",
           "UPDATE ReturnBeforeTest SET name = 'updated' RETURN BEFORE WHERE val = 1");
@@ -499,10 +495,9 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void createEdgeUnidirectional() {
     database.getSchema().buildEdgeType().withName("UniEdge").withBidirectional(false).create();
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sql",
-          "CREATE EDGE UniEdge FROM (SELECT FROM V1 WHERE idx = 7) TO (SELECT FROM V2 WHERE idx = 2) UNIDIRECTIONAL");
-    });
+          "CREATE EDGE UniEdge FROM (SELECT FROM V1 WHERE idx = 7) TO (SELECT FROM V2 WHERE idx = 2) UNIDIRECTIONAL"));
     // The edge should exist going out from V1[7]
     final ResultSet rs = database.query("sql",
         "SELECT outE('UniEdge').size() as cnt FROM V1 WHERE idx = 7");
@@ -537,16 +532,14 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   // --- Delete edges via DELETE FROM ---
   @Test
   void deleteEdgeWithWhere() {
-    database.transaction(() -> {
+    database.transaction(() ->
       // Create a specific edge to delete
       database.command("sql",
-          "CREATE EDGE E1 FROM (SELECT FROM V1 WHERE idx = 8) TO (SELECT FROM V2 WHERE idx = 3)");
-    });
-    database.transaction(() -> {
+          "CREATE EDGE E1 FROM (SELECT FROM V1 WHERE idx = 8) TO (SELECT FROM V2 WHERE idx = 3)"));
+    database.transaction(() ->
       // Delete edges going from V1[8] by querying and deleting from edge type
       database.command("sql",
-          "DELETE FROM (SELECT expand(outE('E1')) FROM V1 WHERE idx = 8)");
-    });
+          "DELETE FROM (SELECT expand(outE('E1')) FROM V1 WHERE idx = 8)"));
     final ResultSet rs = database.query("sql", "SELECT outE('E1').size() as cnt FROM V1 WHERE idx = 8");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Integer>getProperty("cnt")).isEqualTo(0);
@@ -557,12 +550,10 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void moveVertex() {
     database.getSchema().createVertexType("V3");
-    database.transaction(() -> {
-      database.command("sql", "CREATE VERTEX V1 SET name = 'toMove', idx = 200");
-    });
-    database.transaction(() -> {
-      database.command("sql", "MOVE VERTEX (SELECT FROM V1 WHERE idx = 200) TO TYPE:V3");
-    });
+    database.transaction(() ->
+      database.command("sql", "CREATE VERTEX V1 SET name = 'toMove', idx = 200"));
+    database.transaction(() ->
+      database.command("sql", "MOVE VERTEX (SELECT FROM V1 WHERE idx = 200) TO TYPE:V3"));
     final ResultSet rs = database.query("sql", "SELECT FROM V3 WHERE idx = 200");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("name")).isEqualTo("toMove");
@@ -577,12 +568,10 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void updateAddRemoveFromCollection() {
     database.getSchema().createDocumentType("CollTest");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO CollTest SET name = 'doc1', items = ['a', 'b']");
-    });
-    database.transaction(() -> {
-      database.command("sql", "UPDATE CollTest SET items += 'c' WHERE name = 'doc1'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO CollTest SET name = 'doc1', items = ['a', 'b']"));
+    database.transaction(() ->
+      database.command("sql", "UPDATE CollTest SET items += 'c' WHERE name = 'doc1'"));
     ResultSet rs = database.query("sql", "SELECT FROM CollTest WHERE name = 'doc1'");
     assertThat(rs.hasNext()).isTrue();
     Result item = rs.next();
@@ -590,9 +579,8 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
     assertThat(items).contains("a", "b", "c");
     rs.close();
 
-    database.transaction(() -> {
-      database.command("sql", "UPDATE CollTest SET items -= 'b' WHERE name = 'doc1'");
-    });
+    database.transaction(() ->
+      database.command("sql", "UPDATE CollTest SET items -= 'b' WHERE name = 'doc1'"));
     rs = database.query("sql", "SELECT FROM CollTest WHERE name = 'doc1'");
     assertThat(rs.hasNext()).isTrue();
     item = rs.next();
@@ -606,12 +594,10 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void updatePutMap() {
     database.getSchema().createDocumentType("MapTest");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO MapTest SET name = 'doc1', props = {'key1': 'val1'}");
-    });
-    database.transaction(() -> {
-      database.command("sql", "UPDATE MapTest SET props.key2 = 'val2' WHERE name = 'doc1'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO MapTest SET name = 'doc1', props = {'key1': 'val1'}"));
+    database.transaction(() ->
+      database.command("sql", "UPDATE MapTest SET props.key2 = 'val2' WHERE name = 'doc1'"));
     final ResultSet rs = database.query("sql", "SELECT FROM MapTest WHERE name = 'doc1'");
     assertThat(rs.hasNext()).isTrue();
     final Result item = rs.next();
@@ -623,12 +609,10 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void updateIncrement() {
     database.getSchema().createDocumentType("IncrTest");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO IncrTest SET name = 'counter', val = 10");
-    });
-    database.transaction(() -> {
-      database.command("sql", "UPDATE IncrTest SET val += 5 WHERE name = 'counter'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO IncrTest SET name = 'counter', val = 10"));
+    database.transaction(() ->
+      database.command("sql", "UPDATE IncrTest SET val += 5 WHERE name = 'counter'"));
     final ResultSet rs = database.query("sql", "SELECT FROM IncrTest WHERE name = 'counter'");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Integer>getProperty("val")).isEqualTo(15);
@@ -641,12 +625,10 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
     database.getSchema().createDocumentType("UpsertTest");
     database.command("sql", "CREATE PROPERTY UpsertTest.uid INTEGER");
     database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "UpsertTest", "uid");
-    database.transaction(() -> {
-      database.command("sql", "UPDATE UpsertTest SET uid = 1, name = 'first' UPSERT WHERE uid = 1");
-    });
-    database.transaction(() -> {
-      database.command("sql", "UPDATE UpsertTest SET uid = 1, name = 'updated' UPSERT WHERE uid = 1");
-    });
+    database.transaction(() ->
+      database.command("sql", "UPDATE UpsertTest SET uid = 1, name = 'first' UPSERT WHERE uid = 1"));
+    database.transaction(() ->
+      database.command("sql", "UPDATE UpsertTest SET uid = 1, name = 'updated' UPSERT WHERE uid = 1"));
     final ResultSet rs = database.query("sql", "SELECT FROM UpsertTest WHERE uid = 1");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<String>getProperty("name")).isEqualTo("updated");
@@ -661,10 +643,9 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void insertFromSelect() {
     database.getSchema().createDocumentType("InsertFromSelTest");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sql",
-          "INSERT INTO InsertFromSelTest FROM (SELECT name, idx FROM V1 WHERE idx < 3)");
-    });
+          "INSERT INTO InsertFromSelTest FROM (SELECT name, idx FROM V1 WHERE idx < 3)"));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM InsertFromSelTest");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(3L);
     rs.close();
@@ -701,9 +682,8 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
       for (int i = 0; i < 5; i++)
         database.command("sql", "INSERT INTO TruncTest SET val = ?", i);
     });
-    database.transaction(() -> {
-      database.command("sql", "TRUNCATE TYPE TruncTest");
-    });
+    database.transaction(() ->
+      database.command("sql", "TRUNCATE TYPE TruncTest"));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM TruncTest");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(0L);
     rs.close();
@@ -849,10 +829,9 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void forEachInScript() {
     database.getSchema().createDocumentType("ForEachTest");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript",
-          "FOREACH ($i IN [1, 2, 3]) { INSERT INTO ForEachTest SET val = $i; }");
-    });
+          "FOREACH ($i IN [1, 2, 3]) { INSERT INTO ForEachTest SET val = $i; }"));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM ForEachTest");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(3L);
     rs.close();
@@ -862,15 +841,14 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void whileInScript() {
     database.getSchema().createDocumentType("WhileTest");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sqlscript", """
           LET $i = 0;
           WHILE ($i < 5) {
             INSERT INTO WhileTest SET val = $i;
             LET $i = $i + 1;
           }
-          """);
-    });
+          """));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM WhileTest");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(5L);
     rs.close();
@@ -936,9 +914,8 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void updateReturnAfter() {
     database.getSchema().createDocumentType("ReturnAfterTest");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO ReturnAfterTest SET name = 'before', val = 1");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO ReturnAfterTest SET name = 'before', val = 1"));
     database.transaction(() -> {
       final ResultSet rs = database.command("sql",
           "UPDATE ReturnAfterTest SET name = 'after' RETURN AFTER WHERE val = 1");
@@ -956,9 +933,8 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
       for (int i = 0; i < 10; i++)
         database.command("sql", "INSERT INTO DelLimitTest SET val = ?", i);
     });
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DelLimitTest LIMIT 3");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DelLimitTest LIMIT 3"));
     final ResultSet rs = database.query("sql", "SELECT count(*) as cnt FROM DelLimitTest");
     assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(7L);
     rs.close();
@@ -968,12 +944,10 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void updateMerge() {
     database.getSchema().createDocumentType("MergeTest");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO MergeTest SET name = 'doc1', data = {'a': 1}");
-    });
-    database.transaction(() -> {
-      database.command("sql", "UPDATE MergeTest MERGE {'b': 2} WHERE name = 'doc1'");
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO MergeTest SET name = 'doc1', data = {'a': 1}"));
+    database.transaction(() ->
+      database.command("sql", "UPDATE MergeTest MERGE {'b': 2} WHERE name = 'doc1'"));
     final ResultSet rs = database.query("sql", "SELECT FROM MergeTest WHERE name = 'doc1'");
     assertThat(rs.hasNext()).isTrue();
     rs.close();
@@ -983,13 +957,11 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void updateContent() {
     database.getSchema().createDocumentType("ContentTest");
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO ContentTest SET name = 'old', val = 1");
-    });
-    database.transaction(() -> {
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO ContentTest SET name = 'old', val = 1"));
+    database.transaction(() ->
       database.command("sql",
-          "UPDATE ContentTest CONTENT {'name': 'new', 'val': 99} WHERE name = 'old'");
-    });
+          "UPDATE ContentTest CONTENT {'name': 'new', 'val': 99} WHERE name = 'old'"));
     final ResultSet rs = database.query("sql", "SELECT FROM ContentTest WHERE name = 'new'");
     assertThat(rs.hasNext()).isTrue();
     assertThat(rs.next().<Integer>getProperty("val")).isEqualTo(99);
@@ -1029,10 +1001,9 @@ class SQLExecutorAdditionalCoverageTest extends TestHelper {
   @Test
   void insertWithEmbedded() {
     database.getSchema().createDocumentType("EmbeddedTest");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sql",
-          "INSERT INTO EmbeddedTest SET name = 'doc1', address = {'street': '123 Main', 'city': 'Springfield'}");
-    });
+          "INSERT INTO EmbeddedTest SET name = 'doc1', address = {'street': '123 Main', 'city': 'Springfield'}"));
     final ResultSet rs = database.query("sql", "SELECT FROM EmbeddedTest WHERE name = 'doc1'");
     assertThat(rs.hasNext()).isTrue();
     final Result item = rs.next();

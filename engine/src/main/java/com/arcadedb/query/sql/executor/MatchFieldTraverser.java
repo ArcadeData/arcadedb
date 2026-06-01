@@ -18,12 +18,14 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
 import com.arcadedb.query.sql.parser.MatchPathItem;
 
-import java.util.*;
+import java.util.Collections;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.Set;
 
 public class MatchFieldTraverser extends MatchEdgeTraverser {
   public MatchFieldTraverser(final Result lastUpstreamRecord, final EdgeTraversal edge) {

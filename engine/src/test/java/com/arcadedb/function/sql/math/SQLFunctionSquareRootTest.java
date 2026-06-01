@@ -163,7 +163,7 @@ class SQLFunctionSquareRootTest {
 
   @Test
   void fromQuery() throws Exception {
-    TestHelper.executeInNewDatabase("./target/databases/testSqrtFunction", (db) -> {
+    TestHelper.executeInNewDatabase("./target/databases/testSqrtFunction", db -> {
       final ResultSet result = db.query("sql", "select sqrt(4.0) as sqrt");
       assertThat(((Number) result.next().getProperty("sqrt")).floatValue()).isEqualTo(2.0F);
     });

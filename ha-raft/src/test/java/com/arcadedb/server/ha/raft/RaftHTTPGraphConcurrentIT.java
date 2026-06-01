@@ -43,7 +43,7 @@ class RaftHTTPGraphConcurrentIT extends BaseRaftHATest {
 
   @Test
   void oneEdgePerTxMultiThreads() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       executeCommand(serverIndex, "sqlscript",
           "create vertex type RaftPhotos" + serverIndex + ";"
               + "create vertex type RaftUsers" + serverIndex + ";"

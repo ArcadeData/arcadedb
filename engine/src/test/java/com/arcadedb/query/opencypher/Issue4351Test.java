@@ -28,6 +28,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -154,7 +155,7 @@ class Issue4351Test {
    */
   @Test
   void cypherUnwindMergeLargerBatchWithDuplicates() {
-    final List<Map<String, Object>> batch = new java.util.ArrayList<>();
+    final List<Map<String, Object>> batch = new ArrayList<>();
     for (int i = 0; i < 50; i++) {
       batch.add(Map.of("name", "John", "role", "role_" + i));
     }

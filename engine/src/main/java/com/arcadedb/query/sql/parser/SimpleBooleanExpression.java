@@ -20,7 +20,7 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 21/11/16.

@@ -22,7 +22,8 @@ package com.arcadedb.query.sql.parser;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 /**
  * This class is used to represent all the identifies in the SQL grammar, ie. class names, property names, index names, variables

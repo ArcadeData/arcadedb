@@ -19,7 +19,6 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.partitioning.PartitioningTestFixture;
 import com.arcadedb.query.sql.executor.Result;
@@ -182,9 +181,8 @@ class PartitioningRepartitionFlagTest extends TestHelper {
 
   @Test
   void roundRobinTypeIsNeverFlagged() {
-    database.transaction(() -> {
-      database.getSchema().buildDocumentType().withName("RoundRobinDoc").withTotalBuckets(4).create();
-    });
+    database.transaction(() ->
+      database.getSchema().buildDocumentType().withName("RoundRobinDoc").withTotalBuckets(4).create());
     final LocalDocumentType type = (LocalDocumentType) database.getSchema().getType("RoundRobinDoc");
     assertThat(type.isNeedsRepartition()).isFalse();
 
@@ -256,8 +254,9 @@ class PartitioningRepartitionFlagTest extends TestHelper {
         final Result row = rs.next();
         assertThat(row.<String>getProperty("name")).isEqualTo(TYPE_NAME);
         assertThat(row.hasProperty("needsRepartition"))
-            .as("FetchFromSchemaTypesStep must surface needsRepartition unconditionally so remote "
-                + "schema reloads pick it up")
+            .as("""
+                FetchFromSchemaTypesStep must surface needsRepartition unconditionally so remote \
+                schema reloads pick it up""")
             .isTrue();
         assertThat(row.<Boolean>getProperty("needsRepartition")).isTrue();
         foundOurType = true;
@@ -304,8 +303,9 @@ class PartitioningRepartitionFlagTest extends TestHelper {
     for (int i = 0; i < 100; i++)
       type.warnIfNeedsRepartition();
     assertThat(type.lastRepartitionWarnMsForTesting())
-        .as("100 rapid warns inside the throttle window must not advance the timestamp - "
-            + "removing the throttle would make at least one CAS succeed and change this value")
+        .as("""
+            100 rapid warns inside the throttle window must not advance the timestamp - \
+            removing the throttle would make at least one CAS succeed and change this value""")
         .isEqualTo(firstStamp);
 
     // Simulate the window expiring by rewinding the throttle past the 60-second boundary. The

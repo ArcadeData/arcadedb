@@ -135,7 +135,7 @@ public class BinaryCondition extends BooleanExpression {
     if (operator instanceof EqualsCompareOperator) {
       final UpdateItem result = new UpdateItem(-1);
       result.operator = UpdateItem.OPERATOR_EQ;
-      final BaseExpression baseExp = ((BaseExpression) left.mathExpression);
+      final BaseExpression baseExp = (BaseExpression) left.mathExpression;
       result.left = baseExp.identifier.suffix.identifier.copy();
       result.leftModifier = baseExp.modifier == null ? null : baseExp.modifier.copy();
       result.right = right.copy();

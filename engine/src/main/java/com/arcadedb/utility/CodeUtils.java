@@ -20,9 +20,13 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
-import java.io.*;
-import java.util.*;
-import java.util.logging.*;
+import java.io.BufferedOutputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.logging.Level;
 
 /**
  * Utility class for common practices with Java code.

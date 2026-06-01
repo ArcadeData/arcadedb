@@ -23,7 +23,6 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashSet;
-import java.util.List;
 import java.util.Set;
 
 /**

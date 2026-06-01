@@ -24,12 +24,17 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
+import com.arcadedb.server.ServerException;
 import com.arcadedb.server.http.HttpServer;
 
 import io.undertow.server.handlers.PathHandler;
 
 import java.io.IOException;
+import java.net.HttpURLConnection;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
+import java.util.Map;
 import java.util.logging.Level;
 
 /**
@@ -172,8 +177,8 @@ public class RaftHAPlugin implements HAServerPlugin {
   }
 
   @Override
-  public java.util.Map<String, Object> getStats() {
-    return raftHAServer != null ? raftHAServer.getStats() : java.util.Collections.emptyMap();
+  public Map<String, Object> getStats() {
+    return raftHAServer != null ? raftHAServer.getStats() : Collections.emptyMap();
   }
 
   @Override
@@ -205,11 +210,11 @@ public class RaftHAPlugin implements HAServerPlugin {
       }
     }
     if (targetAddr == null)
-      throw new com.arcadedb.server.ServerException("Cannot find server '" + serverName + "' in the cluster");
+      throw new ServerException("Cannot find server '" + serverName + "' in the cluster");
 
     try {
-      final java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
-          new java.net.URL("http://" + targetAddr + "/api/v1/server").openConnection();
+      final HttpURLConnection conn = (HttpURLConnection)
+          new URL("http://" + targetAddr + "/api/v1/server").openConnection();
       conn.setRequestMethod("POST");
       conn.setDoOutput(true);
       conn.setRequestProperty("Content-Type", "application/json");
@@ -221,7 +226,7 @@ public class RaftHAPlugin implements HAServerPlugin {
       conn.getOutputStream().write("{\"command\":\"shutdown\"}".getBytes(StandardCharsets.UTF_8));
       conn.getResponseCode();
       conn.disconnect();
-    } catch (final java.io.IOException e) {
+    } catch (final IOException e) {
       throw new RuntimeException("Failed to shutdown remote server '" + serverName + "'", e);
     }
   }

@@ -44,9 +44,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest1 WHERE uid = 5");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest1 WHERE uid = 5"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest1");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(9L);
@@ -70,9 +69,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest2 WHERE value > 15");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest2 WHERE value > 15"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest2");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(16L);
@@ -96,9 +94,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest3 WHERE score >= 10");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest3 WHERE score >= 10"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest3");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(10L);
@@ -126,9 +123,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest4 WHERE age < 5");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest4 WHERE age < 5"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest4");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(20L);
@@ -156,9 +152,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest5 WHERE priority <= 7");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest5 WHERE priority <= 7"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest5");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(12L);
@@ -186,9 +181,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest6 WHERE number BETWEEN 10 AND 20");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest6 WHERE number BETWEEN 10 AND 20"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest6");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(19L); // 30 - 11 (10 to 20 inclusive)
@@ -213,9 +207,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       database.newDocument("DeleteTest7").set("code", "D004").save();
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest7 WHERE code = 'B002'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest7 WHERE code = 'B002'"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest7");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(3L);
@@ -236,9 +229,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest8 WHERE category = 'A'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest8 WHERE category = 'A'"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest8");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(10L); // 15 - 5 (indices 0, 3, 6, 9, 12)
@@ -257,9 +249,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest9 WHERE id = 999");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest9 WHERE id = 999"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest9");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(10L);
@@ -274,9 +265,8 @@ class DeleteFromIndexStepTest extends TestHelper {
 
     // No records inserted
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest10 WHERE value = 5");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest10 WHERE value = 5"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest10");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(0L);
@@ -297,9 +287,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest11 WHERE status = 'active'");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest11 WHERE status = 'active'"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest11");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(10L);
@@ -327,9 +316,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest12 WHERE rating > 50 AND rating < 75");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest12 WHERE rating > 50 AND rating < 75"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest12");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(76L); // 100 - 24 (51 to 74)
@@ -352,9 +340,8 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest13 WHERE value < 10");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest13 WHERE value < 10"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest13");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(10L);
@@ -374,14 +361,12 @@ class DeleteFromIndexStepTest extends TestHelper {
     });
 
     // Delete first record
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest14 WHERE seq = 0");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest14 WHERE seq = 0"));
 
     // Delete last record
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM DeleteTest14 WHERE seq = 9");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM DeleteTest14 WHERE seq = 9"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest14");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(8L);
@@ -400,10 +385,9 @@ class DeleteFromIndexStepTest extends TestHelper {
       }
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       // Using BETWEEN which should work with descending order
-      database.command("sql", "DELETE FROM DeleteTest15 WHERE rank BETWEEN 5 AND 10");
-    });
+      database.command("sql", "DELETE FROM DeleteTest15 WHERE rank BETWEEN 5 AND 10"));
 
     final ResultSet result = database.query("sql", "SELECT count(*) as cnt FROM DeleteTest15");
     assertThat(result.next().<Long>getProperty("cnt")).isEqualTo(9L); // 15 - 6 (5 to 10 inclusive)

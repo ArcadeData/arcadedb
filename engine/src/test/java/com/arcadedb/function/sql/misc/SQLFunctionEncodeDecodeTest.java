@@ -53,7 +53,7 @@ class SQLFunctionEncodeDecodeTest {
 
   @Test
   void query() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionEncodeTest", (db) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionEncodeTest", db -> {
       final ResultSet result = db.query("sql", "select decode( encode('abc123', 'base64'), 'base64' ).asString() as encode");
       assertThat((Iterator<? extends Result>) result).isNotNull();
       final Object prop = result.next().getProperty("encode");

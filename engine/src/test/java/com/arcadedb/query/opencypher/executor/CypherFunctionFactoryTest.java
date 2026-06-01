@@ -43,14 +43,13 @@ class CypherFunctionFactoryTest {
     database = new DatabaseFactory("./target/databases/test-cypher-functions").create();
     database.getSchema().createVertexType("TestNode");
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.newVertex("TestNode")
           .set("name", "Alice")
           .set("value", 42)
           .set("price", 19.99)
           .set("text", "Hello World")
-          .save();
-    });
+          .save());
   }
 
   @AfterEach

@@ -20,7 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.nio.*;
+import java.nio.ByteBuffer;
 
 @ExcludeFromJacocoGeneratedReport
 public interface BinaryStructure {

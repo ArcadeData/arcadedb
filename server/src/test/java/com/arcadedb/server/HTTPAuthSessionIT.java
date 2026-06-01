@@ -22,7 +22,6 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
-import java.io.IOException;
 import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -49,7 +48,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
    */
   @Test
   void listSessionsAsRoot() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // 1. LOGIN: Create a session first
       HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();
@@ -142,7 +141,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
    */
   @Test
   void loginAndUseToken() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // 1. LOGIN: Get an authentication token using username/password
       HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();
@@ -254,7 +253,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
    */
   @Test
   void loginWithInvalidCredentials() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();
 
@@ -276,7 +275,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
    */
   @Test
   void queryWithInvalidToken() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/query/" + DATABASE_NAME + "/sql/select%201").openConnection();
 
@@ -298,7 +297,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
    */
   @Test
   void sessionExpiresAfterAbsoluteTimeout() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Get the auth session manager and check it has absolute timeout configured
       final var server = getServer(serverIndex);
       final var authSessionManager = server.getHttpServer().getAuthSessionManager();
@@ -327,7 +326,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
    */
   @Test
   void tokenWithTransaction() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // 1. LOGIN
       HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();
@@ -409,7 +408,7 @@ class HTTPAuthSessionIT extends BaseGraphServerTest {
    */
   @Test
   void invalidTokenAfterServerRestartReturns401() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // 1. LOGIN
       HttpURLConnection connection = (HttpURLConnection) new URL(
           "http://127.0.0.1:248" + serverIndex + "/api/v1/login").openConnection();

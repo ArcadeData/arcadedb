@@ -23,8 +23,8 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @ExcludeFromJacocoGeneratedReport
 public interface EdgeSegment extends Record {

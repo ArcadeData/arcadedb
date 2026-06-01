@@ -52,7 +52,7 @@ public class SQLFunctionGeoDistance extends SQLFunctionAbstract {
     final double[] p1 = extractPointCoords(iParams[0]);
     final double[] p2 = extractPointCoords(iParams[1]);
 
-    final String unit = (iParams.length >= 3 && iParams[2] != null) ? iParams[2].toString() : "m";
+    final String unit = iParams.length >= 3 && iParams[2] != null ? iParams[2].toString() : "m";
 
     final double deltaLat = Math.toRadians(p2[1] - p1[1]);
     final double deltaLon = Math.toRadians(p2[0] - p1[0]);

@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -135,7 +134,7 @@ public class AlgoHashGNN extends AbstractAlgoProcedure {
     final int[] hashB = new int[embDim];
     for (int d = 0; d < embDim; d++) {
       // Ensure a is odd (to guarantee full-period LCG-style coverage)
-      hashA[d] = (rng.nextInt(numFeatures / 2) * 2 + 1);
+      hashA[d] = rng.nextInt(numFeatures / 2) * 2 + 1;
       hashB[d] = rng.nextInt(numFeatures);
     }
 

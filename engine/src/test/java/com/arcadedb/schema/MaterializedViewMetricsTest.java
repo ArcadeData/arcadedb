@@ -43,13 +43,12 @@ class MaterializedViewMetricsTest extends TestHelper {
       database.newDocument("Sensor").set("name", "humidity").set("value", 80).save();
     });
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("SensorView")
           .withQuery("SELECT name, value FROM Sensor")
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
-          .create();
-    });
+          .create());
 
     final MaterializedView mv = database.getSchema().getMaterializedView("SensorView");
 
@@ -75,17 +74,15 @@ class MaterializedViewMetricsTest extends TestHelper {
       database.getSchema().getType("Product2").createProperty("name", Type.STRING);
     });
 
-    database.transaction(() -> {
-      database.newDocument("Product2").set("name", "widget").save();
-    });
+    database.transaction(() ->
+      database.newDocument("Product2").set("name", "widget").save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("ProductView2")
           .withQuery("SELECT name FROM Product2")
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
-          .create();
-    });
+          .create());
 
     // Refresh to get metrics populated
     database.getSchema().getMaterializedView("ProductView2").refresh();
@@ -107,17 +104,15 @@ class MaterializedViewMetricsTest extends TestHelper {
       database.getSchema().getType("Data").createProperty("val", Type.INTEGER);
     });
 
-    database.transaction(() -> {
-      database.newDocument("Data").set("val", 1).save();
-    });
+    database.transaction(() ->
+      database.newDocument("Data").set("val", 1).save());
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.getSchema().buildMaterializedView()
           .withName("DataView")
           .withQuery("SELECT val FROM Data")
           .withRefreshMode(MaterializedViewRefreshMode.MANUAL)
-          .create();
-    });
+          .create());
 
     final MaterializedView mv = database.getSchema().getMaterializedView("DataView");
     assertThat(mv.getRefreshCount()).isEqualTo(1);

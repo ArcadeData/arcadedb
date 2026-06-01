@@ -18,8 +18,6 @@
  */
 package com.arcadedb.exception;
 
-import java.io.*;
-
 public class SerializationException extends ArcadeDBException {
   public SerializationException(final String s) {
     super(s);

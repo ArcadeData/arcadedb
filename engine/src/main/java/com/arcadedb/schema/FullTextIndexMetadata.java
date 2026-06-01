@@ -21,7 +21,6 @@ package com.arcadedb.schema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -87,7 +86,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
     // Parse per-field analyzers (pattern: *_analyzer)
     for (final String key : metadata.keySet()) {
-      if (key.endsWith(ANALYZER_SUFFIX) && !key.equals("analyzer") && !key.equals("index_analyzer") && !key.equals("query_analyzer")) {
+      if (key.endsWith(ANALYZER_SUFFIX) && !"analyzer".equals(key) && !"index_analyzer".equals(key) && !"query_analyzer".equals(key)) {
         final String fieldName = key.substring(0, key.length() - ANALYZER_SUFFIX.length());
         this.fieldAnalyzers.put(fieldName, metadata.getString(key));
       }

@@ -20,11 +20,9 @@ package com.arcadedb.index.vector;
 
 import io.github.jbellis.jvector.graph.GraphIndexBuilder;
 import io.github.jbellis.jvector.graph.GraphSearcher;
-import io.github.jbellis.jvector.graph.ListRandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.RandomAccessVectorValues;
 import io.github.jbellis.jvector.graph.SearchResult;
 import io.github.jbellis.jvector.graph.similarity.BuildScoreProvider;
-import io.github.jbellis.jvector.graph.similarity.SearchScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.DefaultSearchScoreProvider;
 import io.github.jbellis.jvector.graph.similarity.ScoreFunction;
 import io.github.jbellis.jvector.util.Bits;
@@ -96,7 +94,7 @@ class JVectorIncrementalBuildTest {
           // Search for a known vector — should find itself as nearest neighbor
           final VectorFloat<?> query = vectors.get(i);
           try (final GraphSearcher searcher = new GraphSearcher(graph)) {
-            final ScoreFunction.ExactScoreFunction exactScore = (node) ->
+            final ScoreFunction.ExactScoreFunction exactScore = node ->
                 SIMILARITY.compare(query, growableVectors.getVector(node));
             final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScore, exactScore);
             final SearchResult result = searcher.search(ssp, k, Bits.ALL);
@@ -142,7 +140,7 @@ class JVectorIncrementalBuildTest {
 
         // HNSW search
         try (final GraphSearcher searcher = new GraphSearcher(graph)) {
-          final ScoreFunction.ExactScoreFunction exactScore = (node) ->
+          final ScoreFunction.ExactScoreFunction exactScore = node ->
               SIMILARITY.compare(query, growableVectors.getVector(node));
           final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScore, exactScore);
           final SearchResult result = searcher.search(ssp, k, 100, 0.0f, 0.0f, Bits.ALL);
@@ -198,7 +196,7 @@ class JVectorIncrementalBuildTest {
       // Search should still work and only return non-deleted nodes
       try (final GraphSearcher searcher = new GraphSearcher(graph)) {
         final VectorFloat<?> query = vectors.get(1); // Use a non-deleted vector
-        final ScoreFunction.ExactScoreFunction exactScore = (node) ->
+        final ScoreFunction.ExactScoreFunction exactScore = node ->
             SIMILARITY.compare(query, growableVectors.getVector(node));
         final DefaultSearchScoreProvider ssp = new DefaultSearchScoreProvider(exactScore, exactScore);
         final SearchResult result = searcher.search(ssp, 10, Bits.ALL);

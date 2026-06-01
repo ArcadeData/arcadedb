@@ -35,7 +35,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 
-import java.io.*;
+import java.io.File;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -626,7 +626,7 @@ class LSMVectorIndexStorageBenchmark {
             qualityMetrics.maxRecall * 100));
         System.out.println(String.format("  - Perfect matches:     %d/%d (%.2f%%)",
             qualityMetrics.perfectMatches, NUM_QUERIES,
-            (qualityMetrics.perfectMatches * 100.0 / NUM_QUERIES)));
+            qualityMetrics.perfectMatches * 100.0 / NUM_QUERIES));
         System.out.println();
         System.out.println(String.format("Vector Fetch Sources:"));
         System.out.println(String.format("  - From graph file:     %d", fetchFromGraph));
@@ -708,7 +708,7 @@ class LSMVectorIndexStorageBenchmark {
 
     // Load all vectors from database for ground truth computation
     final Map<RID, float[]> allVectors = new HashMap<>();
-    db.transaction(() -> {
+    db.transaction(() ->
       db.scanType("VectorDoc", true, record -> {
         final var doc = record.asDocument();
         final RID rid = doc.getIdentity();
@@ -719,8 +719,7 @@ class LSMVectorIndexStorageBenchmark {
           // benchmark data is float[]; tolerate the rare unsupported entry rather than aborting
         }
         return true;
-      });
-    });
+      }));
 
     System.out.println(String.format("  Loaded %d vectors for ground truth computation", allVectors.size()));
 

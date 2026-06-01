@@ -20,7 +20,7 @@ package com.arcadedb.utility;
 
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Resolve entity class and descriptors using the paths configured.
@@ -52,9 +52,9 @@ public class VariableParser {
       final String post = text.substring(endPos + endPattern.length());
 
       // DECODE INTERNAL
-      if (beginPattern.equals("${"))
+      if ("${".equals(beginPattern))
         var = var.replace("$\\{", "${");
-      if (endPattern.equals("}"))
+      if ("}".equals(endPattern))
         var = var.replace("\\}", "}");
 
       Object resolved = listener.resolve(var);

@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.opencypher.optimizer.statistics;
 
-import java.util.Arrays;
 import java.util.List;
 
 /**

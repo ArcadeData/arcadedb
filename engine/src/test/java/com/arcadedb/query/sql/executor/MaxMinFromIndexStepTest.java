@@ -36,7 +36,7 @@ class MaxMinFromIndexStepTest {
 
   @Test
   void shouldReturnMaxValueFromIndex() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Long.class);
       final TypeIndex index = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "value");
@@ -62,7 +62,7 @@ class MaxMinFromIndexStepTest {
 
   @Test
   void shouldReturnMinValueFromIndex() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Long.class);
       final TypeIndex index = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "value");
@@ -88,7 +88,7 @@ class MaxMinFromIndexStepTest {
 
   @Test
   void shouldReturnNullForEmptyIndex() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Long.class);
       final TypeIndex index = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "value");
@@ -108,7 +108,7 @@ class MaxMinFromIndexStepTest {
 
   @Test
   void shouldHaveCorrectPrettyPrintForMax() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Long.class);
       final TypeIndex index = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "value");
@@ -125,7 +125,7 @@ class MaxMinFromIndexStepTest {
 
   @Test
   void shouldHaveCorrectPrettyPrintForMin() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
+    TestHelper.executeInNewDatabase(db -> {
       final DocumentType type = db.getSchema().createDocumentType("TestType");
       type.createProperty("value", Long.class);
       final TypeIndex index = type.createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, false, "value");

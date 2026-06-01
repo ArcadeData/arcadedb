@@ -20,7 +20,7 @@ package com.arcadedb;
 
 import com.arcadedb.log.Logger;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public enum NullLogger implements Logger {
 

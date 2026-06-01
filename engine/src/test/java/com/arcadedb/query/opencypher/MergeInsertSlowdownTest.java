@@ -27,6 +27,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Random;
@@ -105,9 +106,10 @@ class MergeInsertSlowdownTest {
   @Test
   void mergeMergeCreateLatencyStaysStable() {
     final String cypher =
-        "MERGE (a:Account {bank: $bank, number: $src}) " +
-            "MERGE (b:Account {bank: $bank, number: $dest}) " +
-            "CREATE (a)-[:Transaction {timestamp: $ts, amount: $amt, currency: $ccy}]->(b)";
+        """
+        MERGE (a:Account {bank: $bank, number: $src}) \
+        MERGE (b:Account {bank: $bank, number: $dest}) \
+        CREATE (a)-[:Transaction {timestamp: $ts, amount: $amt, currency: $ccy}]->(b)""";
 
     final Random rnd = new Random(42);
     final long baseTs = 1779793007000L;
@@ -125,14 +127,14 @@ class MergeInsertSlowdownTest {
       // Customers (sources): roughly uniform over the full pool.
       final int srcIdx = rnd.nextInt(ACCOUNTS_POOL);
       // Merchants (destinations): 80% land on the hot 1% of accounts, the rest spread out.
-      final int destIdx = (rnd.nextInt(100) < 80) ? rnd.nextInt(hotPool) : rnd.nextInt(ACCOUNTS_POOL);
+      final int destIdx = rnd.nextInt(100) < 80 ? rnd.nextInt(hotPool) : rnd.nextInt(ACCOUNTS_POOL);
 
       final Map<String, Object> params = new HashMap<>(8);
       params.put("bank", "flash");
       params.put("src", String.format("61%08d", srcIdx));
       params.put("dest", String.format("61%08d", destIdx));
       params.put("ts", baseTs + i);
-      params.put("amt", new java.math.BigDecimal(rnd.nextInt(10_000)));
+      params.put("amt", new BigDecimal(rnd.nextInt(10_000)));
       params.put("ccy", "ZAR");
 
       database.transaction(() -> {

@@ -3,7 +3,7 @@ package com.arcadedb.schema;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.List;
 
 /*
  * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)

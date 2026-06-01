@@ -24,6 +24,9 @@ import com.arcadedb.database.RID;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -224,8 +227,8 @@ class PaginatedSparseVectorEngineTombstoneTriggerTest extends TestHelper {
     }
   }
 
-  private static java.util.List<RID> ridsFromTopK(final java.util.List<com.arcadedb.index.sparsevector.RidScore> hits) {
-    final java.util.List<RID> out = new java.util.ArrayList<>(hits.size());
+  private static List<RID> ridsFromTopK(final List<RidScore> hits) {
+    final List<RID> out = new ArrayList<>(hits.size());
     for (final var h : hits)
       out.add(h.rid());
     return out;

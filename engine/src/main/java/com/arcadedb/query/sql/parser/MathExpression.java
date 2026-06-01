@@ -29,11 +29,12 @@ import com.arcadedb.utility.DateUtils;
 
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.math.*;
-import java.time.*;
-import java.time.temporal.*;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.Duration;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class MathExpression extends SimpleNode {
   private static final Object               NULL_VALUE       = new Object();

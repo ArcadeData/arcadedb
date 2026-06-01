@@ -28,7 +28,6 @@ import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import io.grpc.CompressorRegistry;
 import io.grpc.DecompressorRegistry;
-import io.grpc.Grpc;
 import io.grpc.InsecureServerCredentials;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;

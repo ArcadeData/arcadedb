@@ -105,12 +105,11 @@ class UnwindExpandStepTest extends TestHelper {
   void shouldUnwindNestedArrays() {
     database.getSchema().createDocumentType("TestUnwindNested");
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.newDocument("TestUnwindNested")
           .set("id", 1)
           .set("groups", Arrays.asList(Arrays.asList("a", "b"), Arrays.asList("c", "d")))
-          .save();
-    });
+          .save());
 
     final ResultSet result = database.query("sql", "SELECT id, groups FROM TestUnwindNested UNWIND groups");
 
@@ -160,9 +159,8 @@ class UnwindExpandStepTest extends TestHelper {
   void shouldExpandSingleValue() {
     database.getSchema().createDocumentType("TestExpandSingle");
 
-    database.transaction(() -> {
-      database.newDocument("TestExpandSingle").set("value", "test").save();
-    });
+    database.transaction(() ->
+      database.newDocument("TestExpandSingle").set("value", "test").save());
 
     final ResultSet result = database.query("sql", "SELECT expand(value) FROM TestExpandSingle");
 
@@ -201,13 +199,12 @@ class UnwindExpandStepTest extends TestHelper {
   void shouldUnwindMultipleFields() {
     database.getSchema().createDocumentType("TestUnwindMulti");
 
-    database.transaction(() -> {
+    database.transaction(() ->
       database.newDocument("TestUnwindMulti")
           .set("id", 1)
           .set("tags", Arrays.asList("tag1", "tag2"))
           .set("categories", Arrays.asList("cat1", "cat2"))
-          .save();
-    });
+          .save());
 
     // Unwind tags first
     final ResultSet result = database.query("sql", "SELECT id, tags, categories FROM TestUnwindMulti UNWIND tags");
@@ -266,9 +263,8 @@ class UnwindExpandStepTest extends TestHelper {
   void shouldExpandEmptyCollection() {
     database.getSchema().createDocumentType("TestExpandEmpty");
 
-    database.transaction(() -> {
-      database.newDocument("TestExpandEmpty").set("items", Arrays.asList()).save();
-    });
+    database.transaction(() ->
+      database.newDocument("TestExpandEmpty").set("items", Arrays.asList()).save());
 
     final ResultSet result = database.query("sql", "SELECT expand(items) FROM TestExpandEmpty");
 

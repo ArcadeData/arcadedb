@@ -82,9 +82,8 @@ class DeltaScanVectorSearchTest extends TestHelper {
     // Now insert a vector very close to queryVector (should be nearest neighbor)
     final float[] nearVector = new float[EMBEDDING_DIM];
     nearVector[0] = 998.0f; // very close to query
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Item SET vector = ?", (Object) nearVector);
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Item SET vector = ?", (Object) nearVector));
 
     // Verify the new vector is tracked (either in delta buffer or live graph)
     final Map<String, Long> stats = lsmIndex.getStats();
@@ -139,9 +138,8 @@ class DeltaScanVectorSearchTest extends TestHelper {
     // Insert a distinctive vector
     final float[] nearVector = new float[EMBEDDING_DIM];
     nearVector[0] = 998.0f;
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Item SET vector = ?", (Object) nearVector);
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Item SET vector = ?", (Object) nearVector));
 
     // Verify it appears in results
     List<Pair<RID, Float>> results = lsmIndex.findNeighborsFromVector(queryVector, 10);
@@ -150,9 +148,8 @@ class DeltaScanVectorSearchTest extends TestHelper {
     assertThat(((float[]) foundVectorObj)[0]).isEqualTo(998.0f);
 
     // Now delete that record
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM " + nearRID);
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM " + nearRID));
 
     // Search again — the deleted vector should NOT appear
     results = lsmIndex.findNeighborsFromVector(queryVector, 10);
@@ -246,9 +243,8 @@ class DeltaScanVectorSearchTest extends TestHelper {
     // Insert a distinctive vector
     final float[] nearVector = new float[EMBEDDING_DIM];
     nearVector[0] = 998.0f;
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Item SET vector = ?", (Object) nearVector);
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Item SET vector = ?", (Object) nearVector));
 
     // Find the nearVector's RID by looking for vector[0] == 998.0
     List<Pair<RID, Float>> allResults = lsmIndex.findNeighborsFromVector(queryVector, 11);
@@ -296,9 +292,8 @@ class DeltaScanVectorSearchTest extends TestHelper {
     // Insert 1 vector — no graph build yet
     final float[] insertedVector = new float[EMBEDDING_DIM];
     insertedVector[0] = 5.0f;
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Item SET vector = ?", (Object) insertedVector);
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Item SET vector = ?", (Object) insertedVector));
 
     // Search should return the delta vector even without a graph
     final float[] queryVector = new float[EMBEDDING_DIM];
@@ -350,9 +345,8 @@ class DeltaScanVectorSearchTest extends TestHelper {
     // Insert a distinctive vector
     final float[] nearVector = new float[EMBEDDING_DIM];
     nearVector[0] = 998.0f;
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO Item SET vector = ?", (Object) nearVector);
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO Item SET vector = ?", (Object) nearVector));
 
     // get() should include the delta vector
     cursor = lsmIndex.get(new Object[] { queryVector }, 10);

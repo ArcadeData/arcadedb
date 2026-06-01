@@ -21,9 +21,11 @@ package com.arcadedb.utility;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
-import java.lang.reflect.*;
-import java.util.*;
-import java.util.logging.*;
+import java.lang.reflect.Field;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.logging.Level;
 
 /**
  * Resolve system variables embedded in a String.

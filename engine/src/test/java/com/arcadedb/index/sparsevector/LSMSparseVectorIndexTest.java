@@ -28,6 +28,8 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 
+import org.assertj.core.api.AbstractThrowableAssert;
+import org.assertj.core.api.Assertions;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
@@ -270,8 +272,8 @@ class LSMSparseVectorIndexTest extends TestHelper {
       // never produces mismatched arrays (DocumentIndexer reads property values that were already
       // validated at insert time).
       final RID rid = doc.getIdentity();
-      final org.assertj.core.api.AbstractThrowableAssert<?, ? extends Throwable> assertion =
-          org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+      final AbstractThrowableAssert<?, ? extends Throwable> assertion =
+          Assertions.assertThatThrownBy(() ->
               bucketIndex.remove(
                   new Object[] { new int[] { 1, 2, 3 }, new float[] { 0.1f, 0.2f } },
                   rid));

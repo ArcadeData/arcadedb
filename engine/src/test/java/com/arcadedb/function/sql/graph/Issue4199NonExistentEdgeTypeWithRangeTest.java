@@ -49,7 +49,7 @@ class Issue4199NonExistentEdgeTypeWithRangeTest {
 
   @Test
   void bothEWithRangeOnMissingEdgeTypeReturnsEmpty() throws Exception {
-    TestHelper.executeInNewDatabase("testIssue4199BothERange", (db) -> {
+    TestHelper.executeInNewDatabase("testIssue4199BothERange", db -> {
       db.getSchema().createVertexType("Node");
       db.getSchema().createEdgeType("KnownEdge");
 
@@ -79,7 +79,7 @@ class Issue4199NonExistentEdgeTypeWithRangeTest {
 
   @Test
   void outEWithRangeOnMissingEdgeTypeReturnsEmpty() throws Exception {
-    TestHelper.executeInNewDatabase("testIssue4199OutERange", (db) -> {
+    TestHelper.executeInNewDatabase("testIssue4199OutERange", db -> {
       db.getSchema().createVertexType("Node");
       db.getSchema().createEdgeType("KnownEdge");
 
@@ -101,7 +101,7 @@ class Issue4199NonExistentEdgeTypeWithRangeTest {
 
   @Test
   void inEWithRangeOnMissingEdgeTypeReturnsEmpty() throws Exception {
-    TestHelper.executeInNewDatabase("testIssue4199InERange", (db) -> {
+    TestHelper.executeInNewDatabase("testIssue4199InERange", db -> {
       db.getSchema().createVertexType("Node");
       db.getSchema().createEdgeType("KnownEdge");
 
@@ -123,7 +123,7 @@ class Issue4199NonExistentEdgeTypeWithRangeTest {
 
   @Test
   void bothEWithRangeMixingKnownAndMissingTypesReturnsKnownOnly() throws Exception {
-    TestHelper.executeInNewDatabase("testIssue4199BothEMixed", (db) -> {
+    TestHelper.executeInNewDatabase("testIssue4199BothEMixed", db -> {
       db.getSchema().createVertexType("Node");
       db.getSchema().createEdgeType("KnownEdge");
 

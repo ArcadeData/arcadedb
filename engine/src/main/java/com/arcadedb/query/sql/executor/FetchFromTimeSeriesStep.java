@@ -92,7 +92,7 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
             return count < nRecords && resultIterator.hasNext();
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin1);
+              cost += System.nanoTime() - begin1;
           }
         }
 
@@ -126,7 +126,7 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
             return result;
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin1);
+              cost += System.nanoTime() - begin1;
           }
         }
 
@@ -137,7 +137,7 @@ public class FetchFromTimeSeriesStep extends AbstractExecutionStep {
       };
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

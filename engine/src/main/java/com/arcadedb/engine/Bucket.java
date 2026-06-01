@@ -22,7 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.Iterator;
 
 /**
  * Bucket interface. It represents a collection of records.

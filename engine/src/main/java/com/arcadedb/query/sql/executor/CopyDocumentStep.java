@@ -83,7 +83,7 @@ public class CopyDocumentStep extends AbstractExecutionStep {
           return new UpdatableResult((MutableDocument) resultDoc);
         } finally {
           if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
         }
       }
 
