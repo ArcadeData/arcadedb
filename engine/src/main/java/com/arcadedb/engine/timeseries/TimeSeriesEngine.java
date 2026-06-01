@@ -132,6 +132,12 @@ public class TimeSeriesEngine implements AutoCloseable {
    * the limit will cause compaction to fail. Plan tag cardinality accordingly.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
+    // Guard against the deadlock described in the Javadoc: a shard-executor thread blocking on
+    // join() of the same fixed-size pool. Disabled in production (asserts off by default); catches
+    // misuse in test runs.
+    assert !Thread.currentThread().getName().startsWith("ArcadeDB-TS-Shard-" + typeName)
+        : "appendSamples must not be called from a shard-executor thread (would block its own pool)";
+
     final int shardIdx = (int) Math.floorMod(appendCounter.getAndIncrement(), (long) shardCount);
     try {
       CompletableFuture.runAsync(() -> {
@@ -142,10 +148,13 @@ public class TimeSeriesEngine implements AutoCloseable {
         }
       }, shardExecutor).join();
     } catch (final CompletionException e) {
+      // Unwrap to preserve the original exception's type across the IOException boundary this
+      // method declares: IOException stays checked, Error and RuntimeException stay unchecked.
+      // Only a genuinely unexpected checked cause falls through to the IOException wrapper.
       if (e.getCause() instanceof IOException ioe)
         throw ioe;
-      // Propagate unchecked exceptions (e.g. NullPointerException from a bug) as-is rather than
-      // obscuring them as a checked IOException and forcing callers to handle them.
+      if (e.getCause() instanceof Error err)
+        throw err;
       if (e.getCause() instanceof RuntimeException re)
         throw re;
       throw new IOException("TimeSeries append to shard " + shardIdx + " failed", e.getCause());
@@ -224,8 +233,14 @@ public class TimeSeriesEngine implements AutoCloseable {
     try {
       CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
     } catch (final CompletionException e) {
+      // Preserve the original exception type across the IOException boundary, mirroring
+      // appendSamples: IOException stays checked, Error and RuntimeException stay unchecked.
       if (e.getCause() instanceof IOException ioe)
         throw ioe;
+      if (e.getCause() instanceof Error err)
+        throw err;
+      if (e.getCause() instanceof RuntimeException re)
+        throw re;
       throw new IOException("Parallel batch shard write failed", e.getCause());
     }
   }
