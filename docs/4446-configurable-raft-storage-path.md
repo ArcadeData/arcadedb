@@ -42,6 +42,36 @@ and mount `/var/lib/arcadedb/raft` on a PVC.
 - Regression tests: `RaftBootstrapDoesNotEngageOnRestartIT`, `RaftBootstrapLateNewerJoinerIT`,
   `RaftReplicaCrashAndRecoverIT`: all PASS (3 tests, 0 failures)
 
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4447
+
+## Review Cycles
+
+**Cycle 1** — head `75cb6b31e`
+- gemini: 3 inline comments - use `File(parent,child)` constructor (all 3 sites), use `isBlank()` instead of `isEmpty()`
+- claude: comment about GlobalConfig/ContextConfig split in test cleanup, recommend `isBlank()`, `@Tag("IntegrationTest")` (uncertain/deferred)
+- Applied: `File(parent,child)` constructor in all 3 locations, `isBlank()`, added Javadoc warning to `deleteDatabaseFolders()`
+- Deferred: `@Tag("IntegrationTest")` - unclear if intentional per project convention
+
+**Cycle 2** — head `b04fba1c3`
+- gemini: did not re-review (consistent with project history)
+- claude: duplicate Javadoc block (must fix), `docs/review-deferred-75cb6b3.md` should be removed (must fix), add negative assertion to test (should fix), `@Tag("IntegrationTest")` (minor)
+- Applied: removed duplicate Javadoc, removed deferred doc, added negative assertion in `RaftStorageDirectoryIT`
+- Deferred: `@Tag("IntegrationTest")` - style decision for developer
+
+**Cycle 3** — head `9aae58bdd`
+- gemini: no comments (clean)
+- claude: accepted all cycle 2 fixes; flagged `@Tag("slow")` as the correct tag (not `@Tag("IntegrationTest")`), per `RaftLeaderCrashWithExternalPropertyIT` etc.
+- Applied: `@Tag("slow")` on `RaftStorageDirectoryIT`
+
+**Cycle 4** — head `6c82cdca9`
+- claude: accepted `@Tag("slow")`; minor - `RaftBootstrapLateNewerJoinerIT` still uses hardcoded path; "ready to merge after that is addressed"
+- Applied: updated `RaftBootstrapLateNewerJoinerIT` cleanup to use `HA_RAFT_STORAGE_DIRECTORY` with fallback
+
+**Final head:** `bbe624abb`
+**Final state:** max-cycles-reached (4/4 cycles used, all actionable items addressed)
+
 ## Changes Made
 
 ### `GlobalConfiguration.java`
