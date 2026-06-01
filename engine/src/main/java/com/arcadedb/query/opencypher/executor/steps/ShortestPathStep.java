@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
@@ -151,7 +152,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
               paths = computeAllShortestPaths(sourceVertex, targetVertex, context);
             } else {
               final List<Object> single = computeShortestPath(sourceVertex, targetVertex, context);
-              paths = (single == null || single.isEmpty()) ? Collections.emptyList() : Collections.singletonList(single);
+              paths = single == null || single.isEmpty() ? Collections.emptyList() : Collections.singletonList(single);
             }
 
             for (final List<Object> path : paths) {
@@ -176,7 +177,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
             // If no path found, skip this result (similar to a failed MATCH)
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
       }
@@ -290,7 +291,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
       return Collections.singletonList(singleNode);
     }
 
-    final String[] typesArray = (edgeTypes == null || edgeTypes.isEmpty()) ? null : edgeTypes.toArray(new String[0]);
+    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null : edgeTypes.toArray(new String[0]);
 
     // distance from source. Acts as visited-set too.
     final Map<RID, Integer> distance = new HashMap<>();
@@ -305,7 +306,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
 
     while (!currentLayer.isEmpty()) {
       if (Thread.interrupted())
-        throw new com.arcadedb.exception.CommandExecutionException("The allShortestPaths() function has been interrupted");
+        throw new CommandExecutionException("The allShortestPaths() function has been interrupted");
 
       // Stop expanding once we've completed the layer where target was first discovered: any further hop
       // would only produce strictly longer (non co-shortest) paths.
@@ -417,7 +418,7 @@ public class ShortestPathStep extends AbstractExecutionStep {
         new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT, Vertex.DIRECTION.IN } :
         new Vertex.DIRECTION[] { direction };
 
-    final String[] typesArray = (edgeTypes == null || edgeTypes.isEmpty()) ? null :
+    final String[] typesArray = edgeTypes == null || edgeTypes.isEmpty() ? null :
         edgeTypes.toArray(new String[0]);
 
     for (final Vertex.DIRECTION dir : directions) {

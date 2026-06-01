@@ -18,7 +18,6 @@
  */
 package com.arcadedb.database;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.engine.FileManager;
 import com.arcadedb.engine.PageManager;
 import com.arcadedb.engine.TransactionManager;
@@ -34,9 +33,10 @@ import com.arcadedb.security.SecurityManager;
 import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.*;
+import java.io.IOException;
+import java.util.Collection;
+import java.util.Map;
+import java.util.concurrent.Callable;
 
 /**
  * Internal API, do not use as an end user.

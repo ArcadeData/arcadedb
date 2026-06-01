@@ -22,7 +22,9 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
-import java.net.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.net.URLEncoder;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -31,7 +33,7 @@ class UserManagementIT extends BaseGraphServerTest {
 
   @Test
   void updateUserDatabases() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create user via POST
       createUser(serverIndex, "dbuser", "password1234",
           new JSONObject().put("*", new JSONArray().put("admin")));
@@ -89,7 +91,7 @@ class UserManagementIT extends BaseGraphServerTest {
 
   @Test
   void updateUserPassword() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createUser(serverIndex, "pwduser", "oldpassword1",
           new JSONObject().put("*", new JSONArray().put("admin")));
 
@@ -149,7 +151,7 @@ class UserManagementIT extends BaseGraphServerTest {
 
   @Test
   void createUserWithApitokenPrefixReturns400() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final JSONObject payload = new JSONObject();
       payload.put("name", "apitoken:hack");
       payload.put("password", "password1234");
@@ -173,7 +175,7 @@ class UserManagementIT extends BaseGraphServerTest {
 
   @Test
   void updateUserWithShortPasswordReturns400() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createUser(serverIndex, "shortpwduser", "validpassword1",
           new JSONObject().put("*", new JSONArray().put("admin")));
 
@@ -201,7 +203,7 @@ class UserManagementIT extends BaseGraphServerTest {
 
   @Test
   void updateUserWithTooLongPasswordReturns400() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createUser(serverIndex, "longpwduser", "validpassword1",
           new JSONObject().put("*", new JSONArray().put("admin")));
 
@@ -230,7 +232,7 @@ class UserManagementIT extends BaseGraphServerTest {
 
   @Test
   void updateNonExistentUserReturns404() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final JSONObject updatePayload = new JSONObject();
       updatePayload.put("password", "doesntmatter");
 
@@ -253,7 +255,7 @@ class UserManagementIT extends BaseGraphServerTest {
 
   @Test
   void nonRootUserWithStringGroupInsteadOfArrayShouldWork() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create user with databases groups as a plain string instead of an array
       // e.g. {"mydb": "admin"} instead of {"mydb": ["admin"]}
       // This simulates the scenario from issue #3779

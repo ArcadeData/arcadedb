@@ -21,7 +21,7 @@
 package com.arcadedb.query.sql.parser;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class InsertBody extends SimpleNode {
 

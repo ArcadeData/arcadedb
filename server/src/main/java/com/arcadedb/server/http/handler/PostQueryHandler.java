@@ -22,7 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.server.http.HttpServer;
 
-import java.util.*;
+import java.util.Map;
 
 public class PostQueryHandler extends PostCommandHandler {
   public PostQueryHandler(final HttpServer httpServer) {

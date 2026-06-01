@@ -37,7 +37,7 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 /**
  * Returns an Result containing metadata regarding the schema types.
@@ -100,7 +100,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
             populateTimeSeriesMetadata(r, (LocalTimeSeriesType) type);
           else
             r.setProperty("records", safeCountType(context, typeName));
-          r.setProperty("buckets", type.getBuckets(false).stream().map((b) -> b.getName()).collect(Collectors.toList()));
+          r.setProperty("buckets", type.getBuckets(false).stream().map(b -> b.getName()).collect(Collectors.toList()));
           r.setProperty("bucketSelectionStrategy", type.getBucketSelectionStrategy().getName());
           // Expose the partition-mapping-stale flag (issue #4087). Set unconditionally via the
           // {@link DocumentType} interface so any implementation - including future replica or
@@ -190,7 +190,7 @@ public class FetchFromSchemaTypesStep extends AbstractExecutionStep {
         }
       } finally {
         if (context.isProfiling()) {
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
         }
       }
     }

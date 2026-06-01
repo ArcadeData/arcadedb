@@ -108,7 +108,7 @@ public class BoltNetworkListener extends Thread {
               bytesRead += n;
             }
 
-            final boolean isTls = (header[0] == 0x16 && header[1] == 0x03);
+            final boolean isTls = header[0] == 0x16 && header[1] == 0x03;
 
             if (isTls) {
               connectionSocket = sslHelper.wrapWithTls(socket, header);

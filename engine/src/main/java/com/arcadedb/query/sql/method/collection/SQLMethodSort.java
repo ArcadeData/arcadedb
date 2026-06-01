@@ -42,9 +42,9 @@ public class SQLMethodSort extends AbstractSQLMethod {
   public Object execute(final Object value, final Identifiable currentRecord, final CommandContext context,
       final Object[] params) {
 
-    if (value != null && value instanceof List list) {
+    if (value instanceof List list) {
       List<Object> result = new ArrayList(list);
-      if (params != null && params.length > 0 && params[0] != null && params[0] instanceof Boolean bool && !bool)
+      if (params != null && params.length > 0 && params[0] instanceof Boolean bool && !bool)
         result.sort((left, right) -> BinaryComparator.compareTo(right, left));
       else
         result.sort((left, right) -> BinaryComparator.compareTo(left, right));

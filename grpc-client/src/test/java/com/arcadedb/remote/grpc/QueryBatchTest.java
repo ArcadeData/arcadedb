@@ -18,7 +18,6 @@
  */
 package com.arcadedb.remote.grpc;
 
-import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import org.junit.jupiter.api.Test;

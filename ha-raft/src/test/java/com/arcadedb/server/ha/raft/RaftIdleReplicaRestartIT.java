@@ -133,9 +133,10 @@ class RaftIdleReplicaRestartIT extends BaseRaftHATest {
         loopCountAfterCatchup);
 
     assertThat(loopCountAfterCatchup)
-        .as("after the replica caught up, the leader must stop emitting the "
-            + "'INCONSISTENCY reply with nextIndex 0 ... entriesCount=0' warning. "
-            + "Observed %d such warnings in the 15s observation window - leader is stuck", loopCountAfterCatchup)
+        .as("""
+            after the replica caught up, the leader must stop emitting the \
+            'INCONSISTENCY reply with nextIndex 0 ... entriesCount=0' warning. \
+            Observed %d such warnings in the 15s observation window - leader is stuck""", loopCountAfterCatchup)
         .isLessThanOrEqualTo(2);
 
     // Confirm the cluster is functional: writes on the leader after the replica restart must

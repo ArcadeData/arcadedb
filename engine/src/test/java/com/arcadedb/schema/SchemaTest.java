@@ -19,13 +19,17 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
-import java.time.*;
-import java.util.*;
+import java.time.ZoneId;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -159,7 +163,7 @@ class SchemaTest extends TestHelper {
     // Close and reopen database
     final String dbPath = database.getDatabasePath();
     database.close();
-    database = new com.arcadedb.database.DatabaseFactory(dbPath).open();
+    database = new DatabaseFactory(dbPath).open();
 
     // Verify data survives reopen
     assertThat(database.getSchema().existsType("ASKED")).isTrue();
@@ -189,7 +193,7 @@ class SchemaTest extends TestHelper {
     assertThat(database.getSchema().existsType("V111")).isTrue();
 
     // Verify getTypes() does not return duplicates for aliased types
-    final long v1Count = database.getSchema().getTypes().stream().filter(t -> t.getName().equals("V1")).count();
+    final long v1Count = database.getSchema().getTypes().stream().filter(t -> "V1".equals(t.getName())).count();
     assertThat(v1Count).isEqualTo(1L);
 
     database.transaction(() -> {
@@ -230,7 +234,7 @@ class SchemaTest extends TestHelper {
         300L);
 
     // Verify getTypes() still does not return duplicates after reopen
-    final long v1CountAfterReopen = database.getSchema().getTypes().stream().filter(t -> t.getName().equals("V1")).count();
+    final long v1CountAfterReopen = database.getSchema().getTypes().stream().filter(t -> "V1".equals(t.getName())).count();
     assertThat(v1CountAfterReopen).isEqualTo(1L);
   }
 

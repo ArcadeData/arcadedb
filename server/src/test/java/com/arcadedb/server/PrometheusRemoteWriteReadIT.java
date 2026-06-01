@@ -20,7 +20,6 @@ package com.arcadedb.server;
 
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.http.handler.prometheus.PrometheusTypes;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.Label;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.LabelMatcher;
 import com.arcadedb.server.http.handler.prometheus.PrometheusTypes.MatchType;
@@ -53,7 +52,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
   @Test
   void remoteWriteBasic() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final WriteRequest writeRequest = new WriteRequest(List.of(
           new TimeSeries(
               List.of(new Label("__name__", "cpu_usage"), new Label("host", "server1")),
@@ -78,7 +77,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
   @Test
   void remoteWriteAutoCreateType() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final WriteRequest writeRequest = new WriteRequest(List.of(
           new TimeSeries(
               List.of(new Label("__name__", "disk_io"), new Label("device", "sda")),
@@ -99,7 +98,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
   @Test
   void remoteWriteMultipleLabels() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final WriteRequest writeRequest = new WriteRequest(List.of(
           new TimeSeries(
               List.of(
@@ -124,7 +123,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
   @Test
   void remoteWriteEmptyBody() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = createPromConnection(serverIndex, "prom/write");
       connection.setDoOutput(true);
       try (final OutputStream os = connection.getOutputStream()) {
@@ -136,7 +135,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
   @Test
   void remoteWriteInvalidSnappy() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final HttpURLConnection connection = createPromConnection(serverIndex, "prom/write");
       connection.setDoOutput(true);
       try (final OutputStream os = connection.getOutputStream()) {
@@ -149,7 +148,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
   @Test
   void remoteReadBasic() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // First insert some data
       final WriteRequest writeRequest = new WriteRequest(List.of(
           new TimeSeries(
@@ -184,7 +183,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
   @Test
   void remoteReadWithLabelMatcher() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Insert data with different label values
       final WriteRequest writeRequest = new WriteRequest(List.of(
           new TimeSeries(
@@ -217,7 +216,7 @@ class PrometheusRemoteWriteReadIT extends BaseGraphServerTest {
 
   @Test
   void remoteReadEmptyResult() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final ReadRequest readRequest = new ReadRequest(List.of(
           new Query(0, 5000, List.of(
               new LabelMatcher(MatchType.EQ, "__name__", "nonexistent_metric")

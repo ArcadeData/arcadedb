@@ -25,7 +25,8 @@ import com.arcadedb.remote.RemoteServer;
 import com.arcadedb.server.BaseGraphServerTest;
 
 import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -99,7 +100,7 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
 
     final List<Long> allIds = new ArrayList<>();
     getServer(0).getDatabase(DATABASE_NAME).iterateType("User", true)
-        .forEachRemaining((a) -> allIds.add(a.getRecord().asVertex().getLong("id")));
+        .forEachRemaining(a -> allIds.add(a.getRecord().asVertex().getLong("id")));
     allIds.sort(Long::compareTo);
 
     long last = -1;
@@ -146,7 +147,7 @@ public class RemoteDatabaseBenchmark extends BaseGraphServerTest {
               incrementError(t);
             }
           }
-        }, false, TX_RETRY, null, (e) -> {
+        }, false, TX_RETRY, null, e -> {
           if (e instanceof ConcurrentModificationException)
             concurrentExceptions.incrementAndGet();
           else {

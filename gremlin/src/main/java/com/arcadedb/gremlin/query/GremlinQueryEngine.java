@@ -26,7 +26,8 @@ import com.arcadedb.gremlin.ArcadeGremlin;
 import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 public class GremlinQueryEngine implements QueryEngine {
   static final  String      ENGINE_NAME = "gremlin";

@@ -27,6 +27,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.index.sparsevector.RidScore;
 import com.arcadedb.index.vector.VectorUtils;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
@@ -36,6 +37,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.logging.Level;
 
 /**
  * Maximal Marginal Relevance (MMR) reranker. Diversifies a scored candidate set by greedily
@@ -166,7 +168,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
     // unexplained heap pressure event later. Heuristic-only: integer overflow in the multiply is
     // possible at extreme values but the threshold check would short-circuit well before that.
     if ((long) usable.size() * expectedDim > MMR_HEAP_WARN_FLOATS)
-      com.arcadedb.log.LogManager.instance().log(this, java.util.logging.Level.WARNING,
+      LogManager.instance().log(this, Level.WARNING,
           NAME + " loaded %d candidates x %d-dim embeddings (~%d MB) - bound the upstream candidate "
               + "pool with a smaller k to reduce heap pressure",
           usable.size(), expectedDim, (long) usable.size() * expectedDim * 4L / (1024L * 1024L));
@@ -191,7 +193,7 @@ public class SQLFunctionVectorMmr extends SQLFunctionVectorAbstract {
         // First pick: no diversity penalty (no selected set), so the objective collapses to
         // {@code lambda * score} - i.e. the top-scored candidate wins, which matches the MMR
         // formal definition where the running-max is undefined / -inf.
-        final float diversityPenalty = (step == 0)
+        final float diversityPenalty = step == 0
             ? 0.0f
             : Math.max(0.0f, maxCosToSelected[i]);  // negative cos rounded up (no anti-bonus)
         final float objective = lambda * usable.get(i).score() - (1.0f - lambda) * diversityPenalty;

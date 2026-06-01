@@ -26,8 +26,9 @@ import com.arcadedb.database.async.DatabaseAsyncExecutorImpl;
 import com.arcadedb.utility.MultiIterator;
 import com.conversantmedia.util.concurrent.MultithreadConcurrentQueue;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Iterator;
+import java.util.List;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * Query iterator returned from queries. Extends the base Java iterator with convenient methods.

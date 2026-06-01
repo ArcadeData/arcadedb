@@ -22,7 +22,6 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.schema.DocumentType;
 
-import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -35,9 +34,9 @@ class CheckClusterTypeStepTest {
 
   @Test
   void shouldCheckClusterType() throws Exception {
-    TestHelper.executeInNewDatabase((db) -> {
-      final DocumentType clazz = (db.getSchema().createDocumentType(CLASS_CLUSTER_NAME)
-          .addBucket(db.getSchema().createBucket(CLASS_CLUSTER_NAME)));
+    TestHelper.executeInNewDatabase(db -> {
+      final DocumentType clazz = db.getSchema().createDocumentType(CLASS_CLUSTER_NAME)
+          .addBucket(db.getSchema().createBucket(CLASS_CLUSTER_NAME));
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);
       final CheckClusterTypeStep step = new CheckClusterTypeStep(CLASS_CLUSTER_NAME, clazz.getName(), context);
@@ -50,7 +49,7 @@ class CheckClusterTypeStepTest {
 
   @Test
   void shouldThrowExceptionWhenClusterIsWrong() throws Exception {
-    assertThatThrownBy(() -> TestHelper.executeInNewDatabase((db) -> {
+    assertThatThrownBy(() -> TestHelper.executeInNewDatabase(db -> {
       db.getSchema().createBucket(CLUSTER_NAME);
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(db);

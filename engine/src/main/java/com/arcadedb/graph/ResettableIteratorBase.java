@@ -21,7 +21,7 @@ package com.arcadedb.graph;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.utility.ResettableIterator;
 
-import java.util.concurrent.atomic.*;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public abstract class ResettableIteratorBase<T> implements ResettableIterator<T> {
   protected final DatabaseInternal database;

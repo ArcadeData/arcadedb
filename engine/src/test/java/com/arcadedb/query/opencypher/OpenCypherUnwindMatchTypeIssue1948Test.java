@@ -247,9 +247,8 @@ class OpenCypherUnwindMatchTypeIssue1948Test {
   @Test
   void unwindMatchWithTypeConstraintSimple() {
     // Create test vertices
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (c:CHUNK {name: 'simple_chunk'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (c:CHUNK {name: 'simple_chunk'})"));
 
     final RID chunkRid;
     try (ResultSet rs = database.query("opencypher", "MATCH (c:CHUNK {name: 'simple_chunk'}) RETURN c")) {

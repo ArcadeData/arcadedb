@@ -29,7 +29,9 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -149,9 +151,8 @@ class CypherReduceAndShortestPathTest {
    */
   @Test
   void reduceWithNullListFromOptionalMatch() {
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (:Person {name: 'IsolatedB', id: 99})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (:Person {name: 'IsolatedB', id: 99})"));
 
     final ResultSet resultSet = database.query("opencypher",
         """
@@ -388,7 +389,7 @@ class CypherReduceAndShortestPathTest {
             MATCH path = allShortestPaths((a:Issue4239_Node {name: 'A'})-[:Issue4239_R*..3]->(b:Issue4239_Node {name: 'B'}))
             RETURN [n IN nodes(path) | n.name] AS path_nodes, length(path) AS hops""");
 
-    final java.util.Set<List<String>> observed = new java.util.HashSet<>();
+    final Set<List<String>> observed = new HashSet<>();
     int rows = 0;
     while (rs.hasNext()) {
       final Result row = rs.next();

@@ -46,6 +46,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Shortest path algorithm to find the shortest path from one node to another node in a directed graph.
@@ -56,7 +57,7 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
   public static final String NAME            = "shortestPath";
   public static final String PARAM_MAX_DEPTH = "maxDepth";
 
-  private static final java.util.Set<String> OPTIONS = java.util.Set.of("direction", "edgeType", "edgeTypeNames", "maxDepth",
+  private static final Set<String> OPTIONS = Set.of("direction", "edgeType", "edgeTypeNames", "maxDepth",
       "edge");
 
   public SQLFunctionShortestPath() {

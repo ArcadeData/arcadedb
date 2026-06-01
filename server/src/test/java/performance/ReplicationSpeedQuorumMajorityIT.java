@@ -27,8 +27,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.UUID;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -68,9 +68,8 @@ public class ReplicationSpeedQuorumMajorityIT extends BasePerformanceTest {
     }
 
     final Database database = getDatabase(0);
-    database.transaction(() -> {
-      populateDatabase(parallel, database);
-    });
+    database.transaction(() ->
+      populateDatabase(parallel, database));
 
     // CLOSE ALL DATABASES BEFORE TO START THE SERVERS
     LogManager.instance().log(this, Level.INFO, "TEST: Closing databases before starting");

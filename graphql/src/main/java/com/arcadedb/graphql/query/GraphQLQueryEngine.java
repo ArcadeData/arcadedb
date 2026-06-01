@@ -33,7 +33,9 @@ import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.FileUtils;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.Set;
 
 public class GraphQLQueryEngine implements QueryEngine {
   public static final String        ENGINE_NAME = "graphql";

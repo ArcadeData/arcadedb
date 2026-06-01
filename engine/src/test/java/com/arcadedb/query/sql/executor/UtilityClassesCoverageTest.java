@@ -25,10 +25,6 @@ import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.RID;
 import org.junit.jupiter.api.Test;
 
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -165,7 +161,7 @@ class UtilityClassesCoverageTest {
   @Test
   void equalsSameTypeEmbeddedDocuments() throws Exception {
     // Embedded documents (null identity) must compare by content for both same-class and cross-class pairs.
-    TestHelper.executeInNewDatabase("testQOEEmbedded", (db) -> {
+    TestHelper.executeInNewDatabase("testQOEEmbedded", db -> {
       db.transaction(() -> {
         db.getSchema().createDocumentType("AddrEmb");
         db.getSchema().createDocumentType("ContainerEmb");

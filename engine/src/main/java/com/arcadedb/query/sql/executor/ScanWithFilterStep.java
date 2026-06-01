@@ -18,7 +18,6 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.ImmutableDocument;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
@@ -117,7 +116,7 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
               totalFiltered++;
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - filterBegin);
+                cost += System.nanoTime() - filterBegin;
             }
           }
         }
@@ -148,7 +147,7 @@ public class ScanWithFilterStep extends AbstractExecutionStep {
       };
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

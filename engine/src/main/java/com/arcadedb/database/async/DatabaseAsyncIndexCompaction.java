@@ -24,7 +24,7 @@ import com.arcadedb.index.IndexException;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class DatabaseAsyncIndexCompaction implements DatabaseAsyncTask {
   public final IndexInternal index;

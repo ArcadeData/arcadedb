@@ -21,7 +21,8 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
-import java.time.*;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;

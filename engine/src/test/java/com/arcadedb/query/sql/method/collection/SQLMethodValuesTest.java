@@ -80,9 +80,8 @@ class SQLMethodValuesTest extends TestHelper {
 
   @Test
   void withDocument() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Person");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("Person"));
 
     database.transaction(() -> {
       MutableDocument doc = database.newDocument("Person");
@@ -105,9 +104,8 @@ class SQLMethodValuesTest extends TestHelper {
 
   @Test
   void withCollectionOfDocuments() {
-    database.transaction(() -> {
-      database.getSchema().createDocumentType("Person");
-    });
+    database.transaction(() ->
+      database.getSchema().createDocumentType("Person"));
 
     List<Document> documents = new ArrayList<>();
     database.transaction(() -> {

@@ -21,13 +21,12 @@ package com.arcadedb.gremlin;
 import com.arcadedb.database.BasicDatabase;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.remote.RemoteDatabase;
 import org.apache.commons.configuration2.Configuration;
 
-import java.io.*;
-import java.util.concurrent.*;
-import java.util.concurrent.atomic.*;
+import java.io.Closeable;
+import java.util.concurrent.ConcurrentLinkedQueue;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * ArcadeDB Gremlin implementation factory class. Utilizes a pool of ArcadeGraph to avoid creating a new instance every time.

@@ -18,8 +18,9 @@
  */
 package com.arcadedb.graphql.parser;
 
-import java.io.*;
-import java.util.*;
+import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
 
 public class JJTGraphQLParserState implements Serializable {
   private final List<Node>    nodes;

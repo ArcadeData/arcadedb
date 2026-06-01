@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -93,7 +94,7 @@ class TimeSeriesConcurrentWriteNoDuplicatesTest extends TestHelper {
     }
 
     startLatch.countDown();
-    assertThat(doneLatch.await(30, java.util.concurrent.TimeUnit.SECONDS))
+    assertThat(doneLatch.await(30, TimeUnit.SECONDS))
         .as("All writer threads should finish within 30 seconds")
         .isTrue();
 

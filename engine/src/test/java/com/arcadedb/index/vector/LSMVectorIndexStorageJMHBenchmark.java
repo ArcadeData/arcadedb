@@ -45,9 +45,10 @@ import org.openjdk.jmh.runner.RunnerException;
 import org.openjdk.jmh.runner.options.Options;
 import org.openjdk.jmh.runner.options.OptionsBuilder;
 
-import java.io.*;
+import java.io.File;
 import java.util.*;
-import java.util.concurrent.*;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 
 /**
  * JMH Microbenchmark comparing vector search performance across different quantization strategies.
@@ -138,7 +139,7 @@ public class LSMVectorIndexStorageJMHBenchmark {
             metadata.append("  \"dimensions\": ").append(DIMENSIONS).append(",\n");
             metadata.append("  \"similarity\": \"COSINE\",\n");
             metadata.append("  \"storeVectorsInGraph\": ").append(storeVectorsInGraph);
-            if (!quantization.equals("NONE")) {
+            if (!"NONE".equals(quantization)) {
               metadata.append(",\n  \"quantization\": \"").append(quantization).append("\"");
             }
             metadata.append("\n}");
@@ -215,7 +216,7 @@ public class LSMVectorIndexStorageJMHBenchmark {
 
       // Compute ground truth for NONE quantization (for recall calculation)
       final String gtKey = String.valueOf(numVectors);
-      if (quantization.equals("NONE") && !GROUND_TRUTH_K10.containsKey(gtKey)) {
+      if ("NONE".equals(quantization) && !GROUND_TRUTH_K10.containsKey(gtKey)) {
         System.out.println("Computing ground truth for recall measurement...");
         final Map<Integer, List<RID>> gtK10 = new HashMap<>();
         final Map<Integer, List<RID>> gtK100 = new HashMap<>();
@@ -246,7 +247,7 @@ public class LSMVectorIndexStorageJMHBenchmark {
       double recallK10 = 1.0;
       double recallK100 = 1.0;
 
-      if (!quantization.equals("NONE") && GROUND_TRUTH_K10.containsKey(gtKey)) {
+      if (!"NONE".equals(quantization) && GROUND_TRUTH_K10.containsKey(gtKey)) {
         final Map<Integer, List<RID>> gtK10 = GROUND_TRUTH_K10.get(gtKey);
         final Map<Integer, List<RID>> gtK100 = GROUND_TRUTH_K100.get(gtKey);
 

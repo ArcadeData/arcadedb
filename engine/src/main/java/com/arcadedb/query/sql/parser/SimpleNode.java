@@ -67,7 +67,7 @@ public abstract class SimpleNode implements Node {
   }
 
   public int jjtGetNumChildren() {
-    return (children == null) ? 0 : children.length;
+    return children == null ? 0 : children.length;
   }
 
   public void jjtSetValue(final Object value) {
@@ -121,7 +121,7 @@ public abstract class SimpleNode implements Node {
     if (children != null) {
       final Object[] childrenJson = new Object[children.length];
       for (int i = 0; i < children.length; i++)
-        childrenJson[i] = (children[i] instanceof SimpleNode) ? ((SimpleNode) children[i]).toJSON() : children[i];
+        childrenJson[i] = children[i] instanceof SimpleNode ? ((SimpleNode) children[i]).toJSON() : children[i];
 
       json.put("children", childrenJson);
     }

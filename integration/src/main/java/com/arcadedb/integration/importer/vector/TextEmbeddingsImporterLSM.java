@@ -29,10 +29,15 @@ import com.arcadedb.integration.importer.ImporterSettings;
 import com.arcadedb.utility.CodeUtils;
 import com.arcadedb.utility.DateUtils;
 
-import java.io.*;
-import java.util.*;
-import java.util.concurrent.atomic.*;
-import java.util.stream.*;
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.util.List;
+import java.util.Locale;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 /**
  * Imports Embeddings using LSMVector index instead of HNSW.
@@ -173,7 +178,7 @@ public class TextEmbeddingsImporterLSM {
 
     logger.logLine(1, "***************************************************************************************************");
     logger.logLine(1, "Import of Text Embeddings database completed in %s with %,d errors and %,d warnings.",
-        DateUtils.formatElapsed((System.currentTimeMillis() - beginTime)), errors, warnings);
+        DateUtils.formatElapsed(System.currentTimeMillis() - beginTime), errors, warnings);
     logger.logLine(1, "\nSUMMARY\n");
     logger.logLine(1, "- Embeddings.................................: %,d", texts.size());
     logger.logLine(1, "- Vertices created...........................: %,d", verticesCreated);
@@ -191,7 +196,7 @@ public class TextEmbeddingsImporterLSM {
   public void printProgress() {
     float progressPerc = 0F;
     if (verticesCreated > 0 && embeddingsParsed > 0)
-      progressPerc = (verticesCreated * 100F / embeddingsParsed);
+      progressPerc = verticesCreated * 100F / embeddingsParsed;
 
     String result = "- %.2f%%".formatted(progressPerc);
 

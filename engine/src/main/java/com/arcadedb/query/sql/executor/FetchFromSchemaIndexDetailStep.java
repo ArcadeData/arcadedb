@@ -25,8 +25,11 @@ import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 
-import java.io.*;
-import java.util.*;
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Returns a single result containing detailed information about a specific index, including
@@ -101,7 +104,7 @@ public class FetchFromSchemaIndexDetailStep extends AbstractExecutionStep {
       return new InternalResultSet(r);
     } finally {
       if (context.isProfiling())
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
     }
   }
 

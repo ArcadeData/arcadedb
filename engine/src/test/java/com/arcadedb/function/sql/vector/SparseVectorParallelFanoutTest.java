@@ -24,13 +24,14 @@ import com.arcadedb.database.RID;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.Set;
 
@@ -197,7 +198,7 @@ class SparseVectorParallelFanoutTest extends TestHelper {
   }
 
   private static float sparseDot(final int[] aIdx, final float[] aVal, final int[] bIdx, final float[] bVal) {
-    final java.util.Map<Integer, Float> map = new java.util.HashMap<>(aIdx.length);
+    final Map<Integer, Float> map = new HashMap<>(aIdx.length);
     for (int i = 0; i < aIdx.length; i++)
       map.put(aIdx[i], aVal[i]);
     float sum = 0.0f;

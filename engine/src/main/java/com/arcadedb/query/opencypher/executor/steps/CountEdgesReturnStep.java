@@ -26,7 +26,6 @@ import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.query.opencypher.ast.Expression;
-import com.arcadedb.query.opencypher.ast.ReturnClause;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
@@ -130,7 +129,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
           groups.merge(key, count, Long::sum);
         } finally {
           if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
         }
       }
 
@@ -173,7 +172,7 @@ public final class CountEdgesReturnStep extends AbstractExecutionStep {
         groups.merge(new GroupKey(keys), count, Long::sum);
       } finally {
         if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
       }
     }
 

@@ -34,18 +34,14 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
-import com.arcadedb.serializer.BinarySerializer;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.utility.LongHashSet;
 import com.arcadedb.utility.LongObjectHashMap;
 
-import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -1189,7 +1185,7 @@ public class GraphBatch implements AutoCloseable {
 
     final Throwable t = error.get();
     if (t != null)
-      throw (t instanceof RuntimeException) ? (RuntimeException) t : new RuntimeException(t);
+      throw t instanceof RuntimeException ? (RuntimeException) t : new RuntimeException(t);
   }
 
   /**
@@ -1858,7 +1854,7 @@ public class GraphBatch implements AutoCloseable {
 
     final Throwable t = error.get();
     if (t != null)
-      throw (t instanceof RuntimeException) ? (RuntimeException) t : new RuntimeException(t);
+      throw t instanceof RuntimeException ? (RuntimeException) t : new RuntimeException(t);
   }
 
   /**
@@ -2191,7 +2187,7 @@ public class GraphBatch implements AutoCloseable {
 
       // When WAL is off and no explicit commitEvery, use 0 (single commit per flush)
       // to eliminate unnecessary transaction begin/commit overhead
-      final int effectiveCommitEvery = (!commitEveryExplicit && !useWAL) ? 0 : commitEvery;
+      final int effectiveCommitEvery = !commitEveryExplicit && !useWAL ? 0 : commitEvery;
 
       return new GraphBatch(database, effectiveBatchSize, edgeListInitialSize, lightEdges,
           bidirectional, effectiveCommitEvery, useWAL, walFlush, preAllocateEdgeChunks, parallelFlush);

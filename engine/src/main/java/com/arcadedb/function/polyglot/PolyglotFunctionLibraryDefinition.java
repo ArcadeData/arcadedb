@@ -22,8 +22,10 @@ import com.arcadedb.function.FunctionLibraryDefinition;
 import com.arcadedb.query.polyglot.GraalPolyglotEngine;
 import com.arcadedb.query.polyglot.PolyglotEngineManager;
 
-import java.util.*;
-import java.util.concurrent.*;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 public abstract class PolyglotFunctionLibraryDefinition<T extends PolyglotFunctionDefinition> implements FunctionLibraryDefinition<T> {
   protected final Database                 database;

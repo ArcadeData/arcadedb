@@ -26,6 +26,7 @@ import com.arcadedb.serializer.BinaryTypes;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -184,7 +185,7 @@ public class DateUtils {
       else
         // NOT SUPPORTED
         timestamp = 0;
-    } else if (value instanceof java.time.OffsetDateTime offsetDateTime) {
+    } else if (value instanceof OffsetDateTime offsetDateTime) {
       if (precisionToUse.equals(ChronoUnit.SECONDS))
         timestamp = offsetDateTime.toInstant().getEpochSecond();
       else if (precisionToUse.equals(ChronoUnit.MILLIS))
@@ -194,7 +195,7 @@ public class DateUtils {
             TimeUnit.MICROSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS) + (offsetDateTime.getNano() / 1000);
       else if (precisionToUse.equals(ChronoUnit.NANOS)) {
         long s2n = TimeUnit.NANOSECONDS.convert(offsetDateTime.toEpochSecond(), TimeUnit.SECONDS);
-        timestamp = (s2n >= 0 && Long.MAX_VALUE - s2n < offsetDateTime.getNano()) ? Long.MAX_VALUE : s2n + offsetDateTime.getNano();
+        timestamp = s2n >= 0 && Long.MAX_VALUE - s2n < offsetDateTime.getNano() ? Long.MAX_VALUE : s2n + offsetDateTime.getNano();
       } else
         // NOT SUPPORTED
         timestamp = 0;
@@ -378,7 +379,7 @@ public class DateUtils {
     if (obj == null)
       return false;
     return obj instanceof Date || obj instanceof Calendar || obj instanceof LocalDate || obj instanceof LocalDateTime
-        || obj instanceof ZonedDateTime || obj instanceof java.time.OffsetDateTime || obj instanceof Instant;
+        || obj instanceof ZonedDateTime || obj instanceof OffsetDateTime || obj instanceof Instant;
   }
 
   public static ChronoUnit getHigherPrecision(final Object... objs) {
@@ -439,7 +440,7 @@ public class DateUtils {
 
   public static DateTimeFormatter getFormatter(final String format) {
     return CACHED_FORMATTERS.computeIfAbsent(format,
-        (f) -> new DateTimeFormatterBuilder().appendPattern(f).parseDefaulting(ChronoField.HOUR_OF_DAY, 0)
+        f -> new DateTimeFormatterBuilder().appendPattern(f).parseDefaulting(ChronoField.HOUR_OF_DAY, 0)
             .parseDefaulting(ChronoField.MINUTE_OF_HOUR, 0).parseDefaulting(ChronoField.SECOND_OF_MINUTE, 0).toFormatter());
   }
 

@@ -28,7 +28,8 @@ import com.arcadedb.integration.importer.Parser;
 import com.arcadedb.integration.importer.SourceSchema;
 import com.univocity.parsers.common.AbstractParser;
 
-import java.io.*;
+import java.io.IOException;
+import java.io.InputStreamReader;
 
 public class RDFImporterFormat extends CSVImporterFormat {
   private static final char[] STRING_CONTENT_SKIP = new char[] { '\'', '\'', '"', '"', '<', '>' };

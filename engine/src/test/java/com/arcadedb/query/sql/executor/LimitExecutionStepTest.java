@@ -73,9 +73,8 @@ class LimitExecutionStepTest extends TestHelper {
   void shouldLimitZero() {
     database.getSchema().createDocumentType("Data");
 
-    database.transaction(() -> {
-      database.newDocument("Data").set("value", 1).save();
-    });
+    database.transaction(() ->
+      database.newDocument("Data").set("value", 1).save());
 
     final ResultSet result = database.query("sql", "SELECT FROM Data LIMIT 0");
     assertThat(result.hasNext()).isFalse();

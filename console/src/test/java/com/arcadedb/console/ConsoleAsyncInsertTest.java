@@ -36,7 +36,6 @@ import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.BaseGraphServerTest;
 import com.arcadedb.server.TestServerHelper;
 import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.FileUtils;

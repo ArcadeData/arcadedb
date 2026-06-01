@@ -25,11 +25,13 @@ import com.arcadedb.serializer.json.JSONObject;
 
 import org.junit.jupiter.api.Test;
 
-import java.net.*;
-import java.util.*;
-import java.util.logging.*;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.logging.Level;
 
-import static org.assertj.core.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Test for GitHub Issue #2097: REBUILD INDEX deletes indexes when used via async HTTP-API.
@@ -69,7 +71,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
    */
   @Test
   void rebuildIndexAsyncDoesNotDeleteIndexes() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
 
       // Setup: Create multiple document types with indexed properties
@@ -170,7 +172,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
    */
   @Test
   void rebuildIndexSyncWorksCorrectly() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
 
       // Setup: Create document type with indexed property
@@ -227,7 +229,7 @@ class Issue2097AsyncRebuildIndexIT extends BaseGraphServerTest {
    */
   @Test
   void rebuildSpecificIndexAsyncDoesNotDeleteIndex() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final Database database = getServer(serverIndex).getDatabase(getDatabaseName());
 
       // Setup: Create document type with indexed property

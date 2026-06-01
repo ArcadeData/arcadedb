@@ -18,7 +18,7 @@
  */
 package com.arcadedb.server;
 
-import java.util.logging.*;
+import java.util.logging.LogManager;
 
 /**
  * Delay the reset after the server completed the shutdown.

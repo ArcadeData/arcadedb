@@ -18,7 +18,7 @@
  */
 package com.arcadedb.utility;
 
-import java.util.*;
+import java.util.Iterator;
 
 /**
  * Iterator can be reset to start from the beginning. This is useful to count instances.

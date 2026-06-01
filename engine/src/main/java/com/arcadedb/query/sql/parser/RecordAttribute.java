@@ -27,7 +27,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
-import java.util.*;
+import java.util.Map;
+import java.util.Objects;
 
 import static com.arcadedb.schema.Property.*;
 
@@ -74,11 +75,11 @@ public class RecordAttribute extends SimpleNode {
   }
 
   public Object evaluate(final Result currentRecord, final CommandContext context) {
-    if (name.equalsIgnoreCase(RID_PROPERTY)) {
+    if (RID_PROPERTY.equalsIgnoreCase(name)) {
       return currentRecord.getIdentity().orElse(null);
-    } else if (name.equalsIgnoreCase(TYPE_PROPERTY)) {
+    } else if (TYPE_PROPERTY.equalsIgnoreCase(name)) {
       return currentRecord.getElement().map(Document::getTypeName).orElse(null);
-    } else if (name.equalsIgnoreCase(CAT_PROPERTY) && currentRecord.getElement().isPresent()) {
+    } else if (CAT_PROPERTY.equalsIgnoreCase(name) && currentRecord.getElement().isPresent()) {
       final Document record = currentRecord.getElement().get();
       if (record instanceof Vertex)
         return "v";
@@ -87,13 +88,13 @@ public class RecordAttribute extends SimpleNode {
       else
         return "d";
 
-    } else if (name.equalsIgnoreCase(IN_PROPERTY) && //
+    } else if (IN_PROPERTY.equalsIgnoreCase(name) && //
         currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
       return currentRecord.getElement().get().asEdge().getIn();
-    } else if (name.equalsIgnoreCase(OUT_PROPERTY) && //
+    } else if (OUT_PROPERTY.equalsIgnoreCase(name) && //
         currentRecord.getElement().isPresent() && currentRecord.getElement().get() instanceof Edge) {
       return currentRecord.getElement().get().asEdge().getOut();
-    } else if (name.equalsIgnoreCase(THIS_PROPERTY)) {
+    } else if (THIS_PROPERTY.equalsIgnoreCase(name)) {
       // Return the entire current record or value
       // For element-based results, return the element
       // For value-based results (like plain strings in CONTAINS conditions), return the value

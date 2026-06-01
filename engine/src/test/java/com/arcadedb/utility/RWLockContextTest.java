@@ -87,7 +87,7 @@ class RWLockContextTest {
     final CountDownLatch readerDone = new CountDownLatch(1);
 
     // Start writer
-    new Thread(() -> {
+    new Thread(() ->
       lockContext.executeInWriteLock(() -> {
         writerActive.set(true);
         writerStarted.countDown();
@@ -98,8 +98,7 @@ class RWLockContextTest {
         }
         writerActive.set(false);
         return null;
-      });
-    }).start();
+      })).start();
 
     // Wait for writer to start
     writerStarted.await(1, TimeUnit.SECONDS);

@@ -31,6 +31,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.log.LogManager;
@@ -82,10 +83,8 @@ import com.arcadedb.engine.timeseries.MultiColumnAggregationRequest;
 import com.arcadedb.engine.timeseries.TagFilter;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
 import com.arcadedb.query.sql.parser.BaseIdentifier;
-import com.arcadedb.query.sql.parser.LevelZeroIdentifier;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.schema.DocumentType;
-import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.LocalTimeSeriesType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -395,7 +394,7 @@ public class SelectExecutionPlanner {
     if (function == null) {
       return false;
     }
-    return function.getName().getStringValue().equalsIgnoreCase("distinct");
+    return "distinct".equalsIgnoreCase(function.getName().getStringValue());
   }
 
   private boolean handleHardwiredOptimizations(final SelectExecutionPlan result, final CommandContext context) {
@@ -463,7 +462,7 @@ public class SelectExecutionPlanner {
       return false;
     }
     final ProjectionItem item = info.aggregateProjection.getItems().getFirst();
-    return item.getExpression().toString().equalsIgnoreCase("count(*)");
+    return "count(*)".equalsIgnoreCase(item.getExpression().toString());
   }
 
   /**
@@ -598,9 +597,9 @@ public class SelectExecutionPlanner {
 
     final String functionName = functionCall.getName().getStringValue().toLowerCase();
     final boolean isMax;
-    if (functionName.equals("max"))
+    if ("max".equals(functionName))
       isMax = true;
-    else if (functionName.equals("min"))
+    else if ("min".equals(functionName))
       isMax = false;
     else
       return null;
@@ -1374,7 +1373,7 @@ public class SelectExecutionPlanner {
     if (booleanExpression instanceof BinaryCondition condition) {
       final BinaryCondition cond = condition;
       final BinaryCompareOperator operator = cond.getOperator();
-      if (isRangeOperator(operator) && cond.getLeft().toString().equalsIgnoreCase(RID_PROPERTY)) {
+      if (isRangeOperator(operator) && RID_PROPERTY.equalsIgnoreCase(cond.getLeft().toString())) {
         final Object obj;
         if (cond.getRight().getRid() != null) {
           obj = cond.getRight().getRid().toRecordId((Result) null, context);
@@ -1561,7 +1560,7 @@ public class SelectExecutionPlanner {
       if (str.length() < 5) {
         continue;
       }
-      if (str.substring(0, 4).equalsIgnoreCase("key ")) {
+      if ("key ".equalsIgnoreCase(str.substring(0, 4))) {
         return exp;
       }
     }
@@ -1574,7 +1573,7 @@ public class SelectExecutionPlanner {
       if (str.length() < 5) {
         continue;
       }
-      if (str.substring(0, 4).equalsIgnoreCase("rid ")) {
+      if ("rid ".equalsIgnoreCase(str.substring(0, 4))) {
         return exp;
       }
     }
@@ -1900,7 +1899,7 @@ public class SelectExecutionPlanner {
    */
   private boolean handleEdgeTypeWithVertexRidFilter(final SelectExecutionPlan plan, final DocumentType docType,
       final QueryPlanningInfo info, final CommandContext context) {
-    if (!(docType instanceof com.arcadedb.schema.EdgeType))
+    if (!(docType instanceof EdgeType))
       return false;
 
     if (info.flattenedWhereClause == null || info.flattenedWhereClause.size() != 1)
@@ -1922,8 +1921,8 @@ public class SelectExecutionPlanner {
       if (attrName == null)
         continue;
 
-      final boolean isOut = attrName.equalsIgnoreCase(Property.OUT_PROPERTY);
-      final boolean isIn = attrName.equalsIgnoreCase(Property.IN_PROPERTY);
+      final boolean isOut = Property.OUT_PROPERTY.equalsIgnoreCase(attrName);
+      final boolean isIn = Property.IN_PROPERTY.equalsIgnoreCase(attrName);
       if (!isOut && !isIn)
         continue;
 
@@ -2111,8 +2110,9 @@ public class SelectExecutionPlanner {
       // for the type name and see that pruning + an explicit cluster filter intersected to empty.
       if (intersected.isEmpty())
         LogManager.instance().log(SelectExecutionPlanner.class, Level.FINE,
-            "Partition pruning on type '%s' intersected to an empty set: derived buckets %s do not "
-                + "overlap the explicit cluster filter %s. Query will return zero rows.",
+            """
+            Partition pruning on type '%s' intersected to an empty set: derived buckets %s do not \
+            overlap the explicit cluster filter %s. Query will return zero rows.""",
             null, docType.getName(), derivedBuckets, filterClusters);
       result = intersected;
     }
@@ -2606,7 +2606,7 @@ public class SelectExecutionPlanner {
           // a different evaluation than the full-text index semantics.
           final BooleanExpression remaining = bestIndex.getRemainingCondition();
           if (remaining != null && !remaining.isEmpty()) {
-            if ((info.perRecordLetClause != null && refersToLet(Collections.singletonList(remaining)))) {
+            if (info.perRecordLetClause != null && refersToLet(Collections.singletonList(remaining))) {
               handleLet(subPlan, info, context);
             }
             subPlan.chain(new FilterStep(createWhereFrom(remaining), context));
@@ -2618,7 +2618,7 @@ public class SelectExecutionPlanner {
               statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           subPlan.chain(step);
           if (!block.getSubBlocks().isEmpty()) {
-            if ((info.perRecordLetClause != null && refersToLet(block.getSubBlocks()))) {
+            if (info.perRecordLetClause != null && refersToLet(block.getSubBlocks())) {
               handleLet(subPlan, info, context);
             }
             subPlan.chain(new FilterStep(createWhereFrom(block), context));
@@ -2666,7 +2666,7 @@ public class SelectExecutionPlanner {
           plan.chain(step);
           plan.chain(new FilterByClustersStep(filterClusters, context));
           if (!block.getSubBlocks().isEmpty()) {
-            if ((info.perRecordLetClause != null && refersToLet(block.getSubBlocks()))) {
+            if (info.perRecordLetClause != null && refersToLet(block.getSubBlocks())) {
               handleLet(plan, info, context);
             }
             plan.chain(new FilterStep(createWhereFrom(block), context));
@@ -2781,7 +2781,7 @@ public class SelectExecutionPlanner {
         }
       }
       if (indexFound && orderType != null) {
-        final boolean isAsc = orderType.equals(OrderByItem.ASC);
+        final boolean isAsc = OrderByItem.ASC.equals(orderType);
 
         List<Integer> filterClusterIds = null;
         if (filterClusters != null)
@@ -2990,8 +2990,8 @@ public class SelectExecutionPlanner {
         info.orderApplied = true;
 
         if (desc.getRemainingCondition() != null && !desc.getRemainingCondition().isEmpty()) {
-        if ((info.perRecordLetClause != null
-            && refersToLet(Collections.singletonList(desc.getRemainingCondition())))) {
+        if (info.perRecordLetClause != null
+            && refersToLet(Collections.singletonList(desc.getRemainingCondition()))) {
           SelectExecutionPlan stubPlan = new SelectExecutionPlan(context,
               statement.getLimit() != null ? statement.getLimit().getValue(context) : 0);
           handleLet(stubPlan, info, context);
@@ -3096,7 +3096,7 @@ public class SelectExecutionPlanner {
         }
       }
     }
-    return result == null || result.equals(OrderByItem.ASC);
+    return result == null || OrderByItem.ASC.equals(result);
   }
 
   private ExecutionStepInternal createParallelIndexFetch(final List<IndexSearchDescriptor> indexSearchDescriptors,
@@ -3794,7 +3794,7 @@ public class SelectExecutionPlanner {
     if (info.orderBy.getItems().size() == 1) {
       OrderByItem item = info.orderBy.getItems().getFirst();
       String recordAttr = item.getRecordAttr();
-      return recordAttr != null && recordAttr.equalsIgnoreCase(RID_PROPERTY) && OrderByItem.DESC.equals(item.getType());
+      return RID_PROPERTY.equalsIgnoreCase(recordAttr) && OrderByItem.DESC.equals(item.getType());
     }
     return false;
   }
@@ -3809,7 +3809,7 @@ public class SelectExecutionPlanner {
     if (info.orderBy.getItems().size() == 1) {
       final OrderByItem item = info.orderBy.getItems().getFirst();
       final String recordAttr = item.getRecordAttr();
-      return recordAttr != null && recordAttr.equalsIgnoreCase(RID_PROPERTY) && (item.getType() == null || OrderByItem.ASC.equals(
+      return RID_PROPERTY.equalsIgnoreCase(recordAttr) && (item.getType() == null || OrderByItem.ASC.equals(
           item.getType()));
     }
     return false;

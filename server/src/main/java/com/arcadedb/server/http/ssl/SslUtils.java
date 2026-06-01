@@ -20,10 +20,13 @@ package com.arcadedb.server.http.ssl;
 
 import com.arcadedb.server.security.ServerSecurityException;
 
-import java.io.*;
-import java.security.*;
-import java.security.cert.*;
-import java.util.function.*;
+import java.io.IOException;
+import java.io.InputStream;
+import java.security.KeyStore;
+import java.security.KeyStoreException;
+import java.security.NoSuchAlgorithmException;
+import java.security.cert.CertificateException;
+import java.util.function.Supplier;
 
 public class SslUtils {
 

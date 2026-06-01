@@ -23,8 +23,8 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.MultiValue;
 
-import java.math.*;
-import java.text.*;
+import java.math.BigDecimal;
+import java.text.SimpleDateFormat;
 import java.util.*;
 
 public class InputParameter extends SimpleNode {

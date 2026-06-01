@@ -230,7 +230,7 @@ public class SubqueryStep extends AbstractExecutionStep {
               buffer.add(mergeResults(currentOuterRow, innerRow));
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
             continue;
           }
@@ -262,7 +262,7 @@ public class SubqueryStep extends AbstractExecutionStep {
             }
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
       }
@@ -368,7 +368,7 @@ public class SubqueryStep extends AbstractExecutionStep {
               }
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
           }
           database.commit();

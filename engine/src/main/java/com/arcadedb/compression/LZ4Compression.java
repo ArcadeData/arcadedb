@@ -23,7 +23,7 @@ import net.jpountz.lz4.LZ4Compressor;
 import net.jpountz.lz4.LZ4Factory;
 import net.jpountz.lz4.LZ4FastDecompressor;
 
-import java.util.*;
+import java.util.Arrays;
 
 /**
  * Compression implementation that uses the popular LZ4 algorithm. Two compressors are exposed: the default

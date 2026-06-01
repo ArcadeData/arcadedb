@@ -25,8 +25,8 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.Pair;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.NoSuchElementException;
+import java.util.logging.Level;
 
 public class EdgeVertexIterator extends ResettableIteratorBase<Pair<RID, RID>> {
   private final RID              vertex;

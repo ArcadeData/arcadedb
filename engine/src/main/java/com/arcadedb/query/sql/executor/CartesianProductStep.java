@@ -21,7 +21,9 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.LocalResultSet;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.NoSuchElementException;
 
 /**
  * Created by luigidellaquila on 11/10/16.
@@ -149,7 +151,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
       }
     } finally {
       if( context.isProfiling() ) {
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
       }
     }
   }

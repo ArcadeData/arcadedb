@@ -73,7 +73,7 @@ public final class MurmurHash {
     case 2:
       h ^= (data[(length & ~3) + 1] & 0xff) << 8;
     case 1:
-      h ^= (data[length & ~3] & 0xff);
+      h ^= data[length & ~3] & 0xff;
       h *= m;
     }
 

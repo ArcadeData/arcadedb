@@ -22,7 +22,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.sql.executor.SQLFunction;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.Set;
 
 /**
  * @author Johann Sorel (Geomatys)

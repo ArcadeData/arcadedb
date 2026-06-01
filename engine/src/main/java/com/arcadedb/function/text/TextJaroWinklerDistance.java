@@ -20,8 +20,6 @@ package com.arcadedb.function.text;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.Arrays;
-
 /**
  * text.jaroWinklerDistance(str1, str2) - Calculate Jaro-Winkler similarity.
  *

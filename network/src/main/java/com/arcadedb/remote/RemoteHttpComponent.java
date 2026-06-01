@@ -50,6 +50,8 @@ import java.util.Base64;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 import java.util.logging.Level;
 import java.util.stream.Collectors;
 
@@ -141,10 +143,10 @@ public class RemoteHttpComponent extends RWLockContext {
     final long watchdogMs = Math.max(timeout * 1000L, 30_000L);
     try {
       return httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString())
-          .get(watchdogMs, java.util.concurrent.TimeUnit.MILLISECONDS);
+          .get(watchdogMs, TimeUnit.MILLISECONDS);
     } catch (final java.util.concurrent.TimeoutException e) {
       throw new IOException("HTTP request watchdog timeout after " + watchdogMs + "ms: " + request.uri(), e);
-    } catch (final java.util.concurrent.ExecutionException e) {
+    } catch (final ExecutionException e) {
       final Throwable cause = e.getCause();
       if (cause instanceof IOException ioe)
         throw ioe;
@@ -314,7 +316,7 @@ public class RemoteHttpComponent extends RWLockContext {
 
         if (response.statusCode() != 200) {
           lastException = manageException(response, payloadCommand != null ? payloadCommand : operation);
-          if (lastException instanceof RuntimeException && lastException.getMessage().equals("Empty payload received")) {
+          if (lastException instanceof RuntimeException && "Empty payload received".equals(lastException.getMessage())) {
             LogManager.instance()
                 .log(this, Level.FINE, "Empty payload received, retrying (retry=%d/%d)...", null, retry, maxRetry);
             continue;
@@ -369,8 +371,8 @@ public class RemoteHttpComponent extends RWLockContext {
         throw new RemoteException("Request interrupted", e);
       } catch (final NeedRetryException e) {
         // Election in progress - retry with delay.
-        final int maxElectionRetries = (this instanceof RemoteDatabase db) ? db.getElectionRetryCount() : 3;
-        final long delayMs = (this instanceof RemoteDatabase db) ? db.getElectionRetryDelayMs() : 2000L;
+        final int maxElectionRetries = this instanceof RemoteDatabase db ? db.getElectionRetryCount() : 3;
+        final long delayMs = this instanceof RemoteDatabase db ? db.getElectionRetryDelayMs() : 2000L;
         if (retry + 1 >= maxRetry || retry >= maxElectionRetries) {
           lastException = e;
           break;
@@ -411,7 +413,7 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   public List<String> getReplicaAddresses() {
-    return replicaServerList.stream().map((e) -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
+    return replicaServerList.stream().map(e -> e.getFirst() + ":" + e.getSecond()).collect(Collectors.toList());
   }
 
   HttpRequest.Builder createRequestBuilder(final String httpMethod, final String url) {
@@ -625,11 +627,11 @@ public class RemoteHttpComponent extends RWLockContext {
         return new NoSuchElementException(detail);
       } else if (exception.equals(SecurityException.class.getName())) {
         return new SecurityException(detail);
-      } else if (exception.equals("com.arcadedb.server.security.ServerSecurityException")) {
+      } else if ("com.arcadedb.server.security.ServerSecurityException".equals(exception)) {
         return new SecurityException(detail);
       } else if (exception.equals(ConnectException.class.getName())) {
         return new NeedRetryException(detail);
-      } else if (exception.equals("com.arcadedb.server.ha.ReplicationException")) {
+      } else if ("com.arcadedb.server.ha.ReplicationException".equals(exception)) {
         return new NeedRetryException(detail);
       } else if (exception.equals(NeedRetryException.class.getName())) {
         return new NeedRetryException(detail);

@@ -24,7 +24,9 @@ import com.arcadedb.graph.Edge;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 /**
  * relationships() function - returns all relationships in a path.

@@ -149,7 +149,7 @@ public class MatchPathItem extends SimpleNode {
     }
 
     final Object qR = this.method.execute(startingPoint, possibleResults, iCommandContext);
-    return (qR instanceof Iterable i && !(qR instanceof Record)) ? i : Set.of((Identifiable) qR);
+    return qR instanceof Iterable i && !(qR instanceof Record) ? i : Set.of((Identifiable) qR);
   }
 
   @Override

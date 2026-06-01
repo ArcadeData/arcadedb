@@ -60,7 +60,7 @@ public class TextSlug extends AbstractTextFunction {
       return null;
 
     final String delimiter = args.length > 1 ? asString(args[1]) : "-";
-    final String delim = (delimiter != null) ? delimiter : "-";
+    final String delim = delimiter != null ? delimiter : "-";
 
     // Normalize Unicode characters
     String normalized = Normalizer.normalize(str, Normalizer.Form.NFD);

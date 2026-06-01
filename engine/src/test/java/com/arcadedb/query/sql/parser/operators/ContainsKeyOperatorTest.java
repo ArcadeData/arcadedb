@@ -21,7 +21,8 @@ package com.arcadedb.query.sql.parser.operators;
 import com.arcadedb.query.sql.parser.ContainsKeyOperator;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

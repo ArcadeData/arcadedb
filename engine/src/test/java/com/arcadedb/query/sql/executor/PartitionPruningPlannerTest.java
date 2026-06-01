@@ -187,8 +187,9 @@ class PartitionPruningPlannerTest extends TestHelper {
     final GetValueFromIndexEntryStep extract = findIndexExtract(plan);
     assertThat(extract).isNotNull();
     assertThat(extract.getFilterBucketIds())
-        .as("AST-walk must recover the property name correctly so the literal predicate prunes "
-            + "to a single bucket; if it fails to extract the name pruning would be a no-op")
+        .as("""
+            AST-walk must recover the property name correctly so the literal predicate prunes \
+            to a single bucket; if it fails to extract the name pruning would be a no-op""")
         .hasSize(1);
     rs.close();
   }

@@ -20,7 +20,9 @@ package com.arcadedb.function.java;/*
 import com.arcadedb.function.FunctionDefinition;
 import com.arcadedb.function.FunctionExecutionException;
 
-import java.lang.reflect.*;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 
 /**
  * Maps a Java method execution to a callable function.

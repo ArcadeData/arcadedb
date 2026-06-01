@@ -23,8 +23,9 @@ import com.arcadedb.database.RID;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.EdgeType;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.logging.Level;
 
 public abstract class IteratorFilterBase<T> extends ResettableIteratorBase<T> {
   private         int          lastElementPosition   = currentPosition.get();

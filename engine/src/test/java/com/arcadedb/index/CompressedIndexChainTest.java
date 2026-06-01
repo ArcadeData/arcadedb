@@ -22,6 +22,7 @@ package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.RID;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.Test;
 
@@ -95,13 +96,13 @@ class CompressedIndexChainTest extends TestHelper {
 
   @Test
   void any2ridGetReturnsNullOnEmptyIndex() throws Exception {
-    final CompressedAny2RIDIndex<String> index = new CompressedAny2RIDIndex<>(database, com.arcadedb.schema.Type.STRING, 16);
+    final CompressedAny2RIDIndex<String> index = new CompressedAny2RIDIndex<>(database, Type.STRING, 16);
     assertThat(index.get("missing")).isNull();
   }
 
   @Test
   void any2ridChainWalkFindsAllCollidingKeys() throws Exception {
-    final CompressedAny2RIDIndex<String> index = new CompressedAny2RIDIndex<>(database, com.arcadedb.schema.Type.STRING, FORCE_COLLISIONS);
+    final CompressedAny2RIDIndex<String> index = new CompressedAny2RIDIndex<>(database, Type.STRING, FORCE_COLLISIONS);
 
     for (int i = 0; i < 50; i++)
       index.put("key-" + i, new RID(4, i));
@@ -114,7 +115,7 @@ class CompressedIndexChainTest extends TestHelper {
 
   @Test
   void any2ridDuplicateKeyRejected() throws Exception {
-    final CompressedAny2RIDIndex<String> index = new CompressedAny2RIDIndex<>(database, com.arcadedb.schema.Type.STRING, FORCE_COLLISIONS);
+    final CompressedAny2RIDIndex<String> index = new CompressedAny2RIDIndex<>(database, Type.STRING, FORCE_COLLISIONS);
     index.put("k", new RID(4, 1));
     assertThatThrownBy(() -> index.put("k", new RID(4, 2)))
         .isInstanceOf(IllegalArgumentException.class);

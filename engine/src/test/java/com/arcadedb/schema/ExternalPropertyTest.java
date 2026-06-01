@@ -19,21 +19,38 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.EmbeddedDocument;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.database.MutableEmbeddedDocument;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.DatabaseIsReadOnlyException;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.BinarySerializerTestHelper;
+import com.arcadedb.serializer.BinaryTypes;
+import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
+
+import org.assertj.core.api.Assertions;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Random;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -213,9 +230,8 @@ class ExternalPropertyTest extends TestHelper {
     final long extCountBefore = externalBucket.count();
     assertThat(extCountBefore).isGreaterThanOrEqualTo(1L);
 
-    database.transaction(() -> {
-      database.lookupByRID(saved[0], true).asDocument().delete();
-    });
+    database.transaction(() ->
+      database.lookupByRID(saved[0], true).asDocument().delete());
 
     final long extCountAfter = externalBucket.count();
     assertThat(extCountAfter).as("external record should be deleted by cascade").isEqualTo(extCountBefore - 1L);
@@ -233,15 +249,15 @@ class ExternalPropertyTest extends TestHelper {
     // The Java path that resolves a bucket by name must reject an external bucket. Build a fresh document and try
     // to route it to the external bucket via Database.createRecord(record, bucketName).
     final MutableDocument fresh = database.newDocument("Doc").set("blob", "x");
-    org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+    Assertions.assertThatThrownBy(() ->
         database.transaction(() ->
-            ((com.arcadedb.database.DatabaseInternal) database).createRecord(fresh, externalBucket.getName())))
+            ((DatabaseInternal) database).createRecord(fresh, externalBucket.getName())))
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("internal");
 
     // SQL INSERT INTO bucket:<external> is also rejected (by the SQL planner, since the bucket has no associated
     // type). Different error message but functionally equivalent: the user cannot target the bucket.
-    org.assertj.core.api.Assertions.assertThatThrownBy(() ->
+    Assertions.assertThatThrownBy(() ->
         database.transaction(() ->
             database.command("sql", "INSERT INTO bucket:" + externalBucket.getName() + " SET x = 1")))
         .isInstanceOf(Exception.class);
@@ -255,9 +271,8 @@ class ExternalPropertyTest extends TestHelper {
     });
     assertThat(database.getSchema().getType("Doc").getProperty("blob").isExternal()).isTrue();
 
-    database.transaction(() -> {
-      database.command("sql", "ALTER PROPERTY Doc.blob EXTERNAL false");
-    });
+    database.transaction(() ->
+      database.command("sql", "ALTER PROPERTY Doc.blob EXTERNAL false"));
     assertThat(database.getSchema().getType("Doc").getProperty("blob").isExternal()).isFalse();
   }
 
@@ -348,7 +363,7 @@ class ExternalPropertyTest extends TestHelper {
     // schema:buckets and excludes the EXTERNAL_PROPERTY bucket but still includes the primary one.
     final ResultSet filtered = database.query("sql",
         "SELECT name, purpose FROM schema:buckets WHERE purpose = 'PRIMARY' OR purpose IS NULL");
-    final java.util.Set<String> names = new java.util.HashSet<>();
+    final Set<String> names = new HashSet<>();
     while (filtered.hasNext())
       names.add(filtered.next().getProperty("name"));
     assertThat(names).contains(primary.getName());
@@ -510,12 +525,12 @@ class ExternalPropertyTest extends TestHelper {
     final var row = rs.next();
 
     // Per-property external flag (only emitted when true).
-    final var properties = (java.util.List<?>) row.getProperty("properties");
+    final var properties = (List<?>) row.getProperty("properties");
     assertThat(properties).isNotNull();
     boolean foundBlobAsExternal = false;
     boolean foundNameWithoutFlag = false;
     for (final Object propObj : properties) {
-      final var prop = (com.arcadedb.query.sql.executor.Result) propObj;
+      final var prop = (Result) propObj;
       final String name = prop.getProperty("name");
       if ("blob".equals(name)) {
         assertThat((Boolean) prop.getProperty("external")).isTrue();
@@ -530,7 +545,7 @@ class ExternalPropertyTest extends TestHelper {
 
     // Type-level externalBuckets mapping (primaryBucketName -> externalBucketName).
     @SuppressWarnings("unchecked")
-    final java.util.Map<String, String> extMap = (java.util.Map<String, String>) row.getProperty("externalBuckets");
+    final Map<String, String> extMap = (Map<String, String>) row.getProperty("externalBuckets");
     assertThat(extMap).isNotNull().isNotEmpty();
     final String primaryName = type.getBuckets(false).getFirst().getName();
     assertThat(extMap).containsKey(primaryName);
@@ -563,7 +578,7 @@ class ExternalPropertyTest extends TestHelper {
     // Persist the override on the database itself via ALTER DATABASE. This writes the value into the
     // database's configuration.json so it survives close+reopen without polluting the JVM-wide
     // GlobalConfiguration (which would leak into concurrent tests).
-    final java.nio.file.Path overrideDir = java.nio.file.Files.createTempDirectory("arcadedb-ext-tier-");
+    final Path overrideDir = Files.createTempDirectory("arcadedb-ext-tier-");
     try {
       database.command("sql",
           "alter database `arcadedb.externalPropertyBucketPath` '" + overrideDir.toString() + "'");
@@ -585,13 +600,13 @@ class ExternalPropertyTest extends TestHelper {
       final LocalBucket external = ((LocalSchema) database.getSchema().getEmbedded()).getBucketById(extId);
 
       // Per-database subdir is appended to the override path (so multiple DBs sharing the path can't collide).
-      final java.io.File tieredDbDir = new java.io.File(overrideDir.toFile(), database.getName());
-      final java.io.File[] dbDirFiles = new java.io.File(database.getDatabasePath()).listFiles(
+      final File tieredDbDir = new File(overrideDir.toFile(), database.getName());
+      final File[] dbDirFiles = new File(database.getDatabasePath()).listFiles(
           (dir, name) -> name.startsWith(external.getName() + "."));
       assertThat(dbDirFiles).as("external bucket should NOT be in the database directory")
           .satisfiesAnyOf(arr -> assertThat(arr).isNull(), arr -> assertThat(arr).isEmpty());
 
-      final java.io.File[] tieredFiles = tieredDbDir.listFiles((dir, name) -> name.startsWith(external.getName() + "."));
+      final File[] tieredFiles = tieredDbDir.listFiles((dir, name) -> name.startsWith(external.getName() + "."));
       assertThat(tieredFiles).as("external bucket should be in <override>/<dbName>/").isNotNull().isNotEmpty();
 
       // Reopen: LocalDatabase.open() reloads configuration.json which contains our ALTER, so FileManager
@@ -602,7 +617,7 @@ class ExternalPropertyTest extends TestHelper {
       final var loaded = database.lookupByRID(saved[0], true).asDocument();
       assertThat(loaded.getString("blob")).isEqualTo("tiered-payload");
     } finally {
-      com.arcadedb.utility.FileUtils.deleteRecursively(overrideDir.toFile());
+      FileUtils.deleteRecursively(overrideDir.toFile());
     }
   }
 
@@ -622,10 +637,10 @@ class ExternalPropertyTest extends TestHelper {
     // so no primary record references it. compression="none" keeps the blob raw so cleanup just sees a normal
     // unreferenced record. The serializer write path is package-private; the test reaches it via the
     // BinarySerializerTestHelper which lives in the same package under src/test/java.
-    database.transaction(() -> com.arcadedb.serializer.BinarySerializerTestHelper.injectOrphanExternalRecord(
-        ((com.arcadedb.database.DatabaseInternal) database).getSerializer(),
-        (com.arcadedb.database.DatabaseInternal) database, extBucketId,
-        com.arcadedb.serializer.BinaryTypes.TYPE_STRING, "orphan-payload", "none"));
+    database.transaction(() -> BinarySerializerTestHelper.injectOrphanExternalRecord(
+        ((DatabaseInternal) database).getSerializer(),
+        (DatabaseInternal) database, extBucketId,
+        BinaryTypes.TYPE_STRING, "orphan-payload", "none"));
 
     assertThat(externalBucket.count()).isEqualTo(extCountBefore + 1);
 
@@ -691,7 +706,7 @@ class ExternalPropertyTest extends TestHelper {
 
     // High-entropy float bits do not compress; auto-mode should fall back to TYPE_EXTERNAL (raw).
     final float[] embedding = new float[1024];
-    final java.util.Random rnd = new java.util.Random(42);
+    final Random rnd = new Random(42);
     for (int i = 0; i < embedding.length; i++)
       embedding[i] = rnd.nextFloat() * 1000f;
 
@@ -994,15 +1009,15 @@ class ExternalPropertyTest extends TestHelper {
     database.transaction(() -> database.newDocument("Doc").set("blob", "v").save());
 
     database.close();
-    database = factory.open(com.arcadedb.engine.ComponentFile.MODE.READ_ONLY);
+    database = factory.open(ComponentFile.MODE.READ_ONLY);
     try {
       assertThatThrownBy(() -> database.command("sql", "REBUILD TYPE Doc"))
-          .isInstanceOfAny(com.arcadedb.exception.DatabaseIsReadOnlyException.class,
-              com.arcadedb.exception.CommandExecutionException.class)
+          .isInstanceOfAny(DatabaseIsReadOnlyException.class,
+              CommandExecutionException.class)
           .satisfies(t -> {
             final String msg = (t.getMessage() == null ? "" : t.getMessage())
                 + (t.getCause() == null || t.getCause().getMessage() == null ? "" : " " + t.getCause().getMessage());
-            assertThat(msg.toLowerCase(java.util.Locale.ENGLISH))
+            assertThat(msg.toLowerCase(Locale.ENGLISH))
                 .as("error must mention read-only state so the operator sees the actual cause")
                 .containsAnyOf("read-only", "read only", "readonly");
           });
@@ -1034,12 +1049,12 @@ class ExternalPropertyTest extends TestHelper {
     database.close();
 
     // Strip the externalBuckets key from schema.json to simulate an older snapshot or partial corruption.
-    final java.io.File schemaJson = new java.io.File(database.getDatabasePath(), "schema.json");
-    String content = java.nio.file.Files.readString(schemaJson.toPath());
-    final com.arcadedb.serializer.json.JSONObject schema = new com.arcadedb.serializer.json.JSONObject(content);
-    final com.arcadedb.serializer.json.JSONObject docType = schema.getJSONObject("types").getJSONObject("Doc");
+    final File schemaJson = new File(database.getDatabasePath(), "schema.json");
+    String content = Files.readString(schemaJson.toPath());
+    final JSONObject schema = new JSONObject(content);
+    final JSONObject docType = schema.getJSONObject("types").getJSONObject("Doc");
     docType.remove("externalBuckets");
-    java.nio.file.Files.writeString(schemaJson.toPath(), schema.toString());
+    Files.writeString(schemaJson.toPath(), schema.toString());
 
     database = factory.open();
 
@@ -1047,7 +1062,7 @@ class ExternalPropertyTest extends TestHelper {
     // Use the Java path (more deterministic error: IllegalArgumentException with "internal" in the message).
     final MutableDocument fresh = database.newDocument("Doc").set("blob", "x");
     assertThatThrownBy(() -> database.transaction(() ->
-        ((com.arcadedb.database.DatabaseInternal) database).createRecord(fresh, extBucketName)))
+        ((DatabaseInternal) database).createRecord(fresh, extBucketName)))
         .as("the heuristic must re-tag the bucket so user DML is still refused after schema.json loss")
         .isInstanceOf(IllegalArgumentException.class)
         .hasMessageContaining("internal");

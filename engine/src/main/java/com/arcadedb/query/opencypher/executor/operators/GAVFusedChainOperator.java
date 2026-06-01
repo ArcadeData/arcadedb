@@ -25,7 +25,6 @@ import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
-import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -35,11 +34,10 @@ import com.arcadedb.utility.LongLongHashMap;
 import com.arcadedb.query.QueryEngineManager;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
-import java.util.NoSuchElementException;
-import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
@@ -162,7 +160,7 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
         continue;
       if (nodeId >= 0) {
         if (sourceCount == sourceNodeIdsBuf.length)
-          sourceNodeIdsBuf = java.util.Arrays.copyOf(sourceNodeIdsBuf, sourceNodeIdsBuf.length * 2);
+          sourceNodeIdsBuf = Arrays.copyOf(sourceNodeIdsBuf, sourceNodeIdsBuf.length * 2);
         sourceNodeIdsBuf[sourceCount++] = nodeId;
       }
     }

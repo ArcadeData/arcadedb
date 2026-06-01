@@ -41,7 +41,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
 
   @Test
   void ingestLineProtocol() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Create a TimeSeries type
       command(serverIndex,
           "CREATE TIMESERIES TYPE weather TIMESTAMP ts TAGS (location STRING) FIELDS (temperature DOUBLE)");
@@ -66,7 +66,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
 
   @Test
   void ingestWithNanoPrecision() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex,
           "CREATE TIMESERIES TYPE cpu TIMESTAMP ts TAGS (host STRING) FIELDS (usage DOUBLE)");
 
@@ -85,7 +85,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
 
   @Test
   void emptyBody() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final int statusCode = postLineProtocol(serverIndex, "", "ms");
       assertThat(statusCode).isEqualTo(400);
     });
@@ -95,7 +95,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   void unknownMeasurementTypeReturnsError() throws Exception {
     // When all samples reference measurement types that have no matching TIMESERIES TYPE,
     // the handler must NOT silently return 204 - that hides data loss from the caller.
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String lineProtocol = "ghost_metric,host=srv1 value=1.0 1000\n";
       final int statusCode = postLineProtocol(serverIndex, lineProtocol, "ms");
       assertThat(statusCode).isEqualTo(400);
@@ -106,7 +106,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   void nonTimeSeriesTypeReturnsError() throws Exception {
     // When all samples reference a type that exists but is NOT a TIMESERIES type,
     // the handler must return 400 - not silently return 204 with zero rows written.
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE DOCUMENT TYPE plain_doc");
       final String lineProtocol = "plain_doc,host=srv1 value=1.0 1000\n";
       final int statusCode = postLineProtocol(serverIndex, lineProtocol, "ms");
@@ -118,7 +118,7 @@ class PostTimeSeriesWriteHandlerIT extends BaseGraphServerTest {
   void gzipCompressedBodyIsAccepted() throws Exception {
     // Telegraf's [[outputs.influxdb]] plugin sends Content-Encoding: gzip by default.
     // The write handler must decompress the body before parsing it.
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex,
           "CREATE TIMESERIES TYPE disk TIMESTAMP ts TAGS (host STRING) FIELDS (used DOUBLE)");
 

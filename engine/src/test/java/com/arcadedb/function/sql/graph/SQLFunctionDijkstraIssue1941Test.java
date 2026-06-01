@@ -35,7 +35,7 @@ class SQLFunctionDijkstraIssue1941Test {
 
   @Test
   void dijkstraWithVertexVariables() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDijkstraIssue1941Test", (db) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDijkstraIssue1941Test", db -> {
       // Setup schema
       db.transaction(() -> {
         db.getSchema().createVertexType("V");
@@ -72,7 +72,7 @@ class SQLFunctionDijkstraIssue1941Test {
 
   @Test
   void dijkstraWithRIDs() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDijkstraIssue1941TestRID", (db) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDijkstraIssue1941TestRID", db -> {
       // Setup schema
       db.transaction(() -> {
         db.getSchema().createVertexType("V");
@@ -109,7 +109,7 @@ class SQLFunctionDijkstraIssue1941Test {
 
   @Test
   void astarWithVertexVariables() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDijkstraIssue1941TestAstar", (db) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDijkstraIssue1941TestAstar", db -> {
       // Setup schema
       db.transaction(() -> {
         db.getSchema().createVertexType("V");
@@ -146,7 +146,7 @@ class SQLFunctionDijkstraIssue1941Test {
 
   @Test
   void dijkstraReturnsListOfRIDs() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDijkstraReturnsRIDs", (db) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDijkstraReturnsRIDs", db -> {
       // Setup schema
       db.transaction(() -> {
         db.getSchema().createVertexType("V");
@@ -191,7 +191,7 @@ class SQLFunctionDijkstraIssue1941Test {
 
   @Test
   void astarReturnsListOfRIDs() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionAstarReturnsRIDs", (db) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionAstarReturnsRIDs", db -> {
       // Setup schema
       db.transaction(() -> {
         db.getSchema().createVertexType("V");

@@ -26,7 +26,8 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-import java.util.*;
+import java.util.HashSet;
+import java.util.Set;
 
 @Deprecated
 public class GetDatabasesHandler extends AbstractServerHttpHandler {

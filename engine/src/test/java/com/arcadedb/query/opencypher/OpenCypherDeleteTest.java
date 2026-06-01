@@ -58,9 +58,8 @@ public class OpenCypherDeleteTest {
   @Test
   void deleteSingleVertex() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Alice'})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Alice'})"));
 
     // Verify created
     ResultSet verify = database.query("opencypher", "MATCH (n:Person) RETURN n");
@@ -69,9 +68,8 @@ public class OpenCypherDeleteTest {
     assertThat(verify.hasNext()).isFalse();
 
     // Delete the person
-    database.transaction(() -> {
-      database.command("opencypher", "MATCH (n:Person {name: 'Alice'}) DELETE n");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MATCH (n:Person {name: 'Alice'}) DELETE n"));
 
     // Verify deleted
     verify = database.query("opencypher", "MATCH (n:Person) RETURN n");
@@ -97,9 +95,8 @@ public class OpenCypherDeleteTest {
     assertThat(count).isEqualTo(3);
 
     // Delete all people
-    database.transaction(() -> {
-      database.command("opencypher", "MATCH (n:Person) DELETE n");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MATCH (n:Person) DELETE n"));
 
     // Verify all deleted
     verify = database.query("opencypher", "MATCH (n:Person) RETURN n");
@@ -116,9 +113,8 @@ public class OpenCypherDeleteTest {
     });
 
     // Delete people over 30
-    database.transaction(() -> {
-      database.command("opencypher", "MATCH (n:Person) WHERE n.age > 30 DELETE n");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MATCH (n:Person) WHERE n.age > 30 DELETE n"));
 
     // Verify only Charlie deleted, Alice and Bob remain
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person) RETURN n ORDER BY n.name");
@@ -134,19 +130,17 @@ public class OpenCypherDeleteTest {
   @Test
   void deleteEdge() {
     // Create two people and a relationship
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name: 'Alice'})-[r:KNOWS {since: 2020}]->(b:Person {name: 'Bob'})");
-    });
+          "CREATE (a:Person {name: 'Alice'})-[r:KNOWS {since: 2020}]->(b:Person {name: 'Bob'})"));
 
     // Verify relationship exists
     ResultSet verify = database.query("opencypher", "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN r");
     assertThat(verify.hasNext()).isTrue();
 
     // Delete the relationship
-    database.transaction(() -> {
-      database.command("opencypher", "MATCH (a:Person)-[r:KNOWS]->(b:Person) DELETE r");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MATCH (a:Person)-[r:KNOWS]->(b:Person) DELETE r"));
 
     // Verify relationship deleted
     verify = database.query("opencypher", "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN r");
@@ -165,10 +159,9 @@ public class OpenCypherDeleteTest {
   @Test
   void detachDeleteVertexWithRelationships() {
     // Create a graph: (Alice)-[:KNOWS]->(Bob)-[:KNOWS]->(Charlie)
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})-[:KNOWS]->(c:Person {name: 'Charlie'})");
-    });
+          "CREATE (a:Person {name: 'Alice'})-[:KNOWS]->(b:Person {name: 'Bob'})-[:KNOWS]->(c:Person {name: 'Charlie'})"));
 
     // Verify 2 relationships exist
     ResultSet verify = database.query("opencypher", "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN r");
@@ -180,9 +173,8 @@ public class OpenCypherDeleteTest {
     assertThat(relCount).isEqualTo(2);
 
     // DETACH DELETE Bob (removes Bob and his relationships)
-    database.transaction(() -> {
-      database.command("opencypher", "MATCH (n:Person {name: 'Bob'}) DETACH DELETE n");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MATCH (n:Person {name: 'Bob'}) DETACH DELETE n"));
 
     // Verify Bob is deleted
     verify = database.query("opencypher", "MATCH (n:Person {name: 'Bob'}) RETURN n");
@@ -244,9 +236,8 @@ public class OpenCypherDeleteTest {
   @Test
   void deleteWithReturn() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'David', age: 40})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'David', age: 40})"));
 
     // Delete with RETURN (returns count of deleted elements)
     database.transaction(() -> {
@@ -266,14 +257,12 @@ public class OpenCypherDeleteTest {
   @Test
   void deleteWithoutReturn() {
     // Create a person
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:Person {name: 'Eve', age: 28})");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:Person {name: 'Eve', age: 28})"));
 
     // Delete without RETURN
-    database.transaction(() -> {
-      database.command("opencypher", "MATCH (n:Person {name: 'Eve'}) DELETE n");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MATCH (n:Person {name: 'Eve'}) DELETE n"));
 
     // Verify deleted
     final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Eve'}) RETURN n");
@@ -296,9 +285,8 @@ public class OpenCypherDeleteTest {
     assertThat(verify.hasNext()).isTrue();
 
     // Delete only KNOWS relationship
-    database.transaction(() -> {
-      database.command("opencypher", "MATCH (a:Person)-[r:KNOWS]->(b:Person) DELETE r");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "MATCH (a:Person)-[r:KNOWS]->(b:Person) DELETE r"));
 
     // Verify KNOWS relationship is gone
     verify = database.query("opencypher", "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN r");

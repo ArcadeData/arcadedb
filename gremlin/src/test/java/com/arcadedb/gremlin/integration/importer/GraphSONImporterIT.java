@@ -35,10 +35,12 @@ import org.apache.tinkerpop.gremlin.structure.Vertex;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
-import java.net.*;
-import java.util.*;
-import java.util.stream.*;
-import java.util.zip.*;
+import java.net.URL;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.stream.Collectors;
+import java.util.zip.GZIPInputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

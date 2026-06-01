@@ -23,7 +23,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 
-import java.security.*;
+import java.security.SecureRandom;
 
 /**
  * Generates a random number integer between 0 and the number passed as parameter.

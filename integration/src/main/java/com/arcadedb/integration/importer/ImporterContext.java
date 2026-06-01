@@ -18,8 +18,9 @@
  */
 package com.arcadedb.integration.importer;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class ImporterContext {
   public final AtomicLong parsed                     = new AtomicLong();

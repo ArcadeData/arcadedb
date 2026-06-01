@@ -18,13 +18,13 @@
  */
 package com.arcadedb.query.sql.executor;
 
-import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.FromClause;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
 
 /**
  * Created by luigidellaquila on 06/08/16.
@@ -74,7 +74,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
           return result;
         } finally {
           if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
         }
       }
 
@@ -88,7 +88,7 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
         fullResult = functionCondition.executeIndexedFunction(queryTarget, context).iterator();
       } finally {
         if (context.isProfiling()) {
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
         }
       }
     }

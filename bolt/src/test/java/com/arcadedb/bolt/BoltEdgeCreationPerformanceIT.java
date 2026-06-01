@@ -83,9 +83,8 @@ public class BoltEdgeCreationPerformanceIT extends BaseGraphServerTest {
         db.getSchema().createEdgeType("PERF_KNOWS");
       }
     });
-    db.transaction(() -> {
-      db.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "PerfPerson", "id");
-    });
+    db.transaction(() ->
+      db.getSchema().getOrCreateTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "PerfPerson", "id"));
 
     // Create Person vertices in batch
     db.transaction(() -> {

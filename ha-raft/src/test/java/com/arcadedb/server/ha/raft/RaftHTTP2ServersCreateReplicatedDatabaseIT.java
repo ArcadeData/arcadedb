@@ -58,7 +58,7 @@ class RaftHTTP2ServersCreateReplicatedDatabaseIT extends BaseRaftHATest {
       connection.disconnect();
     }
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String response = command(serverIndex, "create vertex type RaftCreateVertex" + serverIndex);
       assertThat(response).contains("RaftCreateVertex" + serverIndex);
     });
@@ -77,7 +77,7 @@ class RaftHTTP2ServersCreateReplicatedDatabaseIT extends BaseRaftHATest {
           return true;
         });
 
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       for (int i = 0; i < 100; i++) {
         final String v1 = new JSONObject(
             command(serverIndex, "create vertex RaftCreateVertex" + serverIndex
@@ -87,7 +87,7 @@ class RaftHTTP2ServersCreateReplicatedDatabaseIT extends BaseRaftHATest {
         for (int s = 0; s < getServerCount(); s++)
           waitForReplicationIsCompleted(s);
 
-        testEachServer((checkServer) ->
+        testEachServer(checkServer ->
             assertThat(new JSONObject(command(checkServer, "select from " + v1)).getJSONArray("result"))
                 .withFailMessage("executed on server " + serverIndex + " checking on server " + checkServer)
                 .isNotEmpty());

@@ -23,11 +23,12 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.Document;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.integration.TestHelper;
+import com.arcadedb.schema.EdgeType;
+
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.nio.file.Files;
-import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -66,12 +67,11 @@ class CSVImporterIT {
     final Database db = databaseFactory.create();
 
     //Max property size is 1024: should fail
-    assertThatThrownBy(() -> {
+    assertThatThrownBy(() ->
       db.command("sql", """
           IMPORT DATABASE file://src/test/resources/importer-big-size.csv
           WITH maxProperties=1000, maxPropertySize=1024
-          """);
-    }).isInstanceOf(Exception.class);
+          """)).isInstanceOf(Exception.class);
 
     //Max property size is 8192: should succeed
     try {
@@ -411,9 +411,8 @@ class CSVImporterIT {
       assertThat(db.countType("Car", true)).isEqualTo(3);
 
       // Verify they are actual vertices
-      db.iterateType("Car", true).forEachRemaining(record -> {
-        assertThat(record.asDocument()).isInstanceOf(Vertex.class);
-      });
+      db.iterateType("Car", true).forEachRemaining(record ->
+        assertThat(record.asDocument()).isInstanceOf(Vertex.class));
 
       // Also verify sparse values are skipped
       db.iterateType("Car", true).forEachRemaining(record -> {
@@ -470,7 +469,7 @@ class CSVImporterIT {
       assertThat(db.countType("Relationship", true)).as("All 3 edges should be imported").isEqualTo(3);
 
       // Verify edge type is non-bidirectional
-      assertThat(((com.arcadedb.schema.EdgeType) db.getSchema().getType("Relationship")).isBidirectional()).isFalse();
+      assertThat(((EdgeType) db.getSchema().getType("Relationship")).isBidirectional()).isFalse();
 
       // Verify outgoing edges exist
       var vertex0 = db.lookupByKey("Node", "Id", 0).next().getRecord().asVertex();

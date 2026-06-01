@@ -18,12 +18,9 @@
  */
 package com.arcadedb.integration.importer;
 
-import com.arcadedb.database.DatabaseComparator;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract.NULL_STRATEGY;
 import com.arcadedb.integration.TestHelper;
-import com.arcadedb.integration.exporter.Exporter;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;

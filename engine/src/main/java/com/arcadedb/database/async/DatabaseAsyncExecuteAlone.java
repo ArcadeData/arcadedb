@@ -20,7 +20,7 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.database.DatabaseInternal;
 
-import java.util.concurrent.*;
+import java.util.concurrent.CountDownLatch;
 
 public class DatabaseAsyncExecuteAlone extends DatabaseAsyncAbstractCallbackTask {
   private final OkCallback callback;

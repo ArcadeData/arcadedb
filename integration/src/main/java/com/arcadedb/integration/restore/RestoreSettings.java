@@ -18,8 +18,10 @@
  */
 package com.arcadedb.integration.restore;
 
-import java.io.*;
-import java.util.*;
+import java.io.File;
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 
 public class RestoreSettings {
   public       String              format               = "full";

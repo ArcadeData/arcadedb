@@ -19,13 +19,7 @@
 package com.arcadedb.index;
 
 import com.arcadedb.TestHelper;
-import com.arcadedb.database.RID;
-import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
-
-import java.util.Iterator;
-
-import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Debug test to check if index is being populated correctly
@@ -48,15 +42,13 @@ public class EmbeddedListIndexDebugTest extends TestHelper {
   @Test
   void indexPopulation() {
     // Create the index
-    database.transaction(() -> {
-      database.command("sql", "CREATE INDEX ON Photo (`tags.id` BY ITEM) NOTUNIQUE");
-    });
+    database.transaction(() ->
+      database.command("sql", "CREATE INDEX ON Photo (`tags.id` BY ITEM) NOTUNIQUE"));
 
     // Insert one document
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sql",
-          "INSERT INTO Photo SET id = 1, tags = [{'@type':'Tag', 'id': 100, 'name': 'test'}]");
-    });
+          "INSERT INTO Photo SET id = 1, tags = [{'@type':'Tag', 'id': 100, 'name': 'test'}]"));
 
     // Check if the index was populated
     database.transaction(() -> {

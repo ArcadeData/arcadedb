@@ -63,16 +63,14 @@ class LSMVectorIndexSimpleUpdateTest extends TestHelper {
     // Insert record with zero embedding
     //System.out.println("Inserting record with zero embedding...");
     float[] zeroEmbedding = new float[EMBEDDING_DIM];
-    database.transaction(() -> {
-      database.command("sql", "INSERT INTO ContentV SET id=?, embedding=?", "content-1", zeroEmbedding);
-    });
+    database.transaction(() ->
+      database.command("sql", "INSERT INTO ContentV SET id=?, embedding=?", "content-1", zeroEmbedding));
 
     // Update with real embedding
     //System.out.println("Updating with real embedding...");
     float[] realEmbedding = generateRandomEmbedding(random, EMBEDDING_DIM);
-    database.transaction(() -> {
-      database.command("sql", "UPDATE ContentV SET embedding=? WHERE id=?", realEmbedding, "content-1");
-    });
+    database.transaction(() ->
+      database.command("sql", "UPDATE ContentV SET embedding=? WHERE id=?", realEmbedding, "content-1"));
 
     // Verify before close
     //System.out.println("Verifying before close...");

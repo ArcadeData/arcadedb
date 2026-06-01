@@ -39,6 +39,7 @@ import com.arcadedb.utility.CollectionUtils;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -140,7 +141,7 @@ public class CallStep extends AbstractExecutionStep {
             // variables if they share a name with a YIELD field. The lazy iterator merges
             // inputRow later, after YIELD filtering.
             allPairs.add(Map.entry(inputRow,
-                java.util.Collections.singletonList((Object) new ResultInternal()).iterator()));
+                Collections.singletonList((Object) new ResultInternal()).iterator()));
           continue;
         }
 
@@ -150,12 +151,12 @@ public class CallStep extends AbstractExecutionStep {
         } else if (callResult instanceof Collection) {
           iter = ((Collection<?>) callResult).iterator();
         } else {
-          iter = java.util.Collections.singletonList(callResult).iterator();
+          iter = Collections.singletonList(callResult).iterator();
         }
         allPairs.add(Map.entry(inputRow, iter));
       } finally {
         if (context.isProfiling())
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
       }
     }
 
@@ -177,7 +178,7 @@ public class CallStep extends AbstractExecutionStep {
         @Override
         public Result next() {
           if (remaining-- <= 0)
-            throw new java.util.NoSuchElementException();
+            throw new NoSuchElementException();
           return sharedResult;
         }
 
@@ -225,7 +226,7 @@ public class CallStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (!hasNext())
-          throw new java.util.NoSuchElementException();
+          throw new NoSuchElementException();
         final Result r = next;
         next = null;
         return r;
@@ -531,7 +532,7 @@ public class CallStep extends AbstractExecutionStep {
       sourceIter = ((Collection<?>) result).iterator();
     } else {
       // Single result
-      sourceIter = java.util.Collections.singletonList(result).iterator();
+      sourceIter = Collections.singletonList(result).iterator();
     }
 
     // Optimization: when the procedure has set a result count hint and YIELD has no WHERE filter,
@@ -556,7 +557,7 @@ public class CallStep extends AbstractExecutionStep {
         @Override
         public Result next() {
           if (remaining-- <= 0)
-            throw new java.util.NoSuchElementException();
+            throw new NoSuchElementException();
           return sharedResult;
         }
 
@@ -591,7 +592,7 @@ public class CallStep extends AbstractExecutionStep {
       @Override
       public Result next() {
         if (!hasNext())
-          throw new java.util.NoSuchElementException();
+          throw new NoSuchElementException();
         final Result r = next;
         next = null;
         return r;

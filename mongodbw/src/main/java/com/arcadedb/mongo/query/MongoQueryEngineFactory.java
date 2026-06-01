@@ -24,7 +24,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.mongo.MongoDBDatabaseWrapper;
 import com.arcadedb.query.QueryEngine;
 
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class MongoQueryEngineFactory implements QueryEngine.QueryEngineFactory {
   @Override

@@ -52,7 +52,7 @@ class WALVersionGapRecoveryTest extends TestHelper {
   }
 
   @Test
-  void applyChangesThrowsOnVersionGap() throws IOException {
+  void applyChangesThrowsOnVersionGap() throws Exception {
     database.transaction(() -> database.newDocument("GapTestType").set("k", 1).save());
 
     final DatabaseInternal db = (DatabaseInternal) database;
@@ -76,7 +76,7 @@ class WALVersionGapRecoveryTest extends TestHelper {
   }
 
   @Test
-  void versionGapPageNotApplied() throws IOException {
+  void versionGapPageNotApplied() throws Exception {
     database.transaction(() -> database.newDocument("GapTestType").set("k", 2).save());
 
     final DatabaseInternal db = (DatabaseInternal) database;

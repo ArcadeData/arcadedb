@@ -183,9 +183,9 @@ public class Console {
         final String[] parts = value.substring(2).split("=");
         System.setProperty(parts[0], parts[1]);
         setGlobalConfiguration(parts[0], parts[1], true);
-      } else if (value.equalsIgnoreCase("-b")) {
+      } else if ("-b".equalsIgnoreCase(value)) {
         batchMode = true;
-      } else if (value.equalsIgnoreCase("-fae")) {
+      } else if ("-fae".equalsIgnoreCase(value)) {
         failAtEnd = true;
       } else {
         commands.append(value);
@@ -256,10 +256,10 @@ public class Console {
 
       final String lineLowerCase = lineTrimmed.toLowerCase(Locale.ENGLISH);
 
-      if (lineLowerCase.equals("quit") || lineLowerCase.equals("exit")) {
+      if ("quit".equals(lineLowerCase) || "exit".equals(lineLowerCase)) {
         executeClose();
         return false;
-      } else if (lineLowerCase.equals("help") || line.equals("?"))
+      } else if ("help".equals(lineLowerCase) || "?".equals(line))
         executeHelp();
       else if (lineLowerCase.startsWith("begin"))
         executeBegin();
@@ -320,7 +320,7 @@ public class Console {
         // AVOID BATCH IN ASYNC MODE BECAUSE IT IS NOT POSSIBLE TO RETRY THE OPERATION
         GlobalConfiguration.ASYNC_TX_BATCH_SIZE.setValue(1);
         if (!isRemoteDatabase())
-          ((Database) databaseProxy).async().onError((e) -> {
+          ((Database) databaseProxy).async().onError(e -> {
             outputError(e);
           });
       }
@@ -335,7 +335,7 @@ public class Console {
       outputLine(3, "Set language to %s", language);
     }
     case "expandresultset" -> {
-      expandResultSet = value.equalsIgnoreCase("true");
+      expandResultSet = "true".equalsIgnoreCase(value);
       outputLine(3, "Set expanded result set to %s", expandResultSet);
     }
     case "maxmultivalueentries" -> {
@@ -819,7 +819,7 @@ public class Console {
 
     checkDatabaseIsOpen();
 
-    if (subject.equalsIgnoreCase("types")) {
+    if ("types".equalsIgnoreCase(subject)) {
       outputLine(3, "AVAILABLE TYPES");
 
       final TableFormatter table = new TableFormatter((text, args) -> output(3, text, args));
@@ -852,7 +852,7 @@ public class Console {
       }
 
       table.writeRows(rows, -1);
-    } else if (subject.equalsIgnoreCase("transaction"))
+    } else if ("transaction".equalsIgnoreCase(subject))
       executeTransactionStatus();
     else if (subject.startsWith("type ")) {
       final String typeName = subject.substring("type ".length()).trim();

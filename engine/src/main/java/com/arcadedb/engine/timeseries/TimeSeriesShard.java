@@ -24,7 +24,6 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
-import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
@@ -772,9 +771,10 @@ public class TimeSeriesShard implements AutoCloseable {
       return;
     lastOversizedWarnMs = now;
     LogManager.instance().log(this, Level.WARNING,
-        "Skipping HA compaction of TimeSeries '%s' shard %d: projected sealed-store size %d bytes exceeds the inline "
-            + "replication cap %d bytes (%s). Data remains in the replicated mutable bucket; raise the cap or reduce "
-            + "retention to re-enable sealing.",
+        """
+        Skipping HA compaction of TimeSeries '%s' shard %d: projected sealed-store size %d bytes exceeds the inline \
+        replication cap %d bytes (%s). Data remains in the replicated mutable bucket; raise the cap or reduce \
+        retention to re-enable sealing.""",
         null, typeName, shardIndex, projectedBytes, capBytes, GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE.getKey());
   }
 

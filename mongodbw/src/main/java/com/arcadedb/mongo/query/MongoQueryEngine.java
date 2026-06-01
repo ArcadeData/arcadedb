@@ -28,8 +28,10 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
-import java.util.logging.*;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.logging.Level;
 
 public class MongoQueryEngine implements QueryEngine {
   public static final String                 ENGINE_NAME = "mongo";

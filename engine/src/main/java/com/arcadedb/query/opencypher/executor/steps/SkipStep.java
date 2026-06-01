@@ -74,7 +74,7 @@ public class SkipStep extends AbstractExecutionStep {
             skipped++;
           } finally {
             if (context.isProfiling())
-              cost += (System.nanoTime() - begin);
+              cost += System.nanoTime() - begin;
           }
         }
 

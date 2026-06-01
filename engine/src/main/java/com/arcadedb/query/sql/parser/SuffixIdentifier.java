@@ -34,7 +34,10 @@ import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Map;
 
 import static com.arcadedb.schema.Property.CAT_PROPERTY;
 import static com.arcadedb.schema.Property.IN_PROPERTY;
@@ -120,7 +123,7 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && varName.equalsIgnoreCase("$parent")) {
+      if (context != null && "$parent".equalsIgnoreCase(varName)) {
         return context.getParent();
       }
       // For $ variables, check record metadata FIRST - this preserves LET variable values
@@ -168,7 +171,7 @@ public class SuffixIdentifier extends SimpleNode {
     }
     if (identifier != null) {
       final String varName = identifier.getStringValue();
-      if (context != null && varName.equalsIgnoreCase("$parent"))
+      if (context != null && "$parent".equalsIgnoreCase(varName))
         return context.getParent();
 
       if (context != null && context.getVariable(varName) != null)
@@ -286,7 +289,7 @@ public class SuffixIdentifier extends SimpleNode {
   }
 
   public boolean isEarlyCalculated(final CommandContext ctx) {
-    return (identifier != null && identifier.isEarlyCalculated(ctx));
+    return identifier != null && identifier.isEarlyCalculated(ctx);
   }
 
   public void aggregate(final Object value, final CommandContext context) {
@@ -316,7 +319,7 @@ public class SuffixIdentifier extends SimpleNode {
 
   @Override
   public boolean refersToParent() {
-    return identifier != null && identifier.getStringValue().equalsIgnoreCase("$parent");
+    return identifier != null && "$parent".equalsIgnoreCase(identifier.getStringValue());
   }
 
   public void setValue(final Object target, final Object value, final CommandContext context) {

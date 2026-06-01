@@ -60,7 +60,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
   @Override
   public void init(final PolyglotFunctionLibraryDefinition library) {
     this.library = library;
-    library.execute((polyglotEngine) -> {
+    library.execute(polyglotEngine -> {
       try {
         // DECLARE THE FUNCTION
         StringBuilder declaration = new StringBuilder("function " + functionName + "( ");
@@ -86,7 +86,7 @@ public class JavascriptFunctionDefinition implements PolyglotFunctionDefinition 
 
   @Override
   public Object execute(final Object... parameters) {
-    return library.execute((polyglotEngine) -> {
+    return library.execute(polyglotEngine -> {
       try {
         final Value fn = polyglotEngine.context.getBindings("js").getMember(functionName);
         if (fn == null)

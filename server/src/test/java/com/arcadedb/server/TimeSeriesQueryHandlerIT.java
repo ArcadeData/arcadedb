@@ -38,7 +38,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   @Test
   void rawQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final JSONObject request = new JSONObject();
@@ -61,7 +61,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   @Test
   void aggregatedQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final JSONObject request = new JSONObject();
@@ -99,7 +99,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   @Test
   void queryWithTagFilter() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final JSONObject request = new JSONObject();
@@ -119,7 +119,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   @Test
   void queryWithFieldProjection() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final JSONObject request = new JSONObject();
@@ -142,7 +142,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   @Test
   void queryMissingType() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final JSONObject request = new JSONObject();
       // No "type" field
 
@@ -153,7 +153,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   @Test
   void queryNonTimeSeriesType() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex, "CREATE DOCUMENT TYPE notts");
 
       final JSONObject request = new JSONObject();
@@ -166,7 +166,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   @Test
   void latestValue() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final JSONObject result = getTsLatest(serverIndex, "weather", null);
@@ -182,7 +182,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   @Test
   void latestWithTagFilter() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       createTypeAndIngestData(serverIndex);
 
       final JSONObject result = getTsLatest(serverIndex, "weather", "location:us-west");
@@ -197,7 +197,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   @Test
   void latestEmptyType() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       command(serverIndex,
           "CREATE TIMESERIES TYPE emptyts TIMESTAMP ts TAGS (tag1 STRING) FIELDS (value DOUBLE)");
 
@@ -209,7 +209,7 @@ class TimeSeriesQueryHandlerIT extends BaseGraphServerTest {
 
   @Test
   void latestMissingType() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final int statusCode = getTsLatestRaw(serverIndex, null, null);
       assertThat(statusCode).isEqualTo(400);
     });

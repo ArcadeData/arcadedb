@@ -29,7 +29,7 @@ import org.apache.tinkerpop.gremlin.structure.io.graphson.GraphSONTokens;
 import org.apache.tinkerpop.gremlin.structure.util.detached.DetachedEdge;
 import org.apache.tinkerpop.gremlin.structure.util.detached.DetachedVertex;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Created by Enrico Risa on 06/09/2017.

@@ -33,9 +33,9 @@ import com.arcadedb.schema.Type;
 
 import org.junit.jupiter.api.Test;
 
-import java.math.*;
-import java.nio.*;
-import java.time.*;
+import java.math.BigDecimal;
+import java.nio.ByteBuffer;
+import java.time.Instant;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -171,7 +171,7 @@ class BinarySerializerTest extends TestHelper {
 
       final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
 
-      final ByteBuffer buffer2 = ByteBuffer.allocate(((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()));
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
@@ -268,7 +268,7 @@ class BinarySerializerTest extends TestHelper {
 
       final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
 
-      final ByteBuffer buffer2 = ByteBuffer.allocate(((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()));
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
@@ -341,7 +341,7 @@ class BinarySerializerTest extends TestHelper {
 
       final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
 
-      final ByteBuffer buffer2 = ByteBuffer.allocate(((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()));
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
@@ -413,7 +413,7 @@ class BinarySerializerTest extends TestHelper {
 
       final Binary buffer = serializer.serialize((DatabaseInternal) database, v);
 
-      final ByteBuffer buffer2 = ByteBuffer.allocate(((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()));
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
@@ -453,7 +453,7 @@ class BinarySerializerTest extends TestHelper {
 
       final Binary buffer = serializer.serialize((DatabaseInternal) database, testDocument);
 
-      final ByteBuffer buffer2 = ByteBuffer.allocate(((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()));
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
@@ -497,7 +497,7 @@ class BinarySerializerTest extends TestHelper {
 
       final Binary buffer = serializer.serialize((DatabaseInternal) database, testDocument);
 
-      final ByteBuffer buffer2 = ByteBuffer.allocate(((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()));
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 
@@ -547,7 +547,7 @@ class BinarySerializerTest extends TestHelper {
 
       final Binary buffer = serializer.serialize((DatabaseInternal) database, testDocument);
 
-      final ByteBuffer buffer2 = ByteBuffer.allocate(((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue()));
+      final ByteBuffer buffer2 = ByteBuffer.allocate((int) GlobalConfiguration.BUCKET_DEFAULT_PAGE_SIZE.getDefValue());
       buffer2.put(buffer.toByteArray());
       buffer2.flip();
 

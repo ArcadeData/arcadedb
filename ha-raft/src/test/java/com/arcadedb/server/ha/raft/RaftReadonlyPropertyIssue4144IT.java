@@ -21,6 +21,7 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.MutableDocument;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.ValidationException;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
@@ -81,12 +82,12 @@ class RaftReadonlyPropertyIssue4144IT extends BaseRaftHATest {
     // (LocalDatabase) cast on the wrapper and crashed with a ClassCastException; post-fix the
     // unwrap reaches the embedded LocalDatabase and the update succeeds.
     db.transaction(() -> {
-      final MutableDocument loaded = db.lookupByRID((com.arcadedb.database.RID) ridHolder[0], true).asDocument().modify();
+      final MutableDocument loaded = db.lookupByRID((RID) ridHolder[0], true).asDocument().modify();
       loaded.set("payload", "v2");
       loaded.save();
     });
 
-    final MutableDocument afterUpdate = db.lookupByRID((com.arcadedb.database.RID) ridHolder[0], true).asDocument().modify();
+    final MutableDocument afterUpdate = db.lookupByRID((RID) ridHolder[0], true).asDocument().modify();
     assertThat(afterUpdate.getString("payload")).isEqualTo("v2");
     assertThat(afterUpdate.getString("id")).isEqualTo("k-1");
   }
@@ -113,7 +114,7 @@ class RaftReadonlyPropertyIssue4144IT extends BaseRaftHATest {
     });
 
     assertThatThrownBy(() -> db.transaction(() -> {
-      final MutableDocument loaded = db.lookupByRID((com.arcadedb.database.RID) ridHolder[0], true).asDocument().modify();
+      final MutableDocument loaded = db.lookupByRID((RID) ridHolder[0], true).asDocument().modify();
       loaded.set("id", "changed");
       loaded.save();
     }))

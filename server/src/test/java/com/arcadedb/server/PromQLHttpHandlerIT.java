@@ -72,7 +72,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void instantQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query", "query=" + encode("prom_cpu") + "&time=5");
       assertThat(result.getString("status")).isEqualTo("success");
@@ -85,7 +85,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void instantQueryWithLabelFilter() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query",
           "query=" + encode("prom_cpu{host=\"server1\"}") + "&time=5");
@@ -98,7 +98,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void rangeQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query_range",
           "query=" + encode("prom_cpu") + "&start=1&end=5&step=1");
@@ -114,7 +114,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void rangeQueryWithRate() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query_range",
           "query=" + encode("rate(prom_http_total[5s])") + "&start=1&end=5&step=1");
@@ -125,7 +125,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void labels() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "labels", "");
       assertThat(result.getString("status")).isEqualTo("success");
@@ -140,7 +140,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void labelValuesForName() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQLLabelValues(serverIndex, "__name__");
       assertThat(result.getString("status")).isEqualTo("success");
@@ -161,7 +161,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void labelValuesForHost() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQLLabelValues(serverIndex, "host");
       assertThat(result.getString("status")).isEqualTo("success");
@@ -172,7 +172,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void series() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "series",
           "match%5B%5D=" + encode("prom_cpu") + "&start=0&end=10");
@@ -185,7 +185,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void errorMissingQuery() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final JSONObject result = getPromQL(serverIndex, "query", "time=5");
       assertThat(result.getString("status")).isEqualTo("error");
       assertThat(result.getString("errorType")).isEqualTo("bad_data");
@@ -194,7 +194,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void errorNonexistentMetric() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final JSONObject result = getPromQL(serverIndex, "query",
           "query=" + encode("nonexistent_metric") + "&time=5");
       assertThat(result.getString("status")).isEqualTo("success");
@@ -204,7 +204,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void errorMalformedPromQL() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final JSONObject result = getPromQL(serverIndex, "query",
           "query=" + encode("sum(") + "&time=5");
       assertThat(result.getString("status")).isEqualTo("error");
@@ -213,7 +213,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void binaryExpression() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query",
           "query=" + encode("prom_cpu * 2") + "&time=5");
@@ -225,7 +225,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void aggregationSum() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       final JSONObject result = getPromQL(serverIndex, "query",
           "query=" + encode("sum(prom_cpu)") + "&time=5");
@@ -237,7 +237,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void emptyResultSet() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Query a metric that has no data ingested
       final JSONObject result = getPromQL(serverIndex, "query",
           "query=" + encode("completely_nonexistent_metric") + "&time=5");
@@ -249,7 +249,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void topkWithKGreaterThanSeriesCount() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       // prom_cpu has 2 series (server1, server2); ask for topk(10) — should return all 2
       final JSONObject result = getPromQL(serverIndex, "query",
@@ -264,7 +264,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void bottomkWithKGreaterThanSeriesCount() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       // Ask for bottomk(100) — should return all available series
       final JSONObject result = getPromQL(serverIndex, "query",
@@ -277,7 +277,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void rangeQueryEmptyResult() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // Range query on nonexistent metric
       final JSONObject result = getPromQL(serverIndex, "query_range",
           "query=" + encode("nonexistent_range_metric") + "&start=1&end=5&step=1");
@@ -290,7 +290,7 @@ class PromQLHttpHandlerIT extends BaseGraphServerTest {
 
   @Test
   void lookbackDeltaParameter() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       ingestTestData(serverIndex);
       // Query with a custom lookback_delta
       final JSONObject result = getPromQL(serverIndex, "query",

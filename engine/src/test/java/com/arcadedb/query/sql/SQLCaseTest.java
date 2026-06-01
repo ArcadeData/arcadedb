@@ -20,7 +20,6 @@ package com.arcadedb.query.sql;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -148,9 +147,9 @@ class SQLCaseTest {
       final String name = result.getProperty("name");
       final int statusCode = ((Number) result.getProperty("statusCode")).intValue();
 
-      if (name.equals("Eve"))
+      if ("Eve".equals(name))
         assertThat(statusCode).isEqualTo(1);
-      else if (name.equals("Frank"))
+      else if ("Frank".equals(name))
         assertThat(statusCode).isEqualTo(0);
 
       count++;
@@ -313,9 +312,8 @@ class SQLCaseTest {
   @Test
   void caseWithNullHandling() {
     // Test CASE with null values
-    database.transaction(() -> {
-      database.newVertex("Person").set("name", "NoAge").save(); // No age property
-    });
+    database.transaction(() ->
+      database.newVertex("Person").set("name", "NoAge").save());
 
     final ResultSet results = database.query("sql",
         """

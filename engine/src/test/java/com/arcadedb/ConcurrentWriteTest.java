@@ -26,8 +26,11 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
-import java.util.concurrent.atomic.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -92,7 +95,7 @@ class ConcurrentWriteTest {
 
   private List<Long> checkRecordSequence(final Database database) {
     final List<Long> allIds = new ArrayList<>();
-    database.iterateType("User", true).forEachRemaining((a) -> allIds.add(a.getRecord().asVertex().getLong("id")));
+    database.iterateType("User", true).forEachRemaining(a -> allIds.add(a.getRecord().asVertex().getLong("id")));
     Collections.sort(allIds);
 
     int missing = 0;
@@ -120,7 +123,7 @@ class ConcurrentWriteTest {
               incrementError(t);
             }
           }
-        }, false, TX_RETRY, null, (e) -> {
+        }, false, TX_RETRY, null, e -> {
           if (e instanceof ConcurrentModificationException)
             concurrentExceptions.incrementAndGet();
           else {

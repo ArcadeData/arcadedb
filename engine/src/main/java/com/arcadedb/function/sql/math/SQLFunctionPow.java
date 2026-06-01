@@ -21,7 +21,8 @@ package com.arcadedb.function.sql.math;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.math.*;
+import java.math.BigDecimal;
+import java.math.BigInteger;
 
 /**
  * Math pow() function.

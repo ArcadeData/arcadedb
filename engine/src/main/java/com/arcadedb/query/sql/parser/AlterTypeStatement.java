@@ -31,7 +31,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.*;
-import java.util.stream.*;
+import java.util.stream.Collectors;
 
 public class AlterTypeStatement extends DDLStatement {
   /**
@@ -199,7 +199,7 @@ public class AlterTypeStatement extends DDLStatement {
     boolean repartitionRequested = false;
     for (final Map.Entry<Identifier, Expression> e : settings.entrySet()) {
       final String key = e.getKey().getStringValue();
-      if (key.equalsIgnoreCase("repartition")) {
+      if ("repartition".equalsIgnoreCase(key)) {
         final Object raw = e.getValue().execute((Result) null, context);
         repartitionRequested = parseBooleanSetting("ALTER TYPE", "repartition", raw);
       } else

@@ -24,7 +24,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.Json;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Created by luigidellaquila on 09/08/16.

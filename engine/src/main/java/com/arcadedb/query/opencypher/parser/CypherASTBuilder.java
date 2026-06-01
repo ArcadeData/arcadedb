@@ -1951,15 +1951,15 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
     }
 
     // Null
-    if (text.equalsIgnoreCase("null")) {
+    if ("null".equalsIgnoreCase(text)) {
       return null;
     }
 
     // Boolean
-    if (text.equalsIgnoreCase("true")) {
+    if ("true".equalsIgnoreCase(text)) {
       return Boolean.TRUE;
     }
-    if (text.equalsIgnoreCase("false")) {
+    if ("false".equalsIgnoreCase(text)) {
       return Boolean.FALSE;
     }
 

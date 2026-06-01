@@ -29,7 +29,7 @@ import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.query.sql.parser.WhereClause;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)

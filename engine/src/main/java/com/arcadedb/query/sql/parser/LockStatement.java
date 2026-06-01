@@ -9,7 +9,9 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 
 public class LockStatement extends SimpleExecStatement {
   public String           mode;
@@ -24,7 +26,7 @@ public class LockStatement extends SimpleExecStatement {
     final DatabaseInternal database = context.getDatabase();
 
     TransactionExplicitLock explicitLock = null;
-    if (mode.equals("TYPE")) {
+    if ("TYPE".equals(mode)) {
       if (identifiers != null && !identifiers.isEmpty()) {
         explicitLock = context.getDatabase().acquireLock();
 

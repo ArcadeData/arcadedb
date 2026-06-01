@@ -21,7 +21,7 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.query.sql.parser.Statement;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
-import java.util.*;
+import java.util.List;
 
 /**
  * Created by luigidellaquila on 06/07/16.

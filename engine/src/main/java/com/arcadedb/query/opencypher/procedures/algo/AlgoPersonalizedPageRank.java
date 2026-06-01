@@ -19,7 +19,6 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
@@ -28,7 +27,6 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 
 import java.util.List;
-import java.util.Map;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
@@ -143,7 +141,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
             if (outDegree[j] > 0)
               incoming += rank[j] / outDegree[j];
           }
-          final double personal = (i == sourceIdx) ? 1.0 : 0.0;
+          final double personal = i == sourceIdx ? 1.0 : 0.0;
           newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
         }
       } else {
@@ -152,7 +150,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
           for (final int j : inAdjFallback[i])
             if (outDegree[j] > 0)
               incoming += rank[j] / outDegree[j];
-          final double personal = (i == sourceIdx) ? 1.0 : 0.0;
+          final double personal = i == sourceIdx ? 1.0 : 0.0;
           newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
         }
       }
@@ -211,7 +209,7 @@ public class AlgoPersonalizedPageRank extends AbstractAlgoProcedure {
         for (final int j : inAdj[i])
           if (outDegree[j] > 0)
             incoming += rank[j] / outDegree[j];
-        final double personal = (i == sourceIdx) ? 1.0 : 0.0;
+        final double personal = i == sourceIdx ? 1.0 : 0.0;
         newRank[i] = (1.0 - dampingFactor) * personal + dampingFactor * incoming + dampingFactor * dangling * personal;
       }
 

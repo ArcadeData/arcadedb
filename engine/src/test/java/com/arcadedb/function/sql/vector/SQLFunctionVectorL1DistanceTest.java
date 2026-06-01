@@ -102,8 +102,9 @@ class SQLFunctionVectorL1DistanceTest extends TestHelper {
   @Test
   void bothAliasesAreRegisteredAndProduceIdenticalResults() {
     final ResultSet rs = database.query("sql",
-        "SELECT `vector.l1Distance`([1.0, 2.0, 3.0], [4.0, 6.0, 8.0]) AS l1, "
-            + "`vector.manhattanDistance`([1.0, 2.0, 3.0], [4.0, 6.0, 8.0]) AS man");
+        """
+        SELECT `vector.l1Distance`([1.0, 2.0, 3.0], [4.0, 6.0, 8.0]) AS l1, \
+        `vector.manhattanDistance`([1.0, 2.0, 3.0], [4.0, 6.0, 8.0]) AS man""");
     assertThat(rs.hasNext()).isTrue();
     final Result row = rs.next();
     assertThat(((Number) row.getProperty("l1")).floatValue()).isCloseTo(12.0f, Offset.offset(0.001f));

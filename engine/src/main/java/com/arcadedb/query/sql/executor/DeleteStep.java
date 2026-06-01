@@ -51,7 +51,7 @@ public class DeleteStep extends AbstractExecutionStep {
           return result;
         } finally {
           if (context.isProfiling()) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }

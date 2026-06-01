@@ -39,12 +39,11 @@ class SQLMethodAdditionalCoverageTest extends TestHelper {
   @Override
   public void beginTest() {
     database.getSchema().createDocumentType("MethDoc");
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("sql",
           """
           INSERT INTO MethDoc SET name = 'Hello World', idx = 42, amount = 123.456, tags = ['alpha', 'beta', 'gamma'], \
-          props = {'key1': 'val1', 'key2': 'val2'}, active = true, empty = ''""");
-    });
+          props = {'key1': 'val1', 'key2': 'val2'}, active = true, empty = ''"""));
   }
 
   // --- String methods ---

@@ -21,8 +21,11 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.MaterializedView;
 
-import java.util.*;
-import java.util.stream.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
+import java.util.List;
+import java.util.stream.Collectors;
 
 /**
  * Returns an Result containing metadata regarding the materialized views.
@@ -79,7 +82,7 @@ public class FetchFromSchemaMaterializedViewsStep extends AbstractExecutionStep 
         }
       } finally {
         if (context.isProfiling()) {
-          cost += (System.nanoTime() - begin);
+          cost += System.nanoTime() - begin;
         }
       }
     }

@@ -21,7 +21,9 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
 
-import java.util.*;
+import java.util.Iterator;
+import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * @author Luigi Dell'Aquila (luigi.dellaquila-(at)-gmail.com)
@@ -86,7 +88,7 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 //            }
           } finally {
             if (context.isProfiling()) {
-              cost += (System.nanoTime() - begin1);
+              cost += System.nanoTime() - begin1;
             }
           }
         }
@@ -121,14 +123,14 @@ public class FetchFromClusterExecutionStep extends AbstractExecutionStep {
 
           } finally {
             if (context.isProfiling()) {
-              cost += (System.nanoTime() - begin1);
+              cost += System.nanoTime() - begin1;
             }
           }
         }
       };
     } finally {
       if (context.isProfiling()) {
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
       }
     }
   }

@@ -26,6 +26,7 @@ import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.FileWriter;
 import java.lang.reflect.Field;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -86,7 +87,7 @@ class LocalSchemaOrphanIndexSelfHealTest extends TestHelper {
     final JSONObject danglingBody = new JSONObject(sample.toString());
     indexes.put(danglingName, danglingBody);
 
-    try (final java.io.FileWriter w = new java.io.FileWriter(schemaFile)) {
+    try (final FileWriter w = new FileWriter(schemaFile)) {
       w.write(schemaJson.toString());
     }
 

@@ -98,7 +98,7 @@ public class JSONArray implements Iterable<Object> {
       else if (value instanceof JSONArray nArray) {
         if (optimizeNumericArrays) {
           final Object primitive = nArray.toPrimitiveNumericArrayOrNull();
-          value = (primitive != null) ? primitive : nArray.toList(true);
+          value = primitive != null ? primitive : nArray.toList(true);
         } else
           value = nArray.toList();
       }

@@ -26,7 +26,7 @@ import com.arcadedb.schema.VertexType;
 
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -70,7 +70,7 @@ public class SelectIndexExecutionTest extends TestHelper {
         final List<Vertex> list = result.toList();
         assertThat(list.size()).isEqualTo(i < 100 ? 1 : 0);
 
-        list.forEach(r -> assertThat(r.getInteger("id") == finalI && r.getString("name").equals("John")).isTrue());
+        list.forEach(r -> assertThat(r.getInteger("id") == finalI && "John".equals(r.getString("name"))).isTrue());
 
         assertThat(result.getMetrics().get("evaluatedRecords")).as("With id " + i).isEqualTo(1L);
         assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(1);
@@ -90,7 +90,7 @@ public class SelectIndexExecutionTest extends TestHelper {
         final int finalI = i;
         final SelectIterator<Vertex> result = select.parameter("value", i).vertices();
 
-        result.forEachRemaining(r -> assertThat(r.getInteger("id") == finalI || r.getString("name").equals("John")).isTrue());
+        result.forEachRemaining(r -> assertThat(r.getInteger("id") == finalI || "John".equals(r.getString("name"))).isTrue());
 
         assertThat(result.getMetrics().get("evaluatedRecords")).as("" + finalI).isEqualTo(i < 100 ? 100L : 101L);
         assertThat(result.getMetrics().get("usedIndexes")).isEqualTo(2);

@@ -37,7 +37,9 @@ import com.arcadedb.serializer.BinaryTypes;
 import java.io.File;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.logging.Level;
 
 /**
@@ -530,7 +532,7 @@ public class HashIndexBucket extends PaginatedComponent {
 
     // Defensive cycle detection: a corrupted overflow chain that loops back to a
     // previously-seen page would otherwise spin forever. Track visited page numbers.
-    final java.util.Set<Integer> visited = new java.util.HashSet<>();
+    final Set<Integer> visited = new HashSet<>();
     visited.add(currentPageNum);
 
     while (true) {
@@ -870,7 +872,7 @@ public class HashIndexBucket extends PaginatedComponent {
     case 3: k1 ^= ((long) data[tail + 2] & 0xff) << 16;
     case 2: k1 ^= ((long) data[tail + 1] & 0xff) << 8;
     case 1:
-      k1 ^= ((long) data[tail] & 0xff);
+      k1 ^= (long) data[tail] & 0xff;
       k1 *= 0xff51afd7ed558ccdL;
       k1 = Long.rotateLeft(k1, 31);
       k1 *= 0xc4ceb9fe1a85ec53L;
@@ -905,7 +907,7 @@ public class HashIndexBucket extends PaginatedComponent {
     int currentPageNum = bucketPageNum;
 
     // Defensive cycle detection on the overflow chain (see insertIntoOverflow above).
-    final java.util.Set<Integer> visited = new java.util.HashSet<>();
+    final Set<Integer> visited = new HashSet<>();
 
     while (true) {
       if (!visited.add(currentPageNum))

@@ -18,8 +18,6 @@
  */
 package com.arcadedb.engine.timeseries.codec;
 
-import java.nio.ByteBuffer;
-
 /**
  * Delta-of-delta encoding for monotonically increasing timestamps.
  * Based on the Facebook Gorilla paper: stores first value raw, then deltas,

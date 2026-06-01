@@ -332,9 +332,8 @@ class CollectDistinctTest {
     void returnDistinctWithMatchProperties() {
       // RETURN DISTINCT on vertex properties
       // Add duplicate name to test deduplication
-      database.transaction(() -> {
-        database.newVertex("Person").set("name", "Alice").save();
-      });
+      database.transaction(() ->
+        database.newVertex("Person").set("name", "Alice").save());
 
       final ResultSet result = database.query("opencypher",
           "MATCH (n:Person) RETURN DISTINCT n.name AS name");
@@ -620,7 +619,7 @@ class CollectDistinctTest {
       database.getSchema().createEdgeType("FROM_DOC");
 
       // Create test data
-      database.transaction(() -> {
+      database.transaction(() ->
         database.command("opencypher",
             // Create documents
             "CREATE (doc1:DOCUMENT {name: 'Document1'}), " +
@@ -646,8 +645,7 @@ class CollectDistinctTest {
                 "(date2)-[:IN_CHUNK]->(chunk2), " +
                 "(person1)-[:IN_CHUNK]->(chunk1), " +
                 "(person2)-[:IN_CHUNK]->(chunk2), " +
-                "(org1)-[:IN_CHUNK]->(chunk1)");
-      });
+                "(org1)-[:IN_CHUNK]->(chunk1)"));
     }
 
     @AfterEach

@@ -74,7 +74,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        return (localCount < nRecords && nextEntry != null);
+        return localCount < nRecords && nextEntry != null;
       }
 
       @Override
@@ -94,7 +94,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
           return result;
         } finally {
           if (context.isProfiling())
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
         }
       }
 
@@ -114,7 +114,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
       e.printStackTrace();
     } finally {
       if (context.isProfiling()) {
-        cost += (System.nanoTime() - begin);
+        cost += System.nanoTime() - begin;
       }
     }
   }
@@ -208,7 +208,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
 
   private void processBetweenCondition() {
     final Expression key = ((BetweenCondition) condition).getFirst();
-    if (!key.toString().equalsIgnoreCase("key")) {
+    if (!"key".equalsIgnoreCase(key.toString())) {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
     final Expression second = ((BetweenCondition) condition).getSecond();
@@ -225,7 +225,7 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
   private void processBinaryCondition() {
     final BinaryCompareOperator operator = ((BinaryCondition) condition).getOperator();
     final Expression left = ((BinaryCondition) condition).getLeft();
-    if (!left.toString().equalsIgnoreCase("key")) {
+    if (!"key".equalsIgnoreCase(left.toString())) {
       throw new CommandExecutionException("search for index for " + condition + " is not supported yet");
     }
     final Object rightValue = ((BinaryCondition) condition).getRight().execute((Result) null, context);
@@ -343,11 +343,11 @@ public class DeleteFromIndexStep extends AbstractExecutionStep {
     if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
-    result += (condition == null ?
+    result += condition == null ?
         "" :
         ("\n" + ExecutionStepInternal.getIndent(depth, indent) + "  " + condition + (additional == null ?
             "" :
-            " and " + additional)));
+            " and " + additional));
     return result;
   }
 

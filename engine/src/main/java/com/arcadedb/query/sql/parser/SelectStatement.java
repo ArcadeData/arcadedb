@@ -34,7 +34,8 @@ import com.arcadedb.query.sql.executor.InternalExecutionPlan;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.query.sql.executor.SelectExecutionPlanner;
 
-import java.util.*;
+import java.util.HashMap;
+import java.util.Map;
 
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTLIMIT;
 import static com.arcadedb.query.sql.parser.SqlParserTreeConstants.JJTTIMEOUT;

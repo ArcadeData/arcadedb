@@ -21,7 +21,6 @@ package com.arcadedb.server.backup;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 
-import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 

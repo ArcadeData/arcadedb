@@ -20,6 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 
@@ -151,7 +153,7 @@ class RaftLeaderProxyIT extends BaseRaftHATest {
     final JSONObject body = new JSONObject()
         .put("language", "sql")
         .put("command", "INSERT INTO V1 SET id = ?, name = ?")
-        .put("params", new com.arcadedb.serializer.json.JSONArray().put(42).put("positional-test"));
+        .put("params", new JSONArray().put(42).put("positional-test"));
 
     final HttpResponse<String> response = postCommandWithBody(followerPort, dbName, body.toString());
     assertThat(response.statusCode())
@@ -165,7 +167,7 @@ class RaftLeaderProxyIT extends BaseRaftHATest {
       final Database db = getServerDatabase(i, dbName);
       final long[] found = { 0 };
       db.transaction(() -> {
-        try (final com.arcadedb.query.sql.executor.ResultSet rs = db.query("sql",
+        try (final ResultSet rs = db.query("sql",
             "SELECT FROM V1 WHERE name = 'positional-test'")) {
           while (rs.hasNext()) {
             rs.next();
@@ -184,7 +186,7 @@ class RaftLeaderProxyIT extends BaseRaftHATest {
     final JSONObject numericBody = new JSONObject()
         .put("language", "sql")
         .put("command", "SELECT FROM V1 WHERE id = ?")
-        .put("params", new com.arcadedb.serializer.json.JSONArray().put(42));
+        .put("params", new JSONArray().put(42));
 
     final HttpResponse<String> numericResponse = postCommandWithBody(followerPort, dbName, numericBody.toString());
     assertThat(numericResponse.statusCode())

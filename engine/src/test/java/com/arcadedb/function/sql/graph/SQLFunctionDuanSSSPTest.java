@@ -28,7 +28,7 @@ import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
-import java.util.*;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -77,7 +77,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void basicPath() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_basicPath", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_basicPath", graph -> {
       setUp(graph);
       final List<RID> result = functionDuanSSSP.execute(null, null, null, new Object[] { v1, v4, "weight" },
           new BasicCommandContext());
@@ -92,7 +92,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void sameVertex() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_sameVertex", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_sameVertex", graph -> {
       setUp(graph);
       final List<RID> result = functionDuanSSSP.execute(null, null, null, new Object[] { v1, v1, "weight" },
           new BasicCommandContext());
@@ -104,7 +104,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void noPath() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_noPath", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_noPath", graph ->
       graph.transaction(() -> {
         graph.getSchema().createVertexType("isolated");
 
@@ -119,13 +119,12 @@ public class SQLFunctionDuanSSSPTest {
             new BasicCommandContext());
 
         assertThat(result).isEmpty();
-      });
-    });
+      }));
   }
 
   @Test
   void sqlQuery() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_sqlQuery", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_sqlQuery", graph -> {
       setUp(graph);
 
       final ResultSet result = graph.query("sql",
@@ -144,7 +143,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void directionOut() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_directionOut", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_directionOut", graph -> {
       setUp(graph);
 
       final List<RID> result = functionDuanSSSP.execute(null, null, null,
@@ -158,7 +157,7 @@ public class SQLFunctionDuanSSSPTest {
 
   @Test
   void largerGraph() throws Exception {
-    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_largerGraph", (graph) -> {
+    TestHelper.executeInNewDatabase("SQLFunctionDuanSSSPTest_largerGraph", graph ->
       graph.transaction(() -> {
         graph.getSchema().createVertexType("city");
         graph.getSchema().createEdgeType("road");
@@ -197,8 +196,7 @@ public class SQLFunctionDuanSSSPTest {
         // or 0 -> 1 -> 3 -> 4 -> 5 (cost: 4+5+2+3 = 14)
         // The algorithm should find the optimal path
         assertThat(result.size()).isGreaterThan(1);
-      });
-    });
+      }));
   }
 
   // NOTE: Cypher test removed because Cypher engine is in a separate module

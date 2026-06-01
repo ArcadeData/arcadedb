@@ -51,9 +51,8 @@ class ParameterInPropertyMapTest {
     database = new DatabaseFactory(DB_PATH).create();
     database.getSchema().getOrCreateVertexType("USER_RIGHTS");
 
-    database.transaction(() -> {
-      database.command("opencypher", "CREATE (n:USER_RIGHTS {user_name: 'random_username_123'}) RETURN n");
-    });
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (n:USER_RIGHTS {user_name: 'random_username_123'}) RETURN n"));
   }
 
   @AfterEach

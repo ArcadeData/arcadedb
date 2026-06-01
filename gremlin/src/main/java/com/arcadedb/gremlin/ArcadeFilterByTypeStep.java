@@ -37,8 +37,10 @@ import org.apache.tinkerpop.gremlin.structure.util.CloseableIterator;
 import org.apache.tinkerpop.gremlin.structure.util.StringFactory;
 import org.apache.tinkerpop.gremlin.util.iterator.EmptyIterator;
 
-import java.util.*;
-import java.util.function.*;
+import java.util.Iterator;
+import java.util.Locale;
+import java.util.Objects;
+import java.util.function.Supplier;
 
 public class ArcadeFilterByTypeStep<S, E extends Element> extends AbstractStep<S, E> implements AutoCloseable, Configuring {
   protected final     String                typeName;

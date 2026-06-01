@@ -30,7 +30,8 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.security.SecurityDatabaseUser;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.List;
 
 /**
  * Builder class for type indexes.
@@ -255,7 +256,7 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
 
             indexes[finalIdx] = createBucketIndex(schema, type, keyTypes, bucket);
 
-          }, false, maxAttempts, null, (error) -> {
+          }, false, maxAttempts, null, error -> {
             for (int j = 0; j < indexes.length; j++) {
               final IndexInternal indexToRemove = (IndexInternal) indexes[j];
               if (indexToRemove != null)

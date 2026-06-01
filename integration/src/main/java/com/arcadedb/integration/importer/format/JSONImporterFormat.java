@@ -45,9 +45,9 @@ import com.google.gson.Gson;
 import com.google.gson.stream.JsonReader;
 import com.google.gson.stream.JsonToken;
 
-import java.io.*;
+import java.io.IOException;
 import java.util.*;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 import static com.google.gson.stream.JsonToken.BEGIN_ARRAY;
 import static com.google.gson.stream.JsonToken.BEGIN_OBJECT;
@@ -97,7 +97,7 @@ public class JSONImporterFormat implements FormatImporter {
           break;
         case NAME:
           final String tag = reader.nextName();
-          if ((mapping.has(tag) || mapping.has("*"))) {
+          if (mapping.has(tag) || mapping.has("*")) {
             tagValue = mapping.has(tag) ? mapping.get(tag) : mapping.get("*");
             if (tagValue instanceof JSONArray)
               waitFor = BEGIN_ARRAY;
@@ -192,7 +192,7 @@ public class JSONImporterFormat implements FormatImporter {
           final Object mappingValue = mapping.get(attributeName);
           if (mappingValue instanceof JSONObject object)
             mappingObject = object;
-          else if (mappingValue instanceof String && mappingValue.toString().equals("@ignore"))
+          else if (mappingValue instanceof String && "@ignore".equals(mappingValue.toString()))
             ignoreObject = true;
         }
         attributeValue = parseRecord(reader, settings, context, database, mappingObject, ignoreObject);
@@ -414,7 +414,7 @@ public class JSONImporterFormat implements FormatImporter {
             // CONVERTED TO EDGE, REMOVE THE PROPERTY ENTIRELY
             attributes.map.remove(mappingName);
         }
-      } else if (mappingValue instanceof String && mappingValue.toString().equals("@ignore")) {
+      } else if (mappingValue instanceof String && "@ignore".equals(mappingValue.toString())) {
         attributes.map.remove(mappingName);
       }
 

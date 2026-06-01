@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 class DatabaseAsyncTransactionRetryExhaustedTest extends TestHelper {
 
   @Test
-  void perTaskErrorCallbackInvokedWhenRetriesExhausted() throws InterruptedException {
+  void perTaskErrorCallbackInvokedWhenRetriesExhausted() throws Exception {
     final AtomicBoolean okCalled = new AtomicBoolean(false);
     final AtomicReference<Throwable> perTaskError = new AtomicReference<>();
     final AtomicReference<Throwable> globalError = new AtomicReference<>();

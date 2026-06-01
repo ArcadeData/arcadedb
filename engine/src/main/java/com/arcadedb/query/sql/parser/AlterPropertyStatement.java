@@ -30,7 +30,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 
-import java.util.*;
+import java.util.Locale;
+import java.util.Map;
 
 public class AlterPropertyStatement extends DDLStatement {
   public Expression settingValue;
@@ -72,38 +73,38 @@ public class AlterPropertyStatement extends DDLStatement {
       result.setProperty("newValue", finalValue);
     } else if (settingName != null) {
       final String setting = settingName.getStringValue().toLowerCase(Locale.ENGLISH);
-      final Object finalValue = setting.equalsIgnoreCase("default") ? settingValue.toString() : settingValue.execute((Identifiable) null, context);
+      final Object finalValue = "default".equalsIgnoreCase(setting) ? settingValue.toString() : settingValue.execute((Identifiable) null, context);
 
       final Object oldValue;
 
-      if (setting.equalsIgnoreCase("readonly")) {
+      if ("readonly".equalsIgnoreCase(setting)) {
         oldValue = property.isReadonly();
         property.setReadonly((boolean) finalValue);
-      } else if (setting.equalsIgnoreCase("mandatory")) {
+      } else if ("mandatory".equalsIgnoreCase(setting)) {
         oldValue = property.isMandatory();
         property.setMandatory((boolean) finalValue);
-      } else if (setting.equalsIgnoreCase("notnull")) {
+      } else if ("notnull".equalsIgnoreCase(setting)) {
         oldValue = property.isNotNull();
         property.setNotNull((boolean) finalValue);
-      } else if (setting.equalsIgnoreCase("hidden")) {
+      } else if ("hidden".equalsIgnoreCase(setting)) {
         oldValue = property.isHidden();
         property.setHidden((boolean) finalValue);
-      } else if (setting.equalsIgnoreCase("external")) {
+      } else if ("external".equalsIgnoreCase(setting)) {
         oldValue = property.isExternal();
         property.setExternal((boolean) finalValue);
-      } else if (setting.equalsIgnoreCase("compression")) {
+      } else if ("compression".equalsIgnoreCase(setting)) {
         oldValue = property.getCompression();
         property.setCompression(String.valueOf(finalValue));
-      } else if (setting.equalsIgnoreCase("max")) {
+      } else if ("max".equalsIgnoreCase(setting)) {
         oldValue = property.getMax();
         property.setMax("" + finalValue);
-      } else if (setting.equalsIgnoreCase("min")) {
+      } else if ("min".equalsIgnoreCase(setting)) {
         oldValue = property.getMin();
         property.setMin("" + finalValue);
-      } else if (setting.equalsIgnoreCase("default")) {
+      } else if ("default".equalsIgnoreCase(setting)) {
         oldValue = property.getDefaultValue();
         property.setDefaultValue("" + finalValue);
-      } else if (setting.equalsIgnoreCase("regexp")) {
+      } else if ("regexp".equalsIgnoreCase(setting)) {
         oldValue = property.getRegexp();
         property.setRegexp("" + finalValue);
       } else {

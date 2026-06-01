@@ -411,7 +411,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     try {
       if (LogManager.instance().isDebugEnabled()) {
         LogManager.instance().log(this, Level.FINE, "CLIENT deleteRecord: db=%s, tx=%s, rid=%s", getName(),
-            (transactionId != null),
+            transactionId != null,
             record.getIdentity());
       }
 
@@ -446,7 +446,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       if (LogManager.instance().isDebugEnabled()) {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT deleteRecord: db=%s, tx=%s, rid=%s, timeoutMs=%s", getName(),
-                (transactionId != null),
+                transactionId != null,
                 rid, timeoutMs);
       }
 
@@ -522,7 +522,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       if (LogManager.instance().isDebugEnabled())
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT executeCommand: db=%s, tx=%s, cmdLen=%s, params=%s", getName(),
-                (transactionId != null),
+                transactionId != null,
                 requestBuilder.getCommand().length(), requestBuilder.getParametersCount());
 
       final ExecuteCommandResponse response = callUnary("ExecuteCommand",
@@ -606,7 +606,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       if (LogManager.instance().isDebugEnabled()) {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT executeQuery: db=%s, tx=%s, queryLen=%s, params=%s", getName(),
-                (transactionId != null),
+                transactionId != null,
                 requestBuilder.getQuery().length(), requestBuilder.getParametersCount());
       }
 
@@ -1066,7 +1066,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT createRecord: db=%s, txOpen=%s, type=%s, propCount=%s, timeoutMs=%s",
                 getName(),
-                (transactionId != null),
+                transactionId != null,
                 cls, props.size(), timeoutMs);
       }
 
@@ -1129,7 +1129,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       if (LogManager.instance().isDebugEnabled()) {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT updateRecord(partial): db=%s, txOpen=%s, rid=%s, timeoutMs=%s", getName(),
-                (transactionId != null),
+                transactionId != null,
                 rid,
                 timeoutMs);
       }
@@ -1164,7 +1164,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         LogManager.instance().log(this, Level.FINE, """
                 CLIENT updateRecord(full): db=%s, txOpen=%s, rid=%s, \
                 timeoutMs=%s""", getName(),
-            (transactionId != null), rid,
+            transactionId != null, rid,
             timeoutMs);
       }
 
@@ -1234,7 +1234,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT lookupByRID: db=%s, txOpen=%s, rid=%s, loadContent=%s, timeoutMs=%s",
                 getName(),
-                (transactionId != null),
+                transactionId != null,
                 rid, loadContent, getTimeout());
       }
 
@@ -1304,7 +1304,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
       if (LogManager.instance().isDebugEnabled()) {
         LogManager.instance()
             .log(this, Level.FINE, "CLIENT insertBulk: rows=%s, timeoutMs=%s, tx=%s", req.getRowsCount(), timeoutMs,
-                (transactionId != null));
+                transactionId != null);
       }
 
       // use callUnary so tx cross-thread checks + rpcSeq happen in one place
@@ -1397,7 +1397,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
                 .addAllRows(protoRows.subList(i, end)).build();
 
         req.onNext(chunk);
-        sent += (end - i);
+        sent += end - i;
       }
       req.onCompleted();
     } catch (RuntimeException sendErr) {
@@ -1784,7 +1784,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
 
   // Optional: language defaulting (server defaults to "sql" too)
   private static String langOrDefault(String language) {
-    return (language == null || language.isEmpty()) ? "sql" : language;
+    return language == null || language.isEmpty() ? "sql" : language;
   }
 
   private Iterator<Record> streamQuery(final String query) {
@@ -2049,7 +2049,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
   }
 
   public @Nullable String currentLocalTxId() {
-    return (debugTx != null ? Long.toString(debugTx.id) : null);
+    return debugTx != null ? Long.toString(debugTx.id) : null;
   }
 
   public void setCurrentTxLabel(String label) {
@@ -2148,7 +2148,7 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     // Don't double-wrap if the observer is already a ClientResponseObserver (e.g. from wrapClientResponseObserver)
     // because wrapping it again with wrapObserver would hide the ClientResponseObserver interface
     // and prevent beforeStart() from being called.
-    StreamObserver<Resp> effectiveObserver = (responseObserver instanceof ClientResponseObserver)
+    StreamObserver<Resp> effectiveObserver = responseObserver instanceof ClientResponseObserver
         ? responseObserver
         : wrapObserver(opName, responseObserver);
     StreamObserver<Req> reqObs = starter.apply(stub, effectiveObserver);

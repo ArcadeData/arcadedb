@@ -30,9 +30,10 @@ import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 import io.github.jbellis.jvector.vector.types.VectorTypeSupport;
 
-import java.util.*;
+import java.util.Arrays;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 /**
  * Implements JVector's RandomAccessVectorValues interface with lazy-loading from ArcadeDB pages.

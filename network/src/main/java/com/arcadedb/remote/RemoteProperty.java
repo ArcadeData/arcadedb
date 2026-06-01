@@ -23,7 +23,7 @@ import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 
-import java.util.*;
+import java.util.Map;
 
 /**
  * Property used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or

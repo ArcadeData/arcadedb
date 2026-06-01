@@ -22,14 +22,12 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.sparsevector.SegmentFormat.RidCompression;
-import com.arcadedb.log.LogManager;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-import java.util.logging.Level;
 import java.util.zip.CRC32;
 
 /**
@@ -323,7 +321,7 @@ public final class SparseSegmentBuilder implements AutoCloseable {
       weightMin = 0.0f;
       weightMax = 0.0f;
     }
-    final float blockMaxForBmw = (weightMax == Float.NEGATIVE_INFINITY) ? 0.0f : weightMax;
+    final float blockMaxForBmw = weightMax == Float.NEGATIVE_INFINITY ? 0.0f : weightMax;
 
     // Reuse the per-builder scratch buffer (sized at construction to the worst-case block
     // payload size). Saves an allocation per block - on a default-shaped 1M-posting flush that

@@ -27,7 +27,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import java.io.*;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.logging.*;
+import java.util.logging.Level;
 
 public class SecurityUserFileRepository {
   public static final  String FILE_NAME        = "server-users.jsonl";

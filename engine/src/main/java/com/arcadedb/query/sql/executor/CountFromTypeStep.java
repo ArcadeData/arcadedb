@@ -22,7 +22,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.schema.DocumentType;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * Returns the number of records contained in a class (including subTypes) Executes a count(*) on a class and returns a single
@@ -83,7 +83,7 @@ public class CountFromTypeStep extends AbstractExecutionStep {
 
         } finally {
           if( context.isProfiling() ) {
-            cost += (System.nanoTime() - begin);
+            cost += System.nanoTime() - begin;
           }
         }
       }

@@ -30,6 +30,7 @@ import com.arcadedb.query.sql.parser.SubQueryCollector;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Expression wrapper that executes a DML statement (INSERT, UPDATE, DELETE, etc.) when evaluated.
@@ -96,7 +97,7 @@ public class StatementExpression extends BaseExpression {
   }
 
   @Override
-  public void toString(final java.util.Map<String, Object> params, final StringBuilder builder) {
+  public void toString(final Map<String, Object> params, final StringBuilder builder) {
     if (statement == null) {
       super.toString(params, builder);
       return;

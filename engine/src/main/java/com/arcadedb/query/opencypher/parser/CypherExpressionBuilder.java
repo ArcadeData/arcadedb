@@ -524,7 +524,7 @@ class CypherExpressionBuilder {
         if (!leftText.isEmpty() && !rightText.isEmpty()) {
           final Expression left = parseExpressionText(leftText);
           final Expression right = parseExpressionText(rightText);
-          final ComparisonExpression.Operator compOp = op.equals("<>") ?
+          final ComparisonExpression.Operator compOp = "<>".equals(op) ?
               ComparisonExpression.Operator.NOT_EQUALS :
               ComparisonExpression.Operator.fromString(op);
           // Return a BooleanExpression wrapped as Expression

@@ -22,7 +22,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.query.sql.parser.FieldMatchPathItem;
 import com.arcadedb.query.sql.parser.MultiMatchPathItem;
 
-import java.util.*;
+import java.util.NoSuchElementException;
 
 /**
  * @author Luigi Dell'Aquila

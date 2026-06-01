@@ -55,8 +55,8 @@ public class ConvertToInteger extends AbstractConvertFunction {
       return ((Number) args[0]).longValue();
     }
 
-    if (args[0] instanceof Boolean) {
-      return ((Boolean) args[0]) ? 1L : 0L;
+    if (args[0] instanceof Boolean b) {
+      return b ? 1L : 0L;
     }
 
     if (args[0] instanceof String) {

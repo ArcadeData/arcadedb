@@ -21,8 +21,8 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
-import com.arcadedb.database.bucketselectionstrategy.BucketSelectionStrategy;
 import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
@@ -123,7 +123,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     this.pattern = pattern;
     this.idFilter = idFilter;
     this.evaluator = new ExpressionEvaluator(new CypherFunctionFactory(DefaultSQLFunctionFactory.getInstance()));
-    this.dynamicIdExpression = (whereFilter != null) ? findIdValueExpression(whereFilter) : null;
+    this.dynamicIdExpression = whereFilter != null ? findIdValueExpression(whereFilter) : null;
     // When the dynamic ID expression handles {@code id(variable) = X} via runtime RID lookup, the
     // same predicate is still present in the WHERE pushdown filter. Re-evaluating it row-by-row
     // would be wasted work, and after id() became Neo4j-compatible (returns Long instead of an RID
@@ -131,7 +131,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // row entirely. Strip the predicate here so the pushdown only carries predicates that the
     // dynamic ID lookup does not already cover. The static idFilter case is handled upstream in
     // {@code CypherExecutionPlan.extractPushdownFilter}.
-    this.whereFilter = (dynamicIdExpression != null)
+    this.whereFilter = dynamicIdExpression != null
         ? stripIdEqualityForVariable(whereFilter, variable)
         : whereFilter;
   }
@@ -282,7 +282,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
                 }
               } finally {
                 if (context.isProfiling())
-                  cost += (System.nanoTime() - begin);
+                  cost += System.nanoTime() - begin;
               }
             }
           }
@@ -323,7 +323,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
               }
             } finally {
               if (context.isProfiling())
-                cost += (System.nanoTime() - begin);
+                cost += System.nanoTime() - begin;
             }
           }
 
@@ -574,7 +574,7 @@ public class MatchNodeStep extends AbstractExecutionStep {
     // TODO follow-up: hoist the bucket-list snapshot to step construction so high-fanout MATCH
     // loops (UNWIND list -> MATCH per element) don't pay {@code getBuckets(false)} per
     // iteration. See review note #8 (issue #4087 follow-up).
-    final List<? extends com.arcadedb.engine.Bucket> typeBuckets = type.getBuckets(false);
+    final List<? extends Bucket> typeBuckets = type.getBuckets(false);
     if (bucketIndex < 0 || bucketIndex >= typeBuckets.size())
       return null;
 

@@ -69,7 +69,7 @@ public class CreateEdgeExecutionPlanner {
       } else {
         final Database db = context.getDatabase();
         final DocumentType typez = db.getSchema()
-            .getTypeByBucketId((db.getSchema().getBucketByName(targetBucketName.getStringValue()).getFileId()));
+            .getTypeByBucketId(db.getSchema().getBucketByName(targetBucketName.getStringValue()).getFileId());
         if (typez != null) {
           targetType = new Identifier(typez.getName());
         } else {

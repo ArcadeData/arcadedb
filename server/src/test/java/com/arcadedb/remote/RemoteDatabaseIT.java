@@ -60,7 +60,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void simpleTxDocuments() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)
           .exists(DATABASE_NAME)).isTrue();
 
@@ -124,7 +124,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void simpleTxGraph() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -297,7 +297,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void transactionIsolation() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final int TOTAL_TRANSACTIONS = 100;
       final int BATCH_SIZE = 100;
 
@@ -379,7 +379,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void ridAsParametersInSQL() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
           DATABASE_NAME)).isTrue();
 
@@ -405,7 +405,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void dropRemoteInheritanceBroken() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
 
@@ -422,7 +422,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void transactionWrongSessionId() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
           DATABASE_NAME)).isTrue();
 
@@ -453,7 +453,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void txVisibility() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       assertThat(new RemoteServer("127.0.0.1", 2480 + serverIndex, "root", BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS).exists(
           DATABASE_NAME)).isTrue();
 
@@ -494,7 +494,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void databaseClose() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);
       assertThat(database.isOpen()).isTrue();
@@ -507,7 +507,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void databaseUniqueIndex() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       try (RemoteDatabase tx = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS);) {
         tx.getSchema().createVertexType("SimpleVertexEx").createProperty("svuuid", String.class)
@@ -543,7 +543,7 @@ class RemoteDatabaseIT extends BaseGraphServerTest {
 
   @Test
   void databaseMVCC() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       try (RemoteDatabase t1 = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
           BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
         t1.getSchema().createVertexType("SimpleVertex");

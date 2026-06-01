@@ -24,14 +24,12 @@ import java.time.LocalTime;
 import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
 import java.time.temporal.IsoFields;
 import java.time.temporal.WeekFields;
 import java.util.Map;
 import java.util.Objects;
 
 import static com.arcadedb.query.opencypher.temporal.CypherDate.toInt;
-import static com.arcadedb.query.opencypher.temporal.CypherDate.toLong;
 
 /**
  * OpenCypher DateTime value wrapping java.time.ZonedDateTime.

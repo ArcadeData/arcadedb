@@ -313,7 +313,7 @@ class ProtoUtilsTest {
     assertThat(list).hasSize(3);
     assertThat(list.get(0)).isEqualTo(1);
     assertThat(list.get(1)).isEqualTo("two");
-    assertThat(((Double) list.get(2))).isCloseTo(3.0, within(0.001));
+    assertThat((Double) list.get(2)).isCloseTo(3.0, within(0.001));
   }
 
   @Test

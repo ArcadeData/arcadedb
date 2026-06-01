@@ -25,6 +25,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -142,7 +143,7 @@ public final class GAVResult implements Result {
 
   @Override
   public Map<String, Object> toMap() {
-    final Map<String, Object> map = new java.util.LinkedHashMap<>(names.length);
+    final Map<String, Object> map = new LinkedHashMap<>(names.length);
     for (int i = 0; i < names.length; i++)
       if (names[i] != null)
         map.put(names[i], values[i]);

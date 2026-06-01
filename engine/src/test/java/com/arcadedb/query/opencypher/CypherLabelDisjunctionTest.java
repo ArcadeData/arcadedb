@@ -49,10 +49,9 @@ class CypherLabelDisjunctionTest {
     if (factory.exists())
       factory.open().drop();
     database = factory.create();
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "CREATE (:A {id: 1}), (:B {id: 2}), (:C {id: 3})");
-    });
+          "CREATE (:A {id: 1}), (:B {id: 2}), (:C {id: 3})"));
   }
 
   @AfterEach
@@ -131,11 +130,11 @@ class CypherLabelDisjunctionTest {
   void labelDisjunctionAnchorWithRelationshipFallsBackToLegacy() {
     // Anchor-side disjunction with a relationship — planner falls back to MatchNodeStep
     // (ExpandAll cannot represent OR semantics on the target side). Must still return rows.
-    database.transaction(() -> {
+    database.transaction(() ->
       database.command("opencypher",
-          "MATCH (a:A {id: 1}), (b:B {id: 2}), (c:C {id: 3}) "
-              + "CREATE (a)-[:REL]->(c), (b)-[:REL]->(c)");
-    });
+          """
+          MATCH (a:A {id: 1}), (b:B {id: 2}), (c:C {id: 3}) \
+          CREATE (a)-[:REL]->(c), (b)-[:REL]->(c)"""));
 
     final ResultSet rs = database.query("opencypher",
         "MATCH (n:A|B)-[:REL]->(m) RETURN n.id AS id ORDER BY id");

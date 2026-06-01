@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
@@ -100,7 +101,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     if (!server.existsDatabase(databaseName))
       return new ExecutionResponse(404, "{ \"error\" : \"Database '" + databaseName + "' not found\"}");
 
-    final var db = (com.arcadedb.database.DatabaseInternal) server.getDatabase(databaseName);
+    final var db = (DatabaseInternal) server.getDatabase(databaseName);
 
     // Compute local checksums with file type categorization
     final JSONObject localChecksums = new JSONObject();
@@ -288,7 +289,7 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
   private static String categorizeFile(final String fileName) {
     if (fileName == null) return "unknown";
     final String lower = fileName.toLowerCase();
-    if (lower.endsWith(".json") || lower.equals("configuration") || lower.contains("schema"))
+    if (lower.endsWith(".json") || "configuration".equals(lower) || lower.contains("schema"))
       return "config";
     if (lower.contains("index") || lower.contains(".idx") || lower.contains(".ridx") || lower.contains(".notunique")
         || lower.contains(".unique") || lower.contains(".dictionary"))

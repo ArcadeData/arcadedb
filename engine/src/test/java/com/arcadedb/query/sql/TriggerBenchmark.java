@@ -109,28 +109,25 @@ class TriggerBenchmark {
     // Warmup
     System.out.print("  Warmup...");
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.newDocument("BaselineTest")
             .set("name", "Test")
-            .save();
-      });
+            .save());
     }
     System.out.println(" done");
 
     // Cleanup
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM BaselineTest");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM BaselineTest"));
 
     // Benchmark
     System.out.print("  Benchmark...");
     long startTime = System.nanoTime();
     for (int i = 0; i < BENCHMARK_ITERATIONS; i++) {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.newDocument("BaselineTest")
             .set("name", "Test")
-            .save();
-      });
+            .save());
     }
     long endTime = System.nanoTime();
     long totalTimeNs = endTime - startTime;
@@ -163,28 +160,25 @@ class TriggerBenchmark {
     // Warmup
     System.out.print("  Warmup...");
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.newDocument("SQLTest")
             .set("name", "Test")
-            .save();
-      });
+            .save());
     }
     System.out.println(" done");
 
     // Cleanup
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM SQLTest");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM SQLTest"));
 
     // Benchmark
     System.out.print("  Benchmark...");
     long startTime = System.nanoTime();
     for (int i = 0; i < BENCHMARK_ITERATIONS; i++) {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.newDocument("SQLTest")
             .set("name", "Test")
-            .save();
-      });
+            .save());
     }
     long endTime = System.nanoTime();
     long totalTimeNs = endTime - startTime;
@@ -220,28 +214,25 @@ class TriggerBenchmark {
     // Warmup
     System.out.print("  Warmup...");
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.newDocument("JSTest")
             .set("name", "Test")
-            .save();
-      });
+            .save());
     }
     System.out.println(" done");
 
     // Cleanup
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM JSTest");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM JSTest"));
 
     // Benchmark
     System.out.print("  Benchmark...");
     long startTime = System.nanoTime();
     for (int i = 0; i < BENCHMARK_ITERATIONS; i++) {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.newDocument("JSTest")
             .set("name", "Test")
-            .save();
-      });
+            .save());
     }
     long endTime = System.nanoTime();
     long totalTimeNs = endTime - startTime;
@@ -277,28 +268,25 @@ class TriggerBenchmark {
     // Warmup
     System.out.print("  Warmup...");
     for (int i = 0; i < WARMUP_ITERATIONS; i++) {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.newDocument("JavaTest")
             .set("name", "Test")
-            .save();
-      });
+            .save());
     }
     System.out.println(" done");
 
     // Cleanup
-    database.transaction(() -> {
-      database.command("sql", "DELETE FROM JavaTest");
-    });
+    database.transaction(() ->
+      database.command("sql", "DELETE FROM JavaTest"));
 
     // Benchmark
     System.out.print("  Benchmark...");
     long startTime = System.nanoTime();
     for (int i = 0; i < BENCHMARK_ITERATIONS; i++) {
-      database.transaction(() -> {
+      database.transaction(() ->
         database.newDocument("JavaTest")
             .set("name", "Test")
-            .save();
-      });
+            .save());
     }
     long endTime = System.nanoTime();
     long totalTimeNs = endTime - startTime;
@@ -336,7 +324,7 @@ class TriggerBenchmark {
       long overhead = avgTime - baseline;
       double overheadPct = baseline > 0 ? ((double) overhead / baseline) * 100 : 0;
 
-      if (triggerType.equals("No Trigger (Baseline)")) {
+      if ("No Trigger (Baseline)".equals(triggerType)) {
         System.out.printf("%-25s │ %15d │ %15s │ %20s%n",
             triggerType, avgTime, "—", "—");
       } else {
@@ -371,17 +359,17 @@ class TriggerBenchmark {
     System.out.println();
 
     // Relative performance
-    if (!fastest.equals("SQL")) {
+    if (!"SQL".equals(fastest)) {
       double sqlSlower = ((double) (sqlTime - fastestTime) / fastestTime) * 100;
       System.out.printf("SQL is %.1f%% slower than %s%n", sqlSlower, fastest);
     }
 
-    if (!fastest.equals("JavaScript")) {
+    if (!"JavaScript".equals(fastest)) {
       double jsSlower = ((double) (jsTime - fastestTime) / fastestTime) * 100;
       System.out.printf("JavaScript is %.1f%% slower than %s%n", jsSlower, fastest);
     }
 
-    if (!fastest.equals("Java")) {
+    if (!"Java".equals(fastest)) {
       double javaSlower = ((double) (javaTime - fastestTime) / fastestTime) * 100;
       System.out.printf("Java is %.1f%% slower than %s%n", javaSlower, fastest);
     }
