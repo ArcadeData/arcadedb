@@ -133,6 +133,10 @@ public class TimeSeriesEngine implements AutoCloseable {
     } catch (final CompletionException e) {
       if (e.getCause() instanceof IOException ioe)
         throw ioe;
+      // Propagate unchecked exceptions (e.g. NullPointerException from a bug) as-is rather than
+      // obscuring them as a checked IOException and forcing callers to handle them.
+      if (e.getCause() instanceof RuntimeException re)
+        throw re;
       throw new IOException("TimeSeries append failed", e.getCause());
     }
   }

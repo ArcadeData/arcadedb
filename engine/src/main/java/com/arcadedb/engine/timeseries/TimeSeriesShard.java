@@ -540,12 +540,10 @@ public class TimeSeriesShard implements AutoCloseable {
         // appendSamples() can be in progress, so we see the fully up-to-date sample count.
         // This closes the race where samples written to page phase4aPageCount during the
         // lock-free Phase 4b would otherwise be lost when clearDataPages() runs.
-        Object[] tailData = null;
-        if (phase4aPageCount > lastFullPage && finalPageCount >= phase4aPageCount)
-          // Include phase4aPageCount itself: it may have received new samples during Phase 4b.
-          tailData = mutableBucket.readPagesRangeForCompaction(phase4aPageCount, finalPageCount);
-        else if (finalPageCount > phase4aPageCount)
-          tailData = mutableBucket.readPagesRangeForCompaction(phase4aPageCount + 1, finalPageCount);
+        // phase4aPageCount is always >= lastFullPage + 1 (Phase 0 returns early when there are
+        // no data pages), and finalPageCount is always >= phase4aPageCount (pages only grow),
+        // so the range starting at phase4aPageCount is always valid.
+        final Object[] tailData = mutableBucket.readPagesRangeForCompaction(phase4aPageCount, finalPageCount);
 
         // Merge Phase 4b spill with tail data
         final Object[] toCompressFinal;
