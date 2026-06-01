@@ -57,6 +57,11 @@ class RaftStorageDirectoryIT extends BaseRaftHATest {
       assertThat(expectedDir)
           .as("raft-storage for server %d must exist under configured raftStorageDirectory", i)
           .exists();
+
+      final File unexpectedDir = new File(getServer(i).getRootPath(), "raft-storage-" + peerIdForIndex(i));
+      assertThat(unexpectedDir)
+          .as("raft-storage for server %d must NOT be created under the default server root when raftStorageDirectory is configured", i)
+          .doesNotExist();
     }
   }
 }

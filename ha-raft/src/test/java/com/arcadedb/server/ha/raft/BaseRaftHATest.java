@@ -83,13 +83,6 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * or forced JVM kill) does not prevent the server from starting up correctly.
    * Within the same test run, {@link #restartServer(int)} preserves the Raft storage
    * because {@link GlobalConfiguration#HA_RAFT_PERSIST_STORAGE} is set to true.
-   */
-  /**
-   * Extends the base cleanup to also remove Raft storage directories.
-   * This ensures that stale Raft state from a previous test run (e.g. after a crash
-   * or forced JVM kill) does not prevent the server from starting up correctly.
-   * Within the same test run, {@link #restartServer(int)} preserves the Raft storage
-   * because {@link GlobalConfiguration#HA_RAFT_PERSIST_STORAGE} is set to true.
    * <p>
    * NOTE: this method reads {@link GlobalConfiguration#HA_RAFT_STORAGE_DIRECTORY} from
    * the global static config, not from the per-server {@link com.arcadedb.ContextConfiguration}.
