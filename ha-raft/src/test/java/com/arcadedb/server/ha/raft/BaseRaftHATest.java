@@ -87,9 +87,13 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
   @Override
   protected void deleteDatabaseFolders() {
     super.deleteDatabaseFolders();
-    final String rootPath = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    String raftDir = GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY.getValueAsString();
+    if (raftDir == null || raftDir.isEmpty())
+      raftDir = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    if (raftDir == null)
+      return;
     for (int i = 0; i < getServerCount(); i++)
-      FileUtils.deleteRecursively(new File(rootPath + File.separator + "raft-storage-" + peerIdForIndex(i)));
+      FileUtils.deleteRecursively(new File(raftDir + File.separator + "raft-storage-" + peerIdForIndex(i)));
   }
 
   @Override

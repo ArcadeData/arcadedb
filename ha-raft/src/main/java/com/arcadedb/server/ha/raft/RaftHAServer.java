@@ -228,7 +228,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
 
-    final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
+    final File storageDir = getRaftStorageDir();
     // Only delete existing Raft storage when persistence is not requested.
     // Persistent mode (HA_RAFT_PERSIST_STORAGE=true) is used in tests that restart nodes
     // within a single test run, so the Raft log survives across stop/start calls.
@@ -392,7 +392,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         this.stateMachine.setServer(arcadeServer);
 
         final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
-        final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
+        final File storageDir = getRaftStorageDir();
         RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
 
         this.raftServer = RaftServer.newBuilder()
@@ -1003,11 +1003,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   boolean hasExistingRaftStorage() {
-    final File storageDir = new File(arcadeServer.getRootPath() + File.separator + "raft-storage-" + localPeerId);
+    final File storageDir = getRaftStorageDir();
     if (!storageDir.exists())
       return false;
     final File[] subdirs = storageDir.listFiles(f -> f.isDirectory() && !f.getName().equals("lost+found"));
     return subdirs != null && subdirs.length > 0;
+  }
+
+  private File getRaftStorageDir() {
+    String raftDir = configuration.getValueAsString(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY);
+    if (raftDir == null || raftDir.isEmpty())
+      raftDir = arcadeServer.getRootPath();
+    return new File(raftDir + File.separator + "raft-storage-" + localPeerId);
   }
 
   /**
