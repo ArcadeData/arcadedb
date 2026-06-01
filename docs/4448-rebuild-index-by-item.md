@@ -39,3 +39,36 @@ and use `Type.STRING` as the key type for BY ITEM properties (consistent with Ty
 ```
 cd engine && mvn test -Dtest=ListIndexByItemTest
 ```
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4449
+
+## Review cycles
+
+### Cycle 1 - SHA c81cf97f6
+
+- **gemini-code-assist** (COMMENTED, 2026-06-01T13:44:25Z): Flagged that the fix handles
+  `" by item"` stripping but does not handle nested property paths (e.g., `nums.a BY ITEM`).
+  When the property name contains `.`, `getPolymorphicPropertyIfExists("nums.a")` returns null
+  and throws `SchemaException`. Suggested replicating the nested-path resolution block from
+  `TypeIndexBuilder.create()` (root property lookup + LIST type validation + `continue` branch).
+- **claude**: Did not review within the 15-minute window (PR open since 13:43 UTC; timeout at 13:58 UTC).
+
+## Unaddressed feedback from cycle 1 (gemini)
+
+Gemini's nested-path handling suggestion was technically sound and actionable, but was not applied
+because the `claude` bot did not complete its review within the 15-minute per-iteration timeout.
+
+The suggested change to `BucketIndexBuilder.create()`:
+- After stripping `" by item"`, if `getPolymorphicPropertyIfExists(actualPropertyName)` returns null
+  AND `actualPropertyName` contains `.`, split on the first `.` and look up the root property.
+- If root property found: validate it's a LIST (for BY ITEM), use `Type.STRING`, and `continue`.
+- If root property not found: throw the existing `SchemaException`.
+
+This is the same logic already present in `TypeIndexBuilder.create()` lines 188-211.
+
+## Final state
+
+`timeout` - claude did not review within the 15-minute window in cycle 1. Gemini's nested-path
+feedback remains unaddressed. Developer should evaluate and apply before merging.
