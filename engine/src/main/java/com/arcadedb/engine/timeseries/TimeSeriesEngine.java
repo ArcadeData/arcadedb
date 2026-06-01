@@ -115,6 +115,17 @@ public class TimeSeriesEngine implements AutoCloseable {
    * they may be routed to the same shard. For contention-free writes, use the async API
    * which provides 1:1 slot-to-shard affinity.
    * <p>
+   * <b>Performance tradeoff:</b> dispatching to the shard executor adds one thread hand-off
+   * plus a blocking {@code join()} per call.  For high-throughput single-row ingestion this
+   * is measurable overhead versus a direct in-thread call, but it is required for correctness:
+   * a direct call inside an enclosing transaction would nest and lose samples (see above).
+   * The batched {@link #appendBatch} path amortizes this hand-off over many samples.
+   * <p>
+   * <b>Threading constraint:</b> this method must NOT be invoked from a shard-executor thread.
+   * The {@code join()} would block that pool thread waiting on the same fixed-size pool, which
+   * can deadlock when every pool thread is similarly blocked.  All current callers run on
+   * request/caller threads, never on shard-executor threads.
+   * <p>
    * <b>Dictionary column constraint:</b> columns using {@code DICTIONARY} compression
    * (typically TAG columns) must not exceed {@link com.arcadedb.engine.timeseries.codec.DictionaryCodec#MAX_DICTIONARY_SIZE}
    * distinct values per sealed block. This is validated at compaction time; data that violates
@@ -137,7 +148,7 @@ public class TimeSeriesEngine implements AutoCloseable {
       // obscuring them as a checked IOException and forcing callers to handle them.
       if (e.getCause() instanceof RuntimeException re)
         throw re;
-      throw new IOException("TimeSeries append failed", e.getCause());
+      throw new IOException("TimeSeries append to shard " + shardIdx + " failed", e.getCause());
     }
   }
 
