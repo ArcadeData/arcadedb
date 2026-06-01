@@ -22,6 +22,7 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
+import com.arcadedb.server.http.HttpServer;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.Parameters;
@@ -57,6 +58,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -92,6 +94,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final RaftGroup               raftGroup;
   private final RaftPeerId              localPeerId;
   private final Map<RaftPeerId, String> httpAddresses = new HashMap<>();
+  // Logged at most once: warns operators that HTTP addresses are derived (not explicitly configured).
+  private final AtomicBoolean httpFallbackWarned = new AtomicBoolean(false);
   private final Map<RaftPeerId, String> peerDisplayNames = new ConcurrentHashMap<>();
   private final String                  clusterName;
 
@@ -204,10 +208,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Returns the HTTP address for a peer, or null if not configured.
+   * Returns the HTTP address for a peer. When the peer's HTTP port was not declared in the server
+   * list, the address is derived as a best effort from the peer's Raft host plus this node's HTTP
+   * port (see {@link #resolveHttpAddress(RaftPeerId)}); returns {@code null} only if the peer is
+   * unknown or this node's HTTP port is not yet available.
    */
   public String getPeerHttpAddress(final RaftPeerId peerId) {
-    return httpAddresses.get(peerId);
+    return resolveHttpAddress(peerId);
   }
 
   /**
@@ -529,13 +536,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Returns the HTTP address (host:port) of the current Raft leader, or {@code null} if the leader
-   * is unknown or its HTTP address was not configured in the server list.
+   * is unknown. When the leader's HTTP port was not declared in the server list, the address is
+   * derived as a best effort from the leader's Raft host plus this node's HTTP port (see
+   * {@link #resolveHttpAddress(RaftPeerId)}).
    */
   public String getLeaderHttpAddress() {
-    final RaftPeerId leaderId = getLeaderId();
-    if (leaderId == null)
-      return null;
-    return httpAddresses.get(leaderId);
+    return resolveHttpAddress(getLeaderId());
   }
 
   public RaftClient getClient() {
@@ -672,7 +678,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final Map<String, String> replicaInfo = new HashMap<>();
         replicaInfo.put("id", peer.getId().toString());
         replicaInfo.put("address", peer.getAddress().toString());
-        final String httpAddr = httpAddresses.get(peer.getId());
+        final String httpAddr = resolveHttpAddress(peer);
         if (httpAddr != null)
           replicaInfo.put("httpAddress", httpAddr);
         replicas.add(replicaInfo);
@@ -688,7 +694,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final StringBuilder sb = new StringBuilder();
     for (final RaftPeer peer : raftGroup.getPeers()) {
       if (!peer.getId().equals(excludeId)) {
-        final String httpAddr = httpAddresses.get(peer.getId());
+        final String httpAddr = resolveHttpAddress(peer);
         if (httpAddr != null) {
           if (!sb.isEmpty())
             sb.append(",");
@@ -697,6 +703,81 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
     }
     return sb.toString();
+  }
+
+  /**
+   * Resolves the HTTP address (host:port) of a peer. When the peer's HTTP port was declared
+   * explicitly in {@link GlobalConfiguration#HA_SERVER_LIST} (the {@code host:raftPort:httpPort}
+   * syntax) that value is returned. Otherwise a best-effort address is synthesized by combining the
+   * peer's Raft host with <em>this</em> node's HTTP listening port. The fallback is correct only for
+   * homogeneous deployments where every node listens on the same HTTP port (e.g. a Kubernetes
+   * StatefulSet); a one-time WARNING is logged so operators can declare explicit HTTP ports when the
+   * cluster is heterogeneous. Returns {@code null} when the peer is unknown or this node's HTTP port
+   * is not yet available.
+   */
+  private String resolveHttpAddress(final RaftPeerId peerId) {
+    if (peerId == null)
+      return null;
+    final String configured = httpAddresses.get(peerId);
+    if (configured != null)
+      return configured;
+    return deriveHttpAddressWithWarning(peerRaftAddress(peerId));
+  }
+
+  /** Overload that avoids the peer lookup when the {@link RaftPeer} is already in hand. */
+  private String resolveHttpAddress(final RaftPeer peer) {
+    final String configured = httpAddresses.get(peer.getId());
+    if (configured != null)
+      return configured;
+    return deriveHttpAddressWithWarning(peer.getAddress());
+  }
+
+  private String deriveHttpAddressWithWarning(final String raftAddress) {
+    if (raftAddress == null)
+      return null;
+    final HttpServer httpServer = arcadeServer.getHttpServer();
+    final int httpPort = httpServer != null ? httpServer.getPort() : -1;
+    final String derived = deriveHttpAddress(raftAddress, httpPort);
+    if (derived != null && httpFallbackWarned.compareAndSet(false, true))
+      LogManager.instance().log(this, Level.WARNING,
+          "HA HTTP addresses are not configured in '%s': deriving peer HTTP endpoints from each peer's Raft host plus this node's HTTP port (%d). "
+              + "This is correct only when every node listens on the same HTTP port (e.g. a Kubernetes StatefulSet). For clusters with heterogeneous "
+              + "HTTP ports, declare them explicitly using the 'host:raftPort:httpPort' syntax in %s.",
+          GlobalConfiguration.HA_SERVER_LIST.getKey(), httpPort, GlobalConfiguration.HA_SERVER_LIST.getKey());
+    return derived;
+  }
+
+  /** Returns the configured Raft address (host:port) of a peer, or {@code null} if not found. */
+  private String peerRaftAddress(final RaftPeerId peerId) {
+    for (final RaftPeer peer : raftGroup.getPeers())
+      if (peer.getId().equals(peerId))
+        return peer.getAddress();
+    return null;
+  }
+
+  /**
+   * Combines the host of a Raft address with the given HTTP port. Returns {@code null} when the port
+   * is not yet known ({@code <= 0}) or the host cannot be extracted. Package-private for testing.
+   */
+  static String deriveHttpAddress(final String raftAddress, final int httpPort) {
+    if (httpPort <= 0)
+      return null;
+    final String host = extractHost(raftAddress);
+    return host != null ? host + ":" + httpPort : null;
+  }
+
+  /**
+   * Extracts the host portion from a {@code host:port} or {@code [ipv6]:port} address. Returns the
+   * input unchanged when it carries no port, or {@code null} when blank. Package-private for testing.
+   */
+  static String extractHost(final String address) {
+    if (address == null || address.isEmpty())
+      return null;
+    final int closeBracket = address.lastIndexOf(']');
+    if (closeBracket >= 0)
+      return address.substring(0, closeBracket + 1); // [ipv6] literal, strip any :port after the bracket
+    final int colon = address.lastIndexOf(':');
+    return colon > 0 ? address.substring(0, colon) : address;
   }
 
   public RaftPeerId getLocalPeerId() {
