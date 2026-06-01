@@ -127,8 +127,10 @@ class RaftBootstrapLateNewerJoinerIT extends BaseRaftHATest {
 
     // Wipe server 2's Raft storage so Ratis re-ships log entries on rejoin (we want the apply
     // path, not InstallSnapshot, to be the carrier of BOOTSTRAP_FINGERPRINT_ENTRY).
-    final String rootPath = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
-    final File raftStorage = new File(rootPath + File.separator + "raft-storage-" + peerIdForIndex(LATE_JOINER_INDEX));
+    String raftDir = GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY.getValueAsString();
+    if (raftDir == null || raftDir.isBlank())
+      raftDir = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    final File raftStorage = new File(raftDir, "raft-storage-" + peerIdForIndex(LATE_JOINER_INDEX));
     FileUtils.deleteRecursively(raftStorage);
 
     try (final DataOutputStream out = new DataOutputStream(new FileOutputStream(lastTxIdFile))) {

@@ -83,13 +83,23 @@ public abstract class BaseRaftHATest extends BaseGraphServerTest {
    * or forced JVM kill) does not prevent the server from starting up correctly.
    * Within the same test run, {@link #restartServer(int)} preserves the Raft storage
    * because {@link GlobalConfiguration#HA_RAFT_PERSIST_STORAGE} is set to true.
+   * <p>
+   * NOTE: this method reads {@link GlobalConfiguration#HA_RAFT_STORAGE_DIRECTORY} from
+   * the global static config, not from the per-server {@link com.arcadedb.ContextConfiguration}.
+   * Subclasses that set {@code HA_RAFT_STORAGE_DIRECTORY} via {@code onServerConfiguration()}
+   * must override this method to clean up the custom directory, as shown in
+   * {@link RaftStorageDirectoryIT}.
    */
   @Override
   protected void deleteDatabaseFolders() {
     super.deleteDatabaseFolders();
-    final String rootPath = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    String raftDir = GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY.getValueAsString();
+    if (raftDir == null || raftDir.isBlank())
+      raftDir = GlobalConfiguration.SERVER_ROOT_PATH.getValueAsString();
+    if (raftDir == null)
+      return;
     for (int i = 0; i < getServerCount(); i++)
-      FileUtils.deleteRecursively(new File(rootPath + File.separator + "raft-storage-" + peerIdForIndex(i)));
+      FileUtils.deleteRecursively(new File(raftDir, "raft-storage-" + peerIdForIndex(i)));
   }
 
   @Override
