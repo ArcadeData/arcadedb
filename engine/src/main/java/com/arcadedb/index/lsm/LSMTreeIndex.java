@@ -53,7 +53,6 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.BinaryComparator;
 import com.arcadedb.serializer.BinaryTypes;
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockManager;
 import com.arcadedb.utility.RWLockContext;
 
@@ -139,7 +138,11 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
   public LSMTreeIndex(final DatabaseInternal database, final String name, final boolean unique, final String filePath
       , final int id,
                       final ComponentFile.MODE mode, final int pageSize, final int version) throws IOException {
-    this.name = FileUtils.encode(name, database.getSchema().getEncoding());
+    // The name passed here is the component name parsed from the on-disk file, which is ALREADY in its
+    // encoded form (e.g. a composite type "Foo~Water" lands on disk as "Foo%7EWater"). Re-encoding it here
+    // would double-encode it (e.g. "%7E" -> "%257E"), so the wrapper name no longer matches the persisted
+    // schema entry, breaking inherited-index lookups on multi-label/inherited types after a restart (#4454).
+    this.name = name;
     this.metadata = new IndexMetadata(null, null, -1);
     this.mutable = new LSMTreeIndexMutable(this, database, name, unique, filePath, id, mode, pageSize, version);
   }
