@@ -303,6 +303,37 @@ class RaftReplicationIT {
     }
   }
 
+  @Test
+  void httpAddressesFallBackToLocalPortWhenNotConfigured() {
+    // Reproduces a HA_SERVER_LIST that omits the HTTP port (host:raftPort only): the parsed
+    // httpAddresses map is empty, which previously left leaderAddress null and replicaAddresses
+    // empty and also broke DDL forwarding to the leader. The server must still report HTTP
+    // endpoints by combining each peer's Raft host with this node's HTTP listening port.
+    for (final ArcadeDBServer server : servers)
+      ((RaftHAPlugin) server.getHA()).getRaftHAServer().getHttpAddresses().clear();
+
+    for (final ArcadeDBServer server : servers) {
+      final RaftHAServer raftHA = ((RaftHAPlugin) server.getHA()).getRaftHAServer();
+      final int localHttpPort = server.getHttpServer().getPort();
+
+      // Leader address is derived (host known from Raft, port from this node) instead of null.
+      // Poll because a follower may briefly not yet know the leader right after election.
+      Awaitility.await()
+          .atMost(15, TimeUnit.SECONDS)
+          .pollInterval(200, TimeUnit.MILLISECONDS)
+          .until(() -> {
+            final String addr = raftHA.getLeaderHttpAddress();
+            return addr != null && addr.startsWith("localhost:");
+          });
+
+      // Replica addresses are no longer empty.
+      assertThat(raftHA.getReplicaAddresses()).isNotEmpty();
+
+      // For the local peer the derivation is exact: its own Raft host plus its own HTTP port.
+      assertThat(raftHA.getPeerHttpAddress(raftHA.getLocalPeerId())).isEqualTo("localhost:" + localHttpPort);
+    }
+  }
+
   private void waitForRatisLeader() {
     Awaitility.await()
         .atMost(15, TimeUnit.SECONDS)
