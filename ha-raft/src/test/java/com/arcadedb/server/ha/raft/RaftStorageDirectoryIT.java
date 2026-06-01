@@ -53,7 +53,7 @@ class RaftStorageDirectoryIT extends BaseRaftHATest {
     // Each server's raft-storage-<peerId> sub-folder must be created under the
     // configured parent directory, not under the server root path.
     for (int i = 0; i < getServerCount(); i++) {
-      final File expectedDir = new File(CUSTOM_RAFT_DIR + File.separator + "raft-storage-" + peerIdForIndex(i));
+      final File expectedDir = new File(CUSTOM_RAFT_DIR, "raft-storage-" + peerIdForIndex(i));
       assertThat(expectedDir)
           .as("raft-storage for server %d must exist under configured raftStorageDirectory", i)
           .exists();

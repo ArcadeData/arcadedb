@@ -1012,9 +1012,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   private File getRaftStorageDir() {
     String raftDir = configuration.getValueAsString(GlobalConfiguration.HA_RAFT_STORAGE_DIRECTORY);
-    if (raftDir == null || raftDir.isEmpty())
+    if (raftDir == null || raftDir.isBlank())
       raftDir = arcadeServer.getRootPath();
-    return new File(raftDir + File.separator + "raft-storage-" + localPeerId);
+    return new File(raftDir, "raft-storage-" + localPeerId);
   }
 
   /**
