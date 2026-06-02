@@ -80,6 +80,9 @@ public class TimeSeriesShard implements AutoCloseable {
   /**
    * Test-only hook. When non-null, fires in {@link #compactInternal()} immediately before Phase 4c
    * acquires the write lock. Used to race concurrent appends against Phase 4c deterministically.
+   * <p>
+   * Tests that set this MUST reset it to {@code null} in an {@code @AfterEach} method, otherwise
+   * it leaks into subsequent tests in the same JVM and silently alters their compaction timing.
    */
   public static volatile Runnable TEST_PRE_PHASE4C_HOOK = null;
 
@@ -219,6 +222,9 @@ public class TimeSeriesShard implements AutoCloseable {
               db.rollback();
             if (attempt == 1)
               throw new IOException("Failed to append timeseries samples after compaction-race retries", e);
+            LogManager.instance().log(this, Level.FINE,
+                "CME on TimeSeries append for shard %d (attempt %d/3) - retrying after compaction Phase 4c race",
+                shardIndex, 4 - attempt);
             // else loop again
           } catch (final Exception e) {
             if (db.isTransactionActive())
@@ -413,7 +419,8 @@ public class TimeSeriesShard implements AutoCloseable {
     compactionLock.writeLock().lock();
     try {
       int phase0Retrieved = -1;
-      for (int attempt = 0; attempt < 3; attempt++) {
+      // Count down to mirror the retry convention used in appendSamples().
+      for (int attempt = 3; attempt > 0; attempt--) {
         db.begin();
         try {
           final int pageCount = mutableBucket.getDataPageCount();
@@ -442,7 +449,7 @@ public class TimeSeriesShard implements AutoCloseable {
         } catch (final ConcurrentModificationException e) {
           if (db.isTransactionActive())
             db.rollback();
-          if (attempt == 2)
+          if (attempt == 1)
             throw new IOException("Compaction failed in phase 0 after retries", e);
           // An in-flight append committed page-0 between begin and commit; retry with the
           // latest version.
@@ -452,6 +459,9 @@ public class TimeSeriesShard implements AutoCloseable {
           throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 0", e);
         }
       }
+      // Every loop iteration that does not break either returns or throws, so a successful
+      // exit always sets phase0Retrieved to the snapshot page count. Make the invariant explicit.
+      assert phase0Retrieved >= 0 : "Phase 0 exited the retry loop without a valid page count";
       snapshotDataPageCount = phase0Retrieved;
     } finally {
       compactionLock.writeLock().unlock();

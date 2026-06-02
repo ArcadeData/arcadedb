@@ -99,6 +99,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Test-only WAL gap counter. When non-null, incremented each time a follower detects a
    * WAL page-version gap. Used by deterministic tests to verify no gap occurred.
+   * <p>
+   * Tests that set this MUST reset it to {@code null} in an {@code @AfterEach} method, otherwise
+   * it leaks into subsequent tests in the same JVM.
    */
   public static volatile AtomicInteger TEST_WAL_GAP_COUNTER = null;
 
