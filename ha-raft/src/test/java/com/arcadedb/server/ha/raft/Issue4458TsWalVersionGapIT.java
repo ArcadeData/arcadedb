@@ -162,9 +162,14 @@ class Issue4458TsWalVersionGapIT extends BaseRaftHATest {
     assertThat(gapCounter.get())
         .as("follower must see zero WAL version gaps during compaction race").isZero();
 
-    // Data-integrity: both nodes must converge to the same count.
+    // Data-integrity: the leader must not have lost samples, and both nodes must converge to the
+    // same count. The lower-bound check guards against the degenerate case where the leader itself
+    // dropped data (e.g. retry exhaustion) and the follower merely agrees on the lower count.
+    final long expectedMinimum = 250L + (long) appendThreads * appendsPerThread;
     final long leaderCount = ((Number) leaderDb.command("sql", "SELECT count(*) AS cnt FROM sensor")
         .next().getProperty("cnt")).longValue();
+    assertThat(leaderCount)
+        .as("no samples lost on the leader during the compaction race").isEqualTo(expectedMinimum);
     final int followerIndex = 1 - leaderIndex;
     final Database followerDb = getServerDatabase(followerIndex, getDatabaseName());
     final long deadline = System.currentTimeMillis() + 30_000;

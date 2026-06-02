@@ -57,6 +57,9 @@ public class TimeSeriesShard implements AutoCloseable {
   private final long                   compactionBucketIntervalMs;
   private final TimeSeriesBucket       mutableBucket;
   private final TimeSeriesSealedStore  sealedStore;
+  // LOCK ORDERING: any code path that takes both {@link #appendLock} and {@link #compactionLock}
+  // MUST acquire appendLock FIRST (see appendSamples()). compact() takes only compactionLock
+  // (never appendLock), so no inversion exists today; preserve this order to keep it that way.
   // Read lock: held by scan/iterate (concurrent reads allowed).
   // Write lock: held by compact() to prevent queries from seeing data twice
   // during the window where sealed blocks are written but mutable not yet cleared.
@@ -222,9 +225,10 @@ public class TimeSeriesShard implements AutoCloseable {
               db.rollback();
             if (attempt == 1)
               throw new IOException("Failed to append timeseries samples after compaction-race retries", e);
+            final int attemptNumber = 4 - attempt; // ascending 1..3 for human-readable logging
             LogManager.instance().log(this, Level.FINE,
                 "CME on TimeSeries append for shard %d (attempt %d/3) - retrying after compaction Phase 4c race",
-                shardIndex, 4 - attempt);
+                shardIndex, attemptNumber);
             // else loop again
           } catch (final Exception e) {
             if (db.isTransactionActive())
