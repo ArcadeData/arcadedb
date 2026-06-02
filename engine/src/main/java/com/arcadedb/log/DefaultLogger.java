@@ -43,6 +43,7 @@ public class DefaultLogger implements Logger {
   private static final String DEFAULT_LOG                  = "com.arcadedb";
   private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
   private static final String FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
+  private static final String DEFAULT_LOG_DIR              = "./log";
 
   /**
    * Static so that a second {@link DefaultLogger} instance installed via
@@ -105,6 +106,18 @@ public class DefaultLogger implements Logger {
     createLogDirectoryFromConfig();
 
     installCustomFormatter();
+  }
+
+  /**
+   * Resolves ${...} system-property / environment-variable placeholders in a JUL FileHandler
+   * pattern. An unresolved placeholder is replaced by the default directory {@code ./log}; a
+   * pattern with no placeholders is returned unchanged. This is what allows the file-log
+   * directory to be pointed at a writable location on a read-only root filesystem.
+   */
+  private static String resolveConfigurableLogDir(final String pattern) {
+    if (pattern == null)
+      return null;
+    return SystemVariableResolver.INSTANCE.resolveSystemVariables(pattern, DEFAULT_LOG_DIR);
   }
 
   /**

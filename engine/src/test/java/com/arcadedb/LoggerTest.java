@@ -166,6 +166,58 @@ class LoggerTest extends TestHelper {
   }
 
   /**
+   * Issue #4451: an unset ${arcadedb.server.logsDirectory} placeholder must fall back to "./log"
+   * so existing single-host installs are unaffected.
+   */
+  @Test
+  void logDirPlaceholderFallsBackToDefaultWhenUnset() throws Exception {
+    final String prev = System.getProperty("arcadedb.server.logsDirectory");
+    System.clearProperty("arcadedb.server.logsDirectory");
+    try {
+      final String resolved = invokeResolveLogDir("${arcadedb.server.logsDirectory}/arcadedb.log");
+      assertThat(resolved).isEqualTo("./log/arcadedb.log");
+    } finally {
+      if (prev != null)
+        System.setProperty("arcadedb.server.logsDirectory", prev);
+    }
+  }
+
+  /**
+   * Issue #4451: ${arcadedb.server.logsDirectory} must resolve from the system property so logs
+   * can be relocated to a writable mount on a read-only root filesystem.
+   */
+  @Test
+  void logDirPlaceholderResolvesFromSystemProperty() throws Exception {
+    final String prev = System.getProperty("arcadedb.server.logsDirectory");
+    System.setProperty("arcadedb.server.logsDirectory", "/var/writable/arcade-logs");
+    try {
+      final String resolved = invokeResolveLogDir("${arcadedb.server.logsDirectory}/arcadedb.log");
+      assertThat(resolved).isEqualTo("/var/writable/arcade-logs/arcadedb.log");
+    } finally {
+      if (prev != null)
+        System.setProperty("arcadedb.server.logsDirectory", prev);
+      else
+        System.clearProperty("arcadedb.server.logsDirectory");
+    }
+  }
+
+  /**
+   * Issue #4451: a literal FileHandler pattern with no ${...} placeholder must pass through
+   * unchanged, so operators using an absolute path are unaffected.
+   */
+  @Test
+  void logDirLiteralPatternPassesThroughUnchanged() throws Exception {
+    final String resolved = invokeResolveLogDir("/custom/log/arcadedb.log");
+    assertThat(resolved).isEqualTo("/custom/log/arcadedb.log");
+  }
+
+  private static String invokeResolveLogDir(final String pattern) throws ReflectiveOperationException {
+    final java.lang.reflect.Method m = DefaultLogger.class.getDeclaredMethod("resolveConfigurableLogDir", String.class);
+    m.setAccessible(true);
+    return (String) m.invoke(null, pattern);
+  }
+
+  /**
    * Reset DefaultLogger.initialized so init() actually runs in tests that exercise the
    * directory-creation logic. The static flag exists to prevent a second DefaultLogger
    * (typically installed by tests that swap in a capturing logger) from re-reading the
