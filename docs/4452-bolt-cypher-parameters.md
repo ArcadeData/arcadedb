@@ -41,3 +41,37 @@ Five regression tests added to `BoltProtocolIT`:
 5. `vlpMatchWithParametersInTransaction` - same within an explicit transaction
 
 All 76 Bolt tests pass (28s run).
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4459
+
+## Review cycles
+
+- **Cycle 1** - HEAD `f1a5a86`. Gemini: 3 inline comments suggesting `try-finally` + `DETACH DELETE`
+  cleanup. Claude: "Up to standards", 0 blocking, 4 advisory items.
+  - Applied (claude): explicit `assertThat(allNodes.hasNext()).isFalse()` in `matchByIdParameter`;
+    stored parent-id `Result` + `hasNext()` check before `.next()` in both VLP tests; comment on the
+    clean-per-test-database dependency; comment clarifying `*0..` is intentional (mirrors the issue's
+    query, zero-hop filtered by the target label).
+  - Skipped (gemini cleanup nits): `BaseGraphServerTest` recreates the database per test method
+    (`@BeforeEach` deletes + recreates, `@AfterEach` drops) and each test uses unique type names, so
+    there is no cross-test pollution; manual cleanup would also break consistency with every existing
+    test in `BoltProtocolIT`. Claude independently confirmed this. Replied on all three threads.
+- **Cycle 2** - HEAD `51a711e18`. Gemini: same 3 cleanup nits carried forward (no fresh review).
+  Claude: "Approve with minor suggestions", 0 blocking, 3 advisory items.
+  - Applied (claude): wrapped `vlpMatchWithParameters` setup in a single transaction for consistency
+    with `vlpMatchWithParametersInTransaction`; comment noting `ORDER BY n.score` is load-bearing.
+  - Skipped (claude): consolidating setup into a comma-separated CREATE - purely cosmetic, claude
+    labeled it "not a blocker"; the per-statement form is clearer.
+- **Cycle 3** - HEAD `1e8a27b8`. Gemini: same 3 cleanup nits carried forward. Claude: one blocking
+  item - remove the committed `docs/review-deferred-*.md` workflow-metadata files (established project
+  decision, see `docs/4397-matchescondition-regex-hashcode-collision.md`).
+  - Applied: removed `docs/review-deferred-f1a5a86.md` and `docs/review-deferred-51a711e.md`; their
+    rationale is captured in this section instead.
+
+## Final state
+
+clean-approval - all actionable bot feedback addressed. The only recurring open items are gemini's
+cleanup nits, which are non-applicable for this test framework (justified-skip, replies on threads,
+corroborated by claude across all cycles).
