@@ -92,13 +92,6 @@ if [ -z "$JAVA_OPTS_SCRIPT" ]; then
         --enable-native-access=ALL-UNNAMED"
 fi
 
-# Optional: relocate log files to a writable directory (e.g. on read-only root filesystems).
-# ARCADEDB_LOG_DIR maps to the arcadedb.server.logsDirectory configuration referenced by
-# config/arcadedb-log.properties. When unset, logs default to ./log.
-if [ -n "$ARCADEDB_LOG_DIR" ]; then
-  JAVA_OPTS_SCRIPT="$JAVA_OPTS_SCRIPT -Darcadedb.server.logsDirectory=$ARCADEDB_LOG_DIR"
-fi
-
 if [ -z "$ARCADEDB_JMX" ]; then
   ARCADEDB_JMX="-Dcom.sun.management.jmxremote=true \
         -Dcom.sun.management.jmxremote.local.only=false \
@@ -110,9 +103,14 @@ fi
 
 echo $$ >$ARCADEDB_PID
 
+# Optional: relocate log files to a writable directory (e.g. on read-only root filesystems).
+# ARCADEDB_LOG_DIR maps to the arcadedb.server.logsDirectory configuration referenced by
+# config/arcadedb-log.properties. When unset, no argument is added and logs default to ./log.
+# Passed as a quoted, conditional argument so a path containing spaces stays a single argument.
 exec "$JAVA" $JAVA_OPTS \
   $ARCADEDB_OPTS_MEMORY \
   $JAVA_OPTS_SCRIPT \
+  ${ARCADEDB_LOG_DIR:+"-Darcadedb.server.logsDirectory=$ARCADEDB_LOG_DIR"} \
   $ARCADEDB_JMX \
   $ARCADEDB_SETTINGS \
   -cp "$ARCADEDB_HOME/lib/*" \
