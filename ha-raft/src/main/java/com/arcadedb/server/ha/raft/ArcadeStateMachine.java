@@ -65,6 +65,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -94,6 +95,15 @@ import java.util.logging.Level;
  * interrupted by a process crash.
  */
 public class ArcadeStateMachine extends BaseStateMachine {
+
+  /**
+   * Test-only WAL gap counter. When non-null, incremented each time a follower detects a
+   * WAL page-version gap. Used by deterministic tests to verify no gap occurred.
+   * <p>
+   * Tests that set this MUST reset it to {@code null} in an {@code @AfterEach} method, otherwise
+   * it leaks into subsequent tests in the same JVM.
+   */
+  public static volatile AtomicInteger TEST_WAL_GAP_COUNTER = null;
 
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
@@ -577,6 +587,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } catch (final WALVersionGapException e) {
       // Version gap: WAL page version > DB page version + 1 - an intermediate transaction
       // was never applied on this node. State has diverged; trigger snapshot resync.
+      final AtomicInteger gapCounter = TEST_WAL_GAP_COUNTER;
+      if (gapCounter != null)
+        gapCounter.incrementAndGet();
       LogManager.instance().log(this, Level.SEVERE,
           "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
           decoded.databaseName(), walTx.txId, e.getMessage());
