@@ -939,6 +939,14 @@ public class BoltNetworkExecutor extends Thread {
         // Database name changed, need to switch
         database = null;
       } else {
+        // Update current user on the existing context to handle LOGOFF/LOGON re-authentication
+        // on the same connection without disrupting any open transactions.
+        if (user != null) {
+          final DatabaseContext.DatabaseContextTL ctx =
+              DatabaseContext.INSTANCE.getContextIfExists(((DatabaseInternal) database).getDatabasePath());
+          if (ctx != null)
+            ctx.setCurrentUser(user.getDatabaseUser(database));
+        }
         return true;
       }
     }
