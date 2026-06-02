@@ -1,0 +1,56 @@
+# Fix #4456 - Bolt follower forwarding: no authenticated user in security context
+
+## Issue
+
+Bolt protocol write queries (`CREATE`, `MERGE`, etc.) fail with
+`Cannot forward command to leader: no authenticated user in the current security context`
+when the connection lands on a Raft HA follower instead of the leader.
+
+REST/HTTP is unaffected. Reported against an EKS deployment with the Helm chart.
+
+## Root Cause
+
+`BoltNetworkExecutor.ensureDatabase()` resolves the database via `server.getDatabase(targetName)`
+but never calls `DatabaseContext.INSTANCE.init(...).setCurrentUser(...)`.
+
+On a follower write, `RaftReplicatedDatabase.forwardCommandToLeaderViaRaft` reads
+`proxied.getCurrentUserName()` (line 1523) to build the `X-ArcadeDB-Forwarded-User` header.
+Because the current user was never bound to the thread-local `DatabaseContext`, this returns
+`null` and a `SecurityException` is thrown (line 1526).
+
+### Identical bug fixed previously in gRPC
+
+`GrpcFollowerForwardingIT` tests the same fix for the gRPC module. Recorded guidance:
+> "any new wire-protocol module (Bolt, MongoDB, Redis) MUST set current user on DatabaseContext
+> after init or HA follower writes fail silently under load."
+
+Bolt never received that treatment.
+
+### Also affected: mongodbw and redisw
+
+Both `mongodbw` and `redisw` also have zero `DatabaseContext`/`setCurrentUser` references.
+Whether their write paths hit the same `.command()` forwarding code needs verification
+during implementation; follow-up issues will be filed if their failure mode differs.
+
+## Fix
+
+In `BoltNetworkExecutor.ensureDatabase()`, after `database = server.getDatabase(targetName)`,
+bind the already-authenticated `ServerSecurityUser user` onto the thread-local context:
+
+```java
+DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(user.getDatabaseUser(database));
+```
+
+This mirrors `PostgresNetworkExecutor.openDatabase()` line 1509 and the gRPC fix.
+
+## Files Changed
+
+- `bolt/src/main/java/com/arcadedb/bolt/BoltNetworkExecutor.java` - bind user in `ensureDatabase()`
+- `bolt/src/test/java/com/arcadedb/bolt/BoltFollowerForwardingIT.java` - new 3-node HA regression test
+- `bolt/pom.xml` - add arcadedb-ha-raft test+test-jar deps (mirrors grpcw/pom.xml)
+
+## Test Plan
+
+1. `BoltFollowerForwardingIT`: 3-node Raft cluster, Neo4j driver writes to a follower,
+   asserts write succeeds and replicates to all 3 nodes.
+2. Existing Bolt tests: `mvn -pl bolt -am test` - must all pass.

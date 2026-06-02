@@ -36,6 +36,7 @@ import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.Index;
@@ -967,6 +968,8 @@ public class BoltNetworkExecutor extends Thread {
         state = State.FAILED;
         return false;
       }
+      if (user != null)
+        DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(user.getDatabaseUser(database));
       return true;
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Unknown error";
