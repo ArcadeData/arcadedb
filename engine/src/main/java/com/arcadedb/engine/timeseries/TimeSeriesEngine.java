@@ -101,30 +101,9 @@ public class TimeSeriesEngine implements AutoCloseable {
   /**
    * Appends samples, routing to a shard using round-robin distribution.
    * <p>
-   * The write is dispatched to the shard executor so it runs on a thread that has no
-   * enclosing caller transaction.  This ensures that the internal {@code begin/commit}
-   * cycle in {@link TimeSeriesShard#appendSamples} operates as a true top-level
-   * transaction and immediately publishes the mutable-bucket page updates to the
-   * page-manager cache.  When called from inside an enclosing transaction (as happens
-   * on the SQL INSERT path), a nested begin/commit defers the page-cache update to the
-   * outer transaction commit, which occurs outside the per-shard {@code appendLock}; a
-   * following serialized append then reads a stale slot count and writes to the same
-   * slot, silently overwriting the preceding sample.
-   * <p>
    * Note: this method is not synchronized. When multiple threads call it concurrently,
    * they may be routed to the same shard. For contention-free writes, use the async API
    * which provides 1:1 slot-to-shard affinity.
-   * <p>
-   * <b>Performance tradeoff:</b> dispatching to the shard executor adds one thread hand-off
-   * plus a blocking {@code join()} per call.  For high-throughput single-row ingestion this
-   * is measurable overhead versus a direct in-thread call, but it is required for correctness:
-   * a direct call inside an enclosing transaction would nest and lose samples (see above).
-   * The batched {@link #appendBatch} path amortizes this hand-off over many samples.
-   * <p>
-   * <b>Threading constraint:</b> this method must NOT be invoked from a shard-executor thread.
-   * The {@code join()} would block that pool thread waiting on the same fixed-size pool, which
-   * can deadlock when every pool thread is similarly blocked.  All current callers run on
-   * request/caller threads, never on shard-executor threads.
    * <p>
    * <b>Dictionary column constraint:</b> columns using {@code DICTIONARY} compression
    * (typically TAG columns) must not exceed {@link com.arcadedb.engine.timeseries.codec.DictionaryCodec#MAX_DICTIONARY_SIZE}
@@ -132,33 +111,8 @@ public class TimeSeriesEngine implements AutoCloseable {
    * the limit will cause compaction to fail. Plan tag cardinality accordingly.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
-    // Guard against the deadlock described in the Javadoc: a shard-executor thread blocking on
-    // join() of the same fixed-size pool. Disabled in production (asserts off by default); catches
-    // misuse in test runs.
-    assert !Thread.currentThread().getName().startsWith("ArcadeDB-TS-Shard-" + typeName)
-        : "appendSamples must not be called from a shard-executor thread (would block its own pool)";
-
     final int shardIdx = (int) Math.floorMod(appendCounter.getAndIncrement(), (long) shardCount);
-    try {
-      CompletableFuture.runAsync(() -> {
-        try {
-          shards[shardIdx].appendSamples(timestamps, columnValues);
-        } catch (final IOException e) {
-          throw new CompletionException(e);
-        }
-      }, shardExecutor).join();
-    } catch (final CompletionException e) {
-      // Unwrap to preserve the original exception's type across the IOException boundary this
-      // method declares: IOException stays checked, Error and RuntimeException stay unchecked.
-      // Only a genuinely unexpected checked cause falls through to the IOException wrapper.
-      if (e.getCause() instanceof IOException ioe)
-        throw ioe;
-      if (e.getCause() instanceof Error err)
-        throw err;
-      if (e.getCause() instanceof RuntimeException re)
-        throw re;
-      throw new IOException("TimeSeries append to shard " + shardIdx + " failed", e.getCause());
-    }
+    shards[shardIdx].appendSamples(timestamps, columnValues);
   }
 
   /**
@@ -233,14 +187,8 @@ public class TimeSeriesEngine implements AutoCloseable {
     try {
       CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
     } catch (final CompletionException e) {
-      // Preserve the original exception type across the IOException boundary, mirroring
-      // appendSamples: IOException stays checked, Error and RuntimeException stay unchecked.
       if (e.getCause() instanceof IOException ioe)
         throw ioe;
-      if (e.getCause() instanceof Error err)
-        throw err;
-      if (e.getCause() instanceof RuntimeException re)
-        throw re;
       throw new IOException("Parallel batch shard write failed", e.getCause());
     }
   }

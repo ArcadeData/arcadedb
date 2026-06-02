@@ -37,14 +37,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * time series type. Each INSERT runs in its own transaction (as it does over the HTTP/wire path),
  * and the engine append must not drop a sample under concurrency.
  * <p>
- * This test exercises BOTH data-loss paths fixed for this scenario:
- * <ol>
- *   <li>the nested-transaction slot collision on the per-row append path, and</li>
- *   <li>the compaction Phase-4 race: the background TimeSeries maintenance scheduler runs an
- *       automatic compaction a few seconds into the run (well within this test's runtime), so the
- *       lock-free Phase 4b overlaps the concurrent inserts.  Before the Phase-4 fix the run lost a
- *       handful of samples even with the slot-collision fix in place.</li>
- * </ol>
+ * The loss is a compaction Phase-4 race: the background TimeSeries maintenance scheduler runs an
+ * automatic compaction a few seconds into the run (well within this test's runtime), so the
+ * lock-free Phase 4b overlaps the concurrent inserts.  Before the Phase-4 fix the last partial data
+ * page was read in Phase 4a and then cleared, dropping any samples written to it during Phase 4b;
+ * the fix defers reading that page to Phase 4c under the write lock so those samples are captured.
  */
 @Tag("slow")
 class TimeSeriesConcurrentInsertTest extends TestHelper {
