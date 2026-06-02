@@ -21,6 +21,8 @@ package com.arcadedb.log;
 import com.arcadedb.utility.AnsiLogFormatter;
 import com.arcadedb.utility.SystemVariableResolver;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -43,6 +45,10 @@ public class DefaultLogger implements Logger {
   private static final String DEFAULT_LOG                  = "com.arcadedb";
   private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
   private static final String FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
+  // Fallback when ${arcadedb.server.logsDirectory} cannot be resolved (e.g. the first log fires during
+  // GlobalConfiguration's own static init, before its values are queryable). Must stay in sync with the
+  // default of GlobalConfiguration.SERVER_LOGS_DIRECTORY (asserted by DefaultLoggerLogDirTest).
+  static final String DEFAULT_LOG_DIR              = "./log";
 
   /**
    * Static so that a second {@link DefaultLogger} instance installed via
@@ -108,12 +114,25 @@ public class DefaultLogger implements Logger {
   }
 
   /**
+   * Resolves ${...} system-property / environment-variable placeholders in a JUL FileHandler
+   * pattern. An unresolved placeholder - including a non-standard one in an operator-supplied
+   * {@code arcadedb-log.properties} - is replaced by the default directory {@code ./log}; a
+   * pattern with no placeholders is returned unchanged. This is what allows the file-log
+   * directory to be pointed at a writable location on a read-only root filesystem.
+   */
+  static String resolveConfigurableLogDir(final String pattern) {
+    if (pattern == null)
+      return null;
+    return SystemVariableResolver.INSTANCE.resolveSystemVariables(pattern, DEFAULT_LOG_DIR);
+  }
+
+  /**
    * Reads the pending log-configuration source (the same one that {@link #installCustomFormatter()}
    * will later load into the LogManager) and pre-creates the parent directory of the configured
    * {@code java.util.logging.FileHandler.pattern}, if any.
    */
   private void createLogDirectoryFromConfig() {
-    final String pattern = findConfiguredFileHandlerPattern();
+    final String pattern = resolveConfigurableLogDir(findConfiguredFileHandlerPattern());
     if (pattern == null)
       return;
 
@@ -220,14 +239,29 @@ public class DefaultLogger implements Logger {
       }
     }
 
-    if (stream != null)
-      try {
-        LogManager.getLogManager().readConfiguration(stream);
+    if (stream != null) {
+      try (final InputStream in = stream) {
+        // Load the configuration so we can resolve ${...} placeholders in FileHandler.pattern
+        // before JUL eagerly opens the log file. This lets the log directory be configured via
+        // the arcadedb.server.logsDirectory system property / environment variable, which is the
+        // only path resolvable this early (the server root path is not set yet at first log).
+        // The Properties round-trip drops the source file's comments and adds a timestamp header;
+        // both are harmless because JUL reads only key/value pairs.
+        final Properties props = new Properties();
+        props.load(in);
+
+        final String pattern = props.getProperty("java.util.logging.FileHandler.pattern");
+        if (pattern != null)
+          props.setProperty("java.util.logging.FileHandler.pattern", resolveConfigurableLogDir(pattern));
+
+        final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        props.store(buffer, null);
+        LogManager.getLogManager().readConfiguration(new ByteArrayInputStream(buffer.toByteArray()));
       } catch (final IOException e) {
         // NOT FOUND, APPLY DEFAULTS
         System.err.println("Cannot find ArcadeDB log file `arcadedb-log.properties`. Using default settings");
       }
-    else
+    } else
       System.err.println("Cannot find ArcadeDB log file `arcadedb-log.properties`. Using default settings");
 
     final boolean installCustomFormatter = Boolean.parseBoolean(

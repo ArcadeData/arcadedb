@@ -201,4 +201,11 @@ class GlobalConfigurationTest extends TestHelper {
 
     GlobalConfiguration.INITIAL_PAGE_CACHE_SIZE.setValue(original);
   }
+
+  @Test
+  void serverLogsDirectoryHasExpectedKeyAndDefault() {
+    assertThat(GlobalConfiguration.SERVER_LOGS_DIRECTORY.getKey()).isEqualTo("arcadedb.server.logsDirectory");
+    assertThat(GlobalConfiguration.SERVER_LOGS_DIRECTORY.getValueAsString()).isEqualTo("./log");
+    assertThat(GlobalConfiguration.SERVER_LOGS_DIRECTORY.getScope()).isEqualTo(GlobalConfiguration.SCOPE.JVM);
+  }
 }

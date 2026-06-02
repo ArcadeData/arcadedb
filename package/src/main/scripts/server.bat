@@ -87,6 +87,10 @@ set JAVA_OPTS_SCRIPT=-XX:+HeapDumpOnOutOfMemoryError ^
   -Djava.util.logging.config.file=config/arcadedb-log.properties ^
   --enable-native-access=ALL-UNNAMED
 
+rem Optional: relocate log files to a writable directory (e.g. read-only root filesystems).
+rem ARCADEDB_LOG_DIR maps to arcadedb.server.logsDirectory used by config/arcadedb-log.properties.
+if not "%ARCADEDB_LOG_DIR%"=="" set JAVA_OPTS_SCRIPT=%JAVA_OPTS_SCRIPT% "-Darcadedb.server.logsDirectory=%ARCADEDB_LOG_DIR%"
+
 rem ARCADEDB memory options, default uses the available RAM. To set it to a specific value, like 2GB of heap, use "-Xms2G -Xmx2G".
 rem
 rem Tip for low-footprint setups (e.g. arcadedb.profile=low-ram): prefer a small initial heap

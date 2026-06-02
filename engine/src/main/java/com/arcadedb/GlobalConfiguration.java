@@ -550,6 +550,11 @@ public enum GlobalConfiguration {
       "Root path in the file system where the server is looking for files. By default is the current directory", String.class,
       null),
 
+  // Default must stay in sync with DefaultLogger.DEFAULT_LOG_DIR so the resolver fallback and the config default agree.
+  SERVER_LOGS_DIRECTORY("arcadedb.server.logsDirectory", SCOPE.JVM,
+      "Directory where the server writes log files, referenced as ${arcadedb.server.logsDirectory} in arcadedb-log.properties. Defaults to './log'; set to an absolute writable path for read-only root filesystems.",
+      String.class, "./log"),
+
   SERVER_DATABASE_DIRECTORY("arcadedb.server.databaseDirectory", SCOPE.JVM, "Directory containing the database", String.class,
       "${arcadedb.server.rootPath}/databases"),
 
