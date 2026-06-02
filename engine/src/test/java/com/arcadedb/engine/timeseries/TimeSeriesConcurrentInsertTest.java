@@ -20,7 +20,6 @@ package com.arcadedb.engine.timeseries;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -37,15 +36,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Regression test for silent sample loss when many concurrent single-row INSERTs target the same
  * time series type. Each INSERT runs in its own transaction (as it does over the HTTP/wire path),
  * and the engine append must not drop a sample under concurrency.
+ * <p>
+ * The loss is a compaction Phase-4 race: the background TimeSeries maintenance scheduler runs an
+ * automatic compaction a few seconds into the run (well within this test's runtime), so the
+ * lock-free Phase 4b overlaps the concurrent inserts.  Before the Phase-4 fix the last partial data
+ * page was read in Phase 4a and then cleared, dropping any samples written to it during Phase 4b;
+ * the fix defers reading that page to Phase 4c under the write lock so those samples are captured.
  */
 @Tag("slow")
 class TimeSeriesConcurrentInsertTest extends TestHelper {
 
   @Test
-  @Disabled("Reproduces a known sample-loss under many concurrent single-row INSERTs into a time "
-      + "series type: serialized per-shard appends can read a stale per-page sample count and write the "
-      + "same row slot, so one sample is overwritten. Enable once the time series append path makes the "
-      + "slot read-modify-write durable under the per-shard append lock.")
   void concurrentSingleRowInsertsDoNotLoseSamples() throws Exception {
     // One shard maximizes contention: every concurrent append serializes on the same shard and
     // contends for the same mutable-bucket data page, which is exactly where the lost update occurs.
