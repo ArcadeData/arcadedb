@@ -1277,6 +1277,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * {@link GlobalConfiguration#HA_QUORUM_TIMEOUT} so we never deadlock if a recorder thread
    * crashed without releasing the session; on timeout we proceed with the original ordering
    * race rather than locking up writes indefinitely.
+   * <p>
+   * Note: the TimeSeries compaction/append deadlock (issue #4458) is fixed at the source -
+   * {@code TimeSeriesShard.appendSamples} no longer holds the compaction read lock while calling
+   * this method, so Phase 4c can complete and end the recording session promptly. This timeout
+   * remains as a defensive safety net for any other recorder thread that crashes mid-session; it
+   * is intentionally retained, not dead code.
    */
   private void waitForActiveRecordingSession() {
     if (proxied.getFileManager().getRecordedChanges() == null)

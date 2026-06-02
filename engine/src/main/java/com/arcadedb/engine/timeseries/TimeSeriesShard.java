@@ -24,6 +24,7 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
@@ -56,6 +57,9 @@ public class TimeSeriesShard implements AutoCloseable {
   private final long                   compactionBucketIntervalMs;
   private final TimeSeriesBucket       mutableBucket;
   private final TimeSeriesSealedStore  sealedStore;
+  // LOCK ORDERING: any code path that takes both {@link #appendLock} and {@link #compactionLock}
+  // MUST acquire appendLock FIRST (see appendSamples()). compact() takes only compactionLock
+  // (never appendLock), so no inversion exists today; preserve this order to keep it that way.
   // Read lock: held by scan/iterate (concurrent reads allowed).
   // Write lock: held by compact() to prevent queries from seeing data twice
   // during the window where sealed blocks are written but mutable not yet cleared.
@@ -75,6 +79,15 @@ public class TimeSeriesShard implements AutoCloseable {
   // Throttle (60s window) for the oversized-sealed-store WARNING so a permanently-too-large shard
   // does not spam the log every maintenance cycle.
   private volatile long                lastOversizedWarnMs = 0;
+
+  /**
+   * Test-only hook. When non-null, fires in {@link #compactInternal()} immediately before Phase 4c
+   * acquires the write lock. Used to race concurrent appends against Phase 4c deterministically.
+   * <p>
+   * Tests that set this MUST reset it to {@code null} in an {@code @AfterEach} method, otherwise
+   * it leaks into subsequent tests in the same JVM and silently alters their compaction timing.
+   */
+  public static volatile Runnable TEST_PRE_PHASE4C_HOOK = null;
 
   public TimeSeriesShard(final DatabaseInternal database, final String baseName, final int shardIndex,
                          final List<ColumnDefinition> columns) throws IOException {
@@ -161,54 +174,74 @@ public class TimeSeriesShard implements AutoCloseable {
   /**
    * Appends samples to the mutable bucket.
    * <p>
-   * The read lock is held for the <em>entire</em> internal transaction lifecycle
-   * (begin → write → commit), not just during the page writes.  This is the key invariant
-   * that prevents MVCC conflicts with Phase 4:
-   * <ul>
-   *   <li>Phase 4 acquires the <em>write</em> lock to clear the mutable bucket.</li>
-   *   <li>The write lock can only be granted after all read-lock holders have released.</li>
-   *   <li>Because this method releases the read lock only <em>after</em> the commit, Phase 4
-   *       is guaranteed that every in-flight append has already persisted its page-0 modifications
-   *       before Phase 4 starts its own transaction.  Phase 4 always sees the latest page-0
-   *       version and commits without conflict; insert transactions are never affected.</li>
-   * </ul>
-   * <p>
-   * This method always manages its own transaction.  If the caller already has an active
-   * transaction, ArcadeDB creates a nested transaction (a new {@code TransactionContext} pushed
-   * onto the per-thread stack).  The nested transaction commits independently; the caller's outer
-   * transaction remains unaffected because it holds none of the modified pages in its dirty set.
-   * <p>
    * Concurrent calls on the <em>same shard</em> are serialized by {@link #appendLock} so that
    * MVCC page-version conflicts can never arise between two concurrent appends.  Writes to
    * different shards still proceed in parallel.
+   * <p>
+   * On Raft HA leaders, the compaction read lock is released before {@code commit()} to prevent a
+   * deadlock. {@code commit()} calls {@code waitForActiveRecordingSession()}, which waits for the
+   * compaction recording session to end; but the session ends only after Phase 4c (which needs the
+   * write lock); and Phase 4c cannot acquire the write lock while this thread holds the read lock.
+   * Releasing the lock early lets Phase 4c proceed.  If Phase 4c clears the mutable bucket before
+   * our commit, we get a {@code ConcurrentModificationException} and retry transparently on the
+   * freshly-cleared page (see issue #4458). In standalone mode the lock is held through commit as
+   * before, since there is no recording-session deadlock.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
-    compactionLock.readLock().lock();
+    // Route the append transaction through the HA wrapper so the mutable-bucket page writes are
+    // shipped to followers via the Raft WAL (TX_ENTRY). On a standalone database,
+    // getWrappedDatabaseInstance() returns the same instance.
+    final DatabaseInternal db = database.getWrappedDatabaseInstance();
+
+    appendLock.lock();
     try {
-      // Serialize concurrent appends on this shard to prevent MVCC conflicts.
-      // Two concurrent nested transactions both modifying page 0 would otherwise produce a
-      // ConcurrentModificationException at commit time (current v.X <> database v.Y).
-      appendLock.lock();
-      try {
-        // Route the append transaction through the HA wrapper so the mutable-bucket page writes are
-        // shipped to followers via the Raft WAL (TX_ENTRY). Committing on the inner LocalDatabase here
-        // would persist the pages locally only, leaving followers with an empty bucket (issue #4382).
-        // On a standalone database getWrappedDatabaseInstance() returns the same instance.
-        final DatabaseInternal db = database.getWrappedDatabaseInstance();
-        db.begin();
+      for (int attempt = 3; attempt > 0; attempt--) {
+        compactionLock.readLock().lock();
+        boolean readLockHeld = true;
         try {
-          mutableBucket.appendSamples(timestamps, columnValues);
-          db.commit();
-        } catch (final Exception e) {
-          if (db.isTransactionActive())
-            db.rollback();
-          throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+          db.begin();
+          try {
+            mutableBucket.appendSamples(timestamps, columnValues);
+          } catch (final Exception e) {
+            if (db.isTransactionActive())
+              db.rollback();
+            throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+          }
+          // On Raft HA leaders, release the read lock BEFORE commit. See appendSamples() javadoc for
+          // why. In standalone (non-replicated) mode there is no waitForActiveRecordingSession()
+          // call in commit(), so no deadlock is possible and the read lock must be held through
+          // commit to protect Phase 4c from MVCC conflicts.
+          if (db.isReplicated()) {
+            compactionLock.readLock().unlock();
+            readLockHeld = false;
+          }
+          try {
+            db.commit();
+            return; // success
+          } catch (final ConcurrentModificationException e) {
+            // Phase 4c committed a page-0 clear between the read-lock release and our commit (HA only).
+            // Roll back and retry on the freshly-cleared page.
+            if (db.isTransactionActive())
+              db.rollback();
+            if (attempt == 1)
+              throw new IOException("Failed to append timeseries samples after compaction-race retries", e);
+            final int attemptNumber = 4 - attempt; // ascending 1..3 for human-readable logging
+            LogManager.instance().log(this, Level.FINE,
+                "CME on TimeSeries append for shard %d (attempt %d/3) - retrying after compaction Phase 4c race",
+                shardIndex, attemptNumber);
+            // else loop again
+          } catch (final Exception e) {
+            if (db.isTransactionActive())
+              db.rollback();
+            throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+          }
+        } finally {
+          if (readLockHeld)
+            compactionLock.readLock().unlock();
         }
-      } finally {
-        appendLock.unlock();
       }
     } finally {
-      compactionLock.readLock().unlock();
+      appendLock.unlock();
     }
   }
 
@@ -378,43 +411,65 @@ public class TimeSeriesShard implements AutoCloseable {
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
 
     // ── Phase 0 (brief writeLock + brief TX): snapshot page count, set crash flag ─────────
-    // The write lock blocks concurrent appendSamples() so the TX modifying page-0 cannot
-    // get an MVCC conflict from a concurrent insert.
+    // Holds the write lock to block new appendSamples() calls. However, an in-flight append
+    // (one that released compactionLock.readLock() before its own commit, per the fix for
+    // issue #4458) may still be executing its DB-level commit concurrently. If that commit
+    // applies page-0 between Phase 0's begin and commit, Phase 0 gets a
+    // ConcurrentModificationException. A brief retry inside the same write lock ensures
+    // Phase 0 always sees the latest page-0 version and commits without conflict. Since
+    // appendLock serializes appends one at a time, at most one in-flight commit can be
+    // outstanding, so one retry is sufficient in practice; the loop uses 3 for safety.
     final int snapshotDataPageCount;
     compactionLock.writeLock().lock();
     try {
-      db.begin();
-      try {
-        final int pageCount = mutableBucket.getDataPageCount();
-        if (pageCount == 0) {
-          db.rollback();
-          return;
-        }
-
-        // HA safety valve (issue #4382): if the rewritten sealed store would be too large to ship
-        // inline in a single Raft entry, skip compaction entirely this cycle. The data stays in the
-        // mutable bucket, which IS fully replicated, so there is no divergence or data loss - just no
-        // sealing. The projected size over-estimates (raw mutable bytes are a ceiling on the
-        // compressed sealed delta), so we always stay safely under the transport cap.
-        if (db.isReplicated()) {
-          final long cap = database.getConfiguration().getValueAsLong(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE);
-          final long projected = sealedStore.getFileSizeBytes() + (long) pageCount * mutableBucket.getPageSize();
-          if (projected > cap) {
+      int capturedPageCount = -1;
+      // Count down to mirror the retry convention used in appendSamples().
+      for (int attempt = 3; attempt > 0; attempt--) {
+        db.begin();
+        try {
+          final int pageCount = mutableBucket.getDataPageCount();
+          if (pageCount == 0) {
             db.rollback();
-            warnOversizedSealedSkip(projected, cap);
             return;
           }
-        }
 
-        snapshotDataPageCount = pageCount;
-        mutableBucket.setCompactionInProgress(true);
-        mutableBucket.setCompactionWatermark(initialBlockCount);
-        db.commit();
-      } catch (final Exception e) {
-        if (db.isTransactionActive())
-          db.rollback();
-        throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 0", e);
+          // HA safety valve (issue #4382): if the rewritten sealed store would be too large to ship
+          // inline in a single Raft entry, skip compaction entirely this cycle.
+          if (db.isReplicated()) {
+            final long cap = database.getConfiguration().getValueAsLong(GlobalConfiguration.HA_TS_MAX_SEALED_INLINE_SIZE);
+            final long projected = sealedStore.getFileSizeBytes() + (long) pageCount * mutableBucket.getPageSize();
+            if (projected > cap) {
+              db.rollback();
+              warnOversizedSealedSkip(projected, cap);
+              return;
+            }
+          }
+
+          mutableBucket.setCompactionInProgress(true);
+          mutableBucket.setCompactionWatermark(initialBlockCount);
+          db.commit();
+          capturedPageCount = pageCount;
+          break;
+        } catch (final ConcurrentModificationException e) {
+          if (db.isTransactionActive())
+            db.rollback();
+          if (attempt == 1)
+            throw new IOException("Compaction failed in phase 0 after retries", e);
+          // An in-flight append committed page-0 between begin and commit; retry with the
+          // latest version.
+        } catch (final Exception e) {
+          if (db.isTransactionActive())
+            db.rollback();
+          throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 0", e);
+        }
       }
+      // Every loop iteration that does not break either returns or throws, so a successful exit
+      // always sets capturedPageCount. Enforce the invariant with an explicit guard (not an assert,
+      // which is disabled by default in production) so a future regression cannot silently propagate
+      // a -1 page count into Phase 4.
+      if (capturedPageCount < 0)
+        throw new IllegalStateException("Phase 0 exited the retry loop without a valid page count");
+      snapshotDataPageCount = capturedPageCount;
     } finally {
       compactionLock.writeLock().unlock();
     }
@@ -529,6 +584,9 @@ public class TimeSeriesShard implements AutoCloseable {
     // ── Phase 4c (brief writeLock + brief TX): read tail pages, swap + clear ──────────────
     // Only pages created DURING Phase 4b need to be processed under the lock.  This is
     // typically just 0-2 pages worth of data, keeping the lock hold time minimal.
+    final Runnable prePhase4cHook = TEST_PRE_PHASE4C_HOOK;
+    if (prePhase4cHook != null)
+      prePhase4cHook.run();
     compactionLock.writeLock().lock();
     try {
       db.begin();
