@@ -89,6 +89,21 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     }
     response.put("peers", peers);
 
+    // Per-database list, used by Studio to render per-database actions (e.g. the emergency
+    // "Resync from Leader" control on followers) and to surface bootstrap baselines when present.
+    final JSONArray databases = new JSONArray();
+    for (final String dbName : httpServer.getServer().getDatabaseNames()) {
+      final JSONObject dbJson = new JSONObject();
+      dbJson.put("name", dbName);
+      final ArcadeStateMachine.BootstrapBaseline baseline = stateMachine.getBootstrapBaseline(dbName);
+      if (baseline != null) {
+        dbJson.put("bootstrapLastTxId", baseline.lastTxId());
+        dbJson.put("bootstrapFingerprint", baseline.fingerprint());
+      }
+      databases.put(dbJson);
+    }
+    response.put("databases", databases);
+
     return new ExecutionResponse(200, response.toString());
   }
 }

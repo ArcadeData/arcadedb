@@ -997,6 +997,62 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Operator-triggered emergency recovery: drop the local copy of {@code dbName} and re-acquire a
+   * fresh full snapshot from the current leader. This is the manual equivalent of the automatic
+   * snapshot install path ({@link #notifyInstallSnapshotFromLeader}) and uses the same crash-safe
+   * {@link SnapshotInstaller} machinery as {@link #installFromLeaderForBootstrap}.
+   * <p>
+   * The intended use case is a follower that has diverged from the leader (e.g. a
+   * {@link WALVersionGapException} reported "snapshot resync required"): the diverged page versions
+   * can never be reconciled by applying further deltas, so the only safe fix is to replace the local
+   * files with the leader's authoritative copy. After install the local database matches the leader's
+   * snapshot point; any Raft log entries replayed afterwards that predate the snapshot are skipped by
+   * the page-version guard in {@code applyChanges}, and forward replication resumes normally.
+   * <p>
+   * Runs synchronously on the caller thread (the HTTP worker thread). Refuses to run on the leader
+   * (it holds the authoritative copy) and when no leader is currently known.
+   *
+   * @param dbName name of the database to resync from the leader
+   * @throws ReplicationException if Raft HA is not enabled, this node is the leader, the leader is
+   *                              unknown, or the snapshot install fails
+   */
+  public void resyncDatabaseFromLeader(final String dbName) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      throw new ReplicationException("Cannot resync database '" + dbName + "': Raft HA is not enabled");
+
+    if (raft.isLeader())
+      throw new ReplicationException("Cannot resync database '" + dbName
+          + "' on the leader: the leader holds the authoritative copy. Run the resync on the diverged follower.");
+
+    if (raft.getLeaderHttpAddress() == null)
+      throw new ReplicationException("Cannot resync database '" + dbName
+          + "': the leader is currently unknown (election in progress?). Retry once a leader is elected.");
+
+    LogManager.instance().log(this, Level.WARNING,
+        "Operator-triggered resync of database '%s' from leader: dropping local copy and re-acquiring full snapshot", dbName);
+
+    try {
+      final String databasePath;
+      if (server.existsDatabase(dbName)) {
+        final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);
+        databasePath = db.getDatabasePath();
+        db.getEmbedded().close();
+        server.removeDatabase(dbName);
+      } else {
+        databasePath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
+            + File.separator + dbName;
+      }
+      // Resolve the leader address on each retry (it can change mid-operation if leadership moves).
+      final String clusterToken = raft.getClusterToken();
+      SnapshotInstaller.install(dbName, databasePath, raft::getLeaderHttpAddress, clusterToken, server);
+      LogManager.instance().log(this, Level.INFO, "Database '%s' resynced from leader on operator request", dbName);
+    } catch (final IOException e) {
+      throw new ReplicationException("Failed to resync database '" + dbName + "' from leader", e);
+    }
+  }
+
+  /**
    * Returns the bootstrap baseline committed for {@code dbName}, or {@code null} if no
    * {@link RaftLogEntryType#BOOTSTRAP_FINGERPRINT_ENTRY} has been applied for it. Visible to
    * tests and the cluster-status exporter (Phase 7).
