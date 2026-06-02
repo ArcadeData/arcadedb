@@ -65,7 +65,6 @@ class Issue4458TsWalVersionGapIT extends BaseRaftHATest {
   @AfterEach
   void cleanupHooks() {
     TimeSeriesShard.TEST_PRE_PHASE4C_HOOK = null;
-    RaftReplicatedDatabase.TEST_PRE_REPLICATE_SCHEMA_HOOK = null;
     ArcadeStateMachine.TEST_WAL_GAP_COUNTER = null;
   }
 

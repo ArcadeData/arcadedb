@@ -36,10 +36,13 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Regression test for issue #4458: concurrent appends must not lose samples when they race
- * against compaction Phase 4c. The fix releases {@code compactionLock.readLock()} before
- * {@code db.commit()} so Phase 4c is never deadlocked by an in-flight append transaction.
- * A {@code ConcurrentModificationException} from Phase 4c committing between the lock release
- * and the append commit is handled by a transparent retry, preserving all data.
+ * against compaction Phase 4c on an embedded (standalone) database.
+ * <p>
+ * NOTE: in standalone mode {@code appendSamples()} holds {@code compactionLock.readLock()} through
+ * {@code db.commit()} (the {@code db.isReplicated()} early-release branch is not taken), so the
+ * HA-only CME-retry path is NOT exercised here. This test verifies that the standalone locking
+ * path remains correct - concurrent appends + compaction lose no data. The actual CME-retry path
+ * introduced by the fix is covered by the HA integration test {@code Issue4458TsWalVersionGapIT}.
  */
 @Tag("slow")
 class Issue4458AppendCompactionRaceTest extends TestHelper {
@@ -98,12 +101,12 @@ class Issue4458AppendCompactionRaceTest extends TestHelper {
           Thread.currentThread().interrupt();
           return;
         }
+        appendsBusy.countDown(); // signal this thread is running
         final long base = 1_000_000L + (long) ti * 100_000L;
         for (int i = 0; i < appendsPerThread; i++) {
           final long ts = base + i;
           final double val = i;
           try {
-            appendsBusy.countDown(); // signal we're running (idempotent after first)
             database.transaction(() ->
                 database.command("sql", "INSERT INTO sensor SET ts = ?, v = ?", ts, val));
             committed.incrementAndGet();

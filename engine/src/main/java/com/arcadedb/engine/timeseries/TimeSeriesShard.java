@@ -24,6 +24,7 @@ import com.arcadedb.engine.Component;
 import com.arcadedb.engine.timeseries.codec.DeltaOfDeltaCodec;
 import com.arcadedb.engine.timeseries.codec.DictionaryCodec;
 import com.arcadedb.engine.timeseries.codec.TimeSeriesCodec;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
 
@@ -31,7 +32,6 @@ import java.io.IOException;
 import java.util.logging.Level;
 import java.util.ArrayList;
 import java.util.Arrays;
-import com.arcadedb.exception.ConcurrentModificationException;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashSet;
@@ -182,58 +182,56 @@ public class TimeSeriesShard implements AutoCloseable {
    * before, since there is no recording-session deadlock.
    */
   public void appendSamples(final long[] timestamps, final Object[]... columnValues) throws IOException {
-    appendLock.lock();
-    try {
-      appendSamplesAttempt(3, timestamps, columnValues);
-    } finally {
-      appendLock.unlock();
-    }
-  }
-
-  private void appendSamplesAttempt(final int retriesLeft, final long[] timestamps, final Object[]... columnValues)
-      throws IOException {
     // Route the append transaction through the HA wrapper so the mutable-bucket page writes are
     // shipped to followers via the Raft WAL (TX_ENTRY). On a standalone database,
     // getWrappedDatabaseInstance() returns the same instance.
     final DatabaseInternal db = database.getWrappedDatabaseInstance();
-    compactionLock.readLock().lock();
-    boolean readLockHeld = true;
+
+    appendLock.lock();
     try {
-      db.begin();
-      try {
-        mutableBucket.appendSamples(timestamps, columnValues);
-      } catch (final Exception e) {
-        if (db.isTransactionActive())
-          db.rollback();
-        throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
-      }
-      // On Raft HA leaders, release the read lock BEFORE commit. See appendSamples() javadoc for
-      // why. In standalone (non-replicated) mode there is no waitForActiveRecordingSession()
-      // call in commit(), so no deadlock is possible and the read lock must be held through
-      // commit to protect Phase 4c from MVCC conflicts.
-      if (db.isReplicated()) {
-        compactionLock.readLock().unlock();
-        readLockHeld = false;
-      }
-      try {
-        db.commit();
-      } catch (final ConcurrentModificationException e) {
-        // Phase 4c committed a page-0 clear between the read-lock release and our commit (HA only).
-        // Roll back and retry on the freshly-cleared page.
-        if (db.isTransactionActive())
-          db.rollback();
-        if (retriesLeft > 0)
-          appendSamplesAttempt(retriesLeft - 1, timestamps, columnValues);
-        else
-          throw new IOException("Failed to append timeseries samples after compaction-race retries", e);
-      } catch (final Exception e) {
-        if (db.isTransactionActive())
-          db.rollback();
-        throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+      for (int attempt = 3; attempt > 0; attempt--) {
+        compactionLock.readLock().lock();
+        boolean readLockHeld = true;
+        try {
+          db.begin();
+          try {
+            mutableBucket.appendSamples(timestamps, columnValues);
+          } catch (final Exception e) {
+            if (db.isTransactionActive())
+              db.rollback();
+            throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+          }
+          // On Raft HA leaders, release the read lock BEFORE commit. See appendSamples() javadoc for
+          // why. In standalone (non-replicated) mode there is no waitForActiveRecordingSession()
+          // call in commit(), so no deadlock is possible and the read lock must be held through
+          // commit to protect Phase 4c from MVCC conflicts.
+          if (db.isReplicated()) {
+            compactionLock.readLock().unlock();
+            readLockHeld = false;
+          }
+          try {
+            db.commit();
+            return; // success
+          } catch (final ConcurrentModificationException e) {
+            // Phase 4c committed a page-0 clear between the read-lock release and our commit (HA only).
+            // Roll back and retry on the freshly-cleared page.
+            if (db.isTransactionActive())
+              db.rollback();
+            if (attempt == 1)
+              throw new IOException("Failed to append timeseries samples after compaction-race retries", e);
+            // else loop again
+          } catch (final Exception e) {
+            if (db.isTransactionActive())
+              db.rollback();
+            throw e instanceof IOException ? (IOException) e : new IOException("Failed to append timeseries samples", e);
+          }
+        } finally {
+          if (readLockHeld)
+            compactionLock.readLock().unlock();
+        }
       }
     } finally {
-      if (readLockHeld)
-        compactionLock.readLock().unlock();
+      appendLock.unlock();
     }
   }
 
