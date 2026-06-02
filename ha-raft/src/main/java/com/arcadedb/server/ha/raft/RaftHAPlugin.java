@@ -143,6 +143,7 @@ public class RaftHAPlugin implements HAServerPlugin {
     routes.addExactPath("/api/v1/cluster/stepdown", new PostStepDownHandler(httpServer, this));
     routes.addExactPath("/api/v1/cluster/leave", new PostLeaveHandler(httpServer, this));
     routes.addPrefixPath("/api/v1/cluster/verify/", new PostVerifyDatabaseHandler(httpServer, this));
+    routes.addPrefixPath("/api/v1/cluster/resync/", new PostResyncDatabaseHandler(httpServer, this));
     // Issue #4147: pre-bootstrap state RPC, used by the bootstrap leader at first cluster
     // formation to collect each peer's (fingerprint, lastTxId) per database.
     routes.addExactPath("/api/v1/cluster/bootstrap-state", new PostBootstrapStateHandler(httpServer, this));

@@ -144,6 +144,29 @@
             </div>
           </div>
 
+          <!-- Emergency recovery: force this follower to drop and re-acquire a database from the
+               leader. Hidden on the leader (it holds the authoritative copy) and toggled by
+               renderResyncRecovery in studio-cluster.js. -->
+          <div class="card mb-3" id="clusterResyncCard" style="display:none; border: 1px solid #fca5a5; border-radius: 10px;">
+            <div class="card-header py-2" style="background: #fef2f2; border-bottom: 1px solid #fca5a5; border-radius: 10px 10px 0 0;">
+              <i class="fas fa-sync-alt" style="color: #ef4444;"></i>
+              <span style="font-weight: 600; font-size: 0.88rem; margin-left: 6px; color: #dc2626;">Emergency Recovery</span>
+              <span style="font-size: 0.72rem; color: var(--text-secondary); margin-left: 8px;">
+                — resync a diverged database from the leader
+              </span>
+            </div>
+            <div class="card-body py-3">
+              <p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 10px;">
+                Drops this node's local copy of the selected database and re-downloads a fresh full
+                snapshot from the leader. Use when this follower has diverged (e.g. a
+                <span style="font-family: monospace;">WALVersionGapException / snapshot resync required</span> error).
+              </p>
+              <div id="clusterResyncList">
+                <!-- Dynamically populated by renderResyncRecovery -->
+              </div>
+            </div>
+          </div>
+
         </div>
 
         <!-- Right column: Danger -->

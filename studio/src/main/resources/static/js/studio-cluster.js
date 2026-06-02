@@ -55,6 +55,10 @@ function renderClusterData(data) {
   // clusters look identical to before.
   renderBootstrapBaselines(data);
 
+  // Emergency recovery controls (resync a diverged database from the leader). Only shown on a
+  // follower; the leader holds the authoritative copy and has nothing to resync.
+  renderResyncRecovery(data);
+
   // Update metrics summary
   updateMetricsSummary(data);
 }
@@ -93,6 +97,66 @@ function renderBootstrapBaselines(data) {
       + '</div>'
     );
   }
+}
+
+// Renders one "Resync from Leader" button per database on a follower node. The button POSTs to the
+// local node's resync endpoint, which drops the local copy and re-downloads a full snapshot from the
+// leader. Hidden entirely on the leader (nothing to resync) and when no databases are present.
+function renderResyncRecovery(data) {
+  var card = $("#clusterResyncCard");
+  var container = $("#clusterResyncList");
+  if (card.length === 0)
+    return; // Older cluster.html that hasn't been updated yet; degrade silently.
+  container.empty();
+
+  var isFollower = data.isLeader === false && data.leaderId != null && data.leaderId !== "";
+  var dbs = data.databases || [];
+  if (!isFollower || dbs.length === 0) {
+    card.hide();
+    return;
+  }
+  card.show();
+
+  for (var i = 0; i < dbs.length; i++) {
+    var name = dbs[i].name;
+    var nameAttr = JSON.stringify(name).replace(/"/g, "&quot;");
+    container.append(
+      '<div class="d-flex align-items-center justify-content-between py-1 px-2 mb-1" '
+      + 'style="font-size:0.82rem; background:var(--bg-main); border-radius:6px; border:1px solid var(--border-light);">'
+      + '<div><i class="fa fa-database" style="color:var(--color-brand); margin-right:6px;"></i>'
+      + escapeHtml(name) + '</div>'
+      + '<div><button class="btn btn-sm btn-outline-danger" style="font-size:0.7rem; padding:1px 8px;" '
+      + 'onclick="resyncDatabase(' + nameAttr + ')" title="Drop this node\'s copy and re-acquire it from the leader">'
+      + '<i class="fa fa-sync-alt"></i> Resync from Leader</button></div>'
+      + '</div>'
+    );
+  }
+}
+
+// Confirms then triggers an emergency resync of the given database on the local node.
+function resyncDatabase(databaseName) {
+  globalConfirm("Resync from Leader",
+    "Drop this node's local copy of <b>" + escapeHtml(databaseName) + "</b> and re-download a fresh "
+    + "full snapshot from the leader?<br><br>"
+    + "<span style='font-size:0.8rem;color:var(--text-secondary);'>"
+    + "Use this only when this follower has diverged from the leader. The local copy is replaced by "
+    + "the leader's authoritative data; any local-only changes on this node are discarded. The cluster "
+    + "keeps serving from the leader and the other followers while this runs."
+    + "</span>",
+    "warning",
+    function() {
+      globalNotify("Resync", "Resyncing '" + databaseName + "' from leader, this may take a while...", "info");
+      jQuery.ajax({
+        type: "POST",
+        url: "api/v1/cluster/resync/" + encodeURIComponent(databaseName),
+        beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+      })
+      .done(function() {
+        globalNotify("Success", "Database '" + databaseName + "' resynced from leader", "success");
+        updateCluster();
+      })
+      .fail(function(jqXHR) { globalNotifyError(jqXHR.responseText); });
+    });
 }
 
 function abbreviateFingerprint(fp) {
