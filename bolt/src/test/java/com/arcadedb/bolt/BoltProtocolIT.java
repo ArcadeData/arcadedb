@@ -1733,6 +1733,8 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         session.run("CREATE (n:WhereParamNode {category: 'B', score: 20})");
         session.run("CREATE (n:WhereParamNode {category: 'A', score: 30})");
 
+        // ORDER BY n.score is load-bearing: the assertions below expect 10 before 30, so the
+        // sort must not be dropped in future refactors.
         final Result result = session.run(
             "MATCH (n:WhereParamNode) WHERE n.category = $cat RETURN n.score AS score ORDER BY n.score",
             Map.of("cat", "A"));
@@ -1775,12 +1777,16 @@ public class BoltProtocolIT extends BaseGraphServerTest {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // The database is recreated fresh per test (BaseGraphServerTest.endTest drops it), so the
-        // unscoped MATCH below binds exactly one VlpParent and one VlpChild per name.
-        session.run("CREATE (a:VlpParent {kind: 'agent'})");
-        session.run("CREATE (b:VlpChild {name: 'tag1', kind: 'tag'})");
-        session.run("CREATE (c:VlpChild {name: 'tag2', kind: 'tag'})");
-        session.run("MATCH (a:VlpParent {kind: 'agent'}), (b:VlpChild {name: 'tag1'}) CREATE (a)-[:vlpEdge]->(b)");
-        session.run("MATCH (a:VlpParent {kind: 'agent'}), (c:VlpChild {name: 'tag2'}) CREATE (a)-[:vlpEdge]->(c)");
+        // unscoped MATCH below binds exactly one VlpParent and one VlpChild per name. Setup runs in a
+        // single transaction for consistency with vlpMatchWithParametersInTransaction.
+        try (Transaction setup = session.beginTransaction()) {
+          setup.run("CREATE (a:VlpParent {kind: 'agent'})");
+          setup.run("CREATE (b:VlpChild {name: 'tag1', kind: 'tag'})");
+          setup.run("CREATE (c:VlpChild {name: 'tag2', kind: 'tag'})");
+          setup.run("MATCH (a:VlpParent {kind: 'agent'}), (b:VlpChild {name: 'tag1'}) CREATE (a)-[:vlpEdge]->(b)");
+          setup.run("MATCH (a:VlpParent {kind: 'agent'}), (c:VlpChild {name: 'tag2'}) CREATE (a)-[:vlpEdge]->(c)");
+          setup.commit();
+        }
 
         final Result parentResult = session.run("MATCH (a:VlpParent {kind: 'agent'}) RETURN ID(a) AS id");
         assertThat(parentResult.hasNext()).isTrue();
