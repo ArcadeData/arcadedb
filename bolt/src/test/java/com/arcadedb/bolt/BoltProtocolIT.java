@@ -1757,6 +1757,7 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         assertThat(allNodes.hasNext()).isTrue();
         final Record firstRecord = allNodes.next();
         final long targetId = firstRecord.get("nid").asLong();
+        assertThat(allNodes.hasNext()).isFalse();
 
         final Result result = session.run(
             "MATCH (n:IdParamNode) WHERE ID(n) = $id RETURN n.label AS label",
@@ -1773,15 +1774,20 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   void vlpMatchWithParameters() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // The database is recreated fresh per test (BaseGraphServerTest.endTest drops it), so the
+        // unscoped MATCH below binds exactly one VlpParent and one VlpChild per name.
         session.run("CREATE (a:VlpParent {kind: 'agent'})");
         session.run("CREATE (b:VlpChild {name: 'tag1', kind: 'tag'})");
         session.run("CREATE (c:VlpChild {name: 'tag2', kind: 'tag'})");
         session.run("MATCH (a:VlpParent {kind: 'agent'}), (b:VlpChild {name: 'tag1'}) CREATE (a)-[:vlpEdge]->(b)");
         session.run("MATCH (a:VlpParent {kind: 'agent'}), (c:VlpChild {name: 'tag2'}) CREATE (a)-[:vlpEdge]->(c)");
 
-        final long parentId = session.run("MATCH (a:VlpParent {kind: 'agent'}) RETURN ID(a) AS id")
-            .next().get("id").asLong();
+        final Result parentResult = session.run("MATCH (a:VlpParent {kind: 'agent'}) RETURN ID(a) AS id");
+        assertThat(parentResult.hasNext()).isTrue();
+        final long parentId = parentResult.next().get("id").asLong();
 
+        // *0.. mirrors the exact query from issue #4452. The zero-hop case never survives because
+        // the source (VlpParent) cannot satisfy the x:VlpChild label filter, so only the 1-hop edge matches.
         final Result result = session.run(
             "MATCH (from:VlpParent)-[:vlpEdge*0..]->(x:VlpChild {name: $nameParam}) WHERE ID(from) = $parentId RETURN x.name AS name",
             Map.of("nameParam", "tag2", "parentId", parentId));
@@ -1797,6 +1803,8 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   void vlpMatchWithParametersInTransaction() {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // The database is recreated fresh per test (BaseGraphServerTest.endTest drops it), so the
+        // unscoped MATCH below binds exactly one TxVlpParent and one TxVlpChild per name.
         try (Transaction setup = session.beginTransaction()) {
           setup.run("CREATE (a:TxVlpParent {kind: 'agent'})");
           setup.run("CREATE (b:TxVlpChild {name: 'tx_tag1', kind: 'tag'})");
@@ -1806,10 +1814,13 @@ public class BoltProtocolIT extends BaseGraphServerTest {
           setup.commit();
         }
 
-        final long parentId = session.run("MATCH (a:TxVlpParent {kind: 'agent'}) RETURN ID(a) AS id")
-            .next().get("id").asLong();
+        final Result parentResult = session.run("MATCH (a:TxVlpParent {kind: 'agent'}) RETURN ID(a) AS id");
+        assertThat(parentResult.hasNext()).isTrue();
+        final long parentId = parentResult.next().get("id").asLong();
 
         try (Transaction tx = session.beginTransaction()) {
+          // *0.. mirrors the exact query from issue #4452. The zero-hop case never survives because
+          // the source (TxVlpParent) cannot satisfy the x:TxVlpChild label filter, so only the 1-hop edge matches.
           final Result result = tx.run(
               "MATCH (from:TxVlpParent)-[:txVlpEdge*0..]->(x:TxVlpChild {name: $nameParam}) WHERE ID(from) = $parentId RETURN x.name AS name",
               Map.of("nameParam", "tx_tag2", "parentId", parentId));
