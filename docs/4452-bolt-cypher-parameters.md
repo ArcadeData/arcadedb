@@ -42,6 +42,14 @@ Five regression tests added to `BoltProtocolIT`:
 
 All 76 Bolt tests pass (28s run).
 
+Additionally, four end-to-end tests were added to `e2e-js/src/js-bolt-e2e.test.js` (Testcontainers +
+the real `neo4j-driver`), under a `variable-length path with parameters (issue #4452)` describe block:
+they build the agent/tag graph from the issue report and assert the `(from)-[:agentTags*0..]->(x:Tag
+{name: $nameParam}) WHERE ID(from) = $parentId` query resolves both parameters. Verified end-to-end:
+all 10 tests pass against `arcadedata/arcadedb:latest` (26.6.1-SNAPSHOT, contains the fix), and the
+two VLP `$nameParam` tests fail (return empty) against `arcadedata/arcadedb:26.5.1` (pre-fix),
+confirming they reproduce the reported bug.
+
 ## PR
 
 https://github.com/ArcadeData/arcadedb/pull/4459
