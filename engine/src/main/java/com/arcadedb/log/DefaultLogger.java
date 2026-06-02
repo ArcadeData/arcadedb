@@ -115,7 +115,8 @@ public class DefaultLogger implements Logger {
 
   /**
    * Resolves ${...} system-property / environment-variable placeholders in a JUL FileHandler
-   * pattern. An unresolved placeholder is replaced by the default directory {@code ./log}; a
+   * pattern. An unresolved placeholder - including a non-standard one in an operator-supplied
+   * {@code arcadedb-log.properties} - is replaced by the default directory {@code ./log}; a
    * pattern with no placeholders is returned unchanged. This is what allows the file-log
    * directory to be pointed at a writable location on a read-only root filesystem.
    */
@@ -244,6 +245,8 @@ public class DefaultLogger implements Logger {
         // before JUL eagerly opens the log file. This lets the log directory be configured via
         // the arcadedb.server.logsDirectory system property / environment variable, which is the
         // only path resolvable this early (the server root path is not set yet at first log).
+        // The Properties round-trip drops the source file's comments and adds a timestamp header;
+        // both are harmless because JUL reads only key/value pairs.
         final Properties props = new Properties();
         props.load(in);
 
