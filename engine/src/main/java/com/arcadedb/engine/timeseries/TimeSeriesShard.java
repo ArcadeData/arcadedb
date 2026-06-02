@@ -418,7 +418,7 @@ public class TimeSeriesShard implements AutoCloseable {
     final int snapshotDataPageCount;
     compactionLock.writeLock().lock();
     try {
-      int phase0Retrieved = -1;
+      int capturedPageCount = -1;
       // Count down to mirror the retry convention used in appendSamples().
       for (int attempt = 3; attempt > 0; attempt--) {
         db.begin();
@@ -444,7 +444,7 @@ public class TimeSeriesShard implements AutoCloseable {
           mutableBucket.setCompactionInProgress(true);
           mutableBucket.setCompactionWatermark(initialBlockCount);
           db.commit();
-          phase0Retrieved = pageCount;
+          capturedPageCount = pageCount;
           break;
         } catch (final ConcurrentModificationException e) {
           if (db.isTransactionActive())
@@ -459,10 +459,13 @@ public class TimeSeriesShard implements AutoCloseable {
           throw e instanceof IOException ? (IOException) e : new IOException("Compaction failed in phase 0", e);
         }
       }
-      // Every loop iteration that does not break either returns or throws, so a successful
-      // exit always sets phase0Retrieved to the snapshot page count. Make the invariant explicit.
-      assert phase0Retrieved >= 0 : "Phase 0 exited the retry loop without a valid page count";
-      snapshotDataPageCount = phase0Retrieved;
+      // Every loop iteration that does not break either returns or throws, so a successful exit
+      // always sets capturedPageCount. Enforce the invariant with an explicit guard (not an assert,
+      // which is disabled by default in production) so a future regression cannot silently propagate
+      // a -1 page count into Phase 4.
+      if (capturedPageCount < 0)
+        throw new IllegalStateException("Phase 0 exited the retry loop without a valid page count");
+      snapshotDataPageCount = capturedPageCount;
     } finally {
       compactionLock.writeLock().unlock();
     }

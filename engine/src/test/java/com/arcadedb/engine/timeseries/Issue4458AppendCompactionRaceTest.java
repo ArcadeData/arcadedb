@@ -30,7 +30,6 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -87,9 +86,8 @@ class Issue4458AppendCompactionRaceTest extends TestHelper {
       }
     };
 
-    final List<Throwable> errors     = new ArrayList<>();
-    final AtomicInteger   committed  = new AtomicInteger();
-    final ExecutorService executor   = Executors.newFixedThreadPool(appendThreads + 1);
+    final List<Throwable> errors = new ArrayList<>();
+    final ExecutorService executor = Executors.newFixedThreadPool(appendThreads + 1);
 
     // Append threads: wait for the hook to fire, then insert as fast as possible.
     for (int t = 0; t < appendThreads; t++) {
@@ -109,7 +107,6 @@ class Issue4458AppendCompactionRaceTest extends TestHelper {
           try {
             database.transaction(() ->
                 database.command("sql", "INSERT INTO sensor SET ts = ?, v = ?", ts, val));
-            committed.incrementAndGet();
           } catch (final Throwable e) {
             synchronized (errors) {
               errors.add(e);

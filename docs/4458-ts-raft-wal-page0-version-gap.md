@@ -33,13 +33,11 @@ Raft log order (after the SCHEMA_ENTRY).
 ### Files changed
 
 - `engine/src/main/java/com/arcadedb/engine/timeseries/TimeSeriesShard.java`
-  - `appendSamples()` refactored to serialize via `appendLock` first
-  - `appendSamplesAttempt()`: on Raft HA leaders, releases `compactionLock.readLock()` before
-    `commit()` to eliminate the deadlock; adds CME retry for Phase 4c race
+  - `appendSamples()` refactored to serialize via `appendLock` first, then on Raft HA leaders
+    release `compactionLock.readLock()` before `commit()` (with a CME retry loop) to eliminate
+    the deadlock; standalone mode holds the read lock through commit as before
   - Phase 0 `compactInternal()`: CME retry loop for in-flight append commits
   - `TEST_PRE_PHASE4C_HOOK` added for deterministic HA testing
-- `ha-raft/src/main/java/com/arcadedb/server/ha/raft/RaftReplicatedDatabase.java`
-  - `TEST_PRE_REPLICATE_SCHEMA_HOOK` added for deterministic testing
 - `ha-raft/src/main/java/com/arcadedb/server/ha/raft/ArcadeStateMachine.java`
   - `TEST_WAL_GAP_COUNTER` added for deterministic testing
 

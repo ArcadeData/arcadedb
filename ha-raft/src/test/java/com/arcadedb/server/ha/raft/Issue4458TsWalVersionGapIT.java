@@ -87,7 +87,7 @@ class Issue4458TsWalVersionGapIT extends BaseRaftHATest {
     // Install WAL gap counter before starting the race.
     ArcadeStateMachine.TEST_WAL_GAP_COUNTER = new AtomicInteger(0);
 
-    final int appendThreads    = 4;
+    final int appendThreads = 4;
     final int appendsPerThread = 60;
 
     // The hook fires just before Phase 4c acquires the write lock.
@@ -109,8 +109,8 @@ class Issue4458TsWalVersionGapIT extends BaseRaftHATest {
       }
     };
 
-    final List<Throwable> errors  = new ArrayList<>();
-    final ExecutorService exec    = Executors.newFixedThreadPool(appendThreads + 1);
+    final List<Throwable> errors = new ArrayList<>();
+    final ExecutorService exec = Executors.newFixedThreadPool(appendThreads + 1);
 
     for (int t = 0; t < appendThreads; t++) {
       final int ti = t;
@@ -126,7 +126,7 @@ class Issue4458TsWalVersionGapIT extends BaseRaftHATest {
         }
         final long base = 1_000_000L + (long) ti * 100_000L;
         for (int i = 0; i < appendsPerThread; i++) {
-          final long ts  = base + i;
+          final long ts = base + i;
           final double v = i;
           try {
             leaderDb.command("sql", "INSERT INTO sensor SET ts = ?, v = ?", ts, v);
