@@ -54,3 +54,25 @@ This mirrors `PostgresNetworkExecutor.openDatabase()` line 1509 and the gRPC fix
 1. `BoltFollowerForwardingIT`: 3-node Raft cluster, Neo4j driver writes to a follower,
    asserts write succeeds and replicates to all 3 nodes.
 2. Existing Bolt tests: `mvn -pl bolt -am test` - must all pass.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4457
+
+## Review Cycles
+
+### Cycle 1 - SHA 6ea4b08fa
+
+**Gemini (COMMENTED):** Flagged critical security vulnerability: LOGOFF/LOGON re-authentication on
+the same connection changes `user` but `ensureDatabase()` returns early (database already open),
+so the DatabaseContext is NOT updated with the new user - privilege escalation risk.
+
+**Claude:** Did not review within 15-minute window.
+
+**Changes applied:** In the early-return block of `ensureDatabase()`, use `getContextIfExists()`
+to update the current user without disturbing any open transactions (calling `init()` again would
+rollback transactions, so `getContextIfExists().setCurrentUser()` is the correct approach).
+
+### Cycle 2 - SHA 0985a30bd
+
+(Pending bot reviews)
