@@ -60,7 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("slow")
 class TimeSeriesGrpcHaConcurrentInsertIT extends BaseRaftHATest {
 
-  private static final int    BASE_GRPC_PORT    = 51071;
+  private static final int    BASE_GRPC_PORT    = 51081;
   private static final int    NUM_THREADS       = 3;
   private static final int    POINTS_PER_THREAD = 2000;
   private static final String TYPE_NAME         = "sensor";
@@ -189,5 +189,23 @@ class TimeSeriesGrpcHaConcurrentInsertIT extends BaseRaftHATest {
     // ingestion that misses the await deadline above.
     final List<String> sample = errors.stream().distinct().limit(10).toList();
     assertThat(errors).as("no ingest errors over gRPC (%d total, distinct sample: %s)", errors.size(), sample).isEmpty();
+
+    // Data integrity: every node must converge to the full sample count. The Raft entries are
+    // committed to a majority before each INSERT acks, but the follower applies them to its state
+    // machine asynchronously, so poll for convergence rather than asserting immediately. A WAL
+    // version gap (the regression this test guards) would prevent a follower from converging.
+    final long expected = (long) NUM_THREADS * POINTS_PER_THREAD;
+    for (int i = 0; i < getServerCount(); i++) {
+      final Database db = getServerDatabase(i, getDatabaseName());
+      final long deadline = System.currentTimeMillis() + 60_000;
+      long count = -1;
+      while (System.currentTimeMillis() < deadline) {
+        count = ((Number) db.command("sql", "SELECT count(*) AS cnt FROM " + TYPE_NAME).next().getProperty("cnt")).longValue();
+        if (count == expected)
+          break;
+        Thread.sleep(1_000);
+      }
+      assertThat(count).as("server %d converged to the full sample count", i).isEqualTo(expected);
+    }
   }
 }
