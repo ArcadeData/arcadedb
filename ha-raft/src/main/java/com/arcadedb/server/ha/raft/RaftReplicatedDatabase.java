@@ -144,6 +144,13 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   static volatile Consumer<String> TEST_POST_REPLICATION_HOOK = null;
 
+  /**
+   * Test-only hook. Fires in {@link #runWithCompactionReplication} just before {@code replicateSchema()}
+   * is called. Used to inject delays and verify that concurrent appends correctly wait for the
+   * recording session to end rather than timing out and shipping TX_ENTRY before the SCHEMA_ENTRY.
+   */
+  static volatile Consumer<String> TEST_PRE_REPLICATE_SCHEMA_HOOK = null;
+
   public record ReadConsistencyContext(Database.READ_CONSISTENCY consistency, long readAfterIndex) {
   }
 
@@ -1238,6 +1245,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
       if (addFiles.isEmpty() && removeFiles.isEmpty() && walEntries.isEmpty() && sealedBlobs.isEmpty())
         return result;
+
+      final Consumer<String> preReplicateHook = TEST_PRE_REPLICATE_SCHEMA_HOOK;
+      if (preReplicateHook != null)
+        preReplicateHook.accept(getName());
 
       final String serializedSchema = proxied.getSchema().getEmbedded().toJSON().toString();
       requireRaftServer().getTransactionBroker()
