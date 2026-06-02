@@ -21,6 +21,8 @@ package com.arcadedb.log;
 import com.arcadedb.utility.AnsiLogFormatter;
 import com.arcadedb.utility.SystemVariableResolver;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileNotFoundException;
@@ -126,7 +128,7 @@ public class DefaultLogger implements Logger {
    * {@code java.util.logging.FileHandler.pattern}, if any.
    */
   private void createLogDirectoryFromConfig() {
-    final String pattern = findConfiguredFileHandlerPattern();
+    final String pattern = resolveConfigurableLogDir(findConfiguredFileHandlerPattern());
     if (pattern == null)
       return;
 
@@ -233,14 +235,27 @@ public class DefaultLogger implements Logger {
       }
     }
 
-    if (stream != null)
-      try {
-        LogManager.getLogManager().readConfiguration(stream);
+    if (stream != null) {
+      try (final InputStream in = stream) {
+        // Load the configuration so we can resolve ${...} placeholders in FileHandler.pattern
+        // before JUL eagerly opens the log file. This lets the log directory be configured via
+        // the arcadedb.server.logsDirectory system property / environment variable, which is the
+        // only path resolvable this early (the server root path is not set yet at first log).
+        final Properties props = new Properties();
+        props.load(in);
+
+        final String pattern = props.getProperty("java.util.logging.FileHandler.pattern");
+        if (pattern != null)
+          props.setProperty("java.util.logging.FileHandler.pattern", resolveConfigurableLogDir(pattern));
+
+        final ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        props.store(buffer, null);
+        LogManager.getLogManager().readConfiguration(new ByteArrayInputStream(buffer.toByteArray()));
       } catch (final IOException e) {
         // NOT FOUND, APPLY DEFAULTS
         System.err.println("Cannot find ArcadeDB log file `arcadedb-log.properties`. Using default settings");
       }
-    else
+    } else
       System.err.println("Cannot find ArcadeDB log file `arcadedb-log.properties`. Using default settings");
 
     final boolean installCustomFormatter = Boolean.parseBoolean(
