@@ -1703,4 +1703,123 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       }
     }
   }
+
+  @Test
+  void matchWithParameterPropertyFilter() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        session.run("CREATE (n:ParamTag {name: 'tag1', value: 'val1'})");
+        session.run("CREATE (n:ParamTag {name: 'tag2', value: 'val2'})");
+        session.run("CREATE (n:ParamTag {name: 'tag3', value: 'val3'})");
+
+        final Result result = session.run(
+            "MATCH (n:ParamTag {name: $name}) RETURN n.name AS name, n.value AS value",
+            Map.of("name", "tag2"));
+
+        assertThat(result.hasNext()).isTrue();
+        final Record record = result.next();
+        assertThat(record.get("name").asString()).isEqualTo("tag2");
+        assertThat(record.get("value").asString()).isEqualTo("val2");
+        assertThat(result.hasNext()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void matchWithWhereParameterStringFilter() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        session.run("CREATE (n:WhereParamNode {category: 'A', score: 10})");
+        session.run("CREATE (n:WhereParamNode {category: 'B', score: 20})");
+        session.run("CREATE (n:WhereParamNode {category: 'A', score: 30})");
+
+        final Result result = session.run(
+            "MATCH (n:WhereParamNode) WHERE n.category = $cat RETURN n.score AS score ORDER BY n.score",
+            Map.of("cat", "A"));
+
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("score").asLong()).isEqualTo(10L);
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("score").asLong()).isEqualTo(30L);
+        assertThat(result.hasNext()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void matchByIdParameter() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        session.run("CREATE (n:IdParamNode {label: 'first'})");
+        session.run("CREATE (n:IdParamNode {label: 'second'})");
+
+        final Result allNodes = session.run("MATCH (n:IdParamNode {label: 'first'}) RETURN ID(n) AS nid, n.label AS label");
+        assertThat(allNodes.hasNext()).isTrue();
+        final Record firstRecord = allNodes.next();
+        final long targetId = firstRecord.get("nid").asLong();
+
+        final Result result = session.run(
+            "MATCH (n:IdParamNode) WHERE ID(n) = $id RETURN n.label AS label",
+            Map.of("id", targetId));
+
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("label").asString()).isEqualTo("first");
+        assertThat(result.hasNext()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void vlpMatchWithParameters() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        session.run("CREATE (a:VlpParent {kind: 'agent'})");
+        session.run("CREATE (b:VlpChild {name: 'tag1', kind: 'tag'})");
+        session.run("CREATE (c:VlpChild {name: 'tag2', kind: 'tag'})");
+        session.run("MATCH (a:VlpParent {kind: 'agent'}), (b:VlpChild {name: 'tag1'}) CREATE (a)-[:vlpEdge]->(b)");
+        session.run("MATCH (a:VlpParent {kind: 'agent'}), (c:VlpChild {name: 'tag2'}) CREATE (a)-[:vlpEdge]->(c)");
+
+        final long parentId = session.run("MATCH (a:VlpParent {kind: 'agent'}) RETURN ID(a) AS id")
+            .next().get("id").asLong();
+
+        final Result result = session.run(
+            "MATCH (from:VlpParent)-[:vlpEdge*0..]->(x:VlpChild {name: $nameParam}) WHERE ID(from) = $parentId RETURN x.name AS name",
+            Map.of("nameParam", "tag2", "parentId", parentId));
+
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("name").asString()).isEqualTo("tag2");
+        assertThat(result.hasNext()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void vlpMatchWithParametersInTransaction() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        try (Transaction setup = session.beginTransaction()) {
+          setup.run("CREATE (a:TxVlpParent {kind: 'agent'})");
+          setup.run("CREATE (b:TxVlpChild {name: 'tx_tag1', kind: 'tag'})");
+          setup.run("CREATE (c:TxVlpChild {name: 'tx_tag2', kind: 'tag'})");
+          setup.run("MATCH (a:TxVlpParent {kind: 'agent'}), (b:TxVlpChild {name: 'tx_tag1'}) CREATE (a)-[:txVlpEdge]->(b)");
+          setup.run("MATCH (a:TxVlpParent {kind: 'agent'}), (c:TxVlpChild {name: 'tx_tag2'}) CREATE (a)-[:txVlpEdge]->(c)");
+          setup.commit();
+        }
+
+        final long parentId = session.run("MATCH (a:TxVlpParent {kind: 'agent'}) RETURN ID(a) AS id")
+            .next().get("id").asLong();
+
+        try (Transaction tx = session.beginTransaction()) {
+          final Result result = tx.run(
+              "MATCH (from:TxVlpParent)-[:txVlpEdge*0..]->(x:TxVlpChild {name: $nameParam}) WHERE ID(from) = $parentId RETURN x.name AS name",
+              Map.of("nameParam", "tx_tag2", "parentId", parentId));
+
+          assertThat(result.hasNext()).isTrue();
+          assertThat(result.next().get("name").asString()).isEqualTo("tx_tag2");
+          assertThat(result.hasNext()).isFalse();
+          tx.commit();
+        }
+      }
+    }
+  }
 }
