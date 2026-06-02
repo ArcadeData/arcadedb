@@ -335,6 +335,56 @@ class RaftHAServerTest {
   }
 
   @Test
+  void findLocalPeerIdMatchesByHostname() {
+    // Plain "host:raftPort:httpPort" list with the node named after its host (the user's Attempt 2).
+    // This must now resolve directly, without the prefix_N convention.
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "arcadesplit1:2434:2480,arcadesplit2:2434:2480,arcadesplit3:2434:2480", 2434);
+    assertThat(RaftPeerAddressResolver.findLocalPeerId(parsed.peers(), parsed.peerNames(), "arcadesplit1", null))
+        .isEqualTo(parsed.peers().get(0).getId());
+    assertThat(RaftPeerAddressResolver.findLocalPeerId(parsed.peers(), parsed.peerNames(), "arcadesplit3", null))
+        .isEqualTo(parsed.peers().get(2).getId());
+  }
+
+  @Test
+  void findLocalPeerIdMatchesByBareIp() {
+    // Bare-IP server list (the user's Attempt 3) with the node named after its own IP.
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "10.70.2.53:2434:2480,10.70.2.70:2434:2480,10.70.2.40:2434:2480", 2434);
+    assertThat(RaftPeerAddressResolver.findLocalPeerId(parsed.peers(), parsed.peerNames(), "10.70.2.70", null))
+        .isEqualTo(parsed.peers().get(1).getId());
+  }
+
+  @Test
+  void findLocalPeerIdNoMatchErrorListsAllThreeOptions() {
+    // A server name that matches no peer name, no host, and has no numeric suffix must produce a
+    // message that spells out all three resolution strategies (host name, name@ syntax, -N suffix).
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "arcadesplit1:2434:2480,arcadesplit2:2434:2480,arcadesplit3:2434:2480", 2434);
+    assertThatThrownBy(() -> RaftPeerAddressResolver.findLocalPeerId(
+        parsed.peers(), parsed.peerNames(), "unrelated", null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("arcadedb.server.name")
+        .hasMessageContaining("arcadesplit1")   // listed among the valid host options
+        .hasMessageContaining("name@host")
+        .hasMessageContaining("zero-based");
+  }
+
+  @Test
+  void findLocalPeerIdOutOfRangeErrorIsZeroBased() {
+    // A 3-node cluster named with 1-based suffixes (-3) is the broken workaround; the message
+    // must steer the user to zero-based -0 .. -2.
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "host1:2434,host2:2435,host3:2436", 2434);
+    assertThatThrownBy(() -> RaftPeerAddressResolver.findLocalPeerId(
+        parsed.peers(), parsed.peerNames(), "arcadesplit-3", null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("zero-based")
+        .hasMessageContaining("-0")
+        .hasMessageContaining("-2");
+  }
+
+  @Test
   void extractHostFromHostPort() {
     assertThat(RaftHAServer.extractHost("splitter-0.splitter.sbu.svc.cluster.local:2434"))
         .isEqualTo("splitter-0.splitter.sbu.svc.cluster.local");

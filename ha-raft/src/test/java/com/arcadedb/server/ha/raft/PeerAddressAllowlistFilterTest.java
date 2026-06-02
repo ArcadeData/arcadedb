@@ -99,6 +99,27 @@ class PeerAddressAllowlistFilterTest {
   }
 
   @Test
+  void extractPeerHostsStripsNamePrefixIPv4() {
+    // Regression: the optional "name@" prefix must not be treated as part of the host, otherwise
+    // the allowlist tries to DNS-resolve "arcadesplit1@10.70.2.53" and rejects all peers.
+    final List<String> hosts = PeerAddressAllowlistFilter.extractPeerHosts(
+        "arcadesplit1@10.70.2.53:2434:2480,arcadesplit2@10.70.2.70:2434:2480,arcadesplit3@10.70.2.40:2434:2480");
+    assertThat(hosts).containsExactly("10.70.2.53", "10.70.2.70", "10.70.2.40");
+  }
+
+  @Test
+  void extractPeerHostsStripsNamePrefixHostname() {
+    final List<String> hosts = PeerAddressAllowlistFilter.extractPeerHosts("frankfurt@node1:2434:2480");
+    assertThat(hosts).containsExactly("node1");
+  }
+
+  @Test
+  void extractPeerHostsStripsNamePrefixIPv6Bracketed() {
+    final List<String> hosts = PeerAddressAllowlistFilter.extractPeerHosts("london@[fe80::1]:2434:2480");
+    assertThat(hosts).containsExactly("fe80::1");
+  }
+
+  @Test
   void extractPeerHostsSkipsBlankEntries() {
     // Trailing comma creates an empty entry
     final List<String> hosts = PeerAddressAllowlistFilter.extractPeerHosts("node1:2434, ,node2:2434");
