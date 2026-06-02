@@ -421,13 +421,16 @@ deleteFunctionStatement
 
 /**
  * MOVE VERTEX statement
- * MOVE VERTEX source TO target [SET ...] [MERGE ...]
- * Supports: MOVE VERTEX expr TO type:TypeName or TO TypeName or TO BUCKET:name
+ * MOVE VERTEX source TO target [SET ...|REMOVE ...|MERGE ...|CONTENT ...] [BATCH n]
+ * Supports: MOVE VERTEX expr TO type:TypeName or TO TypeName or TO bucket:name or TO bucket:id
  */
 moveVertexStatement
-    : MOVE VERTEX expression TO (TYPE COLON identifier | BUCKET COLON identifier | identifier)
-      (SET updateItem (COMMA updateItem)*)?
-      (MERGE expression)?
+    : MOVE VERTEX expression TO ( TYPE COLON identifier
+                               | BUCKET COLON identifier
+                               | BUCKET_IDENTIFIER
+                               | BUCKET_NUMBER_IDENTIFIER
+                               | identifier )
+      updateOperation?
       (BATCH expression)?
     ;
 

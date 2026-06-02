@@ -232,4 +232,99 @@ class MoveVertexStatementExecutionTest extends TestHelper {
     assertThat(rs.hasNext()).isFalse();
     rs.close();
   }
+
+  /**
+   * Regression test for issue #4461: MOVE VERTEX must return the new RID of the moved (re-created) vertex,
+   * for both a literal RID source and a SELECT subquery source.
+   */
+  @Test
+  void moveVertexReturnsNewRid() {
+    final String typeA = "testMoveRetA";
+    final String typeB = "testMoveRetB";
+    database.getSchema().createVertexType(typeA);
+    database.getSchema().createVertexType(typeB);
+    database.setAutoTransaction(true);
+
+    final String rid1 = database.command("sql", "create vertex " + typeA).next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql", "MOVE VERTEX " + rid1 + " TO TYPE:" + typeB)) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result moved = rs.next();
+      assertThat(moved.getIdentity()).isPresent();
+      assertThat(moved.getElement().get().getTypeName()).isEqualTo(typeB);
+      assertThat(rs.hasNext()).isFalse();
+    }
+
+    final String rid2 = database.command("sql", "create vertex " + typeA).next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql", "MOVE VERTEX (SELECT FROM " + rid2 + ") TO TYPE:" + typeB)) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result moved = rs.next();
+      assertThat(moved.getIdentity()).isPresent();
+      // the moved record is a brand-new record, not the source RID
+      assertThat(moved.getIdentity().get().toString()).isNotEqualTo(rid2);
+      assertThat(moved.getElement().get().getTypeName()).isEqualTo(typeB);
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * Regression test for issue #4461: MOVE VERTEX ... TO bucket:name must parse and move the vertex to the target bucket.
+   */
+  @Test
+  void moveVertexToBucket() {
+    final String typeA = "testMoveBucketA";
+    database.getSchema().createVertexType(typeA).addBucket(database.getSchema().createBucket("testMoveBucket_extra"));
+    database.setAutoTransaction(true);
+
+    final String rid = database.command("sql", "create vertex " + typeA).next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql", "MOVE VERTEX " + rid + " TO BUCKET:testMoveBucket_extra")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Result moved = rs.next();
+      assertThat(moved.getElement().get().getIdentity().getBucketId())
+          .isEqualTo(database.getSchema().getBucketByName("testMoveBucket_extra").getFileId());
+      assertThat(rs.hasNext()).isFalse();
+    }
+  }
+
+  /**
+   * Regression test for issue #4461: the SET/REMOVE/MERGE/CONTENT operations must be applied to the moved (re-created)
+   * vertex. Previously they were silently applied to the stale source record and lost.
+   */
+  @Test
+  void moveVertexWithUpdateOperations() {
+    final String typeA = "testMoveOpsA";
+    final String typeB = "testMoveOpsB";
+    database.getSchema().createVertexType(typeA);
+    database.getSchema().createVertexType(typeB);
+    database.setAutoTransaction(true);
+
+    // SET
+    String rid = database.command("sql", "create vertex " + typeA + " set somefield = 0").next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql",
+        "MOVE VERTEX (SELECT FROM " + rid + ") TO TYPE:" + typeB + " SET somefield = 1")) {
+      assertThat(rs.next().<Integer>getProperty("somefield")).isEqualTo(1);
+    }
+
+    // REMOVE
+    rid = database.command("sql", "create vertex " + typeA + " set somefield = 0").next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql",
+        "MOVE VERTEX (SELECT FROM " + rid + ") TO TYPE:" + typeB + " REMOVE somefield")) {
+      assertThat(rs.next().hasProperty("somefield")).isFalse();
+    }
+
+    // MERGE
+    rid = database.command("sql", "create vertex " + typeA + " set somefield = 0").next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql",
+        "MOVE VERTEX (SELECT FROM " + rid + ") TO TYPE:" + typeB + " MERGE {\"somefield\": 9}")) {
+      assertThat(rs.next().<Integer>getProperty("somefield")).isEqualTo(9);
+    }
+
+    // CONTENT
+    rid = database.command("sql", "create vertex " + typeA + " set somefield = 0").next().getIdentity().get().toString();
+    try (final ResultSet rs = database.command("sql",
+        "MOVE VERTEX (SELECT FROM " + rid + ") TO TYPE:" + typeB + " CONTENT {\"newfield\": 7}")) {
+      final Result moved = rs.next();
+      assertThat(moved.<Integer>getProperty("newfield")).isEqualTo(7);
+      assertThat(moved.hasProperty("somefield")).isFalse();
+    }
+  }
 }
