@@ -202,6 +202,32 @@ class OpenCypherIndexTest {
     assertThat(((Number) value).longValue()).isEqualTo(42L);
   }
 
+  // Issue #4354: Neo4j-style lazy schema. A single `CREATE INDEX FOR (n:Label) ON (n.prop)` on a
+  // brand-new label/property must implicitly create the vertex type and let the index back an
+  // indexed lookup, without the three-statement preamble (create type, create property, create index).
+  @Test
+  void createIndexImplicitlyCreatesSchemaNeo4jStyle() {
+    assertThat(database.getSchema().existsType("Worker")).isFalse();
+
+    // Single statement, no preamble: exactly the Neo4j workflow from the issue.
+    database.command("opencypher", "CREATE INDEX FOR (n:Worker) ON (n.name)");
+
+    assertThat(database.getSchema().existsType("Worker")).isTrue();
+    assertThat(database.getSchema().getType("Worker")).isInstanceOf(VertexType.class);
+
+    final Collection<TypeIndex> indexes = database.getSchema().getType("Worker").getAllIndexes(false);
+    assertThat(indexes).anyMatch(idx -> idx.getPropertyNames().contains("name"));
+
+    // The index must be usable end-to-end: insert and look up by the indexed property.
+    database.command("opencypher", "CREATE (a:Worker {name: 'Alice'})");
+    database.command("opencypher", "CREATE (b:Worker {name: 'Bob'})");
+
+    try (final ResultSet rs = database.query("opencypher", "MATCH (n:Worker {name: 'Alice'}) RETURN n.name AS name")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat((String) rs.next().getProperty("name")).isEqualTo("Alice");
+    }
+  }
+
   private void assertIntegerLookupsAllReturnOne(final String description) {
     // 1. plain label match: returned uuid must still be a number (not "1").
     try (final ResultSet rs = database.query("opencypher", "MATCH (n:Person) RETURN n.uuid AS u")) {
