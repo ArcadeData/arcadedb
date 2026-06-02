@@ -164,10 +164,18 @@ final class RaftPeerAddressResolver {
   }
 
   /**
-   * Determines the local peer ID. If {@code peerNames} contains an entry whose value equals the
-   * {@code serverName}, the corresponding peer is returned. Otherwise the server name is parsed
-   * for the numeric suffix convention {@code prefix_N} or {@code prefix-N} and used as the index
-   * into {@code peers} (e.g. {@code arcadedb-0} or {@code ArcadeDB_0} maps to index 0).
+   * Determines the local peer ID using three strategies, in priority order:
+   * <ol>
+   *   <li><b>Named peer match:</b> if {@code peerNames} contains an entry whose value equals the
+   *       {@code serverName} (the {@code name@host} syntax), the corresponding peer is returned.</li>
+   *   <li><b>Hostname match:</b> if {@code serverName} equals the host component of a peer's Raft
+   *       address (e.g. server name {@code arcadesplit1} for the list entry
+   *       {@code arcadesplit1:2434:2480}, or an IP), that peer is returned. This lets a plain
+   *       {@code host:raftPort:httpPort} server list work without the {@code prefix_N} convention.</li>
+   *   <li><b>Numeric suffix:</b> the server name is parsed for the {@code prefix_N} / {@code prefix-N}
+   *       convention and used as the zero-based index into {@code peers} (e.g. {@code arcadedb-0}
+   *       or {@code ArcadeDB_0} maps to index 0).</li>
+   * </ol>
    */
   static RaftPeerId findLocalPeerId(final List<RaftPeer> peers, final Map<RaftPeerId, String> peerNames,
       final String serverName, final ArcadeDBServer server) {
@@ -177,18 +185,42 @@ final class RaftPeerAddressResolver {
           return entry.getKey();
     }
 
+    // Match the server name against the host component of each peer's Raft address. Covers the
+    // plain "host:raftPort:httpPort" (or bare-IP) server list where the node is named after its host.
+    for (final RaftPeer peer : peers)
+      if (serverName.equals(RaftHAServer.extractHost(peer.getAddress())))
+        return peer.getId();
+
     final int separatorIdx;
     try {
       separatorIdx = findLastSeparatorIndex(serverName);
     } catch (final IllegalArgumentException e) {
+      final List<String> configuredNames = peerNames != null ? new ArrayList<>(peerNames.values()) : List.of();
+      final List<String> peerHosts = new ArrayList<>(peers.size());
+      for (final RaftPeer peer : peers)
+        peerHosts.add(RaftHAServer.extractHost(peer.getAddress()));
       throw new IllegalArgumentException(
-          "Server name '" + serverName + "' did not match any configured peer name and has no '_N' or '-N' suffix",
+          "Cannot determine which cluster peer this node is: server name '" + serverName
+              + "' does not match any configured peer name"
+              + (configuredNames.isEmpty() ? "" : " (configured names: " + configuredNames + ")")
+              + ", does not match any host in the server list (hosts: " + peerHosts
+              + "), and does not end with a node index ('-N' or '_N'). Fix this in one of these ways: "
+              + "(1) set 'arcadedb.server.name' to the host of this node as it appears in the server list "
+              + "(e.g. one of " + peerHosts + "); "
+              + "or (2) use the 'name@host:raftPort:httpPort' syntax in the server list and set "
+              + "'arcadedb.server.name' to one of those names; "
+              + "or (3) name each node '" + serverName + "-N' (or '_N'), where N is its zero-based position "
+              + "in the server list (first entry = 0); for " + peers.size() + " peers the valid suffixes are -0 .. -"
+              + (peers.size() - 1) + ".",
           e);
     }
     final int index = Integer.parseInt(serverName.substring(separatorIdx + 1));
     if (index < 0 || index >= peers.size())
       throw new IllegalArgumentException(
-          "Server index " + index + " from name '" + serverName + "' is out of range [0, " + peers.size() + ")");
+          "Server index " + index + " parsed from node name '" + serverName + "' is out of range: the server list has "
+              + peers.size() + " peers, so the index must be zero-based in [0, " + peers.size() + "). "
+              + "For " + peers.size() + " peers name the nodes with suffixes -0 .. -" + (peers.size() - 1)
+              + " (the first server-list entry is index 0, not 1).");
 
     return peers.get(index).getId();
   }

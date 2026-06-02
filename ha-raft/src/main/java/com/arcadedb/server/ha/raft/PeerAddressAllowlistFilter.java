@@ -122,7 +122,9 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
 
   /**
    * Extracts just the host component from every entry in the ArcadeDB HA server list.
-   * Entries follow {@code host:raftPort[:httpPort[:priority]]} or the bracketed IPv6 form.
+   * Entries follow {@code [name@]host:raftPort[:httpPort[:priority]]} or the bracketed IPv6 form.
+   * The optional {@code name@} prefix (e.g. {@code frankfurt@10.0.0.1:2434:2480}) is stripped
+   * before the host is extracted, mirroring {@link RaftPeerAddressResolver#parsePeerList}.
    * <p>
    * An empty or null serverList returns an empty list rather than throwing, so callers can
    * decide whether a missing list is an error.
@@ -134,7 +136,15 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     final String[] entries = serverList.split(",");
     final List<String> hosts = new ArrayList<>(entries.length);
     for (final String entry : entries) {
-      final String trimmed = entry.trim();
+      String trimmed = entry.trim();
+      if (trimmed.isEmpty())
+        continue;
+
+      // Strip the optional human-readable "name@" prefix so it is not mistaken for the host.
+      // parsePeerList allows only one '@'; here we defensively take the part after the first.
+      final int atIdx = trimmed.indexOf('@');
+      if (atIdx >= 0)
+        trimmed = trimmed.substring(atIdx + 1).trim();
       if (trimmed.isEmpty())
         continue;
 
