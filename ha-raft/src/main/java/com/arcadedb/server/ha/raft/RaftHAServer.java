@@ -296,7 +296,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       new KubernetesAutoJoin(arcadeServer, raftGroup, localPeerId, raftProperties).tryAutoJoin();
 
     final long healthInterval = configuration.getValueAsLong(GlobalConfiguration.HA_HEALTH_CHECK_INTERVAL);
-    this.healthMonitor = new HealthMonitor(this, healthInterval);
+    final long staleFollowerLagThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_STALE_FOLLOWER_LAG_THRESHOLD);
+    final long staleFollowerRecoveryDurationMs = configuration.getValueAsLong(
+        GlobalConfiguration.HA_STALE_FOLLOWER_RECOVERY_DURATION_MS);
+    this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs);
     this.healthMonitor.start();
   }
 
@@ -330,6 +333,33 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   @Override
   public boolean isShutdownRequested() {
     return shutdownRequested;
+  }
+
+  /**
+   * Stale-follower detection for the {@link HealthMonitor} (issue #3893): true only when this node
+   * is a running follower lagging more than {@code lagThreshold} entries behind the commit index,
+   * is NOT actively catching up, and has no snapshot download already pending. Returns false for
+   * the leader and whenever the Raft state cannot be read.
+   */
+  @Override
+  public boolean isFollowerLaggingBeyond(final long lagThreshold) {
+    if (raftServer == null || shutdownRequested || isLeader())
+      return false;
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm == null || sm.isCatchingUp() || sm.isSnapshotDownloadPending())
+      return false;
+    final long commit = getCommitIndex();
+    final long applied = getLastAppliedIndex();
+    if (commit < 0 || applied < 0)
+      return false;
+    return commit - applied > lagThreshold;
+  }
+
+  @Override
+  public void recoverFromPersistentLag() {
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm != null)
+      sm.recoverFromPersistentLag();
   }
 
   /**

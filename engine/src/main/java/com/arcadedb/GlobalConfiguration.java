@@ -907,6 +907,22 @@ public enum GlobalConfiguration {
       "Maximum acceptable gap between the snapshot index and persisted applied index before triggering a snapshot download.",
       Long.class, 10L),
 
+  HA_STALE_FOLLOWER_LAG_THRESHOLD("arcadedb.ha.staleFollowerLagThreshold", SCOPE.SERVER,
+      """
+      Number of Raft log entries a follower may lag behind the commit index, while NOT actively catching up, before the \
+      health monitor re-arms a snapshot download from the leader. Guards against a follower that diverged (apply failure) \
+      and whose snapshot download also failed on a quiet cluster, where no new entry arrives to re-trigger recovery. \
+      0 (the default) disables stale-follower recovery; the node restart path remains the primary mitigation. \
+      Enable with a value well below HA_SNAPSHOT_THRESHOLD once you have observed normal catch-up lag for your workload, \
+      to avoid multiple followers downloading snapshots from the leader at once.""",
+      Long.class, 0L),
+
+  HA_STALE_FOLLOWER_RECOVERY_DURATION_MS("arcadedb.ha.staleFollowerRecoveryDurationMs", SCOPE.SERVER,
+      """
+      How long in milliseconds the lag described by HA_STALE_FOLLOWER_LAG_THRESHOLD must persist continuously \
+      (across consecutive health-monitor ticks) before recovery is triggered. Avoids acting on transient catch-up lag.""",
+      Long.class, 60_000L),
+
   HA_SNAPSHOT_MAX_ENTRY_SIZE("arcadedb.ha.snapshotMaxEntrySize", SCOPE.SERVER,
       "Maximum uncompressed size in bytes for a single entry in a snapshot ZIP file. Protects against decompression bombs.",
       Long.class, 10_737_418_240L),

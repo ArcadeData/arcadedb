@@ -203,6 +203,21 @@ class ArcadeStateMachineTest {
   }
 
   @Test
+  void freshStateMachineReportsNoCatchUpOrPendingDownload() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    assertThat(sm.isCatchingUp()).isFalse();
+    assertThat(sm.isSnapshotDownloadPending()).isFalse();
+  }
+
+  @Test
+  void recoverFromPersistentLagIsNoOpWithoutRaftHAServer() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    // No RaftHAServer/server wired: must not throw and must not arm a download (issue #3893).
+    assertThatNoException().isThrownBy(sm::recoverFromPersistentLag);
+    assertThat(sm.isSnapshotDownloadPending()).isFalse();
+  }
+
+  @Test
   void deserializeWalTransactionZeroPages() {
     final int segmentSize = 0;
     final int totalSize = 24 + 12; // header + footer only
