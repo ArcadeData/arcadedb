@@ -474,6 +474,11 @@ public class TimeSeriesShard implements AutoCloseable {
     // Grab the write lock just long enough to snapshot the current page count and read the
     // pages accumulated since Phase 0.  Release the lock immediately so appends can resume
     // while we sort + compress (Phase 4b).
+    //
+    // IMPORTANT: do NOT read the last page (phase4aPageCount) here.  Phase 4b runs lock-free,
+    // so concurrent appendSamples() calls may add samples to page phase4aPageCount between now
+    // and Phase 4c.  Deferring the read of page phase4aPageCount to Phase 4c (under writeLock)
+    // guarantees we capture those extra samples and do not lose them when clearDataPages() runs.
     final int phase4aPageCount;
     Object[] phase4aData;
     compactionLock.writeLock().lock();
@@ -481,8 +486,9 @@ public class TimeSeriesShard implements AutoCloseable {
       db.begin();
       try {
         phase4aPageCount = mutableBucket.getDataPageCount();
-        if (phase4aPageCount > lastFullPage)
-          phase4aData = mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, phase4aPageCount);
+        if (phase4aPageCount > lastFullPage + 1)
+          // Read only up to phase4aPageCount - 1; the last page is read in Phase 4c.
+          phase4aData = mutableBucket.readPagesRangeForCompaction(lastFullPage + 1, phase4aPageCount - 1);
         else
           phase4aData = null;
       } finally {
@@ -529,10 +535,15 @@ public class TimeSeriesShard implements AutoCloseable {
       try {
         final int finalPageCount = mutableBucket.getDataPageCount();
 
-        // Read only the tail pages created after Phase 4a's snapshot.
-        Object[] tailData = null;
-        if (finalPageCount > phase4aPageCount)
-          tailData = mutableBucket.readPagesRangeForCompaction(phase4aPageCount + 1, finalPageCount);
+        // Re-read page phase4aPageCount (the last page as of Phase 4a) plus any new pages
+        // created during Phase 4b.  Running under the writeLock guarantees no concurrent
+        // appendSamples() can be in progress, so we see the fully up-to-date sample count.
+        // This closes the race where samples written to page phase4aPageCount during the
+        // lock-free Phase 4b would otherwise be lost when clearDataPages() runs.
+        // phase4aPageCount is always >= lastFullPage + 1 (Phase 0 returns early when there are
+        // no data pages), and finalPageCount is always >= phase4aPageCount (pages only grow),
+        // so the range starting at phase4aPageCount is always valid.
+        final Object[] tailData = mutableBucket.readPagesRangeForCompaction(phase4aPageCount, finalPageCount);
 
         // Merge Phase 4b spill with tail data
         final Object[] toCompressFinal;

@@ -105,6 +105,13 @@ public class TimeSeriesEngine implements AutoCloseable {
    * they may be routed to the same shard. For contention-free writes, use the async API
    * which provides 1:1 slot-to-shard affinity.
    * <p>
+   * <b>Threading:</b> the append runs on the calling thread. When invoked inside an enclosing
+   * transaction (as on the SQL INSERT path), the shard's internal {@code begin/commit} nests into
+   * that transaction, so the mutable-bucket page writes are published and replicated by the
+   * enclosing commit as a single, in-order transaction. Routing the append onto another thread to
+   * make it a top-level transaction must be avoided: it would publish the shard pages out of band
+   * with the enclosing commit and, under HA, reorder the page versions on the Raft log.
+   * <p>
    * <b>Dictionary column constraint:</b> columns using {@code DICTIONARY} compression
    * (typically TAG columns) must not exceed {@link com.arcadedb.engine.timeseries.codec.DictionaryCodec#MAX_DICTIONARY_SIZE}
    * distinct values per sealed block. This is validated at compaction time; data that violates
