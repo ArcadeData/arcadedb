@@ -47,8 +47,8 @@ public class DefaultLogger implements Logger {
   private static final String FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
   // Fallback when ${arcadedb.server.logsDirectory} cannot be resolved (e.g. the first log fires during
   // GlobalConfiguration's own static init, before its values are queryable). Must stay in sync with the
-  // default of GlobalConfiguration.SERVER_LOGS_DIRECTORY.
-  private static final String DEFAULT_LOG_DIR              = "./log";
+  // default of GlobalConfiguration.SERVER_LOGS_DIRECTORY (asserted by DefaultLoggerLogDirTest).
+  static final String DEFAULT_LOG_DIR              = "./log";
 
   /**
    * Static so that a second {@link DefaultLogger} instance installed via
@@ -120,7 +120,7 @@ public class DefaultLogger implements Logger {
    * pattern with no placeholders is returned unchanged. This is what allows the file-log
    * directory to be pointed at a writable location on a read-only root filesystem.
    */
-  private static String resolveConfigurableLogDir(final String pattern) {
+  static String resolveConfigurableLogDir(final String pattern) {
     if (pattern == null)
       return null;
     return SystemVariableResolver.INSTANCE.resolveSystemVariables(pattern, DEFAULT_LOG_DIR);
