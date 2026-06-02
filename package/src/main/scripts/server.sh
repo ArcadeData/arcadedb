@@ -103,9 +103,14 @@ fi
 
 echo $$ >$ARCADEDB_PID
 
+# Optional: relocate log files to a writable directory (e.g. on read-only root filesystems).
+# ARCADEDB_LOG_DIR maps to the arcadedb.server.logsDirectory configuration referenced by
+# config/arcadedb-log.properties. When unset, no argument is added and logs default to ./log.
+# Passed as a quoted, conditional argument so a path containing spaces stays a single argument.
 exec "$JAVA" $JAVA_OPTS \
   $ARCADEDB_OPTS_MEMORY \
   $JAVA_OPTS_SCRIPT \
+  ${ARCADEDB_LOG_DIR:+"-Darcadedb.server.logsDirectory=$ARCADEDB_LOG_DIR"} \
   $ARCADEDB_JMX \
   $ARCADEDB_SETTINGS \
   -cp "$ARCADEDB_HOME/lib/*" \

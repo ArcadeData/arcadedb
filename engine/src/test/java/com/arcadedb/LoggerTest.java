@@ -166,6 +166,56 @@ class LoggerTest extends TestHelper {
   }
 
   /**
+   * Issue #4451: a ${arcadedb.server.logsDirectory} placeholder in FileHandler.pattern must be
+   * resolved both when pre-creating the log directory and in the pattern handed to JUL, so the
+   * file handler opens under the configured (writable) directory instead of "./log".
+   */
+  @Test
+  void fileHandlerPatternResolvesConfigurableLogDir() throws Exception {
+    final Path tempBase = Files.createTempDirectory("arcade-4451-placeholder");
+    final File customLogDir = tempBase.resolve("k8s-writable").toFile();
+    assertThat(customLogDir).doesNotExist();
+
+    final File customProps = tempBase.resolve("placeholder-handler.properties").toFile();
+    try (final PrintWriter pw = new PrintWriter(customProps)) {
+      pw.println("handlers=java.util.logging.ConsoleHandler, java.util.logging.FileHandler");
+      pw.println(".level=WARNING");
+      pw.println("java.util.logging.ConsoleHandler.level=WARNING");
+      pw.println("java.util.logging.ConsoleHandler.formatter=com.arcadedb.utility.AnsiLogFormatter");
+      pw.println("java.util.logging.FileHandler.level=WARNING");
+      pw.println("java.util.logging.FileHandler.pattern=${arcadedb.server.logsDirectory}/arcade.%g.log");
+      pw.println("java.util.logging.FileHandler.count=1");
+      pw.println("java.util.logging.FileHandler.limit=1000");
+      pw.println("java.util.logging.FileHandler.formatter=com.arcadedb.log.LogFormatter");
+    }
+
+    final String prevProp = System.getProperty("java.util.logging.config.file");
+    final String prevDir = System.getProperty("arcadedb.server.logsDirectory");
+    System.setProperty("java.util.logging.config.file", customProps.getAbsolutePath());
+    System.setProperty("arcadedb.server.logsDirectory", customLogDir.getAbsolutePath());
+
+    try {
+      resetDefaultLoggerInitialized();
+      final DefaultLogger logger = new DefaultLogger();
+      logger.init();
+
+      // createLogDirectoryFromConfig pre-created the resolved directory
+      assertThat(customLogDir).exists().isDirectory();
+      // installCustomFormatter handed JUL the resolved, not the raw, pattern
+      assertThat(java.util.logging.LogManager.getLogManager().getProperty("java.util.logging.FileHandler.pattern"))
+          .isEqualTo(customLogDir.getAbsolutePath() + "/arcade.%g.log");
+    } finally {
+      closeFileHandlers();
+      if (prevDir != null)
+        System.setProperty("arcadedb.server.logsDirectory", prevDir);
+      else
+        System.clearProperty("arcadedb.server.logsDirectory");
+      restoreLogConfig(prevProp);
+      deleteTree(tempBase);
+    }
+  }
+
+  /**
    * Reset DefaultLogger.initialized so init() actually runs in tests that exercise the
    * directory-creation logic. The static flag exists to prevent a second DefaultLogger
    * (typically installed by tests that swap in a capturing logger) from re-reading the
