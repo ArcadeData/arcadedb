@@ -45,6 +45,7 @@ public class DefaultLogger implements Logger {
   private static final String DEFAULT_LOG                  = "com.arcadedb";
   private static final String ENV_INSTALL_CUSTOM_FORMATTER = "arcadedb.installCustomFormatter";
   private static final String FILE_LOG_PROPERTIES          = "arcadedb-log.properties";
+  // Must stay in sync with the default of GlobalConfiguration.SERVER_LOGS_DIRECTORY (arcadedb.server.logsDirectory).
   private static final String DEFAULT_LOG_DIR              = "./log";
 
   /**
