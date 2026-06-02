@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.parser.Bucket;
@@ -44,17 +45,22 @@ public class MoveVertexStep extends AbstractExecutionStep {
   @Override
   public ResultSet syncPull(final CommandContext ctx, final int records) throws TimeoutException {
     final ResultSet prevResult = getPrev().syncPull(ctx, records);
+
+    // The moved vertices are re-created under the target type/bucket with a brand-new RID. Replace each input result with an
+    // updatable result wrapping the new record so that any following SET/REMOVE/MERGE/CONTENT operations and the final save act
+    // on the moved vertex, and so the new RID is returned to the caller.
+    final InternalResultSet result = new InternalResultSet();
     while (prevResult.hasNext()) {
-      final Result result = prevResult.next();
-      final Vertex v = result.getVertex().get();
+      final Result item = prevResult.next();
+      final Vertex v = item.getVertex().orElse(null);
       if (v != null) {
-        if (targetBucket != null)
-          v.moveToBucket(targetBucket);
-        else
-          v.moveToType(targetType);
-      }
+        final RID newIdentity = targetBucket != null ? v.moveToBucket(targetBucket) : v.moveToType(targetType);
+        final Vertex moved = ctx.getDatabase().lookupByRID(newIdentity, true).asVertex();
+        result.add(new UpdatableResult(moved.modify()));
+      } else
+        result.add(item);
     }
-    return prevResult;
+    return result;
   }
 
   @Override

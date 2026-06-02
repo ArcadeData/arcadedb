@@ -4730,11 +4730,10 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     return stmt;
   }
 
-  // TODO: Complete MOVE VERTEX visitor implementation - temporarily disabled
-  // /**
-  //  * Visit MOVE VERTEX statement.
-  //  * Supports: MOVE VERTEX expr TO type:TypeName or TO TypeName or TO bucket:name
-  //  */
+  /**
+   * Visit MOVE VERTEX statement.
+   * Supports: MOVE VERTEX expr TO type:TypeName | TO bucket:name | TO bucket:id [SET|REMOVE|MERGE|CONTENT ...] [BATCH n]
+   */
   @Override
   public MoveVertexStatement visitMoveVertexStmt(final SQLParser.MoveVertexStmtContext ctx) {
     final MoveVertexStatement stmt = new MoveVertexStatement(-1);
@@ -4769,30 +4768,31 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     }
     stmt.source = fromItem;
 
-    // Target: TYPE:identifier or BUCKET:identifier or identifier (bucket name)
+    // Target: TYPE:identifier, BUCKET:name, bucket:name (single token), bucket:id (single token) or bare identifier (bucket name)
     if (moveCtx.TYPE() != null) {
       // TO TYPE:typename
       stmt.targetType = (Identifier) visit(moveCtx.identifier());
+    } else if (moveCtx.BUCKET_IDENTIFIER() != null) {
+      // TO bucket:name (lexed as a single BUCKET_IDENTIFIER token)
+      final String text = moveCtx.BUCKET_IDENTIFIER().getText();
+      stmt.targetBucket = new Bucket(text.substring("bucket:".length()));
+    } else if (moveCtx.BUCKET_NUMBER_IDENTIFIER() != null) {
+      // TO bucket:123 (lexed as a single BUCKET_NUMBER_IDENTIFIER token)
+      final String text = moveCtx.BUCKET_NUMBER_IDENTIFIER().getText();
+      stmt.targetBucket = new Bucket(Integer.parseInt(text.substring("bucket:".length())));
     } else if (moveCtx.BUCKET() != null) {
-      // TO BUCKET:bucketname
+      // TO BUCKET : bucketname (separated tokens, e.g. with spaces around the colon)
       final Identifier bucketId = (Identifier) visit(moveCtx.identifier());
       stmt.targetBucket = new Bucket(bucketId.getStringValue());
     } else {
-      // TO bucketname (without BUCKET: prefix)
+      // TO bucketname (without bucket: prefix)
       final Identifier bucketId = (Identifier) visit(moveCtx.identifier());
       stmt.targetBucket = new Bucket(bucketId.getStringValue());
     }
 
-    // SET clause (updateItems)
-    if (moveCtx.SET() != null) {
-      final UpdateOperations updateOps = new UpdateOperations(-1);
-      updateOps.type = UpdateOperations.TYPE_SET;
-      for (final SQLParser.UpdateItemContext itemCtx : moveCtx.updateItem()) {
-        final UpdateItem item = (UpdateItem) visit(itemCtx);
-        updateOps.updateItems.add(item);
-      }
-      stmt.updateOperations = updateOps;
-    }
+    // Update operations: SET, ADD, PUT, REMOVE, INCREMENT, MERGE, CONTENT
+    if (moveCtx.updateOperation() != null)
+      stmt.updateOperations = (UpdateOperations) visit(moveCtx.updateOperation());
 
     // BATCH clause
     if (moveCtx.BATCH() != null) {
