@@ -1779,6 +1779,9 @@ public class BoltProtocolIT extends BaseGraphServerTest {
         // The database is recreated fresh per test (BaseGraphServerTest.endTest drops it), so the
         // unscoped MATCH below binds exactly one VlpParent and one VlpChild per name. Setup runs in a
         // single transaction for consistency with vlpMatchWithParametersInTransaction.
+        // The MATCH...CREATE edge statements rely on read-your-writes within the same Bolt
+        // transaction: the nodes created by the preceding statements must be visible to the later
+        // MATCH before commit.
         try (Transaction setup = session.beginTransaction()) {
           setup.run("CREATE (a:VlpParent {kind: 'agent'})");
           setup.run("CREATE (b:VlpChild {name: 'tag1', kind: 'tag'})");
@@ -1810,7 +1813,8 @@ public class BoltProtocolIT extends BaseGraphServerTest {
     try (Driver driver = getDriver()) {
       try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
         // The database is recreated fresh per test (BaseGraphServerTest.endTest drops it), so the
-        // unscoped MATCH below binds exactly one TxVlpParent and one TxVlpChild per name.
+        // unscoped MATCH below binds exactly one TxVlpParent and one TxVlpChild per name. The
+        // MATCH...CREATE edge statements rely on read-your-writes within the same Bolt transaction.
         try (Transaction setup = session.beginTransaction()) {
           setup.run("CREATE (a:TxVlpParent {kind: 'agent'})");
           setup.run("CREATE (b:TxVlpChild {name: 'tx_tag1', kind: 'tag'})");
