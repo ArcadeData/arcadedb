@@ -63,23 +63,24 @@ class Issue4458AppendCompactionRaceTest extends TestHelper {
           database.command("sql", "INSERT INTO sensor SET ts = ?, v = ?", ts, (double) ts));
     }
 
-    final int appendThreads  = 8;
+    final int appendThreads = 8;
     final int appendsPerThread = 200;
-    final int initialCount   = 300;
-    final int expectedTotal  = initialCount + appendThreads * appendsPerThread;
+    final int initialCount = 300;
+    final int expectedTotal = initialCount + appendThreads * appendsPerThread;
 
     // Latch: fired when TEST_PRE_PHASE4C_HOOK runs, signalling append threads to start.
-    final CountDownLatch hookFired   = new CountDownLatch(1);
-    // Latch: fired when all append threads have submitted their first INSERT, signalling
-    // the hook to proceed (ensuring appends are in-flight before Phase 4c runs).
-    final CountDownLatch appendsBusy = new CountDownLatch(appendThreads);
+    final CountDownLatch hookFired = new CountDownLatch(1);
+    // Latch: each append thread counts this down from INSIDE its first transaction (after the
+    // append write, before commit), so when the hook proceeds the threads are guaranteed to have
+    // an open transaction in flight - not merely scheduled - maximising the append/compaction
+    // overlap regardless of CI runner scheduling latency.
+    final CountDownLatch appendsInFlight = new CountDownLatch(appendThreads);
 
     TimeSeriesShard.TEST_PRE_PHASE4C_HOOK = () -> {
       hookFired.countDown();
-      // Wait briefly so append threads have time to begin their transactions and
-      // reach the commit/readLock-release point, maximising the CME-race window.
+      // Wait until append threads actually have a transaction in flight, then let Phase 4c run.
       try {
-        appendsBusy.await(10, TimeUnit.SECONDS);
+        appendsInFlight.await(10, TimeUnit.SECONDS);
         Thread.sleep(50);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
@@ -99,14 +100,18 @@ class Issue4458AppendCompactionRaceTest extends TestHelper {
           Thread.currentThread().interrupt();
           return;
         }
-        appendsBusy.countDown(); // signal this thread is running
         final long base = 1_000_000L + (long) ti * 100_000L;
         for (int i = 0; i < appendsPerThread; i++) {
           final long ts = base + i;
           final double val = i;
+          final boolean firstInsert = i == 0;
           try {
-            database.transaction(() ->
-                database.command("sql", "INSERT INTO sensor SET ts = ?, v = ?", ts, val));
+            database.transaction(() -> {
+              database.command("sql", "INSERT INTO sensor SET ts = ?, v = ?", ts, val);
+              // Signal in-flight status from within the transaction, before it commits.
+              if (firstInsert)
+                appendsInFlight.countDown();
+            });
           } catch (final Throwable e) {
             synchronized (errors) {
               errors.add(e);
