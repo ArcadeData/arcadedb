@@ -153,4 +153,71 @@ describe("E2E tests using Neo4j Bolt driver (issue #3650)", () => {
     expect(result.records).toHaveLength(1);
     expect(result.records[0].get("name")).toBe("Alice");
   });
+
+  // Issue #4452: a variable-length path whose target node carries a parameterized
+  // property predicate, combined with a parameterized ID() filter on the source.
+  // This is the exact shape that returned empty over Bolt before the #4271 engine fix.
+  describe("variable-length path with parameters (issue #4452)", () => {
+    let parentId;
+
+    beforeAll(async () => {
+      await session.run("CREATE (:Agent {kind: 'agent'})");
+      await session.run("CREATE (:Tag {name: 'tag1', value: 'val1'})");
+      await session.run("CREATE (:Tag {name: 'tag2', value: 'val2'})");
+      await session.run(
+        "MATCH (a:Agent {kind: 'agent'}), (t:Tag {name: 'tag1'}) CREATE (a)-[:agentTags {refType: 'false'}]->(t)"
+      );
+      await session.run(
+        "MATCH (a:Agent {kind: 'agent'}), (t:Tag {name: 'tag2'}) CREATE (a)-[:agentTags {refType: 'false'}]->(t)"
+      );
+      const idResult = await session.run(
+        "MATCH (a:Agent {kind: 'agent'}) RETURN ID(a) AS id"
+      );
+      expect(idResult.records).toHaveLength(1);
+      parentId = idResult.records[0].get("id");
+    });
+
+    afterAll(async () => {
+      await session.run("MATCH (n) WHERE n:Agent OR n:Tag DETACH DELETE n");
+    });
+
+    it("should resolve $nameParam in the VLP target and $parentId in the ID filter", async () => {
+      const result = await session.run(
+        "MATCH (from)-[:agentTags*0..]->(x:Tag {name: $nameParam}) " +
+          "WHERE ID(from) = $parentId RETURN x.name AS name, x.value AS value",
+        { nameParam: "tag2", parentId: parentId }
+      );
+      expect(result.records).toHaveLength(1);
+      expect(result.records[0].get("name")).toBe("tag2");
+      expect(result.records[0].get("value")).toBe("val2");
+    });
+
+    it("should match the other tag when $nameParam changes", async () => {
+      const result = await session.run(
+        "MATCH (from)-[:agentTags*0..]->(x:Tag {name: $nameParam}) " +
+          "WHERE ID(from) = $parentId RETURN x.name AS name",
+        { nameParam: "tag1", parentId: parentId }
+      );
+      expect(result.records).toHaveLength(1);
+      expect(result.records[0].get("name")).toBe("tag1");
+    });
+
+    it("should return 0 results when $nameParam matches no tag", async () => {
+      const result = await session.run(
+        "MATCH (from)-[:agentTags*0..]->(x:Tag {name: $nameParam}) " +
+          "WHERE ID(from) = $parentId RETURN x.name AS name",
+        { nameParam: "nonexistent", parentId: parentId }
+      );
+      expect(result.records).toHaveLength(0);
+    });
+
+    it("should look up the source node directly by $id with ID()", async () => {
+      const result = await session.run(
+        "MATCH (n:Agent) WHERE ID(n) = $id RETURN n.kind AS kind",
+        { id: parentId }
+      );
+      expect(result.records).toHaveLength(1);
+      expect(result.records[0].get("kind")).toBe("agent");
+    });
+  });
 });

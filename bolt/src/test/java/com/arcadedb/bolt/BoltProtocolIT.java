@@ -1703,4 +1703,144 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       }
     }
   }
+
+  @Test
+  void matchWithParameterPropertyFilter() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        session.run("CREATE (n:ParamTag {name: 'tag1', value: 'val1'})");
+        session.run("CREATE (n:ParamTag {name: 'tag2', value: 'val2'})");
+        session.run("CREATE (n:ParamTag {name: 'tag3', value: 'val3'})");
+
+        final Result result = session.run(
+            "MATCH (n:ParamTag {name: $name}) RETURN n.name AS name, n.value AS value",
+            Map.of("name", "tag2"));
+
+        assertThat(result.hasNext()).isTrue();
+        final Record record = result.next();
+        assertThat(record.get("name").asString()).isEqualTo("tag2");
+        assertThat(record.get("value").asString()).isEqualTo("val2");
+        assertThat(result.hasNext()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void matchWithWhereParameterStringFilter() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        session.run("CREATE (n:WhereParamNode {category: 'A', score: 10})");
+        session.run("CREATE (n:WhereParamNode {category: 'B', score: 20})");
+        session.run("CREATE (n:WhereParamNode {category: 'A', score: 30})");
+
+        // ORDER BY n.score is load-bearing: the assertions below expect 10 before 30, so the
+        // sort must not be dropped in future refactors.
+        final Result result = session.run(
+            "MATCH (n:WhereParamNode) WHERE n.category = $cat RETURN n.score AS score ORDER BY n.score",
+            Map.of("cat", "A"));
+
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("score").asLong()).isEqualTo(10L);
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("score").asLong()).isEqualTo(30L);
+        assertThat(result.hasNext()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void matchByIdParameter() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        session.run("CREATE (n:IdParamNode {label: 'first'})");
+        session.run("CREATE (n:IdParamNode {label: 'second'})");
+
+        final Result allNodes = session.run("MATCH (n:IdParamNode {label: 'first'}) RETURN ID(n) AS nid, n.label AS label");
+        assertThat(allNodes.hasNext()).isTrue();
+        final Record firstRecord = allNodes.next();
+        final long targetId = firstRecord.get("nid").asLong();
+        assertThat(allNodes.hasNext()).isFalse();
+
+        final Result result = session.run(
+            "MATCH (n:IdParamNode) WHERE ID(n) = $id RETURN n.label AS label",
+            Map.of("id", targetId));
+
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("label").asString()).isEqualTo("first");
+        assertThat(result.hasNext()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void vlpMatchWithParameters() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // The database is recreated fresh per test (BaseGraphServerTest.endTest drops it), so the
+        // unscoped MATCH below binds exactly one VlpParent and one VlpChild per name. Setup runs in a
+        // single transaction for consistency with vlpMatchWithParametersInTransaction.
+        // The MATCH...CREATE edge statements rely on read-your-writes within the same Bolt
+        // transaction: the nodes created by the preceding statements must be visible to the later
+        // MATCH before commit.
+        try (Transaction setup = session.beginTransaction()) {
+          setup.run("CREATE (a:VlpParent {kind: 'agent'})");
+          setup.run("CREATE (b:VlpChild {name: 'tag1', kind: 'tag'})");
+          setup.run("CREATE (c:VlpChild {name: 'tag2', kind: 'tag'})");
+          setup.run("MATCH (a:VlpParent {kind: 'agent'}), (b:VlpChild {name: 'tag1'}) CREATE (a)-[:vlpEdge]->(b)");
+          setup.run("MATCH (a:VlpParent {kind: 'agent'}), (c:VlpChild {name: 'tag2'}) CREATE (a)-[:vlpEdge]->(c)");
+          setup.commit();
+        }
+
+        final Result parentResult = session.run("MATCH (a:VlpParent {kind: 'agent'}) RETURN ID(a) AS id");
+        assertThat(parentResult.hasNext()).isTrue();
+        final long parentId = parentResult.next().get("id").asLong();
+
+        // *0.. mirrors the exact query from issue #4452. The zero-hop case never survives because
+        // the source (VlpParent) cannot satisfy the x:VlpChild label filter, so only the 1-hop edge matches.
+        final Result result = session.run(
+            "MATCH (from:VlpParent)-[:vlpEdge*0..]->(x:VlpChild {name: $nameParam}) WHERE ID(from) = $parentId RETURN x.name AS name",
+            Map.of("nameParam", "tag2", "parentId", parentId));
+
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("name").asString()).isEqualTo("tag2");
+        assertThat(result.hasNext()).isFalse();
+      }
+    }
+  }
+
+  @Test
+  void vlpMatchWithParametersInTransaction() {
+    try (Driver driver = getDriver()) {
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // The database is recreated fresh per test (BaseGraphServerTest.endTest drops it), so the
+        // unscoped MATCH below binds exactly one TxVlpParent and one TxVlpChild per name. The
+        // MATCH...CREATE edge statements rely on read-your-writes within the same Bolt transaction.
+        try (Transaction setup = session.beginTransaction()) {
+          setup.run("CREATE (a:TxVlpParent {kind: 'agent'})");
+          setup.run("CREATE (b:TxVlpChild {name: 'tx_tag1', kind: 'tag'})");
+          setup.run("CREATE (c:TxVlpChild {name: 'tx_tag2', kind: 'tag'})");
+          setup.run("MATCH (a:TxVlpParent {kind: 'agent'}), (b:TxVlpChild {name: 'tx_tag1'}) CREATE (a)-[:txVlpEdge]->(b)");
+          setup.run("MATCH (a:TxVlpParent {kind: 'agent'}), (c:TxVlpChild {name: 'tx_tag2'}) CREATE (a)-[:txVlpEdge]->(c)");
+          setup.commit();
+        }
+
+        final Result parentResult = session.run("MATCH (a:TxVlpParent {kind: 'agent'}) RETURN ID(a) AS id");
+        assertThat(parentResult.hasNext()).isTrue();
+        final long parentId = parentResult.next().get("id").asLong();
+
+        try (Transaction tx = session.beginTransaction()) {
+          // *0.. mirrors the exact query from issue #4452. The zero-hop case never survives because
+          // the source (TxVlpParent) cannot satisfy the x:TxVlpChild label filter, so only the 1-hop edge matches.
+          final Result result = tx.run(
+              "MATCH (from:TxVlpParent)-[:txVlpEdge*0..]->(x:TxVlpChild {name: $nameParam}) WHERE ID(from) = $parentId RETURN x.name AS name",
+              Map.of("nameParam", "tx_tag2", "parentId", parentId));
+
+          assertThat(result.hasNext()).isTrue();
+          assertThat(result.next().get("name").asString()).isEqualTo("tx_tag2");
+          assertThat(result.hasNext()).isFalse();
+          tx.commit();
+        }
+      }
+    }
+  }
 }
