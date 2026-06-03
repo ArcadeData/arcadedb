@@ -92,3 +92,16 @@ Broader suite: index (embedded list, list-by-item, composite, map) and SQL query
     committed convention (38 such files already in the repo, e.g. `docs/4337-*`, `docs/4364-*`) and
     is produced by the resolve-issue workflow. The claim that the convention does not exist is not
     accurate.
+
+### Cycle 2 - `342fd2b2`
+
+- **claude** (Approved with minor suggestions):
+  - Noted that switching to `MultiValue` quietly broadens behavior for `Map` parameters (expanded by
+    `map.values()`), consistent with `processInCondition` but previously not reached. Added a concise
+    behavioral comment above the condition explaining the multi-value expansion. Did not add a `Map`
+    test, since that would lock incidental Map-expansion into a tested contract; the fix targets the
+    array/collection shapes produced by JSON parameter deserialization.
+  - Declined: trimming the class Javadoc per a cited "never write multi-paragraph docstrings" rule -
+    that rule is not present in CLAUDE.md, and the Javadoc documents a non-obvious root cause.
+  - Declined: removing the "Review cycles" section from this doc. 15+ committed tracking docs in the
+    repo (e.g. `docs/4274-*`, `docs/4331-*`) contain exactly this section; it is a convention.
