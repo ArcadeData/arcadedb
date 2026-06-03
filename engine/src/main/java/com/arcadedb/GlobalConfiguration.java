@@ -949,6 +949,25 @@ public enum GlobalConfiguration {
       "Rate-limiting interval in milliseconds for DNS re-resolution in the gRPC peer address allowlist filter.",
       Long.class, 30_000L),
 
+  HA_PEER_ALLOWLIST_STARTUP_GRACE_MS("arcadedb.ha.peerAllowlistStartupGraceMs", SCOPE.SERVER,
+      """
+      Startup grace window in milliseconds during which the gRPC peer allowlist filter fails OPEN (accepts and logs a \
+      warning) for an inbound address it cannot yet match, as long as it has never resolved every host in \
+      arcadedb.ha.serverList at least once. This prevents a self-inflicted partition on Kubernetes, where a peer's \
+      headless-service DNS record is only published once its pod is Ready, so a legitimately-restarting peer connects \
+      before its own name resolves. Measured from filter creation. Once all peer hosts have resolved at least once, or \
+      the window elapses, the filter enforces normally. Set to 0 to disable fail-open (strict from the first connection); \
+      the filter is not an mTLS substitute (see issue #3890), so a bounded fail-open window is the safer default.""",
+      Long.class, 60_000L),
+
+  HA_PEER_ALLOWLIST_STICKY_TTL_MS("arcadedb.ha.peerAllowlistStickyTtlMs", SCOPE.SERVER,
+      """
+      How long in milliseconds the gRPC peer allowlist filter keeps the last successfully-resolved IPs of a peer host \
+      when a later DNS re-resolution of that host fails. Bridges transient DNS outages and pod-IP churn so a peer that \
+      resolved moments ago is not evicted from the allowlist by a momentary lookup failure. Set to 0 to disable \
+      stickiness (drop a host from the allowlist as soon as it stops resolving).""",
+      Long.class, 300_000L),
+
   // POSTGRES
   POSTGRES_PORT("arcadedb.postgres.port", SCOPE.SERVER,
       "TCP/IP port number used for incoming connections for Postgres plugin. Default is 5432", Integer.class, 5432),

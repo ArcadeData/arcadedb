@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import org.apache.ratis.thirdparty.io.grpc.Attributes;
 import org.apache.ratis.thirdparty.io.grpc.Grpc;
@@ -29,10 +30,13 @@ import java.net.SocketAddress;
 import java.net.UnknownHostException;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
 /**
@@ -44,24 +48,80 @@ import java.util.logging.Level;
  * address arrives, rate-limited by {@code refreshIntervalMs}, so that Kubernetes pod-IP churn
  * on restart does not permanently lock out a restarted peer.
  * <p>
+ * To avoid a self-inflicted partition during the window where peer DNS is not yet usable
+ * (issue #4471 - on Kubernetes a headless-service A record is only published once a pod is
+ * Ready, so peers come up before each other's names resolve), the filter is hardened in three
+ * ways:
+ * <ul>
+ *   <li><b>Bypass the rate limit while the allowlist is incomplete.</b> Until every peer host has
+ *       resolved at least once, a miss re-resolves on a short floor instead of waiting the full
+ *       {@code refreshIntervalMs}, so the allowlist converges quickly at startup.</li>
+ *   <li><b>Sticky last-known-good IPs.</b> When a host that resolved before fails to resolve now
+ *       (transient DNS outage, pod-IP churn mid-restart), its previous IPs are retained for
+ *       {@code stickyTtlMs} rather than being evicted immediately.</li>
+ *   <li><b>Startup fail-open grace.</b> Until the first time all peer hosts have resolved, and for
+ *       at most {@code startupGraceMs} from creation, an unmatched address is accepted with a
+ *       warning instead of rejected. After the allowlist is once complete, or the window elapses,
+ *       the filter enforces normally.</li>
+ * </ul>
+ * <p>
  * This is NOT a substitute for mTLS: it does not authenticate peer identity and does not
- * encrypt the traffic. See GitHub issue #3890.
+ * encrypt the traffic. See GitHub issue #3890. The bounded startup fail-open is an acceptable
+ * trade-off for that reason; set {@code startupGraceMs=0} to disable it.
  */
 final class PeerAddressAllowlistFilter extends ServerTransportFilter {
 
+  /** Pluggable host resolver so tests can drive resolution deterministically without real DNS. */
+  @FunctionalInterface
+  interface HostResolver {
+    InetAddress[] resolve(String host) throws UnknownHostException;
+  }
+
   private static final Set<String> LOOPBACK_IPS = Set.of("127.0.0.1", "0:0:0:0:0:0:0:1", "::1");
+  // Minimum spacing between re-resolutions while the allowlist is still incomplete. Bounds DNS load
+  // under a connection flood at startup while still letting the allowlist converge within ~1s.
+  private static final long        INCOMPLETE_RESOLVE_FLOOR_MS = 1_000L;
 
   private final List<String>                 peerHosts;
   private final long                         refreshIntervalMs;
+  private final long                         startupGraceMs;
+  private final long                         stickyTtlMs;
+  private final long                         createdMs;
+  private final LongSupplier                 clock;
+  private final HostResolver                 resolver;
   private final AtomicReference<Set<String>> allowedIps = new AtomicReference<>(Collections.emptySet());
+  // Per-host last successfully-resolved IPs and the time they were resolved, for sticky retention.
+  // Only mutated inside the synchronized doResolve(); never read outside it.
+  private final Map<String, Set<String>>     lastKnownIps = new HashMap<>();
+  private final Map<String, Long>            lastKnownMs  = new HashMap<>();
   private volatile long                      lastResolveMs;
+  // Latches true the first time every peer host is covered by the allowlist; gates the fail-open grace.
+  private volatile boolean                   everCompletelyResolved;
 
   PeerAddressAllowlistFilter(final List<String> peerHosts, final long refreshIntervalMs) {
+    this(peerHosts, refreshIntervalMs,
+        GlobalConfiguration.HA_PEER_ALLOWLIST_STARTUP_GRACE_MS.getValueAsLong(),
+        GlobalConfiguration.HA_PEER_ALLOWLIST_STICKY_TTL_MS.getValueAsLong());
+  }
+
+  PeerAddressAllowlistFilter(final List<String> peerHosts, final long refreshIntervalMs, final long startupGraceMs,
+      final long stickyTtlMs) {
+    this(peerHosts, refreshIntervalMs, startupGraceMs, stickyTtlMs, System::currentTimeMillis, InetAddress::getAllByName);
+  }
+
+  /** Full constructor; the {@code clock} and {@code resolver} hooks make resolution deterministic in tests. */
+  PeerAddressAllowlistFilter(final List<String> peerHosts, final long refreshIntervalMs, final long startupGraceMs,
+      final long stickyTtlMs, final LongSupplier clock, final HostResolver resolver) {
     if (peerHosts == null || peerHosts.isEmpty())
       throw new IllegalArgumentException("Peer allowlist requires at least one host");
     this.peerHosts = List.copyOf(peerHosts);
     this.refreshIntervalMs = Math.max(0L, refreshIntervalMs);
-    resolveNow();
+    this.startupGraceMs = Math.max(0L, startupGraceMs);
+    this.stickyTtlMs = Math.max(0L, stickyTtlMs);
+    this.clock = clock;
+    this.resolver = resolver;
+    this.createdMs = clock.getAsLong();
+    doResolve();
   }
 
   @Override
@@ -77,20 +137,44 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     if (address.isLoopbackAddress())
       return attrs;
 
-    final String ip = address.getHostAddress();
-    if (allowedIps.get().contains(ip))
+    if (isAllowed(address.getHostAddress()))
       return attrs;
 
-    // Miss: re-resolve (rate-limited) to pick up restarted peers with new IPs.
-    if (System.currentTimeMillis() - lastResolveMs >= refreshIntervalMs) {
-      resolveNow();
-      if (allowedIps.get().contains(ip))
-        return attrs;
+    throw new SecurityException("Remote address '" + address.getHostAddress() + "' is not in the cluster peer allowlist");
+  }
+
+  /**
+   * Decides whether {@code ip} may connect, applying the incomplete-allowlist bypass and the
+   * startup fail-open grace (issue #4471). Package-private so it can be unit-tested without
+   * constructing gRPC transport objects. Logs a warning on both fail-open and reject.
+   */
+  boolean isAllowed(final String ip) {
+    if (ip == null)
+      return true; // address not available; cannot evaluate, leave to other layers
+    if (allowedIps.get().contains(ip))
+      return true;
+
+    // Miss: re-resolve to pick up restarted peers with new IPs. While the allowlist has never been
+    // complete (startup), use a short floor so it converges fast; once complete, respect refreshIntervalMs.
+    final long floor = everCompletelyResolved ? refreshIntervalMs : Math.min(refreshIntervalMs, INCOMPLETE_RESOLVE_FLOOR_MS);
+    resolveIfStale(floor);
+    if (allowedIps.get().contains(ip))
+      return true;
+
+    // Startup fail-open: we have never seen the full peer set resolve and are still within the grace
+    // window. Accept rather than partition the cluster against itself while DNS catches up.
+    final long now = clock.getAsLong();
+    if (!everCompletelyResolved && startupGraceMs > 0 && now - createdMs < startupGraceMs) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Accepting Raft gRPC connection from %s during startup grace: peer allowlist not yet complete "
+              + "(resolved %d/%d hosts, allowed=%s). Will enforce once all peers resolve or after %dms.",
+          ip, lastKnownIps.size(), peerHosts.size(), allowedIps.get(), startupGraceMs);
+      return true;
     }
 
     LogManager.instance().log(this, Level.WARNING,
         "Rejecting Raft gRPC connection from non-peer address: %s (allowed=%s)", ip, allowedIps.get());
-    throw new SecurityException("Remote address '" + ip + "' is not in the cluster peer allowlist");
+    return false;
   }
 
   /** Returns an immutable snapshot of the currently allowed IPs. Exposed for testing. */
@@ -98,26 +182,64 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     return allowedIps.get();
   }
 
-  /** Triggers an immediate DNS re-resolution. Exposed for testing. */
-  void refresh() {
-    resolveNow();
+  /** True once every peer host has been covered by the allowlist at least once. Exposed for testing. */
+  boolean isEverCompletelyResolved() {
+    return everCompletelyResolved;
   }
 
-  private void resolveNow() {
-    final Set<String> resolved = new HashSet<>();
-    resolved.addAll(LOOPBACK_IPS);
+  /** Triggers an immediate DNS re-resolution. Exposed for testing. */
+  void refresh() {
+    doResolve();
+  }
+
+  /** Re-resolves only if at least {@code floor} ms have elapsed since the last resolution. */
+  private synchronized void resolveIfStale(final long floor) {
+    if (clock.getAsLong() - lastResolveMs < floor)
+      return; // another thread re-resolved recently; avoid a thundering herd under a connection flood
+    doResolve();
+  }
+
+  private synchronized void doResolve() {
+    final long now = clock.getAsLong();
+    final Set<String> effective = new HashSet<>(LOOPBACK_IPS);
+    int covered = 0;
     for (final String host : peerHosts) {
+      Set<String> fresh = null;
       try {
-        final InetAddress[] addrs = InetAddress.getAllByName(host);
-        for (final InetAddress a : addrs)
-          resolved.add(a.getHostAddress());
+        final InetAddress[] addrs = resolver.resolve(host);
+        if (addrs != null && addrs.length > 0) {
+          fresh = new HashSet<>();
+          for (final InetAddress a : addrs)
+            fresh.add(a.getHostAddress());
+        }
       } catch (final UnknownHostException e) {
         LogManager.instance().log(this, Level.WARNING,
             "Cannot resolve cluster peer host '%s' for Raft gRPC allowlist: %s", host, e.getMessage());
       }
+
+      if (fresh != null && !fresh.isEmpty()) {
+        lastKnownIps.put(host, fresh);
+        lastKnownMs.put(host, now);
+        effective.addAll(fresh);
+        covered++;
+      } else {
+        // Resolution failed: keep the last-known-good IPs for a bounded time (sticky) so a transient
+        // DNS outage or pod-IP churn does not evict a peer that resolved moments ago.
+        final Set<String> prev = lastKnownIps.get(host);
+        final Long prevMs = lastKnownMs.get(host);
+        if (prev != null && prevMs != null && stickyTtlMs > 0 && now - prevMs <= stickyTtlMs) {
+          effective.addAll(prev);
+          covered++;
+        } else {
+          lastKnownIps.remove(host);
+          lastKnownMs.remove(host);
+        }
+      }
     }
-    allowedIps.set(Collections.unmodifiableSet(resolved));
-    lastResolveMs = System.currentTimeMillis();
+    allowedIps.set(Collections.unmodifiableSet(effective));
+    lastResolveMs = now;
+    if (covered == peerHosts.size())
+      everCompletelyResolved = true;
   }
 
   /**

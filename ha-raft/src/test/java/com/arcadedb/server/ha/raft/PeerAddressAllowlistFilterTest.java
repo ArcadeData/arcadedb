@@ -20,7 +20,12 @@ package com.arcadedb.server.ha.raft;
 
 import org.junit.jupiter.api.Test;
 
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -172,5 +177,140 @@ class PeerAddressAllowlistFilterTest {
   void toStringContainsPeerHosts() {
     final PeerAddressAllowlistFilter filter = new PeerAddressAllowlistFilter(List.of("node1", "node2"), 30_000L);
     assertThat(filter.toString()).contains("node1", "node2");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Startup DNS-race hardening (issue #4471) - deterministic via injected clock/resolver
+  // ---------------------------------------------------------------------------
+
+  /** In-memory DNS: hosts map to a list of literal IPs; an absent/empty host throws like real DNS. */
+  static final class FakeResolver implements PeerAddressAllowlistFilter.HostResolver {
+    final Map<String, List<String>> table = new HashMap<>();
+
+    @Override
+    public InetAddress[] resolve(final String host) throws UnknownHostException {
+      final List<String> ips = table.get(host);
+      if (ips == null || ips.isEmpty())
+        throw new UnknownHostException(host + ": Name does not resolve");
+      final InetAddress[] out = new InetAddress[ips.size()];
+      for (int i = 0; i < ips.size(); i++)
+        out[i] = InetAddress.getByName(ips.get(i)); // literal IP: no network lookup
+      return out;
+    }
+  }
+
+  private static PeerAddressAllowlistFilter filter(final List<String> hosts, final long refreshMs, final long graceMs,
+      final long stickyMs, final AtomicLong clock, final FakeResolver resolver) {
+    return new PeerAddressAllowlistFilter(hosts, refreshMs, graceMs, stickyMs, clock::get, resolver);
+  }
+
+  @Test
+  void failsOpenWhilePeersUnresolvableDuringStartupGrace() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver(); // nothing resolves yet (pods not Ready)
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA", "peerB"), 30_000L, 60_000L, 300_000L, clock, dns);
+
+    assertThat(f.isEverCompletelyResolved()).isFalse();
+    // A legitimate peer connects before its own DNS record is published: accepted during the grace window.
+    assertThat(f.isAllowed("10.1.13.9")).isTrue();
+  }
+
+  @Test
+  void enforcesAfterStartupGraceExpiresIfStillIncomplete() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver(); // never resolves
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA", "peerB"), 30_000L, 60_000L, 300_000L, clock, dns);
+
+    clock.set(60_001); // grace window elapsed
+    assertThat(f.isAllowed("10.1.13.9")).isFalse();
+  }
+
+  @Test
+  void failOpenDisabledWhenGraceZero() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA"), 30_000L, 0L, 300_000L, clock, dns);
+
+    assertThat(f.isAllowed("10.1.13.9")).isFalse(); // strict from the first connection
+  }
+
+  @Test
+  void missBypassesRefreshRateLimitWhileAllowlistIncomplete() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver(); // peerA unresolvable at construction
+    // grace=0 so the only way to be accepted is a successful (bypassing) re-resolution.
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA"), 30_000L, 0L, 300_000L, clock, dns);
+    assertThat(f.isAllowed("10.1.13.9")).isFalse();
+
+    // peerA's DNS record is now published; only 1.1s later (well under the 30s refresh interval).
+    dns.table.put("peerA", List.of("10.1.13.9"));
+    clock.set(1_100);
+
+    // Because the allowlist is still incomplete, the miss re-resolves on the short floor and converges.
+    assertThat(f.isAllowed("10.1.13.9")).isTrue();
+    assertThat(f.isEverCompletelyResolved()).isTrue();
+  }
+
+  @Test
+  void steadyStateRejectsUnknownAndStopsFailingOpenOnceComplete() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    dns.table.put("peerA", List.of("10.1.13.8"));
+    dns.table.put("peerB", List.of("10.1.13.9"));
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA", "peerB"), 30_000L, 60_000L, 300_000L, clock, dns);
+
+    assertThat(f.isEverCompletelyResolved()).isTrue();
+    assertThat(f.isAllowed("10.1.13.8")).isTrue();
+    assertThat(f.isAllowed("10.1.13.9")).isTrue();
+    // A stranger is rejected even though we are still within the wall-clock grace window, because the
+    // allowlist has already been complete once (fail-open only covers the never-yet-complete startup).
+    assertThat(f.isAllowed("10.99.99.99")).isFalse();
+  }
+
+  @Test
+  void stickyRetainsLastKnownIpOnTransientDnsFailureThenExpires() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    dns.table.put("peerA", List.of("10.1.13.8"));
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA"), 30_000L, 0L, 300_000L, clock, dns);
+    assertThat(f.getAllowedIps()).contains("10.1.13.8");
+
+    // Transient DNS outage for peerA.
+    dns.table.remove("peerA");
+    clock.set(100_000); // within sticky TTL (300s)
+    f.refresh();
+    assertThat(f.getAllowedIps()).contains("10.1.13.8"); // retained
+
+    clock.set(500_000); // past sticky TTL since last good resolution (t=0)
+    f.refresh();
+    assertThat(f.getAllowedIps()).doesNotContain("10.1.13.8"); // evicted
+  }
+
+  @Test
+  void stickinessDisabledDropsHostImmediatelyOnFailure() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    dns.table.put("peerA", List.of("10.1.13.8"));
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA"), 30_000L, 0L, 0L, clock, dns);
+    assertThat(f.getAllowedIps()).contains("10.1.13.8");
+
+    dns.table.remove("peerA");
+    clock.set(1_000);
+    f.refresh();
+    assertThat(f.getAllowedIps()).doesNotContain("10.1.13.8");
+  }
+
+  @Test
+  void picksUpRestartedPeerNewIpAfterRefreshInterval() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    dns.table.put("peerA", List.of("10.1.13.8"));
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA"), 30_000L, 0L, 300_000L, clock, dns);
+    assertThat(f.isAllowed("10.1.13.8")).isTrue();
+
+    // peerA pod restarts with a new IP; DNS now points to it.
+    dns.table.put("peerA", List.of("10.1.13.50"));
+    clock.set(31_000); // past the steady-state refresh interval
+    assertThat(f.isAllowed("10.1.13.50")).isTrue();
   }
 }
