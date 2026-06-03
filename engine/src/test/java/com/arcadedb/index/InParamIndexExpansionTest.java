@@ -30,13 +30,14 @@ import java.util.Map;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for issue #4468: SQL `IN :param` with a collection parameter
- * returns no rows when an index is used on the left-hand field.
- *
- * Root cause: FetchFromIndexStep.cartesianProduct() only expanded Iterable<?>,
- * but JSON deserialization via toMap(true) yields primitive arrays (long[], double[])
- * which are not Iterable. The entire array was treated as a single index key,
- * matching nothing.
+ * SQL {@code IN :param} with a collection parameter must use the index and return the same rows as
+ * the literal list form {@code IN [1, 2, 3]}.
+ * <p>
+ * The HTTP layer deserializes JSON numeric arrays into primitive arrays (long[], int[], double[])
+ * via toMap(true). The indexed expansion in FetchFromIndexStep.cartesianProduct() must treat those
+ * primitive arrays as multi-value keys and look each element up individually, exactly like the
+ * non-indexed IN evaluator. When it did not, the whole array was used as a single index key and
+ * matched nothing.
  */
 class InParamIndexExpansionTest extends TestHelper {
 
@@ -56,7 +57,6 @@ class InParamIndexExpansionTest extends TestHelper {
     });
   }
 
-  // Baseline: literal IN list must use the index and return all three rows.
   @Test
   void literalInListUsesIndexAndReturnsRows() {
     database.transaction(() -> {
@@ -66,7 +66,6 @@ class InParamIndexExpansionTest extends TestHelper {
     });
   }
 
-  // Issue #4468: named List<Long> param — this is the primary failing form.
   @Test
   void namedListParamInWithIndexReturnsRows() {
     database.transaction(() -> {
@@ -78,9 +77,9 @@ class InParamIndexExpansionTest extends TestHelper {
     });
   }
 
-  // Issue #4468: named primitive long[] param — simulates HTTP JSON deserialization via toMap(true).
+  // long[] reproduces the HTTP JSON deserialization that toMap(true) performs for integer arrays.
   @Test
-  void namedPrimitiveArrayParamInWithIndexReturnsRows() {
+  void namedPrimitiveLongArrayParamInWithIndexReturnsRows() {
     database.transaction(() -> {
       final ResultSet rs = database.query("sql",
           "select code from IssueItem where code in :codes order by code",
@@ -90,7 +89,30 @@ class InParamIndexExpansionTest extends TestHelper {
     });
   }
 
-  // Issue #4468: named Object[] param — covers mixed boxed-array case.
+  // int[] is another primitive-array shape toMap(true) can produce for small integer JSON arrays.
+  @Test
+  void namedPrimitiveIntArrayParamInWithIndexReturnsRows() {
+    database.transaction(() -> {
+      final ResultSet rs = database.query("sql",
+          "select code from IssueItem where code in :codes order by code",
+          Map.of("codes", new int[] { 1, 2, 3 }));
+      final List<Integer> codes = rs.stream().map(r -> r.<Integer>getProperty("code")).toList();
+      assertThat(codes).containsExactly(1, 2, 3);
+    });
+  }
+
+  // double[] is produced for floating-point JSON arrays; values must coerce to the INTEGER index key.
+  @Test
+  void namedPrimitiveDoubleArrayParamInWithIndexReturnsRows() {
+    database.transaction(() -> {
+      final ResultSet rs = database.query("sql",
+          "select code from IssueItem where code in :codes order by code",
+          Map.of("codes", new double[] { 1.0, 2.0, 3.0 }));
+      final List<Integer> codes = rs.stream().map(r -> r.<Integer>getProperty("code")).toList();
+      assertThat(codes).containsExactly(1, 2, 3);
+    });
+  }
+
   @Test
   void namedObjectArrayParamInWithIndexReturnsRows() {
     database.transaction(() -> {
@@ -102,7 +124,6 @@ class InParamIndexExpansionTest extends TestHelper {
     });
   }
 
-  // Issue #4468: positional List<Long> param — the other reported failing form.
   @Test
   void positionalListParamInWithIndexReturnsRows() {
     database.transaction(() -> {
@@ -114,7 +135,6 @@ class InParamIndexExpansionTest extends TestHelper {
     });
   }
 
-  // Confirm the execution plan uses the index for the IN :codes form.
   @Test
   void namedListParamInExplainUsesIndex() {
     database.transaction(() -> {
@@ -126,7 +146,7 @@ class InParamIndexExpansionTest extends TestHelper {
     });
   }
 
-  // Verify the non-indexed path (arithmetic prevents index use) still works as a control.
+  // Control: arithmetic on the left side forces the non-indexed evaluator, which already worked.
   @Test
   void namedListParamInWithoutIndexReturnsRows() {
     database.transaction(() -> {
@@ -138,7 +158,6 @@ class InParamIndexExpansionTest extends TestHelper {
     });
   }
 
-  // Partial match: only 2 of 3 codes present in the collection.
   @Test
   void namedListParamInWithIndexReturnsPartialRows() {
     database.transaction(() -> {
@@ -150,7 +169,6 @@ class InParamIndexExpansionTest extends TestHelper {
     });
   }
 
-  // Single-element list param must also find exactly one row.
   @Test
   void namedListParamInWithIndexReturnsSingleRow() {
     database.transaction(() -> {

@@ -35,8 +35,12 @@ so `WHERE (field + 0) IN :param` worked fine.
 
 `engine/src/main/java/com/arcadedb/query/sql/executor/FetchFromIndexStep.java`
 
-Extended the predicate in `cartesianProduct()` to also match arrays, and instantiate an
-`IterableObjectArray` wrapper (already in the utility package) when the value is not `Iterable`:
+Replaced the `Iterable<?>`-only predicate in `cartesianProduct()` with the existing `MultiValue`
+utility, which already detects and iterates every array type (`long[]`, `int[]`, `double[]`,
+`Object[]`) as well as `Collection`/`Iterable`. This is the same utility the sibling
+`processInCondition()` path uses (lines 258-261 of the same file), so both multi-value detection
+sites now share one code path. `MultiValue.isMultiValue(null)` is internally null-safe, so no
+explicit null guard is needed.
 
 ```java
 // Before
@@ -44,9 +48,8 @@ if (value instanceof Iterable<?> iterable && !(value instanceof Identifiable)) {
     for (final Object elemInKey : iterable) {
 
 // After
-if (!(value instanceof Identifiable) && (value instanceof Iterable<?> || (value != null && value.getClass().isArray()))) {
-    final Iterable<?> iterable = value instanceof Iterable<?> iter ? iter : new IterableObjectArray<>(value);
-    for (final Object elemInKey : iterable) {
+if (!(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
+    for (final Object elemInKey : MultiValue.getMultiValueIterable(value)) {
 ```
 
 ## Files Changed
@@ -56,10 +59,12 @@ if (!(value instanceof Identifiable) && (value instanceof Iterable<?> || (value 
 
 ## Test Results
 
-New regression test `InParamIndexExpansionTest` (9 test methods):
+New regression test `InParamIndexExpansionTest` (11 test methods):
 - `literalInListUsesIndexAndReturnsRows` - passes before and after fix (baseline)
 - `namedListParamInWithIndexReturnsRows` - passes before and after fix (`List<Long>` is Iterable)
-- `namedPrimitiveArrayParamInWithIndexReturnsRows` - **failed before fix, passes after**
+- `namedPrimitiveLongArrayParamInWithIndexReturnsRows` - **failed before fix, passes after**
+- `namedPrimitiveIntArrayParamInWithIndexReturnsRows` - **failed before fix, passes after**
+- `namedPrimitiveDoubleArrayParamInWithIndexReturnsRows` - **failed before fix, passes after** (double coerces to INTEGER key)
 - `namedObjectArrayParamInWithIndexReturnsRows` - **failed before fix, passes after**
 - `positionalListParamInWithIndexReturnsRows` - passes (List is Iterable in embedded mode)
 - `namedListParamInExplainUsesIndex` - confirms index is used
@@ -67,4 +72,23 @@ New regression test `InParamIndexExpansionTest` (9 test methods):
 - `namedListParamInWithIndexReturnsPartialRows` - partial match works
 - `namedListParamInWithIndexReturnsSingleRow` - single-element list works
 
-Broader suite: 314 index and SQL query tests, 0 failures, 0 errors.
+Broader suite: index (embedded list, list-by-item, composite, map) and SQL query tests pass with
+0 failures, 0 errors.
+
+## Review cycles
+
+### Cycle 1 - `b940f325`
+
+- **gemini-code-assist** (1 comment): hoist the `value != null` null check to the front of the
+  `cartesianProduct` condition. Subsumed by the cycle-1 change below - switching to
+  `MultiValue.isMultiValue` (internally null-safe) removed the need for any explicit null guard.
+- **claude** (review comment): suggested reusing the already-imported `MultiValue` utility instead
+  of `IterableObjectArray` for consistency with `processInCondition`; add `int[]`/`double[]` test
+  cases; remove issue-reference comments from test method bodies; remove the docs file.
+  - Applied: switched to `MultiValue.isMultiValue` + `getMultiValueIterable` (verified safe across
+    embedded-list, list-by-item, map, and composite index suites); added `int[]` and `double[]`
+    test cases; removed issue-reference comments and em-dashes from test method bodies.
+  - Declined: removing this docs file. The `docs/<issue>-<name>.md` tracking doc is an established,
+    committed convention (38 such files already in the repo, e.g. `docs/4337-*`, `docs/4364-*`) and
+    is produced by the resolve-issue workflow. The claim that the convention does not exist is not
+    accurate.
