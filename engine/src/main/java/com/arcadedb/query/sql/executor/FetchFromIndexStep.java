@@ -41,6 +41,7 @@ import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.query.sql.parser.LtOperator;
 import com.arcadedb.query.sql.parser.PCollection;
 import com.arcadedb.query.sql.parser.ValueExpression;
+import com.arcadedb.utility.IterableObjectArray;
 import com.arcadedb.utility.MultiIterator;
 import com.arcadedb.utility.Pair;
 
@@ -421,8 +422,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     final Expression nextElementInKey = key.getExpressions().getFirst();
     final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
-    if (value instanceof Iterable<?> iterable && !(value instanceof Identifiable)) {
+    if (!(value instanceof Identifiable) && (value instanceof Iterable<?> || (value != null && value.getClass().isArray()))) {
       final List<PCollection> result = new ArrayList<>();
+      final Iterable<?> iterable = value instanceof Iterable<?> iter ? iter : new IterableObjectArray<>(value);
       for (final Object elemInKey : iterable) {
         final PCollection newHead = new PCollection(-1);
         for (final Expression exp : head.getExpressions())
