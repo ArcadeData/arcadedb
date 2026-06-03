@@ -798,7 +798,7 @@ public enum GlobalConfiguration {
       Path to a file containing the shared secret for inter-node request forwarding authentication. \
       Used to keep the secret off the command line (e.g. a Kubernetes Secret mounted on tmpfs). \
       Read only when arcadedb.ha.clusterToken is not set; the file content is trimmed of surrounding whitespace.""",
-      String.class, null),
+      String.class, ""),
 
   HA_HEALTH_CHECK_INTERVAL("arcadedb.ha.healthCheckInterval", SCOPE.SERVER,
       "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
