@@ -40,6 +40,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.KeyStore;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 import java.util.zip.ZipEntry;
@@ -94,6 +95,12 @@ public final class SnapshotInstaller {
    */
   static final long MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES = 10L * 1024 * 1024 * 1024;
 
+  /**
+   * Logged at most once: warns that SSL is enabled but the snapshot is being downloaded over plain
+   * HTTP because no HTTPS endpoint could be resolved for the leader.
+   */
+  private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
+
   private SnapshotInstaller() {
   }
 
@@ -102,28 +109,32 @@ public final class SnapshotInstaller {
    * Downloads the snapshot ZIP with retry, extracts to a temp directory, and atomically
    * swaps it into the live database path.
    *
-   * @param databaseName   name of the database to install
-   * @param databasePath   absolute path to the live database directory
-   * @param leaderHttpAddr leader's HTTP address (host:port)
-   * @param clusterToken   cluster authentication token (may be null)
-   * @param server         the ArcadeDB server instance for re-registering the database
+   * @param databaseName    name of the database to install
+   * @param databasePath    absolute path to the live database directory
+   * @param leaderHttpAddr  leader's plain HTTP address (host:httpPort)
+   * @param leaderHttpsAddr leader's HTTPS address (host:httpsPort), or {@code null} when no encrypted
+   *                        endpoint is known. When SSL is enabled and this is non-null the snapshot is
+   *                        downloaded over HTTPS; otherwise it falls back to plain HTTP on
+   *                        {@code leaderHttpAddr} (issue #4470).
+   * @param clusterToken    cluster authentication token (may be null)
+   * @param server          the ArcadeDB server instance for re-registering the database
    */
   public static void install(final String databaseName, final String databasePath,
-      final String leaderHttpAddr, final String clusterToken,
+      final String leaderHttpAddr, final String leaderHttpsAddr, final String clusterToken,
       final ArcadeDBServer server) throws IOException {
-    install(databaseName, databasePath, () -> leaderHttpAddr, clusterToken, server);
+    install(databaseName, databasePath, () -> leaderHttpAddr, () -> leaderHttpsAddr, clusterToken, server);
   }
 
   /**
-   * Overload that resolves the leader HTTP address on each retry attempt. Use this when the
+   * Overload that resolves the leader HTTP/HTTPS addresses on each retry attempt. Use this when the
    * leader may not be known yet at the moment install is invoked (e.g. during bootstrap-mismatch
-   * recovery on startup, before Ratis has finished electing a leader). When the supplier returns
+   * recovery on startup, before Ratis has finished electing a leader). When a supplier returns
    * null on a given attempt, that attempt is treated as a failure and the next retry will resolve
    * again, giving leader election time to complete.
    */
   public static void install(final String databaseName, final String databasePath,
-      final Supplier<String> leaderHttpAddrSupplier, final String clusterToken,
-      final ArcadeDBServer server) throws IOException {
+      final Supplier<String> leaderHttpAddrSupplier, final Supplier<String> leaderHttpsAddrSupplier,
+      final String clusterToken, final ArcadeDBServer server) throws IOException {
 
     final Path dbPath = Path.of(databasePath).normalize().toAbsolutePath();
     final Path snapshotNew = dbPath.resolve(SNAPSHOT_NEW_DIR);
@@ -143,7 +154,8 @@ public final class SnapshotInstaller {
     final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
     final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
 
-    downloadWithRetry(databaseName, snapshotNew, leaderHttpAddrSupplier, clusterToken, maxRetries, retryBaseMs, server);
+    downloadWithRetry(databaseName, snapshotNew, leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken,
+        maxRetries, retryBaseMs, server);
 
     // Mark download as complete
     Files.writeString(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE), "");
@@ -255,15 +267,16 @@ public final class SnapshotInstaller {
   static void downloadWithRetry(final String databaseName, final Path snapshotNewDir,
       final String leaderHttpAddr, final String clusterToken,
       final int maxRetries, final long retryBaseMs) throws IOException {
-    downloadWithRetry(databaseName, snapshotNewDir, () -> leaderHttpAddr, clusterToken, maxRetries, retryBaseMs, null);
+    downloadWithRetry(databaseName, snapshotNewDir, () -> leaderHttpAddr, () -> null, clusterToken, maxRetries, retryBaseMs,
+        null);
   }
 
   static void downloadWithRetry(final String databaseName, final Path snapshotNewDir,
-      final Supplier<String> leaderHttpAddrSupplier, final String clusterToken,
-      final int maxRetries, final long retryBaseMs, final ArcadeDBServer server) throws IOException {
+      final Supplier<String> leaderHttpAddrSupplier, final Supplier<String> leaderHttpsAddrSupplier,
+      final String clusterToken, final int maxRetries, final long retryBaseMs, final ArcadeDBServer server)
+      throws IOException {
 
     final boolean useSSL = server != null && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
-    final String scheme = useSSL ? "https://" : "http://";
     IOException lastException = null;
 
     for (int attempt = 0; attempt <= maxRetries; attempt++) {
@@ -283,10 +296,28 @@ public final class SnapshotInstaller {
         }
       }
 
-      // Resolve the leader address on every attempt: during bootstrap-mismatch recovery the
+      // Resolve the leader endpoint on every attempt: during bootstrap-mismatch recovery the
       // first attempt typically races Ratis leader election and observes a null address.
-      final String leaderHttpAddr = leaderHttpAddrSupplier.get();
-      if (leaderHttpAddr == null) {
+      // When SSL is enabled, prefer the HTTPS endpoint so the snapshot travels encrypted; the plain
+      // HTTP listener and the HTTPS listener bind to *different* ports, so forcing an HTTPS scheme
+      // onto the plain HTTP port is what produced "Unsupported or unrecognized SSL message" (#4470).
+      boolean https = false;
+      String endpoint = null;
+      if (useSSL && leaderHttpsAddrSupplier != null) {
+        endpoint = leaderHttpsAddrSupplier.get();
+        if (endpoint != null)
+          https = true;
+      }
+      if (endpoint == null) {
+        endpoint = leaderHttpAddrSupplier.get();
+        if (useSSL && endpoint != null && PLAIN_HTTP_FALLBACK_WARNED.compareAndSet(false, true))
+          LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+              "SSL is enabled but no HTTPS endpoint is known for snapshot download of '%s'; falling back to plain HTTP on %s. "
+                  + "Declare an httpsPort (the optional 5th field 'host:raftPort:httpPort:priority:httpsPort') in '%s' to "
+                  + "transfer snapshots encrypted.",
+              null, databaseName, endpoint, GlobalConfiguration.HA_SERVER_LIST.getKey());
+      }
+      if (endpoint == null) {
         lastException = new IOException("Leader HTTP address not yet known (Raft election in progress)");
         LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
             "Snapshot download attempt %d/%d failed for '%s': %s",
@@ -294,9 +325,9 @@ public final class SnapshotInstaller {
         continue;
       }
 
-      final String snapshotUrl = scheme + leaderHttpAddr + "/api/v1/ha/snapshot/" + databaseName;
+      final String snapshotUrl = (https ? "https://" : "http://") + endpoint + "/api/v1/ha/snapshot/" + databaseName;
       try {
-        downloadSnapshot(snapshotNewDir, snapshotUrl, clusterToken, useSSL, server);
+        downloadSnapshot(snapshotNewDir, snapshotUrl, clusterToken, https, server);
         return; // Success
       } catch (final IOException e) {
         lastException = e;
@@ -311,7 +342,7 @@ public final class SnapshotInstaller {
   }
 
   private static void downloadSnapshot(final Path targetDir, final String snapshotUrl,
-      final String clusterToken, final boolean useSSL, final ArcadeDBServer server) throws IOException {
+      final String clusterToken, final boolean https, final ArcadeDBServer server) throws IOException {
 
     HALog.log(SnapshotInstaller.class, HALog.BASIC, "Downloading snapshot from %s", snapshotUrl);
 
@@ -323,8 +354,8 @@ public final class SnapshotInstaller {
     }
 
     if (connection instanceof HttpsURLConnection) {
-      if (!useSSL)
-        throw new ReplicationException("Snapshot URL is HTTPS but SSL is disabled: " + snapshotUrl);
+      if (!https)
+        throw new ReplicationException("Snapshot URL is HTTPS but plain HTTP was expected: " + snapshotUrl);
       final SSLContext sslContext = buildSSLContext(server);
       ((HttpsURLConnection) connection).setSSLSocketFactory(sslContext.getSocketFactory());
     }
@@ -390,19 +421,33 @@ public final class SnapshotInstaller {
     }
   }
 
-  private static SSLContext buildSSLContext(final ArcadeDBServer server) throws IOException {
+  /**
+   * Builds the client-side {@link SSLContext} used for encrypted peer-to-peer transfers (snapshot
+   * download, cross-node verify). Package-private so other HA peer-to-peer callers validate the peer
+   * certificate the same way (against the trust store, not the key store).
+   */
+  static SSLContext buildSSLContext(final ArcadeDBServer server) throws IOException {
     try {
       if (server == null)
         return SSLContext.getDefault();
-      final String keystorePath = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
-      if (keystorePath == null || keystorePath.isBlank())
+
+      // The client validates the leader's server certificate against its TRUST store, not its key
+      // store: the key store holds this node's own private key/cert and is the wrong source of trust
+      // anchors (issue #4470). Fall back to the key store for backward compatibility when no trust
+      // store is configured, then to the JVM default trust store.
+      String storePath = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE);
+      String storePassword = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD);
+      if (storePath == null || storePath.isBlank()) {
+        storePath = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
+        storePassword = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD);
+      }
+      if (storePath == null || storePath.isBlank())
         return SSLContext.getDefault();
 
-      final String keystorePassword = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD);
-      final char[] password = keystorePassword != null ? keystorePassword.toCharArray() : new char[0];
+      final char[] password = storePassword != null ? storePassword.toCharArray() : new char[0];
 
       final KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
-      try (final InputStream is = Files.newInputStream(Path.of(keystorePath))) {
+      try (final InputStream is = Files.newInputStream(Path.of(storePath))) {
         ks.load(is, password);
       }
       final TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());

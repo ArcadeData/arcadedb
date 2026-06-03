@@ -488,6 +488,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         final RaftPeerId leaderId = RaftPeerId.valueOf(
             roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
         final String leaderHttpAddr = raftHAServer.getPeerHttpAddress(leaderId);
+        final String leaderHttpsAddr = raftHAServer.getPeerHttpsAddress(leaderId);
 
         if (leaderHttpAddr == null)
           throw new RuntimeException("Cannot determine leader HTTP address for snapshot download");
@@ -504,7 +505,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
             final String databasePath = db.getDatabasePath();
             db.close();
             server.removeDatabase(dbName);
-            SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, clusterToken, server);
+            SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
           }
         }
 
@@ -836,9 +837,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
 
       final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
+      final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
       try {
-        SnapshotInstaller.install(databaseName, databasePath, leaderHttpAddr, clusterToken, server);
+        SnapshotInstaller.install(databaseName, databasePath, leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
       } catch (final IOException e) {
         throw new RuntimeException("Failed to install snapshot for restored database '" + databaseName + "'", e);
       }
@@ -1002,6 +1004,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final String clusterToken = raft != null ? raft.getClusterToken() : null;
       SnapshotInstaller.install(dbName, databasePath,
           () -> raft != null ? raft.getLeaderHttpAddress() : null,
+          () -> raft != null ? raft.getLeaderHttpsAddress() : null,
           clusterToken, server);
       LogManager.instance().log(this, Level.INFO,
           "Database '%s' reinstalled after bootstrap mismatch", dbName);
@@ -1059,7 +1062,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       }
       // Resolve the leader address on each retry (it can change mid-operation if leadership moves).
       final String clusterToken = raft.getClusterToken();
-      SnapshotInstaller.install(dbName, databasePath, raft::getLeaderHttpAddress, clusterToken, server);
+      SnapshotInstaller.install(dbName, databasePath, raft::getLeaderHttpAddress, raft::getLeaderHttpsAddress,
+          clusterToken, server);
       LogManager.instance().log(this, Level.INFO, "Database '%s' resynced from leader on operator request", dbName);
     } catch (final IOException e) {
       throw new ReplicationException("Failed to resync database '" + dbName + "' from leader", e);
@@ -1155,6 +1159,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
             "Cannot trigger snapshot download: leader HTTP address unknown");
         return;
       }
+      final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
       for (final String dbName : server.getDatabaseNames()) {
         if (server.existsDatabase(dbName)) {
@@ -1162,7 +1167,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           final String databasePath = db.getDatabasePath();
           db.close();
           server.removeDatabase(dbName);
-          SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, clusterToken, server);
+          SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
         }
       }
       LogManager.instance().log(this, Level.INFO, "Snapshot download triggered by watchdog completed");

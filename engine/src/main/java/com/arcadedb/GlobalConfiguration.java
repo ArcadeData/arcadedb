@@ -660,10 +660,13 @@ public enum GlobalConfiguration {
 
   HA_SERVER_LIST("arcadedb.ha.serverList", SCOPE.SERVER,
       """
-      Servers in the cluster as a list of <hostname/ip-address:raftPort:httpPort[:priority]> items separated by comma. \
+      Servers in the cluster, comma-separated. Each entry can use either the positional form \
+      <hostname/ip-address:raftPort:httpPort[:priority[:httpsPort]]> or the more readable object form \
+      <hostname/ip-address:{raft:2434,http:2480,https:2490,priority:10}> (fields unordered, all optional except raft defaults to the configured Raft port). Both forms may be mixed and prefixed with an optional 'name@'. \
       The httpPort is required for replica-to-leader HTTP command forwarding. \
       The optional priority (integer, default 0) sets the preferred leader: the node with the highest priority is preferred during elections. \
-      Example: localhost:2434:2480:10,192.168.0.1:2434:2480:0""",
+      The optional httpsPort is used for encrypted peer-to-peer transfers (e.g. snapshot download) when 'arcadedb.ssl.enabled' is true; when omitted on a homogeneous cluster it is derived from this node's local HTTPS listening port. \
+      Examples: localhost:2434:2480:10:2490,192.168.0.1:2434:2480:0:2490 or localhost:{raft:2434,http:2480,https:2490,priority:10},192.168.0.1:{raft:2434,http:2480,https:2490}""",
       String.class, ""),
 
   HA_SERVER_ROLE("arcadedb.ha.serverRole", SCOPE.SERVER,

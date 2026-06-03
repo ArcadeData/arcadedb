@@ -94,8 +94,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    RaftGroup               raftGroup;
   private final    RaftPeerId              localPeerId;
   private final    Map<RaftPeerId, String> httpAddresses      = new HashMap<>();
+  // Explicit HTTPS endpoints (optional 5th field in HA_SERVER_LIST). Used for encrypted
+  // peer-to-peer transfers (snapshot download) when SSL is enabled.
+  private final    Map<RaftPeerId, String> httpsAddresses     = new HashMap<>();
   // Logged at most once: warns operators that HTTP addresses are derived (not explicitly configured).
   private final    AtomicBoolean           httpFallbackWarned = new AtomicBoolean(false);
+  // Logged at most once: notes that peer HTTPS endpoints are derived from this node's local HTTPS port.
+  private final    AtomicBoolean           httpsFallbackWarned = new AtomicBoolean(false);
   private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
   private final    String                  clusterName;
 
@@ -132,6 +137,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final String serverName = arcadeServer.getServerName();
 
     this.httpAddresses.putAll(parsed.httpAddresses());
+    this.httpsAddresses.putAll(parsed.httpsAddresses());
     this.localPeerId = RaftPeerAddressResolver.findLocalPeerId(peers, configuredPeerNames, serverName, arcadeServer);
 
     // If this node is configured as a replica, override its Raft peer priority to 0
@@ -215,6 +221,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public String getPeerHttpAddress(final RaftPeerId peerId) {
     return resolveHttpAddress(peerId);
+  }
+
+  /**
+   * Returns the HTTPS address (host:httpsPort) for a peer, or {@code null} when no HTTPS endpoint can
+   * be resolved. The endpoint is taken from the explicit 5th field of the server list when present;
+   * otherwise, on a homogeneous cluster, it is derived from the peer's Raft host plus this node's
+   * local HTTPS listening port. Returns {@code null} when SSL is disabled, this node has no HTTPS
+   * listener, or the peer is unknown. Used to download snapshots over real HTTPS instead of forcing
+   * an HTTPS scheme onto the plain HTTP port (issue #4470).
+   */
+  public String getPeerHttpsAddress(final RaftPeerId peerId) {
+    return resolveHttpsAddress(peerId);
   }
 
   /**
@@ -577,6 +595,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return resolveHttpAddress(getLeaderId());
   }
 
+  /**
+   * Returns the HTTPS address (host:httpsPort) of the current Raft leader, or {@code null} when no
+   * HTTPS endpoint can be resolved (SSL disabled, no local HTTPS listener, or leader unknown).
+   * See {@link #getPeerHttpsAddress(RaftPeerId)}.
+   */
+  public String getLeaderHttpsAddress() {
+    return resolveHttpsAddress(getLeaderId());
+  }
+
   public RaftClient getClient() {
     return raftClient;
   }
@@ -777,6 +804,39 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
               + "This is correct only when every node listens on the same HTTP port (e.g. a Kubernetes StatefulSet). For clusters with heterogeneous "
               + "HTTP ports, declare them explicitly using the 'host:raftPort:httpPort' syntax in %s.",
           GlobalConfiguration.HA_SERVER_LIST.getKey(), httpPort, GlobalConfiguration.HA_SERVER_LIST.getKey());
+    return derived;
+  }
+
+  /**
+   * Resolves the HTTPS address (host:httpsPort) of a peer for encrypted snapshot transfer. Prefers
+   * the explicit HTTPS endpoint from the server list (5th field); otherwise derives it from the
+   * peer's Raft host plus this node's local HTTPS listening port. Returns {@code null} when SSL is
+   * disabled (no local HTTPS listener), the peer is unknown, or the port is not yet available.
+   */
+  private String resolveHttpsAddress(final RaftPeerId peerId) {
+    if (peerId == null)
+      return null;
+    final String configured = httpsAddresses.get(peerId);
+    if (configured != null)
+      return configured;
+    return deriveHttpsAddressWithWarning(peerRaftAddress(peerId));
+  }
+
+  private String deriveHttpsAddressWithWarning(final String raftAddress) {
+    if (raftAddress == null)
+      return null;
+    final HttpServer httpServer = arcadeServer.getHttpServer();
+    final int httpsPort = httpServer != null ? httpServer.getHttpsPort() : -1;
+    if (httpsPort <= 0)
+      return null; // SSL disabled or no HTTPS listener: caller falls back to plain HTTP
+    final String derived = deriveHttpAddress(raftAddress, httpsPort);
+    if (derived != null && httpsFallbackWarned.compareAndSet(false, true))
+      LogManager.instance().log(this, Level.INFO,
+          "HA HTTPS endpoints are not configured in '%s': deriving peer HTTPS endpoints for encrypted snapshot transfer "
+              + "from each peer's Raft host plus this node's HTTPS port (%d). This is correct only when every node listens on the "
+              + "same HTTPS port (e.g. a Kubernetes StatefulSet). For heterogeneous clusters, declare them explicitly using the "
+              + "'host:raftPort:httpPort:priority:httpsPort' syntax in %s.",
+          GlobalConfiguration.HA_SERVER_LIST.getKey(), httpsPort, GlobalConfiguration.HA_SERVER_LIST.getKey());
     return derived;
   }
 

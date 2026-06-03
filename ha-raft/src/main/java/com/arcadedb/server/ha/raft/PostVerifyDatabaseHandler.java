@@ -29,6 +29,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.apache.ratis.protocol.RaftPeer;
 
+import javax.net.ssl.HttpsURLConnection;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -197,9 +198,28 @@ public class PostVerifyDatabaseHandler extends AbstractServerHttpHandler {
     peerResult.put("httpAddress", peerHttpAddr);
 
     try {
-      final String url = (useSsl ? "https" : "http") + "://" + peerHttpAddr
+      // Peers only advertise their plain HTTP port; the HTTPS listener (when SSL is enabled) binds a
+      // separate port. Forcing an https scheme onto the plain HTTP port fails with "Unsupported or
+      // unrecognized SSL message" (issue #4470). When SSL is enabled, prefer the peer's resolved HTTPS
+      // endpoint (explicit 5th field of HA_SERVER_LIST, or derived from the local HTTPS port);
+      // otherwise fall back to plain HTTP on the always-present HTTP listener.
+      String endpoint = peerHttpAddr;
+      boolean https = false;
+      if (useSsl) {
+        final String peerHttpsAddr = raftHAServer.getPeerHttpsAddress(peer.getId());
+        if (peerHttpsAddr != null) {
+          endpoint = peerHttpsAddr;
+          https = true;
+        }
+      }
+
+      final String url = (https ? "https" : "http") + "://" + endpoint
           + "/api/v1/cluster/verify/" + databaseName;
       final var conn = (HttpURLConnection) new URI(url).toURL().openConnection();
+      // Validate the peer certificate against the configured trust store, consistent with the
+      // snapshot download path.
+      if (conn instanceof HttpsURLConnection httpsConn)
+        httpsConn.setSSLSocketFactory(SnapshotInstaller.buildSSLContext(httpServer.getServer()).getSocketFactory());
       try {
         conn.setRequestMethod("POST");
         conn.setRequestProperty("Content-Type", "application/json");

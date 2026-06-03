@@ -39,11 +39,13 @@ final class RaftPeerAddressResolver {
    * Result of parsing the HA server list. Contains the Raft peers (with raft addresses) and
    * a map from peer ID to HTTP address for replica-to-leader HTTP command forwarding.
    * The {@code httpAddresses} map is empty when no httpPort is specified in the server list.
+   * The {@code httpsAddresses} map is empty when no httpsPort (the optional 5th field) is specified;
+   * it is used for encrypted peer-to-peer transfers (e.g. snapshot download) when SSL is enabled.
    * The {@code peerNames} map contains user-provided peer names from the optional {@code name@}
    * prefix and is empty when no entry uses that syntax.
    */
   public record ParsedPeerList(List<RaftPeer> peers, Map<RaftPeerId, String> httpAddresses,
-                               Map<RaftPeerId, String> peerNames) {
+                               Map<RaftPeerId, String> httpsAddresses, Map<RaftPeerId, String> peerNames) {
   }
 
   private RaftPeerAddressResolver() {
@@ -52,33 +54,51 @@ final class RaftPeerAddressResolver {
   /**
    * Parses a comma-separated server list into a {@link ParsedPeerList}.
    * <p>
-   * Each entry supports the following formats:
+   * Each entry supports two interchangeable syntaxes.
+   * <p>
+   * <b>1. Object form</b> (recommended for readability): {@code host:{raft:2434,http:2480,https:2490,priority:10}}.
+   * The fields are unordered and all optional except that {@code raft} defaults to {@code defaultPort}
+   * when omitted ({@code http}/{@code https} are simply not stored when absent, {@code priority} defaults
+   * to 0). This avoids the positional ambiguity of the colon form. Example:
+   * {@code frankfurt@db1:{raft:2434,http:2480,https:2490}}.
+   * <p>
+   * <b>2. Positional (colon) form</b>:
    * <ul>
+   *   <li>{@code host:raftPort:httpPort:priority:httpsPort} - explicit Raft port, HTTP port,
+   *       leader-election priority, and HTTPS port (used for encrypted peer-to-peer transfers when
+   *       {@code arcadedb.ssl.enabled} is true)</li>
    *   <li>{@code host:raftPort:httpPort:priority} - explicit Raft port, HTTP port, and leader-election priority</li>
    *   <li>{@code host:raftPort:httpPort} - explicit Raft and HTTP ports, priority defaults to 0</li>
    *   <li>{@code host:raftPort} - explicit Raft port, no HTTP address stored, priority defaults to 0</li>
    *   <li>{@code host} - Raft port defaults to {@code defaultPort}, no HTTP address, priority defaults to 0</li>
    * </ul>
-   * Any of the formats above may be prefixed with an optional human-readable peer name using the
-   * {@code name@} syntax (e.g. {@code frankfurt@host:2434:2480}). Names must be unique within the
-   * cluster but are otherwise free-form. Names allow operators to identify nodes in logs and Studio
-   * without relying on the {@code prefix_N} server-name convention required for positional resolution.
+   * Both forms may be prefixed with an optional human-readable peer name using the {@code name@} syntax
+   * (e.g. {@code frankfurt@host:2434:2480}). Names must be unique within the cluster but are otherwise
+   * free-form. Names allow operators to identify nodes in logs and Studio without relying on the
+   * {@code prefix_N} server-name convention required for positional resolution. The two forms may be
+   * freely mixed within the same comma-separated list.
    * <p>
-   * The {@code httpAddresses} map in the result is populated only for entries with 3 or 4 parts;
-   * it is keyed by the {@link RaftPeerId} of each peer.
+   * The {@code httpAddresses} map in the result is populated only when an HTTP port is given;
+   * the {@code httpsAddresses} map only when an HTTPS port is given. Both are keyed by the
+   * {@link RaftPeerId} of each peer. The HTTPS port is optional: when omitted, a homogeneous cluster
+   * can still transfer snapshots over HTTPS because the address is derived from this node's local
+   * HTTPS listening port (see {@code RaftHAServer#resolveHttpsAddress}).
    * <p>
    * Priority is used for Raft leader election: the node with the highest priority is preferred as leader.
    * This is a soft preference - if the preferred leader is unavailable, another node will take over.
    */
   static ParsedPeerList parsePeerList(final String serverList, final int defaultPort) {
-    final String[] entries = serverList.split(",");
-    final List<RaftPeer> peers = new ArrayList<>(entries.length);
-    final Map<RaftPeerId, String> httpAddresses = new HashMap<>(entries.length);
-    final Map<RaftPeerId, String> peerNames = new HashMap<>(entries.length);
-    final Map<String, String> nameToEntry = new HashMap<>(entries.length);
+    // Split on top-level commas only: the object form {raft:..,http:..} contains commas that must not
+    // be treated as entry separators.
+    final List<String> entries = splitEntries(serverList);
+    final List<RaftPeer> peers = new ArrayList<>(entries.size());
+    final Map<RaftPeerId, String> httpAddresses = new HashMap<>(entries.size());
+    final Map<RaftPeerId, String> httpsAddresses = new HashMap<>(entries.size());
+    final Map<RaftPeerId, String> peerNames = new HashMap<>(entries.size());
+    final Map<String, String> nameToEntry = new HashMap<>(entries.size());
 
-    for (int i = 0; i < entries.length; i++) {
-      String entry = entries[i].trim();
+    for (final String rawEntry : entries) {
+      String entry = rawEntry.trim();
 
       String peerName = null;
       final int atIdx = entry.indexOf('@');
@@ -95,35 +115,52 @@ final class RaftPeerAddressResolver {
         entry = entry.substring(atIdx + 1).trim();
       }
 
-      final String[] parts = entry.split(":");
-
-      if (parts.length > 4 || parts.length == 0 || parts[0].isBlank())
-        throw new ServerException(
-            "Invalid peer address format '" + entry + "'. Expected [name@]host[:raftPort[:httpPort[:priority]]]");
-
       final String raftAddress;
       String httpAddress = null;
+      String httpsAddress = null;
       int priority = 0;
 
-      if (parts.length == 4) {
-        // host:raftPort:httpPort:priority
-        raftAddress = parts[0] + ":" + parts[1];
-        httpAddress = parts[0] + ":" + parts[2];
-        try {
-          priority = Integer.parseInt(parts[3]);
-        } catch (final NumberFormatException e) {
-          throw new ServerException("Invalid priority value '" + parts[3] + "' in peer address '" + entry + "'");
-        }
-      } else if (parts.length == 3) {
-        // host:raftPort:httpPort
-        raftAddress = parts[0] + ":" + parts[1];
-        httpAddress = parts[0] + ":" + parts[2];
-      } else if (parts.length == 2) {
-        // host:raftPort
-        raftAddress = entry;
+      final int braceIdx = entry.indexOf('{');
+      if (braceIdx >= 0) {
+        // Object form: host:{raft:2434,http:2480,https:2490,priority:10}
+        final PeerSpec spec = parseObjectForm(entry, braceIdx, defaultPort);
+        raftAddress = spec.host + ":" + spec.raftPort;
+        if (spec.httpPort != null)
+          httpAddress = spec.host + ":" + spec.httpPort;
+        if (spec.httpsPort != null)
+          httpsAddress = spec.host + ":" + spec.httpsPort;
+        priority = spec.priority;
       } else {
-        // host only - use default Raft port
-        raftAddress = entry + ":" + defaultPort;
+        final String[] parts = entry.split(":");
+
+        if (parts.length > 5 || parts.length == 0 || parts[0].isBlank())
+          throw new ServerException(
+              "Invalid peer address format '" + entry
+                  + "'. Expected [name@]host[:raftPort[:httpPort[:priority[:httpsPort]]]] "
+                  + "or [name@]host:{raft:..,http:..,https:..,priority:..}");
+
+        if (parts.length == 5) {
+          // host:raftPort:httpPort:priority:httpsPort
+          raftAddress = parts[0] + ":" + parts[1];
+          httpAddress = parts[0] + ":" + parts[2];
+          priority = parseIntField(parts[3], "priority", entry);
+          httpsAddress = parts[0] + ":" + parts[4];
+        } else if (parts.length == 4) {
+          // host:raftPort:httpPort:priority
+          raftAddress = parts[0] + ":" + parts[1];
+          httpAddress = parts[0] + ":" + parts[2];
+          priority = parseIntField(parts[3], "priority", entry);
+        } else if (parts.length == 3) {
+          // host:raftPort:httpPort
+          raftAddress = parts[0] + ":" + parts[1];
+          httpAddress = parts[0] + ":" + parts[2];
+        } else if (parts.length == 2) {
+          // host:raftPort
+          raftAddress = entry;
+        } else {
+          // host only - use default Raft port
+          raftAddress = entry + ":" + defaultPort;
+        }
       }
 
       // Use host_raftPort as peer ID (underscore avoids JMX ObjectName issues with colons)
@@ -137,6 +174,8 @@ final class RaftPeerAddressResolver {
 
       if (httpAddress != null)
         httpAddresses.put(peer.getId(), httpAddress);
+      if (httpsAddress != null)
+        httpsAddresses.put(peer.getId(), httpsAddress);
       if (peerName != null)
         peerNames.put(peer.getId(), peerName);
     }
@@ -160,7 +199,112 @@ final class RaftPeerAddressResolver {
     return new ParsedPeerList(
         Collections.unmodifiableList(peers),
         Collections.unmodifiableMap(httpAddresses),
+        Collections.unmodifiableMap(httpsAddresses),
         Collections.unmodifiableMap(peerNames));
+  }
+
+  /** Resolved ports for a single peer entry, regardless of the syntax it was written in. */
+  private static final class PeerSpec {
+    final String  host;
+    final int     raftPort;
+    final Integer httpPort;  // null when not specified
+    final Integer httpsPort; // null when not specified
+    final int     priority;
+
+    PeerSpec(final String host, final int raftPort, final Integer httpPort, final Integer httpsPort, final int priority) {
+      this.host = host;
+      this.raftPort = raftPort;
+      this.httpPort = httpPort;
+      this.httpsPort = httpsPort;
+      this.priority = priority;
+    }
+  }
+
+  /**
+   * Parses the object form {@code host:{raft:..,http:..,https:..,priority:..}} into a {@link PeerSpec}.
+   * Fields are unordered and all optional; {@code raft} defaults to {@code defaultPort}. Unknown or
+   * duplicated keys throw {@link ServerException}.
+   */
+  private static PeerSpec parseObjectForm(final String entry, final int braceIdx, final int defaultPort) {
+    if (!entry.endsWith("}"))
+      throw new ServerException("Invalid peer address '" + entry + "': missing closing '}'");
+
+    String host = entry.substring(0, braceIdx).trim();
+    if (host.endsWith(":"))
+      host = host.substring(0, host.length() - 1).trim();
+    if (host.isBlank())
+      throw new ServerException("Invalid peer address '" + entry + "': host before '{' is blank");
+
+    final String body = entry.substring(braceIdx + 1, entry.length() - 1).trim();
+
+    int raftPort = defaultPort;
+    Integer httpPort = null;
+    Integer httpsPort = null;
+    int priority = 0;
+    final Map<String, String> seen = new HashMap<>();
+
+    if (!body.isEmpty()) {
+      for (final String kv : body.split(",")) {
+        final String pair = kv.trim();
+        if (pair.isEmpty())
+          continue;
+        final int colon = pair.indexOf(':');
+        if (colon < 0)
+          throw new ServerException("Invalid field '" + pair + "' in peer address '" + entry + "': expected key:value");
+        final String key = pair.substring(0, colon).trim().toLowerCase();
+        final String value = pair.substring(colon + 1).trim();
+        if (seen.put(key, value) != null)
+          throw new ServerException("Duplicate key '" + key + "' in peer address '" + entry + "'");
+
+        switch (key) {
+        case "raft" -> raftPort = parseIntField(value, "raft", entry);
+        case "http" -> httpPort = parseIntField(value, "http", entry);
+        case "https" -> httpsPort = parseIntField(value, "https", entry);
+        case "priority" -> priority = parseIntField(value, "priority", entry);
+        default -> throw new ServerException(
+            "Unknown key '" + key + "' in peer address '" + entry + "'. Supported keys: raft, http, https, priority");
+        }
+      }
+    }
+    return new PeerSpec(host, raftPort, httpPort, httpsPort, priority);
+  }
+
+  /** Parses an integer field, throwing a descriptive {@link ServerException} on malformed input. */
+  private static int parseIntField(final String value, final String fieldName, final String entry) {
+    try {
+      return Integer.parseInt(value.trim());
+    } catch (final NumberFormatException e) {
+      throw new ServerException("Invalid " + fieldName + " value '" + value + "' in peer address '" + entry + "'");
+    }
+  }
+
+  /**
+   * Splits a comma-separated server list into entries, treating commas inside an object-form
+   * {@code {...}} block as literal (not entry separators). Throws on unbalanced braces.
+   */
+  static List<String> splitEntries(final String serverList) {
+    final List<String> entries = new ArrayList<>();
+    final StringBuilder current = new StringBuilder();
+    int depth = 0;
+    for (int i = 0; i < serverList.length(); i++) {
+      final char c = serverList.charAt(i);
+      if (c == '{')
+        depth++;
+      else if (c == '}') {
+        if (depth == 0)
+          throw new ServerException("Unbalanced '}' in server list: " + serverList);
+        depth--;
+      }
+      if (c == ',' && depth == 0) {
+        entries.add(current.toString());
+        current.setLength(0);
+      } else
+        current.append(c);
+    }
+    if (depth != 0)
+      throw new ServerException("Unbalanced '{' in server list: " + serverList);
+    entries.add(current.toString());
+    return entries;
   }
 
   /**
