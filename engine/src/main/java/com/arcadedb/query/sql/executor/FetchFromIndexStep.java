@@ -421,9 +421,12 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
 
     final Expression nextElementInKey = key.getExpressions().getFirst();
     final Object value = nextElementInKey.execute(new ResultInternal(context.getDatabase()), context);
-    if (value instanceof Iterable<?> iterable && !(value instanceof Identifiable)) {
+    // A multi-value key expands into one index lookup per element. MultiValue covers every shape a
+    // parameter can take, including primitive arrays (long[]/int[]/double[]) that are not Iterable,
+    // consistent with the multi-value handling in processInCondition().
+    if (!(value instanceof Identifiable) && MultiValue.isMultiValue(value)) {
       final List<PCollection> result = new ArrayList<>();
-      for (final Object elemInKey : iterable) {
+      for (final Object elemInKey : MultiValue.getMultiValueIterable(value)) {
         final PCollection newHead = new PCollection(-1);
         for (final Expression exp : head.getExpressions())
           newHead.add(exp.copy());
