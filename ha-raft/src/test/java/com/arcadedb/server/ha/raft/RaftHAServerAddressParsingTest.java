@@ -44,8 +44,117 @@ class RaftHAServerAddressParsingTest {
 
   @Test
   void tooManyColonsThrows() {
-    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("host:1:2:3:4", 2434))
+    // 6 colon-separated parts exceed the supported host:raftPort:httpPort:priority:httpsPort format
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("host:1:2:3:4:5", 2434))
         .isInstanceOf(ServerException.class);
+  }
+
+  @Test
+  void fivePartsParsesHttpsPort() {
+    // host:raftPort:httpPort:priority:httpsPort
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:2434:2480:7:2490", 2434);
+    final var peerId = parsed.peers().get(0).getId();
+    assertThat(parsed.peers().get(0).getAddress()).isEqualTo("myhost:2434");
+    assertThat(parsed.peers().get(0).getPriority()).isEqualTo(7);
+    assertThat(parsed.httpAddresses()).containsEntry(peerId, "myhost:2480");
+    assertThat(parsed.httpsAddresses()).containsEntry(peerId, "myhost:2490");
+  }
+
+  @Test
+  void namedFivePartsParsesHttpsPort() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("alpha@myhost:2434:2480:0:2490", 2434);
+    final var peerId = parsed.peers().get(0).getId();
+    assertThat(parsed.httpsAddresses()).containsEntry(peerId, "myhost:2490");
+    assertThat(parsed.peerNames()).containsEntry(peerId, "alpha");
+  }
+
+  @Test
+  void fourPartsLeavesHttpsAddressesEmpty() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:2434:2480:7", 2434);
+    assertThat(parsed.httpsAddresses()).isEmpty();
+  }
+
+  @Test
+  void objectFormFullParsesAllFields() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:{raft:2434,http:2480,https:2490,priority:10}", 2434);
+    final var peer = parsed.peers().get(0);
+    assertThat(peer.getAddress()).isEqualTo("myhost:2434");
+    assertThat(peer.getPriority()).isEqualTo(10);
+    assertThat(parsed.httpAddresses()).containsEntry(peer.getId(), "myhost:2480");
+    assertThat(parsed.httpsAddresses()).containsEntry(peer.getId(), "myhost:2490");
+  }
+
+  @Test
+  void objectFormFieldsAreUnorderedAndOptional() {
+    // https omitted, fields out of order, whitespace tolerated
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:{ priority: 5 , http: 2480 , raft: 2434 }", 2434);
+    final var peer = parsed.peers().get(0);
+    assertThat(peer.getAddress()).isEqualTo("myhost:2434");
+    assertThat(peer.getPriority()).isEqualTo(5);
+    assertThat(parsed.httpAddresses()).containsEntry(peer.getId(), "myhost:2480");
+    assertThat(parsed.httpsAddresses()).isEmpty();
+  }
+
+  @Test
+  void objectFormRaftDefaultsToDefaultPort() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:{http:2480}", 9999);
+    assertThat(parsed.peers().get(0).getAddress()).isEqualTo("myhost:9999");
+    assertThat(parsed.httpAddresses()).containsEntry(parsed.peers().get(0).getId(), "myhost:2480");
+  }
+
+  @Test
+  void objectFormWithNamePrefix() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("frankfurt@db1:{raft:2434,http:2480,https:2490}", 2434);
+    final var peer = parsed.peers().get(0);
+    assertThat(peer.getAddress()).isEqualTo("db1:2434");
+    assertThat(parsed.peerNames()).containsEntry(peer.getId(), "frankfurt");
+    assertThat(parsed.httpsAddresses()).containsEntry(peer.getId(), "db1:2490");
+  }
+
+  @Test
+  void mixedObjectAndPositionalForms() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList(
+        "host1:{raft:2434,http:2480,https:2490},host2:2434:2480", 2434);
+    assertThat(parsed.peers()).hasSize(2);
+    assertThat(parsed.peers().get(0).getAddress()).isEqualTo("host1:2434");
+    assertThat(parsed.peers().get(1).getAddress()).isEqualTo("host2:2434");
+    assertThat(parsed.httpsAddresses()).containsEntry(parsed.peers().get(0).getId(), "host1:2490");
+    assertThat(parsed.httpsAddresses()).doesNotContainKey(parsed.peers().get(1).getId());
+  }
+
+  @Test
+  void objectFormUnknownKeyThrows() {
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("host:{raft:2434,foo:1}", 2434))
+        .isInstanceOf(ServerException.class)
+        .hasMessageContaining("Unknown key 'foo'");
+  }
+
+  @Test
+  void objectFormDuplicateKeyThrows() {
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("host:{raft:2434,raft:2435}", 2434))
+        .isInstanceOf(ServerException.class)
+        .hasMessageContaining("Duplicate key 'raft'");
+  }
+
+  @Test
+  void objectFormNonNumericPortThrows() {
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("host:{raft:abc}", 2434))
+        .isInstanceOf(ServerException.class)
+        .hasMessageContaining("Invalid raft value");
+  }
+
+  @Test
+  void objectFormUnbalancedBraceThrows() {
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("host:{raft:2434", 2434))
+        .isInstanceOf(ServerException.class);
+  }
+
+  @Test
+  void objectFormEmptyBracesUsesDefaults() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:{}", 2434);
+    assertThat(parsed.peers().get(0).getAddress()).isEqualTo("myhost:2434");
+    assertThat(parsed.httpAddresses()).isEmpty();
+    assertThat(parsed.httpsAddresses()).isEmpty();
   }
 
   @Test

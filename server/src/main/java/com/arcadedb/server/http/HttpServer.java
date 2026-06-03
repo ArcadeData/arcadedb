@@ -124,6 +124,7 @@ public class HttpServer implements ServerPlugin {
   private          Undertow               undertow;
   private volatile String                 listeningAddress;
   private          int                    httpPortListening;
+  private          int                    httpsPortListening = -1;
 
   public HttpServer(final ArcadeDBServer server) {
     this.server = server;
@@ -184,6 +185,11 @@ public class HttpServer implements ServerPlugin {
 
         LogManager.instance().log(this, Level.INFO, "- HTTP Server started (host=%s port=%d httpsPort=%s)", host, httpPortListening,
             httpsPortListening > 0 ? httpsPortListening : "-");
+
+        // Record the bound HTTPS port (when SSL is enabled) so the HA layer can advertise/derive
+        // encrypted peer endpoints for snapshot download. Left at -1 when SSL is disabled.
+        if (configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL) && httpsPortListening > 0)
+          this.httpsPortListening = httpsPortListening;
 
         listeningAddress = "0.0.0.0".equals(host) ?
             server.getHostAddress() + ":" + httpPortListening :
@@ -395,6 +401,14 @@ public class HttpServer implements ServerPlugin {
 
   public int getPort() {
     return httpPortListening;
+  }
+
+  /**
+   * Returns the bound HTTPS listening port when SSL is enabled, or {@code -1} when SSL is disabled
+   * (no HTTPS listener) or the server has not started yet.
+   */
+  public int getHttpsPort() {
+    return httpsPortListening;
   }
 
   public WebSocketEventBus getWebSocketEventBus() {
