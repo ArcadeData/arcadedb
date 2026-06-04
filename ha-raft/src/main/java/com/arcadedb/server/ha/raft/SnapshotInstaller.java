@@ -431,16 +431,14 @@ public final class SnapshotInstaller {
       if (server == null)
         return SSLContext.getDefault();
 
-      // The client validates the leader's server certificate against its TRUST store, not its key
-      // store: the key store holds this node's own private key/cert and is the wrong source of trust
-      // anchors (issue #4470). Fall back to the key store for backward compatibility when no trust
-      // store is configured, then to the JVM default trust store.
-      String storePath = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE);
-      String storePassword = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD);
-      if (storePath == null || storePath.isBlank()) {
-        storePath = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE);
-        storePassword = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_KEYSTORE_PASSWORD);
-      }
+      // The client validates the leader's server certificate against its TRUST store only: the key
+      // store holds this node's own private key/cert (its identity) and is the wrong source of trust
+      // anchors (issue #4470). This mirrors HttpServer.createSSLContext(), which keeps the two stores
+      // strictly separate and mandates a trust store whenever SSL is enabled - so a running HTTPS
+      // cluster always has one configured here. When no trust store is set, fall back to the JVM
+      // default trust store rather than the key store.
+      final String storePath = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE);
+      final String storePassword = server.getConfiguration().getValueAsString(GlobalConfiguration.NETWORK_SSL_TRUSTSTORE_PASSWORD);
       if (storePath == null || storePath.isBlank())
         return SSLContext.getDefault();
 
