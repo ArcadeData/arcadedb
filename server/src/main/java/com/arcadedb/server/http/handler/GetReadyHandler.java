@@ -40,9 +40,10 @@ public class GetReadyHandler extends AbstractServerHttpHandler {
     if (server.getStatus() != ArcadeDBServer.STATUS.ONLINE)
       return new ExecutionResponse(503, "Server not started yet");
 
-    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)) {
+    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)
+        && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
       final HAServerPlugin ha = server.getHA();
-      if (ha != null && ha.getElectionStatus() != HAServerPlugin.ELECTION_STATUS.DONE)
+      if (ha == null || ha.getElectionStatus() != HAServerPlugin.ELECTION_STATUS.DONE)
         return new ExecutionResponse(503, "Node has not yet joined the Raft group");
     }
 

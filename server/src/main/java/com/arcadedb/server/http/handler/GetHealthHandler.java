@@ -19,7 +19,6 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.serializer.json.JSONObject;
-import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
@@ -40,9 +39,9 @@ public class GetHealthHandler extends AbstractServerHttpHandler {
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
     Metrics.counter("http.health").increment();
 
-    if (httpServer.getServer().getStatus() == ArcadeDBServer.STATUS.ONLINE)
-      return new ExecutionResponse(204, "");
-    return new ExecutionResponse(503, "Server not started yet");
+    // Liveness only: reaching this handler proves the HTTP layer is up, so the process is live.
+    // It deliberately does not consult server status, so a node still warming up is not killed.
+    return new ExecutionResponse(204, "");
   }
 
   @Override

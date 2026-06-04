@@ -60,6 +60,7 @@ class GetReadyHandlerHATest {
   void flagOnAndElectionDoneReturns204() throws Exception {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
+    cfg.setValue(GlobalConfiguration.HA_ENABLED, true);
 
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
@@ -76,6 +77,7 @@ class GetReadyHandlerHATest {
   void flagOnAndElectionInProgressReturns503() throws Exception {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
+    cfg.setValue(GlobalConfiguration.HA_ENABLED, true);
 
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
@@ -89,17 +91,35 @@ class GetReadyHandlerHATest {
   }
 
   @Test
-  void flagOnButNoHAReturns204() throws Exception {
+  void flagOnButHaDisabledReturns204() throws Exception {
     final ContextConfiguration cfg = new ContextConfiguration();
     cfg.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
+    // HA not enabled: single-node deployment, the readiness flag has no effect.
+    cfg.setValue(GlobalConfiguration.HA_ENABLED, false);
 
     final ArcadeDBServer server = mock(ArcadeDBServer.class);
     when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
     when(server.getConfiguration()).thenReturn(cfg);
-    // HA inactive: flag has no effect, single-node readiness applies.
     when(server.getHA()).thenReturn(null);
 
     final ExecutionResponse response = newHandler(server).execute(null, (ServerSecurityUser) null, null);
     assertThat(response.getCode()).isEqualTo(204);
+  }
+
+  @Test
+  void flagOnHaEnabledButPluginAbsentReturns503() throws Exception {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
+    // HA requested but no HA plugin registered (e.g. arcadedb-ha-raft missing): the node runs
+    // standalone, which does not satisfy the operator's "require HA for readiness" intent.
+    cfg.setValue(GlobalConfiguration.HA_ENABLED, true);
+
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
+    when(server.getConfiguration()).thenReturn(cfg);
+    when(server.getHA()).thenReturn(null);
+
+    final ExecutionResponse response = newHandler(server).execute(null, (ServerSecurityUser) null, null);
+    assertThat(response.getCode()).isEqualTo(503);
   }
 }
