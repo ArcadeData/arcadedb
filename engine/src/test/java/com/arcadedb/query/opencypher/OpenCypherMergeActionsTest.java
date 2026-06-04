@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -28,6 +29,11 @@ import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -236,5 +242,98 @@ public class OpenCypherMergeActionsTest {
     final Edge edge = (Edge) result.next().toElement();
     assertThat(((Number) edge.get("since")).intValue()).isEqualTo(2021);
     assertThat((Boolean) edge.get("promoted")).isTrue();
+  }
+
+  /** ON MATCH SET with values identical to the stored ones still returns the matched values. */
+  @Test
+  void mergeOnMatchSetWithUnchangedValuesKeepsValues() {
+    database.command("opencypher", "CREATE (n:Person {name: 'Kim', bank: 'ACME', branch: 'HQ'})");
+
+    final ResultSet result = database.command("opencypher",
+        """
+        MERGE (n:Person {name: 'Kim'}) \
+        ON MATCH SET n.bank = 'ACME', n.branch = 'HQ' \
+        RETURN n""");
+
+    assertThat(result.hasNext()).isTrue();
+    final Vertex person = (Vertex) result.next().toElement();
+    assertThat(person.get("bank")).isEqualTo("ACME");
+    assertThat(person.get("branch")).isEqualTo("HQ");
+  }
+
+  /** The equality skip must not suppress genuine updates: a changed value is still written. */
+  @Test
+  void mergeOnMatchSetWithChangedValueStillWrites() {
+    database.command("opencypher", "CREATE (n:Person {name: 'Leo', counter: 1})");
+
+    final ResultSet result = database.command("opencypher",
+        """
+        MERGE (n:Person {name: 'Leo'}) \
+        ON MATCH SET n.counter = 2 \
+        RETURN n""");
+
+    assertThat(result.hasNext()).isTrue();
+    final Vertex person = (Vertex) result.next().toElement();
+    assertThat(((Number) person.get("counter")).intValue()).isEqualTo(2);
+
+    // Verify persistence
+    final ResultSet verify = database.query("opencypher", "MATCH (n:Person {name: 'Leo'}) RETURN n.counter AS c");
+    assertThat(((Number) verify.next().<Number>getProperty("c")).intValue()).isEqualTo(2);
+  }
+
+  /** Regression: re-asserting unchanged values in ON MATCH SET must not bump the MVCC version, so two concurrent MERGEs of the same shared vertex commit without ConcurrentModificationException. */
+  @Test
+  void mergeOnMatchSetWithUnchangedValuesDoesNotConflictConcurrently() throws Exception {
+    // Pre-create the shared vertex both transactions will MERGE-match.
+    database.command("opencypher", "CREATE (n:Person {name: 'Shared', bank: 'ACME', branch: 'HQ'})");
+
+    final CyclicBarrier bothMatched = new CyclicBarrier(2);
+    final AtomicInteger conflicts = new AtomicInteger();
+    final AtomicReference<Throwable> unexpected = new AtomicReference<>();
+
+    final Runnable worker = () -> {
+      try {
+        database.begin();
+        // Reads the shared vertex into this transaction; with the bug it also
+        // rewrites the unchanged values, dirtying the record's page.
+        database.command("opencypher",
+            "MERGE (n:Person {name: 'Shared'}) ON MATCH SET n.bank = 'ACME', n.branch = 'HQ' RETURN n").close();
+        // Ensure both transactions have matched before either commits, so a
+        // write by one would invalidate the version the other read. Bounded wait so a
+        // worker that died before reaching the barrier can't hang the other indefinitely.
+        bothMatched.await(15, TimeUnit.SECONDS);
+        database.commit();
+      } catch (final ConcurrentModificationException e) {
+        conflicts.incrementAndGet();
+        if (database.isTransactionActive())
+          database.rollback();
+      } catch (final Throwable t) {
+        unexpected.compareAndSet(null, t);
+        if (database.isTransactionActive())
+          database.rollback();
+      }
+    };
+
+    final Thread t1 = new Thread(worker);
+    final Thread t2 = new Thread(worker);
+    t1.start();
+    t2.start();
+    t1.join();
+    t2.join();
+
+    assertThat(unexpected.get()).isNull();
+    assertThat(conflicts.get()).isZero();
+  }
+
+  /** ON MATCH SET of an absent property to null is a no-op: the property stays absent. */
+  @Test
+  void mergeOnMatchSetNullOnAbsentPropertyIsNoOp() {
+    database.command("opencypher", "CREATE (n:Person {name: 'Kim'})");
+
+    database.command("opencypher",
+        "MERGE (n:Person {name: 'Kim'}) ON MATCH SET n.bank = null RETURN n").close();
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:Person {name: 'Kim'}) RETURN n.bank AS b");
+    assertThat(rs.next().<Object>getProperty("b")).isNull();
   }
 }
