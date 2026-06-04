@@ -141,6 +141,7 @@ public class OpenApiSpecGenerator {
     // Server endpoints
     paths.addPathItem("/api/v1/server", createServerPath());
     paths.addPathItem("/api/v1/ready", createReadyPath());
+    paths.addPathItem("/api/v1/health", createHealthPath());
     paths.addPathItem("/api/v1/databases", createDatabasesPath());
 
     // Database endpoints
@@ -209,6 +210,20 @@ public class OpenApiSpecGenerator {
     getOp.setSummary("Check server readiness");
     getOp.setDescription("Health check endpoint to verify if the server is ready to accept requests");
     getOp.setOperationId("checkReady");
+    getOp.addTagsItem("Health");
+    getOp.setResponses(createReadyResponses());
+    pathItem.setGet(getOp);
+
+    return pathItem;
+  }
+
+  private PathItem createHealthPath() {
+    final PathItem pathItem = new PathItem();
+
+    final Operation getOp = new Operation();
+    getOp.setSummary("Check server liveness");
+    getOp.setDescription("Liveness probe: returns 204 when the server process and HTTP layer are up. Performs no database I/O and requires no authentication.");
+    getOp.setOperationId("checkHealth");
     getOp.addTagsItem("Health");
     getOp.setResponses(createReadyResponses());
     pathItem.setGet(getOp);

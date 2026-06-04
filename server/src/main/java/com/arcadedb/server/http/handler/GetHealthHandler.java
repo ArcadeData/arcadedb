@@ -18,35 +18,31 @@
  */
 package com.arcadedb.server.http.handler;
 
-import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
-import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.undertow.server.HttpServerExchange;
 
-public class GetReadyHandler extends AbstractServerHttpHandler {
-  public GetReadyHandler(final HttpServer httpServer) {
+/**
+ * Kubernetes liveness probe. Reports whether the server process and HTTP layer are up.
+ * Performs no database I/O and requires no authentication so an orchestrator can poll it
+ * cheaply. Distinct from readiness: a node that is merely warming up is still live and must
+ * not be killed by the orchestrator.
+ */
+public class GetHealthHandler extends AbstractServerHttpHandler {
+  public GetHealthHandler(final HttpServer httpServer) {
     super(httpServer);
   }
 
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
-    Metrics.counter("http.ready").increment();
+    Metrics.counter("http.health").increment();
 
-    final ArcadeDBServer server = httpServer.getServer();
-    if (server.getStatus() != ArcadeDBServer.STATUS.ONLINE)
-      return new ExecutionResponse(503, "Server not started yet");
-
-    if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)) {
-      final HAServerPlugin ha = server.getHA();
-      if (ha != null && ha.getElectionStatus() != HAServerPlugin.ELECTION_STATUS.DONE)
-        return new ExecutionResponse(503, "Node has not yet joined the Raft group");
-    }
-
-    return new ExecutionResponse(204, "");
+    if (httpServer.getServer().getStatus() == ArcadeDBServer.STATUS.ONLINE)
+      return new ExecutionResponse(204, "");
+    return new ExecutionResponse(503, "Server not started yet");
   }
 
   @Override
