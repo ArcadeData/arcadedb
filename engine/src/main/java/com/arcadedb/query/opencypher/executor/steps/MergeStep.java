@@ -1267,14 +1267,34 @@ public class MergeStep extends AbstractExecutionStep {
         case PROPERTY: {
           if (!(obj instanceof Document doc))
             break;
-          final MutableDocument mutableDoc = doc.modify();
-          Object value = evaluator.evaluate(item.getValueExpression(), result, context);
-          if (value == null)
-            mutableDoc.remove(item.getProperty());
-          else
-            mutableDoc.set(item.getProperty(), TemporalUtil.toCoreJavaType(value));
-          mutableDoc.save();
-          ((ResultInternal) result).setProperty(variable, mutableDoc);
+          final String property = item.getProperty();
+          final Object value = evaluator.evaluate(item.getValueExpression(), result, context);
+          if (value == null) {
+            // Removing an absent property is a no-op: skip the write so the
+            // record version is not bumped (see equality skip below).
+            if (doc.has(property)) {
+              final MutableDocument mutableDoc = doc.modify();
+              mutableDoc.remove(property);
+              mutableDoc.save();
+              ((ResultInternal) result).setProperty(variable, mutableDoc);
+            }
+          } else {
+            final Object coerced = TemporalUtil.toCoreJavaType(value);
+            // Skip the write entirely when the stored value already equals the
+            // new one. Writing identical values back still marks the record
+            // dirty and bumps its MVCC version on save(), which makes every
+            // concurrent transaction that read the same record fail with
+            // ConcurrentModificationException. This is the dominant source of
+            // retry storms for ON MATCH SET on shared vertices: the new value
+            // typically never changes for an already-matched record, so the
+            // MERGE can stay a read-only operation for it.
+            if (!valuesEqual(doc.get(property), coerced)) {
+              final MutableDocument mutableDoc = doc.modify();
+              mutableDoc.set(property, coerced);
+              mutableDoc.save();
+              ((ResultInternal) result).setProperty(variable, mutableDoc);
+            }
+          }
           break;
         }
         case REPLACE_MAP: {
