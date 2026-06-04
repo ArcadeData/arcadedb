@@ -1104,7 +1104,8 @@ public class MergeStep extends AbstractExecutionStep {
       return b == null;
     if (a.equals(b))
       return true;
-    // Numeric type-safe comparison: Integer(1) should equal Long(1)
+    // Numeric type-safe comparison: Integer(1) equals Long(1). Float vs Double may report unequal
+    // after widening (0.1f != 0.1d): conservative on purpose, the only cost is a redundant write.
     if (a instanceof Number && b instanceof Number)
       return ((Number) a).longValue() == ((Number) b).longValue()
           && Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue()) == 0;
@@ -1270,8 +1271,7 @@ public class MergeStep extends AbstractExecutionStep {
           final String property = item.getProperty();
           final Object value = evaluator.evaluate(item.getValueExpression(), result, context);
           if (value == null) {
-            // Removing an absent property is a no-op: skip the write so the
-            // record version is not bumped (see equality skip below).
+            // Removing an absent property is a no-op: skip to avoid bumping the MVCC version.
             if (doc.has(property)) {
               final MutableDocument mutableDoc = doc.modify();
               mutableDoc.remove(property);
@@ -1280,14 +1280,8 @@ public class MergeStep extends AbstractExecutionStep {
             }
           } else {
             final Object coerced = TemporalUtil.toCoreJavaType(value);
-            // Skip the write entirely when the stored value already equals the
-            // new one. Writing identical values back still marks the record
-            // dirty and bumps its MVCC version on save(), which makes every
-            // concurrent transaction that read the same record fail with
-            // ConcurrentModificationException. This is the dominant source of
-            // retry storms for ON MATCH SET on shared vertices: the new value
-            // typically never changes for an already-matched record, so the
-            // MERGE can stay a read-only operation for it.
+            // Skip write when value is unchanged to avoid a needless MVCC version bump (which would
+            // make concurrent readers of this record fail with ConcurrentModificationException).
             if (!valuesEqual(doc.get(property), coerced)) {
               final MutableDocument mutableDoc = doc.modify();
               mutableDoc.set(property, coerced);

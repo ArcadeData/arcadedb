@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -242,11 +244,7 @@ public class OpenCypherMergeActionsTest {
     assertThat((Boolean) edge.get("promoted")).isTrue();
   }
 
-  /**
-   * ON MATCH SET with values identical to the stored ones must not rewrite the
-   * record. Re-writing the same values keeps the matched vertex unchanged but
-   * is otherwise a no-op for callers.
-   */
+  /** ON MATCH SET with values identical to the stored ones still returns the matched values. */
   @Test
   void mergeOnMatchSetWithUnchangedValuesKeepsValues() {
     database.command("opencypher", "CREATE (n:Person {name: 'Kim', bank: 'ACME', branch: 'HQ'})");
@@ -263,10 +261,7 @@ public class OpenCypherMergeActionsTest {
     assertThat(person.get("branch")).isEqualTo("HQ");
   }
 
-  /**
-   * The equality skip must not suppress genuine updates. When a value actually
-   * changes, ON MATCH SET still writes it.
-   */
+  /** The equality skip must not suppress genuine updates: a changed value is still written. */
   @Test
   void mergeOnMatchSetWithChangedValueStillWrites() {
     database.command("opencypher", "CREATE (n:Person {name: 'Leo', counter: 1})");
@@ -286,14 +281,7 @@ public class OpenCypherMergeActionsTest {
     assertThat(((Number) verify.next().<Number>getProperty("c")).intValue()).isEqualTo(2);
   }
 
-  /**
-   * Regression: ON MATCH SET that writes back identical values bumps the
-   * record's MVCC version on every match, so concurrent transactions that
-   * read the same shared vertex fail with ConcurrentModificationException and
-   * have to retry. With the equality skip the MERGE becomes read-only for the
-   * matched vertex, so two transactions that both only re-assert the existing
-   * values can commit without conflicting.
-   */
+  /** Regression: re-asserting unchanged values in ON MATCH SET must not bump the MVCC version, so two concurrent MERGEs of the same shared vertex commit without ConcurrentModificationException. */
   @Test
   void mergeOnMatchSetWithUnchangedValuesDoesNotConflictConcurrently() throws Exception {
     // Pre-create the shared vertex both transactions will MERGE-match.
@@ -311,10 +299,11 @@ public class OpenCypherMergeActionsTest {
         database.command("opencypher",
             "MERGE (n:Person {name: 'Shared'}) ON MATCH SET n.bank = 'ACME', n.branch = 'HQ' RETURN n").close();
         // Ensure both transactions have matched before either commits, so a
-        // write by one would invalidate the version the other read.
-        bothMatched.await();
+        // write by one would invalidate the version the other read. Bounded wait so a
+        // worker that died before reaching the barrier can't hang the other indefinitely.
+        bothMatched.await(15, TimeUnit.SECONDS);
         database.commit();
-      } catch (final com.arcadedb.exception.ConcurrentModificationException e) {
+      } catch (final ConcurrentModificationException e) {
         conflicts.incrementAndGet();
         if (database.isTransactionActive())
           database.rollback();
@@ -334,5 +323,17 @@ public class OpenCypherMergeActionsTest {
 
     assertThat(unexpected.get()).isNull();
     assertThat(conflicts.get()).isZero();
+  }
+
+  /** ON MATCH SET of an absent property to null is a no-op: the property stays absent. */
+  @Test
+  void mergeOnMatchSetNullOnAbsentPropertyIsNoOp() {
+    database.command("opencypher", "CREATE (n:Person {name: 'Kim'})");
+
+    database.command("opencypher",
+        "MERGE (n:Person {name: 'Kim'}) ON MATCH SET n.bank = null RETURN n").close();
+
+    final ResultSet rs = database.query("opencypher", "MATCH (n:Person {name: 'Kim'}) RETURN n.bank AS b");
+    assertThat(rs.next().<Object>getProperty("b")).isNull();
   }
 }
