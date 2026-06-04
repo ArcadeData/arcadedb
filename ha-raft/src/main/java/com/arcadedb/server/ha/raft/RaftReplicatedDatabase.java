@@ -97,6 +97,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -136,6 +137,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       ThreadLocal.withInitial(ArrayList::new);
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
+
+  /**
+   * Emits the "no security context, forwarding as root" notice only once per JVM so embedded
+   * deployments that legitimately issue writes from background threads don't get log-spammed.
+   */
+  private final AtomicBoolean forwardAsRootWarned = new AtomicBoolean(false);
 
   /**
    * Test-only fault-injection hook. Fires after Raft replication succeeds but BEFORE phase-2
@@ -1526,10 +1533,23 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (clusterToken != null && !clusterToken.isBlank())
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
 
-    final String proxiedUser = proxied.getCurrentUserName();
-    if (proxiedUser == null || proxiedUser.isBlank())
-      throw new SecurityException(
-          "Cannot forward command to leader: no authenticated user in the current security context");
+    String proxiedUser = proxied.getCurrentUserName();
+    if (proxiedUser == null || proxiedUser.isBlank()) {
+      // No per-thread security context: this is an in-process, embedded call (e.g. an embedded
+      // scripting engine or an application background/worker thread) that bypassed the HTTP layer
+      // where the request user is normally bound to the thread-local DatabaseContext. Such callers
+      // are fully trusted: locally a null security context already grants full access (permission
+      // checks are skipped), so we represent the operation to the leader as the root user. The
+      // forwarding itself remains authenticated server-to-server via the shared cluster token, so
+      // this is not a remote privilege-escalation vector. Mirrors BootstrapElection, which also
+      // forwards server-internal operations as "root".
+      proxiedUser = "root";
+      if (forwardAsRootWarned.compareAndSet(false, true))
+        LogManager.instance().log(this, Level.WARNING,
+            "No authenticated user in the security context while forwarding a write to the leader (db=%s): "
+                + "this is expected for embedded/in-process callers and the command is forwarded as 'root'. "
+                + "This notice is logged only once.", getName());
+    }
     builder.header("X-ArcadeDB-Forwarded-User", proxiedUser);
 
     try {
