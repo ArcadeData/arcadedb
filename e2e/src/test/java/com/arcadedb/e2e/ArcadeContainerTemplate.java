@@ -41,7 +41,7 @@ public abstract class ArcadeContainerTemplate {
             -Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz}
             -Darcadedb.server.plugins=PostgresProtocolPlugin,GremlinServerPlugin,GrpcServerPlugin,BoltProtocolPlugin,PrometheusMetricsPlugin
             """)
-        .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
+        .waitingFor(Wait.forHttp("/api/v1/health").forPort(2480).forStatusCode(204));
     ARCADE.start();
   }
 
