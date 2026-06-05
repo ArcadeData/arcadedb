@@ -79,6 +79,9 @@ public class CypherStatementCache {
   private CypherStatement parse(final String query) throws CommandParsingException {
     try {
       return parser.parse(query);
+    } catch (final CommandParsingException e) {
+      // already a clear, actionable parsing error (e.g. deprecated-syntax hints) - keep it at top level
+      throw e;
     } catch (final Exception e) {
       throw new CommandParsingException("Error parsing OpenCypher query: " + query, e);
     }
