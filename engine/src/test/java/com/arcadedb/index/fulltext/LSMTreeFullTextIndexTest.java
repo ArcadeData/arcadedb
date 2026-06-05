@@ -189,8 +189,25 @@ class LSMTreeFullTextIndexTest extends TestHelper {
       database.command("sql", "CREATE PROPERTY doc2.str STRING");
       database.command("sql", "CREATE INDEX ON doc2 (str) FULL_TEXT null_strategy skip");
       database.command("sql", "INSERT INTO doc2 (str) VALUES ('a'), ('b'), (null)");
-    });
 
+      // ISSUE #4475: the FULL_TEXT index must report the actual NULL_STRATEGY (SKIP), not ERROR
+      final TypeIndex index = (TypeIndex) database.getSchema().getIndexByName("doc2[str]");
+      assertThat(index.getNullStrategy()).isEqualTo(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP);
+
+      // schema:indexes introspection must also expose SKIP
+      final ResultSet rs = database.query("sql",
+          "SELECT name, nullStrategy FROM schema:indexes WHERE name = 'doc2[str]'");
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(rs.next().getProperty("nullStrategy").toString()).isEqualTo("SKIP");
+
+      // a subtype created after the parent FULL_TEXT index must inherit NULL_STRATEGY SKIP on every bucket index
+      database.command("sql", "CREATE DOCUMENT TYPE doc3 EXTENDS doc2");
+      for (final Index bucketIndex : ((TypeIndex) database.getSchema().getIndexByName("doc2[str]")).getIndexesOnBuckets())
+        assertThat(bucketIndex.getNullStrategy()).isEqualTo(LSMTreeIndexAbstract.NULL_STRATEGY.SKIP);
+
+      // and the inherited bucket index must accept the null value instead of failing the commit
+      database.command("sql", "INSERT INTO doc3 (str) VALUES (null)");
+    });
   }
 
   /**

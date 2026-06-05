@@ -492,13 +492,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   @Override
   public LSMTreeIndexAbstract.NULL_STRATEGY getNullStrategy() {
-    return LSMTreeIndexAbstract.NULL_STRATEGY.ERROR;
+    return underlyingIndex.getNullStrategy();
   }
 
   @Override
   public void setNullStrategy(final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy) {
-    if (nullStrategy != LSMTreeIndexAbstract.NULL_STRATEGY.ERROR)
-      throw new IllegalArgumentException("Unsupported null strategy '" + nullStrategy + "'");
+    underlyingIndex.setNullStrategy(nullStrategy);
   }
 
   @Override
