@@ -84,6 +84,13 @@ public class SaveElementStep extends AbstractExecutionStep {
 
           final MutableDocument modifiableDoc = doc.modify();
 
+          // On UPDATE (createAlways=false) skip the save - and the resulting MVCC version bump - when an
+          // existing record was not actually modified (e.g. UPDATE ... SET x = <same value>). Otherwise a
+          // clean record gets enrolled in the transaction and concurrent updaters collide with
+          // ConcurrentModificationException. INSERT/CREATE paths (createAlways=true) always persist.
+          if (!createAlways && modifiableDoc.getIdentity() != null && !modifiableDoc.isDirty())
+            return result;
+
           if (bucket == null)
             modifiableDoc.save();
           else
