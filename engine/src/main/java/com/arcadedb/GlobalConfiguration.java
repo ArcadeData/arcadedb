@@ -545,6 +545,10 @@ public enum GlobalConfiguration {
 
   SERVER_METRICS_LOGGING("arcadedb.serverMetrics.logging", SCOPE.SERVER, "True to enable metrics logging", Boolean.class, false),
 
+  SERVER_READINESS_REQUIRES_HA("arcadedb.server.readinessRequiresHA", SCOPE.SERVER,
+      "When true and HA is active, /api/v1/ready also requires the node to have joined the Raft group and be caught up. Default false preserves current readiness behavior.",
+      Boolean.class, false),
+
   //paths
   SERVER_ROOT_PATH("arcadedb.server.rootPath", SCOPE.SERVER,
       "Root path in the file system where the server is looking for files. By default is the current directory", String.class,

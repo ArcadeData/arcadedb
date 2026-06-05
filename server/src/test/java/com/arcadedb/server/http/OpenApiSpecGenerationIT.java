@@ -158,6 +158,7 @@ class OpenApiSpecGenerationIT extends BaseGraphServerTest {
     Set<String> expectedGetEndpoints = Set.of(
         "/api/v1/server",
         "/api/v1/ready",
+        "/api/v1/health",
         "/api/v1/databases",
         "/api/v1/exists/{database}",
         "/api/v1/query/{database}/{language}/{command}"

@@ -35,6 +35,7 @@ import com.arcadedb.server.http.handler.GetGroupsHandler;
 import com.arcadedb.server.http.handler.GetUsersHandler;
 import com.arcadedb.server.http.handler.GetDynamicContentHandler;
 import com.arcadedb.server.http.handler.GetExistsDatabaseHandler;
+import com.arcadedb.server.http.handler.GetHealthHandler;
 import com.arcadedb.server.http.handler.GetOpenApiHandler;
 import com.arcadedb.server.http.handler.GetQueryHandler;
 import com.arcadedb.server.http.handler.GetReadyHandler;
@@ -230,6 +231,7 @@ public class HttpServer implements ServerPlugin {
         .get("/server", new GetServerHandler(this))
         .post("/server", new PostServerCommandHandler(this))
         .get("/ready", new GetReadyHandler(this))
+        .get("/health", new GetHealthHandler(this))
         .get("/openapi.json", new GetOpenApiHandler(this))
         .get("/docs", new GetApiDocsHandler(this))
         .get("/server/api-tokens", new GetApiTokensHandler(this))
