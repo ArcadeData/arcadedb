@@ -389,7 +389,7 @@ public abstract class ContainersTestTemplate {
             """, name))
         .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms2G -Xmx2G")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(3L * 1024 * 1024 * 1024))
-        .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
+        .waitingFor(Wait.forHttp("/api/v1/health").forPort(2480).forStatusCode(204));
     containers.add(container);
     return container;
   }
@@ -428,14 +428,14 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.backup.enabled=false
             -Darcadedb.typeDefaultBuckets=10
             -Darcadedb.ha.enabled=true
-            -Darcadedb.ha.implementation=raft
             -Darcadedb.ha.quorum=%s
+            -Darcadedb.server.readinessRequiresHA=true
             -Darcadedb.ha.raft.port=2434
             -Darcadedb.ha.serverList=%s
             """, name, quorum, serverList))
         .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms2G -Xmx2G")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(3L * 1024 * 1024 * 1024))
-        .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
+        .waitingFor(Wait.forHttp("/api/v1/health").forPort(2480).forStatusCode(204));
     containers.add(container);
     return container;
   }
@@ -472,14 +472,14 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.backup.enabled=false
             -Darcadedb.typeDefaultBuckets=10
             -Darcadedb.ha.enabled=true
-            -Darcadedb.ha.implementation=raft
+            -Darcadedb.server.readinessRequiresHA=true
             -Darcadedb.ha.quorum=%s
             -Darcadedb.ha.raft.port=2434
             -Darcadedb.ha.serverList=%s
             """, name, quorum, serverList))
         .withEnv("ARCADEDB_OPTS_MEMORY", "-Xms2G -Xmx2G")
         .withCreateContainerCmdModifier(cmd -> cmd.getHostConfig().withMemory(3L * 1024 * 1024 * 1024))
-        .waitingFor(Wait.forHttp("/api/v1/ready").forPort(2480).forStatusCode(204));
+        .waitingFor(Wait.forHttp("/api/v1/health").forPort(2480).forStatusCode(204));
     containers.add(container);
     return container;
   }

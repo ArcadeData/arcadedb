@@ -141,6 +141,7 @@ public class OpenApiSpecGenerator {
     // Server endpoints
     paths.addPathItem("/api/v1/server", createServerPath());
     paths.addPathItem("/api/v1/ready", createReadyPath());
+    paths.addPathItem("/api/v1/health", createHealthPath());
     paths.addPathItem("/api/v1/databases", createDatabasesPath());
 
     // Database endpoints
@@ -214,6 +215,32 @@ public class OpenApiSpecGenerator {
     pathItem.setGet(getOp);
 
     return pathItem;
+  }
+
+  private PathItem createHealthPath() {
+    final PathItem pathItem = new PathItem();
+
+    final Operation getOp = new Operation();
+    getOp.setSummary("Check server liveness");
+    getOp.setDescription("Liveness probe: returns 204 when the server process and HTTP layer are up. Performs no database I/O and requires no authentication.");
+    getOp.setOperationId("checkHealth");
+    getOp.addTagsItem("Health");
+    getOp.setResponses(createHealthResponses());
+    pathItem.setGet(getOp);
+
+    return pathItem;
+  }
+
+  private ApiResponses createHealthResponses() {
+    final ApiResponses responses = new ApiResponses();
+
+    // Liveness only ever responds with a 2xx when reachable; it never returns 503 (unlike readiness).
+    final ApiResponse liveResponse = new ApiResponse();
+    liveResponse.setDescription("Server process and HTTP layer are up");
+    responses.addApiResponse("200", liveResponse);
+    responses.addApiResponse("204", liveResponse);
+
+    return responses;
   }
 
   private PathItem createDatabasesPath() {
