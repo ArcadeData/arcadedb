@@ -472,7 +472,6 @@ public abstract class ContainersTestTemplate {
             -Darcadedb.backup.enabled=false
             -Darcadedb.typeDefaultBuckets=10
             -Darcadedb.ha.enabled=true
-            -Darcadedb.ha.implementation=raft
             -Darcadedb.server.readinessRequiresHA=true
             -Darcadedb.ha.quorum=%s
             -Darcadedb.ha.raft.port=2434
