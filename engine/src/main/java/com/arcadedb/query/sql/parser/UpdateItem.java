@@ -127,7 +127,11 @@ public class UpdateItem extends SimpleNode {
     case OPERATOR_EQ:
       Object newValue = extractFromResult(rightValue);
       newValue = convertToPropertyType(doc, attrName, newValue);
-      doc.setProperty(attrName.getStringValue(), newValue);
+      final String propName = attrName.getStringValue();
+      // Skip the write when the value is unchanged to avoid a needless MVCC version bump (which would
+      // make concurrent updaters of this record fail with ConcurrentModificationException).
+      if (!valuesEqual(doc.getProperty(propName), newValue))
+        doc.setProperty(propName, newValue);
       break;
     case OPERATOR_MINUSASSIGN:
       doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.MINUS));
@@ -142,6 +146,19 @@ public class UpdateItem extends SimpleNode {
       doc.setProperty(attrName.getStringValue(), calculateNewValue(doc, context, MathExpression.Operator.STAR));
       break;
     }
+  }
+
+  private static boolean valuesEqual(final Object a, final Object b) {
+    if (a == null)
+      return b == null;
+    if (a.equals(b))
+      return true;
+    // Numeric type-safe comparison: Integer(1) equals Long(1). Float vs Double may report unequal
+    // after widening (0.1f != 0.1d): conservative on purpose, the only cost is a redundant write.
+    if (a instanceof Number && b instanceof Number)
+      return ((Number) a).longValue() == ((Number) b).longValue()
+          && Double.compare(((Number) a).doubleValue(), ((Number) b).doubleValue()) == 0;
+    return false;
   }
 
   private Object convertToPropertyType(final ResultInternal res, final Identifier attrName, Object newValue) {
