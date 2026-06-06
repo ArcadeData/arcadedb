@@ -26,8 +26,6 @@ import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.antlr.v4.runtime.Token;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Set;
 import java.util.regex.Pattern;
 
@@ -50,19 +48,14 @@ public class Cypher25AntlrParser {
       throw new CommandParsingException("Query cannot be empty");
 
     try {
-      // Reject deprecated/legacy Cypher syntax with a clear, actionable message before the generic
-      // ANTLR parse (which would otherwise produce a cryptic "Unexpected input" error). The catch below
-      // re-throws CommandParsingException as-is so the hint surfaces at top level, while any unexpected
-      // exception still gets the wrapping context (issue #4141).
-      checkDeprecatedSyntax(query);
-
-      // Create lexer
       final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(query));
-
-      // Create token stream
       final CommonTokenStream tokens = new CommonTokenStream(lexer);
 
-      // Create parser
+      // Reject deprecated/legacy Cypher syntax with an actionable hint before the generic ANTLR parse,
+      // which would otherwise produce a cryptic "Unexpected input" error (issue #4141). Reuses this same
+      // token stream, so no second lex. The catch below re-throws CommandParsingException as-is.
+      checkDeprecatedSyntax(query, tokens);
+
       final Cypher25Parser parser = new Cypher25Parser(tokens);
 
       // Custom error handling
@@ -110,83 +103,60 @@ public class Cypher25AntlrParser {
     }
   }
 
-  // Keywords that legitimately introduce a brace-block expression ('EXISTS { ... }', 'COUNT { ... }',
-  // 'COLLECT { ... }', 'CALL { ... }'), so a following '{' must not be mistaken for a legacy parameter.
-  // Trade-off: a single-name group right after one of these (e.g. 'COUNT {name}') is therefore NOT
-  // flagged as a legacy parameter. That shape is invalid in those contexts anyway, so the false-negative
-  // is harmless - it just yields the generic parser error instead of the legacy-parameter hint.
-  private static final Set<String> BRACE_BLOCK_KEYWORDS = Set.of("EXISTS", "COUNT", "COLLECT", "CALL");
-
-  // A legacy named parameter ('{name}'). Matched on token TEXT rather than type because Cypher 25 lexes
-  // many plain words (NAME, TYPE, ...) as keyword tokens that are still legal as a parameter name. The
-  // required leading letter/underscore also excludes purely numeric braces, so quantified-path-pattern
-  // quantifiers ('{n}' / '{n,m}') are never mistaken for legacy positional parameters.
+  // A legacy named parameter name (the required leading letter/underscore also excludes purely numeric
+  // braces, so quantified-path-pattern quantifiers '{n}'/'{n,m}' are never mistaken for one).
   private static final Pattern PARAM_NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
 
+  // Operator/punctuation tokens after which a '{...}' begins a value, never a map projection (which must
+  // attach to a variable). Restricting the legacy-'{name}' check to these positions guarantees we never
+  // flag a real map projection - including 'type{name}', where the projected-on variable is a keyword
+  // token (NAME, TYPE, ... are legal variable names) and so is indistinguishable from a clause keyword.
+  // The cost is only a false negative (a legacy param after a keyword like IN/RETURN yields the generic
+  // parser error instead of the hint), which is harmless.
+  private static final Set<Integer> VALUE_PREFIX_TOKENS = Set.of(
+      Cypher25Lexer.EQ, Cypher25Lexer.NEQ, Cypher25Lexer.LT, Cypher25Lexer.GT, Cypher25Lexer.LE, Cypher25Lexer.GE,
+      Cypher25Lexer.PLUS, Cypher25Lexer.MINUS, Cypher25Lexer.TIMES, Cypher25Lexer.DIVIDE, Cypher25Lexer.POW,
+      Cypher25Lexer.COMMA, Cypher25Lexer.LPAREN, Cypher25Lexer.LBRACKET);
+
   /**
-   * Detects deprecated/legacy Cypher syntax removed under ISO/IEC 39075 (GQL) / Cypher 25 and throws a
-   * {@link CommandParsingException} pointing at the supported replacement. Scans the lexer token stream
-   * (default channel only) so matches inside string literals or comments are never flagged.
-   * <p>
-   * Detected:
-   * <ul>
-   *   <li>{@code PERIODIC COMMIT} -&gt; use {@code CALL { ... } IN TRANSACTIONS}</li>
-   *   <li>legacy {@code {param}} parameters -&gt; use {@code $param}</li>
-   * </ul>
+   * Rejects deprecated syntax removed under ISO/IEC 39075 (GQL) / Cypher 25 with a hint at the supported
+   * replacement: {@code PERIODIC COMMIT} (use {@code CALL { ... } IN TRANSACTIONS}) and legacy
+   * {@code {param}} (use {@code $param}). Scans {@code tokens} on the default channel, so occurrences
+   * inside string literals or comments are never matched.
    */
-  private static void checkDeprecatedSyntax(final String query) {
-    // Cheap, allocation-free pre-filter: both deprecated forms must contain a '{' (legacy '{param}') or
-    // the word PERIODIC ('PERIODIC COMMIT'). Skipping the extra lex pass for everything else keeps GC
-    // pressure off the parse hot path, since the vast majority of queries hit neither.
+  private static void checkDeprecatedSyntax(final String query, final CommonTokenStream tokens) {
+    // Allocation-free pre-filter: neither deprecated form is possible without a '{' or the word PERIODIC,
+    // so the token walk is skipped for the vast majority of queries.
     if (query.indexOf('{') < 0 && !containsIgnoreCase(query, "PERIODIC"))
       return;
 
-    final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(query));
-    lexer.removeErrorListeners(); // the authoritative lex/parse pass runs later; tolerate lex issues here
+    tokens.fill(); // the parser reuses this same fully-buffered stream
 
-    final CommonTokenStream stream = new CommonTokenStream(lexer);
-    stream.fill();
+    // Sliding window of the three most recent default-channel tokens: t1 is the immediate predecessor of
+    // the current token, t2 the one before it, t3 the one before that. No intermediate list is allocated.
+    Token t3 = null, t2 = null, t1 = null;
+    for (final Token tok : tokens.getTokens()) {
+      if (tok.getChannel() != Token.DEFAULT_CHANNEL || tok.getType() == Token.EOF)
+        continue;
 
-    final List<Token> tokens = new ArrayList<>();
-    for (final Token t : stream.getTokens())
-      if (t.getChannel() == Token.DEFAULT_CHANNEL && t.getType() != Token.EOF)
-        tokens.add(t);
-
-    for (int i = 0; i < tokens.size(); i++) {
-      final Token t = tokens.get(i);
-
-      // PERIODIC COMMIT (two consecutive word tokens; the keywords are not in the grammar). Text match
-      // naturally excludes string literals, whose token text retains the surrounding quotes.
-      if ("PERIODIC".equalsIgnoreCase(t.getText())
-          && i + 1 < tokens.size() && "COMMIT".equalsIgnoreCase(tokens.get(i + 1).getText()))
+      if (t1 != null && "PERIODIC".equalsIgnoreCase(t1.getText()) && "COMMIT".equalsIgnoreCase(tok.getText()))
         throw new CommandParsingException(
             "Deprecated syntax: 'PERIODIC COMMIT' is no longer supported. Use 'CALL { ... } IN TRANSACTIONS [OF n ROWS]' instead");
 
-      // Legacy parameter '{name}': exactly one name token between braces, that is neither a map projection
-      // ('var {name}') nor a brace-block expression ('EXISTS/COUNT/COLLECT/CALL { ... }'). A map literal
-      // would require a ':' inside, so it can never match this single-token shape.
-      if (t.getType() == Cypher25Lexer.LCURLY
-          && i + 2 < tokens.size() && tokens.get(i + 2).getType() == Cypher25Lexer.RCURLY
-          && PARAM_NAME.matcher(tokens.get(i + 1).getText()).matches()) {
-        final Token prev = i > 0 ? tokens.get(i - 1) : null;
-        final boolean mapProjection = prev != null && isNameToken(prev);
-        final boolean braceBlock = prev != null && BRACE_BLOCK_KEYWORDS.contains(prev.getText().toUpperCase());
-        if (!mapProjection && !braceBlock) {
-          final String name = tokens.get(i + 1).getText();
-          throw new CommandParsingException(
-              "Deprecated syntax: legacy parameter '{" + name + "}' is no longer supported. Use '$" + name + "' instead");
-        }
+      // legacy '{name}': t2='{', t1=name, tok='}', preceded (t3) by a value operator/punctuation
+      if (tok.getType() == Cypher25Lexer.RCURLY
+          && t2 != null && t2.getType() == Cypher25Lexer.LCURLY
+          && t1 != null && PARAM_NAME.matcher(t1.getText()).matches()
+          && t3 != null && VALUE_PREFIX_TOKENS.contains(t3.getType())) {
+        final String name = t1.getText();
+        throw new CommandParsingException(
+            "Deprecated syntax: legacy parameter '{" + name + "}' is no longer supported. Use '$" + name + "' instead");
       }
-    }
-  }
 
-  // A map projection target ('var {...}') is a user-defined variable, which lexes as one of these name
-  // token types (not an arbitrary keyword), so this reliably tells a projection apart from a clause
-  // keyword or operator preceding a legacy parameter.
-  private static boolean isNameToken(final Token t) {
-    return t.getType() == Cypher25Lexer.IDENTIFIER
-        || t.getType() == Cypher25Lexer.EXTENDED_IDENTIFIER
-        || t.getType() == Cypher25Lexer.ESCAPED_SYMBOLIC_NAME;
+      t3 = t2;
+      t2 = t1;
+      t1 = tok;
+    }
   }
 
   // Allocation-free case-insensitive substring search (avoids String.toUpperCase() on the parse hot path).

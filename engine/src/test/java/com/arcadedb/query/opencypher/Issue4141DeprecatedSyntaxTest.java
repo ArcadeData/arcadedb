@@ -18,19 +18,19 @@
  */
 package com.arcadedb.query.opencypher;
 
-import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
-
-import java.util.Map;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.query.sql.executor.ResultSet;
 
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseFactory;
-import com.arcadedb.exception.CommandParsingException;
-import com.arcadedb.query.sql.executor.ResultSet;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Issue #4141 (ISO GQL / Cypher 25 cleanup): deprecated/legacy syntax must be rejected with a clear,
@@ -142,6 +142,28 @@ public class Issue4141DeprecatedSyntaxTest {
         "MATCH (p:Person) RETURN p.name AS name, COUNT { (p) } AS c ORDER BY name")) {
       assertThat(rs.hasNext()).isTrue();
       assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(1L);
+    }
+  }
+
+  @Test
+  void mapProjectionOnKeywordNamedVariableIsNotMistakenForLegacyParameter() {
+    // 'type' is a keyword token but a legal variable name, so 'type{name}' is a map projection whose '{'
+    // is preceded by the variable (not a value operator) and must not be flagged as a legacy parameter.
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (type:Person) WHERE type.name = 'Alice' WITH type, type.name AS name RETURN type{name} AS proj")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Map<String, Object> proj = rs.next().getProperty("proj");
+      assertThat(proj).containsEntry("name", "Alice");
+    }
+  }
+
+  @Test
+  void periodicCommitInsideStringLiteralIsNotFlagged() {
+    // The token scan runs on the default channel, so 'PERIODIC COMMIT' inside a string literal (a single
+    // string token) is not two keyword tokens and must not be flagged.
+    try (final ResultSet rs = database.query("opencypher", "RETURN 'PERIODIC COMMIT' AS s")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat((String) rs.next().getProperty("s")).isEqualTo("PERIODIC COMMIT");
     }
   }
 }
