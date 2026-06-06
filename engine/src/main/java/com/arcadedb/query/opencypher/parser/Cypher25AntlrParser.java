@@ -100,6 +100,10 @@ public class Cypher25AntlrParser {
 
       return statement;
 
+    } catch (final CommandParsingException e) {
+      // semantic-validation and explicit parse errors already carry a clear, actionable message
+      // (e.g. AmbiguousAggregationExpression, UndefinedVariable, "Unexpected input ...") - surface it
+      throw e;
     } catch (final Exception e) {
       throw new CommandParsingException("Failed to parse Cypher query: " + query, e);
     }
