@@ -47,7 +47,10 @@ public class Issue4141DeprecatedSyntaxTest {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/testIssue4141DeprecatedSyntax").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/testIssue4141DeprecatedSyntax");
+    if (factory.exists())
+      factory.open().drop(); // defend against a leftover db from a previously interrupted run
+    database = factory.create();
     database.getSchema().createVertexType("Person");
     database.transaction(() -> {
       database.command("opencypher", "CREATE (p:Person {name: 'Alice', age: 30})");
@@ -120,6 +123,25 @@ public class Issue4141DeprecatedSyntaxTest {
       assertThat(rs.hasNext()).isTrue();
       final Map<String, Object> m = rs.next().getProperty("m");
       assertThat(m).containsEntry("name", "Alice");
+    }
+  }
+
+  @Test
+  void existsBraceBlockIsNotMistakenForLegacyParameter() {
+    // 'EXISTS { ... }' is a brace-block expression; the following '{' must not trigger the legacy-param check.
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (p:Person) WHERE EXISTS { (p) } RETURN p.name AS name ORDER BY name")) {
+      assertThat(rs.hasNext()).isTrue();
+    }
+  }
+
+  @Test
+  void countBraceBlockIsNotMistakenForLegacyParameter() {
+    // 'COUNT { ... }' is a brace-block expression; the following '{' must not trigger the legacy-param check.
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (p:Person) RETURN p.name AS name, COUNT { (p) } AS c ORDER BY name")) {
+      assertThat(rs.hasNext()).isTrue();
+      assertThat(((Number) rs.next().getProperty("c")).longValue()).isEqualTo(1L);
     }
   }
 }

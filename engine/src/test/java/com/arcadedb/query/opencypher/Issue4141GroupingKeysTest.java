@@ -46,7 +46,10 @@ public class Issue4141GroupingKeysTest {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/testIssue4141GroupingKeys").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/testIssue4141GroupingKeys");
+    if (factory.exists())
+      factory.open().drop(); // defend against a leftover db from a previously interrupted run
+    database = factory.create();
     database.getSchema().createVertexType("Person");
     database.transaction(() -> {
       database.command("opencypher", "CREATE (p:Person {name: 'Alice', dept: 'eng', team: 'core', age: 30})");

@@ -49,12 +49,13 @@ public class Cypher25AntlrParser {
     if (query == null || query.trim().isEmpty())
       throw new CommandParsingException("Query cannot be empty");
 
-    // Reject deprecated/legacy Cypher syntax with a clear, actionable message before the generic
-    // ANTLR parse (which would otherwise produce a cryptic "Unexpected input" error). Done on its
-    // own token pass so the message is not swallowed by the wrapping catch below (issue #4141).
-    checkDeprecatedSyntax(query);
-
     try {
+      // Reject deprecated/legacy Cypher syntax with a clear, actionable message before the generic
+      // ANTLR parse (which would otherwise produce a cryptic "Unexpected input" error). The catch below
+      // re-throws CommandParsingException as-is so the hint surfaces at top level, while any unexpected
+      // exception still gets the wrapping context (issue #4141).
+      checkDeprecatedSyntax(query);
+
       // Create lexer
       final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(query));
 
@@ -111,12 +112,15 @@ public class Cypher25AntlrParser {
 
   // Keywords that legitimately introduce a brace-block expression ('EXISTS { ... }', 'COUNT { ... }',
   // 'COLLECT { ... }', 'CALL { ... }'), so a following '{' must not be mistaken for a legacy parameter.
+  // Trade-off: a single-name group right after one of these (e.g. 'COUNT {name}') is therefore NOT
+  // flagged as a legacy parameter. That shape is invalid in those contexts anyway, so the false-negative
+  // is harmless - it just yields the generic parser error instead of the legacy-parameter hint.
   private static final Set<String> BRACE_BLOCK_KEYWORDS = Set.of("EXISTS", "COUNT", "COLLECT", "CALL");
 
   // A legacy named parameter ('{name}'). Matched on token TEXT rather than type because Cypher 25 lexes
-  // many plain words (NAME, TYPE, ...) as keyword tokens that are still legal as a parameter name.
-  // Purely numeric braces are intentionally excluded: '{n}' / '{n,m}' are quantified-path-pattern
-  // quantifiers, not legacy positional parameters.
+  // many plain words (NAME, TYPE, ...) as keyword tokens that are still legal as a parameter name. The
+  // required leading letter/underscore also excludes purely numeric braces, so quantified-path-pattern
+  // quantifiers ('{n}' / '{n,m}') are never mistaken for legacy positional parameters.
   private static final Pattern PARAM_NAME = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
 
   /**
@@ -131,6 +135,12 @@ public class Cypher25AntlrParser {
    * </ul>
    */
   private static void checkDeprecatedSyntax(final String query) {
+    // Cheap, allocation-free pre-filter: both deprecated forms must contain a '{' (legacy '{param}') or
+    // the word PERIODIC ('PERIODIC COMMIT'). Skipping the extra lex pass for everything else keeps GC
+    // pressure off the parse hot path, since the vast majority of queries hit neither.
+    if (query.indexOf('{') < 0 && !containsIgnoreCase(query, "PERIODIC"))
+      return;
+
     final Cypher25Lexer lexer = new Cypher25Lexer(CharStreams.fromString(query));
     lexer.removeErrorListeners(); // the authoritative lex/parse pass runs later; tolerate lex issues here
 
@@ -177,5 +187,14 @@ public class Cypher25AntlrParser {
     return t.getType() == Cypher25Lexer.IDENTIFIER
         || t.getType() == Cypher25Lexer.EXTENDED_IDENTIFIER
         || t.getType() == Cypher25Lexer.ESCAPED_SYMBOLIC_NAME;
+  }
+
+  // Allocation-free case-insensitive substring search (avoids String.toUpperCase() on the parse hot path).
+  private static boolean containsIgnoreCase(final String s, final String sub) {
+    final int max = s.length() - sub.length();
+    for (int i = 0; i <= max; i++)
+      if (s.regionMatches(true, i, sub, 0, sub.length()))
+        return true;
+    return false;
   }
 }

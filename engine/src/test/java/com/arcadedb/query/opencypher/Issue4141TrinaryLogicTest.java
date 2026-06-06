@@ -54,7 +54,10 @@ public class Issue4141TrinaryLogicTest {
 
   @BeforeEach
   void setUp() {
-    database = new DatabaseFactory("./target/databases/testIssue4141TrinaryLogic").create();
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/testIssue4141TrinaryLogic");
+    if (factory.exists())
+      factory.open().drop(); // defend against a leftover db from a previously interrupted run
+    database = factory.create();
     database.getSchema().createVertexType("Person");
 
     database.transaction(() -> {
@@ -183,6 +186,8 @@ public class Issue4141TrinaryLogicTest {
   // Helpers
   // ----------------------------------------------------------------------------------------------
 
+  // Returns the matched 'name' values sorted, so callers can use order-sensitive containsExactly assertions
+  // without depending on row iteration order.
   private List<String> matchedNames(final String cypher) {
     final List<String> names = new ArrayList<>();
     try (final ResultSet rs = database.query("opencypher", cypher)) {
