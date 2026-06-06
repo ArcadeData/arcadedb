@@ -112,11 +112,12 @@ public class Cypher25AntlrParser {
   // flag a real map projection - including 'type{name}', where the projected-on variable is a keyword
   // token (NAME, TYPE, ... are legal variable names) and so is indistinguishable from a clause keyword.
   // The cost is only a false negative (a legacy param after a keyword like IN/RETURN yields the generic
-  // parser error instead of the hint), which is harmless.
+  // parser error instead of the hint), which is harmless. RBRACKET ('a[i]{p}') and COLON ('{k: {p}}')
+  // are included as value positions even though those shapes are otherwise invalid anyway.
   private static final Set<Integer> VALUE_PREFIX_TOKENS = Set.of(
       Cypher25Lexer.EQ, Cypher25Lexer.NEQ, Cypher25Lexer.LT, Cypher25Lexer.GT, Cypher25Lexer.LE, Cypher25Lexer.GE,
       Cypher25Lexer.PLUS, Cypher25Lexer.MINUS, Cypher25Lexer.TIMES, Cypher25Lexer.DIVIDE, Cypher25Lexer.POW,
-      Cypher25Lexer.COMMA, Cypher25Lexer.LPAREN, Cypher25Lexer.LBRACKET);
+      Cypher25Lexer.COMMA, Cypher25Lexer.LPAREN, Cypher25Lexer.LBRACKET, Cypher25Lexer.RBRACKET, Cypher25Lexer.COLON);
 
   /**
    * Rejects deprecated syntax removed under ISO/IEC 39075 (GQL) / Cypher 25 with a hint at the supported
