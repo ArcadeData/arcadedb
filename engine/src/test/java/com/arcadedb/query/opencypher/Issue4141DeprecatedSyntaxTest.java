@@ -94,6 +94,26 @@ public class Issue4141DeprecatedSyntaxTest {
         .hasMessageContaining("$name");
   }
 
+  @Test
+  void legacyParameterAfterMapMergeIsRejected() {
+    // 'SET n += {param}' - the map-merge operator '+=' is a value position.
+    assertThatThrownBy(() ->
+        database.command("opencypher", "MATCH (p:Person) SET p += {props} RETURN p"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("{props}")
+        .hasMessageContaining("$props");
+  }
+
+  @Test
+  void legacyParameterAfterInequalityIsRejected() {
+    // '!=' is the deprecated inequality operator but still a value position.
+    assertThatThrownBy(() ->
+        database.command("opencypher", "MATCH (p:Person) WHERE p.name != {name} RETURN p"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("{name}")
+        .hasMessageContaining("$name");
+  }
+
   // ---- Supported syntax keeps working (no false positives) ------------------------------------
 
   @Test

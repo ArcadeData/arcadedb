@@ -115,8 +115,9 @@ public class Cypher25AntlrParser {
   // parser error instead of the hint), which is harmless. RBRACKET ('a[i]{p}') and COLON ('{k: {p}}')
   // are included as value positions even though those shapes are otherwise invalid anyway.
   private static final Set<Integer> VALUE_PREFIX_TOKENS = Set.of(
-      Cypher25Lexer.EQ, Cypher25Lexer.NEQ, Cypher25Lexer.LT, Cypher25Lexer.GT, Cypher25Lexer.LE, Cypher25Lexer.GE,
-      Cypher25Lexer.PLUS, Cypher25Lexer.MINUS, Cypher25Lexer.TIMES, Cypher25Lexer.DIVIDE, Cypher25Lexer.POW,
+      Cypher25Lexer.EQ, Cypher25Lexer.NEQ, Cypher25Lexer.INVALID_NEQ, Cypher25Lexer.LT, Cypher25Lexer.GT,
+      Cypher25Lexer.LE, Cypher25Lexer.GE, Cypher25Lexer.PLUS, Cypher25Lexer.MINUS, Cypher25Lexer.TIMES,
+      Cypher25Lexer.DIVIDE, Cypher25Lexer.POW, Cypher25Lexer.PERCENT, Cypher25Lexer.PLUSEQUAL, Cypher25Lexer.DOUBLEBAR,
       Cypher25Lexer.COMMA, Cypher25Lexer.LPAREN, Cypher25Lexer.LBRACKET, Cypher25Lexer.RBRACKET, Cypher25Lexer.COLON);
 
   /**
