@@ -965,6 +965,9 @@ command
 // ISO/IEC 39075 (GQL) transaction control - issue #4141 section 2.
 // GQL standardizes only the bare statements; the optional ISOLATION clause is an ArcadeDB
 // extension (mirrors SQL 'BEGIN ISOLATION <level>') exposing the engine transaction isolation level.
+// GQL access-mode (READ ONLY / READ WRITE) is intentionally NOT parsed: ArcadeDB's begin() has no
+// read-only transaction mode, so accepting those tokens would be cosmetic and unenforced. Until then
+// 'START TRANSACTION READ ONLY' reports an actionable "Unexpected input 'READ'" parse error.
 transactionCommand
    : START TRANSACTION (ISOLATION symbolicNameString)?
    | COMMIT

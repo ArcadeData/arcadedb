@@ -50,14 +50,13 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
-import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
-import java.util.stream.Collectors;
+import java.util.StringJoiner;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -106,7 +105,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
           // Transaction control (START TRANSACTION/COMMIT/ROLLBACK) is a session-control operation that
           // reads/writes no data itself; the writes it wraps are gated by their own operation types. So it
           // must not be classified as ADMIN (that would lock it behind the MCP admin flag and stop a
-          // write-capable agent from committing its own writes).
+          // write-capable agent from committing its own writes). This permission axis is independent of
+          // isReadOnly()/HA routing (see CypherTransactionStatement.isReadOnly()), so keep this check ahead
+          // of the isReadOnly()/write-detection fallback below to avoid the write-set misclassification.
           if (statement instanceof CypherTransactionStatement)
             return CollectionUtils.singletonSet(OperationType.READ);
           if (statement instanceof CypherDDLStatement)
@@ -528,8 +529,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
         try {
           level = Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel.toUpperCase(Locale.ENGLISH));
         } catch (final IllegalArgumentException e) {
-          final String validLevels = Arrays.stream(Database.TRANSACTION_ISOLATION_LEVEL.values())
-              .map(Enum::name).collect(Collectors.joining(", "));
+          final StringJoiner validLevels = new StringJoiner(", ");
+          for (final Database.TRANSACTION_ISOLATION_LEVEL l : Database.TRANSACTION_ISOLATION_LEVEL.values())
+            validLevels.add(l.name());
           throw new CommandParsingException(
               "Invalid transaction isolation level '" + isolationLevel + "'. Valid values: " + validLevels);
         }

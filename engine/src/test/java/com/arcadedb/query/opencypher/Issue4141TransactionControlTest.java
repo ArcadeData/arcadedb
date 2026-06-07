@@ -72,14 +72,21 @@ public class Issue4141TransactionControlTest {
     }
   }
 
+  /** Runs a fire-and-forget Cypher command, closing the ResultSet to release it. */
+  private void exec(final String cypher) {
+    try (final ResultSet ignored = database.command("opencypher", cypher)) {
+      // no rows to consume
+    }
+  }
+
   // ---- COMMIT persists the work done since START TRANSACTION -----------------------------------
 
   @Test
   void startTransactionThenCommitPersistsAcrossCommands() {
-    database.command("opencypher", "START TRANSACTION");
-    database.command("opencypher", "CREATE (p:Person {name: 'Alice'})");
-    database.command("opencypher", "CREATE (p:Person {name: 'Bob'})");
-    database.command("opencypher", "COMMIT");
+    exec("START TRANSACTION");
+    exec("CREATE (p:Person {name: 'Alice'})");
+    exec("CREATE (p:Person {name: 'Bob'})");
+    exec("COMMIT");
 
     // Both vertices survive because the explicit transaction was committed.
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:Person) RETURN count(p) AS cnt")) {
@@ -91,9 +98,9 @@ public class Issue4141TransactionControlTest {
 
   @Test
   void startTransactionThenRollbackDiscardsAcrossCommands() {
-    database.command("opencypher", "START TRANSACTION");
-    database.command("opencypher", "CREATE (p:Person {name: 'Charlie'})");
-    database.command("opencypher", "ROLLBACK");
+    exec("START TRANSACTION");
+    exec("CREATE (p:Person {name: 'Charlie'})");
+    exec("ROLLBACK");
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:Person) RETURN count(p) AS cnt")) {
       assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(0L);
@@ -112,9 +119,7 @@ public class Issue4141TransactionControlTest {
       final Result r = rs.next();
       assertThat(r.<String>getProperty("operation")).isEqualTo("commit");
     }
-    try (final ResultSet rs = database.command("opencypher", "START TRANSACTION")) {
-      rs.next();
-    }
+    exec("START TRANSACTION");
     try (final ResultSet rs = database.command("opencypher", "ROLLBACK")) {
       final Result r = rs.next();
       assertThat(r.<String>getProperty("operation")).isEqualTo("rollback");
@@ -125,14 +130,14 @@ public class Issue4141TransactionControlTest {
 
   @Test
   void uncommittedWorkIsVisibleWithinTheSameTransaction() {
-    database.command("opencypher", "START TRANSACTION");
-    database.command("opencypher", "CREATE (p:Person {name: 'Dave'})");
+    exec("START TRANSACTION");
+    exec("CREATE (p:Person {name: 'Dave'})");
 
     // Visible to a read issued on the same thread/transaction before COMMIT.
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:Person {name: 'Dave'}) RETURN count(p) AS cnt")) {
       assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(1L);
     }
-    database.command("opencypher", "ROLLBACK");
+    exec("ROLLBACK");
   }
 
   // ---- Nested transactions: a second START TRANSACTION opens a nested tx -----------------------
@@ -141,16 +146,16 @@ public class Issue4141TransactionControlTest {
   void doubleStartTransactionOpensNestedTransaction() {
     // Same behavior as SQL BEGIN: a second START TRANSACTION does not error, it nests. The following
     // COMMIT finalizes only the inner transaction, leaving the outer one still active.
-    database.command("opencypher", "START TRANSACTION");
-    database.command("opencypher", "START TRANSACTION");
-    database.command("opencypher", "CREATE (p:Person {name: 'Nina'})");
-    database.command("opencypher", "COMMIT");
+    exec("START TRANSACTION");
+    exec("START TRANSACTION");
+    exec("CREATE (p:Person {name: 'Nina'})");
+    exec("COMMIT");
 
     // The outer transaction is still open after committing the inner one.
     assertThat(database.isTransactionActive()).isTrue();
 
     // Finalize the outer transaction; the work is persisted only now.
-    database.command("opencypher", "COMMIT");
+    exec("COMMIT");
     assertThat(database.isTransactionActive()).isFalse();
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:Person {name: 'Nina'}) RETURN count(p) AS cnt")) {
@@ -179,12 +184,12 @@ public class Issue4141TransactionControlTest {
 
   @Test
   void startTransactionWithIsolationLevelCommits() {
-    database.command("opencypher", "START TRANSACTION ISOLATION REPEATABLE_READ");
+    exec("START TRANSACTION ISOLATION REPEATABLE_READ");
     // The level is applied to the active transaction (not the database default), matching SQL 'BEGIN ISOLATION'.
     assertThat(((DatabaseInternal) database).getTransaction().getIsolationLevel())
         .isEqualTo(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
-    database.command("opencypher", "CREATE (p:Person {name: 'Frank'})");
-    database.command("opencypher", "COMMIT");
+    exec("CREATE (p:Person {name: 'Frank'})");
+    exec("COMMIT");
 
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:Person {name: 'Frank'}) RETURN count(p) AS cnt")) {
       assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(1L);
@@ -193,10 +198,10 @@ public class Issue4141TransactionControlTest {
 
   @Test
   void startTransactionWithReadCommittedIsolation() {
-    database.command("opencypher", "START TRANSACTION ISOLATION READ_COMMITTED");
+    exec("START TRANSACTION ISOLATION READ_COMMITTED");
     assertThat(((DatabaseInternal) database).getTransaction().getIsolationLevel())
         .isEqualTo(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
-    database.command("opencypher", "ROLLBACK");
+    exec("ROLLBACK");
   }
 
   @Test
@@ -207,12 +212,25 @@ public class Issue4141TransactionControlTest {
         .hasMessageContaining("REPEATABLE_READ");
   }
 
+  // ---- GQL access mode (READ ONLY / READ WRITE) is intentionally unimplemented -----------------
+
+  @Test
+  void gqlAccessModeIsNotSupportedAndReportsAParseError() {
+    // ArcadeDB's begin() has no read-only transaction mode, so the GQL access-mode clause is not parsed;
+    // it must surface as an actionable parse error rather than being silently accepted/ignored.
+    assertThatThrownBy(() -> database.command("opencypher", "START TRANSACTION READ ONLY"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("READ");
+    if (database.isTransactionActive())
+      database.rollback();
+  }
+
   // ---- Backward compatibility: commit/rollback/transaction remain valid identifiers ------------
 
   @Test
   void keywordsRemainUsableAsIdentifiers() {
     database.transaction(() ->
-        database.command("opencypher", "CREATE (p:Person {name: 'Eve', commit: 1, rollback: 2, transaction: 3, isolation: 4})"));
+        exec("CREATE (p:Person {name: 'Eve', commit: 1, rollback: 2, transaction: 3, isolation: 4})"));
 
     try (final ResultSet rs = database.query("opencypher",
         "MATCH (p:Person {name: 'Eve'}) RETURN p.commit AS commit, p.rollback AS rollback, p.transaction AS transaction, p.isolation AS isolation")) {
