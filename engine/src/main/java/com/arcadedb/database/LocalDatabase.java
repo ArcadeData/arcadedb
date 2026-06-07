@@ -778,7 +778,9 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (record != null)
         return true;
 
-      return schema.getBucketById(rid.getBucketId()).existsRecord(rid);
+      // A dangling RID can reference a bucket that no longer exists: the record simply does not exist. See issue #4501.
+      final LocalBucket bucket = schema.getBucketById(rid.getBucketId(), false);
+      return bucket != null && bucket.existsRecord(rid);
     });
   }
 
@@ -808,7 +810,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         loadRecordContent = loadContent;
 
       if (loadRecordContent || type == null) {
-        final Binary buffer = schema.getBucketById(rid.getBucketId()).getRecord(rid);
+        // A dangling index entry can reference an RID whose bucket no longer exists (e.g. the record/bucket
+        // was removed but the index entry survived). Treat it as a missing record so callers that already
+        // handle RecordNotFoundException (like index scans) can skip it, instead of aborting with a
+        // SchemaException ("Bucket with id 'NNN' was not found"). See issue #4501.
+        final LocalBucket bucket = schema.getBucketById(rid.getBucketId(), false);
+        if (bucket == null)
+          throw new RecordNotFoundException("Record " + rid + " not found", rid);
+        final Binary buffer = bucket.getRecord(rid);
         record = recordFactory.newImmutableRecord(wrappedDatabaseInstance, type, rid, buffer.copyOfContent(), null);
         record = invokeAfterReadEvents(record);
         if (record == null)
