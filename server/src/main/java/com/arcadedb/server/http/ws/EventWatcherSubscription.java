@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.ws;
 
+import com.arcadedb.database.Document;
 import io.undertow.websockets.core.WebSocketChannel;
 
 import java.io.IOException;
@@ -58,8 +59,14 @@ public class EventWatcherSubscription {
   }
 
   public boolean isMatch(final ChangeEvent event) {
+    // Only documents, vertices and edges are part of the change stream. Internal records (e.g. edge segments) are not
+    // Documents and must never be published: calling asDocument() on them used to crash the watcher thread (issue #4479).
+    if (!(event.getRecord() instanceof Document document))
+      return false;
+
     final var databaseEventTypes = typeSubscriptions.get("*");
-    final var typeEventTypes = typeSubscriptions.get(event.getRecord().asDocument().getTypeName());
+    // Use Document.getTypeName() directly: Vertex and Edge both extend Document, while asDocument() deliberately throws for them.
+    final var typeEventTypes = typeSubscriptions.get(document.getTypeName());
     // first, see if the type matches on the "database" sub, then the type specific sub
     return (databaseEventTypes != null && databaseEventTypes.contains(event.getType())) || (typeEventTypes != null && typeEventTypes.contains(event.getType()));
   }

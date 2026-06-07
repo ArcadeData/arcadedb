@@ -305,6 +305,54 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
   }
 
   @Test
+  void edgeChangeDoesNotCrashEventBus() throws Throwable {
+    // ISSUE #4479: creating an edge produced a ChangeEvent whose record is an Edge. isMatch() called
+    // record.asDocument(), which throws ClassCastException for edges, killing the watcher thread and
+    // permanently stopping the change stream (only an ArcadeDB restart recovered it). After the fix the
+    // edge event must be delivered and the stream must keep working for subsequent changes.
+    execute(() -> {
+      try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        final var result = client.send(buildActionMessage("subscribe", "graph"));
+        assertThat(new JSONObject(result).get("result")).isEqualTo("ok");
+
+        final var db = getServerDatabase(0, "graph");
+        final MutableVertex v1 = db.newVertex("V1").set("name", "src").save();
+        final MutableVertex v2 = db.newVertex("V1").set("name", "dst").save();
+
+        // Creating the edge generates a ChangeEvent backed by an Edge record: this used to crash the bus.
+        v1.newEdge("E1", v2).save();
+
+        // Drain messages until the edge create event arrives (edge creation also fires vertex update events,
+        // so the ordering is not deterministic).
+        var sawEdgeCreate = false;
+        String message;
+        while ((message = client.popMessage(2000)) != null) {
+          final var json = new JSONObject(message);
+          if ("create".equals(json.get("changeType")) && "E1".equals(json.getJSONObject("record").get("@type"))) {
+            sawEdgeCreate = true;
+            break;
+          }
+        }
+        assertThat(sawEdgeCreate).as("Edge create event must be delivered without crashing the change stream").isTrue();
+
+        // The stream must still be alive after the edge event: a subsequent vertex creation must be delivered.
+        db.newVertex("V1").set("name", "after").save();
+        var sawAfter = false;
+        while ((message = client.popMessage(2000)) != null) {
+          final var json = new JSONObject(message);
+          final var record = json.getJSONObject("record");
+          if ("create".equals(json.get("changeType")) && "after".equals(record.getString("name", null))) {
+            sawAfter = true;
+            break;
+          }
+        }
+        assertThat(sawAfter).as("Change stream must stay alive after an edge change event").isTrue();
+      }
+    }, "edgeChangeDoesNotCrashEventBus");
+  }
+
+  @Test
   void unsubscribeDatabaseWorks() throws Throwable {
     execute(() -> {
       try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", "root",
