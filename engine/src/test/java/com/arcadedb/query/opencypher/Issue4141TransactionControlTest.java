@@ -217,12 +217,11 @@ public class Issue4141TransactionControlTest {
   @Test
   void gqlAccessModeIsNotSupportedAndReportsAParseError() {
     // ArcadeDB's begin() has no read-only transaction mode, so the GQL access-mode clause is not parsed;
-    // it must surface as an actionable parse error rather than being silently accepted/ignored.
+    // it must surface as an actionable parse error rather than being silently accepted/ignored. The failure
+    // is raised while parsing, before begin() runs, so no transaction is opened.
     assertThatThrownBy(() -> database.command("opencypher", "START TRANSACTION READ ONLY"))
         .isInstanceOf(CommandParsingException.class)
         .hasMessageContaining("READ");
-    if (database.isTransactionActive())
-      database.rollback();
   }
 
   // ---- Backward compatibility: commit/rollback/transaction remain valid identifiers ------------
