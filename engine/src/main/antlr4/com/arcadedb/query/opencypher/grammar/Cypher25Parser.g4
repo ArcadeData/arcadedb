@@ -958,7 +958,17 @@ command
       | allocationCommand
       | showCommand
       | terminateCommand
+      | transactionCommand
    )
+   ;
+
+// ISO/IEC 39075 (GQL) transaction control - issue #4141 section 2.
+// GQL standardizes only the bare statements; the optional ISOLATION clause is an ArcadeDB
+// extension (mirrors SQL 'BEGIN ISOLATION <level>') exposing the engine transaction isolation level.
+transactionCommand
+   : START TRANSACTION (ISOLATION symbolicNameString)?
+   | COMMIT
+   | ROLLBACK
    ;
 
 createCommand
@@ -2192,6 +2202,7 @@ unescapedSymbolicNameString_
    | COLLECT
    | COMMAND
    | COMMANDS
+   | COMMIT
    | COMPOSITE
    | CONCURRENT
    | CONSTRAINT
@@ -2294,6 +2305,7 @@ unescapedSymbolicNameString_
    | INTEGER16
    | INTEGER8
    | IS
+   | ISOLATION
    | JOIN
    | KEY
    | LABEL
@@ -2379,6 +2391,7 @@ unescapedSymbolicNameString_
    | REVOKE
    | ROLE
    | ROLES
+   | ROLLBACK
    | ROW
    | ROWS
    | RULE

@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.ast.CreateClause;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.CypherTransactionStatement;
 import com.arcadedb.query.opencypher.ast.DeleteClause;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.ExistsExpression;
@@ -121,7 +122,22 @@ public class CypherASTBuilder extends Cypher25ParserBaseVisitor<Object> {
       return handleShowCommand(ctx.showCommand());
     if (ctx.alterCommand() != null)
       return handleAlterCommand(ctx.alterCommand());
+    if (ctx.transactionCommand() != null)
+      return handleTransactionCommand(ctx.transactionCommand());
     throw new CommandParsingException("Unsupported command type");
+  }
+
+  private CypherTransactionStatement handleTransactionCommand(final Cypher25Parser.TransactionCommandContext ctx) {
+    if (ctx.START() != null) {
+      final String isolationLevel = ctx.symbolicNameString() != null ?
+          stripBackticks(ctx.symbolicNameString().getText()) : null;
+      return new CypherTransactionStatement(CypherTransactionStatement.Kind.BEGIN, isolationLevel);
+    }
+    if (ctx.COMMIT() != null)
+      return new CypherTransactionStatement(CypherTransactionStatement.Kind.COMMIT);
+    if (ctx.ROLLBACK() != null)
+      return new CypherTransactionStatement(CypherTransactionStatement.Kind.ROLLBACK);
+    throw new CommandParsingException("Unsupported transaction command");
   }
 
   private CypherStatement handleCreateCommand(final Cypher25Parser.CreateCommandContext ctx) {
