@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.QuerySession;
 import com.arcadedb.query.sql.executor.Result;
@@ -39,9 +41,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Issue #4141 (ISO/IEC 39075 GQL, section 2 - Infrastructure & Environment): Session Management statements
  * {@code SESSION SET $name = value}, {@code SESSION RESET}, {@code SESSION CLOSE}.
  * <p>
- * These operate on the {@link QuerySession} bound to the current thread (a server session). This test
- * exercises the engine layer with a fake in-memory session bound to the thread-local, plus the embedded
- * case (no session bound) which must report an actionable error.
+ * These operate on the {@link QuerySession} attached to the current thread's database context (a server
+ * session). This test exercises the engine layer with a fake in-memory session attached to that context,
+ * plus the embedded case (no session attached) which must report an actionable error.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -87,18 +89,27 @@ public class Issue4141SessionManagementTest {
 
   @AfterEach
   void tearDown() {
-    QuerySession.unbind();
     if (database != null) {
+      // Detach the fake session from this thread's context so a later test sees no bound session.
+      final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(
+          ((DatabaseInternal) database).getDatabasePath());
+      if (ctx != null)
+        ctx.setQuerySession(null);
       database.drop();
       database = null;
     }
+  }
+
+  /** Attaches the fake session to this thread's database context, the way the server does for a request. */
+  private void bindSession() {
+    DatabaseContext.INSTANCE.init((DatabaseInternal) database).setQuerySession(session);
   }
 
   // ---- SESSION SET binds a parameter on the bound session -------------------------------------
 
   @Test
   void sessionSetBindsParameter() {
-    QuerySession.bind(session);
+    bindSession();
     try (final ResultSet rs = database.command("opencypher", "SESSION SET $greeting = 'hello'")) {
       final Result r = rs.next();
       assertThat(r.<String>getProperty("operation")).isEqualTo("set");
@@ -110,14 +121,14 @@ public class Issue4141SessionManagementTest {
 
   @Test
   void sessionSetEvaluatesExpressionValue() {
-    QuerySession.bind(session);
+    bindSession();
     database.command("opencypher", "SESSION SET $n = 6 * 7").close();
     assertThat(((Number) session.params.get("n")).intValue()).isEqualTo(42);
   }
 
   @Test
   void sessionSetCanReferenceAnEarlierSessionParameter() {
-    QuerySession.bind(session);
+    bindSession();
     database.command("opencypher", "SESSION SET $base = 10").close();
     database.command("opencypher", "SESSION SET $derived = $base + 5").close();
     assertThat(((Number) session.params.get("derived")).intValue()).isEqualTo(15);
@@ -127,7 +138,7 @@ public class Issue4141SessionManagementTest {
 
   @Test
   void sessionResetClearsParameters() {
-    QuerySession.bind(session);
+    bindSession();
     session.params.put("x", 1);
     session.params.put("y", 2);
     try (final ResultSet rs = database.command("opencypher", "SESSION RESET")) {
@@ -140,7 +151,7 @@ public class Issue4141SessionManagementTest {
 
   @Test
   void sessionCloseClosesTheSession() {
-    QuerySession.bind(session);
+    bindSession();
     try (final ResultSet rs = database.command("opencypher", "SESSION CLOSE")) {
       assertThat(rs.next().<String>getProperty("operation")).isEqualTo("close");
     }

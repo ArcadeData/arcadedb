@@ -26,16 +26,14 @@ import java.util.Map;
  * operate on the session bound to the current thread.
  * <p>
  * Sessions are owned by the server layer (e.g. the HTTP {@code arcadedb-session-id} session), which the
- * engine module cannot reference directly. The owner therefore binds its session to {@link #bind} for the
- * duration of a command and clears it with {@link #unbind} afterwards; the engine reaches it through
- * {@link #current}. When nothing is bound (embedded use, no server session) {@link #current} returns
- * {@code null} and Session Management statements report an actionable error.
+ * engine module cannot reference directly. The owner attaches its session to the per-thread
+ * {@link com.arcadedb.database.DatabaseContext.DatabaseContextTL#setQuerySession} alongside the transaction;
+ * the engine reads it back from that same thread context. When none is attached (embedded use, no server
+ * session) Session Management statements report an actionable error rather than silently doing nothing.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public interface QuerySession {
-  ThreadLocal<QuerySession> CURRENT = new ThreadLocal<>();
-
   /**
    * Binds {@code name} to {@code value} as a session parameter. Subsequent commands run within this session
    * see it as a query parameter (e.g. {@code $name}) unless the command supplies its own value for that name.
@@ -57,25 +55,4 @@ public interface QuerySession {
    * later references to its id fail (the {@code SESSION CLOSE} effect).
    */
   void close();
-
-  /**
-   * Returns the session bound to the current thread, or {@code null} when none is bound (embedded use).
-   */
-  static QuerySession current() {
-    return CURRENT.get();
-  }
-
-  /**
-   * Binds {@code session} to the current thread. The owner must call {@link #unbind} when the command finishes.
-   */
-  static void bind(final QuerySession session) {
-    CURRENT.set(session);
-  }
-
-  /**
-   * Clears the session bound to the current thread.
-   */
-  static void unbind() {
-    CURRENT.remove();
-  }
 }

@@ -72,6 +72,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -122,6 +123,9 @@ public class BoltNetworkExecutor extends Thread {
 
   // Transaction state
   private boolean explicitTransaction = false;
+
+  // GQL session state for this connection (SESSION SET/RESET/CLOSE parameters), issue #4141 section 2.
+  private final BoltSession session = new BoltSession();
 
   /**
    * Current result set for streaming results.
@@ -479,6 +483,11 @@ public class BoltNetworkExecutor extends Thread {
       }
     }
 
+    // NOTE: do not clear the GQL session parameters here. The Bolt RESET message is connection-level
+    // housekeeping the driver sends when recycling a pooled connection, not a user request to reset GQL
+    // session state; clearing here would drop SESSION SET parameters between auto-commit queries. GQL
+    // session parameters are cleared only by an explicit SESSION RESET / SESSION CLOSE statement.
+
     explicitTransaction = false;
     currentResultSet = null;
     currentFields = null;
@@ -534,6 +543,14 @@ public class BoltNetworkExecutor extends Thread {
     if (!ensureDatabase())
       return;
 
+    // Attach this connection's session to the thread context so the engine can reach it for GQL SESSION
+    // statements; merge any session parameters so later commands resolve them (issue #4141 section 2).
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(
+        ((DatabaseInternal) database).getDatabasePath());
+    if (ctx != null)
+      ctx.setQuerySession(session);
+    final Map<String, Object> effectiveParams = mergeSessionParameters(params);
+
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
     if (handleSystemQuery(query)) {
       currentResultSet = null;
@@ -567,9 +584,9 @@ public class BoltNetworkExecutor extends Thread {
 
       // Use command() for writes, query() for reads
       if (isWriteOperation) {
-        currentResultSet = database.command("opencypher", query, params);
+        currentResultSet = database.command("opencypher", query, effectiveParams);
       } else {
-        currentResultSet = database.query("opencypher", query, params);
+        currentResultSet = database.query("opencypher", query, effectiveParams);
       }
 
       // Capture the plan from the engine. EXPLAIN returns ExplainResultSet (one synthetic row
@@ -929,6 +946,21 @@ public class BoltNetworkExecutor extends Thread {
   /**
    * Ensure database is open and accessible.
    */
+  /**
+   * Merges the connection's session parameters (set via {@code SESSION SET}) into the RUN request parameters.
+   * Request-supplied parameters win. Returns {@code requestParams} unchanged when there are no session
+   * parameters (issue #4141 section 2).
+   */
+  private Map<String, Object> mergeSessionParameters(final Map<String, Object> requestParams) {
+    final Map<String, Object> sessionParams = session.getParameters();
+    if (sessionParams.isEmpty())
+      return requestParams;
+    final Map<String, Object> merged = new HashMap<>(sessionParams);
+    if (requestParams != null)
+      merged.putAll(requestParams);
+    return merged;
+  }
+
   private boolean ensureDatabase() throws IOException {
     if (database != null && database.isOpen()) {
       // Check if we need to switch to a different database

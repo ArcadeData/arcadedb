@@ -106,15 +106,12 @@ public class HttpSession implements QuerySession {
     if (lock.tryLock(DEFAULT_TIMEOUT, TimeUnit.MILLISECONDS)) {
       try {
         LogManager.instance().log(this, Level.FINE, "Executing session %s for user %s", id, user.getName());
-        // Expose this session to the engine so SESSION statements and session-parameter merging can reach it.
-        QuerySession.bind(this);
         callback.call();
       } catch (Exception e) {
         // ROLLBACK SERVER-SIDE TRANSACTION
         cancel();
         throw e;
       } finally {
-        QuerySession.unbind();
         lock.unlock();
       }
     } else {

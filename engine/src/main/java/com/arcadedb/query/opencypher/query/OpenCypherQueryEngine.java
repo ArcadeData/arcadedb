@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
@@ -577,7 +578,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * to, so the statement reports an actionable error rather than silently doing nothing.
    */
   private ResultSet executeSession(final CypherSessionStatement stmt) {
-    final QuerySession session = QuerySession.current();
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    final QuerySession session = ctx != null ? ctx.getQuerySession() : null;
     if (session == null)
       throw new CommandExecutionException(
           "SESSION statements require a server session (set the 'arcadedb-session-id' HTTP header); not available in embedded mode");

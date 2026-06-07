@@ -19,6 +19,8 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseContext;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncResultsetCallback;
 import com.arcadedb.query.QuerySession;
 import com.arcadedb.log.LogManager;
@@ -122,7 +124,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
     // Merge any session parameters set via 'SESSION SET $x = ...' so later commands in the same session
     // can reference them. Request-supplied params win over session params (issue #4141 section 2).
-    paramMap = mergeSessionParameters(paramMap);
+    paramMap = mergeSessionParameters(paramMap, database);
 
     if (limit != -1) {
       if ("sql".equalsIgnoreCase(language) || "sqlScript".equalsIgnoreCase(language)) {
@@ -280,8 +282,10 @@ public class PostCommandHandler extends AbstractQueryHandler {
    * request parameters. Request-supplied parameters take precedence. Returns {@code requestParams} unchanged
    * when there is no bound session or it has no parameters (issue #4141 section 2).
    */
-  private static Map<String, Object> mergeSessionParameters(final Map<String, Object> requestParams) {
-    final QuerySession session = QuerySession.current();
+  private static Map<String, Object> mergeSessionParameters(final Map<String, Object> requestParams, final Database database) {
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(
+        ((DatabaseInternal) database).getDatabasePath());
+    final QuerySession session = ctx != null ? ctx.getQuerySession() : null;
     if (session == null)
       return requestParams;
     final Map<String, Object> sessionParams = session.getParameters();
