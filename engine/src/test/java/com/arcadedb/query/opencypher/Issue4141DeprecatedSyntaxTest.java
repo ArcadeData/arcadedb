@@ -94,6 +94,44 @@ public class Issue4141DeprecatedSyntaxTest {
         .hasMessageContaining("$name");
   }
 
+  @Test
+  void legacyParameterAfterMapMergeIsRejected() {
+    // 'SET n += {param}' - the map-merge operator '+=' is a value position.
+    assertThatThrownBy(() ->
+        database.command("opencypher", "MATCH (p:Person) SET p += {props} RETURN p"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("{props}")
+        .hasMessageContaining("$props");
+  }
+
+  @Test
+  void legacyParameterAfterInequalityIsRejected() {
+    // '!=' is the deprecated inequality operator but still a value position.
+    assertThatThrownBy(() ->
+        database.command("opencypher", "MATCH (p:Person) WHERE p.name != {name} RETURN p"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("{name}")
+        .hasMessageContaining("$name");
+  }
+
+  @Test
+  void legacyParameterAfterModuloIsRejected() {
+    assertThatThrownBy(() ->
+        database.command("opencypher", "MATCH (p:Person) WHERE p.age % {mod} = 0 RETURN p"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("{mod}")
+        .hasMessageContaining("$mod");
+  }
+
+  @Test
+  void legacyParameterAfterConcatenationIsRejected() {
+    assertThatThrownBy(() ->
+        database.command("opencypher", "MATCH (p:Person) RETURN p.name || {suffix} AS x"))
+        .isInstanceOf(CommandParsingException.class)
+        .hasMessageContaining("{suffix}")
+        .hasMessageContaining("$suffix");
+  }
+
   // ---- Supported syntax keeps working (no false positives) ------------------------------------
 
   @Test
@@ -102,6 +140,20 @@ public class Issue4141DeprecatedSyntaxTest {
         Map.of("name", "Alice"))) {
       assertThat(rs.hasNext()).isTrue();
       assertThat((Integer) rs.next().getProperty("age")).isEqualTo(30);
+    }
+  }
+
+  @Test
+  void nestedMapLiteralIsNotMistakenForLegacyParameter() {
+    // A nested map literal with a real value ('{outer: {inner: p.name}}') must parse: the inner '}' is
+    // preceded by 'p . name', so the token before it is not '{' and the legacy-param check does not fire.
+    // (A bare '{inner}' after a colon is not a valid map value, so COLON as a value position is safe.)
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (p:Person) WHERE p.name = 'Alice' RETURN {outer: {inner: p.name}} AS nested")) {
+      assertThat(rs.hasNext()).isTrue();
+      final Map<String, Object> nested = rs.next().getProperty("nested");
+      final Map<String, Object> inner = (Map<String, Object>) nested.get("outer");
+      assertThat(inner).containsEntry("inner", "Alice");
     }
   }
 
