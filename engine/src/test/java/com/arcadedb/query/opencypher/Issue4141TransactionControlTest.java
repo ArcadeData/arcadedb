@@ -135,6 +135,29 @@ public class Issue4141TransactionControlTest {
     database.command("opencypher", "ROLLBACK");
   }
 
+  // ---- Nested transactions: a second START TRANSACTION opens a nested tx -----------------------
+
+  @Test
+  void doubleStartTransactionOpensNestedTransaction() {
+    // Same behavior as SQL BEGIN: a second START TRANSACTION does not error, it nests. The following
+    // COMMIT finalizes only the inner transaction, leaving the outer one still active.
+    database.command("opencypher", "START TRANSACTION");
+    database.command("opencypher", "START TRANSACTION");
+    database.command("opencypher", "CREATE (p:Person {name: 'Nina'})");
+    database.command("opencypher", "COMMIT");
+
+    // The outer transaction is still open after committing the inner one.
+    assertThat(database.isTransactionActive()).isTrue();
+
+    // Finalize the outer transaction; the work is persisted only now.
+    database.command("opencypher", "COMMIT");
+    assertThat(database.isTransactionActive()).isFalse();
+
+    try (final ResultSet rs = database.query("opencypher", "MATCH (p:Person {name: 'Nina'}) RETURN count(p) AS cnt")) {
+      assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(1L);
+    }
+  }
+
   // ---- COMMIT/ROLLBACK without an active transaction -------------------------------------------
 
   @Test

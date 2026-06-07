@@ -510,6 +510,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * Executes a transaction control statement (START TRANSACTION/COMMIT/ROLLBACK) directly against the
    * database transaction API. The opened transaction outlives this command so subsequent write commands
    * reuse it and only COMMIT/ROLLBACK finalize it, matching the SQL BEGIN/COMMIT/ROLLBACK semantics.
+   * <p>
+   * Note on nesting (same behavior as SQL BEGIN): a second START TRANSACTION while one is already active
+   * does not error - it opens a <em>nested</em> transaction. A following COMMIT/ROLLBACK then finalizes
+   * only that inner transaction, leaving the outer one active. Callers that did not intend to nest must
+   * balance each START TRANSACTION with its own COMMIT/ROLLBACK.
    */
   private ResultSet executeTransaction(final CypherTransactionStatement txn) {
     final InternalResultSet resultSet = new InternalResultSet();
@@ -544,6 +549,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
       database.rollback();
       result.setProperty("operation", "rollback");
       break;
+    default:
+      throw new IllegalStateException("Unhandled transaction kind: " + txn.getKind());
     }
 
     resultSet.add(result);
