@@ -73,24 +73,29 @@ public class WebSocketEventBus {
     final var databaseName = event.getRecord().getDatabase().getName();
     final var zombieConnections = new ArrayList<UUID>();
     this.subscribers.get(databaseName).values().forEach(subscription -> {
-      if (subscription.isMatch(event)) {
-        WebSockets.sendText(event.toJSON(), subscription.getChannel(), new WebSocketCallback<>() {
-          @Override
-          public void complete(final WebSocketChannel webSocketChannel, final Void unused) {
-            webSocketChannel.flush();
-          }
-
-          @Override
-          public void onError(final WebSocketChannel webSocketChannel, final Void unused, final Throwable throwable) {
-            final var channelId = (UUID) webSocketChannel.getAttribute(CHANNEL_ID);
-            if (throwable instanceof IOException) {
-              LogManager.instance().log(this, Level.FINE, "Closing zombie connection: %s", null, channelId);
-              zombieConnections.add(channelId);
-            } else {
-              LogManager.instance().log(this, Level.SEVERE, "Unexpected error while sending message.", throwable);
+      try {
+        if (subscription.isMatch(event)) {
+          WebSockets.sendText(event.toJSON(), subscription.getChannel(), new WebSocketCallback<>() {
+            @Override
+            public void complete(final WebSocketChannel webSocketChannel, final Void unused) {
+              webSocketChannel.flush();
             }
-          }
-        });
+
+            @Override
+            public void onError(final WebSocketChannel webSocketChannel, final Void unused, final Throwable throwable) {
+              final var channelId = (UUID) webSocketChannel.getAttribute(CHANNEL_ID);
+              if (throwable instanceof IOException) {
+                LogManager.instance().log(this, Level.FINE, "Closing zombie connection: %s", null, channelId);
+                zombieConnections.add(channelId);
+              } else {
+                LogManager.instance().log(this, Level.SEVERE, "Unexpected error while sending message.", throwable);
+              }
+            }
+          });
+        }
+      } catch (final Exception e) {
+        // NEVER LET A SINGLE SUBSCRIPTION FAILURE KILL THE WATCHER THREAD AND STOP THE WHOLE CHANGE STREAM (ISSUE #4479).
+        LogManager.instance().log(this, Level.SEVERE, "Error while publishing change event to subscription %s", e, subscription);
       }
     });
 

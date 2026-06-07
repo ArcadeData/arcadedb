@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.http.ws;
 
+import com.arcadedb.database.Document;
 import com.arcadedb.database.Record;
 import com.arcadedb.event.AfterRecordCreateListener;
 import com.arcadedb.event.AfterRecordDeleteListener;
@@ -36,16 +37,24 @@ public class WebSocketEventListener implements AfterRecordCreateListener, AfterR
 
   @Override
   public void onAfterCreate(final Record record) {
-    this.watcherThread.push(new ChangeEvent(ChangeEvent.TYPE.CREATE, record));
+    push(ChangeEvent.TYPE.CREATE, record);
   }
 
   @Override
   public void onAfterUpdate(final Record record) {
-    this.watcherThread.push(new ChangeEvent(ChangeEvent.TYPE.UPDATE, record));
+    push(ChangeEvent.TYPE.UPDATE, record);
   }
 
   @Override
   public void onAfterDelete(final Record record) {
-    this.watcherThread.push(new ChangeEvent(ChangeEvent.TYPE.DELETE, record));
+    push(ChangeEvent.TYPE.DELETE, record);
+  }
+
+  private void push(final ChangeEvent.TYPE type, final Record record) {
+    // Only documents, vertices and edges are part of the change stream. Internal records (e.g. edge segments holding
+    // a vertex's edge pointers) are not Documents: queuing them would both pollute the bounded event queue and crash
+    // the watcher thread later via Record.asDocument() (issue #4479).
+    if (record instanceof Document)
+      this.watcherThread.push(new ChangeEvent(type, record));
   }
 }
