@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.query;
 
 import com.arcadedb.ContextConfiguration;
+import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Record;
@@ -29,6 +30,7 @@ import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
+import com.arcadedb.query.opencypher.ast.CypherTransactionStatement;
 import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -51,8 +53,10 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.StringJoiner;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -98,6 +102,14 @@ public class OpenCypherQueryEngine implements QueryEngine {
         public Set<OperationType> getOperationTypes() {
           if (statement instanceof CypherAdminStatement)
             return CollectionUtils.singletonSet(OperationType.ADMIN);
+          // Transaction control (START TRANSACTION/COMMIT/ROLLBACK) is a session-control operation that
+          // reads/writes no data itself; the writes it wraps are gated by their own operation types. So it
+          // must not be classified as ADMIN (that would lock it behind the MCP admin flag and stop a
+          // write-capable agent from committing its own writes). This permission axis is independent of
+          // isReadOnly()/HA routing (see CypherTransactionStatement.isReadOnly()), so keep this check ahead
+          // of the isReadOnly()/write-detection fallback below to avoid the write-set misclassification.
+          if (statement instanceof CypherTransactionStatement)
+            return CollectionUtils.singletonSet(OperationType.READ);
           if (statement instanceof CypherDDLStatement)
             return CollectionUtils.singletonSet(OperationType.SCHEMA);
           if (statement.isReadOnly())
@@ -201,6 +213,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // Admin statements (user management) are executed directly against the security manager
       if (statement instanceof CypherAdminStatement)
         return executeAdmin((CypherAdminStatement) statement);
+
+      // Transaction control statements (START TRANSACTION/COMMIT/ROLLBACK) are executed directly
+      // against the database transaction API, bypassing the planner's auto-commit pipeline.
+      if (statement instanceof CypherTransactionStatement)
+        return executeTransaction((CypherTransactionStatement) statement);
 
       return execute(actualQuery, statement, configuration, parameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
@@ -487,6 +504,58 @@ public class OpenCypherQueryEngine implements QueryEngine {
     }
     }
 
+    return resultSet;
+  }
+
+  /**
+   * Executes a transaction control statement (START TRANSACTION/COMMIT/ROLLBACK) directly against the
+   * database transaction API. The opened transaction outlives this command so subsequent write commands
+   * reuse it and only COMMIT/ROLLBACK finalize it, matching the SQL BEGIN/COMMIT/ROLLBACK semantics.
+   * <p>
+   * Note on nesting (same behavior as SQL BEGIN): a second START TRANSACTION while one is already active
+   * does not error - it opens a <em>nested</em> transaction. A following COMMIT/ROLLBACK then finalizes
+   * only that inner transaction, leaving the outer one active. Callers that did not intend to nest must
+   * balance each START TRANSACTION with its own COMMIT/ROLLBACK.
+   */
+  private ResultSet executeTransaction(final CypherTransactionStatement txn) {
+    final InternalResultSet resultSet = new InternalResultSet();
+    final ResultInternal result = new ResultInternal(database);
+
+    switch (txn.getKind()) {
+    case BEGIN:
+      final String isolationLevel = txn.getIsolationLevel();
+      if (isolationLevel != null) {
+        final Database.TRANSACTION_ISOLATION_LEVEL level;
+        try {
+          level = Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel.toUpperCase(Locale.ENGLISH));
+        } catch (final IllegalArgumentException e) {
+          final StringJoiner validLevels = new StringJoiner(", ");
+          for (final Database.TRANSACTION_ISOLATION_LEVEL l : Database.TRANSACTION_ISOLATION_LEVEL.values())
+            validLevels.add(l.name());
+          throw new CommandParsingException(
+              "Invalid transaction isolation level '" + isolationLevel + "'. Valid values: " + validLevels);
+        }
+        database.begin(level);
+      } else
+        database.begin();
+      result.setProperty("operation", "begin");
+      break;
+    case COMMIT:
+      if (!database.isTransactionActive())
+        throw new CommandExecutionException("No active transaction to COMMIT (issue a START TRANSACTION first)");
+      database.commit();
+      result.setProperty("operation", "commit");
+      break;
+    case ROLLBACK:
+      // database.rollback() is idempotent: with no active transaction it is a no-op, so ROLLBACK is lenient.
+      database.rollback();
+      result.setProperty("operation", "rollback");
+      break;
+    default:
+      throw new IllegalStateException("Unhandled transaction kind: " + txn.getKind());
+    }
+
+    resultSet.add(result);
     return resultSet;
   }
 
