@@ -263,6 +263,10 @@ COMMANDS
    : C O M M A N D S
    ;
 
+COMMIT
+   : C O M M I T
+   ;
+
 COMPOSITE
    : C O M P O S I T E
    ;
@@ -692,6 +696,10 @@ IS
    : I S
    ;
 
+ISOLATION
+   : I S O L A T I O N
+   ;
+
 JOIN
    : J O I N
    ;
@@ -1106,6 +1114,10 @@ ROLE
 
 ROLES
    : R O L E S
+   ;
+
+ROLLBACK
+   : R O L L B A C K
    ;
 
 ROW
