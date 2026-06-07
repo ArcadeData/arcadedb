@@ -50,11 +50,14 @@ import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.security.SecurityManager;
 import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 
+import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Native OpenCypher query engine for ArcadeDB.
@@ -100,8 +103,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
         public Set<OperationType> getOperationTypes() {
           if (statement instanceof CypherAdminStatement)
             return CollectionUtils.singletonSet(OperationType.ADMIN);
+          // Transaction control (START TRANSACTION/COMMIT/ROLLBACK) is a session-control operation that
+          // reads/writes no data itself; the writes it wraps are gated by their own operation types. So it
+          // must not be classified as ADMIN (that would lock it behind the MCP admin flag and stop a
+          // write-capable agent from committing its own writes).
           if (statement instanceof CypherTransactionStatement)
-            return CollectionUtils.singletonSet(OperationType.ADMIN);
+            return CollectionUtils.singletonSet(OperationType.READ);
           if (statement instanceof CypherDDLStatement)
             return CollectionUtils.singletonSet(OperationType.SCHEMA);
           if (statement.isReadOnly())
@@ -514,10 +521,12 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (isolationLevel != null) {
         final Database.TRANSACTION_ISOLATION_LEVEL level;
         try {
-          level = Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel.toUpperCase());
+          level = Database.TRANSACTION_ISOLATION_LEVEL.valueOf(isolationLevel.toUpperCase(Locale.ENGLISH));
         } catch (final IllegalArgumentException e) {
+          final String validLevels = Arrays.stream(Database.TRANSACTION_ISOLATION_LEVEL.values())
+              .map(Enum::name).collect(Collectors.joining(", "));
           throw new CommandParsingException(
-              "Invalid transaction isolation level '" + isolationLevel + "'. Valid values: READ_COMMITTED, REPEATABLE_READ");
+              "Invalid transaction isolation level '" + isolationLevel + "'. Valid values: " + validLevels);
         }
         database.begin(level);
       } else
@@ -525,10 +534,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
       result.setProperty("operation", "begin");
       break;
     case COMMIT:
+      if (!database.isTransactionActive())
+        throw new CommandExecutionException("No active transaction to COMMIT (issue a START TRANSACTION first)");
       database.commit();
       result.setProperty("operation", "commit");
       break;
     case ROLLBACK:
+      // database.rollback() is idempotent: with no active transaction it is a no-op, so ROLLBACK is lenient.
       database.rollback();
       result.setProperty("operation", "rollback");
       break;

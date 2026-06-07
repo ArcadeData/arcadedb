@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -132,6 +133,23 @@ public class Issue4141TransactionControlTest {
       assertThat(rs.next().<Long>getProperty("cnt")).isEqualTo(1L);
     }
     database.command("opencypher", "ROLLBACK");
+  }
+
+  // ---- COMMIT/ROLLBACK without an active transaction -------------------------------------------
+
+  @Test
+  void commitWithoutActiveTransactionFailsWithActionableMessage() {
+    assertThatThrownBy(() -> database.command("opencypher", "COMMIT"))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("No active transaction");
+  }
+
+  @Test
+  void rollbackWithoutActiveTransactionIsANoOp() {
+    // ROLLBACK is lenient: with no active transaction it succeeds as a no-op.
+    try (final ResultSet rs = database.command("opencypher", "ROLLBACK")) {
+      assertThat(rs.next().<String>getProperty("operation")).isEqualTo("rollback");
+    }
   }
 
   // ---- ArcadeDB extension: optional ISOLATION level on START TRANSACTION -----------------------
