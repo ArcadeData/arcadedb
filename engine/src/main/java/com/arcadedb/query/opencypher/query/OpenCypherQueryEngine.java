@@ -29,8 +29,11 @@ import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.ast.CypherSessionStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.CypherTransactionStatement;
+import com.arcadedb.query.QuerySession;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
@@ -109,6 +112,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
           // isReadOnly()/HA routing (see CypherTransactionStatement.isReadOnly()), so keep this check ahead
           // of the isReadOnly()/write-detection fallback below to avoid the write-set misclassification.
           if (statement instanceof CypherTransactionStatement)
+            return CollectionUtils.singletonSet(OperationType.READ);
+          // Session management is session-control (no data read/write); same READ permission rationale as
+          // transaction control above.
+          if (statement instanceof CypherSessionStatement)
             return CollectionUtils.singletonSet(OperationType.READ);
           if (statement instanceof CypherDDLStatement)
             return CollectionUtils.singletonSet(OperationType.SCHEMA);
@@ -218,6 +225,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // against the database transaction API, bypassing the planner's auto-commit pipeline.
       if (statement instanceof CypherTransactionStatement)
         return executeTransaction((CypherTransactionStatement) statement);
+
+      // Session management statements (SESSION SET/RESET/CLOSE) operate on the server session bound to
+      // the current thread; executed directly, no planner pipeline.
+      if (statement instanceof CypherSessionStatement)
+        return executeSession((CypherSessionStatement) statement);
 
       return execute(actualQuery, statement, configuration, parameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
@@ -553,6 +565,48 @@ public class OpenCypherQueryEngine implements QueryEngine {
       break;
     default:
       throw new IllegalStateException("Unhandled transaction kind: " + txn.getKind());
+    }
+
+    resultSet.add(result);
+    return resultSet;
+  }
+
+  /**
+   * Executes a session management statement (SESSION SET/RESET/CLOSE) against the {@link QuerySession}
+   * bound to the current thread by the server. In embedded use (no server session) there is nothing to bind
+   * to, so the statement reports an actionable error rather than silently doing nothing.
+   */
+  private ResultSet executeSession(final CypherSessionStatement stmt) {
+    final QuerySession session = QuerySession.current();
+    if (session == null)
+      throw new CommandExecutionException(
+          "SESSION statements require a server session (set the 'arcadedb-session-id' HTTP header); not available in embedded mode");
+
+    final InternalResultSet resultSet = new InternalResultSet();
+    final ResultInternal result = new ResultInternal(database);
+
+    switch (stmt.getKind()) {
+    case SET:
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      // Expose the session parameters set so far so a value can reference an earlier one.
+      context.setInputParameters(session.getParameters());
+      final Object value = EXPRESSION_EVALUATOR.evaluate(stmt.getValueExpression(), new ResultInternal(database), context);
+      session.setParameter(stmt.getParameterName(), value);
+      result.setProperty("operation", "set");
+      result.setProperty("name", stmt.getParameterName());
+      result.setProperty("value", value);
+      break;
+    case RESET:
+      session.reset();
+      result.setProperty("operation", "reset");
+      break;
+    case CLOSE:
+      session.close();
+      result.setProperty("operation", "close");
+      break;
+    default:
+      throw new IllegalStateException("Unhandled session kind: " + stmt.getKind());
     }
 
     resultSet.add(result);

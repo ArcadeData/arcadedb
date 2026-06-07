@@ -1,0 +1,178 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.query.opencypher;
+
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.query.QuerySession;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
+
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+
+import java.util.HashMap;
+import java.util.Map;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+
+/**
+ * Issue #4141 (ISO/IEC 39075 GQL, section 2 - Infrastructure & Environment): Session Management statements
+ * {@code SESSION SET $name = value}, {@code SESSION RESET}, {@code SESSION CLOSE}.
+ * <p>
+ * These operate on the {@link QuerySession} bound to the current thread (a server session). This test
+ * exercises the engine layer with a fake in-memory session bound to the thread-local, plus the embedded
+ * case (no session bound) which must report an actionable error.
+ *
+ * @author Luca Garulli (l.garulli@arcadedata.com)
+ */
+public class Issue4141SessionManagementTest {
+  private Database    database;
+  private FakeSession session;
+
+  /** Minimal in-memory QuerySession standing in for the server session in engine-level tests. */
+  private static class FakeSession implements QuerySession {
+    final Map<String, Object> params = new HashMap<>();
+    boolean                   closed = false;
+
+    @Override
+    public void setParameter(final String name, final Object value) {
+      params.put(name, value);
+    }
+
+    @Override
+    public Map<String, Object> getParameters() {
+      return params;
+    }
+
+    @Override
+    public void reset() {
+      params.clear();
+    }
+
+    @Override
+    public void close() {
+      closed = true;
+    }
+  }
+
+  @BeforeEach
+  void setUp() {
+    final DatabaseFactory factory = new DatabaseFactory("./target/databases/testIssue4141SessionManagement");
+    if (factory.exists())
+      factory.open().drop(); // defend against a leftover db from a previously interrupted run
+    database = factory.create();
+    database.getSchema().createVertexType("Person");
+    session = new FakeSession();
+  }
+
+  @AfterEach
+  void tearDown() {
+    QuerySession.unbind();
+    if (database != null) {
+      database.drop();
+      database = null;
+    }
+  }
+
+  // ---- SESSION SET binds a parameter on the bound session -------------------------------------
+
+  @Test
+  void sessionSetBindsParameter() {
+    QuerySession.bind(session);
+    try (final ResultSet rs = database.command("opencypher", "SESSION SET $greeting = 'hello'")) {
+      final Result r = rs.next();
+      assertThat(r.<String>getProperty("operation")).isEqualTo("set");
+      assertThat(r.<String>getProperty("name")).isEqualTo("greeting");
+      assertThat(r.<String>getProperty("value")).isEqualTo("hello");
+    }
+    assertThat(session.params).containsEntry("greeting", "hello");
+  }
+
+  @Test
+  void sessionSetEvaluatesExpressionValue() {
+    QuerySession.bind(session);
+    database.command("opencypher", "SESSION SET $n = 6 * 7").close();
+    assertThat(((Number) session.params.get("n")).intValue()).isEqualTo(42);
+  }
+
+  @Test
+  void sessionSetCanReferenceAnEarlierSessionParameter() {
+    QuerySession.bind(session);
+    database.command("opencypher", "SESSION SET $base = 10").close();
+    database.command("opencypher", "SESSION SET $derived = $base + 5").close();
+    assertThat(((Number) session.params.get("derived")).intValue()).isEqualTo(15);
+  }
+
+  // ---- SESSION RESET clears the session parameters --------------------------------------------
+
+  @Test
+  void sessionResetClearsParameters() {
+    QuerySession.bind(session);
+    session.params.put("x", 1);
+    session.params.put("y", 2);
+    try (final ResultSet rs = database.command("opencypher", "SESSION RESET")) {
+      assertThat(rs.next().<String>getProperty("operation")).isEqualTo("reset");
+    }
+    assertThat(session.params).isEmpty();
+  }
+
+  // ---- SESSION CLOSE closes the session ------------------------------------------------------
+
+  @Test
+  void sessionCloseClosesTheSession() {
+    QuerySession.bind(session);
+    try (final ResultSet rs = database.command("opencypher", "SESSION CLOSE")) {
+      assertThat(rs.next().<String>getProperty("operation")).isEqualTo("close");
+    }
+    assertThat(session.closed).isTrue();
+  }
+
+  // ---- Embedded use (no session bound) reports an actionable error ----------------------------
+
+  @Test
+  void sessionStatementWithoutABoundSessionFails() {
+    // No QuerySession bound (embedded): the statement must not silently no-op.
+    assertThatThrownBy(() -> database.command("opencypher", "SESSION SET $x = 1"))
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("server session");
+  }
+
+  // ---- Backward compatibility: session/reset/close remain valid identifiers -------------------
+
+  @Test
+  void keywordsRemainUsableAsIdentifiers() {
+    database.transaction(() -> {
+      try (final ResultSet ignored = database.command("opencypher",
+          "CREATE (p:Person {name: 'Sam', session: 1, reset: 2, close: 3})")) {
+      }
+    });
+
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (p:Person {name: 'Sam'}) RETURN p.session AS session, p.reset AS reset, p.close AS close")) {
+      final Result r = rs.next();
+      assertThat(r.<Number>getProperty("session").intValue()).isEqualTo(1);
+      assertThat(r.<Number>getProperty("reset").intValue()).isEqualTo(2);
+      assertThat(r.<Number>getProperty("close").intValue()).isEqualTo(3);
+    }
+  }
+}

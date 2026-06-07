@@ -239,6 +239,10 @@ CIDR
    : C I D R
    ;
 
+CLOSE
+   : C L O S E
+   ;
+
 COLLECT
    : C O L L E C T
    ;
@@ -1044,6 +1048,10 @@ RENAME
    : R E N A M E
    ;
 
+RESET
+   : R E S E T
+   ;
+
 REGEQ
    : '=~'
    ;
@@ -1186,6 +1194,10 @@ SERVER
 
 SERVERS
    : S E R V E R S
+   ;
+
+SESSION
+   : S E S S I O N
    ;
 
 SET
