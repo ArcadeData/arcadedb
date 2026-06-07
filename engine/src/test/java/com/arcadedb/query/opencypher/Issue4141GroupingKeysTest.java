@@ -125,6 +125,6 @@ public class Issue4141GroupingKeysTest {
     assertThatThrownBy(() ->
         database.query("opencypher", "MATCH (p:Person) WHERE count(*) > 1 RETURN p").close())
         .isInstanceOf(CommandParsingException.class)
-        .hasMessageContaining("Aggregation");
+        .hasMessageContaining("InvalidAggregation: Aggregation functions are not allowed in WHERE");
   }
 }
