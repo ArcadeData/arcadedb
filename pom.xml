@@ -58,7 +58,7 @@
 
         <docker.plugin.version>1.2.2</docker.plugin.version>
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
-        <jacoco-maven-plugin.version>0.8.14</jacoco-maven-plugin.version>
+        <jacoco-maven-plugin.version>0.8.15</jacoco-maven-plugin.version>
         <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
         <maven-failsafe-plugin.version>3.5.6</maven-failsafe-plugin.version>
         <maven-assembly-plugin.version>3.8.0</maven-assembly-plugin.version>
@@ -78,7 +78,7 @@
         <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
 
         <testcontainers.version>2.0.5</testcontainers.version>
-        <logback-classic.version>1.5.33</logback-classic.version>
+        <logback-classic.version>1.5.34</logback-classic.version>
         <micrometer.version>1.16.5</micrometer.version>
         <postgres.version>42.7.11</postgres.version>
 
@@ -98,7 +98,7 @@
         <grpc.version>1.79.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
         <protobuf-java.version>4.35.0</protobuf-java.version>
-        <com.google.api.grpc.version>2.71.0</com.google.api.grpc.version>
+        <com.google.api.grpc.version>2.72.0</com.google.api.grpc.version>
         <javax.annotation-api.version>1.3.2</javax.annotation-api.version>
 
         <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
