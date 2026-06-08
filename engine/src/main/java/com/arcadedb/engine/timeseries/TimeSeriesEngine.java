@@ -264,7 +264,7 @@ public class TimeSeriesEngine implements AutoCloseable {
     while (iter.hasNext()) {
       final Object[] row = iter.next();
       final long ts = (long) row[0];
-      final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
+      final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : singleBucketAnchor(fromTs);
       final double value;
 
       if (columnIndex + 1 < row.length && row[columnIndex + 1] instanceof Number)
@@ -451,7 +451,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             if (tagFilter != null && !tagFilter.matches(row))
               continue;
             final long ts = (long) row[0];
-            final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : fromTs;
+            final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : singleBucketAnchor(fromTs);
 
             for (int r = 0; r < reqCount; r++) {
               if (isCount[r])
@@ -661,6 +661,16 @@ public class TimeSeriesEngine implements AutoCloseable {
       peeked = delegate.hasNext() ? delegate.next() : null;
       return result;
     }
+  }
+
+  /**
+   * Resolves the bucket-timestamp anchor for single-bucket aggregation (when {@code bucketIntervalMs <= 0}).
+   * The caller-supplied {@code fromTs} can be the {@link Long#MIN_VALUE} "no lower bound" sentinel; anchoring
+   * the single bucket to that sentinel would make downstream consumers misformat it as a real epoch. In that
+   * case the bucket is anchored at the Unix epoch ({@code 0L}) instead.
+   */
+  static long singleBucketAnchor(final long fromTs) {
+    return fromTs == Long.MIN_VALUE ? 0L : fromTs;
   }
 
   private void accumulateToBucket(final AggregationResult result, final long bucketTs, final double value,

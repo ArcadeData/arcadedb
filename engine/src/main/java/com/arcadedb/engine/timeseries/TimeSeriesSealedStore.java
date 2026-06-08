@@ -498,7 +498,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           if (timestamps[i] < fromTs || timestamps[i] > toTs)
             continue;
 
-          final long bucketTs = bucketIntervalMs > 0 ? (timestamps[i] / bucketIntervalMs) * bucketIntervalMs : fromTs;
+          final long bucketTs = bucketIntervalMs > 0
+              ? (timestamps[i] / bucketIntervalMs) * bucketIntervalMs
+              : TimeSeriesEngine.singleBucketAnchor(fromTs);
 
           accumulateSample(result, bucketTs, values[i], type);
         }
@@ -703,6 +705,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           }
         } else {
           // No bucket interval — accumulate all into one bucket
+          final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
           for (int i = 0; i < tsCount; i++) {
             final long ts = timestamps[i];
             if (ts < fromTs || ts > toTs)
@@ -714,7 +717,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             for (int r = 0; r < reqCount; r++)
               rowValues[r] = isCount[r] ? 1.0 : decompressedCols[schemaColIndices[r]][i];
 
-            result.accumulateRow(fromTs, rowValues);
+            result.accumulateRow(singleBucketTs, rowValues);
           }
         }
         if (metrics != null)
