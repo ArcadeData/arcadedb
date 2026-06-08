@@ -59,6 +59,12 @@ import java.util.stream.Collectors;
  * txId:long|pages:int|&lt;segmentSize:int|fileId:int|pageNumber:long|pageModifiedFrom:int|pageModifiedTo:int|&lt;prevContent&gt;&lt;newContent&gt;segmentSize:int&gt;MagicNumber:long
  */
 public class TransactionContext implements Transaction {
+  // Bounded internal retry budget for the snapshot-vs-lock race against compaction-induced file migration during
+  // commit lock acquisition (see lockFilesInOrder). Each retry only re-resolves file ids and re-acquires locks (no
+  // rollback, no page reload), so it converges in microseconds. Sized for the worst legitimate case of concurrent
+  // compactions across all indexes of a multi-indexed type; exhausting it signals a real concurrency problem.
+  private static final int                           MAX_LOCK_MIGRATION_RETRIES = 10;
+
   private final DatabaseInternal                     database;
   private final Map<Integer, Integer>                newPageCounters       = new ConcurrentHashMap<>();
   // Per-tx record-count delta per bucket. Single-threaded (HashMap was used, not ConcurrentHashMap),
@@ -895,25 +901,63 @@ public class TransactionContext implements Transaction {
 
   private List<Integer> lockFilesInOrder(final IntHashSet files) {
     final long timeout = database.getConfiguration().getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
+    final LocalSchema schema = database.getSchema().getEmbedded();
 
-    final List<Integer> locked = database.getTransactionManager().tryLockFiles(files.toArray(), timeout, getRequester());
+    // Work on a private copy so the caller's set is never mutated by the migration re-resolution below
+    // (the explicit-lock path passes its own filesToLock set).
+    IntHashSet filesToLock = new IntHashSet(files.size() + 4);
+    files.forEach(filesToLock::add);
 
-    // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX.
-    // Transaction rollback is the caller's responsibility: commit1stPhase catches and rolls back; the explicit-lock path retries
-    // internally with refreshed file IDs (see LocalTransactionExplicitLock.lock()) since no modifications exist yet at that point.
-    for (Integer f : locked)
-      if (!database.getFileManager().existsFile(f)) {
-        database.getTransactionManager().unlockFilesInOrder(locked, getRequester());
-        final Integer migrated = database.getSchema().getEmbedded().getMigratedFileId(f);
-        if (migrated != null) {
-          LogManager.instance().log(this, Level.FINE, "Found upgraded file '%d' to '%d' during transaction commit", f, migrated);
-          throw new ConcurrentModificationException(
-              "Error on commit transaction: file '" + f + "' has been migrated to '" + migrated + "' (likely by an index compaction). Please retry the operation.");
+    // Bounded internal retry for the snapshot-vs-lock race against a background index compaction.
+    // A compaction can migrate an index file (registerFile + setMigratedFileId, old file removed) between the
+    // moment the file id is resolved (lockFilesFromChanges/addFilesToLock or an explicit-lock collection) and the
+    // moment we acquire and verify the lock here. When that happens the old file id no longer exists. Re-resolving
+    // the migrated id and retrying converges transparently without surfacing a ConcurrentModificationException to
+    // the caller: at this point no transaction modification has been applied yet (record updates and index entries
+    // are written later in commit1stPhase, after this method returns), so re-locking is side-effect free. The new
+    // file id is authoritative because the buffered index entries are resolved by index name at commit time and
+    // therefore land in the current (migrated) file regardless of which id we lock here.
+    for (int attempt = 0; ; ++attempt) {
+      final List<Integer> locked = database.getTransactionManager().tryLockFiles(filesToLock.toArray(), timeout, getRequester());
+
+      // CHECK IF ALL THE LOCKED FILES STILL EXIST. FILE MISSING CAN HAPPEN IN CASE OF INDEX COMPACTION OR DROP OF A BUCKET OR AN INDEX.
+      int missingFile = -1;
+      for (final Integer f : locked)
+        if (!database.getFileManager().existsFile(f)) {
+          missingFile = f;
+          break;
         }
-        throw new ConcurrentModificationException("File with id '" + f + "' has been removed");
-      }
 
-    return locked;
+      if (missingFile == -1)
+        return locked;
+
+      // FOUND A MISSING FILE: RELEASE EVERY LOCK ACQUIRED IN THIS ATTEMPT BEFORE DECIDING WHAT TO DO.
+      database.getTransactionManager().unlockFilesInOrder(locked, getRequester());
+
+      final Integer migrated = schema.getMigratedFileId(missingFile);
+      if (migrated == null)
+        throw new ConcurrentModificationException("File with id '" + missingFile + "' has been removed");
+
+      if (attempt >= MAX_LOCK_MIGRATION_RETRIES)
+        throw new ConcurrentModificationException(
+            "Error on commit transaction: file '" + missingFile + "' has been migrated to '" + migrated
+                + "' (likely by an index compaction). Please retry the operation.");
+
+      LogManager.instance().log(this, Level.FINE,
+          "Retrying lock acquisition after compaction migrated file '%d' to '%d' (attempt %d/%d, threadId=%d)", missingFile, migrated,
+          attempt + 1, MAX_LOCK_MIGRATION_RETRIES, Thread.currentThread().threadId());
+
+      // RE-RESOLVE THE MIGRATED FILE ID AND RETRY TRANSPARENTLY. IntHashSet has no remove(), so rebuild the set
+      // replacing the migrated id (rare path: only taken when a compaction raced this commit).
+      final int removed = missingFile;
+      final IntHashSet next = new IntHashSet(filesToLock.size() + 1);
+      filesToLock.forEach(id -> {
+        if (id != removed)
+          next.add(id);
+      });
+      next.add(migrated);
+      filesToLock = next;
+    }
   }
 
   private void checkExplicitLocks(final IntHashSet modifiedFiles) {
