@@ -687,6 +687,12 @@ class GraphAlgorithmsTest extends TestHelper {
 
     final int aId = gav.getNodeId(a.getIdentity());
     assertThat(lcc[aId]).isCloseTo(1.0 / 3.0, Offset.offset(1e-9));
+    // B and C each have 2 distinct undirected neighbours forming the single A-B-C triangle => LCC = 1.0;
+    // D has a single distinct neighbour (A), degree < 2 => LCC = 0.0. The inflated (un-deduplicated)
+    // degree would corrupt B and C too, so asserting them makes the regression airtight.
+    assertThat(lcc[gav.getNodeId(b.getIdentity())]).isCloseTo(1.0, Offset.offset(1e-9));
+    assertThat(lcc[gav.getNodeId(c.getIdentity())]).isCloseTo(1.0, Offset.offset(1e-9));
+    assertThat(lcc[gav.getNodeId(d.getIdentity())]).isCloseTo(0.0, Offset.offset(1e-9));
 
     gav.drop();
   }

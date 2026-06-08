@@ -1320,6 +1320,9 @@ public final class GraphAlgorithms {
     // distinct neighbour exactly once and never the node itself. Both the single-type merge and
     // the multi-type sort above leave equal neighbours adjacent, so this is a single linear walk
     // per node. The write cursor never overtakes the read cursor, so compaction is safe in place.
+    // TODO: this pass is sequential while the multi-type sort above is parallel; for very large
+    // graphs it could be parallelized via a two-phase prefix-sum (per-node compacted sizes, then
+    // a parallel compaction), at the cost of extra complexity.
     final int[] compactOffsets = new int[n + 1];
     int write = 0;
     for (int u = 0; u < n; u++) {
