@@ -1132,6 +1132,39 @@ public enum Type {
   }
 
   /**
+   * Returns a canonical representation of a value to be used as a hash/equality key (e.g. GROUP BY or DISTINCT keys).
+   * <p>
+   * Java boxed numbers do not equate across types or scales: {@code Integer(1).equals(Long(1))} is {@code false} and
+   * {@code BigDecimal("1").equals(BigDecimal("1.0"))} is {@code false} (different scale). When the same logical value
+   * reaches a grouping step represented with different numeric types (e.g. an Integer from an index scan and a
+   * BigDecimal from arithmetic), this would split a single logical group into several. To avoid that, every finite
+   * {@link Number} is normalised to a {@link BigDecimal} with trailing zeros stripped, so numerically-equal values
+   * share the same {@code equals}/{@code hashCode}. Non-finite floating point values (NaN, +/-Infinity) cannot be
+   * represented as BigDecimal and are returned unchanged; all non-numeric values are returned unchanged.
+   *
+   * @param value the value to normalise (may be {@code null})
+   *
+   * @return the canonical key for the value
+   */
+  public static Object normalizeNumberForKey(final Object value) {
+    if (value instanceof Number) {
+      if (value instanceof BigDecimal bigDecimal)
+        return bigDecimal.stripTrailingZeros();
+      if (value instanceof BigInteger bigInteger)
+        return new BigDecimal(bigInteger);
+      if (value instanceof Double || value instanceof Float) {
+        final double d = ((Number) value).doubleValue();
+        if (Double.isNaN(d) || Double.isInfinite(d))
+          return value;
+        return BigDecimal.valueOf(d).stripTrailingZeros();
+      }
+      // Integer/Long/Short/Byte/AtomicInteger/AtomicLong and other integral numbers
+      return BigDecimal.valueOf(((Number) value).longValue());
+    }
+    return value;
+  }
+
+  /**
    * Convert the input object to an integer.
    *
    * @param value Any type supported
