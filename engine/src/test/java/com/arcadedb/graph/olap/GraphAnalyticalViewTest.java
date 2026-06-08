@@ -2474,6 +2474,72 @@ class GraphAnalyticalViewTest extends TestHelper {
     gav.drop();
   }
 
+  /**
+   * Regression for #4512: the slow path of getNeighborsFromCSR (taken whenever an overlay is present)
+   * must filter base CSR neighbours through the overlay's deleted-edge set. Otherwise getVertices(...)
+   * returns ghost edges and disagrees with countEdges(...) on the same view after an edge delete.
+   */
+  @Test
+  void getVerticesExcludesEdgesDeletedInOverlay() {
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex alice = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex bob = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex charlie = database.newVertex("Person").set("name", "Charlie").save();
+    alice.newEdge("FOLLOWS", bob);
+    alice.newEdge("FOLLOWS", charlie);
+    bob.newEdge("FOLLOWS", charlie);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("get-vertices-del-edge")
+        .withVertexTypes("Person")
+        .withEdgeTypes("FOLLOWS")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int aliceId = gav.getNodeId(alice.getIdentity());
+    final int bobId = gav.getNodeId(bob.getIdentity());
+    final int charlieId = gav.getNodeId(charlie.getIdentity());
+
+    // Before deletion: alice -> {bob, charlie}, charlie <- {alice, bob}
+    assertThat(gav.getVertices(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS")).containsExactlyInAnyOrder(bobId, charlieId);
+    assertThat(gav.getVertices(charlieId, Vertex.DIRECTION.IN, "FOLLOWS")).containsExactlyInAnyOrder(aliceId, bobId);
+
+    // Delete one edge: alice -> bob. This activates the overlay (slow path of getNeighborsFromCSR).
+    database.begin();
+    alice.getIdentity().asVertex().getEdges(Vertex.DIRECTION.OUT, "FOLLOWS").forEach(e -> {
+      if (e.getIn().equals(bob.getIdentity()))
+        e.delete();
+    });
+    database.commit();
+
+    // OUT direction: bob must no longer appear among alice's out-neighbours.
+    final int[] aliceOut = gav.getVertices(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS");
+    assertThat(aliceOut).containsExactly(charlieId);
+    assertThat(aliceOut).doesNotContain(bobId);
+    // getVertices() and countEdges() must agree on the same view.
+    assertThat((long) aliceOut.length).isEqualTo(gav.countEdges(aliceId, Vertex.DIRECTION.OUT, "FOLLOWS"));
+
+    // IN direction: alice must no longer appear among bob's in-neighbours.
+    final int[] bobIn = gav.getVertices(bobId, Vertex.DIRECTION.IN, "FOLLOWS");
+    assertThat(bobIn).isEmpty();
+    assertThat((long) bobIn.length).isEqualTo(gav.countEdges(bobId, Vertex.DIRECTION.IN, "FOLLOWS"));
+
+    // BOTH direction on alice: only the surviving alice -> charlie edge remains.
+    final int[] aliceBoth = gav.getVertices(aliceId, Vertex.DIRECTION.BOTH, "FOLLOWS");
+    assertThat(aliceBoth).containsExactly(charlieId);
+    assertThat((long) aliceBoth.length).isEqualTo(gav.countEdges(aliceId, Vertex.DIRECTION.BOTH, "FOLLOWS"));
+
+    // Untouched edges remain intact.
+    assertThat(gav.getVertices(charlieId, Vertex.DIRECTION.IN, "FOLLOWS")).containsExactlyInAnyOrder(aliceId, bobId);
+    assertThat(gav.getVertices(bobId, Vertex.DIRECTION.OUT, "FOLLOWS")).containsExactly(charlieId);
+
+    gav.drop();
+  }
+
   @Test
   void incrementalDeleteVertex() {
     database.getSchema().createVertexType("Person");
