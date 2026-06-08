@@ -56,6 +56,29 @@ The fast paths (no overlay) are unchanged - they are only reachable when
 - `GraphAnalyticalViewTest`: 124 tests, 0 failures.
 - `GraphAlgorithmsTest`: 20 tests, 0 failures.
 
+## PR
+
+- https://github.com/ArcadeData/arcadedb/pull/4525
+
+## Review cycles
+
+### Cycle 1 — head 98766bf
+- `gemini-code-assist`: COMMENTED. One medium-priority actionable item: in
+  `copyBaseExcludingDeleted`, `ov.isEdgeDeleted` autoboxes a packed long for a
+  `Set` lookup and was called twice per neighbour (count pass + copy pass).
+  Suggested caching deletion status in a lazily-allocated `boolean[]` so the call
+  happens once per neighbour, halving lookups/allocations while keeping the
+  no-deletion case allocation-free.
+  - APPLIED: rewrote the helper as a single pass that caches results in a lazily
+    allocated `boolean[]` mask. Tests still green (124 + 20).
+- `claude`: no review produced within the 15-minute per-iteration window.
+
+## Final state
+
+- timeout: `claude` bot did not review within the per-iteration window.
+  Gemini's actionable feedback was applied and pushed. PR left open for the
+  developer. Merge remains the developer's responsibility.
+
 ## Status
 
-- Fix implemented and verified.
+- Fix implemented, verified, and Gemini review feedback addressed.

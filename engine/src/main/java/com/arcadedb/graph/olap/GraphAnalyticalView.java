@@ -1634,27 +1634,35 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (ov == null)
       return Arrays.copyOfRange(neighbors, start, end);
 
-    // First pass: count survivors. Avoids allocating a trimmed array when nothing is deleted.
+    // Single pass over the slice. ov.isEdgeDeleted() autoboxes a packed long for a Set lookup, so we call it
+    // exactly once per neighbour and cache the result in a boolean[]. The cache is allocated lazily, only when
+    // the first deleted edge is found, so the common no-deletion case stays allocation-free.
+    final int len = end - start;
+    boolean[] deletedMask = null;
     int kept = 0;
-    for (int i = start; i < end; i++) {
-      final int n = neighbors[i];
+    for (int i = 0; i < len; i++) {
+      final int n = neighbors[start + i];
       final boolean deleted = outgoing ? ov.isEdgeDeleted(edgeType, nodeId, n) : ov.isEdgeDeleted(edgeType, n, nodeId);
-      if (!deleted)
+      if (deleted) {
+        if (deletedMask == null) {
+          deletedMask = new boolean[len];
+          kept = i; // every neighbour seen so far was kept
+        }
+        deletedMask[i] = true;
+      } else if (deletedMask != null) {
         kept++;
+      }
     }
-    if (kept == end - start)
+    if (deletedMask == null)
       return Arrays.copyOfRange(neighbors, start, end);
     if (kept == 0)
       return EMPTY_INT;
 
     final int[] result = new int[kept];
     int pos = 0;
-    for (int i = start; i < end; i++) {
-      final int n = neighbors[i];
-      final boolean deleted = outgoing ? ov.isEdgeDeleted(edgeType, nodeId, n) : ov.isEdgeDeleted(edgeType, n, nodeId);
-      if (!deleted)
-        result[pos++] = n;
-    }
+    for (int i = 0; i < len; i++)
+      if (!deletedMask[i])
+        result[pos++] = neighbors[start + i];
     return result;
   }
 
