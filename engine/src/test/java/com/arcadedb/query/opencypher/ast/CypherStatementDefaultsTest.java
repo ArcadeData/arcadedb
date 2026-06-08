@@ -80,4 +80,30 @@ class CypherStatementDefaultsTest {
       assertThat(s.hasFinishClause()).isFalse();
     }
   }
+
+  /**
+   * Issue #4505: {@code isServerControlStatement()} names the "not idempotent yet permission-gated as READ"
+   * concept. Only transaction control and session management are server-control statements; admin and DDL
+   * statements have their own (ADMIN / SCHEMA) gates and must report false, as must ordinary query statements
+   * via the interface default.
+   */
+  @Test
+  void onlyTransactionAndSessionAreServerControlStatements() {
+    final List<CypherStatement> serverControl = List.of(
+        new CypherTransactionStatement(CypherTransactionStatement.Kind.BEGIN),
+        new CypherTransactionStatement(CypherTransactionStatement.Kind.COMMIT),
+        new CypherTransactionStatement(CypherTransactionStatement.Kind.ROLLBACK),
+        new CypherSessionStatement(CypherSessionStatement.Kind.RESET),
+        new CypherSessionStatement(CypherSessionStatement.Kind.SET, "p", null),
+        new CypherSessionStatement(CypherSessionStatement.Kind.CLOSE));
+    for (final CypherStatement s : serverControl)
+      assertThat(s.isServerControlStatement()).isTrue();
+
+    final List<CypherStatement> notServerControl = List.of(
+        new CypherAdminStatement(CypherAdminStatement.Kind.SHOW_USERS, null, null, false, false),
+        new CypherDDLStatement(CypherDDLStatement.Kind.CREATE_INDEX, null, "idx", "Person",
+            List.of("name"), false, false, false));
+    for (final CypherStatement s : notServerControl)
+      assertThat(s.isServerControlStatement()).isFalse();
+  }
 }

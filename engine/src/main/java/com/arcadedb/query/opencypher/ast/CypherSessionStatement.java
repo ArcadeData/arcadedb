@@ -62,17 +62,18 @@ public class CypherSessionStatement implements CypherStatement {
   }
 
   /**
-   * Returns {@code false} even though session management reads/writes no query data: {@code isReadOnly()}
-   * drives {@code isIdempotent()}, which HA uses to route a command and which Bolt's {@code isWriteQuery()}
-   * uses to pick {@code command()} vs {@code query()} - SESSION statements must go through {@code command()}
-   * (the only path that dispatches them) and must not be routed to a follower. The MCP permission axis is a
-   * separate concern that classifies them as {@code READ}.
-   *
-   * @see com.arcadedb.query.opencypher.query.OpenCypherQueryEngine for the {@code OperationType.READ} side
+   * Returns {@code false}: SESSION statements are not idempotent, must go through {@code command()} (the only
+   * path that dispatches them) and must not be routed to a follower. The decoupled READ permission gating
+   * lives on the other axis - see {@link #isServerControlStatement()}.
    */
   @Override
   public boolean isReadOnly() {
     return false;
+  }
+
+  @Override
+  public boolean isServerControlStatement() {
+    return true;
   }
 
   // All structural query accessors (getMatchClauses, getReturnClause, hasCreate, ...) inherit the
