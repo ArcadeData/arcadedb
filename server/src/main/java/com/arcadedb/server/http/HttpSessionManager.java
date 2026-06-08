@@ -97,10 +97,14 @@ public class HttpSessionManager extends RWLockContext {
   public HttpSession createSession(final ServerSecurityUser user, final TransactionContext dbTx) {
     return executeInWriteLock(() -> {
       final String id = "AS-" + UUID.randomUUID();
-      final HttpSession session = new HttpSession(user, id, dbTx);
+      final HttpSession session = new HttpSession(user, id, dbTx, this);
       sessions.put(id, session);
       return session;
     });
+  }
+
+  public HttpSession removeSession(final String id) {
+    return executeInWriteLock(() -> sessions.remove(id));
   }
 
   public int getActiveSessions() {

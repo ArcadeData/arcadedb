@@ -20,8 +20,12 @@ package com.arcadedb.server.http;
 
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.QuerySession;
 import com.arcadedb.server.security.ServerSecurityUser;
 
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -29,22 +33,53 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
 /**
- * Manage a transaction on the HTTP protocol.
+ * Manage a transaction on the HTTP protocol. Also acts as the {@link QuerySession} that ISO GQL Session
+ * Management statements ({@code SESSION SET/RESET/CLOSE}) operate on: it carries session parameters that
+ * subsequent commands in the same session see as query parameters.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class HttpSession {
-  private static final long               DEFAULT_TIMEOUT = 5_000;
-  public final         String             id;
-  public final         TransactionContext transaction;
-  public final         ServerSecurityUser user;
-  private final        ReentrantLock      lock            = new ReentrantLock();
-  private volatile     long               lastUpdate      = System.currentTimeMillis();
+public class HttpSession implements QuerySession {
+  private static final long                DEFAULT_TIMEOUT = 5_000;
+  public final         String              id;
+  public final         TransactionContext  transaction;
+  public final         ServerSecurityUser  user;
+  private final        HttpSessionManager  manager;
+  // Accessed only under the session lock (see execute()), so a plain HashMap is sufficient.
+  private final        Map<String, Object> parameters      = new HashMap<>();
+  // Cached live read-only view over 'parameters' (reflects mutations), so getParameters() allocates nothing.
+  private final        Map<String, Object> parametersView  = Collections.unmodifiableMap(parameters);
+  private final        ReentrantLock       lock            = new ReentrantLock();
+  private volatile     long                lastUpdate      = System.currentTimeMillis();
 
-  public HttpSession(final ServerSecurityUser user, final String id, final TransactionContext dbTx) {
+  public HttpSession(final ServerSecurityUser user, final String id, final TransactionContext dbTx,
+      final HttpSessionManager manager) {
     this.user = user;
     this.id = id;
     this.transaction = dbTx;
+    this.manager = manager;
+  }
+
+  @Override
+  public void setParameter(final String name, final Object value) {
+    parameters.put(name, value);
+  }
+
+  @Override
+  public Map<String, Object> getParameters() {
+    return parametersView;
+  }
+
+  @Override
+  public void reset() {
+    parameters.clear();
+  }
+
+  @Override
+  public void close() {
+    // Invalidate the session so later references to its id fail, then roll back its open transaction.
+    manager.removeSession(id);
+    cancel();
   }
 
   public long elapsedFromLastUpdate() {

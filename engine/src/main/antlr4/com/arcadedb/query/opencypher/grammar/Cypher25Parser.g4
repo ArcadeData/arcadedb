@@ -959,7 +959,19 @@ command
       | showCommand
       | terminateCommand
       | transactionCommand
+      | sessionCommand
    )
+   ;
+
+// ISO/IEC 39075 (GQL) session management.
+// SESSION SET binds a named query parameter on the current server session; later commands in the same
+// session see it as $name unless they supply their own value. RESET clears the session parameters; CLOSE
+// closes the session (rolls back its transaction and invalidates it). These require a server session - in
+// embedded use they report an actionable error.
+sessionCommand
+   : SESSION SET parameter["ANY"] EQ expression
+   | SESSION RESET
+   | SESSION CLOSE
    ;
 
 // ISO/IEC 39075 (GQL) transaction control - issue #4141 section 2.
@@ -2202,6 +2214,7 @@ unescapedSymbolicNameString_
    | CASE
    | CHANGE
    | CIDR
+   | CLOSE
    | COLLECT
    | COMMAND
    | COMMANDS
@@ -2388,6 +2401,7 @@ unescapedSymbolicNameString_
    | REPORT
    | REQUIRE
    | REQUIRED
+   | RESET
    | RESTRICT
    | RETRY
    | RETURN
@@ -2410,6 +2424,7 @@ unescapedSymbolicNameString_
    | SEEK
    | SERVER
    | SERVERS
+   | SESSION
    | SET
    | SETTING
    | SETTINGS
