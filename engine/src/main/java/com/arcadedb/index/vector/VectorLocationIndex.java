@@ -88,9 +88,11 @@ public class VectorLocationIndex {
   public VectorLocationIndex(final int maxSize, final int initialCapacity) {
     this.maxSize = maxSize;
     if (maxSize > 0) {
-      // Bounded LRU cache with automatic eviction
+      // Bounded LRU cache with automatic eviction.
+      // Insertion-order (accessOrder=false): a get() must not be a structural modification, otherwise concurrent reads
+      // would corrupt the doubly-linked list while another thread iterates it. Eviction stays least-recently-inserted.
       this.locations = Collections.synchronizedMap(
-          new LinkedHashMap<Integer, VectorLocation>(initialCapacity, 0.75f, true) {
+          new LinkedHashMap<Integer, VectorLocation>(initialCapacity, 0.75f, false) {
             @Override
             protected boolean removeEldestEntry(final Map.Entry<Integer, VectorLocation> eldest) {
               return size() > maxSize;
@@ -171,7 +173,14 @@ public class VectorLocationIndex {
    * @return Stream of vector IDs
    */
   public IntStream getAllVectorIds() {
-    return locations.keySet().stream().mapToInt(Integer::intValue);
+    // Snapshot the keys while holding the wrapper monitor: Collections.synchronizedMap requires manual
+    // synchronization around any iteration, and the bounded backend is a LinkedHashMap whose list must not
+    // be mutated concurrently. Streaming happens on the detached copy.
+    final int[] ids;
+    synchronized (locations) {
+      ids = locations.keySet().stream().mapToInt(Integer::intValue).toArray();
+    }
+    return IntStream.of(ids);
   }
 
   /**
@@ -180,9 +189,16 @@ public class VectorLocationIndex {
    * @return Stream of active vector IDs
    */
   public IntStream getActiveVectorIds() {
-    return locations.keySet().stream()
-        .filter(id -> !locations.get(id).deleted)
-        .mapToInt(Integer::intValue);
+    // Snapshot the active ids while holding the wrapper monitor, evaluating the deleted flag inside the
+    // critical section so neither the iteration nor the per-entry get() races with concurrent mutation.
+    final int[] ids;
+    synchronized (locations) {
+      ids = locations.entrySet().stream()
+          .filter(e -> !e.getValue().deleted)
+          .mapToInt(Map.Entry::getKey)
+          .toArray();
+    }
+    return IntStream.of(ids);
   }
 
   /**
@@ -200,7 +216,10 @@ public class VectorLocationIndex {
    * @return Number of active vectors
    */
   public long getActiveCount() {
-    return locations.values().stream().filter(loc -> !loc.deleted).count();
+    // Iterate the values inside the wrapper monitor as required by Collections.synchronizedMap.
+    synchronized (locations) {
+      return locations.values().stream().filter(loc -> !loc.deleted).count();
+    }
   }
 
   /**
