@@ -106,20 +106,13 @@ public class OpenCypherQueryEngine implements QueryEngine {
         public Set<OperationType> getOperationTypes() {
           if (statement instanceof CypherAdminStatement)
             return CollectionUtils.singletonSet(OperationType.ADMIN);
-          // Transaction control (START TRANSACTION/COMMIT/ROLLBACK) is a session-control operation that
-          // reads/writes no data itself; the writes it wraps are gated by their own operation types. So it
-          // must not be classified as ADMIN (that would lock it behind the MCP admin flag and stop a
-          // write-capable agent from committing its own writes). This permission axis is independent of
-          // isReadOnly()/HA routing (see CypherTransactionStatement.isReadOnly()), so keep this check ahead
-          // of the isReadOnly()/write-detection fallback below to avoid the write-set misclassification.
-          if (statement instanceof CypherTransactionStatement)
-            return CollectionUtils.singletonSet(OperationType.READ);
-          // Session management is session-control (no data read/write); same READ permission rationale as
-          // transaction control above, and intentionally decoupled from isReadOnly() (see
-          // CypherSessionStatement.isReadOnly()). SESSION CLOSE rolls back the caller's OWN session
-          // transaction - a user can only close the session bound to their own request, so discarding their
-          // own uncommitted work is not a privilege escalation and READ remains the correct gate.
-          if (statement instanceof CypherSessionStatement)
+          // Server-control statements (transaction control and session management) read/write no data
+          // themselves; the writes they wrap are gated by their own operation types. They must not be
+          // classified as ADMIN (that would lock them behind the MCP admin flag and stop a write-capable
+          // agent from committing its own writes). This permission axis is independent of isReadOnly()/HA
+          // routing - see CypherStatement.isServerControlStatement() - so keep this check ahead of the
+          // isReadOnly()/write-detection fallback below to avoid the write-set misclassification.
+          if (statement.isServerControlStatement())
             return CollectionUtils.singletonSet(OperationType.READ);
           if (statement instanceof CypherDDLStatement)
             return CollectionUtils.singletonSet(OperationType.SCHEMA);

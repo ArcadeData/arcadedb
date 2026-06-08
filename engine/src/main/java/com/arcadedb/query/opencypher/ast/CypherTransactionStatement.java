@@ -58,13 +58,15 @@ public class CypherTransactionStatement implements CypherStatement {
 
   @Override
   public boolean isReadOnly() {
-    // Intentionally false even though transaction control reads/writes no query data. isReadOnly()
-    // drives isIdempotent(), which HA uses to route a command: an idempotent command may run on a
-    // follower, a non-idempotent one is forwarded to the leader (RaftReplicatedDatabase.command()).
-    // Transaction control must establish its write context on the leader, and it is not idempotent
-    // (a repeated START TRANSACTION nests). The separate MCP permission axis classifies it as READ in
-    // OpenCypherQueryEngine.getOperationTypes() - that is a different concern from this one.
+    // Intentionally false: transaction control is not idempotent (a repeated START TRANSACTION nests) and
+    // must establish its write context on the leader, so HA must not route it to a follower. The decoupled
+    // READ permission gating lives on the other axis - see isServerControlStatement().
     return false;
+  }
+
+  @Override
+  public boolean isServerControlStatement() {
+    return true;
   }
 
   // All structural query accessors (getMatchClauses, getReturnClause, hasCreate, ...) inherit the

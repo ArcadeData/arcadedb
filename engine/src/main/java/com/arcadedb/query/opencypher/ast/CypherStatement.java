@@ -263,4 +263,25 @@ public interface CypherStatement {
   default boolean hasFinishClause() {
     return false;
   }
+
+  /**
+   * Returns true when this is a server/session control statement (transaction control such as
+   * {@code START TRANSACTION}/{@code COMMIT}/{@code ROLLBACK}, or session management such as
+   * {@code SESSION SET}/{@code RESET}/{@code CLOSE}).
+   * <p>
+   * These statements sit on two deliberately decoupled axes, which this single predicate names so the
+   * split no longer needs parallel comments at each call site (issue #4505):
+   * <ul>
+   *   <li>{@link #isReadOnly()} returns {@code false}, so they are <em>not</em> idempotent: HA routes them
+   *       to the leader and Bolt sends them through {@code command()} (the only path that dispatches them).</li>
+   *   <li>They read and write no data of their own, so the MCP permission axis
+   *       ({@code OpenCypherQueryEngine.getOperationTypes()}) gates them as least-privilege
+   *       {@code OperationType.READ}; the work they wrap is gated separately by its own operation types.</li>
+   * </ul>
+   *
+   * @return true for transaction-control / session-management statements, false otherwise
+   */
+  default boolean isServerControlStatement() {
+    return false;
+  }
 }
