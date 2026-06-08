@@ -251,6 +251,86 @@ class DistinctExecutionStepTest extends TestHelper {
     result.close();
   }
 
+  /**
+   * Issue #4506: when a projection excludes the identity ({@code @rid}) the visible rows can collapse,
+   * but DISTINCT used to deduplicate by RID and wrongly kept the duplicates. After excluding the RID
+   * the two records below become identical visible rows and must collapse into one.
+   */
+  @Test
+  void shouldDeduplicateByValueWhenProjectionExcludesRid() {
+    database.getSchema().createDocumentType("Item");
+
+    database.transaction(() -> {
+      database.newDocument("Item").set("name", "x").save();
+      database.newDocument("Item").set("name", "x").save(); // same content, different RID
+    });
+
+    final ResultSet result = database.query("sql",
+        "SELECT DISTINCT *, !@rid, !@type FROM Item");
+
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      assertThat(item.<String>getProperty("name")).isEqualTo("x");
+      count++;
+    }
+
+    assertThat(count).isEqualTo(1);
+    result.close();
+  }
+
+  /**
+   * Issue #4506: a wildcard projection that drops {@code @rid} and a discriminating field must
+   * deduplicate on the remaining projected value, not on the underlying record identity.
+   */
+  @Test
+  void shouldDeduplicateByRemainingProjectionWhenRidExcluded() {
+    database.getSchema().createDocumentType("Reading");
+
+    database.transaction(() -> {
+      database.newDocument("Reading").set("sensor", "a").set("ts", 1).save();
+      database.newDocument("Reading").set("sensor", "a").set("ts", 2).save();
+      database.newDocument("Reading").set("sensor", "a").set("ts", 3).save();
+      database.newDocument("Reading").set("sensor", "b").set("ts", 4).save();
+    });
+
+    final ResultSet result = database.query("sql",
+        "SELECT DISTINCT *, !@rid, !@type, !ts FROM Reading");
+
+    final Set<String> sensors = new HashSet<>();
+    while (result.hasNext())
+      sensors.add(result.next().getProperty("sensor"));
+
+    assertThat(sensors).containsExactlyInAnyOrder("a", "b");
+    result.close();
+  }
+
+  /**
+   * Issue #4506: a plain {@code SELECT DISTINCT *} keeps {@code @rid} in the output, so two records
+   * with otherwise identical content are still distinct rows and must NOT be collapsed.
+   */
+  @Test
+  void shouldKeepDistinctRecordsWhenWildcardRetainsRid() {
+    database.getSchema().createDocumentType("Doc");
+
+    database.transaction(() -> {
+      database.newDocument("Doc").set("name", "same").save();
+      database.newDocument("Doc").set("name", "same").save();
+    });
+
+    final ResultSet result = database.query("sql",
+        "SELECT DISTINCT * FROM Doc");
+
+    int count = 0;
+    while (result.hasNext()) {
+      result.next();
+      count++;
+    }
+
+    assertThat(count).isEqualTo(2); // different RIDs are part of the output
+    result.close();
+  }
+
   @Test
   void shouldHandleDistinctWithNullValues() {
     database.getSchema().createDocumentType("Data");
