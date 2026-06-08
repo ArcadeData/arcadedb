@@ -944,9 +944,6 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * Ensure database is open and accessible.
-   */
-  /**
    * Merges the connection's session parameters (set via {@code SESSION SET}) into the RUN request parameters.
    * Request-supplied parameters win. Returns {@code requestParams} unchanged when there are no session
    * parameters (issue #4141 section 2).
@@ -955,6 +952,9 @@ public class BoltNetworkExecutor extends Thread {
     return QuerySession.mergeParameters(session.getParameters(), requestParams);
   }
 
+  /**
+   * Ensure database is open and accessible.
+   */
   private boolean ensureDatabase() throws IOException {
     if (database != null && database.isOpen()) {
       // Check if we need to switch to a different database

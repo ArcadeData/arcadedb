@@ -37,6 +37,8 @@ import java.util.Map;
  */
 public class BoltSession implements QuerySession {
   private final Map<String, Object> parameters = new HashMap<>();
+  // Cached live read-only view over 'parameters' (reflects mutations), so getParameters() allocates nothing.
+  private final Map<String, Object> parametersView = Collections.unmodifiableMap(parameters);
 
   @Override
   public void setParameter(final String name, final Object value) {
@@ -45,7 +47,7 @@ public class BoltSession implements QuerySession {
 
   @Override
   public Map<String, Object> getParameters() {
-    return Collections.unmodifiableMap(parameters);
+    return parametersView;
   }
 
   @Override

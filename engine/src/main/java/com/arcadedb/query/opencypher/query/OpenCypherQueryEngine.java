@@ -592,7 +592,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
       // Expose the request parameters plus the session parameters set so far, so a value can reference
-      // either (request parameters win on a name clash).
+      // either (request parameters win on a name clash). This merge is what makes the value resolve on the
+      // embedded/direct-API path, which has no protocol-layer pre-merge; over HTTP/Bolt the incoming params
+      // already include the session params (pre-merged for ordinary queries), so this is an idempotent re-merge.
       context.setInputParameters(QuerySession.mergeParameters(session.getParameters(), parameters));
       final Object value = EXPRESSION_EVALUATOR.evaluate(stmt.getValueExpression(), new ResultInternal(database), context);
       session.setParameter(stmt.getParameterName(), value);
@@ -605,6 +607,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
       result.setProperty("operation", "reset");
       break;
     case CLOSE:
+      // Depending on the owner, close() may roll back the session's transaction (HTTP). It runs while this
+      // command is still in flight, so any further DB operation issued in the same request/session after
+      // SESSION CLOSE would act on an already-finalized transaction.
       session.close();
       result.setProperty("operation", "close");
       break;

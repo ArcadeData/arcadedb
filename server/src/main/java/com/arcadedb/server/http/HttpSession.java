@@ -47,6 +47,8 @@ public class HttpSession implements QuerySession {
   private final        HttpSessionManager  manager;
   // Accessed only under the session lock (see execute()), so a plain HashMap is sufficient.
   private final        Map<String, Object> parameters      = new HashMap<>();
+  // Cached live read-only view over 'parameters' (reflects mutations), so getParameters() allocates nothing.
+  private final        Map<String, Object> parametersView  = Collections.unmodifiableMap(parameters);
   private final        ReentrantLock       lock            = new ReentrantLock();
   private volatile     long                lastUpdate      = System.currentTimeMillis();
 
@@ -65,7 +67,7 @@ public class HttpSession implements QuerySession {
 
   @Override
   public Map<String, Object> getParameters() {
-    return Collections.unmodifiableMap(parameters);
+    return parametersView;
   }
 
   @Override

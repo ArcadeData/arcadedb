@@ -65,6 +65,11 @@ public class CypherSessionStatement implements CypherStatement {
 
   @Override
   public boolean isReadOnly() {
+    // Intentionally false even though session management reads/writes no query data. isReadOnly() drives
+    // isIdempotent(), which HA uses to route a command and which Bolt's isWriteQuery() uses to pick
+    // command() vs query() - SESSION statements must go through command() (the only path that dispatches
+    // them) and must not be routed to a follower. The MCP permission axis classifies them separately as
+    // READ in OpenCypherQueryEngine.getOperationTypes(); that is a different concern from this one.
     return false;
   }
 
