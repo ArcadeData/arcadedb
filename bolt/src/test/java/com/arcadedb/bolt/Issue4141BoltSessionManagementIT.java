@@ -29,6 +29,7 @@ import org.neo4j.driver.GraphDatabase;
 import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
+import org.neo4j.driver.Transaction;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -62,8 +63,27 @@ public class Issue4141BoltSessionManagementIT extends BaseGraphServerTest {
         AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
         Config.builder()
             .withoutEncryption()
-            .withMaxConnectionPoolSize(1) // pin to one server-side connection so session params persist
+            // Session parameters are connection-scoped, so pin the driver to one server-side connection
+            // for deterministic cross-command visibility in these tests.
+            .withMaxConnectionPoolSize(1)
             .build());
+  }
+
+  @Test
+  void sessionCloseDoesNotRollBackTheBoltTransaction() {
+    // Asymmetry vs HTTP: over Bolt the connection/transaction lifecycle is the protocol's, so SESSION CLOSE
+    // only clears session parameters - it must NOT roll back the connection's open transaction.
+    try (final Driver driver = getDriver();
+        final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+      try (final Transaction tx = session.beginTransaction()) {
+        tx.run("CREATE (n:BoltCloseAsym {id: 1})").consume();
+        tx.run("SESSION CLOSE").consume();
+        // The CREATE is still visible inside the transaction: SESSION CLOSE did not roll it back.
+        final Result r = tx.run("MATCH (n:BoltCloseAsym {id: 1}) RETURN count(n) AS c");
+        assertThat(r.next().get("c").asInt()).isEqualTo(1);
+        tx.commit();
+      }
+    }
   }
 
   @Test

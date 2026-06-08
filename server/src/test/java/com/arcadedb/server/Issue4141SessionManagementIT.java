@@ -113,6 +113,21 @@ public class Issue4141SessionManagementIT extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void sessionCloseAfterCommitDoesNotFail() throws Exception {
+    testEachServer(serverIndex -> {
+      final String baseUrl = "http://127.0.0.1:248" + serverIndex + "/api/v1";
+      final String sessionId = beginSession(baseUrl);
+
+      // Commit the session transaction so it is no longer active.
+      command(baseUrl, sessionId, "COMMIT");
+
+      // SESSION CLOSE must still succeed with no active transaction (cancel() guards with isActive()).
+      final JSONObject res = command(baseUrl, sessionId, "SESSION CLOSE");
+      assertThat(res.getJSONArray("result").getJSONObject(0).getString("operation")).isEqualTo("close");
+    });
+  }
+
   private String beginSession(final String baseUrl) throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + "/begin/" + getDatabaseName()).openConnection();
     connection.setRequestMethod("POST");

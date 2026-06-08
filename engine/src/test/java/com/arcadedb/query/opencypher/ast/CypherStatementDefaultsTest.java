@@ -21,7 +21,6 @@ package com.arcadedb.query.opencypher.ast;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
-import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -38,6 +37,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class CypherStatementDefaultsTest {
 
+  // Maintenance note: when a new non-query CypherStatement class is added (a control/admin statement that
+  // carries no clauses), add an instance to the list below so it is held to the neutral defaults.
   @Test
   void controlStatementsInheritNeutralDefaults() {
     final List<CypherStatement> controlStatements = List.of(
@@ -78,20 +79,5 @@ class CypherStatementDefaultsTest {
       assertThat(s.hasVariableLengthPath()).isFalse();
       assertThat(s.hasFinishClause()).isFalse();
     }
-  }
-
-  @Test
-  void everyControlStatementClassIsCovered() {
-    // Guard rail: if a new non-query CypherStatement class is added, extend the coverage above.
-    final List<String> covered = Stream.of(
-            CypherTransactionStatement.class,
-            CypherSessionStatement.class,
-            CypherAdminStatement.class,
-            CypherDDLStatement.class)
-        .map(Class::getSimpleName)
-        .toList();
-
-    assertThat(covered).containsExactlyInAnyOrder(
-        "CypherTransactionStatement", "CypherSessionStatement", "CypherAdminStatement", "CypherDDLStatement");
   }
 }

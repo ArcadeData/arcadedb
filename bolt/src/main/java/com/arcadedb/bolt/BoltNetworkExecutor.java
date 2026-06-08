@@ -538,12 +538,10 @@ public class BoltNetworkExecutor extends Thread {
     firstRecordTime = 0;
     syntheticResults = null;
 
-    // Ensure database is open (maps "system"/"neo4j" to default database)
+    // Ensure database is open (maps "system"/"neo4j" to default database). This also attaches the
+    // connection's GQL session to the thread context, which the engine reads for SESSION statements.
     if (!ensureDatabase())
       return;
-
-    // ensureDatabase() has attached this connection's session to the thread context, so the engine reaches
-    // it for GQL SESSION statements and merges its parameters into this command's parameters.
 
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
     if (handleSystemQuery(query)) {

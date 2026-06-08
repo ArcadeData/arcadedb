@@ -72,9 +72,9 @@ public interface QuerySession {
   static Map<String, Object> mergeParameters(final Map<String, Object> sessionParams, final Map<String, Object> requestParams) {
     if (sessionParams == null || sessionParams.isEmpty())
       return requestParams;
-    // Pre-size for both maps so putAll does not resize the table (request params overwrite on a name clash).
+    // Sized for both maps up front so putAll never resizes the table (request params win on a name clash).
     final int size = sessionParams.size() + (requestParams != null ? requestParams.size() : 0);
-    final Map<String, Object> merged = new HashMap<>((int) (size / 0.75f) + 1);
+    final Map<String, Object> merged = HashMap.newHashMap(size);
     merged.putAll(sessionParams);
     if (requestParams != null)
       merged.putAll(requestParams);
