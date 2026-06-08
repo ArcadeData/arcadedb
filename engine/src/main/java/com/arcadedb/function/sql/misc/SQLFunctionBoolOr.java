@@ -45,16 +45,21 @@ public class SQLFunctionBoolOr extends SQLAggregatedFunction {
       else if (MultiValue.isMultiValue(params[0]))
         for (final Object n : MultiValue.getMultiValueIterable(params[0])) {
           or((Boolean) n);
-          if (or) break;
+          if (or != null && or) break; // OR SHORT-CIRCUITS ON TRUE
         }
-    } else {
-      or = null;
-      for (int i = 0; i < params.length; ++i) {
-        or((Boolean) params[i]);
-        if (or) break;
+      return or;
+    }
+
+    // PER-ROW MULTI-ARG: OR THE ARGUMENTS INTO A LOCAL VARIABLE WITHOUT TOUCHING THE CROSS-ROW ACCUMULATOR.
+    Boolean rowOr = null;
+    for (int i = 0; i < params.length; ++i) {
+      final Boolean value = (Boolean) params[i];
+      if (value != null) {
+        rowOr = rowOr == null ? value : rowOr || value;
+        if (rowOr) break; // OR SHORT-CIRCUITS ON TRUE
       }
     }
-    return or;
+    return rowOr;
   }
 
   protected void or(final Boolean value) {
