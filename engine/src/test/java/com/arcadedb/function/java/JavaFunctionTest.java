@@ -39,6 +39,10 @@ class JavaFunctionTest extends TestHelper {
     public static int SUM(final int a, final int b) {
       return a + b;
     }
+
+    public static int boom() {
+      throw new IllegalStateException("boom from target method");
+    }
   }
 
   @Test
@@ -130,6 +134,26 @@ class JavaFunctionTest extends TestHelper {
     throws Exception {
     registerClass();
     assertThatThrownBy(() -> database.getSchema().getFunction("math", "SUM").execute("invalid", 5)).isInstanceOf(FunctionExecutionException.class);
+  }
+
+  @Test
+  void wrongParameterCount()
+    throws Exception {
+    registerClass();
+    assertThatThrownBy(() -> database.getSchema().getFunction("math", "sum").execute(3))
+        .isInstanceOf(FunctionExecutionException.class)
+        .hasMessageContaining("expected 2")
+        .hasMessageContaining("received 1");
+  }
+
+  @Test
+  void targetExceptionCausePreserved()
+    throws Exception {
+    registerClass();
+    assertThatThrownBy(() -> database.getSchema().getFunction("math", "boom").execute())
+        .isInstanceOf(FunctionExecutionException.class)
+        .hasRootCauseInstanceOf(IllegalStateException.class)
+        .hasRootCauseMessage("boom from target method");
   }
 
   private void registerClass() throws ClassNotFoundException, InvocationTargetException, NoSuchMethodException, InstantiationException, IllegalAccessException {

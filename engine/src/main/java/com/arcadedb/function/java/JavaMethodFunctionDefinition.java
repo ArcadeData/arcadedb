@@ -72,9 +72,18 @@ public class JavaMethodFunctionDefinition implements FunctionDefinition {
 
   @Override
   public Object execute(final Object... parameters) {
+    final int received = parameters != null ? parameters.length : 0;
+    if (!method.isVarArgs() && received != method.getParameterCount())
+      throw new FunctionExecutionException(
+          "Error on executing function '" + method + "': expected " + method.getParameterCount() + " parameter(s) but received " + received);
+
     try {
       return method.invoke(instance, parameters);
-    } catch (final Exception e) {
+    } catch (final InvocationTargetException e) {
+      // PRESERVE THE ORIGINAL EXCEPTION THROWN BY THE TARGET METHOD INSTEAD OF THE REFLECTION WRAPPER
+      final Throwable cause = e.getCause() != null ? e.getCause() : e;
+      throw new FunctionExecutionException("Error on executing function '" + method + "'", cause);
+    } catch (final IllegalAccessException | IllegalArgumentException e) {
       throw new FunctionExecutionException("Error on executing function '" + method + "'", e);
     }
   }
