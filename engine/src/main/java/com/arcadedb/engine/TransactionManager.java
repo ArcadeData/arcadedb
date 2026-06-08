@@ -441,7 +441,29 @@ public class TransactionManager {
                     + txPage.currentPageVersion + ") does not match with existent version (" + page.getVersion() + ") fileId="
                     + txPage.fileId);
           }
-          // forceApply: compaction page replication - write at the leader's version regardless of gap
+          // forceApply (compaction page replication) bypasses the version gap, but ONLY when the WAL
+          // entry rewrites the WHOLE content region. The follower's page is at version N while this
+          // entry carries N+K with K>1: it never saw the intermediate transactions, so the bytes
+          // outside [changesFrom, changesTo] do not correspond to the leader's baseline. Applying a
+          // partial delta would leave those bytes stale yet force the version forward to N+K, so every
+          // later MVCC check would pass over a silently corrupted page that then spreads across the
+          // cluster (issue #4510). A full-page payload (what serializeFilePagesAsWal ships) covers the
+          // entire content region, so it is safe regardless of the gap; a partial one is rejected here
+          // so the follower recovers via a full snapshot instead.
+          final int deltaSize = txPage.changesTo - txPage.changesFrom + 1;
+          final boolean fullPage =
+              txPage.changesFrom == BasePage.PAGE_HEADER_SIZE && deltaSize == file.getPageSize() - BasePage.PAGE_HEADER_SIZE;
+          if (!fullPage) {
+            LogManager.instance().log(this, Level.SEVERE,
+                "Refusing forceApply of partial delta for page %s over a stale baseline (WAL v.%d, db v.%d) fileId=%d: bytes outside the delta range would stay stale while the version is forced forward. A full-page snapshot is required.",
+                null, pageId, txPage.currentPageVersion, page.getVersion(), txPage.fileId);
+            if (ignoreErrors)
+              continue;
+            throw new WALVersionGapException(
+                "Refusing forceApply of partial delta for page " + pageId + " over a stale baseline (WAL v."
+                    + txPage.currentPageVersion + ", db v." + page.getVersion()
+                    + "): a full page is required to safely bypass the version gap, fileId=" + txPage.fileId);
+          }
         }
 
         LogManager.instance().log(this, Level.FINE, "Updating page %s versionInLog=%d versionInDB=%d (txId=%d)", null, pageId,
