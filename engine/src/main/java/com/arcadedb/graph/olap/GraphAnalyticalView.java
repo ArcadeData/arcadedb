@@ -200,6 +200,9 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   private final AtomicBoolean    compacting = new AtomicBoolean(false);
   private final AtomicBoolean    buildQueued = new AtomicBoolean(false);
   private volatile boolean       asyncRebuildNeeded;  // true when a commit arrived during an async rebuild
+  // true when an edge property update (which cannot be represented in the overlay) was buffered
+  // during a compaction rebuild and needs a follow-up rebuild to become visible. See issue #4513.
+  private volatile boolean       edgePropRebuildNeeded;
 
   // Raw TxDeltas buffered during compaction. Non-null only while a compaction rebuild is in progress.
   // Accessed only under synchronized(this), so ArrayList is safe.
@@ -1374,7 +1377,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
         pendingDeltas.add(delta);
     }
 
-    if (compactionThreshold > 0 && Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold) {
+    // An edge property change (e.g. weight) has no overlay representation, so it can only be made
+    // visible by rebuilding the base columns. Force a rebuild regardless of the edge-count
+    // threshold; otherwise the change would be silently dropped until the next compaction (#4513).
+    final boolean forceRebuild = delta.edgePropertiesUpdated;
+
+    if (forceRebuild || (compactionThreshold > 0 && Math.abs(merged.getDeltaEdgeCount()) > compactionThreshold)) {
       // Guard: only one compaction thread at a time
       if (!compacting.compareAndSet(false, true))
         return;
@@ -1412,8 +1420,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   // Merging against the new mapping resolves RIDs to correct dense IDs.
                   if (!buffered.isEmpty()) {
                     DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
-                    for (final TxDelta d : buffered)
+                    for (final TxDelta d : buffered) {
                       overlay = overlay.merge(d, result.getMapping());
+                      // Edge property updates have no overlay representation, so a delta buffered
+                      // during this rebuild may not be reflected in the fresh CSR (if it committed
+                      // after the relevant bucket was scanned). Flag a follow-up rebuild (#4513).
+                      if (d.edgePropertiesUpdated)
+                        edgePropRebuildNeeded = true;
+                    }
                     if (overlay.hasChanges())
                       fresh = fresh.withOverlay(overlay);
                   }
@@ -1439,6 +1453,15 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
             BUILD_PERMITS.release();
             compacting.set(false);
             taskCompleted();
+            // An edge property update buffered during this rebuild was not reflected in the fresh
+            // CSR: schedule a follow-up rebuild now that compaction is released. Converges once
+            // edge property updates stop. See issue #4513.
+            if (edgePropRebuildNeeded) {
+              edgePropRebuildNeeded = false;
+              final TxDelta forced = new TxDelta();
+              forced.edgePropertiesUpdated = true;
+              applyDelta(forced);
+            }
           }
         });
       } catch (final RejectedExecutionException e) {

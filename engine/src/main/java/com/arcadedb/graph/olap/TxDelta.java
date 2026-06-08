@@ -36,10 +36,16 @@ class TxDelta {
   final List<EdgeDelta>            deletedEdges     = new ArrayList<>();
   final Map<RID, Map<String, Object>> updatedProperties = new HashMap<>();
 
+  // Set when a covered edge had a property change. Edge property overrides cannot be represented
+  // in the overlay (the columnar edge stores are read directly by the array-based algorithms,
+  // bypassing the overlay), so this flag forces a rebuild on commit instead of silently dropping
+  // the update. See issue #4513.
+  boolean edgePropertiesUpdated = false;
+
   boolean isEmpty() {
     return addedVertices.isEmpty() && deletedVertices.isEmpty()
         && addedEdges.isEmpty() && deletedEdges.isEmpty()
-        && updatedProperties.isEmpty();
+        && updatedProperties.isEmpty() && !edgePropertiesUpdated;
   }
 
   void clear() {
@@ -48,6 +54,7 @@ class TxDelta {
     addedEdges.clear();
     deletedEdges.clear();
     updatedProperties.clear();
+    edgePropertiesUpdated = false;
   }
 
   static class VertexDelta {

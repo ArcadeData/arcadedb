@@ -3885,6 +3885,66 @@ class GraphAnalyticalViewTest extends TestHelper {
   }
 
   @Test
+  void syncEdgePropertyUpdateReflectedInDijkstra() {
+    // Issue #4513: in SYNCHRONOUS mode DeltaCollector.onAfterUpdate only handled Vertex updates,
+    // so edge property changes (e.g. weight updates read by Dijkstra) were silently dropped from
+    // the view until the next compaction. The fix forces a rebuild when a covered edge's property
+    // changes so the columnar edge stores (read directly by the array-based algorithms) stay correct.
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("ROAD").createProperty("weight", Type.DOUBLE);
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    // Two routes from A to C: direct A->C (cost 10) and indirect A->B->C (cost 1+1=2).
+    a.newEdge("ROAD", c, "weight", 10.0);
+    final RID edgeABrid = a.newEdge("ROAD", b, "weight", 1.0).getIdentity();
+    b.newEdge("ROAD", c, "weight", 1.0);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withName("sync-edge-prop-4513")
+        .withVertexTypes("Node")
+        .withEdgeTypes("ROAD")
+        .withEdgeProperties("weight")
+        .withUpdateMode(GraphAnalyticalView.UpdateMode.SYNCHRONOUS)
+        .build();
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idC = gav.getNodeId(c.getIdentity());
+
+    // Initially the indirect route A->B->C (cost 2) is the shortest.
+    double[] dist = GraphAlgorithms.dijkstraSingleSource(gav, idA, "weight", Vertex.DIRECTION.OUT, "ROAD");
+    assertThat(dist[idC]).isEqualTo(2.0);
+
+    final long initialBuildTimestamp = gav.getBuildTimestamp();
+
+    // Raise the A->B weight to 100 so the indirect route (cost 101) becomes more expensive
+    // than the direct A->C edge (cost 10).
+    database.begin();
+    edgeABrid.asEdge().modify().set("weight", 100.0).save();
+    database.commit();
+
+    // The edge property update must trigger a rebuild so the new weight is visible to Dijkstra.
+    final long deadline = System.currentTimeMillis() + 10_000;
+    while (gav.getBuildTimestamp() == initialBuildTimestamp && System.currentTimeMillis() < deadline) {
+      try {
+        Thread.sleep(50);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+    }
+
+    // After the rebuild Dijkstra must read the updated weight; the direct edge (cost 10) now wins.
+    dist = GraphAlgorithms.dijkstraSingleSource(gav, idA, "weight", Vertex.DIRECTION.OUT, "ROAD");
+    assertThat(dist[idC]).isEqualTo(10.0);
+
+    gav.drop();
+  }
+
+  @Test
   void edgePropertyMemoryAccounted() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK").createProperty("weight", Type.DOUBLE);

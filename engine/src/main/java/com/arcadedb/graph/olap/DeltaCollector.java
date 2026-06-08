@@ -98,6 +98,14 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
         final TxDelta delta = getOrCreateDelta();
         delta.updatedProperties.put(vertex.getIdentity(), extractProperties(vertex));
         scheduleSyncCallback(delta);
+      } else if (record instanceof Edge) {
+        // Edge property updates have no overlay representation (the columnar edge stores are read
+        // directly by the array-based algorithms, bypassing the overlay), so flag the delta to
+        // force a rebuild on commit. Without this, edge property changes (e.g. weight updates read
+        // by Dijkstra) would be silently dropped until the next compaction. See issue #4513.
+        final TxDelta delta = getOrCreateDelta();
+        delta.edgePropertiesUpdated = true;
+        scheduleSyncCallback(delta);
       }
     } else {
       scheduleAsyncCallback();
@@ -147,6 +155,7 @@ class DeltaCollector implements AfterRecordCreateListener, AfterRecordUpdateList
           frozen.addedEdges.addAll(delta.addedEdges);
           frozen.deletedEdges.addAll(delta.deletedEdges);
           frozen.updatedProperties.putAll(delta.updatedProperties);
+          frozen.edgePropertiesUpdated = delta.edgePropertiesUpdated;
           delta.clear();
           perThreadDeltas.remove(Thread.currentThread().threadId());
           if (!frozen.isEmpty())
