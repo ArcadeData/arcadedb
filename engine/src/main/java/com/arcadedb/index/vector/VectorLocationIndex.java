@@ -73,7 +73,7 @@ public class VectorLocationIndex {
    * Create a VectorLocationIndex with a specific maximum size.
    *
    * @param maxSize Maximum number of entries to cache. Set to -1 for unlimited (backward compatible).
-   *                When the limit is reached, least-recently-used entries are evicted automatically.
+   *                When the limit is reached, the oldest-inserted entry is evicted automatically (insertion-order, FIFO).
    */
   public VectorLocationIndex(final int maxSize) {
     this(maxSize, 16);
@@ -88,9 +88,11 @@ public class VectorLocationIndex {
   public VectorLocationIndex(final int maxSize, final int initialCapacity) {
     this.maxSize = maxSize;
     if (maxSize > 0) {
-      // Bounded LRU cache with automatic eviction
+      // Bounded cache with automatic insertion-order (FIFO) eviction.
+      // Insertion-order (accessOrder=false): a get() must not be a structural modification, otherwise concurrent reads
+      // would corrupt the doubly-linked list while another thread iterates it. Eviction stays least-recently-inserted.
       this.locations = Collections.synchronizedMap(
-          new LinkedHashMap<Integer, VectorLocation>(initialCapacity, 0.75f, true) {
+          new LinkedHashMap<Integer, VectorLocation>(initialCapacity, 0.75f, false) {
             @Override
             protected boolean removeEldestEntry(final Map.Entry<Integer, VectorLocation> eldest) {
               return size() > maxSize;
@@ -171,6 +173,18 @@ public class VectorLocationIndex {
    * @return Stream of vector IDs
    */
   public IntStream getAllVectorIds() {
+    if (maxSize > 0) {
+      // Bounded backend is a Collections.synchronizedMap-wrapped LinkedHashMap: iteration requires holding the
+      // wrapper monitor, and the linked list must not be mutated concurrently. Snapshot under the monitor and
+      // stream the detached copy.
+      final int[] ids;
+      synchronized (locations) {
+        ids = locations.keySet().stream().mapToInt(Integer::intValue).toArray();
+      }
+      return IntStream.of(ids);
+    }
+    // Unlimited backend is a ConcurrentHashMap: keySet() iteration is already thread-safe and weakly-consistent,
+    // so stream it lazily without the O(N) snapshot allocation.
     return locations.keySet().stream().mapToInt(Integer::intValue);
   }
 
@@ -180,9 +194,23 @@ public class VectorLocationIndex {
    * @return Stream of active vector IDs
    */
   public IntStream getActiveVectorIds() {
-    return locations.keySet().stream()
-        .filter(id -> !locations.get(id).deleted)
-        .mapToInt(Integer::intValue);
+    if (maxSize > 0) {
+      // Bounded backend: snapshot the active ids while holding the wrapper monitor, evaluating the deleted flag
+      // inside the critical section so neither the iteration nor the per-entry read races with concurrent mutation.
+      final int[] ids;
+      synchronized (locations) {
+        ids = locations.entrySet().stream()
+            .filter(e -> !e.getValue().deleted)
+            .mapToInt(Map.Entry::getKey)
+            .toArray();
+      }
+      return IntStream.of(ids);
+    }
+    // Unlimited backend (ConcurrentHashMap): stream entrySet() lazily. Using entrySet() also avoids the extra
+    // get() lookup the original keySet()+get() implementation performed.
+    return locations.entrySet().stream()
+        .filter(e -> !e.getValue().deleted)
+        .mapToInt(Map.Entry::getKey);
   }
 
   /**
@@ -200,6 +228,13 @@ public class VectorLocationIndex {
    * @return Number of active vectors
    */
   public long getActiveCount() {
+    if (maxSize > 0) {
+      // Bounded backend: iterate the values inside the wrapper monitor as required by Collections.synchronizedMap.
+      synchronized (locations) {
+        return locations.values().stream().filter(loc -> !loc.deleted).count();
+      }
+    }
+    // Unlimited backend (ConcurrentHashMap): values() iteration is already thread-safe and weakly-consistent.
     return locations.values().stream().filter(loc -> !loc.deleted).count();
   }
 
