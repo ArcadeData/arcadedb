@@ -261,10 +261,13 @@ public class TimeSeriesEngine implements AutoCloseable {
     final Iterator<Object[]> iter = iterateQuery(fromTs, toTs, null, tagFilter);
     final AggregationResult result = new AggregationResult();
 
+    // Loop-invariant: resolve the single-bucket anchor once outside the hot loop.
+    final long singleBucketTs = singleBucketAnchor(fromTs);
+
     while (iter.hasNext()) {
       final Object[] row = iter.next();
       final long ts = (long) row[0];
-      final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : singleBucketAnchor(fromTs);
+      final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
       final double value;
 
       if (columnIndex + 1 < row.length && row[columnIndex + 1] instanceof Number)
@@ -438,6 +441,9 @@ public class TimeSeriesEngine implements AutoCloseable {
 
       final double[] rowValues = new double[reqCount];
 
+      // Loop-invariant: resolve the single-bucket anchor once outside the per-shard hot loops.
+      final long singleBucketTs = singleBucketAnchor(fromTs);
+
       for (final TimeSeriesShard shard : shards) {
         // Hold the compaction read lock for sealed+mutable reads to prevent data loss
         // if compaction completes between reading the two layers.
@@ -451,7 +457,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             if (tagFilter != null && !tagFilter.matches(row))
               continue;
             final long ts = (long) row[0];
-            final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : singleBucketAnchor(fromTs);
+            final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
 
             for (int r = 0; r < reqCount; r++) {
               if (isCount[r])
