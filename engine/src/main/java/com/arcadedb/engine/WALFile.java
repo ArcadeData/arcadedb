@@ -242,6 +242,78 @@ public class WALFile extends LockContext {
     }
   }
 
+  /**
+   * Scans forward from {@code fromPos} for the start of the next valid transaction record. Used during
+   * recovery to tell a benign torn record at the physical end of the file (the last write interrupted by
+   * a crash) apart from a corrupt record in the middle of the WAL that is followed by intact transactions.
+   * In the latter case stopping silently would drop committed data (issue #4508).
+   * <p>
+   * Every transaction ends with an 8-byte {@link #MAGIC_NUMBER} footer, so this scans for that pattern and,
+   * for each occurrence, derives the candidate transaction start and validates it with {@link #getTransaction(long)}.
+   * The validation rejects a {@link #MAGIC_NUMBER} that appears by coincidence inside a page payload because the
+   * derived transaction must parse cleanly and its own footer must land exactly on the matched magic number.
+   *
+   * @param fromPos position where transaction parsing failed
+   *
+   * @return start position of the next valid transaction, or -1 if none is found before EOF
+   */
+  public long findNextValidTransactionPosition(final long fromPos) {
+    try {
+      final long size = getSize();
+      if (fromPos < 0 || fromPos + TX_HEADER_SIZE + TX_FOOTER_SIZE > size)
+        return -1;
+
+      final int CHUNK_SIZE = 1 << 16; // 64K
+      final ByteBuffer chunk = ByteBuffer.allocate(CHUNK_SIZE);
+
+      // Begin one byte past the failed record so its broken content is skipped.
+      long scanPos = fromPos + 1;
+      while (scanPos + Binary.LONG_SERIALIZED_SIZE <= size) {
+        chunk.clear();
+        final int toRead = (int) Math.min(CHUNK_SIZE, size - scanPos);
+        chunk.limit(toRead);
+        int read = 0;
+        while (read < toRead) {
+          final int n = channel.read(chunk, scanPos + read);
+          if (n == -1)
+            break;
+          read += n;
+        }
+        if (read < Binary.LONG_SERIALIZED_SIZE)
+          break;
+
+        for (int i = 0; i + Binary.LONG_SERIALIZED_SIZE <= read; i++) {
+          if (chunk.getLong(i) != MAGIC_NUMBER)
+            continue;
+
+          final long magicPos = scanPos + i;
+          // TX_FOOTER = SEGMENT_SIZE(int) + MAGIC_NUMBER(long): the matched magic is preceded by the segment size.
+          final long footerSegmentSizePos = magicPos - Binary.INT_SERIALIZED_SIZE;
+          if (footerSegmentSizePos < fromPos)
+            continue;
+
+          final int segmentSize = readInt(footerSegmentSizePos);
+          if (segmentSize < 0)
+            continue;
+
+          final long txStart = footerSegmentSizePos - (long) segmentSize - TX_HEADER_SIZE;
+          if (txStart < fromPos)
+            continue;
+
+          final WALTransaction tx = getTransaction(txStart);
+          if (tx != null && tx.endPositionInLog == magicPos + Binary.LONG_SERIALIZED_SIZE)
+            return txStart;
+        }
+
+        // Overlap by 7 bytes so a magic number straddling a chunk boundary is not missed.
+        scanPos += read - (Binary.LONG_SERIALIZED_SIZE - 1);
+      }
+    } catch (final IOException e) {
+      // Treat an I/O error during the scan as "no valid transaction found": recovery stops at fromPos.
+    }
+    return -1;
+  }
+
   public static Binary writeTransactionToBuffer(final List<MutablePage> pages, final long txId) {
     // COMPUTE TOTAL TXLOG SEGMENT SIZE
     int segmentSize = 0;

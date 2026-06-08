@@ -245,16 +245,24 @@ public class TransactionManager {
       }
 
       if (activeWALFilePool.length > 0) {
+        long lastTxId = -1;
+        boolean walGapDetected = false;
+
         final WALFile.WALTransaction[] walPositions = new WALFile.WALTransaction[activeWALFilePool.length];
         for (int i = 0; i < activeWALFilePool.length; ++i) {
           final WALFile file = activeWALFilePool[i];
           walPositions[i] = file.getFirstTransaction();
+          // A torn first record followed by intact transactions is corruption, not a clean empty/EOF file:
+          // stopping silently would drop committed data (issue #4508). Abort recovery and preserve the WAL.
+          if (walPositions[i] == null && file.findNextValidTransactionPosition(0) >= 0) {
+            LogManager.instance().log(this, Level.SEVERE,
+                "Recovery aborted for database '%s': corrupt transaction record at the start of WAL file '%s' followed by valid transactions. WAL files have been preserved for manual inspection. No further transactions will be replayed.",
+                null, database, file);
+            walGapDetected = true;
+          }
         }
 
-        long lastTxId = -1;
-        boolean walGapDetected = false;
-
-        while (true) {
+        while (!walGapDetected) {
           int lowerTx = -1;
           long lowerTxId = -1;
 
@@ -285,7 +293,19 @@ public class TransactionManager {
             break;
           }
 
-          walPositions[lowerTx] = activeWALFilePool[lowerTx].getTransaction(walPositions[lowerTx].endPositionInLog);
+          final WALFile walFile = activeWALFilePool[lowerTx];
+          final long nextPos = walPositions[lowerTx].endPositionInLog;
+          final WALFile.WALTransaction nextTx = walFile.getTransaction(nextPos);
+          if (nextTx == null && walFile.findNextValidTransactionPosition(nextPos) >= 0) {
+            // A record is corrupt but intact transactions follow it: stopping here would silently drop
+            // committed data. Abort recovery and preserve the WAL files for manual inspection (issue #4508).
+            LogManager.instance().log(this, Level.SEVERE,
+                "Recovery aborted for database '%s': corrupt transaction record in WAL file '%s' at offset %d followed by valid transactions. WAL files have been preserved for manual inspection. No further transactions will be replayed.",
+                null, database, walFile, nextPos);
+            walGapDetected = true;
+            break;
+          }
+          walPositions[lowerTx] = nextTx;
         }
 
         // Only update the next-tx counter if recovery actually applied a transaction. When
