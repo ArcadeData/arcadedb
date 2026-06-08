@@ -171,6 +171,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // Use statement cache to avoid re-parsing
       final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
 
+      // Make any session parameters (SESSION SET) visible to this query as $name.
+      final Map<String, Object> effectiveParameters = mergeSessionParameters(parameters);
+
       // EXPLAIN never executes the underlying query, so the idempotency rule does not apply.
       // PROFILE is treated as idempotent at the wrapper level to match SQL parity
       // (see ProfileStatement/ExplainStatement in the SQL parser, both return isIdempotent()==true).
@@ -180,7 +183,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (!explain && !profile && !statement.isReadOnly())
         throw new QueryNotIdempotentException("Query '" + query + "' is not idempotent");
 
-      return execute(actualQuery, statement, configuration, parameters, explain, profile);
+      return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile);
     } catch (final QueryNotIdempotentException | CommandExecutionException | CommandParsingException | SecurityException e) {
       throw e;
     } catch (final Exception e) {
@@ -230,12 +233,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (statement instanceof CypherTransactionStatement)
         return executeTransaction((CypherTransactionStatement) statement);
 
+      // Make any session parameters (SESSION SET) visible to this command as $name.
+      final Map<String, Object> effectiveParameters = mergeSessionParameters(parameters);
+
       // Session management statements (SESSION SET/RESET/CLOSE) operate on the server session bound to
       // the current thread; executed directly, no planner pipeline.
       if (statement instanceof CypherSessionStatement)
-        return executeSession((CypherSessionStatement) statement, parameters);
+        return executeSession((CypherSessionStatement) statement, effectiveParameters);
 
-      return execute(actualQuery, statement, configuration, parameters, explain, profile);
+      return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
       throw e;
     } catch (final Exception e) {
@@ -576,9 +582,22 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
+   * Merges the parameters of the session attached to this thread's context (set via SESSION SET) under the
+   * request parameters, request parameters winning. Returns the request parameters unchanged - no
+   * allocation - when there is no attached session or it has no parameters (the common case). This is the
+   * single place where session parameters become visible to a Cypher command or query as $name; it is
+   * deliberately scoped to the OpenCypher engine, since session parameters are a GQL concept.
+   */
+  private Map<String, Object> mergeSessionParameters(final Map<String, Object> requestParameters) {
+    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
+    final QuerySession session = ctx != null ? ctx.getQuerySession() : null;
+    return session != null ? QuerySession.mergeParameters(session.getParameters(), requestParameters) : requestParameters;
+  }
+
+  /**
    * Executes a session management statement (SESSION SET/RESET/CLOSE) against the {@link QuerySession}
-   * bound to the current thread by the server. In embedded use (no server session) there is nothing to bind
-   * to, so the statement reports an actionable error rather than silently doing nothing.
+   * attached to the current thread context by the server. In embedded use (no server session) there is
+   * nothing attached, so the statement reports an actionable error rather than silently doing nothing.
    */
   private ResultSet executeSession(final CypherSessionStatement stmt, final Map<String, Object> parameters) {
     final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
@@ -594,11 +613,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
     case SET:
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
-      // Expose the request parameters plus the session parameters set so far, so a value can reference
-      // either (request parameters win on a name clash). This merge is what makes the value resolve on the
-      // embedded/direct-API path, which has no protocol-layer pre-merge; over HTTP/Bolt the incoming params
-      // already include the session params (pre-merged for ordinary queries), so this is an idempotent re-merge.
-      context.setInputParameters(QuerySession.mergeParameters(session.getParameters(), parameters));
+      // 'parameters' already carries the session parameters (merged once in command()), so a value can
+      // reference an earlier session parameter or a request parameter.
+      context.setInputParameters(parameters);
       final Object value = EXPRESSION_EVALUATOR.evaluate(stmt.getValueExpression(), new ResultInternal(database), context);
       session.setParameter(stmt.getParameterName(), value);
       result.setProperty("operation", "set");

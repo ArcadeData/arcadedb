@@ -26,7 +26,7 @@ import java.util.Map;
 
 /**
  * The per-connection {@link QuerySession} for the Bolt protocol: it carries the session parameters set with
- * GQL {@code SESSION SET} so later commands on the same connection see them (issue #4141 section 2).
+ * GQL {@code SESSION SET} so later commands on the same connection see them.
  * <p>
  * A Bolt connection runs in a single dedicated thread, so this state needs no synchronization. The Bolt
  * connection and its transaction lifecycle are governed by the Bolt protocol (BEGIN/COMMIT/ROLLBACK/RESET

@@ -23,6 +23,8 @@ import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Base64;
 import java.util.HashMap;
 
@@ -77,6 +79,38 @@ public class Issue4141SessionManagementIT extends BaseGraphServerTest {
 
       command(baseUrl, sessionId, "SESSION CLOSE");
     });
+  }
+
+  @Test
+  void sessionParametersResolveOnTheQueryEndpoint() throws Exception {
+    testEachServer(serverIndex -> {
+      final String baseUrl = "http://127.0.0.1:248" + serverIndex + "/api/v1";
+      final String sessionId = beginSession(baseUrl);
+      command(baseUrl, sessionId, "SESSION SET $threshold = 21");
+
+      // The /query (GET) endpoint must also see session parameters, not just /command.
+      final JSONObject res = queryGet(baseUrl, sessionId, "RETURN $threshold AS t");
+      assertThat(res.getJSONArray("result").getJSONObject(0).getInt("t")).isEqualTo(21);
+
+      command(baseUrl, sessionId, "SESSION CLOSE");
+    });
+  }
+
+  private JSONObject queryGet(final String baseUrl, final String sessionId, final String cypher) throws Exception {
+    final String encoded = URLEncoder.encode(cypher, StandardCharsets.UTF_8).replace("+", "%20");
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        baseUrl + "/query/" + getDatabaseName() + "/opencypher/" + encoded).openConnection();
+    connection.setRequestMethod("GET");
+    connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
+    connection.setRequestProperty("Authorization", basicAuth());
+    connection.connect();
+    try {
+      final String response = readResponse(connection);
+      assertThat(connection.getResponseCode()).isEqualTo(200);
+      return new JSONObject(response);
+    } finally {
+      connection.disconnect();
+    }
   }
 
   private String beginSession(final String baseUrl) throws Exception {

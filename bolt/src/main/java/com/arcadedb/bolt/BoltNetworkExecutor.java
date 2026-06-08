@@ -42,7 +42,6 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.query.QuerySession;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.Result;
@@ -124,7 +123,7 @@ public class BoltNetworkExecutor extends Thread {
   // Transaction state
   private boolean explicitTransaction = false;
 
-  // GQL session state for this connection (SESSION SET/RESET/CLOSE parameters), issue #4141 section 2.
+  // GQL session state for this connection (SESSION SET/RESET/CLOSE parameters).
   private final BoltSession session = new BoltSession();
 
   /**
@@ -543,10 +542,8 @@ public class BoltNetworkExecutor extends Thread {
     if (!ensureDatabase())
       return;
 
-    // ensureDatabase() has attached this connection's session to the thread context (so the engine can
-    // reach it for GQL SESSION statements); merge any session parameters so later commands resolve them
-    // (issue #4141 section 2).
-    final Map<String, Object> effectiveParams = mergeSessionParameters(params);
+    // ensureDatabase() has attached this connection's session to the thread context, so the engine reaches
+    // it for GQL SESSION statements and merges its parameters into this command's parameters.
 
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
     if (handleSystemQuery(query)) {
@@ -581,9 +578,9 @@ public class BoltNetworkExecutor extends Thread {
 
       // Use command() for writes, query() for reads
       if (isWriteOperation) {
-        currentResultSet = database.command("opencypher", query, effectiveParams);
+        currentResultSet = database.command("opencypher", query, params);
       } else {
-        currentResultSet = database.query("opencypher", query, effectiveParams);
+        currentResultSet = database.query("opencypher", query, params);
       }
 
       // Capture the plan from the engine. EXPLAIN returns ExplainResultSet (one synthetic row
@@ -938,15 +935,6 @@ public class BoltNetworkExecutor extends Thread {
     rt.put("servers", servers);
 
     sendSuccess(CollectionUtils.singletonMap("rt", rt));
-  }
-
-  /**
-   * Merges the connection's session parameters (set via {@code SESSION SET}) into the RUN request parameters.
-   * Request-supplied parameters win. Returns {@code requestParams} unchanged when there are no session
-   * parameters (issue #4141 section 2).
-   */
-  private Map<String, Object> mergeSessionParameters(final Map<String, Object> requestParams) {
-    return QuerySession.mergeParameters(session.getParameters(), requestParams);
   }
 
   /**

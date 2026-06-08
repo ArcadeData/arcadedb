@@ -283,7 +283,7 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) database,
           session.transaction);
       // Attach the session to the thread context so the engine can reach it for GQL SESSION statements and
-      // session-parameter merging (issue #4141 section 2).
+      // session-parameter merging.
       ctx.setQuerySession(session);
       exchange.getResponseHeaders().put(SESSION_ID_HEADER, session.id);
 

@@ -18,11 +18,9 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import java.util.List;
-
 /**
  * AST node for ISO/IEC 39075 (GQL) Session Management statements: {@code SESSION SET $name = value},
- * {@code SESSION RESET} and {@code SESSION CLOSE}. Issue #4141 section 2.
+ * {@code SESSION RESET} and {@code SESSION CLOSE}.
  * <p>
  * These operate on the {@link com.arcadedb.query.QuerySession} bound to the current thread (a server
  * session); they are executed directly, bypassing the planner pipeline.
@@ -73,78 +71,6 @@ public class CypherSessionStatement implements CypherStatement {
     return false;
   }
 
-  @Override
-  public List<MatchClause> getMatchClauses() {
-    return List.of();
-  }
-
-  @Override
-  public WhereClause getWhereClause() {
-    return null;
-  }
-
-  @Override
-  public ReturnClause getReturnClause() {
-    return null;
-  }
-
-  @Override
-  public boolean hasCreate() {
-    return false;
-  }
-
-  @Override
-  public boolean hasMerge() {
-    return false;
-  }
-
-  @Override
-  public boolean hasDelete() {
-    return false;
-  }
-
-  @Override
-  public OrderByClause getOrderByClause() {
-    return null;
-  }
-
-  @Override
-  public Expression getSkip() {
-    return null;
-  }
-
-  @Override
-  public Expression getLimit() {
-    return null;
-  }
-
-  @Override
-  public CreateClause getCreateClause() {
-    return null;
-  }
-
-  @Override
-  public SetClause getSetClause() {
-    return null;
-  }
-
-  @Override
-  public DeleteClause getDeleteClause() {
-    return null;
-  }
-
-  @Override
-  public MergeClause getMergeClause() {
-    return null;
-  }
-
-  @Override
-  public List<UnwindClause> getUnwindClauses() {
-    return List.of();
-  }
-
-  @Override
-  public List<WithClause> getWithClauses() {
-    return List.of();
-  }
+  // All structural query accessors (getMatchClauses, getReturnClause, hasCreate, ...) inherit the
+  // empty/neutral defaults from CypherStatement: a session management statement carries no clauses.
 }

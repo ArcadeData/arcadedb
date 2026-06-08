@@ -201,7 +201,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     private      Binary                   temporaryBuffer2;
     private      int                      maxNested    = 3;
     private      SecurityDatabaseUser     currentUser  = null;
-    // The stateful client session bound to this thread context (GQL SESSION statements, issue #4141 §2).
+    // The stateful client session bound to this thread context (GQL SESSION statements).
     // Set by the protocol owner (HTTP/Bolt) alongside the transaction; null in plain embedded use.
     private      QuerySession             querySession = null;
 

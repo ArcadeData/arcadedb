@@ -18,8 +18,6 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
-import java.util.List;
-
 /**
  * AST node for ISO/IEC 39075 (GQL) transaction control statements: {@code START TRANSACTION},
  * {@code COMMIT} and {@code ROLLBACK}. These bypass the normal query execution pipeline and are
@@ -69,78 +67,6 @@ public class CypherTransactionStatement implements CypherStatement {
     return false;
   }
 
-  @Override
-  public List<MatchClause> getMatchClauses() {
-    return List.of();
-  }
-
-  @Override
-  public WhereClause getWhereClause() {
-    return null;
-  }
-
-  @Override
-  public ReturnClause getReturnClause() {
-    return null;
-  }
-
-  @Override
-  public boolean hasCreate() {
-    return false;
-  }
-
-  @Override
-  public boolean hasMerge() {
-    return false;
-  }
-
-  @Override
-  public boolean hasDelete() {
-    return false;
-  }
-
-  @Override
-  public OrderByClause getOrderByClause() {
-    return null;
-  }
-
-  @Override
-  public Expression getSkip() {
-    return null;
-  }
-
-  @Override
-  public Expression getLimit() {
-    return null;
-  }
-
-  @Override
-  public CreateClause getCreateClause() {
-    return null;
-  }
-
-  @Override
-  public SetClause getSetClause() {
-    return null;
-  }
-
-  @Override
-  public DeleteClause getDeleteClause() {
-    return null;
-  }
-
-  @Override
-  public MergeClause getMergeClause() {
-    return null;
-  }
-
-  @Override
-  public List<UnwindClause> getUnwindClauses() {
-    return List.of();
-  }
-
-  @Override
-  public List<WithClause> getWithClauses() {
-    return List.of();
-  }
+  // All structural query accessors (getMatchClauses, getReturnClause, hasCreate, ...) inherit the
+  // empty/neutral defaults from CypherStatement: a transaction control statement carries no clauses.
 }

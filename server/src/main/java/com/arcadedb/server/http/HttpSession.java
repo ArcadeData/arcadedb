@@ -35,7 +35,7 @@ import java.util.logging.Level;
 /**
  * Manage a transaction on the HTTP protocol. Also acts as the {@link QuerySession} that ISO GQL Session
  * Management statements ({@code SESSION SET/RESET/CLOSE}) operate on: it carries session parameters that
- * subsequent commands in the same session see as query parameters (issue #4141 section 2).
+ * subsequent commands in the same session see as query parameters.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */

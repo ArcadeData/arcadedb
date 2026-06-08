@@ -963,7 +963,7 @@ command
    )
    ;
 
-// ISO/IEC 39075 (GQL) session management - issue #4141 section 2.
+// ISO/IEC 39075 (GQL) session management.
 // SESSION SET binds a named query parameter on the current server session; later commands in the same
 // session see it as $name unless they supply their own value. RESET clears the session parameters; CLOSE
 // closes the session (rolls back its transaction and invalidates it). These require a server session - in

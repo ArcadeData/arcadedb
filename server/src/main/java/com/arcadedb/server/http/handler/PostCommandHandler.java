@@ -19,10 +19,7 @@
 package com.arcadedb.server.http.handler;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.database.DatabaseContext;
-import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.async.AsyncResultsetCallback;
-import com.arcadedb.query.QuerySession;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
@@ -121,10 +118,6 @@ public class PostCommandHandler extends AbstractQueryHandler {
     // AbstractServerHttpHandler, instead of being wrapped by the surrounding TransactionException
     // and downgraded to HTTP 500.
     paramMap = AbstractQueryHandler.decodeTypedJsonMarkers(paramMap);
-
-    // Merge any session parameters set via 'SESSION SET $x = ...' so later commands in the same session
-    // can reference them. Request-supplied params win over session params (issue #4141 section 2).
-    paramMap = mergeSessionParameters(paramMap, database);
 
     if (limit != -1) {
       if ("sql".equalsIgnoreCase(language) || "sqlScript".equalsIgnoreCase(language)) {
@@ -275,20 +268,6 @@ public class PostCommandHandler extends AbstractQueryHandler {
     } finally {
       source.close();
     }
-  }
-
-  /**
-   * Merges the parameters of the session bound to the current thread (set via {@code SESSION SET}) into the
-   * request parameters. Request-supplied parameters take precedence. Returns {@code requestParams} unchanged
-   * when there is no bound session or it has no parameters (issue #4141 section 2).
-   */
-  private static Map<String, Object> mergeSessionParameters(final Map<String, Object> requestParams, final Database database) {
-    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(
-        ((DatabaseInternal) database).getDatabasePath());
-    final QuerySession session = ctx != null ? ctx.getQuerySession() : null;
-    if (session == null)
-      return requestParams;
-    return QuerySession.mergeParameters(session.getParameters(), requestParams);
   }
 
   protected ResultSet executeCommand(final Database database, final String language, final String command,
