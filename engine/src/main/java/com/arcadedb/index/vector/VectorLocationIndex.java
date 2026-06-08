@@ -73,7 +73,7 @@ public class VectorLocationIndex {
    * Create a VectorLocationIndex with a specific maximum size.
    *
    * @param maxSize Maximum number of entries to cache. Set to -1 for unlimited (backward compatible).
-   *                When the limit is reached, least-recently-used entries are evicted automatically.
+   *                When the limit is reached, the oldest-inserted entry is evicted automatically (insertion-order, FIFO).
    */
   public VectorLocationIndex(final int maxSize) {
     this(maxSize, 16);
@@ -88,7 +88,7 @@ public class VectorLocationIndex {
   public VectorLocationIndex(final int maxSize, final int initialCapacity) {
     this.maxSize = maxSize;
     if (maxSize > 0) {
-      // Bounded LRU cache with automatic eviction.
+      // Bounded cache with automatic insertion-order (FIFO) eviction.
       // Insertion-order (accessOrder=false): a get() must not be a structural modification, otherwise concurrent reads
       // would corrupt the doubly-linked list while another thread iterates it. Eviction stays least-recently-inserted.
       this.locations = Collections.synchronizedMap(

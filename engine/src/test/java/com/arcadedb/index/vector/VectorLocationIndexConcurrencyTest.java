@@ -103,7 +103,7 @@ class VectorLocationIndexConcurrencyTest {
   }
 
   /**
-   * Eviction must remain least-recently-inserted (insertion-order LRU) after
+   * Eviction must remain insertion-order (FIFO, oldest-inserted first) after
    * dropping access-order, and the map must never exceed maxSize.
    */
   @Test
