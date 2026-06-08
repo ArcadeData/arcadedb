@@ -50,5 +50,41 @@ behavior and LRU eviction semantics.
 
 - New regression test `VectorLocationIndexConcurrencyTest` drives concurrent
   `get`/`getActiveVectorIds`/`getActiveCount` against a bounded index and
-  asserts no exception and consistent results.
-- Existing vector index tests must still pass.
+  asserts no exception and consistent results. Before the fix it reproduced
+  `ConcurrentModificationException` (verified); after the fix all 4 methods
+  pass, including an unlimited-mode (`ConcurrentHashMap`) concurrency case.
+- Existing vector index tests pass: `LSMVectorIndexTest`,
+  `LSMVectorIndexSimpleUpdateTest`, `LSMVectorIndexConcurrentUpdateTest`,
+  `LSMVectorIndexRebuildTest`, `LSMVectorIndexPersistenceTest`,
+  `LSMVectorIndexRecoveryTest` (66 tests, 0 failures).
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/4528
+
+## Review cycles
+
+- cycle 1: `abb24dc` - initial fix (accessOrder=false + always-synchronized
+  snapshot in the three iterating methods). Gemini reviewed with one high-priority,
+  actionable point: in unlimited mode the backend is a `ConcurrentHashMap`, so
+  synchronizing on it and snapshotting keys into an `int[]` adds O(N) allocation
+  and GC pressure for no concurrency benefit. The `claude` bot did not post a
+  review within the 15-minute window.
+- cycle 2: `498dc3e` - addressed Gemini's feedback: gated the synchronized
+  snapshot on `maxSize > 0` (bounded `synchronizedMap`/`LinkedHashMap` backend
+  only) and kept the lazy `ConcurrentHashMap` stream for unlimited mode; added
+  an unlimited-mode concurrency regression test. No bot review arrived within
+  the polling window (neither `gemini-code-assist` re-review nor `claude`).
+
+## Deferred items
+
+None. All actionable review feedback was applied; no comments were unclear or
+disputed.
+
+## Final state
+
+`timeout` - the review loop's gating reviewer set (`claude` + `gemini-code-assist`)
+never both responded on the same head SHA within the per-cycle 15-minute window.
+The `claude` bot was unresponsive across both cycles. All actionable feedback
+received (Gemini, cycle 1) was addressed in cycle 2. The PR is left open for the
+developer; merge remains the developer's responsibility.
