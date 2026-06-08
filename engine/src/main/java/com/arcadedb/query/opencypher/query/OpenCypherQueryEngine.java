@@ -230,7 +230,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       // Session management statements (SESSION SET/RESET/CLOSE) operate on the server session bound to
       // the current thread; executed directly, no planner pipeline.
       if (statement instanceof CypherSessionStatement)
-        return executeSession((CypherSessionStatement) statement);
+        return executeSession((CypherSessionStatement) statement, parameters);
 
       return execute(actualQuery, statement, configuration, parameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
@@ -577,7 +577,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * bound to the current thread by the server. In embedded use (no server session) there is nothing to bind
    * to, so the statement reports an actionable error rather than silently doing nothing.
    */
-  private ResultSet executeSession(final CypherSessionStatement stmt) {
+  private ResultSet executeSession(final CypherSessionStatement stmt, final Map<String, Object> parameters) {
     final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
     final QuerySession session = ctx != null ? ctx.getQuerySession() : null;
     if (session == null)
@@ -591,8 +591,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
     case SET:
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
-      // Expose the session parameters set so far so a value can reference an earlier one.
-      context.setInputParameters(session.getParameters());
+      // Expose the request parameters plus the session parameters set so far, so a value can reference
+      // either (request parameters win on a name clash).
+      context.setInputParameters(QuerySession.mergeParameters(session.getParameters(), parameters));
       final Object value = EXPRESSION_EVALUATOR.evaluate(stmt.getValueExpression(), new ResultInternal(database), context);
       session.setParameter(stmt.getParameterName(), value);
       result.setProperty("operation", "set");

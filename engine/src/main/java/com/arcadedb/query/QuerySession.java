@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query;
 
+import java.util.HashMap;
 import java.util.Map;
 
 /**
@@ -55,4 +56,19 @@ public interface QuerySession {
    * later references to its id fail (the {@code SESSION CLOSE} effect).
    */
   void close();
+
+  /**
+   * Merges session parameters under request-supplied parameters, with request parameters taking precedence.
+   * Returns {@code requestParams} unchanged (no allocation) when there are no session parameters - the common
+   * case. Single source of truth for the session-parameter merge semantics shared by the HTTP, Bolt and
+   * engine paths (issue #4141 section 2).
+   */
+  static Map<String, Object> mergeParameters(final Map<String, Object> sessionParams, final Map<String, Object> requestParams) {
+    if (sessionParams == null || sessionParams.isEmpty())
+      return requestParams;
+    final Map<String, Object> merged = new HashMap<>(sessionParams);
+    if (requestParams != null)
+      merged.putAll(requestParams);
+    return merged;
+  }
 }

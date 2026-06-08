@@ -288,12 +288,7 @@ public class PostCommandHandler extends AbstractQueryHandler {
     final QuerySession session = ctx != null ? ctx.getQuerySession() : null;
     if (session == null)
       return requestParams;
-    final Map<String, Object> sessionParams = session.getParameters();
-    if (sessionParams.isEmpty())
-      return requestParams;
-    final Map<String, Object> merged = new HashMap<>(sessionParams);
-    merged.putAll(requestParams);
-    return merged;
+    return QuerySession.mergeParameters(session.getParameters(), requestParams);
   }
 
   protected ResultSet executeCommand(final Database database, final String language, final String command,

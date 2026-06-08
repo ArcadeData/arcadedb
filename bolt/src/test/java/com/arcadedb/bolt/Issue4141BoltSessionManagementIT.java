@@ -71,8 +71,11 @@ public class Issue4141BoltSessionManagementIT extends BaseGraphServerTest {
     try (final Driver driver = getDriver();
         final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
 
-      // SESSION SET binds a parameter on the connection's session.
-      assertThat(session.run("SESSION SET $threshold = 21").single().get("operation").asString()).isEqualTo("set");
+      // SESSION SET binds a parameter on the connection's session and echoes the operation/name/value.
+      final org.neo4j.driver.Record setRec = session.run("SESSION SET $threshold = 21").single();
+      assertThat(setRec.get("operation").asString()).isEqualTo("set");
+      assertThat(setRec.get("name").asString()).isEqualTo("threshold");
+      assertThat(setRec.get("value").asInt()).isEqualTo(21);
 
       // A later command on the same connection sees it as $threshold.
       Result result = session.run("RETURN $threshold AS t");

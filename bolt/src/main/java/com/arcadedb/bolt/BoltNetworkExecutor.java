@@ -42,6 +42,7 @@ import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.QuerySession;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.Result;
@@ -72,7 +73,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -952,13 +952,7 @@ public class BoltNetworkExecutor extends Thread {
    * parameters (issue #4141 section 2).
    */
   private Map<String, Object> mergeSessionParameters(final Map<String, Object> requestParams) {
-    final Map<String, Object> sessionParams = session.getParameters();
-    if (sessionParams.isEmpty())
-      return requestParams;
-    final Map<String, Object> merged = new HashMap<>(sessionParams);
-    if (requestParams != null)
-      merged.putAll(requestParams);
-    return merged;
+    return QuerySession.mergeParameters(session.getParameters(), requestParams);
   }
 
   private boolean ensureDatabase() throws IOException {

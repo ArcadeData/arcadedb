@@ -134,6 +134,14 @@ public class Issue4141SessionManagementTest {
     assertThat(((Number) session.params.get("derived")).intValue()).isEqualTo(15);
   }
 
+  @Test
+  void sessionSetCanReferenceARequestParameter() {
+    bindSession();
+    // The value expression must resolve request-supplied parameters, not just session parameters.
+    database.command("opencypher", "SESSION SET $derived = $incoming + 1", "incoming", 41).close();
+    assertThat(((Number) session.params.get("derived")).intValue()).isEqualTo(42);
+  }
+
   // ---- SESSION RESET clears the session parameters --------------------------------------------
 
   @Test
