@@ -2148,10 +2148,56 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     } catch (final Exception e) {
       open = false;
 
+      // ISSUE #4511: RELEASE THE FILE LOCK AND CLOSE THE I/O RESOURCES ACQUIRED BEFORE THE FAILURE, OTHERWISE THE
+      // DATABASE STAYS PERMANENTLY UNOPENABLE WITHIN THIS JVM (AND THE LOCK FILE CANNOT BE REMOVED ON WINDOWS).
+      releaseResourcesOnOpenFailure();
+
       if (e instanceof DatabaseOperationException exception)
         throw exception;
 
       throw new DatabaseOperationException("Error on creating new database instance", e);
+    }
+  }
+
+  /**
+   * Releases the resources acquired during {@link #openInternal()} when the open fails partway through (issue #4511).
+   * In particular it releases the JVM file lock and closes the lock-file I/O channels, the {@link FileManager} and the
+   * {@link TransactionManager}. The {@code database.lck} marker is intentionally left on disk so the next open still
+   * performs recovery. Every step is best-effort and isolated so a failure in one does not skip the others.
+   */
+  private void releaseResourcesOnOpenFailure() {
+    try {
+      if (lockFile != null) {
+        if (lockFileLock != null) {
+          lockFileLock.release();
+          lockFileLock = null;
+        }
+        if (lockFileIOChannel != null) {
+          lockFileIOChannel.close();
+          lockFileIOChannel = null;
+        }
+        if (lockFileIO != null) {
+          lockFileIO.close();
+          lockFileIO = null;
+        }
+      }
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on releasing lock file '%s' after a failed open", e, lockFile);
+    }
+
+    try {
+      if (fileManager != null)
+        fileManager.close();
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error on closing file manager after a failed open of database '%s'", e, name);
+    }
+
+    try {
+      if (transactionManager != null)
+        transactionManager.close(false);
+    } catch (final Exception e) {
+      LogManager.instance()
+          .log(this, Level.WARNING, "Error on closing transaction manager after a failed open of database '%s'", e, name);
     }
   }
 
