@@ -97,7 +97,9 @@ public class TransactionManager {
                   LogManager.instance().setContext(logContext);
 
                 checkWALFiles();
-                cleanWALFiles(true, false);
+                // Runtime WAL rotation: fsync the data files before a rotated WAL is dropped, so a power
+                // loss cannot lose pages that were only write()'n to the OS cache (issue #4509).
+                cleanWALFiles(true, false, true);
               } finally {
                 taskExecuting.countDown();
               }
@@ -758,6 +760,25 @@ public class TransactionManager {
   }
 
   private boolean cleanWALFiles(final boolean dropFiles, final boolean force) {
+    return cleanWALFiles(dropFiles, force, false);
+  }
+
+  /**
+   * Removes inactive WAL files, either dropping them ({@code dropFiles}) or just closing them.
+   *
+   * @param dropFiles       when true the WAL files are physically deleted, otherwise only closed
+   * @param force           when true a file is removed even if it still has pages pending to flush
+   * @param syncDataOnDrop  when true the data files touched by the WAL are fsync'd before the WAL is dropped.
+   *                        {@code WALFile.notifyPageFlushed()} decrements the pending-pages counter right after a
+   *                        {@code write()} that only reaches the OS page cache, so {@code pendingPagesToFlush == 0}
+   *                        does not mean the data is durable. Dropping the WAL at that point would, on a power loss
+   *                        before the OS writes the dirty pages back, lose committed transactions and silently
+   *                        corrupt later transactions on the same pages (issue #4509). Used by the runtime WAL
+   *                        rotation path; the clean-close path already fsyncs via {@code FileManager.syncFiles()}
+   *                        before it gets here.
+   */
+  private boolean cleanWALFiles(final boolean dropFiles, final boolean force, final boolean syncDataOnDrop) {
+    boolean dataSynced = false;
     for (final Iterator<WALFile> it = inactiveWALFilePool.iterator(); it.hasNext(); ) {
       final WALFile file = it.next();
 
@@ -768,9 +789,15 @@ public class TransactionManager {
           statsPagesWritten.addAndGet((Long) fileStats.get("pagesWritten"));
           statsBytesWritten.addAndGet((Long) fileStats.get("bytesWritten"));
 
-          if (dropFiles)
+          if (dropFiles) {
+            // Make the data pages durable before the WAL that protects them is deleted. fsync once, lazily,
+            // right before the first WAL file is actually dropped in this pass (issue #4509).
+            if (syncDataOnDrop && !dataSynced) {
+              database.getFileManager().syncFiles();
+              dataSynced = true;
+            }
             file.drop();
-          else
+          } else
             file.close();
 
         } catch (final IOException e) {
