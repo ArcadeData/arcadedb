@@ -543,12 +543,9 @@ public class BoltNetworkExecutor extends Thread {
     if (!ensureDatabase())
       return;
 
-    // Attach this connection's session to the thread context so the engine can reach it for GQL SESSION
-    // statements; merge any session parameters so later commands resolve them (issue #4141 section 2).
-    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(
-        ((DatabaseInternal) database).getDatabasePath());
-    if (ctx != null)
-      ctx.setQuerySession(session);
+    // ensureDatabase() has attached this connection's session to the thread context (so the engine can
+    // reach it for GQL SESSION statements); merge any session parameters so later commands resolve them
+    // (issue #4141 section 2).
     final Map<String, Object> effectiveParams = mergeSessionParameters(params);
 
     // Intercept known system queries (CALL dbms.components(), SHOW DATABASES, etc.)
@@ -970,8 +967,11 @@ public class BoltNetworkExecutor extends Thread {
         if (user != null) {
           final DatabaseContext.DatabaseContextTL ctx =
               DatabaseContext.INSTANCE.getContextIfExists(((DatabaseInternal) database).getDatabasePath());
-          if (ctx != null)
+          if (ctx != null) {
             ctx.setCurrentUser(user.getDatabaseUser(database));
+            // Attach this connection's GQL session so SESSION statements and param merging can reach it.
+            ctx.setQuerySession(session);
+          }
         }
         return true;
       }
@@ -1002,8 +1002,12 @@ public class BoltNetworkExecutor extends Thread {
         state = State.FAILED;
         return false;
       }
-      if (user != null)
-        DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(user.getDatabaseUser(database));
+      if (user != null) {
+        final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) database);
+        ctx.setCurrentUser(user.getDatabaseUser(database));
+        // Attach this connection's GQL session so SESSION statements and param merging can reach it.
+        ctx.setQuerySession(session);
+      }
       return true;
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Unknown error";

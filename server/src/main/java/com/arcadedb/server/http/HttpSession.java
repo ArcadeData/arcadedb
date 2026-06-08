@@ -78,8 +78,8 @@ public class HttpSession implements QuerySession {
   @Override
   public void close() {
     // Invalidate the session so later references to its id fail, then roll back its open transaction.
-    if (manager != null)
-      manager.removeSession(id);
+    // manager is always supplied by HttpSessionManager.createSession, so a NPE here would be a real bug.
+    manager.removeSession(id);
     cancel();
   }
 

@@ -37,8 +37,6 @@ import static org.assertj.core.api.Assertions.assertThat;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class Issue4141SessionManagementIT extends BaseGraphServerTest {
-  private static final String DATABASE_NAME = "graph";
-
   @Test
   void sessionParametersFlowAcrossCommandsThenCloseInvalidates() throws Exception {
     testEachServer(serverIndex -> {
@@ -65,8 +63,24 @@ public class Issue4141SessionManagementIT extends BaseGraphServerTest {
     });
   }
 
+  @Test
+  void sessionParametersDoNotBleedToNonSessionRequests() throws Exception {
+    testEachServer(serverIndex -> {
+      final String baseUrl = "http://127.0.0.1:248" + serverIndex + "/api/v1";
+      final String sessionId = beginSession(baseUrl);
+      command(baseUrl, sessionId, "SESSION SET $threshold = 21");
+
+      // A request WITHOUT the session header must not inherit the session's parameters, even when it lands
+      // on the same pooled worker thread (session-bleed guard in DatabaseAbstractHandler).
+      final JSONObject res = commandNoSession(baseUrl, "RETURN $threshold AS t");
+      assertThat(res.getJSONArray("result").getJSONObject(0).isNull("t")).isTrue();
+
+      command(baseUrl, sessionId, "SESSION CLOSE");
+    });
+  }
+
   private String beginSession(final String baseUrl) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + "/begin/" + DATABASE_NAME).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + "/begin/" + getDatabaseName()).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty("Authorization", basicAuth());
     connection.connect();
@@ -82,7 +96,7 @@ public class Issue4141SessionManagementIT extends BaseGraphServerTest {
   }
 
   private JSONObject command(final String baseUrl, final String sessionId, final String cypher) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + "/command/" + DATABASE_NAME).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + "/command/" + getDatabaseName()).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
     connection.setRequestProperty("Authorization", basicAuth());
@@ -97,8 +111,23 @@ public class Issue4141SessionManagementIT extends BaseGraphServerTest {
     }
   }
 
+  private JSONObject commandNoSession(final String baseUrl, final String cypher) throws Exception {
+    final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + "/command/" + getDatabaseName()).openConnection();
+    connection.setRequestMethod("POST");
+    connection.setRequestProperty("Authorization", basicAuth());
+    formatPayload(connection, "opencypher", cypher, null, new HashMap<>());
+    connection.connect();
+    try {
+      final String response = readResponse(connection);
+      assertThat(connection.getResponseCode()).isEqualTo(200);
+      return new JSONObject(response);
+    } finally {
+      connection.disconnect();
+    }
+  }
+
   private int commandResponseCode(final String baseUrl, final String sessionId, final String cypher) throws Exception {
-    final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + "/command/" + DATABASE_NAME).openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URL(baseUrl + "/command/" + getDatabaseName()).openConnection();
     connection.setRequestMethod("POST");
     connection.setRequestProperty(ARCADEDB_SESSION_ID, sessionId);
     connection.setRequestProperty("Authorization", basicAuth());

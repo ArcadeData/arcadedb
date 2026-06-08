@@ -115,7 +115,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
           if (statement instanceof CypherTransactionStatement)
             return CollectionUtils.singletonSet(OperationType.READ);
           // Session management is session-control (no data read/write); same READ permission rationale as
-          // transaction control above.
+          // transaction control above, and intentionally decoupled from isReadOnly() (see
+          // CypherSessionStatement.isReadOnly()). SESSION CLOSE rolls back the caller's OWN session
+          // transaction - a user can only close the session bound to their own request, so discarding their
+          // own uncommitted work is not a privilege escalation and READ remains the correct gate.
           if (statement instanceof CypherSessionStatement)
             return CollectionUtils.singletonSet(OperationType.READ);
           if (statement instanceof CypherDDLStatement)

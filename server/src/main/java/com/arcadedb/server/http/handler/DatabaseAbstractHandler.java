@@ -89,6 +89,12 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
       if (currentUser == null || !currentUser.equals(user.getDatabaseUser(database)))
         current.setCurrentUser(user != null ? user.getDatabaseUser(database) : null);
 
+      // A session request attaches its QuerySession in setTransactionInThreadLocal above. A non-session
+      // request must never inherit a stale session from a thread-context reused on this pooled thread,
+      // which would leak another user's SESSION SET parameters into this request.
+      if (activeSession == null)
+        current.setQuerySession(null);
+
       // Warn if autoCommit parameter conflicts with session
       if (activeSession != null && payload != null && payload.has("autoCommit")) {
         final boolean explicitAutoCommit = payload.getBoolean("autoCommit");
