@@ -483,7 +483,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int tsColIdx = findTimestampColumnIndex();
     final int targetColSchemaIdx = findNonTsColumnSchemaIndex(columnIndex);
 
-    // Loop-invariant: resolve the single-bucket anchor once outside the block/sample hot loops.
     final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
 
     // Hold the read lock for the entire scan including file I/O to prevent stale offsets

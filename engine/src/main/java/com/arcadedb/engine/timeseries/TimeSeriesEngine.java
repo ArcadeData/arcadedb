@@ -261,7 +261,6 @@ public class TimeSeriesEngine implements AutoCloseable {
     final Iterator<Object[]> iter = iterateQuery(fromTs, toTs, null, tagFilter);
     final AggregationResult result = new AggregationResult();
 
-    // Loop-invariant: resolve the single-bucket anchor once outside the hot loop.
     final long singleBucketTs = singleBucketAnchor(fromTs);
 
     while (iter.hasNext()) {
@@ -441,7 +440,6 @@ public class TimeSeriesEngine implements AutoCloseable {
 
       final double[] rowValues = new double[reqCount];
 
-      // Loop-invariant: resolve the single-bucket anchor once outside the per-shard hot loops.
       final long singleBucketTs = singleBucketAnchor(fromTs);
 
       for (final TimeSeriesShard shard : shards) {

@@ -111,6 +111,32 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
   }
 
   @Test
+  void aggregateSingleColumnSingleBucketReadsSealedData() throws Exception {
+    database.begin();
+    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_sealed_col", COLS, 1);
+    engine.appendSamples(new long[] { 1000L, 2000L, 3000L, 4000L }, new Object[] { 10.0, 20.0, 30.0, 40.0 });
+    database.commit();
+
+    // Force the sealed-store path so TimeSeriesSealedStore.aggregate() (single-column) is exercised.
+    database.begin();
+    engine.compactAll();
+    database.commit();
+
+    database.begin();
+    final AggregationResult result = engine.aggregate(Long.MIN_VALUE, Long.MAX_VALUE, 0,
+        AggregationType.SUM, 0, null);
+
+    assertThat(result.size()).isEqualTo(1);
+    assertThat(result.getBucketTimestamp(0)).isNotEqualTo(Long.MIN_VALUE);
+    assertThat(result.getBucketTimestamp(0)).isGreaterThanOrEqualTo(0L);
+    assertThat(result.getValue(0)).isEqualTo(100.0);
+    assertThat(result.getCount(0)).isEqualTo(4);
+    database.commit();
+
+    engine.close();
+  }
+
+  @Test
   void aggregateMultiSingleBucketReadsSealedData() throws Exception {
     database.begin();
     final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_sealed", COLS, 1);
