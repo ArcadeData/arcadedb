@@ -34,6 +34,11 @@ import java.util.Map;
  * <p>
  * Session parameters are a GQL concept: they are merged into a query's parameters only on the OpenCypher
  * engine path (any language served by the OpenCypher engine), not for other query languages.
+ * <p>
+ * Session state is node-local and is <b>not</b> replicated across an HA cluster. Because Session Management
+ * statements are non-idempotent they route to the leader, but the parameters live on the connection / HTTP
+ * session that issued the {@code SESSION SET}. In an HA setup without session affinity, a {@code SESSION SET}
+ * on one node followed by a query routed to another node will not see the parameter.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -59,8 +64,9 @@ public interface QuerySession {
    * <b>transport-specific</b>: the HTTP session also rolls back its open transaction and invalidates its id so
    * later references fail, whereas a connection-scoped owner (Bolt) only clears the session parameters and
    * leaves the connection and its transaction live. A client must therefore not assume {@code SESSION CLOSE}
-   * rolls back a transaction on every transport. The owner may finalize the transaction here, so callers
-   * should not issue further operations on the same session within the same request after closing it.
+   * rolls back a transaction on every transport. Over the <b>HTTP</b> transport specifically, the transaction
+   * is finalized here, so callers must not issue further operations on that HTTP session within the same
+   * request after closing it; on a connection-scoped transport (Bolt) further operations remain valid.
    */
   void close();
 

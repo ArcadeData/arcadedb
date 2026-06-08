@@ -30,6 +30,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.Collections;
 import java.util.HashMap;
@@ -75,6 +77,8 @@ public class Issue4141SessionManagementTest {
 
     @Override
     public void close() {
+      // Records the call only. Unlike production (BoltSession clears params; HttpSession removes itself from
+      // the manager), the engine does not read params after close(), so the double needs no further effect.
       closed = true;
     }
   }
@@ -170,10 +174,12 @@ public class Issue4141SessionManagementTest {
 
   // ---- Embedded use (no session bound) reports an actionable error ----------------------------
 
-  @Test
-  void sessionStatementWithoutABoundSessionFails() {
-    // No QuerySession bound (embedded): the statement must not silently no-op.
-    assertThatThrownBy(() -> database.command("opencypher", "SESSION SET $x = 1"))
+  @ParameterizedTest
+  @ValueSource(strings = { "SESSION SET $x = 1", "SESSION RESET", "SESSION CLOSE" })
+  void sessionStatementWithoutABoundSessionFails(final String statement) {
+    // No QuerySession bound (embedded): the guard at the top of executeSession applies to all three kinds,
+    // so none may silently no-op.
+    assertThatThrownBy(() -> database.command("opencypher", statement))
         .isInstanceOf(CommandExecutionException.class)
         .hasMessageContaining("server session");
   }

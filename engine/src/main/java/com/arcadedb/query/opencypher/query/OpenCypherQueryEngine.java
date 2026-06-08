@@ -27,24 +27,24 @@ import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.query.OperationType;
+import com.arcadedb.query.QueryEngine;
+import com.arcadedb.query.QuerySession;
 import com.arcadedb.query.opencypher.ast.CypherAdminStatement;
 import com.arcadedb.query.opencypher.ast.CypherDDLStatement;
 import com.arcadedb.query.opencypher.ast.CypherSessionStatement;
 import com.arcadedb.query.opencypher.ast.CypherStatement;
 import com.arcadedb.query.opencypher.ast.CypherTransactionStatement;
-import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
-import com.arcadedb.query.QuerySession;
-import com.arcadedb.query.sql.executor.BasicCommandContext;
-import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
 import com.arcadedb.query.opencypher.executor.CypherExecutionPlan;
 import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
-import com.arcadedb.query.OperationType;
-import com.arcadedb.query.QueryEngine;
-import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
+import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
+import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.utility.CollectionUtils;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -172,7 +172,9 @@ public class OpenCypherQueryEngine implements QueryEngine {
       final CypherStatement statement = database.getCypherStatementCache().get(actualQuery);
 
       // Make any session parameters (SESSION SET) visible to this query as $name.
-      final Map<String, Object> effectiveParameters = mergeSessionParameters(parameters);
+      final QuerySession session = currentQuerySession();
+      final Map<String, Object> effectiveParameters = QuerySession.mergeParameters(
+          session != null ? session.getParameters() : null, parameters);
 
       // EXPLAIN never executes the underlying query, so the idempotency rule does not apply.
       // PROFILE is treated as idempotent at the wrapper level to match SQL parity
@@ -233,13 +235,16 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (statement instanceof CypherTransactionStatement)
         return executeTransaction((CypherTransactionStatement) statement);
 
-      // Make any session parameters (SESSION SET) visible to this command as $name.
-      final Map<String, Object> effectiveParameters = mergeSessionParameters(parameters);
+      // Make any session parameters (SESSION SET) visible to this command as $name. Resolve the session
+      // once and thread it to both the merge and executeSession (avoids a second thread-context lookup).
+      final QuerySession session = currentQuerySession();
+      final Map<String, Object> effectiveParameters = QuerySession.mergeParameters(
+          session != null ? session.getParameters() : null, parameters);
 
       // Session management statements (SESSION SET/RESET/CLOSE) operate on the server session bound to
       // the current thread; executed directly, no planner pipeline.
       if (statement instanceof CypherSessionStatement)
-        return executeSession((CypherSessionStatement) statement, effectiveParameters);
+        return executeSession((CypherSessionStatement) statement, session, effectiveParameters);
 
       return execute(actualQuery, statement, configuration, effectiveParameters, explain, profile);
     } catch (final CommandExecutionException | CommandParsingException | SecurityException e) {
@@ -582,16 +587,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
-   * Merges the parameters of the session attached to this thread's context (set via SESSION SET) under the
-   * request parameters, request parameters winning. Returns the request parameters unchanged - no
-   * allocation - when there is no attached session or it has no parameters (the common case). This is the
-   * single place where session parameters become visible to a Cypher command or query as $name; it is
-   * deliberately scoped to the OpenCypher engine, since session parameters are a GQL concept.
+   * Returns the {@link QuerySession} attached to this thread's context by the server (HTTP/Bolt), or
+   * {@code null} in embedded use. Resolved once per command/query and threaded to both the parameter merge
+   * and {@link #executeSession} so the thread-context is not looked up twice. Session parameters become
+   * visible to a Cypher command or query as {@code $name} only on this OpenCypher engine path, since they
+   * are a GQL concept.
    */
-  private Map<String, Object> mergeSessionParameters(final Map<String, Object> requestParameters) {
+  private QuerySession currentQuerySession() {
     final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    final QuerySession session = ctx != null ? ctx.getQuerySession() : null;
-    return session != null ? QuerySession.mergeParameters(session.getParameters(), requestParameters) : requestParameters;
+    return ctx != null ? ctx.getQuerySession() : null;
   }
 
   /**
@@ -599,9 +603,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * attached to the current thread context by the server. In embedded use (no server session) there is
    * nothing attached, so the statement reports an actionable error rather than silently doing nothing.
    */
-  private ResultSet executeSession(final CypherSessionStatement stmt, final Map<String, Object> parameters) {
-    final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(database.getDatabasePath());
-    final QuerySession session = ctx != null ? ctx.getQuerySession() : null;
+  private ResultSet executeSession(final CypherSessionStatement stmt, final QuerySession session,
+      final Map<String, Object> parameters) {
     if (session == null)
       throw new CommandExecutionException(
           "SESSION statements require a server session (set the 'arcadedb-session-id' HTTP header); not available in embedded mode");
