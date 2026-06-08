@@ -1614,12 +1614,12 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
       if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
         final int start = csr.outOffset(nodeId), end = csr.outOffsetEnd(nodeId);
         if (start < end)
-          baseOut = Arrays.copyOfRange(csr.getForwardNeighbors(), start, end);
+          baseOut = copyBaseExcludingDeleted(csr.getForwardNeighbors(), start, end, ov, edgeType, nodeId, true);
       }
       if (direction == Vertex.DIRECTION.IN || direction == Vertex.DIRECTION.BOTH) {
         final int start = csr.inOffset(nodeId), end = csr.inOffsetEnd(nodeId);
         if (start < end)
-          baseIn = Arrays.copyOfRange(csr.getBackwardNeighbors(), start, end);
+          baseIn = copyBaseExcludingDeleted(csr.getBackwardNeighbors(), start, end, ov, edgeType, nodeId, false);
       }
     }
 
@@ -1643,6 +1643,49 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     if (ovOut.length > 0) { System.arraycopy(ovOut, 0, result, pos, ovOut.length); pos += ovOut.length; }
     if (ovIn.length > 0) { System.arraycopy(ovIn, 0, result, pos, ovIn.length); pos += ovIn.length; }
     Arrays.sort(result);
+    return result;
+  }
+
+  /**
+   * Copies the base CSR neighbour slice {@code [start, end)} for {@code nodeId}, skipping any edge that the
+   * overlay marks as deleted. For an outgoing slice each neighbour {@code n} represents the edge {@code nodeId -> n};
+   * for an incoming slice it represents {@code n -> nodeId}. When no relevant deletions exist the original slice is
+   * returned verbatim to keep the no-deletion case allocation-cheap.
+   * <p>
+   * The caller only reaches this helper on the slow path, which is taken precisely when an overlay is present, so
+   * {@code ov} is always non-null here (the {@code ov == null} fast paths in {@link #getNeighborsFromCSR} return earlier).
+   */
+  private static int[] copyBaseExcludingDeleted(final int[] neighbors, final int start, final int end,
+      final DeltaOverlay ov, final String edgeType, final int nodeId, final boolean outgoing) {
+    // Single pass over the slice. ov.isEdgeDeleted() autoboxes a packed long for a Set lookup, so we call it
+    // exactly once per neighbour and cache the result in a boolean[]. The cache is allocated lazily, only when
+    // the first deleted edge is found, so the common no-deletion case stays allocation-free.
+    final int len = end - start;
+    boolean[] deletedMask = null;
+    int kept = 0;
+    for (int i = 0; i < len; i++) {
+      final int n = neighbors[start + i];
+      final boolean deleted = outgoing ? ov.isEdgeDeleted(edgeType, nodeId, n) : ov.isEdgeDeleted(edgeType, n, nodeId);
+      if (deleted) {
+        if (deletedMask == null) {
+          deletedMask = new boolean[len];
+          kept = i; // every neighbour seen so far was kept
+        }
+        deletedMask[i] = true;
+      } else if (deletedMask != null) {
+        kept++;
+      }
+    }
+    if (deletedMask == null)
+      return Arrays.copyOfRange(neighbors, start, end);
+    if (kept == 0)
+      return EMPTY_INT;
+
+    final int[] result = new int[kept];
+    int pos = 0;
+    for (int i = 0; i < len; i++)
+      if (!deletedMask[i])
+        result[pos++] = neighbors[start + i];
     return result;
   }
 
