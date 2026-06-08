@@ -412,7 +412,11 @@ public class OpenCypherQueryEngine implements QueryEngine {
   }
 
   /**
-   * Maps a Cypher type name (from IS TYPED constraints) to an ArcadeDB Type.
+   * Maps a Cypher type name (from IS TYPED constraints) to an ArcadeDB Type. The GQL numeric width types map
+   * onto ArcadeDB's existing widths (INT8->BYTE, INT16->SHORT, INT32->INTEGER, INT64->LONG, FLOAT32->FLOAT,
+   * FLOAT64->DOUBLE) so a declared property persists and reloads at that width. The mapping mirrors the read
+   * side ({@link com.arcadedb.query.opencypher.ast.IsTypedExpression}): INTEGER is the 64-bit generic, INT
+   * aliases INT32. Keeping the two sides aligned is what makes a declared column satisfy its own IS TYPED.
    */
   private static Type mapCypherType(final String cypherType) {
     switch (cypherType) {
@@ -422,12 +426,23 @@ public class OpenCypherQueryEngine implements QueryEngine {
     case "STRING":
     case "VARCHAR":
       return Type.STRING;
-    case "INTEGER":
+    case "INT8":
+    case "INTEGER8":
+      return Type.BYTE;
+    case "INT16":
+    case "INTEGER16":
+      return Type.SHORT;
     case "INT":
+    case "INT32":
+    case "INTEGER32":
+      return Type.INTEGER;
+    case "INTEGER":
     case "SIGNED INTEGER":
     case "INTEGER64":
     case "INT64":
       return Type.LONG;
+    case "FLOAT32":
+      return Type.FLOAT;
     case "FLOAT":
     case "FLOAT64":
       return Type.DOUBLE;
