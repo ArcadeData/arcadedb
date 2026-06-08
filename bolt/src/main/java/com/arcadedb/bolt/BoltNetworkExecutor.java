@@ -123,6 +123,9 @@ public class BoltNetworkExecutor extends Thread {
   // Transaction state
   private boolean explicitTransaction = false;
 
+  // GQL session state for this connection (SESSION SET/RESET/CLOSE parameters).
+  private final BoltSession session = new BoltSession();
+
   /**
    * Current result set for streaming results.
    * Thread-safety: This class is designed to handle a single connection in a dedicated thread.
@@ -479,6 +482,11 @@ public class BoltNetworkExecutor extends Thread {
       }
     }
 
+    // NOTE: do not clear the GQL session parameters here. The Bolt RESET message is connection-level
+    // housekeeping the driver sends when recycling a pooled connection, not a user request to reset GQL
+    // session state; clearing here would drop SESSION SET parameters between auto-commit queries. GQL
+    // session parameters are cleared only by an explicit SESSION RESET / SESSION CLOSE statement.
+
     explicitTransaction = false;
     currentResultSet = null;
     currentFields = null;
@@ -530,7 +538,8 @@ public class BoltNetworkExecutor extends Thread {
     firstRecordTime = 0;
     syntheticResults = null;
 
-    // Ensure database is open (maps "system"/"neo4j" to default database)
+    // Ensure database is open (maps "system"/"neo4j" to default database). This also attaches the
+    // connection's GQL session to the thread context, which the engine reads for SESSION statements.
     if (!ensureDatabase())
       return;
 
@@ -944,8 +953,11 @@ public class BoltNetworkExecutor extends Thread {
         if (user != null) {
           final DatabaseContext.DatabaseContextTL ctx =
               DatabaseContext.INSTANCE.getContextIfExists(((DatabaseInternal) database).getDatabasePath());
-          if (ctx != null)
+          if (ctx != null) {
             ctx.setCurrentUser(user.getDatabaseUser(database));
+            // Attach this connection's GQL session so SESSION statements and param merging can reach it.
+            ctx.setQuerySession(session);
+          }
         }
         return true;
       }
@@ -976,8 +988,12 @@ public class BoltNetworkExecutor extends Thread {
         state = State.FAILED;
         return false;
       }
-      if (user != null)
-        DatabaseContext.INSTANCE.init((DatabaseInternal) database).setCurrentUser(user.getDatabaseUser(database));
+      if (user != null) {
+        final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.init((DatabaseInternal) database);
+        ctx.setCurrentUser(user.getDatabaseUser(database));
+        // Attach this connection's GQL session so SESSION statements and param merging can reach it.
+        ctx.setQuerySession(session);
+      }
       return true;
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Unknown error";

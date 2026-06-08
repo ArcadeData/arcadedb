@@ -20,6 +20,7 @@ package com.arcadedb.database;
 
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.query.QuerySession;
 import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
@@ -200,6 +201,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     private      Binary                   temporaryBuffer2;
     private      int                      maxNested    = 3;
     private      SecurityDatabaseUser     currentUser  = null;
+    // The stateful client session bound to this thread context (GQL SESSION statements).
+    // Set by the protocol owner (HTTP/Bolt) alongside the transaction; null in plain embedded use.
+    private      QuerySession             querySession = null;
 
     public SecurityDatabaseUser getCurrentUser() {
       return currentUser;
@@ -207,6 +211,14 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
 
     public void setCurrentUser(final SecurityDatabaseUser currentUser) {
       this.currentUser = currentUser;
+    }
+
+    public QuerySession getQuerySession() {
+      return querySession;
+    }
+
+    public void setQuerySession(final QuerySession querySession) {
+      this.querySession = querySession;
     }
 
     public Binary getTemporaryBuffer1() {
