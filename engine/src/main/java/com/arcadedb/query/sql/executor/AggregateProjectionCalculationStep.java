@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
+import com.arcadedb.schema.Type;
 
 import java.util.*;
 
@@ -42,6 +43,11 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     private final int hashCode;
 
     GroupByKey(final Object[] values) {
+      // Normalise numeric values to a canonical form so that numerically-equal keys represented with different
+      // numeric types (e.g. Integer(1) vs Long(1), or BigDecimal("1") vs BigDecimal("1.0")) end up in the same
+      // group instead of being split (issue #4516).
+      for (int i = 0; i < values.length; i++)
+        values[i] = Type.normalizeNumberForKey(values[i]);
       this.values = values;
       this.hashCode = Arrays.hashCode(values);
     }

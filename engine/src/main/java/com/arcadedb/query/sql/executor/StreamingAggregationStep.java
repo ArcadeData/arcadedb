@@ -23,6 +23,7 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.GroupBy;
 import com.arcadedb.query.sql.parser.Projection;
 import com.arcadedb.query.sql.parser.ProjectionItem;
+import com.arcadedb.schema.Type;
 
 import java.util.Arrays;
 import java.util.NoSuchElementException;
@@ -138,7 +139,8 @@ public class StreamingAggregationStep extends AbstractExecutionStep {
     final Object[] keyValues = new Object[groupBy.getItems().size()];
     int idx = 0;
     for (final Expression item : groupBy.getItems())
-      keyValues[idx++] = item.execute(row, context);
+      // Normalise numeric values so numerically-equal keys with different numeric types are not split (issue #4516).
+      keyValues[idx++] = Type.normalizeNumberForKey(item.execute(row, context));
     return keyValues;
   }
 
