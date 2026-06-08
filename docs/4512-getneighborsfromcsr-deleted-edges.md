@@ -73,11 +73,24 @@ The fast paths (no overlay) are unchanged - they are only reachable when
     allocated `boolean[]` mask. Tests still green (124 + 20).
 - `claude`: no review produced within the 15-minute per-iteration window.
 
+### Cycle 2 — head 4d5c93c1e
+- Pushed the boolean-mask optimization, which re-triggered the reviewers.
+- `gemini-code-assist`: re-anchored the same medium-priority inline comment to
+  the new commit. Its suggested code now matches the pushed implementation
+  exactly (single pass, lazily-allocated `boolean[]`, `kept = i` on first
+  deletion), so the concern is already fully addressed - nothing new to act on.
+- `claude`: again did not review within the window. The `claude` gating bot was
+  consistently unresponsive on this PR.
+
 ## Final state
 
-- timeout: `claude` bot did not review within the per-iteration window.
-  Gemini's actionable feedback was applied and pushed. PR left open for the
-  developer. Merge remains the developer's responsibility.
+- timeout: the gating `claude` bot never reviewed in either cycle's window.
+  Gemini's only actionable item (the GC-pressure optimization in
+  `copyBaseExcludingDeleted`) was applied and pushed; Gemini's re-review confirms
+  the current code matches its suggestion. PR left open for the developer.
+  Merge remains the developer's responsibility.
+
+Review cycles run: 2.
 
 ## Status
 
