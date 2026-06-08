@@ -483,6 +483,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final int tsColIdx = findTimestampColumnIndex();
     final int targetColSchemaIdx = findNonTsColumnSchemaIndex(columnIndex);
 
+    final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
+
     // Hold the read lock for the entire scan including file I/O to prevent stale offsets
     // after atomic file replacement by concurrent writers (truncate/downsample).
     directoryLock.readLock().lock();
@@ -498,7 +500,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           if (timestamps[i] < fromTs || timestamps[i] > toTs)
             continue;
 
-          final long bucketTs = bucketIntervalMs > 0 ? (timestamps[i] / bucketIntervalMs) * bucketIntervalMs : fromTs;
+          final long bucketTs = bucketIntervalMs > 0
+              ? (timestamps[i] / bucketIntervalMs) * bucketIntervalMs
+              : singleBucketTs;
 
           accumulateSample(result, bucketTs, values[i], type);
         }
@@ -538,6 +542,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     // Pre-allocate decode buffers reused across all blocks in this call
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
     final double[] reusableValBuf = new double[MAX_BLOCK_SIZE];
+
+    final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
 
     // Hold the read lock for the entire scan including file I/O to prevent stale offsets
     // after atomic file replacement by concurrent writers (truncate/downsample).
@@ -714,7 +720,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             for (int r = 0; r < reqCount; r++)
               rowValues[r] = isCount[r] ? 1.0 : decompressedCols[schemaColIndices[r]][i];
 
-            result.accumulateRow(fromTs, rowValues);
+            result.accumulateRow(singleBucketTs, rowValues);
           }
         }
         if (metrics != null)
