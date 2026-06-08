@@ -691,6 +691,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         final Map<String, GrpcValue> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
             : req.hasPartial() ? req.getPartial().getPropertiesMap() : Collections.emptyMap();
 
+        // In full-replacement mode (oneof "record") remove the properties that are no longer present, so a
+        // client-side save() that dropped a property is mirrored on the server (matches the HTTP "update content"
+        // semantics). In partial mode (oneof "partial") only the provided keys are merged.
+        if (req.hasRecord()) {
+          for (final String existing : new ArrayList<>(mvertex.getPropertyNames()))
+            if (!props.containsKey(existing))
+              mvertex.remove(existing);
+        }
+
         // Exclude ArcadeDB system fields during update
 
         props.forEach((k, v) -> {
@@ -717,6 +726,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         final Map<String, GrpcValue> props = req.hasRecord() ? req.getRecord().getPropertiesMap()
             : req.hasPartial() ? req.getPartial().getPropertiesMap() : Collections.emptyMap();
+
+        // In full-replacement mode (oneof "record") remove the properties that are no longer present, so a
+        // client-side save() that dropped a property is mirrored on the server (matches the HTTP "update content"
+        // semantics). In partial mode (oneof "partial") only the provided keys are merged.
+        if (req.hasRecord()) {
+          for (final String existing : new ArrayList<>(mdoc.getPropertyNames()))
+            if (!props.containsKey(existing))
+              mdoc.remove(existing);
+        }
 
         // Exclude ArcadeDB system fields during update
 

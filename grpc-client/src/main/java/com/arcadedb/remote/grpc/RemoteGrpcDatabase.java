@@ -688,13 +688,16 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     final RID rid = record.getIdentity();
 
     if (rid != null) {
-      // -------- UPDATE (partial) --------
-      PropertiesUpdate partial =
-          PropertiesUpdate.newBuilder().putAllProperties(convertParamsToGrpcValue(record.toMap(false)))
+      // -------- UPDATE (full replacement) --------
+      // save() persists the complete current state of the record, so it must use the full-replacement payload
+      // (oneof "record"). A partial payload cannot express a removed property (the key is simply absent from the
+      // map), which would leave dropped properties behind on the server. This mirrors the HTTP "update content".
+      GrpcRecord fullRecord =
+          GrpcRecord.newBuilder().putAllProperties(convertParamsToGrpcValue(record.toMap(false)))
               .build();
 
       UpdateRecordRequest.Builder updateBuilder = UpdateRecordRequest.newBuilder().setDatabase(getName())
-          .setRid(rid.toString()).setPartial(partial).setDatabase(databaseName).setCredentials(buildCredentials());
+          .setRid(rid.toString()).setRecord(fullRecord).setDatabase(databaseName).setCredentials(buildCredentials());
 
       if (transactionId != null)
         updateBuilder.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
