@@ -173,14 +173,19 @@ public class VectorLocationIndex {
    * @return Stream of vector IDs
    */
   public IntStream getAllVectorIds() {
-    // Snapshot the keys while holding the wrapper monitor: Collections.synchronizedMap requires manual
-    // synchronization around any iteration, and the bounded backend is a LinkedHashMap whose list must not
-    // be mutated concurrently. Streaming happens on the detached copy.
-    final int[] ids;
-    synchronized (locations) {
-      ids = locations.keySet().stream().mapToInt(Integer::intValue).toArray();
+    if (maxSize > 0) {
+      // Bounded backend is a Collections.synchronizedMap-wrapped LinkedHashMap: iteration requires holding the
+      // wrapper monitor, and the linked list must not be mutated concurrently. Snapshot under the monitor and
+      // stream the detached copy.
+      final int[] ids;
+      synchronized (locations) {
+        ids = locations.keySet().stream().mapToInt(Integer::intValue).toArray();
+      }
+      return IntStream.of(ids);
     }
-    return IntStream.of(ids);
+    // Unlimited backend is a ConcurrentHashMap: keySet() iteration is already thread-safe and weakly-consistent,
+    // so stream it lazily without the O(N) snapshot allocation.
+    return locations.keySet().stream().mapToInt(Integer::intValue);
   }
 
   /**
@@ -189,16 +194,23 @@ public class VectorLocationIndex {
    * @return Stream of active vector IDs
    */
   public IntStream getActiveVectorIds() {
-    // Snapshot the active ids while holding the wrapper monitor, evaluating the deleted flag inside the
-    // critical section so neither the iteration nor the per-entry get() races with concurrent mutation.
-    final int[] ids;
-    synchronized (locations) {
-      ids = locations.entrySet().stream()
-          .filter(e -> !e.getValue().deleted)
-          .mapToInt(Map.Entry::getKey)
-          .toArray();
+    if (maxSize > 0) {
+      // Bounded backend: snapshot the active ids while holding the wrapper monitor, evaluating the deleted flag
+      // inside the critical section so neither the iteration nor the per-entry read races with concurrent mutation.
+      final int[] ids;
+      synchronized (locations) {
+        ids = locations.entrySet().stream()
+            .filter(e -> !e.getValue().deleted)
+            .mapToInt(Map.Entry::getKey)
+            .toArray();
+      }
+      return IntStream.of(ids);
     }
-    return IntStream.of(ids);
+    // Unlimited backend (ConcurrentHashMap): stream entrySet() lazily. Using entrySet() also avoids the extra
+    // get() lookup the original keySet()+get() implementation performed.
+    return locations.entrySet().stream()
+        .filter(e -> !e.getValue().deleted)
+        .mapToInt(Map.Entry::getKey);
   }
 
   /**
@@ -216,10 +228,14 @@ public class VectorLocationIndex {
    * @return Number of active vectors
    */
   public long getActiveCount() {
-    // Iterate the values inside the wrapper monitor as required by Collections.synchronizedMap.
-    synchronized (locations) {
-      return locations.values().stream().filter(loc -> !loc.deleted).count();
+    if (maxSize > 0) {
+      // Bounded backend: iterate the values inside the wrapper monitor as required by Collections.synchronizedMap.
+      synchronized (locations) {
+        return locations.values().stream().filter(loc -> !loc.deleted).count();
+      }
     }
+    // Unlimited backend (ConcurrentHashMap): values() iteration is already thread-safe and weakly-consistent.
+    return locations.values().stream().filter(loc -> !loc.deleted).count();
   }
 
   /**

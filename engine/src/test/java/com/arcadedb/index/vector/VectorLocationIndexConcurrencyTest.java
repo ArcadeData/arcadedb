@@ -127,6 +127,60 @@ class VectorLocationIndexConcurrencyTest {
   }
 
   /**
+   * Unlimited mode is backed by a ConcurrentHashMap and uses the lazy,
+   * non-snapshotting stream path. Verify it stays consistent under concurrent
+   * reads/iteration without throwing.
+   */
+  @Test
+  void unlimitedModeConcurrentIterationDoesNotThrow() throws InterruptedException {
+    final VectorLocationIndex index = new VectorLocationIndex(); // unlimited (ConcurrentHashMap)
+
+    final int seed = 512;
+    for (int i = 0; i < seed; i++)
+      index.addVector(false, i * 24L, new RID(1, i));
+
+    final int threads = 8;
+    final int iterationsPerThread = 3_000;
+    final ExecutorService pool = Executors.newFixedThreadPool(threads);
+    final CountDownLatch start = new CountDownLatch(1);
+    final CountDownLatch done = new CountDownLatch(threads);
+    final AtomicBoolean failed = new AtomicBoolean(false);
+    final ConcurrentLinkedQueue<Throwable> errors = new ConcurrentLinkedQueue<>();
+
+    for (int t = 0; t < threads; t++) {
+      final int threadId = t;
+      pool.submit(() -> {
+        try {
+          start.await();
+          for (int i = 0; i < iterationsPerThread; i++) {
+            switch (i % 4) {
+            case 0 -> index.addVector(false, i, new RID(1, seed + threadId * iterationsPerThread + i));
+            case 1 -> index.getActiveVectorIds().count();
+            case 2 -> index.getAllVectorIds().count();
+            default -> index.getActiveCount();
+            }
+          }
+        } catch (final Throwable e) {
+          failed.set(true);
+          errors.add(e);
+        } finally {
+          done.countDown();
+        }
+      });
+    }
+
+    start.countDown();
+    final boolean finished = done.await(60, TimeUnit.SECONDS);
+    pool.shutdownNow();
+
+    assertThat(finished).as("all worker threads completed within timeout").isTrue();
+    assertThat(failed.get())
+        .as("no exception during unlimited-mode concurrent access; first error: %s",
+            errors.isEmpty() ? "none" : errors.peek())
+        .isFalse();
+  }
+
+  /**
    * getActiveVectorIds must exclude tombstoned entries; getActiveCount must
    * match.
    */
