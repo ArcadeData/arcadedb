@@ -1313,6 +1313,31 @@ public final class GraphAlgorithms {
       });
     }
 
+    // De-duplicate each (now sorted) adjacency list in place. A vertex pair (u, v) connected by
+    // both an out-edge u->v and an in-edge u<-v produces two copies of v in N(u); reciprocal or
+    // bidirectional edges (common with importers) are the typical source. Self-loops (u itself)
+    // are dropped too: the undirected neighbour set used for a simple-graph LCC contains each
+    // distinct neighbour exactly once and never the node itself. Both the single-type merge and
+    // the multi-type sort above leave equal neighbours adjacent, so this is a single linear walk
+    // per node. The write cursor never overtakes the read cursor, so compaction is safe in place.
+    final int[] compactOffsets = new int[n + 1];
+    int write = 0;
+    for (int u = 0; u < n; u++) {
+      compactOffsets[u] = write;
+      final int end = offsets[u + 1];
+      int last = Integer.MIN_VALUE;
+      for (int j = offsets[u]; j < end; j++) {
+        final int neighbor = neighbors[j];
+        if (neighbor == u || neighbor == last)
+          continue;
+        neighbors[write++] = neighbor;
+        last = neighbor;
+      }
+    }
+    compactOffsets[n] = write;
+    // The compacted layout supersedes the raw merged layout for triangle counting and the degree.
+    System.arraycopy(compactOffsets, 0, offsets, 0, n + 1);
+
     // Count triangles using the "forward" technique: for each edge (u, v) where v > u,
     // count common neighbors w > v via sorted-merge intersection.
     // Each triangle {u, v, w} is found exactly once (u < v < w), then credited to all 3 nodes.
