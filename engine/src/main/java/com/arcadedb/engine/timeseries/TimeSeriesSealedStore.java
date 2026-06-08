@@ -543,6 +543,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final long[] reusableTsBuf = new long[MAX_BLOCK_SIZE];
     final double[] reusableValBuf = new double[MAX_BLOCK_SIZE];
 
+    // Loop-invariant: resolve the single-bucket anchor once outside the per-block loop.
+    final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
+
     // Hold the read lock for the entire scan including file I/O to prevent stale offsets
     // after atomic file replacement by concurrent writers (truncate/downsample).
     directoryLock.readLock().lock();
@@ -707,7 +710,6 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           }
         } else {
           // No bucket interval — accumulate all into one bucket
-          final long singleBucketTs = TimeSeriesEngine.singleBucketAnchor(fromTs);
           for (int i = 0; i < tsCount; i++) {
             final long ts = timestamps[i];
             if (ts < fromTs || ts > toTs)

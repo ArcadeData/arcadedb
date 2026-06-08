@@ -43,16 +43,19 @@ and `0L` is the value endorsed by the issue, is a valid epoch, and is identical 
 
 New regression test `TimeSeriesSingleBucketAnchorTest`:
 
+- `singleBucketAnchorMapsSentinelToEpoch` - direct unit test of the helper contract (`MIN_VALUE` -> `0L`, real `fromTs` preserved).
 - `aggregateSingleBucketWithMinValueFromTsIsNotSentinel` - mutable single-bucket SUM, MIN_VALUE fromTs.
 - `aggregateSingleBucketWithRealFromTsKeepsAnchor` - real lower bound still anchors at `fromTs`.
+- `aggregateSingleBucketWithRealFromTsKeepsAnchorOnSealedData` - real lower bound preserved on the sealed path after `compactAll()`.
 - `aggregateMultiSingleBucketWithMinValueFromTsIsNotSentinel` - multi-column single-bucket.
-- `aggregateMultiSingleBucketReadsSealedData` - exercises the sealed-store path after `compactAll()`.
+- `aggregateSingleColumnSingleBucketReadsSealedData` - single-column sealed path after `compactAll()`.
+- `aggregateMultiSingleBucketReadsSealedData` - multi-column sealed-store path after `compactAll()`.
 
 Confirmed failing before the fix (bucket key `Long.MIN_VALUE`), passing after.
 
 ## Verification
 
-- New test: 4/4 pass.
+- New test: 7/7 pass.
 - Regression suite (78 tests): `TimeSeriesEngineTest`, `TimeSeriesSealedStoreTest`,
   `TimeSeriesAggregationPushDownTest`, `TimeSeriesAccuracyTest`, `TimeSeriesShardTest`,
   `TimeSeriesSQLTest`, `TimeSeriesPhase2SQLTest`, `SQLFunctionTimeBucketTest`,

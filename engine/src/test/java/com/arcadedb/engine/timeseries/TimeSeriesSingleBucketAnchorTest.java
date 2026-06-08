@@ -53,6 +53,14 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
   }
 
   @Test
+  void singleBucketAnchorMapsSentinelToEpoch() {
+    // The MIN_VALUE "no lower bound" sentinel maps to the epoch anchor; any real fromTs is preserved.
+    assertThat(TimeSeriesEngine.singleBucketAnchor(Long.MIN_VALUE)).isEqualTo(0L);
+    assertThat(TimeSeriesEngine.singleBucketAnchor(0L)).isEqualTo(0L);
+    assertThat(TimeSeriesEngine.singleBucketAnchor(1000L)).isEqualTo(1000L);
+  }
+
+  @Test
   void aggregateSingleBucketWithMinValueFromTsIsNotSentinel() throws Exception {
     database.begin();
     engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket", COLS, 1);
@@ -66,9 +74,8 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
 
     // All three rows collapse into one bucket
     assertThat(result.size()).isEqualTo(1);
-    // The bug: the bucket key was Long.MIN_VALUE (the sentinel). It must be a valid epoch instead.
-    assertThat(result.getBucketTimestamp(0)).isNotEqualTo(Long.MIN_VALUE);
-    assertThat(result.getBucketTimestamp(0)).isGreaterThanOrEqualTo(0L);
+    // The bug: the bucket key was Long.MIN_VALUE (the sentinel). It must be the epoch anchor instead.
+    assertThat(result.getBucketTimestamp(0)).isEqualTo(0L);
     // SUM is unaffected by the anchor
     assertThat(result.getValue(0)).isEqualTo(60.0);
     assertThat(result.getCount(0)).isEqualTo(3);
@@ -134,8 +141,7 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
 
     final List<Long> buckets = result.getBucketTimestamps();
     assertThat(buckets).hasSize(1);
-    assertThat(buckets.get(0)).isNotEqualTo(Long.MIN_VALUE);
-    assertThat(buckets.get(0)).isGreaterThanOrEqualTo(0L);
+    assertThat(buckets.get(0)).isEqualTo(0L);
     assertThat(result.getValue(buckets.get(0), 0)).isEqualTo(60.0);
     database.commit();
   }
@@ -157,8 +163,7 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
         AggregationType.SUM, 0, null);
 
     assertThat(result.size()).isEqualTo(1);
-    assertThat(result.getBucketTimestamp(0)).isNotEqualTo(Long.MIN_VALUE);
-    assertThat(result.getBucketTimestamp(0)).isGreaterThanOrEqualTo(0L);
+    assertThat(result.getBucketTimestamp(0)).isEqualTo(0L);
     assertThat(result.getValue(0)).isEqualTo(100.0);
     assertThat(result.getCount(0)).isEqualTo(4);
     database.commit();
@@ -185,8 +190,7 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
 
     final List<Long> buckets = result.getBucketTimestamps();
     assertThat(buckets).hasSize(1);
-    assertThat(buckets.get(0)).isNotEqualTo(Long.MIN_VALUE);
-    assertThat(buckets.get(0)).isGreaterThanOrEqualTo(0L);
+    assertThat(buckets.get(0)).isEqualTo(0L);
     assertThat(result.getValue(buckets.get(0), 0)).isEqualTo(100.0);
     database.commit();
   }
