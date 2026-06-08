@@ -169,17 +169,19 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
   }
 
   /**
-   * Checks whether all edge types in the pattern exist in the schema.
-   * If any type does not exist, the relationship match can never produce results.
+   * Checks whether at least one edge type in the pattern exists in the schema.
+   * A relationship-type list is a disjunction ([:A|B] matches type A OR type B), so the match can
+   * still produce results as long as one alternative is a declared type; undeclared alternatives are
+   * simply ignored by the lower-level edge iterators. Only short-circuit when NONE of the types exist.
    */
   private boolean edgeTypesExistInSchema(final CommandContext context) {
     if (!pattern.hasTypes())
       return true; // No type filter means all edges match
     final var schema = context.getDatabase().getSchema();
     for (final String type : pattern.getTypes())
-      if (!schema.existsType(type))
-        return false;
-    return true;
+      if (schema.existsType(type))
+        return true;
+    return false;
   }
 
   /**

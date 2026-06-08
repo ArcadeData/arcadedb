@@ -127,4 +127,27 @@ class CypherRelationshipTypeDisjunctionTest {
   void typeDisjunctionVariableLengthMatches() {
     assertThat(count("MATCH (a:T)-[:R1|R2*1..2]->(b:T) RETURN count(*) AS c")).isEqualTo(1);
   }
+
+  /**
+   * Refined repro from issue #4480 (comment): the disjunction dropped the whole match only when
+   * BOTH (1) one alternative was an undeclared edge type and (2) the target node carried an inline
+   * property anchor. Removing either condition returned the correct count.
+   */
+  @Test
+  void typeDisjunctionUndeclaredSecondTypeWithTargetPropertyAnchor() {
+    database.transaction(() ->
+        database.command("opencypher", "CREATE (a:Z {k:'a'})-[:RX]->(b:Z {k:'b'})"));
+    // RY is never declared. The disjunction must still match the existing RX edge.
+    assertThat(count("MATCH (a:Z)-[:RX|RY]->(b:Z) RETURN count(*) AS c")).isEqualTo(1);
+    // Same query with an inline property anchor on the target node: must also match.
+    assertThat(count("MATCH (a:Z)-[:RX|RY]->(b:Z {k:'b'}) RETURN count(*) AS c")).isEqualTo(1);
+  }
+
+  @Test
+  void typeDisjunctionUndeclaredFirstTypeWithTargetPropertyAnchor() {
+    database.transaction(() ->
+        database.command("opencypher", "CREATE (a:Z {k:'a'})-[:RX]->(b:Z {k:'b'})"));
+    // Order-independent: undeclared type listed first.
+    assertThat(count("MATCH (a:Z)-[:RY|RX]->(b:Z {k:'b'}) RETURN count(*) AS c")).isEqualTo(1);
+  }
 }
