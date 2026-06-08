@@ -45,16 +45,21 @@ public class SQLFunctionBoolAnd extends SQLAggregatedFunction {
       else if (MultiValue.isMultiValue(params[0]))
         for (final Object n : MultiValue.getMultiValueIterable(params[0])) {
           and((Boolean) n);
-          if (and) break;
+          if (and != null && !and) break; // AND SHORT-CIRCUITS ON FALSE
         }
-    } else {
-      and = null;
-      for (int i = 0; i < params.length; ++i) {
-        and((Boolean) params[i]);
-        if (and) break;
+      return and;
+    }
+
+    // PER-ROW MULTI-ARG: AND THE ARGUMENTS INTO A LOCAL VARIABLE WITHOUT TOUCHING THE CROSS-ROW ACCUMULATOR.
+    Boolean rowAnd = null;
+    for (int i = 0; i < params.length; ++i) {
+      final Boolean value = (Boolean) params[i];
+      if (value != null) {
+        rowAnd = rowAnd == null ? value : rowAnd && value;
+        if (!rowAnd) break; // AND SHORT-CIRCUITS ON FALSE
       }
     }
-    return and;
+    return rowAnd;
   }
 
   protected void and(final Boolean value) {

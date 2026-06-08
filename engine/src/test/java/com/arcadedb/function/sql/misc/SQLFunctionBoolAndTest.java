@@ -177,4 +177,34 @@ class SQLFunctionBoolAndTest extends TestHelper {
       assertThat(result.next().<Boolean>getProperty("result")).isNull();
     });
   }
+
+  /**
+   * Issue #4517/related: multi-arg bool_and is a per-row AND of its arguments and must short-circuit on FALSE, not TRUE.
+   */
+  @Test
+  void boolAndMultiArg() {
+    database.transaction(() -> {
+      assertThat(database.query("sql", "SELECT bool_and(true, false) AS r").next().<Boolean>getProperty("r")).isFalse();
+      assertThat(database.query("sql", "SELECT bool_and(false, true) AS r").next().<Boolean>getProperty("r")).isFalse();
+      assertThat(database.query("sql", "SELECT bool_and(true, true) AS r").next().<Boolean>getProperty("r")).isTrue();
+      assertThat(database.query("sql", "SELECT bool_and(true, true, false) AS r").next().<Boolean>getProperty("r")).isFalse();
+    });
+  }
+
+  /**
+   * Issue #4517: a per-row multi-arg call must not wipe the cross-row accumulator queried via getResult().
+   */
+  @Test
+  void boolAndMultiArgDoesNotClobberAccumulator() {
+    final SQLFunctionBoolAnd f = new SQLFunctionBoolAnd();
+    f.execute(null, null, null, new Object[] { true }, null);
+    f.execute(null, null, null, new Object[] { true }, null);
+    assertThat((Boolean) f.getResult()).isTrue();
+
+    // PER-ROW MULTI-ARG COMPUTATION
+    assertThat((Boolean) f.execute(null, null, null, new Object[] { true, false }, null)).isFalse();
+
+    // ACCUMULATOR PRESERVED
+    assertThat((Boolean) f.getResult()).isTrue();
+  }
 }

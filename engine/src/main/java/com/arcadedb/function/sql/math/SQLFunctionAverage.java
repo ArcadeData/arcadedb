@@ -36,6 +36,12 @@ import java.math.RoundingMode;
 public class SQLFunctionAverage extends SQLAggregatedFunction {
   public static final String NAME = "avg";
 
+  /**
+   * Scale used when averaging {@link BigDecimal} values, so the result keeps fractional digits instead of inheriting the
+   * dividend scale (which would truncate to an integer).
+   */
+  private static final int BIG_DECIMAL_SCALE = 10;
+
   private Number sum;
   private int    total = 0;
 
@@ -52,13 +58,21 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
         for (final Object n : MultiValue.getMultiValueIterable(params[0]))
           sum((Number) n);
 
-    } else {
-      sum = null;
-      for (int i = 0; i < params.length; ++i)
-        sum((Number) params[i]);
+      return getResult();
     }
 
-    return getResult();
+    // MULTI-ARG IS A PER-ROW COMPUTATION: AVERAGE THE ARGUMENTS USING LOCAL VARIABLES WITHOUT TOUCHING THE
+    // CROSS-ROW ACCUMULATOR, OTHERWISE A SUBSEQUENT getResult() WOULD ONLY REFLECT THIS ROW'S CONTRIBUTION.
+    Number rowSum = null;
+    int rowTotal = 0;
+    for (int i = 0; i < params.length; ++i) {
+      final Number value = (Number) params[i];
+      if (value != null) {
+        rowTotal++;
+        rowSum = rowSum == null ? value : Type.increment(rowSum, value);
+      }
+    }
+    return computeAverage(rowSum, rowTotal);
   }
 
   protected void sum(final Number value) {
@@ -87,17 +101,16 @@ public class SQLFunctionAverage extends SQLAggregatedFunction {
   }
 
   private Object computeAverage(final Number iSum, final int iTotal) {
-    if (iSum instanceof Integer)
-      return iSum.intValue() / iTotal;
-    else if (iSum instanceof Long)
-      return iSum.longValue() / iTotal;
-    else if (iSum instanceof Float)
-      return iSum.floatValue() / iTotal;
-    else if (iSum instanceof Double)
-      return iSum.doubleValue() / iTotal;
-    else if (iSum instanceof BigDecimal decimal)
-      return decimal.divide(new BigDecimal(iTotal), RoundingMode.HALF_UP);
+    // EMPTY GROUP: NO VALUES TO AVERAGE (ALSO AVOIDS A DIVISION BY ZERO)
+    if (iSum == null || iTotal == 0)
+      return null;
 
-    return null;
+    // BIGDECIMAL KEEPS FULL PRECISION: USE AN EXPLICIT SCALE, OTHERWISE divide() INHERITS THE DIVIDEND SCALE AND TRUNCATES
+    // (e.g. new BigDecimal("10").divide(BigDecimal(3)) -> 3 instead of 3.3333333333).
+    if (iSum instanceof BigDecimal decimal)
+      return decimal.divide(new BigDecimal(iTotal), BIG_DECIMAL_SCALE, RoundingMode.HALF_UP);
+
+    // ALL OTHER NUMERIC TYPES AVERAGE AS A DOUBLE SO INTEGER/LONG SUMS ARE NOT TRUNCATED (e.g. avg(1, 2) -> 1.5).
+    return iSum.doubleValue() / iTotal;
   }
 }

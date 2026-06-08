@@ -148,4 +148,34 @@ class SQLFunctionBoolOrTest extends TestHelper {
       assertThat((Boolean) result.next().getProperty("bool_or")).isTrue();
     });
   }
+
+  /**
+   * Issue #4517/related: multi-arg bool_or is a per-row OR of its arguments and short-circuits on TRUE.
+   */
+  @Test
+  void boolOrMultiArg() {
+    database.transaction(() -> {
+      assertThat(database.query("sql", "SELECT bool_or(false, true) AS r").next().<Boolean>getProperty("r")).isTrue();
+      assertThat(database.query("sql", "SELECT bool_or(true, false) AS r").next().<Boolean>getProperty("r")).isTrue();
+      assertThat(database.query("sql", "SELECT bool_or(false, false) AS r").next().<Boolean>getProperty("r")).isFalse();
+      assertThat(database.query("sql", "SELECT bool_or(false, false, true) AS r").next().<Boolean>getProperty("r")).isTrue();
+    });
+  }
+
+  /**
+   * Issue #4517: a per-row multi-arg call must not wipe the cross-row accumulator queried via getResult().
+   */
+  @Test
+  void boolOrMultiArgDoesNotClobberAccumulator() {
+    final SQLFunctionBoolOr f = new SQLFunctionBoolOr();
+    f.execute(null, null, null, new Object[] { false }, null);
+    f.execute(null, null, null, new Object[] { true }, null);
+    assertThat((Boolean) f.getResult()).isTrue();
+
+    // PER-ROW MULTI-ARG COMPUTATION
+    assertThat((Boolean) f.execute(null, null, null, new Object[] { false, false }, null)).isFalse();
+
+    // ACCUMULATOR PRESERVED
+    assertThat((Boolean) f.getResult()).isTrue();
+  }
 }

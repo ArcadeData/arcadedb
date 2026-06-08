@@ -47,12 +47,18 @@ public class SQLFunctionSum extends SQLAggregatedFunction {
       else if (MultiValue.isMultiValue(params[0]))
         for (final Object n : MultiValue.getMultiValueIterable(params[0]))
           sum((Number) n);
-    } else {
-      sum = null;
-      for (int i = 0; i < params.length; ++i)
-        sum((Number) params[i]);
+      return sum;
     }
-    return sum;
+
+    // MULTI-ARG IS A PER-ROW COMPUTATION: SUM THE ARGUMENTS INTO A LOCAL VARIABLE WITHOUT TOUCHING THE
+    // CROSS-ROW ACCUMULATOR, OTHERWISE A SUBSEQUENT getResult() WOULD ONLY RETURN THIS ROW'S CONTRIBUTION.
+    Number rowSum = null;
+    for (int i = 0; i < params.length; ++i) {
+      final Number value = (Number) params[i];
+      if (value != null)
+        rowSum = rowSum == null ? value : Type.increment(rowSum, value);
+    }
+    return rowSum;
   }
 
   protected void sum(final Number value) {
