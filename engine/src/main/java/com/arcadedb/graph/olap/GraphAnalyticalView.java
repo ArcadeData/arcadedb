@@ -1626,14 +1626,14 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
   /**
    * Copies the base CSR neighbour slice {@code [start, end)} for {@code nodeId}, skipping any edge that the
    * overlay marks as deleted. For an outgoing slice each neighbour {@code n} represents the edge {@code nodeId -> n};
-   * for an incoming slice it represents {@code n -> nodeId}. When no overlay or no relevant deletions exist the
-   * original slice is returned verbatim to keep the no-deletion fast case allocation-cheap.
+   * for an incoming slice it represents {@code n -> nodeId}. When no relevant deletions exist the original slice is
+   * returned verbatim to keep the no-deletion case allocation-cheap.
+   * <p>
+   * The caller only reaches this helper on the slow path, which is taken precisely when an overlay is present, so
+   * {@code ov} is always non-null here (the {@code ov == null} fast paths in {@link #getNeighborsFromCSR} return earlier).
    */
   private static int[] copyBaseExcludingDeleted(final int[] neighbors, final int start, final int end,
       final DeltaOverlay ov, final String edgeType, final int nodeId, final boolean outgoing) {
-    if (ov == null)
-      return Arrays.copyOfRange(neighbors, start, end);
-
     // Single pass over the slice. ov.isEdgeDeleted() autoboxes a packed long for a Set lookup, so we call it
     // exactly once per neighbour and cache the result in a boolean[]. The cache is allocated lazily, only when
     // the first deleted edge is found, so the common no-deletion case stays allocation-free.
