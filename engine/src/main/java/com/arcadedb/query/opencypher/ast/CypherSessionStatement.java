@@ -61,13 +61,17 @@ public class CypherSessionStatement implements CypherStatement {
     return valueExpression;
   }
 
+  /**
+   * Returns {@code false} even though session management reads/writes no query data: {@code isReadOnly()}
+   * drives {@code isIdempotent()}, which HA uses to route a command and which Bolt's {@code isWriteQuery()}
+   * uses to pick {@code command()} vs {@code query()} - SESSION statements must go through {@code command()}
+   * (the only path that dispatches them) and must not be routed to a follower. The MCP permission axis is a
+   * separate concern that classifies them as {@code READ}.
+   *
+   * @see com.arcadedb.query.opencypher.query.OpenCypherQueryEngine for the {@code OperationType.READ} side
+   */
   @Override
   public boolean isReadOnly() {
-    // Intentionally false even though session management reads/writes no query data. isReadOnly() drives
-    // isIdempotent(), which HA uses to route a command and which Bolt's isWriteQuery() uses to pick
-    // command() vs query() - SESSION statements must go through command() (the only path that dispatches
-    // them) and must not be routed to a follower. The MCP permission axis classifies them separately as
-    // READ in OpenCypherQueryEngine.getOperationTypes(); that is a different concern from this one.
     return false;
   }
 

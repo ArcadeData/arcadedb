@@ -55,9 +55,12 @@ public interface QuerySession {
   void reset();
 
   /**
-   * Releases this session's resources (the {@code SESSION CLOSE} effect). The exact effect is owner-specific:
-   * the HTTP session also rolls back its open transaction and invalidates its id so later references fail,
-   * whereas a connection-scoped owner (Bolt) only clears the session parameters.
+   * Releases this session's resources (the {@code SESSION CLOSE} effect). The exact effect is intentionally
+   * <b>transport-specific</b>: the HTTP session also rolls back its open transaction and invalidates its id so
+   * later references fail, whereas a connection-scoped owner (Bolt) only clears the session parameters and
+   * leaves the connection and its transaction live. A client must therefore not assume {@code SESSION CLOSE}
+   * rolls back a transaction on every transport. The owner may finalize the transaction here, so callers
+   * should not issue further operations on the same session within the same request after closing it.
    */
   void close();
 
@@ -69,7 +72,10 @@ public interface QuerySession {
   static Map<String, Object> mergeParameters(final Map<String, Object> sessionParams, final Map<String, Object> requestParams) {
     if (sessionParams == null || sessionParams.isEmpty())
       return requestParams;
-    final Map<String, Object> merged = new HashMap<>(sessionParams);
+    // Pre-size for both maps so putAll does not resize the table (request params overwrite on a name clash).
+    final int size = sessionParams.size() + (requestParams != null ? requestParams.size() : 0);
+    final Map<String, Object> merged = new HashMap<>((int) (size / 0.75f) + 1);
+    merged.putAll(sessionParams);
     if (requestParams != null)
       merged.putAll(requestParams);
     return merged;

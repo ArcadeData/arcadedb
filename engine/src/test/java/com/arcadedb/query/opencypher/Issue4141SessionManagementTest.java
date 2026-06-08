@@ -31,6 +31,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -63,7 +64,8 @@ public class Issue4141SessionManagementTest {
 
     @Override
     public Map<String, Object> getParameters() {
-      return params;
+      // Mirror production (HttpSession/BoltSession) so the double cannot mask an engine mutating session params.
+      return Collections.unmodifiableMap(params);
     }
 
     @Override
