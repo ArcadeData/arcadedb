@@ -1313,6 +1313,25 @@ public final class GraphAlgorithms {
       });
     }
 
+    // Both merge paths produce per-node sorted adjacency. Compact in place: drop self-loops and
+    // duplicates from reciprocal edges (same neighbour in both the fwd and bwd CSR lists), so the
+    // undirected neighbour set used for the simple-graph LCC holds each distinct neighbour once.
+    // offsets[u] is captured before being overwritten, and the write cursor never overtakes the
+    // read cursor, so the mutation is safe in place with no extra allocation.
+    int write = 0;
+    for (int u = 0; u < n; u++) {
+      final int readStart = offsets[u];
+      final int readEnd = offsets[u + 1];
+      offsets[u] = write;
+      int last = -1; // node IDs are non-negative sequential integers, so -1 never matches
+      for (int j = readStart; j < readEnd; j++) {
+        final int neighbor = neighbors[j];
+        if (neighbor != u && neighbor != last)
+          neighbors[write++] = last = neighbor;
+      }
+    }
+    offsets[n] = write;
+
     // Count triangles using the "forward" technique: for each edge (u, v) where v > u,
     // count common neighbors w > v via sorted-merge intersection.
     // Each triangle {u, v, w} is found exactly once (u < v < w), then credited to all 3 nodes.

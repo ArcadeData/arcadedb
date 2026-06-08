@@ -623,6 +623,81 @@ class GraphAlgorithmsTest extends TestHelper {
   }
 
   @Test
+  void lccReciprocalTriangle() {
+    // Triangle A-B-C, but every edge is materialised in BOTH directions (reciprocal edges).
+    // Undirected LCC must still be 1.0 for all three nodes: the duplicate forward/backward
+    // neighbour must be de-duplicated so that deg(u) == 2 and triangles(u) == 1.
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    // forward edges
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", c);
+    c.newEdge("LINK", a);
+    // reciprocal edges: each pair now has both an out- and an in-edge, so the merged
+    // forward+backward adjacency contains every neighbour twice.
+    b.newEdge("LINK", a);
+    c.newEdge("LINK", b);
+    a.newEdge("LINK", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final double[] lcc = GraphAlgorithms.localClusteringCoefficient(gav, "LINK");
+
+    assertThat(lcc).hasSize(3);
+    // Each node has 2 distinct undirected neighbours forming a single triangle => LCC = 1.0.
+    // Without de-duplication the inflated degree and over-counted triangles produce a wrong value.
+    for (final double coeff : lcc)
+      assertThat(coeff).isCloseTo(1.0, Offset.offset(1e-9));
+
+    gav.drop();
+  }
+
+  @Test
+  void lccReciprocalPartialClique() {
+    // A--B, A--C, A--D, B--C with every edge reciprocated (both directions stored).
+    // A has 3 distinct undirected neighbours (B, C, D) and exactly 1 triangle (A-B-C),
+    // so LCC(A) = 2 * 1 / (3 * 2) = 1/3 even though each neighbour is stored twice.
+    database.getSchema().createVertexType("Node");
+    database.getSchema().createEdgeType("LINK");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Node").set("name", "A").save();
+    final MutableVertex b = database.newVertex("Node").set("name", "B").save();
+    final MutableVertex c = database.newVertex("Node").set("name", "C").save();
+    final MutableVertex d = database.newVertex("Node").set("name", "D").save();
+    a.newEdge("LINK", b);
+    b.newEdge("LINK", a);
+    a.newEdge("LINK", c);
+    c.newEdge("LINK", a);
+    a.newEdge("LINK", d);
+    d.newEdge("LINK", a);
+    b.newEdge("LINK", c);
+    c.newEdge("LINK", b);
+    database.commit();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Node").withEdgeTypes("LINK").build();
+    final double[] lcc = GraphAlgorithms.localClusteringCoefficient(gav, "LINK");
+
+    final int aId = gav.getNodeId(a.getIdentity());
+    assertThat(lcc[aId]).isCloseTo(1.0 / 3.0, Offset.offset(1e-9));
+    // B and C each have 2 distinct undirected neighbours forming the single A-B-C triangle => LCC = 1.0;
+    // D has a single distinct neighbour (A), degree < 2 => LCC = 0.0. The inflated (un-deduplicated)
+    // degree would corrupt B and C too, so asserting them makes the regression airtight.
+    assertThat(lcc[gav.getNodeId(b.getIdentity())]).isCloseTo(1.0, Offset.offset(1e-9));
+    assertThat(lcc[gav.getNodeId(c.getIdentity())]).isCloseTo(1.0, Offset.offset(1e-9));
+    assertThat(lcc[gav.getNodeId(d.getIdentity())]).isCloseTo(0.0, Offset.offset(1e-9));
+
+    gav.drop();
+  }
+
+  @Test
   void compactionThresholdBuilder() {
     database.getSchema().createVertexType("Node");
     database.getSchema().createEdgeType("LINK");
