@@ -26,6 +26,8 @@ import com.arcadedb.exception.TimeoutException;
 
 import java.util.*;
 
+import static com.arcadedb.schema.Property.RID_PROPERTY;
+
 /**
  * Created by luigidellaquila on 08/07/16.
  *
@@ -147,14 +149,9 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   }
 
   private void markAsVisited(final Result nextValue) {
-    if (nextValue.isElement()) {
-      final RID identity = nextValue.getElement().get().getIdentity();
-      final int bucket = identity.getBucketId();
-      final long pos = identity.getPosition();
-      if (bucket >= 0 && pos >= 0) {
-        pastRids.add(identity);
-        return;
-      }
+    if (canUseRidFastPath(nextValue)) {
+      pastRids.add(nextValue.getElement().get().getIdentity());
+      return;
     }
     // Store only the property values, not the full Result object
     pastItems.add(new DistinctKey(nextValue));
@@ -167,16 +164,29 @@ public class DistinctExecutionStep extends AbstractExecutionStep {
   }
 
   private boolean alreadyVisited(final Result nextValue) {
-    if (nextValue.isElement()) {
-      final RID identity = nextValue.getElement().get().getIdentity();
-      final int bucket = identity.getBucketId();
-      final long pos = identity.getPosition();
-      if (bucket >= 0 && pos >= 0) {
-        return pastRids.contains(identity);
-      }
-    }
+    if (canUseRidFastPath(nextValue))
+      return pastRids.contains(nextValue.getElement().get().getIdentity());
     // Check using only the property values
     return pastItems.contains(new DistinctKey(nextValue));
+  }
+
+  /**
+   * The RID-based fast path deduplicates by record identity instead of by the projected row, which
+   * is a memory optimization that is only valid when identity still uniquely determines the output.
+   * It is valid for bare element wrappers (whole-record selects and internal index dedup) and for
+   * projected rows that still expose {@code @rid}. When a projection has reshaped the row and dropped
+   * the identity (e.g. {@code SELECT DISTINCT *, !@rid}), two different records can collapse to the
+   * same output and must be compared by value, so we fall back to the property-based {@link DistinctKey}.
+   */
+  private boolean canUseRidFastPath(final Result value) {
+    if (!value.isElement())
+      return false;
+    final RID identity = value.getElement().get().getIdentity();
+    if (identity.getBucketId() < 0 || identity.getPosition() < 0)
+      return false;
+    if (value instanceof ResultInternal ri && ri.hasProjectedProperties())
+      return value.getPropertyNames().contains(RID_PROPERTY);
+    return true;
   }
 
   @Override

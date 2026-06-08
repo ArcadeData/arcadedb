@@ -332,6 +332,17 @@ public class ResultInternal implements Result {
     return this.element != null;
   }
 
+  /**
+   * Returns {@code true} when this result carries explicitly projected properties (set via
+   * {@link #setProperty}), as opposed to being a bare wrapper around the backing {@link #element}.
+   * Used by DISTINCT to decide whether the cheap RID-based deduplication is still semantically
+   * valid: once a projection has reshaped the row (e.g. excluding {@code @rid}), two different
+   * records can map to the same output and must be compared by value instead of by identity.
+   */
+  public boolean hasProjectedProperties() {
+    return content != null && !content.isEmpty();
+  }
+
   public Optional<Document> getElement() {
     return Optional.ofNullable(element);
   }
