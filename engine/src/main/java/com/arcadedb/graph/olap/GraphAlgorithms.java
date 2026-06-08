@@ -1313,33 +1313,24 @@ public final class GraphAlgorithms {
       });
     }
 
-    // De-duplicate each (now sorted) adjacency list in place. A vertex pair (u, v) connected by
-    // both an out-edge u->v and an in-edge u<-v produces two copies of v in N(u); reciprocal or
-    // bidirectional edges (common with importers) are the typical source. Self-loops (u itself)
-    // are dropped too: the undirected neighbour set used for a simple-graph LCC contains each
-    // distinct neighbour exactly once and never the node itself. Both the single-type merge and
-    // the multi-type sort above leave equal neighbours adjacent, so this is a single linear walk
-    // per node. The write cursor never overtakes the read cursor, so compaction is safe in place.
-    // TODO: this pass is sequential while the multi-type sort above is parallel; for very large
-    // graphs it could be parallelized via a two-phase prefix-sum (per-node compacted sizes, then
-    // a parallel compaction), at the cost of extra complexity.
-    final int[] compactOffsets = new int[n + 1];
+    // Both merge paths produce per-node sorted adjacency. Compact in place: drop self-loops and
+    // duplicates from reciprocal edges (same neighbour in both the fwd and bwd CSR lists), so the
+    // undirected neighbour set used for the simple-graph LCC holds each distinct neighbour once.
+    // offsets[u] is captured before being overwritten, and the write cursor never overtakes the
+    // read cursor, so the mutation is safe in place with no extra allocation.
     int write = 0;
     for (int u = 0; u < n; u++) {
-      compactOffsets[u] = write;
-      final int end = offsets[u + 1];
-      int last = Integer.MIN_VALUE;
-      for (int j = offsets[u]; j < end; j++) {
+      final int readStart = offsets[u];
+      final int readEnd = offsets[u + 1];
+      offsets[u] = write;
+      int last = -1; // node IDs are non-negative sequential integers, so -1 never matches
+      for (int j = readStart; j < readEnd; j++) {
         final int neighbor = neighbors[j];
-        if (neighbor == u || neighbor == last)
-          continue;
-        neighbors[write++] = neighbor;
-        last = neighbor;
+        if (neighbor != u && neighbor != last)
+          neighbors[write++] = last = neighbor;
       }
     }
-    compactOffsets[n] = write;
-    // The compacted layout supersedes the raw merged layout for triangle counting and the degree.
-    System.arraycopy(compactOffsets, 0, offsets, 0, n + 1);
+    offsets[n] = write;
 
     // Count triangles using the "forward" technique: for each edge (u, v) where v > u,
     // count common neighbors w > v via sorted-merge intersection.
