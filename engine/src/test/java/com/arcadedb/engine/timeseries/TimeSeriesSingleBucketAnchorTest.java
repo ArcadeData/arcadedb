@@ -21,6 +21,7 @@ package com.arcadedb.engine.timeseries;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.schema.Type;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -40,10 +41,21 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
       new ColumnDefinition("value", Type.DOUBLE, ColumnDefinition.ColumnRole.FIELD)
   );
 
+  // Closed in @AfterEach so the engine/files are released even when an assertion fails mid-test.
+  private TimeSeriesEngine engine;
+
+  @AfterEach
+  void closeEngine() throws Exception {
+    if (engine != null) {
+      engine.close();
+      engine = null;
+    }
+  }
+
   @Test
   void aggregateSingleBucketWithMinValueFromTsIsNotSentinel() throws Exception {
     database.begin();
-    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket", COLS, 1);
+    engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket", COLS, 1);
     engine.appendSamples(new long[] { 1000L, 2000L, 3000L }, new Object[] { 10.0, 20.0, 30.0 });
     database.commit();
 
@@ -61,34 +73,54 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
     assertThat(result.getValue(0)).isEqualTo(60.0);
     assertThat(result.getCount(0)).isEqualTo(3);
     database.commit();
-
-    engine.close();
   }
 
   @Test
   void aggregateSingleBucketWithRealFromTsKeepsAnchor() throws Exception {
     database.begin();
-    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_real", COLS, 1);
+    engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_real", COLS, 1);
     engine.appendSamples(new long[] { 1000L, 2000L, 3000L }, new Object[] { 10.0, 20.0, 30.0 });
     database.commit();
 
     database.begin();
     // A real lower bound must still anchor the single bucket at fromTs (unchanged behavior).
     final AggregationResult result = engine.aggregate(1000L, Long.MAX_VALUE, 0,
-        AggregationType.COUNT, 0, null);
+        AggregationType.SUM, 0, null);
 
     assertThat(result.size()).isEqualTo(1);
     assertThat(result.getBucketTimestamp(0)).isEqualTo(1000L);
+    assertThat(result.getValue(0)).isEqualTo(60.0);
     assertThat(result.getCount(0)).isEqualTo(3);
     database.commit();
+  }
 
-    engine.close();
+  @Test
+  void aggregateSingleBucketWithRealFromTsKeepsAnchorOnSealedData() throws Exception {
+    database.begin();
+    engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_real_sealed", COLS, 1);
+    engine.appendSamples(new long[] { 1000L, 2000L, 3000L, 4000L }, new Object[] { 10.0, 20.0, 30.0, 40.0 });
+    database.commit();
+
+    // Force the sealed-store path so a real lower bound is preserved there too.
+    database.begin();
+    engine.compactAll();
+    database.commit();
+
+    database.begin();
+    final AggregationResult result = engine.aggregate(1000L, Long.MAX_VALUE, 0,
+        AggregationType.SUM, 0, null);
+
+    assertThat(result.size()).isEqualTo(1);
+    assertThat(result.getBucketTimestamp(0)).isEqualTo(1000L);
+    assertThat(result.getValue(0)).isEqualTo(100.0);
+    assertThat(result.getCount(0)).isEqualTo(4);
+    database.commit();
   }
 
   @Test
   void aggregateMultiSingleBucketWithMinValueFromTsIsNotSentinel() throws Exception {
     database.begin();
-    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_multi", COLS, 1);
+    engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_multi", COLS, 1);
     engine.appendSamples(new long[] { 1000L, 2000L, 3000L }, new Object[] { 10.0, 20.0, 30.0 });
     database.commit();
 
@@ -106,14 +138,12 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
     assertThat(buckets.get(0)).isGreaterThanOrEqualTo(0L);
     assertThat(result.getValue(buckets.get(0), 0)).isEqualTo(60.0);
     database.commit();
-
-    engine.close();
   }
 
   @Test
   void aggregateSingleColumnSingleBucketReadsSealedData() throws Exception {
     database.begin();
-    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_sealed_col", COLS, 1);
+    engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_sealed_col", COLS, 1);
     engine.appendSamples(new long[] { 1000L, 2000L, 3000L, 4000L }, new Object[] { 10.0, 20.0, 30.0, 40.0 });
     database.commit();
 
@@ -132,14 +162,12 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
     assertThat(result.getValue(0)).isEqualTo(100.0);
     assertThat(result.getCount(0)).isEqualTo(4);
     database.commit();
-
-    engine.close();
   }
 
   @Test
   void aggregateMultiSingleBucketReadsSealedData() throws Exception {
     database.begin();
-    final TimeSeriesEngine engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_sealed", COLS, 1);
+    engine = new TimeSeriesEngine((DatabaseInternal) database, "ts_single_bucket_sealed", COLS, 1);
     engine.appendSamples(new long[] { 1000L, 2000L, 3000L, 4000L }, new Object[] { 10.0, 20.0, 30.0, 40.0 });
     database.commit();
 
@@ -161,7 +189,5 @@ class TimeSeriesSingleBucketAnchorTest extends TestHelper {
     assertThat(buckets.get(0)).isGreaterThanOrEqualTo(0L);
     assertThat(result.getValue(buckets.get(0), 0)).isEqualTo(100.0);
     database.commit();
-
-    engine.close();
   }
 }
