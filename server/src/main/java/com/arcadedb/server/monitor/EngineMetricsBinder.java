@@ -25,6 +25,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.binder.MeterBinder;
 
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Exposes engine-wide statistics from {@link Profiler} as Micrometer gauges so they appear in
@@ -48,8 +49,12 @@ public final class EngineMetricsBinder implements MeterBinder {
 
   private static final long SNAPSHOT_TTL_NANOS = TimeUnit.SECONDS.toNanos(1);
 
-  private volatile JSONObject cachedSnapshot;
-  private volatile long       cachedAtNanos;
+  /** The snapshot and the timestamp it was taken at, swapped atomically so a reader never sees a new
+   * snapshot paired with a stale timestamp. */
+  private record CachedSnapshot(JSONObject json, long atNanos) {
+  }
+
+  private final AtomicReference<CachedSnapshot> cache = new AtomicReference<>();
 
   @Override
   public void bindTo(final MeterRegistry registry) {
@@ -101,12 +106,14 @@ public final class EngineMetricsBinder implements MeterBinder {
 
   private JSONObject snapshot() {
     final long now = System.nanoTime();
-    JSONObject snap = cachedSnapshot;
-    if (snap == null || now - cachedAtNanos > SNAPSHOT_TTL_NANOS) {
-      snap = Profiler.INSTANCE.toJSON();
-      cachedSnapshot = snap;
-      cachedAtNanos = now;
+    final CachedSnapshot current = cache.get();
+    if (current == null || now - current.atNanos() > SNAPSHOT_TTL_NANOS) {
+      // Last-writer-wins: two threads may both rebuild on the TTL boundary (Profiler.toJSON() is
+      // synchronized, so concurrent rebuilds are safe), but snapshot and timestamp stay consistent.
+      final JSONObject snap = Profiler.INSTANCE.toJSON();
+      cache.set(new CachedSnapshot(snap, now));
+      return snap;
     }
-    return snap;
+    return current.json();
   }
 }

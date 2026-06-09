@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -59,6 +60,25 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
     assertThat(rawPathTimer).isNull();
   }
 
+  @Test
+  void httpRequestsTimerRecordsErrorStatus() throws Exception {
+    // An unauthenticated request to a protected endpoint returns 401, exercising the error path.
+    final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/command/graph").openConnection();
+    c.setRequestMethod("POST");
+    c.setDoOutput(true);
+    c.setRequestProperty("Content-Type", "application/json");
+    c.getOutputStream().write("{\"language\":\"sql\",\"command\":\"select 1\"}".getBytes(StandardCharsets.UTF_8));
+    c.connect();
+    assertThat(c.getResponseCode()).isEqualTo(401);
+    c.disconnect();
+
+    // RED metrics must record errors too, tagged with the failing status code.
+    final Timer errorTimer = Metrics.globalRegistry.find("arcadedb.http.requests")
+        .tag("path", "/command/{database}").tag("status", "401").timer();
+    assertThat(errorTimer).isNotNull();
+    assertThat(errorTimer.count()).isGreaterThanOrEqualTo(1L);
+  }
+
   private void issueReady() throws Exception {
     final HttpURLConnection connection = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
     connection.setRequestMethod("GET");
@@ -74,7 +94,7 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
     c.setRequestProperty("Authorization",
         "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
     c.setRequestProperty("Content-Type", "application/json");
-    c.getOutputStream().write("{\"language\":\"sql\",\"command\":\"select 1 as one\"}".getBytes());
+    c.getOutputStream().write("{\"language\":\"sql\",\"command\":\"select 1 as one\"}".getBytes(StandardCharsets.UTF_8));
     c.connect();
     c.getResponseCode();
     c.disconnect();
