@@ -104,6 +104,10 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     }
     response.put("databases", databases);
 
+    // Cluster-level health alerts (e.g. single-bucket types that serialize concurrent writes on the
+    // leader). Surfaced in Studio's HA panel so operators see actionable warnings without log-grepping.
+    response.put("alerts", ClusterAlerts.scan(httpServer.getServer()));
+
     return new ExecutionResponse(200, response.toString());
   }
 }

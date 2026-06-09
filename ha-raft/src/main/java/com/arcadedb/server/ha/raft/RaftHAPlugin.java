@@ -29,12 +29,17 @@ import com.arcadedb.server.http.HttpServer;
 
 import io.undertow.server.handlers.PathHandler;
 
+import com.arcadedb.database.DatabaseInternal;
+
 import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.logging.Level;
 
 /**
@@ -47,6 +52,10 @@ public class RaftHAPlugin implements HAServerPlugin {
   private ArcadeDBServer       server;
   private ContextConfiguration configuration;
   private RaftHAServer         raftHAServer;
+
+  // Databases already warned about single-bucket types, so the diagnostic is logged once per
+  // database per plugin lifetime instead of on every (re)wrap.
+  private final Set<String> warnedSingleBucketDatabases = ConcurrentHashMap.newKeySet();
 
   @Override
   public void configure(final ArcadeDBServer arcadeDBServer, final ContextConfiguration configuration) {
@@ -73,8 +82,14 @@ public class RaftHAPlugin implements HAServerPlugin {
       raftHAServer.getStateMachine().setRaftHAServer(raftHAServer);
       raftHAServer.start();
 
-      // Register the database wrapper so the server wraps databases with RaftReplicatedDatabase
-      server.setDatabaseWrapper(db -> new RaftReplicatedDatabase(server, db, raftHAServer));
+      // Register the database wrapper so the server wraps databases with RaftReplicatedDatabase.
+      // A database joining HA is also the natural point to warn (once) about single-bucket types:
+      // in a cluster every write lands on the leader, so a single-bucket type serializes concurrent
+      // writers on one page and drives the "Concurrent modification on page ..." retry storms.
+      server.setDatabaseWrapper(db -> {
+        warnIfSingleBucketTypes(db);
+        return new RaftReplicatedDatabase(server, db, raftHAServer);
+      });
 
       // Re-wrap any databases that were already loaded before this plugin started
       server.rewrapDatabases();
@@ -111,6 +126,35 @@ public class RaftHAPlugin implements HAServerPlugin {
 
   public RaftHAServer getRaftHAServer() {
     return raftHAServer;
+  }
+
+  /**
+   * Logs a one-time WARNING listing the database's single-bucket types. Single-bucket types cannot
+   * spread concurrent writes (round-robin and thread both reduce to bucket 0), so under HA they
+   * serialize all leader-side writers onto one page. The same diagnostic is surfaced live in
+   * Studio's HA panel via {@link ClusterAlerts}. Logged once per database so a restart/rewrap does
+   * not spam the log.
+   */
+  private void warnIfSingleBucketTypes(final DatabaseInternal db) {
+    try {
+      if (!warnedSingleBucketDatabases.add(db.getName()))
+        return;
+
+      final List<String> singleBucketTypes = ClusterAlerts.findSingleBucketTypes(db);
+      if (singleBucketTypes.isEmpty())
+        return;
+
+      LogManager.instance().log(this, Level.WARNING,
+          "HA database '%s' has %d type(s) backed by a single bucket: %s. In a cluster all writes "
+              + "execute on the leader, so these types serialize concurrent writers on the same page and cause "
+              + "MVCC retries. Increase buckets (e.g. CREATE VERTEX TYPE <name> BUCKETS 16) and set "
+              + "'ALTER TYPE <name> BucketSelectionStrategy `thread`' to remove the contention.",
+          db.getName(), singleBucketTypes.size(), singleBucketTypes);
+    } catch (final RuntimeException e) {
+      // Diagnostic only: never let it interfere with wrapping a database for HA.
+      LogManager.instance().log(this, Level.FINE, "Single-bucket type check skipped for '%s': %s",
+          db.getName(), e.getMessage());
+    }
   }
 
   @Override
