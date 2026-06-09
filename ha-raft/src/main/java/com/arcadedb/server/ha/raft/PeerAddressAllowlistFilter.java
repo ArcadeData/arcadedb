@@ -244,9 +244,15 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
 
   /**
    * Extracts just the host component from every entry in the ArcadeDB HA server list.
-   * Entries follow {@code [name@]host:raftPort[:httpPort[:priority]]} or the bracketed IPv6 form.
+   * Entries follow {@code [name@]host:raftPort[:httpPort[:priority[:httpsPort]]]}, the bracketed
+   * IPv6 form, or the object form {@code [name@]host:{raft:..,http:..,https:..,priority:..}}.
    * The optional {@code name@} prefix (e.g. {@code frankfurt@10.0.0.1:2434:2480}) is stripped
    * before the host is extracted, mirroring {@link RaftPeerAddressResolver#parsePeerList}.
+   * <p>
+   * Entry splitting is brace-aware (via {@link RaftPeerAddressResolver#splitEntries}) so that the
+   * commas inside an object-form {@code {raft:..,http:..}} block are not mistaken for entry
+   * separators (issue #4470): a naive {@code split(",")} would otherwise extract {@code http} and
+   * {@code https} as bogus peer hosts.
    * <p>
    * An empty or null serverList returns an empty list rather than throwing, so callers can
    * decide whether a missing list is an error.
@@ -255,8 +261,8 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     if (serverList == null || serverList.isBlank())
       return Collections.emptyList();
 
-    final String[] entries = serverList.split(",");
-    final List<String> hosts = new ArrayList<>(entries.length);
+    final List<String> entries = RaftPeerAddressResolver.splitEntries(serverList);
+    final List<String> hosts = new ArrayList<>(entries.size());
     for (final String entry : entries) {
       String trimmed = entry.trim();
       if (trimmed.isEmpty())
@@ -270,8 +276,8 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
       if (trimmed.isEmpty())
         continue;
 
-      // Parse host from host[:raftPort[:httpPort[:priority]]] format.
-      // IPv6 bracketed addresses look like [::1]:raftPort.
+      // Parse host from host[:raftPort[:httpPort[:priority[:httpsPort]]]], the object form
+      // host:{raft:..,http:..} or the bracketed IPv6 form.
       final String host;
       if (trimmed.startsWith("[")) {
         // IPv6 bracketed: [::1]:port - extract content between brackets
@@ -281,9 +287,17 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
         else
           host = trimmed; // malformed - pass through as-is
       } else {
-        // Standard host:port or bare host - first colon-delimited token is the host
+        // Object form host:{...} - the host is everything before the '{' (its commas were already
+        // protected by splitEntries). Otherwise it is the first colon-delimited token.
+        final int braceIdx = trimmed.indexOf('{');
         final int colonIdx = trimmed.indexOf(':');
-        host = colonIdx > 0 ? trimmed.substring(0, colonIdx) : trimmed;
+        if (braceIdx >= 0) {
+          String h = trimmed.substring(0, braceIdx).trim();
+          if (h.endsWith(":"))
+            h = h.substring(0, h.length() - 1).trim();
+          host = h;
+        } else
+          host = colonIdx > 0 ? trimmed.substring(0, colonIdx) : trimmed;
       }
 
       if (!host.isBlank())

@@ -137,6 +137,41 @@ class PeerAddressAllowlistFilterTest {
     assertThat(hosts).containsExactly("127.0.0.1");
   }
 
+  @Test
+  void extractPeerHostsObjectFormSingleEntry() {
+    // Issue #4470: commas inside the {raft:..,http:..,https:..} block must not split the entry,
+    // otherwise 'http' and 'https' get extracted as bogus hosts.
+    final List<String> hosts = PeerAddressAllowlistFilter.extractPeerHosts("node1:{raft:2434,http:2480,https:2490}");
+    assertThat(hosts).containsExactly("node1");
+  }
+
+  @Test
+  void extractPeerHostsObjectFormMultipleEntries() {
+    // Reproduces the exact serverList from issue #4470 comment that produced the bogus
+    // 'http'/'https' allowlist hosts.
+    final List<String> hosts = PeerAddressAllowlistFilter.extractPeerHosts(
+        "wxg-arcadedb-0.svc.local:{raft:2434,http:2480,https:2490},"
+            + "wxg-arcadedb-1.svc.local:{raft:2434,http:2480,https:2490},"
+            + "wxg-arcadedb-2.svc.local:{raft:2434,http:2480,https:2490}");
+    assertThat(hosts).containsExactly(
+        "wxg-arcadedb-0.svc.local", "wxg-arcadedb-1.svc.local", "wxg-arcadedb-2.svc.local");
+    assertThat(hosts).doesNotContain("http", "https");
+  }
+
+  @Test
+  void extractPeerHostsObjectFormWithNamePrefix() {
+    final List<String> hosts = PeerAddressAllowlistFilter.extractPeerHosts(
+        "frankfurt@node1:{raft:2434,http:2480,https:2490,priority:10}");
+    assertThat(hosts).containsExactly("node1");
+  }
+
+  @Test
+  void extractPeerHostsMixesObjectAndPositionalForms() {
+    final List<String> hosts = PeerAddressAllowlistFilter.extractPeerHosts(
+        "node1:{raft:2434,http:2480},node2:2434:2480,[::1]:2434");
+    assertThat(hosts).containsExactly("node1", "node2", "::1");
+  }
+
   // ---------------------------------------------------------------------------
   // Constructor / validation tests
   // ---------------------------------------------------------------------------
