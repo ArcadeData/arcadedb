@@ -44,6 +44,10 @@ function renderClusterData(data) {
   var peers = data.peers || [];
   $("#clusterServerCount").text(peers.length);
 
+  // Cluster-level health alerts (e.g. single-bucket types serializing concurrent writes). The
+  // section hides itself when the cluster reports no active alerts.
+  renderClusterAlerts(data);
+
   // Node cards
   renderNodeCards(data);
 
@@ -61,6 +65,73 @@ function renderClusterData(data) {
 
   // Update metrics summary
   updateMetricsSummary(data);
+}
+
+// Renders the cluster health alerts returned by GET /api/v1/cluster ("alerts" array). Each alert is
+// a diagnostic with a severity, a headline, an explanation and a concrete remediation. The whole
+// section is hidden when there are no active alerts, so a healthy cluster looks unchanged.
+function renderClusterAlerts(data) {
+  var row = $("#clusterAlertsRow");
+  var container = $("#clusterAlerts");
+  if (container.length === 0)
+    return; // Older cluster.html without the alerts section; degrade silently.
+
+  container.empty();
+
+  var alerts = data.alerts || [];
+  if (alerts.length === 0) {
+    row.hide();
+    return;
+  }
+  row.show();
+
+  for (var i = 0; i < alerts.length; i++) {
+    var a = alerts[i];
+    var severity = a.severity || "warning";
+    var bsClass = severity === "critical" ? "alert-danger"
+      : (severity === "info" ? "alert-info" : "alert-warning");
+    var icon = severity === "critical" ? "fa-circle-exclamation"
+      : (severity === "info" ? "fa-circle-info" : "fa-triangle-exclamation");
+
+    var html = '<div class="alert ' + bsClass + ' py-2 px-3 mb-2" role="alert" style="font-size: 0.85rem;">'
+      + '<div class="d-flex align-items-start gap-2">'
+      + '<i class="fa-solid ' + icon + ' mt-1"></i>'
+      + '<div class="flex-grow-1">'
+      + '<div style="font-weight: 600;">' + escapeHtml(a.title || "Alert") + '</div>';
+
+    if (a.message)
+      html += '<div class="mt-1">' + escapeHtml(a.message) + '</div>';
+    if (a.recommendation)
+      html += '<div class="mt-1"><span class="text-muted">Recommendation:</span> ' + escapeHtml(a.recommendation) + '</div>';
+
+    html += renderAlertDetails(a) + '</div></div></div>';
+    container.append(html);
+  }
+}
+
+// Renders the optional per-alert "details" payload. Currently understands the single-bucket-types
+// shape ({ databases: { dbName: [typeName, ...] } }); unknown shapes are ignored so new server-side
+// checks never break an older Studio.
+function renderAlertDetails(a) {
+  var details = a.details;
+  if (!details || !details.databases)
+    return "";
+
+  var html = "";
+  var dbs = details.databases;
+  for (var dbName in dbs) {
+    if (!Object.prototype.hasOwnProperty.call(dbs, dbName))
+      continue;
+    var types = dbs[dbName] || [];
+    if (types.length === 0)
+      continue;
+    var escaped = [];
+    for (var i = 0; i < types.length; i++)
+      escaped.push('<code>' + escapeHtml(types[i]) + '</code>');
+    html += '<div class="mt-1"><span class="text-muted">' + escapeHtml(dbName) + ':</span> '
+      + escaped.join(", ") + '</div>';
+  }
+  return html;
 }
 
 // Renders one row per database that has a committed bootstrap baseline. Surfaces lastTxId and
