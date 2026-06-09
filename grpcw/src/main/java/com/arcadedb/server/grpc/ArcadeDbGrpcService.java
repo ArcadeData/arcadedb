@@ -593,22 +593,47 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   @Override
   public void lookupByRid(LookupByRidRequest req, StreamObserver<LookupByRidResponse> resp) {
+    // When the read is part of an externally-managed transaction, execute it on the transaction's dedicated thread so the
+    // record version is tracked in that transaction. Under REPEATABLE_READ this is what lets a later write detect a
+    // concurrent modification on commit, mirroring the HTTP behavior (issue #4533).
+    final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
+    final TransactionContext txCtx = incomingTxId != null && !incomingTxId.isBlank()
+        ? activeTransactions.get(incomingTxId) : null;
+
+    if (txCtx != null) {
+      try {
+        final Future<LookupByRidResponse> future = txCtx.executor.submit(() -> lookupByRidInternal(req, txCtx.db));
+        resp.onNext(future.get());
+        resp.onCompleted();
+      } catch (Exception e) {
+        final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
+        if (cause instanceof RecordNotFoundException)
+          resp.onError(Status.NOT_FOUND.withDescription("LookupByRid: " + cause.getMessage()).asException());
+        else
+          resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + cause.getMessage()).asException());
+      }
+      return;
+    }
+
     try {
-      Database db = getDatabase(req.getDatabase(), req.getCredentials());
-
-      final String ridStr = req.getRid();
-      if (ridStr == null || ridStr.isBlank())
-        throw new IllegalArgumentException("rid is required");
-
-      var el = db.lookupByRID(new RID(ridStr), true);
-
-      resp.onNext(LookupByRidResponse.newBuilder().setFound(true).setRecord(convertToGrpcRecord(el.getRecord(), db)).build());
+      final Database db = getDatabase(req.getDatabase(), req.getCredentials());
+      resp.onNext(lookupByRidInternal(req, db));
       resp.onCompleted();
     } catch (RecordNotFoundException e) {
       resp.onError(Status.NOT_FOUND.withDescription("LookupByRid: " + e.getMessage()).asException());
     } catch (Exception e) {
       resp.onError(Status.INTERNAL.withDescription("LookupByRid: " + e.getMessage()).asException());
     }
+  }
+
+  private LookupByRidResponse lookupByRidInternal(final LookupByRidRequest req, final Database db) {
+    final String ridStr = req.getRid();
+    if (ridStr == null || ridStr.isBlank())
+      throw new IllegalArgumentException("rid is required");
+
+    final var el = db.lookupByRID(new RID(ridStr), true);
+
+    return LookupByRidResponse.newBuilder().setFound(true).setRecord(convertToGrpcRecord(el.getRecord(), db)).build();
   }
 
   @Override
@@ -1015,6 +1040,20 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return projectionConfig;
   }
 
+  /**
+   * Maps the wire-protocol {@link TransactionIsolation} to the engine {@link Database.TRANSACTION_ISOLATION_LEVEL}.
+   * ArcadeDB only supports READ_COMMITTED and REPEATABLE_READ, so weaker/stronger levels collapse to the closest match.
+   * Unset (proto default, old clients) maps to READ_COMMITTED to preserve the previous behavior.
+   */
+  private static Database.TRANSACTION_ISOLATION_LEVEL mapIsolationLevel(final TransactionIsolation isolation) {
+    if (isolation == null)
+      return Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+    return switch (isolation) {
+      case REPEATABLE_READ, SERIALIZABLE -> Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ;
+      default -> Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+    };
+  }
+
   @Override
   public void beginTransaction(BeginTransactionRequest request,
                                StreamObserver<BeginTransactionResponse> responseObserver) {
@@ -1049,12 +1088,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           beginTransaction(): calling database.begin() on dedicated thread \
           for txId=%s""", transactionId);
 
+      // Honor the isolation level requested by the client (defaults to READ_COMMITTED). This is required so that
+      // REPEATABLE_READ transactions track the version of the records they read and a write-write conflict raises a
+      // ConcurrentModificationException on commit, exactly as on HTTP (issue #4533).
+      final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel = mapIsolationLevel(request.getIsolation());
+
       // Begin transaction ON THE DEDICATED THREAD - this is critical because ArcadeDB
       // transactions are thread-local
       Future<?> beginFuture = txCtx.executor.submit(() -> {
         // Initialize the DatabaseContext on this dedicated thread before any DB operation
         DatabaseContext.INSTANCE.init((DatabaseInternal) database);
-        database.begin();
+        database.begin(isolationLevel);
       });
       beginFuture.get(); // Wait for begin to complete
 
