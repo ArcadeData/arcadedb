@@ -40,6 +40,7 @@ import com.arcadedb.server.event.FileServerEventLog;
 import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
+import com.arcadedb.server.monitor.EngineMetricsBinder;
 import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.plugin.PluginManager;
@@ -208,6 +209,9 @@ public class ArcadeDBServer {
       // Engine executor pools (query parallelism + sparse-vector scoring) - exposes
       // arcadedb.executor.pool.{size,active,...} gauges tagged with pool=<name>.
       new PoolMetrics().bindTo(Metrics.globalRegistry);
+      // Engine-wide Profiler stats (cache hit/miss, pages, WAL, MVCC conflicts, open files, tx,
+      // queries) - exposes arcadedb.engine.* gauges read live from the Profiler on each scrape.
+      new EngineMetricsBinder().bindTo(Metrics.globalRegistry);
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_LOGGING)) {
         LogManager.instance().log(this, Level.INFO, "- Logging metrics enabled...");
