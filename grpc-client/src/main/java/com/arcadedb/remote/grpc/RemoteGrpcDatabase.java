@@ -1229,8 +1229,14 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     if (rid == null)
       throw new IllegalArgumentException("Record is null");
 
-    final LookupByRidRequest req = LookupByRidRequest.newBuilder().setDatabase(getName()).setRid(rid.toString())
-        .setCredentials(buildCredentials()).build();
+    final LookupByRidRequest.Builder reqBuilder = LookupByRidRequest.newBuilder().setDatabase(getName()).setRid(rid.toString())
+        .setCredentials(buildCredentials());
+
+    // Propagate the active transaction so the read is tracked by it (required for REPEATABLE_READ conflict detection).
+    if (transactionId != null)
+      reqBuilder.setTransaction(TransactionContext.newBuilder().setTransactionId(transactionId).setDatabase(getName()).build());
+
+    final LookupByRidRequest req = reqBuilder.build();
 
     try {
       if (LogManager.instance().isDebugEnabled()) {

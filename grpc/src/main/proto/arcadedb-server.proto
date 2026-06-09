@@ -341,6 +341,7 @@ message LookupByRidRequest {
   string database = 1;
   DatabaseCredentials credentials = 2;
   string rid = 3;
+  TransactionContext transaction = 4; // optional: read within an externally-managed transaction
 }
 message LookupByRidResponse {
   bool   found = 1;
