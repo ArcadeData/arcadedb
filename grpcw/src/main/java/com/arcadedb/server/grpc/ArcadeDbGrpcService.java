@@ -1202,22 +1202,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   @Override
   public void streamQuery(StreamQueryRequest request, StreamObserver<QueryResult> responseObserver) {
-    ProtocolContext.set("grpc");
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
     final long engineStart = System.nanoTime();
-    ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
-
-    final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
-
     final AtomicBoolean cancelled = new AtomicBoolean(false);
-    scso.setOnCancelHandler(() -> cancelled.set(true));
 
     Database db = null;
     boolean beganHere = false;
     String profileLanguage = null;
 
+    ProtocolContext.set("grpc");
     try {
+      ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
+
+      final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
+      scso.setOnCancelHandler(() -> cancelled.set(true));
+
       db = getDatabase(request.getDatabase(), request.getCredentials());
       final int batchSize = Math.max(1, request.getBatchSize());
 
@@ -1564,18 +1564,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   // --- 1) Unary bulk ---
   @Override
   public void bulkInsert(BulkInsertRequest req, StreamObserver<InsertSummary> resp) {
-    ProtocolContext.set("grpc");
-    final InsertOptions opts = defaults(req.getOptions()); // apply defaults (batch size, tx mode, etc.)
     final long started = System.currentTimeMillis();
 
-    try (InsertContext ctx = new InsertContext(opts)) {
+    ProtocolContext.set("grpc");
+    try {
+      final InsertOptions opts = defaults(req.getOptions()); // apply defaults (batch size, tx mode, etc.)
 
-      Counts totals = insertRows(ctx, req.getRowsList().iterator());
+      try (InsertContext ctx = new InsertContext(opts)) {
 
-      ctx.flushCommit(true);
+        Counts totals = insertRows(ctx, req.getRowsList().iterator());
 
-      resp.onNext(ctx.summary(totals, started));
-      resp.onCompleted();
+        ctx.flushCommit(true);
+
+        resp.onNext(ctx.summary(totals, started));
+        resp.onCompleted();
+      }
     } catch (Exception e) {
       resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + e.getMessage()).asException());
     } finally {
