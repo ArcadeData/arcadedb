@@ -166,7 +166,15 @@ public class RemoteMutableVertex extends MutableVertex {
 
   @Override
   public IterableGraph<Edge> getEdges(final DIRECTION direction, final String... edgeTypes) {
-    return internal.getEdges(DIRECTION.BOTH, edgeTypes);
+    return internal.getEdges(direction, edgeTypes);
+  }
+
+  public IterableGraph<Edge> getEdges(final DIRECTION direction, final int limit, final int skip, final String... edgeTypes) {
+    return internal.getEdges(direction, limit, skip, edgeTypes);
+  }
+
+  public IterableGraph<Edge> getEdgesPaged(final DIRECTION direction, final int pageSize, final String... edgeTypes) {
+    return internal.getEdgesPaged(direction, pageSize, edgeTypes);
   }
 
   @Override
@@ -177,6 +185,15 @@ public class RemoteMutableVertex extends MutableVertex {
   @Override
   public IterableGraph<Vertex> getVertices(final DIRECTION direction, final String... edgeTypes) {
     return internal.getVertices(direction, edgeTypes);
+  }
+
+  public IterableGraph<Vertex> getVertices(final DIRECTION direction, final int limit, final int skip,
+      final String... edgeTypes) {
+    return internal.getVertices(direction, limit, skip, edgeTypes);
+  }
+
+  public IterableGraph<Vertex> getVerticesPaged(final DIRECTION direction, final int pageSize, final String... edgeTypes) {
+    return internal.getVerticesPaged(direction, pageSize, edgeTypes);
   }
 
   @Override
