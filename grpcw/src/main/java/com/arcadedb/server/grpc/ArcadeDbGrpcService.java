@@ -1202,6 +1202,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   @Override
   public void streamQuery(StreamQueryRequest request, StreamObserver<QueryResult> responseObserver) {
+    ProtocolContext.set("grpc");
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
     final long engineStart = System.nanoTime();
@@ -1301,6 +1302,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       recordGrpcProfile("grpc.stream", profile, db != null ? db.getName() : request.getDatabase(),
           profileLanguage != null ? profileLanguage : request.getLanguage(), request.getQuery());
       QueryProfile.popCurrent();
+      ProtocolContext.clear();
     }
   }
 
@@ -1562,7 +1564,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   // --- 1) Unary bulk ---
   @Override
   public void bulkInsert(BulkInsertRequest req, StreamObserver<InsertSummary> resp) {
-
+    ProtocolContext.set("grpc");
     final InsertOptions opts = defaults(req.getOptions()); // apply defaults (batch size, tx mode, etc.)
     final long started = System.currentTimeMillis();
 
@@ -1576,6 +1578,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       resp.onCompleted();
     } catch (Exception e) {
       resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + e.getMessage()).asException());
+    } finally {
+      ProtocolContext.clear();
     }
   }
 
