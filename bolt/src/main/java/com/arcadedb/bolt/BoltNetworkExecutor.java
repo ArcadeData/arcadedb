@@ -38,6 +38,7 @@ import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
@@ -165,6 +166,7 @@ public class BoltNetworkExecutor extends Thread {
 
   @Override
   public void run() {
+    ProtocolContext.set("bolt");
     try {
       state = State.NEGOTIATION;
 
@@ -218,6 +220,7 @@ public class BoltNetworkExecutor extends Thread {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "BOLT connection error", e);
     } finally {
+      ProtocolContext.clear();
       cleanup();
     }
   }
