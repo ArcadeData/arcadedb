@@ -54,4 +54,18 @@ class QueryMetricsProtocolIT extends BaseGraphServerTest {
     assertThat(timer).isNotNull();
     assertThat(timer.count()).isGreaterThanOrEqualTo(1L);
   }
+
+  @Test
+  void protocolTagIsBoundedAndQueryTextIsNeverATag() throws Exception {
+    httpQueryRecordedWithProtocolTag(); // populate at least one series
+
+    final var timers = Metrics.globalRegistry.find("arcadedb.query.duration").timers();
+    assertThat(timers).isNotEmpty();
+    for (final Timer t : timers) {
+      final String protocol = t.getId().getTag("protocol");
+      assertThat(protocol).isIn("http", "bolt", "postgres", "mongo", "grpc", "redis", "internal");
+      t.getId().getTags().forEach(tag ->
+          assertThat(tag.getValue().toLowerCase()).doesNotContain("select"));
+    }
+  }
 }
