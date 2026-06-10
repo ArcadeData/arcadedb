@@ -26,6 +26,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.Edge;
@@ -140,6 +141,7 @@ public class PostgresNetworkExecutor extends Thread {
 
   @Override
   public void run() {
+    ProtocolContext.set("postgres");
     try {
       if (!readStartupMessage(true))
         return;
@@ -219,6 +221,7 @@ public class PostgresNetworkExecutor extends Thread {
       }
 
     } finally {
+      ProtocolContext.clear();
       close();
     }
   }
