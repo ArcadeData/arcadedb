@@ -1559,14 +1559,24 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet command(final String language, final String query) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
-    return getQueryEngine(language).command(query, new ContextConfiguration());
+    final long start = QueryMetricsRecorder.Holder.startNanos();
+    try {
+      return getQueryEngine(language).command(query, new ContextConfiguration());
+    } finally {
+      QueryMetricsRecorder.Holder.record(start, name, language, "command");
+    }
   }
 
   @Override
   public ResultSet command(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
-    return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
+    final long start = QueryMetricsRecorder.Holder.startNanos();
+    try {
+      return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
+    } finally {
+      QueryMetricsRecorder.Holder.record(start, name, language, "command");
+    }
   }
 
   @Override
@@ -1574,7 +1584,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Object... parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
-    return getQueryEngine(language).command(query, configuration, parameters);
+    final long start = QueryMetricsRecorder.Holder.startNanos();
+    try {
+      return getQueryEngine(language).command(query, configuration, parameters);
+    } finally {
+      QueryMetricsRecorder.Holder.record(start, name, language, "command");
+    }
   }
 
   @Override
@@ -1587,7 +1602,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       final Map<String, Object> parameters) {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
-    return getQueryEngine(language).command(query, configuration, parameters);
+    final long start = QueryMetricsRecorder.Holder.startNanos();
+    try {
+      return getQueryEngine(language).command(query, configuration, parameters);
+    } finally {
+      QueryMetricsRecorder.Holder.record(start, name, language, "command");
+    }
   }
 
   @Deprecated
@@ -1613,21 +1633,36 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   public ResultSet query(final String language, final String query) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
-    return getQueryEngine(language).query(query, new ContextConfiguration());
+    final long start = QueryMetricsRecorder.Holder.startNanos();
+    try {
+      return getQueryEngine(language).query(query, new ContextConfiguration());
+    } finally {
+      QueryMetricsRecorder.Holder.record(start, name, language, "query");
+    }
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Object... parameters) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
-    return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
+    final long start = QueryMetricsRecorder.Holder.startNanos();
+    try {
+      return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
+    } finally {
+      QueryMetricsRecorder.Holder.record(start, name, language, "query");
+    }
   }
 
   @Override
   public ResultSet query(final String language, final String query, final Map<String, Object> parameters) {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
-    return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
+    final long start = QueryMetricsRecorder.Holder.startNanos();
+    try {
+      return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
+    } finally {
+      QueryMetricsRecorder.Holder.record(start, name, language, "query");
+    }
   }
 
   @Override
