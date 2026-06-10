@@ -32,13 +32,11 @@ import com.arcadedb.server.monitor.QueryProfile;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
-import io.micrometer.core.instrument.Timer;
 import io.undertow.server.HttpServerExchange;
 
 import java.io.IOException;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
 import java.util.logging.Level;
 
 public class PostCommandHandler extends AbstractQueryHandler {
@@ -274,35 +272,10 @@ public class PostCommandHandler extends AbstractQueryHandler {
 
   protected ResultSet executeCommand(final Database database, final String language, final String command,
       final Map<String, Object> paramMap) {
-    return timeExecution(database.getName(), language, "command", () -> {
-      final Object params = mapParams(paramMap);
-
-      if (params instanceof Object[] objects)
-        return database.command(language, command, httpServer.getServer().getConfiguration(), objects);
-      return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
-    });
-  }
-
-  /**
-   * Records the duration of a query/command execution into the always-on {@code arcadedb.query.duration}
-   * RED timer, tagged with the database, language and execution type ({@code query} or {@code command}).
-   * The query text itself is never used as a tag to keep metric cardinality bounded.
-   */
-  protected static ResultSet timeExecution(final String databaseName, final String language, final String type,
-      final Supplier<ResultSet> execution) {
-    final long start = System.nanoTime();
-    try {
-      return execution.get();
-    } finally {
-      Timer.builder("arcadedb.query.duration")
-          .description("Query/command execution duration")
-          .tag("db", databaseName)
-          .tag("language", language)
-          .tag("type", type)
-          .publishPercentileHistogram()
-          .register(Metrics.globalRegistry)
-          .record(System.nanoTime() - start, TimeUnit.NANOSECONDS);
-    }
+    final Object params = mapParams(paramMap);
+    if (params instanceof Object[] objects)
+      return database.command(language, command, httpServer.getServer().getConfiguration(), objects);
+    return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);
   }
 
   protected void executeCommandAsync(final Database database, final String language, final String command,

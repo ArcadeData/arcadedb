@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -100,6 +101,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // do not dispatch) request handling. Recorded in the finally block below into the
     // arcadedb.http.requests Micrometer timer. When no tracer is registered this is metrics-only.
     final long httpStartNanos = System.nanoTime();
+    ProtocolContext.set("http");
 
     try {
       LogManager.instance().setContext(httpServer.getServer().getServerName());
@@ -348,6 +350,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
+      ProtocolContext.clear();
       LogManager.instance().setContext(null);
 
       Timer.builder("arcadedb.http.requests")
