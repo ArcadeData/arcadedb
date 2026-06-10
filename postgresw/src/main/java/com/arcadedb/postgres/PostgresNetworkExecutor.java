@@ -27,6 +27,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.ProtocolContext;
+import com.arcadedb.database.QueryMetricsRecorder;
 import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.Edge;
@@ -288,7 +289,13 @@ public class PostgresNetworkExecutor extends Thread {
     if (type == 'P') {
       if (portal.sqlStatement != null) {
         final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-        final ResultSet resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
+        final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
+        final ResultSet resultSet;
+        try {
+          resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
+        } finally {
+          QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), portal.language, "command");
+        }
         portal.executed = true;
         if (portal.isExpectingResult) {
           portal.cachedResultSet = browseAndCacheResultSet(resultSet, 0);
@@ -364,7 +371,12 @@ public class PostgresNetworkExecutor extends Thread {
           ResultSet resultSet;
           if (portal.sqlStatement != null) {
             final Object[] parameters = portal.parameterValues != null ? portal.parameterValues.toArray() : new Object[0];
-            resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
+            final long metricsStart = QueryMetricsRecorder.Holder.startNanos();
+            try {
+              resultSet = portal.sqlStatement.execute(database, parameters, createCommandContext());
+            } finally {
+              QueryMetricsRecorder.Holder.record(metricsStart, database.getName(), portal.language, "command");
+            }
           } else {
             resultSet = database.command(portal.language, portal.query, server.getConfiguration(), getParams(portal));
           }
