@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -266,6 +267,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     boolean beganHere = false;
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
+    ProtocolContext.set("grpc");
     String profileLanguage = null;
 
     try {
@@ -450,6 +452,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .setExecutionTimeMs(ms)
           .build();
     } finally {
+      ProtocolContext.clear();
       recordGrpcProfile("grpc.command", profile, db != null ? db.getName() : req.getDatabase(),
           profileLanguage != null ? profileLanguage : req.getLanguage(), req.getCommand());
       QueryProfile.popCurrent();
@@ -906,6 +909,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private ExecuteQueryResponse executeQueryInternal(final ExecuteQueryRequest request, final Database database) {
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
+    ProtocolContext.set("grpc");
     String profileLanguage = null;
     try {
       final long deserStart = System.nanoTime();
@@ -986,6 +990,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return response;
       }
     } finally {
+      ProtocolContext.clear();
       recordGrpcProfile("grpc.query", profile, database != null ? database.getName() : request.getDatabase(),
           profileLanguage != null ? profileLanguage : request.getLanguage(), request.getQuery());
       QueryProfile.popCurrent();
