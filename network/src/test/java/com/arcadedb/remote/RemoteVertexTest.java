@@ -20,6 +20,7 @@ package com.arcadedb.remote;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -27,6 +28,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -144,5 +146,155 @@ class RemoteVertexTest {
     verify(mockDatabase).command(eq("sql"), sqlCaptor.capture(), paramsCaptor.capture());
     assertThat(sqlCaptor.getValue()).doesNotContain("set");
     assertThat(paramsCaptor.getValue()).isEmpty();
+  }
+
+  @Test
+  void getVerticesWithLimitAndSkipEmitsSqlWithSkipLimit() {
+    final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    final ResultSet emptyRs = mock(ResultSet.class);
+    when(emptyRs.hasNext()).thenReturn(false);
+    when(mockDatabase.query(eq("sql"), sqlCaptor.capture())).thenReturn(emptyRs);
+
+    remoteVertex.getVertices(Vertex.DIRECTION.OUT, 100, 50, "Knows");
+
+    final String sql = sqlCaptor.getValue();
+    assertThat(sql).contains("out(").contains("'Knows'");
+    assertThat(sql).contains("SKIP 50");
+    assertThat(sql).contains("LIMIT 100");
+  }
+
+  @Test
+  void getVerticesDefaultUsesDefaultPageSize() {
+    final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    final ResultSet emptyRs = mock(ResultSet.class);
+    when(emptyRs.hasNext()).thenReturn(false);
+    when(mockDatabase.query(eq("sql"), sqlCaptor.capture())).thenReturn(emptyRs);
+
+    // iterator is lazy - must consume it to trigger the first page fetch
+    remoteVertex.getVertices(Vertex.DIRECTION.OUT, "Knows").iterator().hasNext();
+
+    final String sql = sqlCaptor.getValue();
+    assertThat(sql).doesNotContain("SKIP");
+    assertThat(sql).contains("LIMIT " + RemoteVertex.DEFAULT_PAGE_SIZE);
+  }
+
+  @Test
+  void getVerticesPagedFetchesMultiplePagesUntilLastPageIsSmaller() {
+    // Two full pages of size 2, then one partial page of size 1 — iterator must call query 3 times.
+    final Result r1 = vertexResult(1);
+    final Result r2 = vertexResult(2);
+    final Result r3 = vertexResult(3);
+    final Result r4 = vertexResult(4);
+    final Result r5 = vertexResult(5);
+
+    final ResultSet page1 = resultSetOf(r1, r2);
+    final ResultSet page2 = resultSetOf(r3, r4);
+    final ResultSet page3 = resultSetOf(r5);
+
+    final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    when(mockDatabase.query(eq("sql"), sqlCaptor.capture()))
+        .thenReturn(page1)
+        .thenReturn(page2)
+        .thenReturn(page3);
+
+    final List<Vertex> collected = new java.util.ArrayList<>();
+    for (final Vertex v : remoteVertex.getVerticesPaged(Vertex.DIRECTION.OUT, 2, "Knows"))
+      collected.add(v);
+
+    assertThat(collected).hasSize(5);
+
+    final List<String> queries = sqlCaptor.getAllValues();
+    assertThat(queries).hasSize(3);
+    // skip=0 is omitted (redundant); skip>0 is always emitted
+    assertThat(queries.get(0)).doesNotContain("SKIP").contains("LIMIT 2");
+    assertThat(queries.get(1)).contains("SKIP 2").contains("LIMIT 2");
+    assertThat(queries.get(2)).contains("SKIP 4").contains("LIMIT 2");
+  }
+
+  @Test
+  void getEdgesWithLimitAndSkipEmitsSqlWithSkipLimit() {
+    final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    final ResultSet emptyRs = mock(ResultSet.class);
+    when(emptyRs.hasNext()).thenReturn(false);
+    when(mockDatabase.query(eq("sql"), sqlCaptor.capture())).thenReturn(emptyRs);
+
+    remoteVertex.getEdges(Vertex.DIRECTION.BOTH, 200, 0, "Knows");
+
+    final String sql = sqlCaptor.getValue();
+    assertThat(sql).contains("bothE(").contains("'Knows'");
+    assertThat(sql).doesNotContain("SKIP");
+    assertThat(sql).contains("LIMIT 200");
+  }
+
+  @Test
+  void getEdgesPagedFetchesMultiplePages() {
+    final Result e1 = edgeResult(1);
+    final Result e2 = edgeResult(2);
+
+    final ResultSet page1 = edgeResultSetOf(e1, e2);
+    final ResultSet page2 = edgeResultSetOf();
+
+    final ArgumentCaptor<String> sqlCaptor = ArgumentCaptor.forClass(String.class);
+    when(mockDatabase.query(eq("sql"), sqlCaptor.capture()))
+        .thenReturn(page1)
+        .thenReturn(page2);
+
+    final List<Edge> collected = new java.util.ArrayList<>();
+    for (final Edge e : remoteVertex.getEdgesPaged(Vertex.DIRECTION.OUT, 2))
+      collected.add(e);
+
+    assertThat(collected).hasSize(2);
+    final List<String> queries = sqlCaptor.getAllValues();
+    assertThat(queries.get(0)).contains("outE(").doesNotContain("SKIP").contains("LIMIT 2");
+    assertThat(queries.get(1)).contains("SKIP 2").contains("LIMIT 2");
+  }
+
+  // --- helpers ---
+
+  private Result vertexResult(final int bucketPos) {
+    final Vertex v = mock(Vertex.class);
+    when(v.getIdentity()).thenReturn(new RID(1, bucketPos));
+    final Result r = mock(Result.class);
+    when(r.getVertex()).thenReturn(Optional.of(v));
+    return r;
+  }
+
+  private Result edgeResult(final int bucketPos) {
+    final Edge e = mock(Edge.class);
+    when(e.getIdentity()).thenReturn(new RID(3, bucketPos));
+    final Result r = mock(Result.class);
+    when(r.getEdge()).thenReturn(Optional.of(e));
+    return r;
+  }
+
+  private ResultSet resultSetOf(final Result... results) {
+    final ResultSet rs = mock(ResultSet.class);
+    final boolean[] hasNextAnswers = new boolean[results.length + 1];
+    for (int i = 0; i < results.length; i++)
+      hasNextAnswers[i] = true;
+    hasNextAnswers[results.length] = false;
+
+    final Boolean[] hasNextBoxed = new Boolean[hasNextAnswers.length];
+    for (int i = 0; i < hasNextAnswers.length; i++)
+      hasNextBoxed[i] = hasNextAnswers[i];
+
+    if (hasNextBoxed.length > 1) {
+      final Boolean first = hasNextBoxed[0];
+      final Boolean[] rest = java.util.Arrays.copyOfRange(hasNextBoxed, 1, hasNextBoxed.length);
+      when(rs.hasNext()).thenReturn(first, rest);
+    } else {
+      when(rs.hasNext()).thenReturn(false);
+    }
+
+    if (results.length > 0) {
+      final Result first = results[0];
+      final Result[] rest = java.util.Arrays.copyOfRange(results, 1, results.length);
+      when(rs.next()).thenReturn(first, rest);
+    }
+    return rs;
+  }
+
+  private ResultSet edgeResultSetOf(final Result... results) {
+    return resultSetOf(results);
   }
 }

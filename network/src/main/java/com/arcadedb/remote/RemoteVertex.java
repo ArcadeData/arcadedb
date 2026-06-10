@@ -30,10 +30,14 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.NoSuchElementException;
 
 /**
  * Vertex type used by {@link RemoteDatabase} class. The metadata are cached from the server until the schema is changed or
@@ -44,6 +48,13 @@ import java.util.Map;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class RemoteVertex {
+  /**
+   * Default number of records fetched per HTTP call by {@link #getEdges} and {@link #getVertices}.
+   * Callers that need a different trade-off between round-trips and response size can use
+   * {@link #getEdgesPaged} / {@link #getVerticesPaged} with an explicit page size.
+   */
+  public static final int DEFAULT_PAGE_SIZE = 2_000;
+
   public final Vertex         vertex;
   public final RemoteDatabase remoteDatabase;
 
@@ -71,8 +82,21 @@ public class RemoteVertex {
     return getEdges(Vertex.DIRECTION.BOTH);
   }
 
+  /**
+   * Returns all edges for this vertex, transparently paginating over multiple HTTP calls using
+   * {@link #DEFAULT_PAGE_SIZE}. Use {@link #getEdgesPaged} to control the page size explicitly.
+   */
   public IterableGraph<Edge> getEdges(final Vertex.DIRECTION direction, final String... edgeTypes) {
-    final ResultSet resultSet = fetch("E", direction, edgeTypes);
+    return getEdgesPaged(direction, DEFAULT_PAGE_SIZE, edgeTypes);
+  }
+
+  /**
+   * Returns a single page of edges starting at {@code skip}, up to {@code limit} edges per call.
+   * Prefer {@link #getEdges} or {@link #getEdgesPaged} for full traversal.
+   */
+  public IterableGraph<Edge> getEdges(final Vertex.DIRECTION direction, final int limit, final int skip,
+      final String... edgeTypes) {
+    final ResultSet resultSet = fetch("E", direction, edgeTypes, limit, skip);
     return new IterableGraph<>() {
       @Override
       public Iterator<Edge> iterator() {
@@ -96,12 +120,77 @@ public class RemoteVertex {
     };
   }
 
+  /**
+   * Returns a lazy iterator that transparently fetches edges in pages of {@code pageSize} elements
+   * over multiple HTTP calls. Each page is one SQL query with SKIP/LIMIT.
+   */
+  public IterableGraph<Edge> getEdgesPaged(final Vertex.DIRECTION direction, final int pageSize, final String... edgeTypes) {
+    return new IterableGraph<>() {
+      @Override
+      public Iterator<Edge> iterator() {
+        return new Iterator<>() {
+          private int currentSkip = 0;
+          private Iterator<Edge> currentPage = Collections.emptyIterator();
+          private boolean done = false;
+
+          private void loadNextPage() {
+            if (done)
+              return;
+            final ResultSet rs = fetch("E", direction, edgeTypes, pageSize, currentSkip);
+            final List<Edge> page = new ArrayList<>(pageSize);
+            while (rs.hasNext())
+              page.add(rs.next().getEdge().get());
+            if (page.size() < pageSize)
+              done = true;
+            currentSkip += page.size();
+            currentPage = page.iterator();
+          }
+
+          @Override
+          public boolean hasNext() {
+            if (currentPage.hasNext())
+              return true;
+            if (done)
+              return false;
+            loadNextPage();
+            return currentPage.hasNext();
+          }
+
+          @Override
+          public Edge next() {
+            if (!hasNext())
+              throw new NoSuchElementException();
+            return currentPage.next();
+          }
+        };
+      }
+
+      @Override
+      public Class<? extends Document> getEntryType() {
+        return Edge.class;
+      }
+    };
+  }
+
   public IterableGraph<Vertex> getVertices() {
     return getVertices(Vertex.DIRECTION.BOTH);
   }
 
+  /**
+   * Returns all neighbor vertices, transparently paginating over multiple HTTP calls using
+   * {@link #DEFAULT_PAGE_SIZE}. Use {@link #getVerticesPaged} to control the page size explicitly.
+   */
   public IterableGraph<Vertex> getVertices(final Vertex.DIRECTION direction, final String... edgeTypes) {
-    final ResultSet resultSet = fetch("", direction, edgeTypes);
+    return getVerticesPaged(direction, DEFAULT_PAGE_SIZE, edgeTypes);
+  }
+
+  /**
+   * Returns a single page of neighbor vertices starting at {@code skip}, up to {@code limit} per call.
+   * Prefer {@link #getVertices} or {@link #getVerticesPaged} for full traversal.
+   */
+  public IterableGraph<Vertex> getVertices(final Vertex.DIRECTION direction, final int limit, final int skip,
+      final String... edgeTypes) {
+    final ResultSet resultSet = fetch("", direction, edgeTypes, limit, skip);
     return new IterableGraph<>() {
       @Override
       public Iterator<Vertex> iterator() {
@@ -114,6 +203,59 @@ public class RemoteVertex {
           @Override
           public Vertex next() {
             return resultSet.next().getVertex().get();
+          }
+        };
+      }
+
+      @Override
+      public Class<? extends Document> getEntryType() {
+        return Vertex.class;
+      }
+    };
+  }
+
+  /**
+   * Returns a lazy iterator that transparently fetches neighbor vertices in pages of {@code pageSize}
+   * elements over multiple HTTP calls. Each page is one SQL query with SKIP/LIMIT.
+   */
+  public IterableGraph<Vertex> getVerticesPaged(final Vertex.DIRECTION direction, final int pageSize,
+      final String... edgeTypes) {
+    return new IterableGraph<>() {
+      @Override
+      public Iterator<Vertex> iterator() {
+        return new Iterator<>() {
+          private int currentSkip = 0;
+          private Iterator<Vertex> currentPage = Collections.emptyIterator();
+          private boolean done = false;
+
+          private void loadNextPage() {
+            if (done)
+              return;
+            final ResultSet rs = fetch("", direction, edgeTypes, pageSize, currentSkip);
+            final List<Vertex> page = new ArrayList<>(pageSize);
+            while (rs.hasNext())
+              page.add(rs.next().getVertex().get());
+            if (page.size() < pageSize)
+              done = true;
+            currentSkip += page.size();
+            currentPage = page.iterator();
+          }
+
+          @Override
+          public boolean hasNext() {
+            if (currentPage.hasNext())
+              return true;
+            if (done)
+              return false;
+            loadNextPage();
+            return currentPage.hasNext();
+          }
+
+          @Override
+          public Vertex next() {
+            if (!hasNext())
+              throw new NoSuchElementException();
+            return currentPage.next();
           }
         };
       }
@@ -251,14 +393,20 @@ public class RemoteVertex {
     remoteDatabase.command("sql", "delete from " + vertex.getIdentity());
   }
 
-  private ResultSet fetch(final String suffix, final Vertex.DIRECTION direction, final String[] types) {
-    StringBuilder query = new StringBuilder("select expand( " + direction.toString().toLowerCase(Locale.ENGLISH) + suffix + "(");
+  private ResultSet fetch(final String suffix, final Vertex.DIRECTION direction, final String[] types, final int limit,
+      final int skip) {
+    final StringBuilder query = new StringBuilder(
+        "select expand( " + direction.toString().toLowerCase(Locale.ENGLISH) + suffix + "(");
     for (int i = 0; i < types.length; ++i) {
       if (i > 0)
         query.append(",");
-      query.append("'" + types[i] + "'");
+      query.append("'").append(types[i]).append("'");
     }
-    query.append(") ) from " + vertex.getIdentity());
+    query.append(") ) from ").append(vertex.getIdentity());
+    if (skip > 0)
+      query.append(" SKIP ").append(skip);
+    if (limit > 0)
+      query.append(" LIMIT ").append(limit);
     return remoteDatabase.query("sql", query.toString());
   }
 }
