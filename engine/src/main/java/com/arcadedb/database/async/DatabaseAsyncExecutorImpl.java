@@ -668,15 +668,25 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   @Override
   public void kill() {
+    final AsyncThread[] threads;
     synchronized (lifecycleLock) {
-      final AsyncThread[] threads = executorThreads;
+      threads = executorThreads;
       if (threads == null)
         return;
       // Unpublish first so concurrent callers stop targeting the about-to-die threads.
       executorThreads = null;
-      // WAIT FOR SHUTDOWN, MAX 1S EACH
       for (int i = 0; i < threads.length; ++i)
         threads[i].forceShutdown = true;
+    }
+    // WAIT FOR SHUTDOWN, MAX 1S EACH - interrupt to wake threads from blocking queue poll
+    for (int i = 0; i < threads.length; ++i)
+      threads[i].interrupt();
+    for (int i = 0; i < threads.length; ++i) {
+      try {
+        threads[i].join(1000);
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      }
     }
   }
 
