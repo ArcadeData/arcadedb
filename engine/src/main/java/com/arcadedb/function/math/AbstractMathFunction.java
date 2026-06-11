@@ -40,11 +40,17 @@ public abstract class AbstractMathFunction implements StatelessFunction {
   }
 
   /**
-   * Safely extract a double from an argument.
+   * Extract a double from a numeric argument, propagating null.
+   * <p>
+   * Returns {@code null} when the argument is null so the caller can short-circuit and return
+   * null per the Cypher spec (and matching PostgreSQL/MySQL, where math functions are null-in
+   * null-out). Returning a boxed {@link Double} avoids the previous foot-gun where a null was
+   * silently coerced to {@code 0.0}, turning e.g. {@code tanh(null)} into {@code tanh(0) == 0}.
+   * See issue #4556.
    */
-  protected double asDouble(final Object arg) {
+  protected Double asDouble(final Object arg) {
     if (arg == null)
-      return 0.0;
+      return null;
     if (arg instanceof Number) {
       return ((Number) arg).doubleValue();
     }

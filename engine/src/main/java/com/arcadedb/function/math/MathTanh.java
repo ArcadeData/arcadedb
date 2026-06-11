@@ -48,9 +48,10 @@ public class MathTanh extends AbstractMathFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args[0] == null)
+    final Double x = asDouble(args[0]);
+    if (x == null)
       return null;
 
-    return Math.tanh(asDouble(args[0]));
+    return Math.tanh(x);
   }
 }

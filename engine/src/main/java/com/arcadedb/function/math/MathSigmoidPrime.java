@@ -48,10 +48,10 @@ public class MathSigmoidPrime extends AbstractMathFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args[0] == null)
+    final Double x = asDouble(args[0]);
+    if (x == null)
       return null;
 
-    final double x = asDouble(args[0]);
     final double sigmoid = 1.0 / (1.0 + Math.exp(-x));
     return sigmoid * (1.0 - sigmoid);
   }
