@@ -32,6 +32,42 @@ exclusive-`fromKeys` branch that already does this.
 
 ## Verification
 
-- New regression test exercising an exclusive-lower-bound range scan after a
-  delete-then-reinsert sequence on an LSM tree index spanning multiple pages.
-- Existing `LSMTreeIndexTest` range/scan suite to confirm no regression.
+- New regression test `LSMTreeIndexCursorStaleKeyTest` reproducing the bug: a
+  key-wide tombstone on the minimum key isolated on the newest page while older
+  pages hold live copies. Fails on the unfixed code (the entry right after the
+  removed key is dropped) and passes with the fix. A second method guards the
+  delete-then-reinsert variant from the issue.
+- Existing `LSMTreeIndexTest` range/scan suite (inclusive/exclusive bounds,
+  `rangeFromHead`) and related index tests confirm no regression. The
+  `LockFilesInOrderFileMigrationTest` failure on this checkout is pre-existing and
+  unrelated (verified on the unmodified baseline).
+
+## Pull request
+
+- PR: https://github.com/ArcadeData/arcadedb/pull/4570
+
+## Review cycles
+
+### Cycle 1 - head 7d42ea6a
+
+- Reviews: `claude[bot]` (PR comment), `gemini-code-assist` (no actionable items),
+  `codacy-production` (0 issues). Core fix approved as correct, minimal, and safe.
+- Applied (actionable & clear):
+  - Trimmed the source comment to a single short line, matching the sibling
+    exclusive-`fromKeys` branch that does the same assignment uncommented.
+  - Trimmed the test class-level Javadoc to one concise sentence (method Javadocs
+    already explain the page topology).
+- Skipped (with rationale):
+  - Removing this tracking doc: kept intentionally - the resolve-issue workflow
+    mandates and updates it; it is a workflow-owned artifact, not ad-hoc docs.
+- Deferred to a follow-up issue (out of scope for #4538):
+  - The `validIterators == 0` advance path also calls `pageCursor.next()` without
+    refreshing `cursorKeys[i]`. claude flags it as a narrower, structurally-similar
+    defect "worth a follow-up issue"; folding it in would broaden scope beyond the
+    reported bug.
+
+## Final state
+
+- max-cycles-reached / handed off: both gating bots reviewed cycle 1; actionable
+  cosmetic feedback applied and pushed. Merge remains the developer's
+  responsibility.

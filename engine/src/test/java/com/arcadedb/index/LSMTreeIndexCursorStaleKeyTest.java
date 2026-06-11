@@ -34,21 +34,9 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for issue #4538.
- * <p>
- * In {@code LSMTreeIndexCursor}'s constructor the {@code removedKeys.contains(keys)} branch advanced the
- * underlying page cursor with {@code pageCursor.next()} and {@code continue}d the validation loop WITHOUT
- * refreshing the cached {@code cursorKeys[i]}. The subsequent {@code fromKeys}/{@code toKeys} checks - and,
- * more importantly, {@code next()}'s minor-key selection - then evaluated against the previous, stale key
- * while the {@code removedKeys} check itself read the fresh {@code pageCursor.getKeys()}. The inconsistency
- * made a range scan run right after a delete (or delete-then-reinsert) sequence drop a valid entry that
- * happens to sit immediately after a key-wide tombstone shared across pages.
- * <p>
- * The scenario below makes the minimum key a key-wide tombstone that is isolated on the newest page while
- * older pages still hold live copies of that same minimum key. Because the cursor validates pages
- * newest-first, the tombstone page seeds {@code removedKeys} with the minimum key, and the older live
- * pages then enter the buggy branch: they advance past the removed minimum and - before the fix - kept the
- * stale cached key, which suppressed the very next key from the scan output.
+ * Regression test for a stale cached key in {@code LSMTreeIndexCursor}: when a key-wide tombstone is shared
+ * across pages, the constructor advanced a page cursor past the removed key without refreshing
+ * {@code cursorKeys[i]}, dropping the valid entry that follows it from a range scan.
  */
 class LSMTreeIndexCursorStaleKeyTest extends TestHelper {
   private static final String TYPE_NAME = "Item";
