@@ -22,7 +22,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -61,7 +61,7 @@ public class PathCreate extends AbstractPathFunction {
     final List<Object> relationships = toList(args[1]);
 
     // Create path representation
-    final Map<String, Object> path = new HashMap<>();
+    final Map<String, Object> path = new LinkedHashMap<>();
     path.put("_type", "path");
 
     final List<Object> nodes = new ArrayList<>();

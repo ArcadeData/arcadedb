@@ -20,7 +20,7 @@ package com.arcadedb.function.map;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -61,9 +61,9 @@ public class MapRemoveKeys extends AbstractMapFunction {
     final List<?> keys = (List<?>) args[1];
 
     if (map == null)
-      return new HashMap<>();
+      return new LinkedHashMap<>();
 
-    final Map<String, Object> result = new HashMap<>(map);
+    final Map<String, Object> result = new LinkedHashMap<>(map);
     for (final Object key : keys) {
       if (key != null) {
         result.remove(key.toString());

@@ -20,7 +20,7 @@ package com.arcadedb.function.map;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -54,7 +54,7 @@ public class MapMerge extends AbstractMapFunction {
     final Map<String, Object> map1 = asMap(args[0]);
     final Map<String, Object> map2 = asMap(args[1]);
 
-    final Map<String, Object> result = new HashMap<>();
+    final Map<String, Object> result = new LinkedHashMap<>();
 
     if (map1 != null)
       result.putAll(map1);

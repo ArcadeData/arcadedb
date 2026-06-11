@@ -41,6 +41,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -1465,6 +1466,86 @@ class CypherBuiltInFunctionsTest extends TestHelper {
       assertThat(rs.hasNext()).isTrue();
       assertThat((boolean) rs.next().getProperty("result")).isTrue();
     });
+  }
+
+  @Test
+  void mapFromListsPreservesKeyOrder() {
+    // APOC-style map functions must return insertion-ordered maps so keys(),
+    // values() and JSON serialization are deterministic (issue #4557)
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.fromLists");
+    final List<Object> keys = List.of("zeta", "year", "x1", "world", "v0", "uber", "tango", "sierra", "romeo", "quebec");
+    final List<Object> values = List.of(0, 1, 2, 3, 4, 5, 6, 7, 8, 9);
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[] { keys, values }, null);
+    assertThat(result.keySet()).containsExactly("zeta", "year", "x1", "world", "v0", "uber", "tango", "sierra", "romeo", "quebec");
+  }
+
+  @Test
+  void mapFromPairsPreservesKeyOrder() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.fromPairs");
+    final List<Object> pairs = List.of(List.of("zeta", 0), List.of("year", 1), List.of("x1", 2), List.of("world", 3),
+        List.of("v0", 4), List.of("uber", 5), List.of("tango", 6), List.of("sierra", 7), List.of("romeo", 8),
+        List.of("quebec", 9));
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[] { pairs }, null);
+    assertThat(result.keySet()).containsExactly("zeta", "year", "x1", "world", "v0", "uber", "tango", "sierra", "romeo", "quebec");
+  }
+
+  @Test
+  void mapMergePreservesKeyOrder() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.merge");
+    final Map<String, Object> first = new LinkedHashMap<>();
+    first.put("zeta", 0);
+    first.put("year", 1);
+    first.put("x1", 2);
+    first.put("world", 3);
+    first.put("v0", 4);
+    final Map<String, Object> second = new LinkedHashMap<>();
+    second.put("uber", 5);
+    second.put("tango", 6);
+    second.put("sierra", 7);
+    second.put("romeo", 8);
+    second.put("quebec", 9);
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[] { first, second }, null);
+    assertThat(result.keySet()).containsExactly("zeta", "year", "x1", "world", "v0", "uber", "tango", "sierra", "romeo", "quebec");
+  }
+
+  @Test
+  void mapSetKeyPreservesKeyOrder() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.setKey");
+    final Map<String, Object> map = new LinkedHashMap<>();
+    map.put("zeta", 0);
+    map.put("year", 1);
+    map.put("x1", 2);
+    map.put("world", 3);
+    map.put("v0", 4);
+    map.put("uber", 5);
+    map.put("tango", 6);
+    map.put("sierra", 7);
+    map.put("romeo", 8);
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[] { map, "quebec", 9 }, null);
+    assertThat(result.keySet()).containsExactly("zeta", "year", "x1", "world", "v0", "uber", "tango", "sierra", "romeo", "quebec");
+  }
+
+  @Test
+  void mapRemoveKeyPreservesKeyOrder() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("map.removeKey");
+    final Map<String, Object> map = new LinkedHashMap<>();
+    map.put("zeta", 0);
+    map.put("year", 1);
+    map.put("x1", 2);
+    map.put("world", 3);
+    map.put("v0", 4);
+    map.put("uber", 5);
+    map.put("tango", 6);
+    map.put("sierra", 7);
+    map.put("romeo", 8);
+    map.put("quebec", 9);
+    @SuppressWarnings("unchecked")
+    final Map<String, Object> result = (Map<String, Object>) fn.execute(new Object[] { map, "world" }, null);
+    assertThat(result.keySet()).containsExactly("zeta", "year", "x1", "v0", "uber", "tango", "sierra", "romeo", "quebec");
   }
 
   // Note: Integration tests for Cypher queries with built-in functions

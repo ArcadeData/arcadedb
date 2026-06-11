@@ -22,7 +22,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
 import java.util.Collection;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -97,7 +97,7 @@ public class PathCombine extends AbstractPathFunction {
       }
     }
 
-    final Map<String, Object> result = new HashMap<>();
+    final Map<String, Object> result = new LinkedHashMap<>();
     result.put("_type", "path");
     result.put("nodes", allNodes);
     result.put("relationships", allRels);

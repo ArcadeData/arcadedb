@@ -21,7 +21,7 @@ package com.arcadedb.function.map;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -64,7 +64,7 @@ public class MapGroupBy extends AbstractMapFunction {
     }
 
     final List<?> list = (List<?>) args[0];
-    final Map<Object, List<Object>> result = new HashMap<>();
+    final Map<Object, List<Object>> result = new LinkedHashMap<>();
 
     for (final Object item : list) {
       if (item instanceof Map) {
