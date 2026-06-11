@@ -72,7 +72,7 @@ public class DateField extends AbstractDateFunction {
       case "millisecond", "milliseconds", "millis" -> (long) (dateTime.getNano() / 1_000_000);
       case "dayofweek", "weekday" -> (long) dateTime.getDayOfWeek().getValue();
       case "dayofyear" -> (long) dateTime.getDayOfYear();
-      case "week", "weekofyear" -> (long) dateTime.get(WeekFields.ISO.weekOfYear());
+      case "week", "weekofyear" -> (long) dateTime.get(WeekFields.ISO.weekOfWeekBasedYear());
       default -> throw new IllegalArgumentException("Unknown date field: " + field);
     };
   }
