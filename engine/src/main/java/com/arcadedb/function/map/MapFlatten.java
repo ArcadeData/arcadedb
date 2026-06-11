@@ -20,7 +20,7 @@ package com.arcadedb.function.map;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -55,9 +55,9 @@ public class MapFlatten extends AbstractMapFunction {
     final String delimiter = args.length > 1 && args[1] != null ? args[1].toString() : ".";
 
     if (map == null)
-      return new HashMap<>();
+      return new LinkedHashMap<>();
 
-    final Map<String, Object> result = new HashMap<>();
+    final Map<String, Object> result = new LinkedHashMap<>();
     flatten("", map, delimiter, result);
     return result;
   }

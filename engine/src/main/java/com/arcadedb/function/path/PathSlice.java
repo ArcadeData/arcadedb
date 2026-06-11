@@ -21,7 +21,7 @@ package com.arcadedb.function.path;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -105,7 +105,7 @@ public class PathSlice extends AbstractPathFunction {
       slicedRels.add(rels.get(i));
     }
 
-    final Map<String, Object> result = new HashMap<>();
+    final Map<String, Object> result = new LinkedHashMap<>();
     result.put("_type", "path");
     result.put("nodes", slicedNodes);
     result.put("relationships", slicedRels);

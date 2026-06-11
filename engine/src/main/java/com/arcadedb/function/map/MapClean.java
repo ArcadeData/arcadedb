@@ -20,7 +20,7 @@ package com.arcadedb.function.map;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -67,7 +67,7 @@ public class MapClean extends AbstractMapFunction {
     final List<?> valuesToRemove = (List<?>) args[2];
 
     if (map == null)
-      return new HashMap<>();
+      return new LinkedHashMap<>();
 
     // Build sets for efficient lookup
     final Set<String> keysSet = new HashSet<>();
@@ -79,7 +79,7 @@ public class MapClean extends AbstractMapFunction {
     final Set<Object> valuesSet = new HashSet<>(valuesToRemove);
 
     // Build result, excluding specified keys and values
-    final Map<String, Object> result = new HashMap<>();
+    final Map<String, Object> result = new LinkedHashMap<>();
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
       if (!keysSet.contains(entry.getKey()) && !valuesSet.contains(entry.getValue())) {
         result.put(entry.getKey(), entry.getValue());

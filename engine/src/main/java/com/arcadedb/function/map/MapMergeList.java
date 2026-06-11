@@ -20,7 +20,7 @@ package com.arcadedb.function.map;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -54,14 +54,14 @@ public class MapMergeList extends AbstractMapFunction {
   @SuppressWarnings("unchecked")
   public Object execute(final Object[] args, final CommandContext context) {
     if (args[0] == null)
-      return new HashMap<>();
+      return new LinkedHashMap<>();
 
     if (!(args[0] instanceof List)) {
       throw new IllegalArgumentException("map.mergeList() requires a list argument");
     }
 
     final List<?> list = (List<?>) args[0];
-    final Map<String, Object> result = new HashMap<>();
+    final Map<String, Object> result = new LinkedHashMap<>();
 
     for (final Object item : list) {
       if (item instanceof Map) {

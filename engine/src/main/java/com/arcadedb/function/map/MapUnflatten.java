@@ -20,7 +20,7 @@ package com.arcadedb.function.map;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -56,9 +56,9 @@ public class MapUnflatten extends AbstractMapFunction {
     final String delimiter = args.length > 1 && args[1] != null ? args[1].toString() : ".";
 
     if (map == null)
-      return new HashMap<>();
+      return new LinkedHashMap<>();
 
-    final Map<String, Object> result = new HashMap<>();
+    final Map<String, Object> result = new LinkedHashMap<>();
     final String delimiterRegex = Pattern.quote(delimiter);
 
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
@@ -78,11 +78,11 @@ public class MapUnflatten extends AbstractMapFunction {
       Object next = current.get(key);
 
       if (next == null) {
-        next = new HashMap<String, Object>();
+        next = new LinkedHashMap<String, Object>();
         current.put(key, next);
       } else if (!(next instanceof Map)) {
         // Key already exists with non-map value, create a map anyway
-        next = new HashMap<String, Object>();
+        next = new LinkedHashMap<String, Object>();
         current.put(key, next);
       }
 
