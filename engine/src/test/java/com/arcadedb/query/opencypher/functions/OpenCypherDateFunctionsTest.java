@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.ZoneId;
 import java.util.Map;
+import java.util.TimeZone;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -127,6 +128,28 @@ class OpenCypherDateFunctionsTest {
   void dateFieldNullHandling() {
     final DateField fn = new DateField();
     assertThat(fn.execute(new Object[]{null, "year"}, null)).isNull();
+  }
+
+  @Test
+  void dateFieldIsoWeekAtYearBoundary() {
+    final DateField fn = new DateField();
+
+    // 2023-01-01 (Sunday) belongs to ISO-8601 week 52 of the week-based-year 2022, not week 0.
+    // Pin the timezone so the millis -> local-date conversion is deterministic.
+    final TimeZone previous = TimeZone.getDefault();
+    try {
+      TimeZone.setDefault(TimeZone.getTimeZone("UTC"));
+
+      final long jan1_2023 = 1672531200000L; // 2023-01-01 00:00:00 UTC
+      assertThat(fn.execute(new Object[]{jan1_2023, "weekofyear"}, null)).isEqualTo(52L);
+      assertThat(fn.execute(new Object[]{jan1_2023, "week"}, null)).isEqualTo(52L);
+
+      // 2023-01-02 (Monday) is the start of ISO week 1
+      final long jan2_2023 = 1672617600000L; // 2023-01-02 00:00:00 UTC
+      assertThat(fn.execute(new Object[]{jan2_2023, "weekofyear"}, null)).isEqualTo(1L);
+    } finally {
+      TimeZone.setDefault(previous);
+    }
   }
 
   // ============ DateFields tests ============
