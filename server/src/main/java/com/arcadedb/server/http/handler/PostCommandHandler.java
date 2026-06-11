@@ -273,7 +273,6 @@ public class PostCommandHandler extends AbstractQueryHandler {
   protected ResultSet executeCommand(final Database database, final String language, final String command,
       final Map<String, Object> paramMap) {
     final Object params = mapParams(paramMap);
-
     if (params instanceof Object[] objects)
       return database.command(language, command, httpServer.getServer().getConfiguration(), objects);
     return database.command(language, command, httpServer.getServer().getConfiguration(), (Map<String, Object>) params);

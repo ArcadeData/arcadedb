@@ -19,6 +19,7 @@
 package com.arcadedb.mongo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
@@ -84,6 +85,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   public Document handleCommand(final Channel channel, final String command, final Document document,
       final DatabaseResolver databaseResolver,
       final Oplog opLog) {
+    ProtocolContext.set("mongo");
     try {
       if ("find".equalsIgnoreCase(command))
         return find(document);
@@ -104,6 +106,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
     } catch (final Exception e) {
       throw new MongoServerException("Error on executing MongoDB '" + command + "' command", e);
+    } finally {
+      ProtocolContext.clear();
     }
   }
 
