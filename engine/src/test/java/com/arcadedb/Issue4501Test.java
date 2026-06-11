@@ -20,8 +20,10 @@ package com.arcadedb;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -98,5 +100,84 @@ public class Issue4501Test extends TestHelper {
     assertThat(ok.hasNext()).isTrue();
     assertThat(ok.next().<String>getProperty("entityId")).isEqualTo("11111111");
     assertThat(ok.hasNext()).isFalse();
+  }
+
+  /**
+   * Write-side repair (issue #4501 follow-up): a dangling entry in a UNIQUE index used to block all writes on that key. INSERTing a real record
+   * for the dangling key failed with {@code DuplicatedKeyException} (the index still reported the key as present) while the unreachable record
+   * could neither be read nor updated. The unique-constraint check now probes the conflicting RID and, when it cannot be loaded, removes the
+   * dangling entry and lets the write proceed instead of aborting the transaction.
+   */
+  @Test
+  void insertRepairsDanglingUniqueEntryInsteadOfFailing() {
+    final VertexType type = database.getSchema().createVertexType("Company");
+    type.createProperty("entityId", Type.STRING);
+    final TypeIndex index = (TypeIndex) database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Company", "entityId");
+
+    database.command("sql", "INSERT INTO Company SET entityId = '11111111'");
+    database.commit();
+
+    injectDanglingEntry(index, "88888888");
+
+    // Before the fix this aborted with DuplicatedKeyException; now the dangling entry is repaired and the new record is stored.
+    assertThatCode(() -> {
+      database.begin();
+      database.command("sql", "INSERT INTO Company SET entityId = '88888888'");
+      database.commit();
+    }).doesNotThrowAnyException();
+
+    assertIndexPointsToRealRecordOnly(index, "88888888");
+  }
+
+  /**
+   * Same scenario reproduced through the exact statement reported in issue #4501: an UPSERT on the dangling key. The fetch skips the unreachable
+   * record (so no match is found), a fresh record is created, and the unique-constraint check repairs the dangling entry at commit time instead
+   * of failing with NoSuchElementException / DuplicatedKeyException.
+   */
+  @Test
+  void upsertRepairsDanglingUniqueEntryInsteadOfFailing() {
+    final VertexType type = database.getSchema().createVertexType("Company");
+    type.createProperty("entityId", Type.STRING);
+    final TypeIndex index = (TypeIndex) database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "Company", "entityId");
+
+    database.command("sql", "INSERT INTO Company SET entityId = '11111111'");
+    database.commit();
+
+    injectDanglingEntry(index, "88888888");
+
+    assertThatCode(() -> {
+      database.begin();
+      database.command("sql", "UPDATE Company SET entityId = '88888888', name = 'ACME' UPSERT WHERE entityId = '88888888'");
+      database.commit();
+    }).doesNotThrowAnyException();
+
+    assertIndexPointsToRealRecordOnly(index, "88888888");
+
+    final ResultSet rs = database.query("sql", "SELECT FROM Company WHERE entityId = '88888888'");
+    assertThat(rs.hasNext()).isTrue();
+    assertThat(rs.next().<String>getProperty("name")).isEqualTo("ACME");
+    assertThat(rs.hasNext()).isFalse();
+  }
+
+  // Injects a dangling entry into a bucket sub-index: key -> RID located in a bucket that does not exist.
+  private void injectDanglingEntry(final TypeIndex index, final String key) {
+    final IndexInternal bucketIndex = index.getSubIndexes().getFirst();
+    database.begin();
+    bucketIndex.put(new Object[] { key }, new RID[] { DANGLING_RID });
+    database.commit();
+  }
+
+  // Verifies the key resolves to a single, valid record (not the dangling RID), i.e. the index was repaired.
+  private void assertIndexPointsToRealRecordOnly(final TypeIndex index, final String key) {
+    final ResultSet rs = database.query("sql", "SELECT FROM Company WHERE entityId = '" + key + "'");
+    assertThat(rs.hasNext()).isTrue();
+    final Result r = rs.next();
+    assertThat(r.<String>getProperty("entityId")).isEqualTo(key);
+    assertThat(rs.hasNext()).isFalse();
+
+    final IndexCursor cursor = index.get(new Object[] { key });
+    assertThat(cursor.hasNext()).isTrue();
+    assertThat(cursor.next().getIdentity()).isNotEqualTo(DANGLING_RID);
+    assertThat(cursor.hasNext()).isFalse();
   }
 }

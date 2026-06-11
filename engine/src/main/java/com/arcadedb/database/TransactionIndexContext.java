@@ -394,18 +394,20 @@ public class TransactionIndexContext {
             return;
 
           try {
-//            database.lookupByRID(firstEntry.getIdentity(), true);
-            // NO EXCEPTION = FOUND
+            // PROBE THE EXISTING RECORD: IF IT LOADS, THE KEY IS A REAL DUPLICATE; OTHERWISE THE INDEX ENTRY IS DANGLING (e.g. it
+            // points to a record or bucket that no longer exists - see issue #4501) AND MUST BE REPAIRED INSTEAD OF FAILING THE WRITE.
+            database.lookupByRID(firstEntry.getIdentity(), true);
+            // NO EXCEPTION = RECORD EXISTS = REAL DUPLICATED KEY
             throw new DuplicatedKeyException(idx.getName(), Arrays.toString(key.keyValues), firstEntry.getIdentity());
 
           } catch (final RecordNotFoundException e) {
-            // INDEX DIRTY, THE RECORD WA DELETED, REMOVE THE ENTRY IN THE INDEX TO FIX IT
+            // INDEX DIRTY: THE RECORD WAS DELETED OR ITS BUCKET IS GONE, REMOVE THE DANGLING ENTRY TO FIX THE INDEX
             LogManager.instance()
-                .log(this, Level.WARNING, "Found entry in index '%s' with key %s pointing to the deleted record %s. Overriding it.",
-                    idx.getName(),
-                    Arrays.toString(key.keyValues), firstEntry.getIdentity());
+                .log(this, Level.WARNING,
+                    "Found entry in index '%s' with key %s pointing to the missing record %s. Removing the dangling entry to repair the index.",
+                    idx.getName(), Arrays.toString(key.keyValues), firstEntry.getIdentity());
 
-            idx.remove(key.keyValues);
+            idx.remove(key.keyValues, firstEntry.getIdentity());
           }
         }
       }
