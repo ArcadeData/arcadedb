@@ -409,7 +409,8 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   public String getLeaderAddress() {
-    return leaderServer.getFirst() + ":" + leaderServer.getSecond();
+    final Pair<String, Integer> snapshot = leaderServer;
+    return snapshot != null ? snapshot.getFirst() + ":" + snapshot.getSecond() : null;
   }
 
   public List<String> getReplicaAddresses() {

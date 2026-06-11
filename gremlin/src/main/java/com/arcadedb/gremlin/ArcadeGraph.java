@@ -165,7 +165,9 @@ public class ArcadeGraph implements Graph, Closeable {
       try {
         final List<String> remoteAddresses = new ArrayList<>();
 
-        remoteAddresses.add(remoteDatabase.getLeaderAddress());
+        final String leaderAddress = remoteDatabase.getLeaderAddress();
+        if (leaderAddress != null)
+          remoteAddresses.add(leaderAddress);
         remoteAddresses.addAll(remoteDatabase.getReplicaAddresses());
 
         final String[] hosts = new String[remoteAddresses.size()];
