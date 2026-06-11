@@ -34,6 +34,7 @@ import java.nio.channels.FileChannel;
 import java.nio.channels.spi.AbstractInterruptibleChannel;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
 
@@ -43,6 +44,14 @@ public class PaginatedComponentFile extends ComponentFile {
   private                 FileChannel      channel;
   private                 int              pageSize;
   private static volatile boolean          warningPrinted = false;
+
+  /**
+   * Guards the {@link #channel}/{@link #file} fields against concurrent I/O while they are swapped.
+   * I/O methods (read/write/force/...) acquire the shared READ lock, so independent pages still run
+   * concurrently; {@link #close()} and {@link #rename(String)} acquire the exclusive WRITE lock so a
+   * channel can never be closed or replaced from under an in-flight operation.
+   */
+  private final ReentrantReadWriteLock channelLock = new ReentrantReadWriteLock();
 
   public static class InterruptibleInvocationHandler implements InvocationHandler {
     @Override
@@ -59,20 +68,51 @@ public class PaginatedComponentFile extends ComponentFile {
     super(filePath, mode);
   }
 
-  public void force(final boolean metaData) throws IOException {
-    if (channel == null)
-      return;
+  /**
+   * Reopens the channel after a {@link ClosedChannelException} while the caller holds the READ lock.
+   * The read lock cannot be upgraded in place, so it is released, the exclusive WRITE lock is taken to
+   * reopen the channel (double-checked so concurrent callers reopen it only once, avoiding leaked file
+   * descriptors), then the read lock is reacquired before returning. The caller resumes its I/O under
+   * the read lock exactly as before.
+   */
+  private void reopenChannelUnderWriteLock() throws FileNotFoundException {
+    channelLock.readLock().unlock();
+    channelLock.writeLock().lock();
     try {
-      channel.force(metaData);
-    } catch (final ClosedChannelException e) {
-      LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on force. Reopen it and retry...", null, fileName);
-      open(filePath, mode);
-      channel.force(metaData);
+      try {
+        if (channel == null || !channel.isOpen())
+          open(filePath, mode);
+      } finally {
+        // DOWNGRADE: reacquire the read lock before releasing the write lock so no rename/close
+        // slips in, and so the caller's finally block always has the read lock to release - even
+        // when open() fails.
+        channelLock.readLock().lock();
+      }
+    } finally {
+      channelLock.writeLock().unlock();
+    }
+  }
+
+  public void force(final boolean metaData) throws IOException {
+    channelLock.readLock().lock();
+    try {
+      if (channel == null)
+        return;
+      try {
+        channel.force(metaData);
+      } catch (final ClosedChannelException e) {
+        LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on force. Reopen it and retry...", null, fileName);
+        reopenChannelUnderWriteLock();
+        channel.force(metaData);
+      }
+    } finally {
+      channelLock.readLock().unlock();
     }
   }
 
   @Override
   public void close() {
+    channelLock.writeLock().lock();
     try {
       LogManager.instance().log(this, Level.FINE, "Closing file %s (id=%d)...", null, filePath, fileId);
 
@@ -88,71 +128,93 @@ public class PaginatedComponentFile extends ComponentFile {
 
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on closing file %s (id=%d)", e, filePath, fileId);
+    } finally {
+      this.open = false;
+      channelLock.writeLock().unlock();
     }
-    this.open = false;
   }
 
   public void rename(final String newFileName) throws IOException {
-    close();
-    LogManager.instance().log(this, Level.FINE, "Renaming file %s (id=%d) to %s...", null, filePath, fileId, newFileName);
-
-    final File newFile;
-    if (newFileName.contains(File.separator) || (File.separatorChar != '/' && newFileName.contains("/"))) {
-      // newFileName is an absolute path (e.g., from removeTempSuffix)
-      newFile = new File(newFileName);
-    } else if (newFileName.contains(".") && newFileName.contains("_")) {
-      // newFileName is already a complete filename, but not an absolute path
-      newFile = new File(osFile.getParentFile(), newFileName);
-    } else {
-      // newFileName is a component name, append the suffix from original file
-      final int suffixStart = osFile.getName().indexOf("_");
-      if (suffixStart < 0)
-        throw new IOException("Original file name '" + osFile.getName() + "' does not contain '_' to extract suffix");
-      final String newFilePath = newFileName + osFile.getName().substring(suffixStart);
-      newFile = new File(osFile.getParentFile(), newFilePath);
-    }
+    channelLock.writeLock().lock();
     try {
-      Files.move(osFile.getAbsoluteFile().toPath(), newFile.getAbsoluteFile().toPath(), StandardCopyOption.ATOMIC_MOVE);
-      open(newFile.getAbsolutePath(), mode);
-    } catch (Exception e) {
-      open(filePath, mode);
-      throw new IOException("Error renaming file " + filePath + " to " + newFile.getAbsolutePath(), e);
+      close();
+      LogManager.instance().log(this, Level.FINE, "Renaming file %s (id=%d) to %s...", null, filePath, fileId, newFileName);
+
+      final File newFile;
+      if (newFileName.contains(File.separator) || (File.separatorChar != '/' && newFileName.contains("/"))) {
+        // newFileName is an absolute path (e.g., from removeTempSuffix)
+        newFile = new File(newFileName);
+      } else if (newFileName.contains(".") && newFileName.contains("_")) {
+        // newFileName is already a complete filename, but not an absolute path
+        newFile = new File(osFile.getParentFile(), newFileName);
+      } else {
+        // newFileName is a component name, append the suffix from original file
+        final int suffixStart = osFile.getName().indexOf("_");
+        if (suffixStart < 0)
+          throw new IOException("Original file name '" + osFile.getName() + "' does not contain '_' to extract suffix");
+        final String newFilePath = newFileName + osFile.getName().substring(suffixStart);
+        newFile = new File(osFile.getParentFile(), newFilePath);
+      }
+      try {
+        Files.move(osFile.getAbsoluteFile().toPath(), newFile.getAbsoluteFile().toPath(), StandardCopyOption.ATOMIC_MOVE);
+        open(newFile.getAbsolutePath(), mode);
+      } catch (Exception e) {
+        open(filePath, mode);
+        throw new IOException("Error renaming file " + filePath + " to " + newFile.getAbsolutePath(), e);
+      }
+    } finally {
+      channelLock.writeLock().unlock();
     }
   }
 
   @Override
   public long getSize() throws IOException {
-    return channel.size();
+    channelLock.readLock().lock();
+    try {
+      return channel.size();
+    } finally {
+      channelLock.readLock().unlock();
+    }
   }
 
   public long getTotalPages() throws IOException {
-    return channel.size() / pageSize;
+    channelLock.readLock().lock();
+    try {
+      return channel.size() / pageSize;
+    } finally {
+      channelLock.readLock().unlock();
+    }
   }
 
   public long calculateChecksum() throws IOException {
-    final CRC32 crc = new CRC32();
+    channelLock.readLock().lock();
+    try {
+      final CRC32 crc = new CRC32();
 
-    final ByteBuffer buffer = ByteBuffer.allocate(getPageSize());
+      final ByteBuffer buffer = ByteBuffer.allocate(getPageSize());
 
-    final long totalPages = getTotalPages();
-    for (int i = 0; i < totalPages; i++) {
-      buffer.clear();
-      long pos = pageSize * (long) i;
-      while (buffer.hasRemaining()) {
-        final int r = channel.read(buffer, pos);
-        if (r < 0)
-          throw new IOException("Unexpected EOF calculating checksum at page " + i + " of file '" + getFileName() + "'");
-        pos += r;
+      final long totalPages = channel.size() / pageSize;
+      for (int i = 0; i < totalPages; i++) {
+        buffer.clear();
+        long pos = pageSize * (long) i;
+        while (buffer.hasRemaining()) {
+          final int r = channel.read(buffer, pos);
+          if (r < 0)
+            throw new IOException("Unexpected EOF calculating checksum at page " + i + " of file '" + getFileName() + "'");
+          pos += r;
+        }
+
+        buffer.rewind();
+        for (int j = 0; j < pageSize; j++) {
+          final int read = buffer.get(j);
+          crc.update(read);
+        }
       }
 
-      buffer.rewind();
-      for (int j = 0; j < pageSize; j++) {
-        final int read = buffer.get(j);
-        crc.update(read);
-      }
+      return crc.getValue();
+    } finally {
+      channelLock.readLock().unlock();
     }
-
-    return crc.getValue();
   }
 
   /**
@@ -164,25 +226,30 @@ public class PaginatedComponentFile extends ComponentFile {
     if (pageNumber < 0)
       throw new IllegalArgumentException("Invalid page number to write: " + pageNumber);
 
-    if (channel == null)
-      throw new IllegalArgumentException("Cannot write page " + pageNumber + " because the file '" + getFileName() + "' is closed");
-
-    assert page.pageId.getFileId() == fileId;
-    final ByteBuffer buffer = page.getContent();
-
-    // NO NEED TO SYNCHRONIZE THE BUFFER BECAUSE MUTABLE PAGES ARE NOT SHARED
-    buffer.clear();
+    channelLock.readLock().lock();
     try {
-      long pos = page.getPhysicalSize() * (long) pageNumber;
-      while (buffer.hasRemaining())
-        pos += channel.write(buffer, pos);
-    } catch (final ClosedChannelException e) {
-      LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
-      open(filePath, mode);
+      if (channel == null)
+        throw new IllegalArgumentException("Cannot write page " + pageNumber + " because the file '" + getFileName() + "' is closed");
+
+      assert page.pageId.getFileId() == fileId;
+      final ByteBuffer buffer = page.getContent();
+
+      // NO NEED TO SYNCHRONIZE THE BUFFER BECAUSE MUTABLE PAGES ARE NOT SHARED
       buffer.clear();
-      long pos = page.getPhysicalSize() * (long) pageNumber;
-      while (buffer.hasRemaining())
-        pos += channel.write(buffer, pos);
+      try {
+        long pos = page.getPhysicalSize() * (long) pageNumber;
+        while (buffer.hasRemaining())
+          pos += channel.write(buffer, pos);
+      } catch (final ClosedChannelException e) {
+        LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
+        reopenChannelUnderWriteLock();
+        buffer.clear();
+        long pos = page.getPhysicalSize() * (long) pageNumber;
+        while (buffer.hasRemaining())
+          pos += channel.write(buffer, pos);
+      }
+    } finally {
+      channelLock.readLock().unlock();
     }
 
     return pageSize;
@@ -214,43 +281,53 @@ public class PaginatedComponentFile extends ComponentFile {
     if (page.getPageId().getPageNumber() < 0)
       throw new IllegalArgumentException("Invalid page number to read: " + pageNumber);
 
-    if (channel == null)
-      throw new IllegalArgumentException("Cannot read page " + pageNumber + " because the file '" + getFileName() + "' is closed");
-
-    assert page.getPageId().getFileId() == fileId;
-    final ByteBuffer buffer = page.getByteBuffer();
-    buffer.clear();
-
+    channelLock.readLock().lock();
     try {
-      long pos = page.getPhysicalSize() * (long) pageNumber;
-      while (buffer.hasRemaining()) {
-        final int r = channel.read(buffer, pos);
-        if (r < 0)
-          throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
-        pos += r;
-      }
-    } catch (final ClosedChannelException e) {
-      LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
-      open(filePath, mode);
+      if (channel == null)
+        throw new IllegalArgumentException("Cannot read page " + pageNumber + " because the file '" + getFileName() + "' is closed");
+
+      assert page.getPageId().getFileId() == fileId;
+      final ByteBuffer buffer = page.getByteBuffer();
       buffer.clear();
-      long pos = page.getPhysicalSize() * (long) pageNumber;
-      while (buffer.hasRemaining()) {
-        final int r = channel.read(buffer, pos);
-        if (r < 0)
-          throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
-        pos += r;
+
+      try {
+        long pos = page.getPhysicalSize() * (long) pageNumber;
+        while (buffer.hasRemaining()) {
+          final int r = channel.read(buffer, pos);
+          if (r < 0)
+            throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
+          pos += r;
+        }
+      } catch (final ClosedChannelException e) {
+        LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
+        reopenChannelUnderWriteLock();
+        buffer.clear();
+        long pos = page.getPhysicalSize() * (long) pageNumber;
+        while (buffer.hasRemaining()) {
+          final int r = channel.read(buffer, pos);
+          if (r < 0)
+            throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
+          pos += r;
+        }
       }
+    } finally {
+      channelLock.readLock().unlock();
     }
   }
 
   public void readPage(final int pageNum, final ByteBuffer buf) throws IOException {
-    buf.clear();
-    long pos = pageSize * (long) pageNum;
-    while (buf.hasRemaining()) {
-      final int r = channel.read(buf, pos);
-      if (r < 0)
-        throw new IOException("Unexpected EOF reading page " + pageNum + " from file '" + getFileName() + "'");
-      pos += r;
+    channelLock.readLock().lock();
+    try {
+      buf.clear();
+      long pos = pageSize * (long) pageNum;
+      while (buf.hasRemaining()) {
+        final int r = channel.read(buf, pos);
+        if (r < 0)
+          throw new IOException("Unexpected EOF reading page " + pageNum + " from file '" + getFileName() + "'");
+        pos += r;
+      }
+    } finally {
+      channelLock.readLock().unlock();
     }
   }
 
