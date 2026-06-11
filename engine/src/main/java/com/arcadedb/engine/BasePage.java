@@ -179,6 +179,13 @@ public abstract class BasePage {
     this.content.position(PAGE_HEADER_SIZE + newPos);
   }
 
+  /**
+   * Value equality on {@code (pageId, version)}. Note that {@code version} is mutable
+   * ({@link MutablePage#incrementVersion()}), so two pages can become equal/unequal over time. Callers that
+   * store pages as values in a hash structure and need stable identity must rely on reference identity, not on
+   * this method (see issue #4544 and {@code PageManagerFlushThread.removeFromFlushIndex}). {@link #hashCode()}
+   * intentionally keys on {@code pageId} only so it stays stable across version changes.
+   */
   @Override
   public boolean equals(final Object o) {
     if (this == o)
