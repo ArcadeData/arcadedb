@@ -20,6 +20,7 @@ package com.arcadedb.remote.grpc;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
@@ -36,6 +37,7 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Reproduces issue #4562: when a transaction fails on commit (e.g. unique key violation), any
@@ -253,6 +255,40 @@ class Issue4562RollbackDeleteTest extends BaseGraphServerTest {
       db.rollback();
 
     return countAll(db);
+  }
+
+  /**
+   * Saving a record whose RID no longer exists (e.g. it was deleted, or created in a rolled-back transaction) must fail
+   * with {@link RecordNotFoundException} on both gRPC and HTTP, matching the embedded engine (issue #4562).
+   */
+  @Test
+  void saveOfDeletedRecordThrowsOnGrpc() {
+    assertSaveOfDeletedRecordThrows(grpc);
+  }
+
+  @Test
+  void saveOfDeletedRecordThrowsOnHttp() {
+    assertSaveOfDeletedRecordThrows(httpDb);
+  }
+
+  private void assertSaveOfDeletedRecordThrows(final RemoteDatabase db) {
+    db.begin();
+    final MutableVertex v = db.newVertex(TYPE);
+    v.set("svex", "ghost");
+    v.set("svuuid", UUID.randomUUID().toString());
+    v.save();
+    db.commit();
+
+    // delete it for good
+    db.begin();
+    db.deleteRecord(db.lookupByRID(v.getIdentity(), false));
+    db.commit();
+
+    // re-saving the now-stale object must fail, not silently no-op
+    db.begin();
+    v.set("svex", "resurrected");
+    assertThatThrownBy(v::save).isInstanceOf(RecordNotFoundException.class);
+    db.rollback();
   }
 
   private boolean recordExists(final RemoteDatabase db, final String rid) {
