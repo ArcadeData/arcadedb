@@ -153,7 +153,10 @@ public class FileUtils {
   }
 
   public static void checkValidName(final String iFileName) throws IOException {
-    if (iFileName.contains("..") || iFileName.contains(File.separator))
+    // Reject both '/' and '\' on every platform (the OS/JVM treat both as separators) and the '.'/'..' directory sentinels.
+    // The substring ".." is allowed inside a name (e.g. "a..b"); only a name equal to ".." is a traversal.
+    if (iFileName == null || iFileName.isEmpty() || iFileName.indexOf('/') > -1 || iFileName.indexOf('\\') > -1
+        || iFileName.equals(".") || iFileName.equals(".."))
       throw new IOException("Invalid file name '" + iFileName + "'");
   }
 
@@ -453,7 +456,7 @@ public class FileUtils {
     int line = 1;
     for (int i = 0; i < text.length(); i++) {
       final char current = text.charAt(i);
-      final Character next = i + 1 < text.length() ? text.charAt(i) : null;
+      final Character next = i + 1 < text.length() ? text.charAt(i + 1) : null;
       if (current == '\n') {
         ++line;
         result.append(String.format("\n%-" + maxLineDigits + "d: ", line));
