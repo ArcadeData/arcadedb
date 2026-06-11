@@ -54,8 +54,23 @@ workers were still mutating now-closed structures.
 
 ## Review Cycles
 
-_(none yet)_
+### Cycle 1 (PR #4573)
+
+- **gemini-code-assist + claude bot:** `InterruptedException` in the join loop re-asserted the
+  interrupt flag mid-loop, so the next `join(1000)` threw immediately and remaining threads were
+  skipped without waiting. Adopted the deferred-reinterrupt pattern: record `interrupted` in a
+  local, keep joining every thread, re-assert the interrupt status once after the loop. Chosen
+  over gemini's `break` because `kill()`'s contract is to stop *all* workers - breaking would
+  abandon the remaining threads. Mirrors the single-span interrupt handling in
+  `shutdownThreadsLocked()`.
+- **claude bot (soft, non-blocking):** added a WARNING log when a thread is still alive after its
+  1s join timeout, to aid production diagnosis of hangs.
+- **claude bot - "remove this docs file":** declined. Committed `docs/<issue>-*.md` tracking docs
+  with `Review cycles` + `Final state` sections are an established repo convention (e.g.
+  docs/4397, 4393, 4446, 4332). The stale "not committed" line was the only genuine issue and is
+  corrected below.
 
 ## Final State
 
-Fix staged, not committed (standalone invocation - developer reviews before committing).
+Fix committed and pushed; PR #4573. Cycle-1 review items addressed (deferred-reinterrupt join
+loop + timeout warning log).
