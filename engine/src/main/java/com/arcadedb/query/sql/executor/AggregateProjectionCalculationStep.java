@@ -104,12 +104,12 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
 
       @Override
       public boolean hasNext() {
-        return localNext <= nRecords && nextItem < finalResults.size();
+        return localNext < nRecords && nextItem < finalResults.size();
       }
 
       @Override
       public Result next() {
-        if (localNext > nRecords || nextItem >= finalResults.size()) {
+        if (localNext >= nRecords || nextItem >= finalResults.size()) {
           throw new NoSuchElementException();
         }
         final Result result = finalResults.get(nextItem);
