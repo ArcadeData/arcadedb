@@ -29,17 +29,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Regression test for issue #4547: opening a not-cleanly-closed database (its {@code database.lck}
- * marker still present on disk, so recovery is required) in {@code READ_ONLY} mode must:
- * <ol>
- *   <li>be rejected, because a {@code READ_ONLY} open cannot perform recovery; and</li>
- *   <li>not leak the OS file lock on {@code database.lck}.</li>
- * </ol>
- *
- * <p>The leak is observable by attempting a subsequent {@code READ_WRITE} open: if the rejected
- * {@code READ_ONLY} open leaked the file lock, the {@code READ_WRITE} open fails with a
- * {@code LockException} ("locked by another process"). With the fix, the lock is never leaked, so
- * the recovery-capable {@code READ_WRITE} open succeeds.
+ * Regression test for issue #4547: a {@code READ_ONLY} open of a not-cleanly-closed database (its
+ * {@code database.lck} marker present, so recovery is required) must be rejected and must not leak
+ * the OS file lock, so a subsequent recovery-capable {@code READ_WRITE} open still succeeds.
  */
 class Issue4547ReadOnlyRecoveryLockLeakTest extends TestHelper {
 
