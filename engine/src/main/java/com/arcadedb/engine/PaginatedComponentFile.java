@@ -68,6 +68,31 @@ public class PaginatedComponentFile extends ComponentFile {
     super(filePath, mode);
   }
 
+  /**
+   * Reopens the channel after a {@link ClosedChannelException} while the caller holds the READ lock.
+   * The read lock cannot be upgraded in place, so it is released, the exclusive WRITE lock is taken to
+   * reopen the channel (double-checked so concurrent callers reopen it only once, avoiding leaked file
+   * descriptors), then the read lock is reacquired before returning. The caller resumes its I/O under
+   * the read lock exactly as before.
+   */
+  private void reopenChannelUnderWriteLock() throws FileNotFoundException {
+    channelLock.readLock().unlock();
+    channelLock.writeLock().lock();
+    try {
+      try {
+        if (channel == null || !channel.isOpen())
+          open(filePath, mode);
+      } finally {
+        // DOWNGRADE: reacquire the read lock before releasing the write lock so no rename/close
+        // slips in, and so the caller's finally block always has the read lock to release - even
+        // when open() fails.
+        channelLock.readLock().lock();
+      }
+    } finally {
+      channelLock.writeLock().unlock();
+    }
+  }
+
   public void force(final boolean metaData) throws IOException {
     channelLock.readLock().lock();
     try {
@@ -77,7 +102,7 @@ public class PaginatedComponentFile extends ComponentFile {
         channel.force(metaData);
       } catch (final ClosedChannelException e) {
         LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on force. Reopen it and retry...", null, fileName);
-        open(filePath, mode);
+        reopenChannelUnderWriteLock();
         channel.force(metaData);
       }
     } finally {
@@ -217,7 +242,7 @@ public class PaginatedComponentFile extends ComponentFile {
           pos += channel.write(buffer, pos);
       } catch (final ClosedChannelException e) {
         LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
-        open(filePath, mode);
+        reopenChannelUnderWriteLock();
         buffer.clear();
         long pos = page.getPhysicalSize() * (long) pageNumber;
         while (buffer.hasRemaining())
@@ -275,7 +300,7 @@ public class PaginatedComponentFile extends ComponentFile {
         }
       } catch (final ClosedChannelException e) {
         LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
-        open(filePath, mode);
+        reopenChannelUnderWriteLock();
         buffer.clear();
         long pos = page.getPhysicalSize() * (long) pageNumber;
         while (buffer.hasRemaining()) {

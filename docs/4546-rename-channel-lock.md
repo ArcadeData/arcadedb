@@ -57,6 +57,28 @@ against a real `PaginatedComponentFile` while a rename runs in a loop, asserting
   `main` baseline (2 of 4 runs fail there with zero source changes). It is unrelated to this
   fix and is left untouched per the no-modify-existing-tests rule.
 
+## Pull request
+
+- PR: https://github.com/ArcadeData/arcadedb/pull/4567
+
+## Review cycles
+
+- **Cycle 1** - head `c778b03b` (initial fix).
+  - `gemini-code-assist`: flagged a real race in the `ClosedChannelException` reopen fallback
+    of `force()`/`write()`/`read()`: calling `open()` while holding only the (shared) read lock
+    lets two concurrent callers reopen the channel at once, leaking file descriptors.
+    **Actionable, applied** - extracted `reopenChannelUnderWriteLock()` which releases the read
+    lock, takes the exclusive write lock, double-checks `channel == null || !channel.isOpen()`
+    before reopening, then downgrades back to the read lock (in a `finally`, so the caller's
+    `finally` always has the read lock to release even if `open()` throws).
+  - `claude`: no review posted within the 15-minute poll window (timeout).
+
+## Final state
+
+- `timeout` - the per-cycle gating waited 15 minutes for both bots; `gemini-code-assist`
+  reviewed and its one actionable item was addressed and pushed, but `claude` never posted a
+  review on the PR. Loop stopped per the timeout rule. PR left open for the developer.
+
 ## Status
 
 - [x] Worktree + branch created
@@ -64,3 +86,5 @@ against a real `PaginatedComponentFile` while a rename runs in a loop, asserting
 - [x] Failing regression test (reproduces NPE)
 - [x] Fix (per-file ReentrantReadWriteLock)
 - [x] Verify (new test passes, no regressions in rename-related suites)
+- [x] PR opened (#4567)
+- [x] Cycle 1 review addressed (Gemini reopen-under-read-lock race)
