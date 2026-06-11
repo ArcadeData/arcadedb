@@ -165,9 +165,7 @@ public class PageManager extends LockContext {
   }
 
   public void deleteFile(final Database database, final int fileId) {
-    // Drain the asynchronous flush thread first: any MutablePage still parked in the flush
-    // queue or index for this fileId would otherwise leak RAM (issue #4545) and could be
-    // flushed to - or served back from - a file that no longer exists.
+    // Drain the async flush thread for this fileId first, otherwise its parked pages leak RAM and could be flushed to a dropped file.
     if (flushThread != null)
       flushThread.removeAllPagesOfFile(database, fileId);
 

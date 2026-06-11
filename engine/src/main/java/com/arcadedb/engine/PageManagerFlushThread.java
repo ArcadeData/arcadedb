@@ -293,26 +293,36 @@ public class PageManagerFlushThread extends Thread {
     pageIndex.entrySet().removeIf(e -> database.equals(e.getKey().getDatabase()));
   }
 
-  /**
-   * Drops every queued or in-flight {@link MutablePage} that belongs to a single dropped file.
-   * Invoked by {@link PageManager#deleteFile} so that, after a file is removed, no page for that
-   * fileId leaks in {@link #pageIndex} nor gets flushed back to a file that no longer exists.
-   */
+  /** Drops every pending {@link MutablePage} of a single dropped file from the queue, the deferred batches and the index. */
   public void removeAllPagesOfFile(final Database database, final int fileId) {
     for (final PagesToFlush pagesToFlush : queue.stream().toList())
-      if (database.equals(pagesToFlush.database))
-        synchronized (pagesToFlush.pages) {
-          for (final Iterator<MutablePage> it = pagesToFlush.pages.iterator(); it.hasNext(); ) {
-            final MutablePage page = it.next();
-            if (page.getPageId().getFileId() == fileId) {
-              pageIndex.remove(page.getPageId());
-              it.remove();
-            }
-          }
-        }
+      removePagesOfFileFromBatch(pagesToFlush, database, fileId);
 
-    // Also clean index entries for pages currently being flushed or deferred while suspended
+    // Also drain batches deferred while the database is suspended (e.g. during a backup): they are
+    // no longer in the main queue, so their MutablePages would otherwise leak until the unsuspend flush.
+    final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.get(database);
+    if (deferred != null)
+      for (final PagesToFlush pagesToFlush : deferred)
+        removePagesOfFileFromBatch(pagesToFlush, database, fileId);
+
+    // Finally clean any index entry for a page currently being flushed.
     pageIndex.entrySet()
         .removeIf(e -> database.equals(e.getKey().getDatabase()) && e.getKey().getFileId() == fileId);
+  }
+
+  private void removePagesOfFileFromBatch(final PagesToFlush pagesToFlush, final Database database, final int fileId) {
+    // pages is null for the SHUTDOWN_THREAD marker.
+    if (pagesToFlush.pages == null || !database.equals(pagesToFlush.database))
+      return;
+
+    synchronized (pagesToFlush.pages) {
+      for (final Iterator<MutablePage> it = pagesToFlush.pages.iterator(); it.hasNext(); ) {
+        final MutablePage page = it.next();
+        if (page.getPageId().getFileId() == fileId) {
+          pageIndex.remove(page.getPageId());
+          it.remove();
+        }
+      }
+    }
   }
 }

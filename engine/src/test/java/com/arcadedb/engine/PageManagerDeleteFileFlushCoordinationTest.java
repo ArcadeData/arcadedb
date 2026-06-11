@@ -22,17 +22,13 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Regression test for issue #4545: {@code PageManager.deleteFile} evicted only the
- * {@code readCache} entries for the dropped fileId, while the asynchronous flush thread
- * still held {@link MutablePage}s for that same fileId inside its {@code pageIndex} and
- * flush queue.
- * <p>
- * That left a per-fileId memory leak in {@code pageIndex} and a window where a page for a
- * dropped file could still be flushed or served back to {@code loadPage}. The fix drains
- * the flush thread's queue and index for the fileId in the same call that drops the file.
+ * Regression test for issue #4545: deleteFile must also drain the async flush thread's pageIndex/queue for the dropped fileId.
  */
 class PageManagerDeleteFileFlushCoordinationTest extends TestHelper {
 
@@ -53,7 +49,7 @@ class PageManagerDeleteFileFlushCoordinationTest extends TestHelper {
       // Schedule a batch of mutable pages for a synthetic fileId that does not exist in the
       // FileManager. They land in the flush thread's pageIndex (and queue) but are never
       // written to disk because flushPage() skips non-existent files.
-      final java.util.List<MutablePage> pages = new java.util.ArrayList<>(NUM_PAGES);
+      final List<MutablePage> pages = new ArrayList<>(NUM_PAGES);
       for (int i = 0; i < NUM_PAGES; i++)
         pages.add(new MutablePage(new PageId(db, FILE_ID, i), PAGE_SIZE));
 
