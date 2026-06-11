@@ -20,7 +20,7 @@ package com.arcadedb.function.map;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -59,7 +59,7 @@ public class MapSetKey extends AbstractMapFunction {
       throw new IllegalArgumentException("map.setKey() key cannot be null");
     }
 
-    final Map<String, Object> result = new HashMap<>();
+    final Map<String, Object> result = new LinkedHashMap<>();
     if (map != null)
       result.putAll(map);
 

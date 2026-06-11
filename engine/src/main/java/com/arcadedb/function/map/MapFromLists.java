@@ -20,7 +20,7 @@ package com.arcadedb.function.map;
 
 import com.arcadedb.query.sql.executor.CommandContext;
 
-import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -62,7 +62,7 @@ public class MapFromLists extends AbstractMapFunction {
     final List<?> keys = (List<?>) args[0];
     final List<?> values = (List<?>) args[1];
 
-    final Map<String, Object> result = new HashMap<>();
+    final Map<String, Object> result = new LinkedHashMap<>();
     final int size = Math.min(keys.size(), values.size());
 
     for (int i = 0; i < size; i++) {
