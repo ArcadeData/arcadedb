@@ -62,3 +62,35 @@ TDD verification:
 Low risk: the new per-file drain reuses the same proven pattern as the per-database drain
 and only touches the file being dropped. No behavioral change for the common path other
 than guaranteeing the flush thread no longer retains pages for dropped files.
+
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/4568 (Closes #4545)
+
+## Review cycles
+
+- cycle 1: head `9c4c4da7` - both bots reviewed. claude (issue comment) and gemini (inline,
+  high) flagged that `removeAllPagesOfFile` drained only the live `queue`, leaving
+  suspend-deferred batches in `deferredByDatabase` (RAM leak window), and that
+  `pagesToFlush.pages` needed a null-guard for the `SHUTDOWN_THREAD` marker. Also: fully
+  qualified names in the test and multi-line comments. Addressed in `408777186`: extracted a
+  shared `removePagesOfFileFromBatch` helper that null-guards and now also drains
+  `deferredByDatabase`; replaced FQNs with imports; trimmed comments/Javadoc to single lines.
+  Two items skipped with justification (see deferred notes).
+- cycle 2: head `408777186` - gemini re-posted the SAME cycle-1 suggestion (it diffs against
+  base, not the prior commit); the committed code already implements that exact change, so the
+  comment is a stale duplicate with nothing actionable. The `claude` bot did not post a review
+  on this SHA within the 15-minute per-iteration window.
+
+## Deferred items
+
+- `docs/review-deferred-9c4c4da7.md` - records the two review points skipped with rationale
+  (keep the package-private `getFlushThread()` test accessor rather than a racy `loadPage`
+  black-box assertion; empty drained batch left in queue is safe, same as
+  `removeAllPagesOfDatabase`).
+
+## Final state
+
+`timeout` - cycle-1 feedback fully addressed and pushed; cycle-2 surfaced only a stale
+gemini duplicate (already satisfied) and no `claude` review landed within the polling window.
+PR left open for the developer. Merge is the developer's responsibility.
