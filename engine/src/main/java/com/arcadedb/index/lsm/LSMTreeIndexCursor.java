@@ -189,6 +189,7 @@ public class LSMTreeIndexCursor implements IndexCursor {
         if (removedKeys.contains(keys)) {
           if (pageCursor.hasNext()) {
             pageCursor.next();
+            cursorKeys[i] = pageCursor.getKeys(); // keep cache in sync with the advanced cursor
             continue;
           }
           pageCursors[i] = null;
