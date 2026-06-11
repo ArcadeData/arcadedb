@@ -26,6 +26,7 @@ import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
 
 import java.io.IOException;
+import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicReference;
@@ -290,5 +291,28 @@ public class PageManagerFlushThread extends Thread {
 
     // Also clean index entries for pages currently being flushed
     pageIndex.entrySet().removeIf(e -> database.equals(e.getKey().getDatabase()));
+  }
+
+  /**
+   * Drops every queued or in-flight {@link MutablePage} that belongs to a single dropped file.
+   * Invoked by {@link PageManager#deleteFile} so that, after a file is removed, no page for that
+   * fileId leaks in {@link #pageIndex} nor gets flushed back to a file that no longer exists.
+   */
+  public void removeAllPagesOfFile(final Database database, final int fileId) {
+    for (final PagesToFlush pagesToFlush : queue.stream().toList())
+      if (database.equals(pagesToFlush.database))
+        synchronized (pagesToFlush.pages) {
+          for (final Iterator<MutablePage> it = pagesToFlush.pages.iterator(); it.hasNext(); ) {
+            final MutablePage page = it.next();
+            if (page.getPageId().getFileId() == fileId) {
+              pageIndex.remove(page.getPageId());
+              it.remove();
+            }
+          }
+        }
+
+    // Also clean index entries for pages currently being flushed or deferred while suspended
+    pageIndex.entrySet()
+        .removeIf(e -> database.equals(e.getKey().getDatabase()) && e.getKey().getFileId() == fileId);
   }
 }

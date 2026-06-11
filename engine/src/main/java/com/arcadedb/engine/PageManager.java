@@ -165,6 +165,12 @@ public class PageManager extends LockContext {
   }
 
   public void deleteFile(final Database database, final int fileId) {
+    // Drain the asynchronous flush thread first: any MutablePage still parked in the flush
+    // queue or index for this fileId would otherwise leak RAM (issue #4545) and could be
+    // flushed to - or served back from - a file that no longer exists.
+    if (flushThread != null)
+      flushThread.removeAllPagesOfFile(database, fileId);
+
     for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
       final CachedPage p = it.next();
       final PageId pageId = p.getPageId();
@@ -173,6 +179,10 @@ public class PageManager extends LockContext {
         it.remove();
       }
     }
+  }
+
+  PageManagerFlushThread getFlushThread() {
+    return flushThread;
   }
 
   private int getMostRecentVersionOfPage(final PageId pageId, final int pageSize) throws IOException {
