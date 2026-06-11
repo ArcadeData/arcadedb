@@ -189,6 +189,9 @@ public class LSMTreeIndexCursor implements IndexCursor {
         if (removedKeys.contains(keys)) {
           if (pageCursor.hasNext()) {
             pageCursor.next();
+            // KEEP THE CACHED KEY IN SYNC WITH THE ADVANCED CURSOR, OTHERWISE THE fromKeys/toKeys CHECKS
+            // BELOW (AND next()'s MINOR-KEY SELECTION) WOULD EVALUATE AGAINST THE PREVIOUS, STALE KEY.
+            cursorKeys[i] = pageCursor.getKeys();
             continue;
           }
           pageCursors[i] = null;
