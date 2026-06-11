@@ -156,6 +156,11 @@ public class ArcadeGraph implements Graph, Closeable {
 
   /**
    * Returns a Gremlin traversal. This traversal is executed outside the database's transaction if any.
+   * <p>
+   * The resolved traversal is cached for the lifetime of this instance. When the remote cluster topology is
+   * unknown at the time of the first call (no leader and no replicas, e.g. mid-failover), the slower embedded
+   * fallback is cached: callers that need to re-resolve the topology after a failover must recreate the
+   * {@code ArcadeGraph} instance.
    */
   public GraphTraversalSource traversal() {
     if (traversal != null)

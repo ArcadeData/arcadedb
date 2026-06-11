@@ -61,3 +61,21 @@ public String getLeaderAddress() {
   established committed convention in this repo (4274...4446, 4448).
 - **Reflection in test (claude):** Declined. The suggested override still uses
   reflection internally and matches the existing #4372 race test in the same file.
+
+### Cycle 2 (claude bot)
+
+- **Fallback caching after failover (claude):** Added a Javadoc note on
+  `ArcadeGraph.traversal()` documenting that the embedded fallback is cached for the
+  instance lifetime, so callers must recreate the `ArcadeGraph` to re-resolve topology
+  after a failover. (The permanent caching is pre-existing via the catch block.)
+- **Test gap for null-leader traversal (claude):** Added
+  `ArcadeGraphRemoteTraversalTest` (package `com.arcadedb.remote`, gremlin test tree)
+  asserting `traversal()` returns a usable fallback - no NPE - when leader and replicas
+  are both unknown. It guards the external contract; the pre-existing catch block also
+  yields a fallback, so it does not isolate the clean branch in isolation.
+- **Package-private setter / reflection (claude):** Declined again, same reasoning as
+  cycle 1.
+- **Trim Review Cycles section (claude):** Declined. Established committed convention
+  (4393, 4397, 4446, 4448).
+- **`String.valueOf` vs `"" +` (claude):** Declined. Pre-existing, cosmetic only; kept
+  the diff focused on the fix.
