@@ -240,7 +240,6 @@ class IteratorTest {
 
   @Test
   void lruCacheBasicOperations() {
-    // LRUCache evicts when size >= cacheSize, so with size 3, it holds max 2 elements
     final LRUCache<String, Integer> cache = new LRUCache<>(4);
 
     cache.put("a", 1);
@@ -254,18 +253,23 @@ class IteratorTest {
 
   @Test
   void lruCacheEviction() {
-    // LRUCache with size 3 evicts when size reaches 3
-    // So it effectively holds at most 2 entries
+    // LRUCache with size 3 holds 3 entries; the eldest is evicted only once
+    // the capacity is exceeded
     final LRUCache<String, Integer> cache = new LRUCache<>(3);
 
     cache.put("a", 1);
     cache.put("b", 2);
-    // At this point, adding "c" would make size 3, so eldest ("a") is evicted
     cache.put("c", 3);
+
+    assertThat(cache.keySet()).containsExactlyInAnyOrder("a", "b", "c");
+
+    // Adding "d" exceeds the capacity, so the eldest ("a") is evicted
+    cache.put("d", 4);
 
     assertThat(cache.containsKey("a")).isFalse();
     assertThat(cache.containsKey("b")).isTrue();
     assertThat(cache.containsKey("c")).isTrue();
+    assertThat(cache.containsKey("d")).isTrue();
   }
 
   @Test
@@ -275,15 +279,17 @@ class IteratorTest {
 
     cache.put("a", 1);
     cache.put("b", 2);
+    cache.put("c", 3);
 
     // Access "a" to make it more recently used
     cache.get("a");
 
-    // Adding "c" evicts "b" (the oldest in access order)
-    cache.put("c", 3);
+    // Adding "d" evicts "b" (the oldest in access order)
+    cache.put("d", 4);
 
     assertThat(cache.containsKey("a")).isTrue();
     assertThat(cache.containsKey("b")).isFalse();
     assertThat(cache.containsKey("c")).isTrue();
+    assertThat(cache.containsKey("d")).isTrue();
   }
 }

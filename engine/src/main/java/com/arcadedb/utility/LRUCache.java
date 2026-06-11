@@ -40,6 +40,8 @@ public class LRUCache<K, V> extends LinkedHashMap<K, V> {
   }
 
   protected boolean removeEldestEntry(final Map.Entry<K, V> eldest) {
-    return size() >= cacheSize;
+    // called after the new entry has been inserted, so evict only when the
+    // capacity is exceeded, not when it is exactly reached
+    return size() > cacheSize;
   }
 }
