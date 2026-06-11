@@ -83,9 +83,17 @@ workers were still mutating now-closed structures.
     path (not the test-only `kill()` path), so a deferred-reinterrupt refactor there is separate
     work with its own regression surface. Tracked as a follow-up rather than widening #4549.
 
+### Cycle 3 (PR #4573)
+
+- **claude bot:** approved ("Ready to merge"). All fixes confirmed correct, the
+  `shutdownThreadsLocked()` follow-up agreed as correctly deferred. One optional observation
+  (explicitly "this is fine"): the test asserted only thread death, not post-`kill()` database
+  state. `LocalDatabase.kill()` sets `open = false` in its `finally`, so that invariant is
+  well-defined - added `assertThat(database.isOpen()).isFalse()` to make the contract explicit.
+
 ## Final State
 
-Fix committed and pushed; PR #4573. Cycle-1 (deferred-reinterrupt join loop + timeout warning
-log) and cycle-2 (redundant test filter removed) review items addressed. One deliberate
-out-of-scope follow-up noted: apply the same deferred-reinterrupt pattern to
-`shutdownThreadsLocked()`.
+Fix committed and pushed; PR #4573, approved at cycle 3. Cycle-1 (deferred-reinterrupt join loop
++ timeout warning log), cycle-2 (redundant test filter removed), and cycle-3 (post-kill
+`isOpen()==false` assertion) review items addressed. One deliberate out-of-scope follow-up noted:
+apply the same deferred-reinterrupt pattern to `shutdownThreadsLocked()`.

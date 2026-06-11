@@ -59,5 +59,8 @@ class DatabaseAsyncExecutorKillTest extends TestHelper {
         .filter(t -> t.getName().startsWith(threadPrefix))
         .collect(Collectors.toSet());
     assertThat(workersAfter).as("async worker threads still alive after kill()").isEmpty();
+
+    // kill() leaves the database closed and unusable - the defined post-kill invariant.
+    assertThat(database.isOpen()).as("database must be closed after kill()").isFalse();
   }
 }
