@@ -607,9 +607,22 @@ public class RemoteHttpComponent extends RWLockContext {
         final int sep = detail.lastIndexOf('.');
         return new ServerIsNotTheLeaderException(sep > -1 ? detail.substring(0, sep) : detail, exceptionArgs);
       } else if (exception.equals(RecordNotFoundException.class.getName())) {
+        // PARSE THE RID OUT OF THE DETAIL MESSAGE (e.g. "Record #12:7 not found"). BE ROBUST: THE MESSAGE MAY NOT CONTAIN A '#',
+        // MAY NOT HAVE A TRAILING SPACE AFTER THE RID, OR MAY CARRY A MALFORMED TOKEN (see issue #4551). FALL BACK TO A null RID.
+        RID rid = null;
         final int begin = detail.indexOf("#");
-        final int end = detail.indexOf(" ", begin);
-        return new RecordNotFoundException(detail, new RID(detail.substring(begin, end)));
+        if (begin > -1) {
+          int end = detail.indexOf(" ", begin);
+          if (end < 0)
+            end = detail.length();
+          try {
+            rid = new RID(detail.substring(begin, end));
+          } catch (final Exception e) {
+            // INVALID RID FORMAT: KEEP rid null SO THE TYPED EXCEPTION IS STILL RETURNED
+            rid = null;
+          }
+        }
+        return new RecordNotFoundException(detail, rid);
       } else if (exception.equals(QuorumNotReachedException.class.getName())) {
         return new QuorumNotReachedException(detail);
       } else if (exception.equals(DuplicatedKeyException.class.getName()) && exceptionArgs != null) {

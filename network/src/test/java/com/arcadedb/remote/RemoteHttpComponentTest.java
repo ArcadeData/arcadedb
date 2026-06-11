@@ -227,6 +227,66 @@ class RemoteHttpComponentTest {
     assertThat(result).isInstanceOf(RecordNotFoundException.class);
   }
 
+  // Regression tests for issue #4551: manageException must not throw StringIndexOutOfBoundsException
+  // while parsing the RID out of a RecordNotFoundException detail message.
+
+  @Test
+  void manageExceptionRecordNotFoundNoHash() {
+    // detail without '#': begin == -1, the old code did substring(-1, end) -> StringIndexOutOfBoundsException
+    final JSONObject json = new JSONObject();
+    json.put("exception", RecordNotFoundException.class.getName());
+    json.put("detail", "Record not found");
+
+    final HttpResponse<String> response = createMockResponse(404, json.toString());
+    final Exception result = component.manageException(response, "test");
+
+    assertThat(result).isInstanceOf(RecordNotFoundException.class);
+    assertThat(((RecordNotFoundException) result).getRID()).isNull();
+    assertThat(result.getMessage()).isEqualTo("Record not found");
+  }
+
+  @Test
+  void manageExceptionRecordNotFoundNoTrailingSpace() {
+    // detail with '#' but no trailing space after the RID: end == -1, the old code did substring(begin, -1) -> throws
+    final JSONObject json = new JSONObject();
+    json.put("exception", RecordNotFoundException.class.getName());
+    json.put("detail", "Cannot find record #12:7");
+
+    final HttpResponse<String> response = createMockResponse(404, json.toString());
+    final Exception result = component.manageException(response, "test");
+
+    assertThat(result).isInstanceOf(RecordNotFoundException.class);
+    assertThat(((RecordNotFoundException) result).getRID()).isNotNull();
+    assertThat(((RecordNotFoundException) result).getRID().toString()).isEqualTo("#12:7");
+  }
+
+  @Test
+  void manageExceptionRecordNotFoundNullDetail() {
+    // No detail field: detail defaults to "Unknown" (no '#') -> must not throw, RID null
+    final JSONObject json = new JSONObject();
+    json.put("exception", RecordNotFoundException.class.getName());
+
+    final HttpResponse<String> response = createMockResponse(404, json.toString());
+    final Exception result = component.manageException(response, "test");
+
+    assertThat(result).isInstanceOf(RecordNotFoundException.class);
+    assertThat(((RecordNotFoundException) result).getRID()).isNull();
+  }
+
+  @Test
+  void manageExceptionRecordNotFoundMalformedRid() {
+    // detail with a '#' but a malformed RID token: RID parsing fails -> fall back to null RID, still typed exception
+    final JSONObject json = new JSONObject();
+    json.put("exception", RecordNotFoundException.class.getName());
+    json.put("detail", "Record #notARid not found");
+
+    final HttpResponse<String> response = createMockResponse(404, json.toString());
+    final Exception result = component.manageException(response, "test");
+
+    assertThat(result).isInstanceOf(RecordNotFoundException.class);
+    assertThat(((RecordNotFoundException) result).getRID()).isNull();
+  }
+
   @Test
   void manageExceptionQuorumNotReached() {
     final JSONObject json = new JSONObject();
