@@ -25,6 +25,7 @@ import java.time.ZoneId;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for OpenCypher date functions.
@@ -202,6 +203,25 @@ class OpenCypherDateFunctionsTest {
   void dateConvertNullHandling() {
     final DateConvert fn = new DateConvert();
     assertThat(fn.execute(new Object[]{null, "ms", "s"}, null)).isNull();
+  }
+
+  @Test
+  void dateConvertDaysToMillis() {
+    final DateConvert fn = new DateConvert();
+
+    // 100 days to milliseconds: well within long range, must be exact and positive
+    final long result = (Long) fn.execute(new Object[]{100L, "d", "ms"}, null);
+    assertThat(result).isEqualTo(100L * 86_400_000L);
+  }
+
+  @Test
+  void dateConvertOverflowThrows() {
+    final DateConvert fn = new DateConvert();
+
+    // 1_000_000_000_000 days * 86_400_000 ms overflows long: must throw, not silently return a negative number
+    assertThatThrownBy(() -> fn.execute(new Object[]{1_000_000_000_000L, "d", "ms"}, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("overflow");
   }
 
   // ============ DateToISO8601 tests ============

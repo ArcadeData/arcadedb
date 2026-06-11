@@ -55,8 +55,13 @@ public class DateConvert extends AbstractDateFunction {
     final String fromUnit = args[1] != null ? args[1].toString() : UNIT_MS;
     final String toUnit = args[2] != null ? args[2].toString() : UNIT_MS;
 
-    // Convert to milliseconds first, then to target unit
-    final long millis = value * unitToMillis(fromUnit);
-    return millis / unitToMillis(toUnit);
+    try {
+      // Use Math.multiplyExact to prevent silent integer overflow
+      // Convert to milliseconds first, then to target unit
+      final long millis = Math.multiplyExact(value, unitToMillis(fromUnit));
+      return millis / unitToMillis(toUnit);
+    } catch (final ArithmeticException e) {
+      throw new IllegalArgumentException("Date conversion overflow: " + e.getMessage(), e);
+    }
   }
 }
