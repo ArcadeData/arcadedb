@@ -46,4 +46,18 @@ public String getLeaderAddress() {
 
 ## Review Cycles
 
-None yet.
+### Cycle 1 (gemini-code-assist + claude bot)
+
+- **Empty contact-point list (gemini + claude):** With a null leader and no replicas,
+  `remoteAddresses` was empty, producing an empty `hosts[]` that made
+  `Cluster.addContactPoints` throw and log a misleading "plugin not available"
+  warning. Fixed: `ArcadeGraph.traversal()` now falls back to `Graph.super.traversal()`
+  when `remoteAddresses` is empty.
+- **Pre-existing `getFirst()` vs `get(i)` (claude):** The host-building loop used
+  `remoteAddresses.getFirst()` instead of `get(i)`, so every contact point was the
+  first address. Fixed since it sits in the same loop and my change made it reachable
+  with replica-only topologies.
+- **Remove docs file (claude):** Declined. `docs/<issue>-*.md` tracking docs are an
+  established committed convention in this repo (4274...4446, 4448).
+- **Reflection in test (claude):** Declined. The suggested override still uses
+  reflection internally and matches the existing #4372 race test in the same file.

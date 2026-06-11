@@ -170,9 +170,16 @@ public class ArcadeGraph implements Graph, Closeable {
           remoteAddresses.add(leaderAddress);
         remoteAddresses.addAll(remoteDatabase.getReplicaAddresses());
 
+        if (remoteAddresses.isEmpty()) {
+          // No leader and no replicas are known (e.g. non-HA server or mid-failover): fall back to the
+          // slower remote implementation rather than building a cluster with no contact points.
+          traversal = Graph.super.traversal();
+          return traversal;
+        }
+
         final String[] hosts = new String[remoteAddresses.size()];
         for (int i = 0; i < remoteAddresses.size(); i++)
-          hosts[i] = HostUtil.parseHostAddress(remoteAddresses.getFirst(), "" + GREMLIN_SERVER_PORT)[0];
+          hosts[i] = HostUtil.parseHostAddress(remoteAddresses.get(i), "" + GREMLIN_SERVER_PORT)[0];
 
         final GraphBinaryMessageSerializerV1 serializer = new GraphBinaryMessageSerializerV1(
             new TypeSerializerRegistry.Builder().addRegistry(new ArcadeIoRegistry()));
