@@ -22,12 +22,15 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class FileUtilsTest {
 
@@ -249,5 +252,66 @@ class FileUtilsTest {
     assertThat(FileUtils.escapeHTML(">")).contains("&#62;");
     assertThat(FileUtils.escapeHTML("&")).contains("&#38;");
     assertThat(FileUtils.escapeHTML("\"")).contains("&#34;");
+  }
+
+  // Issue #4561: checkValidName must reject both separators on any platform and treat ".." as a path segment.
+  @Test
+  void checkValidNameAcceptsPlainNames() {
+    assertThatCode(() -> FileUtils.checkValidName("database.json")).doesNotThrowAnyException();
+    assertThatCode(() -> FileUtils.checkValidName("backup-2026.tgz")).doesNotThrowAnyException();
+    // A ".." that is not the whole name is a legal file name (only an exact "." or ".." is rejected).
+    assertThatCode(() -> FileUtils.checkValidName("a..b")).doesNotThrowAnyException();
+    assertThatCode(() -> FileUtils.checkValidName("file..bak")).doesNotThrowAnyException();
+    assertThatCode(() -> FileUtils.checkValidName("....")).doesNotThrowAnyException();
+    assertThatCode(() -> FileUtils.checkValidName("...")).doesNotThrowAnyException();
+  }
+
+  @Test
+  void checkValidNameRejectsForwardSlash() {
+    assertThatThrownBy(() -> FileUtils.checkValidName("../etc/passwd")).isInstanceOf(IOException.class);
+    assertThatThrownBy(() -> FileUtils.checkValidName("dir/file")).isInstanceOf(IOException.class);
+  }
+
+  @Test
+  void checkValidNameRejectsBackslash() {
+    // On Linux the JVM File.separator is '/', so a backslash used to slip through.
+    assertThatThrownBy(() -> FileUtils.checkValidName("..\\windows\\system32")).isInstanceOf(IOException.class);
+    assertThatThrownBy(() -> FileUtils.checkValidName("dir\\file")).isInstanceOf(IOException.class);
+  }
+
+  @Test
+  void checkValidNameRejectsDirectorySentinels() {
+    // Both the parent ("..") and current (".") directory sentinels are rejected as whole names.
+    assertThatThrownBy(() -> FileUtils.checkValidName("..")).isInstanceOf(IOException.class);
+    assertThatThrownBy(() -> FileUtils.checkValidName(".")).isInstanceOf(IOException.class);
+  }
+
+  @Test
+  void checkValidNameRejectsNullAndEmpty() {
+    assertThatThrownBy(() -> FileUtils.checkValidName(null)).isInstanceOf(IOException.class);
+    assertThatThrownBy(() -> FileUtils.checkValidName("")).isInstanceOf(IOException.class);
+  }
+
+  // Issue #4560: printWithLineNumbers must collapse a CRLF into a single line break and consume the '\r'.
+  @Test
+  void printWithLineNumbersCollapsesCRLF() {
+    final String result = FileUtils.printWithLineNumbers("line1\r\nline2");
+    // Two source lines must produce exactly two numbered lines: "1:" and "2:".
+    assertThat(result).contains("1:");
+    assertThat(result).contains("2:");
+    assertThat(result).doesNotContain("3:");
+    assertThat(result).contains("line1");
+    assertThat(result).contains("line2");
+    // The carriage return must be consumed by the lookahead, not emitted as a literal character.
+    assertThat(result).doesNotContain("\r");
+  }
+
+  @Test
+  void printWithLineNumbersHandlesUnixNewline() {
+    final String result = FileUtils.printWithLineNumbers("line1\nline2\nline3");
+    assertThat(result).contains("1:");
+    assertThat(result).contains("2:");
+    assertThat(result).contains("3:");
+    assertThat(result).doesNotContain("4:");
   }
 }
