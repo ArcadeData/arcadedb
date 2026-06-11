@@ -93,7 +93,8 @@ public class CartesianProductStep extends AbstractExecutionStep {
   }
 
   private void fetchFirstRecord() {
-    for (final ResultSet rs : resultSets) {
+    for (int i = 0; i < resultSets.size(); i++) {
+      final ResultSet rs = resultSets.get(i);
       if (!rs.hasNext()) {
         nextRecord = null;
         return;
@@ -101,6 +102,7 @@ public class CartesianProductStep extends AbstractExecutionStep {
       final Result item = rs.next();
       currentTuple.add(item);
       completedPrefetch.add(false);
+      bufferLiveValue(i, item);
     }
     buildNextRecord();
   }
@@ -123,9 +125,25 @@ public class CartesianProductStep extends AbstractExecutionStep {
       currentTuple.set(level, currentRs.next());
       fetchNextRecord(level - 1);
     } else {
-      currentTuple.set(level, currentRs.next());
+      final Result item = currentRs.next();
+      currentTuple.set(level, item);
+      bufferLiveValue(level, item);
     }
     buildNextRecord();
+  }
+
+  /**
+   * Buffers a value read from the live result set of the given level so it can be replayed later via
+   * {@link InternalResultSet#reset()}. Only values seen during the first pass of a level are buffered, and each
+   * exactly once: while {@code completedPrefetch[level]} is false the level is still consuming its live source.
+   * This prevents the outer-level rows from being appended repeatedly while inner levels iterate (issue #4543).
+   */
+  private void bufferLiveValue(final int level, final Result value) {
+    if (completedPrefetch.get(level))
+      return;
+    preFetches.get(level).add(value);
+    if (!resultSets.get(level).hasNext())
+      completedPrefetch.set(level, true);
   }
 
   private void buildNextRecord() {
@@ -141,12 +159,6 @@ public class CartesianProductStep extends AbstractExecutionStep {
         final Result res = this.currentTuple.get(i);
         for (final String s : res.getPropertyNames()) {
           nextRecord.setProperty(s, res.getProperty(s));
-        }
-        if (!completedPrefetch.get(i)) {
-          preFetches.get(i).add(res);
-          if (!resultSets.get(i).hasNext()) {
-            completedPrefetch.set(i, true);
-          }
         }
       }
     } finally {
