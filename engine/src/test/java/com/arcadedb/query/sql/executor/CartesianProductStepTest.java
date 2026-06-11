@@ -22,6 +22,9 @@ import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -146,6 +149,45 @@ class CartesianProductStepTest extends TestHelper {
 
     assertThat(count).isEqualTo(3); // 1 * 3 = 3
     result.close();
+  }
+
+  /**
+   * Reproduces issue #4543: CartesianProductStep.preFetches accumulates duplicate rows from outer levels.
+   * A MATCH query with 3 disjoint patterns triggers a 3-level CartesianProductStep. Before the fix, the
+   * buffered prefetch of the middle level contained duplicate values, so the cross-product returned the
+   * same combination more than once.
+   */
+  @Test
+  void shouldNotReturnDuplicatesInThreeWayMatchProduct() {
+    database.getSchema().createVertexType("CpA");
+    database.getSchema().createVertexType("CpB");
+    database.getSchema().createVertexType("CpC");
+
+    database.transaction(() -> {
+      database.newVertex("CpA").set("v", "a1").save();
+      database.newVertex("CpA").set("v", "a2").save();
+
+      database.newVertex("CpB").set("v", "b1").save();
+      database.newVertex("CpB").set("v", "b2").save();
+
+      database.newVertex("CpC").set("v", "c1").save();
+      database.newVertex("CpC").set("v", "c2").save();
+    });
+
+    final ResultSet result = database.query("sql",
+        "MATCH {type: CpA, as: a}, {type: CpB, as: b}, {type: CpC, as: c} RETURN a.v as a, b.v as b, c.v as c");
+
+    final Set<String> combinations = new HashSet<>();
+    int count = 0;
+    while (result.hasNext()) {
+      final Result item = result.next();
+      final String combo = item.<String>getProperty("a") + "-" + item.<String>getProperty("b") + "-" + item.<String>getProperty("c");
+      assertThat(combinations.add(combo)).as("Duplicate combination returned: " + combo).isTrue();
+      count++;
+    }
+    result.close();
+
+    assertThat(count).isEqualTo(8); // 2 * 2 * 2 = 8, each exactly once
   }
 
   @Test
