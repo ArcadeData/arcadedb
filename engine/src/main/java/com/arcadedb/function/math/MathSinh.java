@@ -48,9 +48,10 @@ public class MathSinh extends AbstractMathFunction {
 
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
-    if (args[0] == null)
+    final Double x = asDouble(args[0]);
+    if (x == null)
       return null;
 
-    return Math.sinh(asDouble(args[0]));
+    return Math.sinh(x);
   }
 }
