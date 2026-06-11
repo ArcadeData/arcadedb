@@ -47,6 +47,11 @@ public class MaterializedViewScheduler {
     if (interval <= 0)
       return;
 
+    // Cancel any task already scheduled for this view, otherwise re-scheduling (for example
+    // when the schema is reloaded) leaves the previous task running and refreshing forever,
+    // as TimeSeriesMaintenanceScheduler.schedule() already does
+    cancel(view.getName());
+
     final WeakReference<Database> dbRef = new WeakReference<>(database);
     final ScheduledFuture<?> future = executor.scheduleAtFixedRate(() -> {
       final Database db = dbRef.get();
