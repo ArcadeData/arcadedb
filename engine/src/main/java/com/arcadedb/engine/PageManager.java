@@ -165,6 +165,10 @@ public class PageManager extends LockContext {
   }
 
   public void deleteFile(final Database database, final int fileId) {
+    // Drain the async flush thread for this fileId first, otherwise its parked pages leak RAM and could be flushed to a dropped file.
+    if (flushThread != null)
+      flushThread.removeAllPagesOfFile(database, fileId);
+
     for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
       final CachedPage p = it.next();
       final PageId pageId = p.getPageId();
@@ -173,6 +177,10 @@ public class PageManager extends LockContext {
         it.remove();
       }
     }
+  }
+
+  PageManagerFlushThread getFlushThread() {
+    return flushThread;
   }
 
   private int getMostRecentVersionOfPage(final PageId pageId, final int pageSize) throws IOException {
