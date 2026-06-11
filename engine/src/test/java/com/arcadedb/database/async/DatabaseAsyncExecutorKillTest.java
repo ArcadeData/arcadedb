@@ -53,9 +53,10 @@ class DatabaseAsyncExecutorKillTest extends TestHelper {
     // kill() must block until all workers have terminated.
     ((DatabaseInternal) database).kill();
 
-    // After kill() returns, all AsyncExecutor-* threads for this database must be dead.
+    // After kill() returns, no AsyncExecutor-* thread for this database may remain.
+    // Thread.getAllStackTraces() only reports live threads, so a matching name here means alive.
     final Set<Thread> workersAfter = Thread.getAllStackTraces().keySet().stream()
-        .filter(t -> t.getName().startsWith(threadPrefix) && t.isAlive())
+        .filter(t -> t.getName().startsWith(threadPrefix))
         .collect(Collectors.toSet());
     assertThat(workersAfter).as("async worker threads still alive after kill()").isEmpty();
   }

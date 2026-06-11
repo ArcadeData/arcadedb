@@ -70,7 +70,22 @@ workers were still mutating now-closed structures.
   docs/4397, 4393, 4446, 4332). The stale "not committed" line was the only genuine issue and is
   corrected below.
 
+### Cycle 2 (PR #4573)
+
+- **claude bot:** confirmed all cycle-1 fixes correct and agreed the tracking doc follows the
+  established `docs/` convention (59 sibling per-issue docs). Two new items:
+  - **Redundant `t.isAlive()` in the test filter** - `Thread.getAllStackTraces()` only reports
+    live threads, so the extra `isAlive()` check was dead. Removed; the post-kill filter now
+    mirrors the pre-kill one.
+  - **`shutdownThreadsLocked()` has the same interrupt-skip pattern** - declined for this PR.
+    Reviewer itself labelled it "pre-existing, out of scope." That method interleaves a blocking,
+    interruptible `queue.put(FORCE_EXIT)` with `join(10000)` and sits on the production `close()`
+    path (not the test-only `kill()` path), so a deferred-reinterrupt refactor there is separate
+    work with its own regression surface. Tracked as a follow-up rather than widening #4549.
+
 ## Final State
 
-Fix committed and pushed; PR #4573. Cycle-1 review items addressed (deferred-reinterrupt join
-loop + timeout warning log).
+Fix committed and pushed; PR #4573. Cycle-1 (deferred-reinterrupt join loop + timeout warning
+log) and cycle-2 (redundant test filter removed) review items addressed. One deliberate
+out-of-scope follow-up noted: apply the same deferred-reinterrupt pattern to
+`shutdownThreadsLocked()`.
