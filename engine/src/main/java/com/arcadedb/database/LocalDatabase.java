@@ -2116,13 +2116,18 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     lockFile = new File(databasePath + "/database.lck");
 
     if (lockFile.exists()) {
+      if (mode == ComponentFile.MODE.READ_ONLY) {
+        // A READ_ONLY open cannot perform recovery: reject WITHOUT acquiring the exclusive write lock, so the OS file
+        // lock on database.lck is never taken (and therefore cannot be leaked). The marker is left untouched so the
+        // next READ_WRITE open still recovers.
+        lockFile = null;
+        throw new DatabaseMetadataException("Database needs recovery but has been open in read only mode");
+      }
+
       lockDatabase();
 
       // RECOVERY
       LogManager.instance().log(this, Level.WARNING, "Database '%s' was not closed properly last time", null, name);
-
-      if (mode == ComponentFile.MODE.READ_ONLY)
-        throw new DatabaseMetadataException("Database needs recovery but has been open in read only mode");
 
       // RESET THE COUNT OF RECORD IN CASE THE DATABASE WAS NOT CLOSED PROPERLY
       for (Bucket b : schema.getBuckets())
@@ -2161,8 +2166,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         serializer.setDateImplementation(configuration.getValue(GlobalConfiguration.DATE_IMPLEMENTATION));
         serializer.setDateTimeImplementation(configuration.getValue(GlobalConfiguration.DATE_TIME_IMPLEMENTATION));
 
-        if (mode == ComponentFile.MODE.READ_WRITE)
-          checkForRecovery();
+        checkForRecovery();
 
         if (security != null)
           security.updateSchema(this);
@@ -2188,6 +2192,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       releaseResourcesOnOpenFailure();
 
       if (e instanceof DatabaseOperationException exception)
+        throw exception;
+
+      // PRESERVE THE READ_ONLY-NEEDS-RECOVERY REJECTION (AND ANY OTHER METADATA ERROR) SO THE CALLER SEES THE REASON
+      // INSTEAD OF AN OPAQUE WRAPPED MESSAGE.
+      if (e instanceof DatabaseMetadataException exception)
         throw exception;
 
       throw new DatabaseOperationException("Error on creating new database instance", e);
