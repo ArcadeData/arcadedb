@@ -582,6 +582,7 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public RemoteBucket getBucketByName(final String name) {
+    checkSchemaIsLoaded();
     final RemoteBucket b = buckets.get(name);
     if (b == null)
       throw new SchemaException("Bucket '" + name + "' not found");
@@ -597,6 +598,7 @@ public class RemoteSchema implements Schema {
   @Deprecated
   @Override
   public Collection<? extends Bucket> getBuckets() {
+    checkSchemaIsLoaded();
     return buckets.values();
   }
 
