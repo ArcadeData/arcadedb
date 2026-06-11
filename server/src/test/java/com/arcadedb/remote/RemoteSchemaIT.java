@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote;
 
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
@@ -30,6 +31,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 
 class RemoteSchemaIT extends BaseGraphServerTest {
   private static final String DATABASE_NAME = "remote-database";
@@ -118,6 +120,41 @@ class RemoteSchemaIT extends BaseGraphServerTest {
       assertThat(type.getName()).isEqualTo("Edge");
       assertThat(database.getSchema().existsType("Edge")).isTrue();
       database.getSchema().dropType("Edge");
+    });
+  }
+
+  /**
+   * Issue #4552: getBuckets() / getBucketByName() must trigger the lazy schema load instead of
+   * throwing a NullPointerException on a fresh RemoteDatabase whose schema has not been loaded yet.
+   */
+  @Test
+  void bucketAccessorsLoadSchemaLazily() throws Exception {
+    testEachServer(serverIndex -> {
+      // FRESH RemoteDatabase: schema (and the buckets map) is not loaded yet.
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+
+        // Before the fix this threw NullPointerException because the buckets map was null.
+        assertThatNoException().isThrownBy(() -> database.getSchema().getBuckets());
+      }
+
+      // Now create a type so we have a known bucket, then verify getBucketByName works on a fresh instance.
+      try (final RemoteDatabase database = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+          BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+        final DocumentType type = database.getSchema().createDocumentType("BucketDoc");
+        final String bucketName = type.getBuckets(false).getFirst().getName();
+
+        // Fresh instance again to make sure the accessor itself loads the schema.
+        try (final RemoteDatabase fresh = new RemoteDatabase("127.0.0.1", 2480 + serverIndex, DATABASE_NAME, "root",
+            BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS)) {
+          final Bucket bucket = fresh.getSchema().getBucketByName(bucketName);
+          assertThat(bucket).isNotNull();
+          assertThat(bucket.getName()).isEqualTo(bucketName);
+          assertThat(fresh.getSchema().getBuckets()).isNotEmpty();
+        }
+
+        database.getSchema().dropType("BucketDoc");
+      }
     });
   }
 
