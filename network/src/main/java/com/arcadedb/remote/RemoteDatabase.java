@@ -760,9 +760,15 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     RID rid = record.getIdentity();
     final JSONObject json = record.toJSON();
     json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
-    if (rid != null)
-      command("sql", "update " + rid + " content " + json);
-    else {
+    if (rid != null) {
+      // SQL UPDATE silently matches zero records when the RID no longer exists (e.g. the record was deleted or the
+      // transaction that created it was rolled back). Saving such a record must fail with RecordNotFoundException to be
+      // consistent with the embedded engine and the gRPC remote (issue #4562).
+      final ResultSet result = command("sql", "update " + rid + " content " + json);
+      final long updated = result.hasNext() ? result.next().<Number>getProperty("count").longValue() : 0;
+      if (updated == 0)
+        throw new RecordNotFoundException("Record " + rid + " not found", rid);
+    } else {
       final ResultSet result = command("sql", "insert into " + record.getTypeName() + " content " + json);
       rid = result.next().getIdentity().get();
     }
