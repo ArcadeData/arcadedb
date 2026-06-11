@@ -234,8 +234,9 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 
 | Group ID | Artifact ID | Version | License | Homepage |
 |----------|-------------|---------|---------|----------|
-| io.micrometer | micrometer-core | 1.16.2 | Apache 2.0 | https://micrometer.io/ |
-| io.micrometer | micrometer-observation | 1.16.2 | Apache 2.0 | https://micrometer.io/ |
+| io.micrometer | micrometer-core | 1.16.5 | Apache 2.0 | https://micrometer.io/ |
+| io.micrometer | micrometer-observation | 1.16.5 | Apache 2.0 | https://micrometer.io/ |
+| io.micrometer | micrometer-registry-otlp | 1.16.5 | Apache 2.0 | https://micrometer.io/ |
 | org.hdrhistogram | HdrHistogram | 2.2.2 | Public Domain / CC0 | https://hdrhistogram.github.io/HdrHistogram/ |
 
 ---

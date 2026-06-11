@@ -20,6 +20,7 @@ package com.arcadedb.server.http.handler;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.*;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
@@ -30,16 +31,20 @@ import com.arcadedb.server.http.IdempotencyCache;
 import com.arcadedb.server.security.ApiTokenConfiguration;
 import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
+import io.micrometer.core.instrument.Metrics;
+import io.micrometer.core.instrument.Timer;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
 import io.undertow.util.HttpString;
+import io.undertow.util.PathTemplateMatch;
 import io.undertow.util.StatusCodes;
 
 import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Deque;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
 
@@ -91,6 +96,12 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
           error2json("Server is installing a snapshot, please retry", "", null, null, null));
       return;
     }
+
+    // Always-on RED timer: capture the start of the worker-thread (or IO-thread for handlers that
+    // do not dispatch) request handling. Recorded in the finally block below into the
+    // arcadedb.http.requests Micrometer timer. When no tracer is registered this is metrics-only.
+    final long httpStartNanos = System.nanoTime();
+    ProtocolContext.set("http");
 
     try {
       LogManager.instance().setContext(httpServer.getServer().getServerName());
@@ -339,8 +350,46 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
+      ProtocolContext.clear();
       LogManager.instance().setContext(null);
+
+      Timer.builder("arcadedb.http.requests")
+          .description("HTTP request duration")
+          .tag("method", exchange.getRequestMethod().toString())
+          .tag("path", pathTemplate(exchange))
+          .tag("status", Integer.toString(exchange.getStatusCode()))
+          .tag("db", databaseTag(exchange))
+          .publishPercentileHistogram()
+          .register(Metrics.globalRegistry)
+          .record(System.nanoTime() - httpStartNanos, TimeUnit.NANOSECONDS);
     }
+  }
+
+  /**
+   * Returns a bounded, low-cardinality path tag for the request: the route template
+   * (e.g. {@code /command/{database}}) resolved by the Undertow routing handler, never the raw URI
+   * carrying the concrete database name. Falls back to the relative path for fixed routes
+   * registered without a path template.
+   */
+  private static String pathTemplate(final HttpServerExchange exchange) {
+    final PathTemplateMatch match = exchange.getAttachment(PathTemplateMatch.ATTACHMENT_KEY);
+    if (match != null)
+      return match.getMatchedTemplate();
+    return exchange.getRelativePath();
+  }
+
+  /**
+   * Returns the database name resolved from the route's {@code {database}} path parameter, or
+   * {@code none} for routes that are not database-scoped (e.g. {@code /ready}, {@code /server}).
+   */
+  private static String databaseTag(final HttpServerExchange exchange) {
+    final PathTemplateMatch match = exchange.getAttachment(PathTemplateMatch.ATTACHMENT_KEY);
+    if (match != null) {
+      final String db = match.getParameters().get("database");
+      if (db != null)
+        return db;
+    }
+    return "none";
   }
 
   /**

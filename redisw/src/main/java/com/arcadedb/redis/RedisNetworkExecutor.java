@@ -84,20 +84,25 @@ public class RedisNetworkExecutor extends Thread {
 
   @Override
   public void run() {
-    while (!shutdown) {
-      try {
-        executeCommand(parseNext());
+    ProtocolContext.set("redis");
+    try {
+      while (!shutdown) {
+        try {
+          executeCommand(parseNext());
 
-        replyToClient(value);
+          replyToClient(value);
 
-      } catch (final EOFException | SocketException e) {
-        LogManager.instance().log(this, Level.FINE, "Redis wrapper: Error on reading request", e);
-        close();
-      } catch (final SocketTimeoutException e) {
-        // IGNORE IT
-      } catch (final IOException e) {
-        LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request", e);
+        } catch (final EOFException | SocketException e) {
+          LogManager.instance().log(this, Level.FINE, "Redis wrapper: Error on reading request", e);
+          close();
+        } catch (final SocketTimeoutException e) {
+          // IGNORE IT
+        } catch (final IOException e) {
+          LogManager.instance().log(this, Level.SEVERE, "Redis wrapper: Error on reading request", e);
+        }
       }
+    } finally {
+      ProtocolContext.clear();
     }
   }
 

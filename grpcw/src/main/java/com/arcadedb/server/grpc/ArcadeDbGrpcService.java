@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -266,6 +267,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     boolean beganHere = false;
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
+    ProtocolContext.set("grpc");
     String profileLanguage = null;
 
     try {
@@ -450,6 +452,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           .setExecutionTimeMs(ms)
           .build();
     } finally {
+      ProtocolContext.clear();
       recordGrpcProfile("grpc.command", profile, db != null ? db.getName() : req.getDatabase(),
           profileLanguage != null ? profileLanguage : req.getLanguage(), req.getCommand());
       QueryProfile.popCurrent();
@@ -931,6 +934,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private ExecuteQueryResponse executeQueryInternal(final ExecuteQueryRequest request, final Database database) {
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
+    ProtocolContext.set("grpc");
     String profileLanguage = null;
     try {
       final long deserStart = System.nanoTime();
@@ -1011,6 +1015,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return response;
       }
     } finally {
+      ProtocolContext.clear();
       recordGrpcProfile("grpc.query", profile, database != null ? database.getName() : request.getDatabase(),
           profileLanguage != null ? profileLanguage : request.getLanguage(), request.getQuery());
       QueryProfile.popCurrent();
@@ -1244,18 +1249,19 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final QueryProfile profile = new QueryProfile();
     QueryProfile.pushCurrent(profile);
     final long engineStart = System.nanoTime();
-    ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
-
-    final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
-
     final AtomicBoolean cancelled = new AtomicBoolean(false);
-    scso.setOnCancelHandler(() -> cancelled.set(true));
 
     Database db = null;
     boolean beganHere = false;
     String profileLanguage = null;
 
+    ProtocolContext.set("grpc");
     try {
+      ProjectionConfig projectionConfig = getProjectionConfigFromRequest(request);
+
+      final ServerCallStreamObserver<QueryResult> scso = (ServerCallStreamObserver<QueryResult>) responseObserver;
+      scso.setOnCancelHandler(() -> cancelled.set(true));
+
       db = getDatabase(request.getDatabase(), request.getCredentials());
       final int batchSize = Math.max(1, request.getBatchSize());
 
@@ -1340,6 +1346,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       recordGrpcProfile("grpc.stream", profile, db != null ? db.getName() : request.getDatabase(),
           profileLanguage != null ? profileLanguage : request.getLanguage(), request.getQuery());
       QueryProfile.popCurrent();
+      ProtocolContext.clear();
     }
   }
 
@@ -1601,20 +1608,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   // --- 1) Unary bulk ---
   @Override
   public void bulkInsert(BulkInsertRequest req, StreamObserver<InsertSummary> resp) {
-
-    final InsertOptions opts = defaults(req.getOptions()); // apply defaults (batch size, tx mode, etc.)
     final long started = System.currentTimeMillis();
 
-    try (InsertContext ctx = new InsertContext(opts)) {
+    ProtocolContext.set("grpc");
+    try {
+      final InsertOptions opts = defaults(req.getOptions()); // apply defaults (batch size, tx mode, etc.)
 
-      Counts totals = insertRows(ctx, req.getRowsList().iterator());
+      try (InsertContext ctx = new InsertContext(opts)) {
 
-      ctx.flushCommit(true);
+        Counts totals = insertRows(ctx, req.getRowsList().iterator());
 
-      resp.onNext(ctx.summary(totals, started));
-      resp.onCompleted();
+        ctx.flushCommit(true);
+
+        resp.onNext(ctx.summary(totals, started));
+        resp.onCompleted();
+      }
     } catch (Exception e) {
       resp.onError(Status.INTERNAL.withDescription("bulkInsert: " + e.getMessage()).asException());
+    } finally {
+      ProtocolContext.clear();
     }
   }
 
