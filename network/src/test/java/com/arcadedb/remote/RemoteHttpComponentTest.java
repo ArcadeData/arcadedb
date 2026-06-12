@@ -700,4 +700,22 @@ class RemoteHttpComponentTest {
 
     assertThat(component.getUrl("command")).isEqualTo("http://localhost:2480/api/v1/command");
   }
+
+  // Regression tests for issue #4550: getLeaderAddress NPE when leaderServer is null
+
+  @Test
+  void getLeaderAddressReturnsNullWhenNoLeader() {
+    // TestableRemoteHttpComponent keeps requestClusterConfiguration() as a no-op,
+    // so leaderServer stays null after construction.
+    assertThat(component.getLeaderAddress()).isNull();
+  }
+
+  @Test
+  void getLeaderAddressFormatsAddressWhenLeaderIsKnown() throws Exception {
+    final Field f = RemoteHttpComponent.class.getDeclaredField("leaderServer");
+    f.setAccessible(true);
+    f.set(component, new Pair<>("db-leader.example.com", 2480));
+
+    assertThat(component.getLeaderAddress()).isEqualTo("db-leader.example.com:2480");
+  }
 }
