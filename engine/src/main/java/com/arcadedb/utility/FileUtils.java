@@ -42,6 +42,7 @@ import java.nio.file.FileSystem;
 import java.nio.file.FileSystems;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Locale;
 import java.util.logging.Level;
 import java.util.zip.GZIPOutputStream;
@@ -494,17 +495,17 @@ public class FileUtils {
   }
 
   public static byte[] readFileAsBytes(final File file) throws IOException {
-    final byte[] bytes = new byte[(int) file.length()];
-    try (FileInputStream fis = new FileInputStream(file)) {
-      fis.read(bytes);
-    }
-    return bytes;
+    return Files.readAllBytes(file.toPath());
   }
 
   public static byte[] readFileAsBytes(final File file, final int maxBytes) throws IOException {
     final byte[] bytes = new byte[maxBytes];
     try (FileInputStream fis = new FileInputStream(file)) {
-      fis.read(bytes);
+      // readNBytes() loops until the buffer is filled or EOF is reached: FileInputStream.read() may return fewer bytes than requested
+      final int read = fis.readNBytes(bytes, 0, maxBytes);
+      if (read < maxBytes)
+        // file shorter than maxBytes: shrink the result to the bytes actually read instead of returning trailing zeros
+        return Arrays.copyOf(bytes, read);
     }
     return bytes;
   }
