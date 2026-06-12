@@ -19,13 +19,24 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.DatabaseOperationException;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
+
+import java.io.UncheckedIOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Test cases for Database.getSize() API
@@ -174,5 +185,52 @@ class DatabaseGetSizeTest extends TestHelper {
     // Size might not decrease immediately due to space not being reclaimed until compaction
     // But we can verify the size is still valid
     assertThat(sizeAfterDelete).isGreaterThan(0L);
+  }
+
+  /**
+   * Regression test for issue #4576: when getSize() fails, the original exception must be preserved
+   * as the cause of the DatabaseOperationException, instead of {@code e.getCause()} which is null (or
+   * a different, inner exception) and loses the real stack trace.
+   * <p>
+   * An unreadable subdirectory makes {@link java.nio.file.Files#walk} throw an
+   * {@link UncheckedIOException}: the buggy code rewrapped it with {@code e.getCause()} (the inner
+   * AccessDeniedException, or null), while the fix propagates the actual exception {@code e}.
+   */
+  @Test
+  @DisabledOnOs(OS.WINDOWS)
+  void getSizePreservesOriginalCauseOnFailure() {
+    final Path unreadable = Path.of(database.getDatabasePath(), "unreadable-4576");
+    try {
+      Files.createDirectory(unreadable);
+      // Strip every permission so Files.walk cannot descend into the directory.
+      Files.setPosixFilePermissions(unreadable, PosixFilePermissions.fromString("---------"));
+
+      // Skip when the permission denial has no effect (e.g. running as root): there is nothing to assert.
+      try (Stream<Path> stream = Files.walk(Path.of(database.getDatabasePath()))) {
+        stream.forEach(p -> {
+        });
+        assumeTrue(false, "Filesystem walk is not blocked by permissions (likely running as root); skipping");
+      } catch (UncheckedIOException expected) {
+        // good: traversal is blocked, getSize() will hit the catch block
+      }
+
+      assertThatThrownBy(() -> database.getSize())
+          .isInstanceOf(DatabaseOperationException.class)
+          // The fix passes the original exception (UncheckedIOException) as the cause; the buggy code
+          // passed e.getCause(), losing the wrapper (and being null for non-IOException failures).
+          .hasCauseInstanceOf(UncheckedIOException.class);
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    } finally {
+      // Restore permissions so TestHelper can clean up the database directory.
+      try {
+        if (Files.exists(unreadable)) {
+          Files.setPosixFilePermissions(unreadable, PosixFilePermissions.fromString("rwxr-xr-x"));
+          Files.delete(unreadable);
+        }
+      } catch (Exception ignore) {
+        // best effort
+      }
+    }
   }
 }
