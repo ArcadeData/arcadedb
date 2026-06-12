@@ -2759,15 +2759,19 @@ public class LSMVectorIndex implements Index, IndexInternal {
    */
   private void bruteForceScan(final VectorFloat<?> queryVectorFloat, final int k,
       final Set<RID> allowedRIDs, final List<Pair<RID, Float>> results,
-      final RandomAccessVectorValues vectors) {
+      final RandomAccessVectorValues vectors, final int[] ordinalMap) {
     // Collect already-seen RIDs to avoid duplicates
     final RidHashSet seenRIDs = new RidHashSet(results.size());
     for (final Pair<RID, Float> r : results)
       seenRIDs.add(r.getFirst());
 
+    // Use the ordinal->vectorId snapshot captured together with the vectors snapshot by the caller.
+    // Re-reading the volatile this.ordinalToVectorId here would risk indexing into an array that was
+    // reassigned by a concurrent rebuild, pairing each ordinal's RID with a vector from a different
+    // mapping (issue #4581).
     boolean added = false;
-    for (int ordinal = 0; ordinal < ordinalToVectorId.length; ordinal++) {
-      final int vectorId = ordinalToVectorId[ordinal];
+    for (int ordinal = 0; ordinal < ordinalMap.length; ordinal++) {
+      final int vectorId = ordinalMap[ordinal];
       final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
       if (loc == null || loc.deleted)
         continue;
@@ -2879,6 +2883,13 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Convert query vector to VectorFloat
         final VectorFloat<?> queryVectorFloat = vts.createFloatVector(queryVector);
 
+        // Snapshot the volatile ordinal->vectorId map once and use the same reference everywhere
+        // below (filter, result extraction and brute-force fallback). The field can be reassigned
+        // by a graph rebuild; reading it more than once would risk pairing an ordinal mapped through
+        // a different array than the one captured by the vectors snapshot, returning RIDs scored
+        // against the wrong vector (issue #4581).
+        final int[] ordinalMap = this.ordinalToVectorId;
+
         // Use liveVectorValues for scoring when available — it has ingested vectors cached
         // in memory, avoiding disk I/O. Falls back to ArcadePageVectorValues (disk-based).
         // Note: liveVectorValues is keyed by vectorId (same as graph ordinal when using
@@ -2893,12 +2904,12 @@ public class LSMVectorIndex implements Index, IndexInternal {
         } else {
           vectors = new ArcadePageVectorValues(getDatabase(), metadata.dimensions,
               vectorProp,
-              vectorIndex, ordinalToVectorId, this);
+              vectorIndex, ordinalMap, this);
         }
 
         // Perform search with optional RID filtering
         final Bits bitsFilter = allowedRIDs != null && !allowedRIDs.isEmpty() ?
-            new RIDBitsFilter(allowedRIDs, ordinalToVectorId, vectorIndex) :
+            new RIDBitsFilter(allowedRIDs, ordinalMap, vectorIndex) :
             Bits.ALL;
 
         // Use instance GraphSearcher with SearchScoreProvider for efSearch control
@@ -2948,7 +2959,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
         LogManager.instance()
             .log(this, Level.INFO, "GraphSearcher returned %d nodes, graphSize=%d, vectorsSize=%d, ordinalToVectorIdLength=%d",
-                searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalToVectorId.length);
+                searchResult.getNodes().length, graphIndex.size(), vectors.size(), ordinalMap.length);
 
         // Extract RIDs and scores from search results using ordinal mapping
         final List<Pair<RID, Float>> results = new ArrayList<>(k);
@@ -2956,8 +2967,8 @@ public class LSMVectorIndex implements Index, IndexInternal {
         int skippedDeletedOrNull = 0;
         for (final SearchResult.NodeScore nodeScore : searchResult.getNodes()) {
           final int ordinal = nodeScore.node;
-          if (ordinal >= 0 && ordinal < ordinalToVectorId.length) {
-            final int vectorId = ordinalToVectorId[ordinal];
+          if (ordinal >= 0 && ordinal < ordinalMap.length) {
+            final int vectorId = ordinalMap[ordinal];
             final VectorLocationIndex.VectorLocation loc = vectorIndex.getLocation(vectorId);
             if (loc != null && !loc.deleted) {
               // Post-filter by allowed RIDs (JVector may include entry node despite Bits filter)
@@ -2979,7 +2990,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
         // Issue #3722: If graph search + delta merge returned significantly fewer results than
         // expected AND there are enough vectors available, fall back to brute-force scan of all
         // vectors. This handles degraded graph quality after rebuilds with corrupted pages.
-        final int availableVectors = ordinalToVectorId.length;
+        final int availableVectors = ordinalMap.length;
         final int expectedResults = Math.min(k, availableVectors);
         if (results.size() < expectedResults && results.size() < availableVectors * 8 / 10) {
           LogManager.instance()
@@ -2988,7 +2999,7 @@ public class LSMVectorIndex implements Index, IndexInternal {
                   Graph search returned only %d results (expected %d, available %d) for index %s - \
                   falling back to brute-force scan (graph may need rebuilding)""",
                   results.size(), expectedResults, availableVectors, indexName);
-          bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors);
+          bruteForceScan(queryVectorFloat, k, allowedRIDs, results, vectors, ordinalMap);
         }
 
         LogManager.instance()
