@@ -542,6 +542,11 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
     final DeltaOverlay ov = snap.overlay;
     final int n = Math.min(degrees.length, snap.nodeMapping.size());
 
+    // Zero the whole buffer first: callers reuse buffers (zero-GC APIs), and the CSR fast path below only
+    // writes indices [0, n). Without this, a missing CSR (csr == null) or an oversized buffer (degrees.length >
+    // nodeMapping.size()) would leave stale values, onto which the overlay deltas would then accumulate.
+    Arrays.fill(degrees, 0);
+
     if (csr != null) {
       // Fast path: direct offset subtraction from CSR arrays — no per-node method dispatch
       if (direction == Vertex.DIRECTION.OUT || direction == Vertex.DIRECTION.BOTH) {
