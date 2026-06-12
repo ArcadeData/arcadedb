@@ -55,7 +55,12 @@ public final class SimdTimeSeriesVectorOps implements TimeSeriesVectorOps {
     double m = Double.POSITIVE_INFINITY;
     int i = 0;
     for (; i + lanes <= length; i += lanes) {
-      final DoubleVector v = DoubleVector.fromArray(DOUBLE_SPECIES, data, offset + i);
+      DoubleVector v = DoubleVector.fromArray(DOUBLE_SPECIES, data, offset + i);
+      // NaN policy (issue #4596): hardware MINSD/MAXSD reduction is NaN order-dependent. Replace any
+      // NaN lane with the reduction identity (+Inf for MIN) so NaN is consistently skipped.
+      final VectorMask<Double> nan = v.test(VectorOperators.IS_NAN);
+      if (nan.anyTrue())
+        v = v.blend(Double.POSITIVE_INFINITY, nan);
       final double laneMin = v.reduceLanes(VectorOperators.MIN);
       if (laneMin < m)
         m = laneMin;
@@ -72,7 +77,12 @@ public final class SimdTimeSeriesVectorOps implements TimeSeriesVectorOps {
     double m = Double.NEGATIVE_INFINITY;
     int i = 0;
     for (; i + lanes <= length; i += lanes) {
-      final DoubleVector v = DoubleVector.fromArray(DOUBLE_SPECIES, data, offset + i);
+      DoubleVector v = DoubleVector.fromArray(DOUBLE_SPECIES, data, offset + i);
+      // NaN policy (issue #4596): hardware MINSD/MAXSD reduction is NaN order-dependent. Replace any
+      // NaN lane with the reduction identity (-Inf for MAX) so NaN is consistently skipped.
+      final VectorMask<Double> nan = v.test(VectorOperators.IS_NAN);
+      if (nan.anyTrue())
+        v = v.blend(Double.NEGATIVE_INFINITY, nan);
       final double laneMax = v.reduceLanes(VectorOperators.MAX);
       if (laneMax > m)
         m = laneMax;

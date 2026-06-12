@@ -2114,8 +2114,10 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         case SUM -> existing + value;
         case COUNT -> existing + 1;
         case AVG -> existing + value; // accumulate sum, divide by count later
-        case MIN -> Math.min(existing, value);
-        case MAX -> Math.max(existing, value);
+        // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
+        // wins over a NaN running value (consistent with the row-iter, merge and SIMD paths).
+        case MIN -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.min(existing, value);
+        case MAX -> Double.isNaN(value) ? existing : Double.isNaN(existing) ? value : Math.max(existing, value);
       };
       result.updateValue(idx, merged);
       result.updateCount(idx, count + 1);
