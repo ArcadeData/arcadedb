@@ -69,7 +69,7 @@ public class RemoteHttpComponent extends RWLockContext {
   private final   int                         originalPort;
   private final   String                      userName;
   private final   String                      userPassword;
-  private final   List<Pair<String, Integer>> replicaServerList         = new ArrayList<>();
+  private volatile List<Pair<String, Integer>> replicaServerList        = new ArrayList<>();
   protected final HttpClient                  httpClient;
   protected final DatabaseStats               stats                     = new DatabaseStats();
   protected final ContextConfiguration        configuration;
@@ -79,7 +79,7 @@ public class RemoteHttpComponent extends RWLockContext {
   private         int                         apiVersion                = 1;
   private         CONNECTION_STRATEGY         connectionStrategy        = CONNECTION_STRATEGY.ROUND_ROBIN;
   private volatile Pair<String, Integer>       leaderServer;
-  private          int                         currentReplicaServerIndex = -1;
+  private volatile int                         currentReplicaServerIndex = -1;
   private          int                         timeout;
   protected        String                      currentServer;
   protected        int                         currentPort;
@@ -458,14 +458,14 @@ public class RemoteHttpComponent extends RWLockContext {
           .log(this, Level.WARNING, "Unable to fetch cluster configuration from %s:%d, using direct connection (%s)",
               null, currentServer, currentPort, e.getMessage());
       leaderServer = new Pair<>(originalServer, originalPort);
-      replicaServerList.clear();
+      publishReplicaServerList(new ArrayList<>());
       return;
     }
 
     try {
       if (!response.has("ha")) {
         leaderServer = new Pair<>(originalServer, originalPort);
-        replicaServerList.clear();
+        publishReplicaServerList(new ArrayList<>());
         return;
       }
 
@@ -479,8 +479,10 @@ public class RemoteHttpComponent extends RWLockContext {
 
       final String cfgReplicaServers = (String) ha.get("replicaAddresses");
 
-      // PARSE SERVER LISTS
-      replicaServerList.clear();
+      // PARSE SERVER LISTS INTO A FRESH LIST, THEN PUBLISH IT ATOMICALLY (SEE publishReplicaServerList).
+      // Never mutate the live list in place: a concurrent getNextReplicaAddress() could observe a
+      // non-empty size and then read past the end after a clear() (issue #4579).
+      final List<Pair<String, Integer>> newReplicaServerList = new ArrayList<>();
 
       if (cfgReplicaServers != null && !cfgReplicaServers.isEmpty()) {
         final String[] serverEntries = cfgReplicaServers.split(",");
@@ -490,12 +492,14 @@ public class RemoteHttpComponent extends RWLockContext {
             final String sHost = serverParts[0];
             final int sPort = Integer.parseInt(serverParts[1]);
 
-            replicaServerList.add(new Pair(sHost, sPort));
+            newReplicaServerList.add(new Pair(sHost, sPort));
           } catch (Exception e) {
             LogManager.instance().log(this, Level.SEVERE, "Invalid replica server address '%s'", null, serverEntry);
           }
         }
       }
+
+      publishReplicaServerList(newReplicaServerList);
 
       LogManager.instance()
           .log(this, Level.FINE, "Remote Database configured with leader=%s and replicas=%s strategy=%s",
@@ -510,27 +514,44 @@ public class RemoteHttpComponent extends RWLockContext {
           .log(this, Level.WARNING, "Unable to parse cluster configuration, using direct connection (%s)",
               null, e.getMessage());
       leaderServer = new Pair<>(originalServer, originalPort);
-      replicaServerList.clear();
+      publishReplicaServerList(new ArrayList<>());
     }
   }
 
+  /**
+   * Atomically replaces the replica server list with a freshly built one and resets the round-robin cursor.
+   * The list reference is volatile, so readers (e.g. {@link #getNextReplicaAddress}) that snapshot it observe
+   * either the complete old list or the complete new one, never an intermediate cleared state (issue #4579).
+   */
+  private void publishReplicaServerList(final List<Pair<String, Integer>> newList) {
+    this.replicaServerList = newList;
+    this.currentReplicaServerIndex = -1;
+  }
+
   private Pair<String, Integer> getNextReplicaAddress() {
-    if (replicaServerList.isEmpty())
+    // Snapshot the reference once: a concurrent publishReplicaServerList() may swap it at any time, but the
+    // local snapshot is stable for the size check and the get() below, so it can never go out of bounds.
+    final List<Pair<String, Integer>> snapshot = replicaServerList;
+    final int size = snapshot.size();
+    if (size == 0)
       return leaderServer;
 
-    ++currentReplicaServerIndex;
-    if (currentReplicaServerIndex > replicaServerList.size() - 1)
-      currentReplicaServerIndex = 0;
+    int index = currentReplicaServerIndex + 1;
+    if (index < 0 || index >= size)
+      index = 0;
+    currentReplicaServerIndex = index;
 
-    return replicaServerList.get(currentReplicaServerIndex);
+    return snapshot.get(index);
   }
 
   boolean reloadClusterConfiguration() {
     final Pair<String, Integer> oldLeader = leaderServer;
 
-    // ASK REPLICA FIRST
-    for (int replicaIdx = 0; replicaIdx < replicaServerList.size(); ++replicaIdx) {
-      final Pair<String, Integer> connectToServer = replicaServerList.get(replicaIdx);
+    // ASK REPLICA FIRST. Snapshot the reference: requestClusterConfiguration() below may swap the
+    // live list mid-loop, so iterate over the stable snapshot taken here (issue #4579).
+    final List<Pair<String, Integer>> snapshot = replicaServerList;
+    for (int replicaIdx = 0; replicaIdx < snapshot.size(); ++replicaIdx) {
+      final Pair<String, Integer> connectToServer = snapshot.get(replicaIdx);
 
       currentServer = connectToServer.getFirst();
       currentPort = connectToServer.getSecond();

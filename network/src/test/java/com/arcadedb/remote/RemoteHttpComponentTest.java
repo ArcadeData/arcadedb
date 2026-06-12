@@ -37,13 +37,17 @@ import org.junit.jupiter.api.Test;
 
 import java.io.InputStream;
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.net.ConnectException;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -717,5 +721,118 @@ class RemoteHttpComponentTest {
     f.set(component, new Pair<>("db-leader.example.com", 2480));
 
     assertThat(component.getLeaderAddress()).isEqualTo("db-leader.example.com:2480");
+  }
+
+  // Regression tests for issue #4579: getNextReplicaAddress AIOOBE race when the replica list shrinks
+  // (cleared/repopulated by requestClusterConfiguration) between the size check and the get().
+
+  @SuppressWarnings("unchecked")
+  private Pair<String, Integer> invokeGetNextReplicaAddress(final RemoteHttpComponent c) throws Exception {
+    final Method m = RemoteHttpComponent.class.getDeclaredMethod("getNextReplicaAddress");
+    m.setAccessible(true);
+    try {
+      return (Pair<String, Integer>) m.invoke(c);
+    } catch (final InvocationTargetException e) {
+      throw (e.getCause() instanceof Exception ex) ? ex : new RuntimeException(e.getCause());
+    }
+  }
+
+  private void invokePublishReplicaServerList(final RemoteHttpComponent c, final List<Pair<String, Integer>> list)
+      throws Exception {
+    final Method m = RemoteHttpComponent.class.getDeclaredMethod("publishReplicaServerList", List.class);
+    m.setAccessible(true);
+    m.invoke(c, list);
+  }
+
+  @Test
+  void getNextReplicaAddressReturnsLeaderWhenNoReplicas() throws Exception {
+    final Field f = RemoteHttpComponent.class.getDeclaredField("leaderServer");
+    f.setAccessible(true);
+    f.set(component, new Pair<>("leader-host", 2480));
+
+    invokePublishReplicaServerList(component, new ArrayList<>());
+
+    assertThat(invokeGetNextReplicaAddress(component)).isEqualTo(new Pair<>("leader-host", 2480));
+  }
+
+  @Test
+  void getNextReplicaAddressCyclesRoundRobin() throws Exception {
+    final List<Pair<String, Integer>> replicas = new ArrayList<>(List.of(
+        new Pair<>("r0", 2480), new Pair<>("r1", 2480), new Pair<>("r2", 2480)));
+    invokePublishReplicaServerList(component, replicas);
+
+    assertThat(invokeGetNextReplicaAddress(component)).isEqualTo(new Pair<>("r0", 2480));
+    assertThat(invokeGetNextReplicaAddress(component)).isEqualTo(new Pair<>("r1", 2480));
+    assertThat(invokeGetNextReplicaAddress(component)).isEqualTo(new Pair<>("r2", 2480));
+    // Wraps around back to the first replica.
+    assertThat(invokeGetNextReplicaAddress(component)).isEqualTo(new Pair<>("r0", 2480));
+  }
+
+  @Test
+  void publishReplicaServerListResetsRoundRobinCursor() throws Exception {
+    invokePublishReplicaServerList(component, new ArrayList<>(List.of(
+        new Pair<>("r0", 2480), new Pair<>("r1", 2480), new Pair<>("r2", 2480))));
+
+    // Advance the cursor near the end of the list.
+    invokeGetNextReplicaAddress(component);
+    invokeGetNextReplicaAddress(component);
+    invokeGetNextReplicaAddress(component);
+
+    // A topology change shrinks the cluster to a single replica. The cursor must reset so the next
+    // read does not address a stale, out-of-range index.
+    invokePublishReplicaServerList(component, new ArrayList<>(List.of(new Pair<>("only", 2480))));
+
+    assertThat(invokeGetNextReplicaAddress(component)).isEqualTo(new Pair<>("only", 2480));
+    assertThat(invokeGetNextReplicaAddress(component)).isEqualTo(new Pair<>("only", 2480));
+  }
+
+  /**
+   * Reproduces issue #4579: one thread continuously rebuilds the replica list with sizes that vary
+   * (including empty) while another thread calls getNextReplicaAddress(). The pre-fix reader re-read
+   * the replicaServerList field three times (isEmpty / size / get), so a list shrunk between those
+   * reads produced an ArrayIndexOutOfBoundsException. The fixed reader snapshots the reference once and
+   * never goes out of bounds.
+   */
+  @Test
+  void getNextReplicaAddressIsRaceFreeWhenReplicaListRebuilt() throws Exception {
+    final Field f = RemoteHttpComponent.class.getDeclaredField("leaderServer");
+    f.setAccessible(true);
+    f.set(component, new Pair<>("leader-host", 2480));
+
+    invokePublishReplicaServerList(component, new ArrayList<>(List.of(
+        new Pair<>("r0", 2480), new Pair<>("r1", 2480), new Pair<>("r2", 2480))));
+
+    final int iterations = 200_000;
+    final AtomicReference<Throwable> failure = new AtomicReference<>();
+
+    final Thread rebuilder = new Thread(() -> {
+      try {
+        for (int i = 0; i < iterations && failure.get() == null; i++) {
+          final int size = i % 5; // cycles 0..4, including the empty list that triggered the AIOOBE
+          final List<Pair<String, Integer>> list = new ArrayList<>(size);
+          for (int j = 0; j < size; j++)
+            list.add(new Pair<>("r" + j, 2480));
+          invokePublishReplicaServerList(component, list);
+        }
+      } catch (final Throwable t) {
+        failure.compareAndSet(null, t);
+      }
+    });
+
+    final Thread reader = new Thread(() -> {
+      try {
+        for (int i = 0; i < iterations && failure.get() == null; i++)
+          invokeGetNextReplicaAddress(component);
+      } catch (final Throwable t) {
+        failure.compareAndSet(null, t);
+      }
+    });
+
+    rebuilder.start();
+    reader.start();
+    rebuilder.join();
+    reader.join();
+
+    assertThat(failure.get()).isNull();
   }
 }
