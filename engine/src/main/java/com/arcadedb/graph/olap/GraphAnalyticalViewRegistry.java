@@ -24,17 +24,26 @@ import com.arcadedb.database.DatabaseInternal;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.WeakHashMap;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Registry that associates named {@link GraphAnalyticalView} instances with databases.
  * <p>
- * Uses a {@link WeakHashMap} keyed by {@link Database}, so GAV references are automatically
- * cleaned up when the database is garbage-collected. Within each database, views are stored
- * in a {@link HashMap} keyed by name.
+ * Keyed by {@link Database}; within each database, views are stored in a {@link HashMap}
+ * keyed by name.
  * <p>
- * All operations are synchronized on the {@code REGISTRY} lock to ensure atomicity and
- * thread-safety, so the inner maps do not need to be concurrent.
+ * <b>Lifecycle note:</b> entries are cleaned up <i>explicitly</i>, never by garbage collection.
+ * Each {@link GraphAnalyticalView} holds a strong reference back to its owning {@link Database}
+ * (issue #4586), so a {@link java.util.WeakHashMap} here would never collect a key while a view
+ * is registered - the weak-key contract would be silently defeated by the value-to-key reference.
+ * A plain {@link ConcurrentHashMap} is used instead to make the explicit-cleanup contract clear.
+ * Cleanup is guaranteed by {@link #shutdownAll}/{@link #dropAll}, invoked from
+ * {@code LocalDatabase.closeInternal()} on every database close, and by {@link #unregister} when a
+ * single view is dropped. The open-database set itself ({@code DatabaseFactory.ACTIVE_INSTANCES})
+ * already strongly pins live databases, so this registry can never be the deciding factor for GC.
+ * <p>
+ * All compound operations are synchronized on the {@code REGISTRY} lock to keep the per-database
+ * inner maps consistent under concurrency, so those inner maps do not need to be concurrent.
  * <p>
  * The registry is used by the builder when a name is specified, and by the query planner
  * to discover available GAVs for a database.
@@ -42,7 +51,7 @@ import java.util.WeakHashMap;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class GraphAnalyticalViewRegistry {
-  private static final WeakHashMap<Database, HashMap<String, GraphAnalyticalView>> REGISTRY = new WeakHashMap<>();
+  private static final ConcurrentHashMap<Database, HashMap<String, GraphAnalyticalView>> REGISTRY = new ConcurrentHashMap<>();
 
   /**
    * Registers a named GAV for a database.
