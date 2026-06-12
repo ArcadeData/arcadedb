@@ -500,6 +500,21 @@
                 <artifactId>jboss-threads</artifactId>
                 <version>${jboss-threads.version}</version>
             </dependency>
+            <!-- Pin protobuf-java across all modules. Transitive deps (e.g. opentelemetry-proto
+                 pulled by micrometer-registry-otlp in the metrics module) drag in an older
+                 protobuf-java than the gRPC gencode was compiled against, which fails at runtime
+                 with "Detected incompatible Protobuf Gencode/Runtime versions" since the runtime
+                 must not be older than the linked gencode. -->
+            <dependency>
+                <groupId>com.google.protobuf</groupId>
+                <artifactId>protobuf-java</artifactId>
+                <version>${protobuf-java.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.google.protobuf</groupId>
+                <artifactId>protobuf-java-util</artifactId>
+                <version>${protobuf-java.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
