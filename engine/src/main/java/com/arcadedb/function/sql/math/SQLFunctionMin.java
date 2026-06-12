@@ -49,7 +49,13 @@ public class SQLFunctionMin extends SQLAggregatedFunction {
     Object min = null;
     for (Object item : params) {
       if (item instanceof Collection<?> collection) {
-        for (final Object subitem : collection) {
+        for (Object subitem : collection) {
+          if (subitem instanceof Number number && min instanceof Number number1 &&//
+              !subitem.getClass().equals(min.getClass())) {
+            final Number[] converted = Type.castComparableNumber(number, number1);
+            subitem = converted[0];
+            min = converted[1];
+          }
           if (min == null || subitem != null && ((Comparable) subitem).compareTo(min) < 0)
             min = subitem;
         }

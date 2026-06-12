@@ -19,8 +19,13 @@
 package com.arcadedb.function;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.function.sql.math.SQLFunctionMax;
+import com.arcadedb.function.sql.math.SQLFunctionMin;
 import com.arcadedb.query.sql.executor.CommandContext;
 import org.junit.jupiter.api.Test;
+
+import java.util.Arrays;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -86,6 +91,32 @@ class AggregatedFunctionTest {
     fn.execute(null, null, null, new Object[]{20}, null);
 
     assertThat(fn.getResult()).isEqualTo(30);
+  }
+
+  @Test
+  void minOnCollectionWithMixedNumericTypes() {
+    // GH #4592: the collection branch must align numeric types before compareTo,
+    // otherwise min([5L, 3.0d]) triggers Double.compareTo(Long) and throws CCE.
+    final SQLFunctionMin fn = new SQLFunctionMin();
+    final Object result = fn.execute(null, null, null, new Object[] { Arrays.asList(5L, 3.0d) }, null);
+    assertThat(((Number) result).doubleValue()).isEqualTo(3.0);
+  }
+
+  @Test
+  void maxOnCollectionWithMixedNumericTypes() {
+    // GH #4592
+    final SQLFunctionMax fn = new SQLFunctionMax();
+    final Object result = fn.execute(null, null, null, new Object[] { Arrays.asList(5L, 3.0d) }, null);
+    assertThat(((Number) result).doubleValue()).isEqualTo(5.0);
+  }
+
+  @Test
+  void minOnCollectionWithNullSubitemsAndMixedTypes() {
+    // GH #4592: null subitems stay ignored even with type alignment in place.
+    final SQLFunctionMin fn = new SQLFunctionMin();
+    final List<Object> values = Arrays.asList(5L, null, 2.0d, null);
+    final Object result = fn.execute(null, null, null, new Object[] { values }, null);
+    assertThat(((Number) result).doubleValue()).isEqualTo(2.0);
   }
 
   private AggregatedFunction createCountFunction() {
