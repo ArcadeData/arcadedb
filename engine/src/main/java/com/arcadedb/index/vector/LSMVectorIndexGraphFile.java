@@ -96,10 +96,30 @@ public class LSMVectorIndexGraphFile extends PaginatedComponent {
 
     final int usablePageSize = pageSize - BasePage.PAGE_HEADER_SIZE;
 
-    // Load last page to get actual content size
+    // Load last page to get actual content size.
+    // The page count reported by the component can be ahead of what is actually on disk when the
+    // graph file has been truncated or the page was never flushed/evicted. In that case the page
+    // manager either returns null or raises IllegalArgumentException ("page does not exist").
+    // Treat the persisted graph as absent (return 0) so loadGraph() falls through to the
+    // "rebuild graph from scratch" recovery path instead of aborting startup.
     final int lastPageId = totalPages - 1;
-    final var lastPage = database.getPageManager()
-            .getImmutablePage(new PageId(database, fileId, lastPageId), pageSize, false, false);
+    final BasePage lastPage;
+    try {
+      lastPage = database.getPageManager()
+              .getImmutablePage(new PageId(database, fileId, lastPageId), pageSize, false, false);
+    } catch (final IllegalArgumentException e) {
+      LogManager.instance().log(this, Level.WARNING,
+              "Graph file '%s' reports %d page(s) but last page %d cannot be read (%s): treating persisted graph as absent (will rebuild)",
+              getName(), totalPages, lastPageId, e.getMessage());
+      return 0;
+    }
+
+    if (lastPage == null) {
+      LogManager.instance().log(this, Level.WARNING,
+              "Graph file '%s' reports %d page(s) but last page %d is missing on disk: treating persisted graph as absent (will rebuild)",
+              getName(), totalPages, lastPageId);
+      return 0;
+    }
 
     // Compute contiguous logical size (excluding headers from logical address space)
     // Each full page contributes usablePageSize bytes, last page contributes its actual content
