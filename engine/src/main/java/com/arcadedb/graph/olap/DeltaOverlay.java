@@ -188,9 +188,17 @@ class DeltaOverlay {
       final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds);
       if (srcId < 0 || tgtId < 0)
         continue;
-      newDeletedEdges.computeIfAbsent(ed.edgeType, k -> new HashSet<>())
-          .add(packEdge(srcId, tgtId));
-      newDeltaEdgeCount--;
+      // Only decrement when the deletion is new: newDeletedEdges is a Set, so a duplicate
+      // deletion (replayed across merges or emitted twice within one TxDelta) is absorbed by
+      // add() returning false. Decrementing unconditionally would drift the counter negative
+      // and corrupt the compaction trigger (Math.abs(deltaEdgeCount) > threshold). See issue #4587.
+      // Only decrement when the deletion is new: newDeletedEdges is a Set, so a duplicate
+      // deletion (replayed across merges or emitted twice within one TxDelta) is absorbed by
+      // add() returning false. Decrementing unconditionally would drift the counter negative
+      // and corrupt the compaction trigger (Math.abs(deltaEdgeCount) > threshold). See issue #4587.
+      if (newDeletedEdges.computeIfAbsent(ed.edgeType, k -> new HashSet<>())
+          .add(packEdge(srcId, tgtId)))
+        newDeltaEdgeCount--;
     }
 
     // Process property updates
