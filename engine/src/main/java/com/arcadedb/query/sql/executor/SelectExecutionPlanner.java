@@ -3277,6 +3277,21 @@ public class SelectExecutionPlanner {
         descriptors = fullTextDescriptors;
     }
 
+    // Among indexes covering the same number of conditions, prefer the ones whose key is FULLY
+    // matched by the predicate (subBlocks == index property count) over a partial/prefix scan on a
+    // longer composite index. e.g. for `WHERE a = ?` with indexes (a) and (a,b), pick (a): a prefix
+    // scan on (a,b) is both more expensive and historically problematic on compacted LSM segments,
+    // which reject partial keys with "key is composed of N items, while the index defined M items".
+    // This mirrors the edge-index behavior introduced by #2092 and makes the choice deterministic
+    // regardless of the index iteration order (polymorphic types return a HashSet). (Issue #4600)
+    if (descriptors.size() > 1) {
+      final List<IndexSearchDescriptor> fullKeyDescriptors = descriptors.stream()
+          .filter(d -> d.getSubBlocks().size() == d.getIndex().getPropertyNames().size())
+          .toList();
+      if (!fullKeyDescriptors.isEmpty() && fullKeyDescriptors.size() < descriptors.size())
+        descriptors = fullKeyDescriptors;
+    }
+
     // If there are multiple indexes covering the same number of conditions,
     // select based on cost (lower is better)
     if (descriptors.size() > 1) {
