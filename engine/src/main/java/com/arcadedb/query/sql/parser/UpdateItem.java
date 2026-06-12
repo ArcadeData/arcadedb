@@ -130,7 +130,10 @@ public class UpdateItem extends SimpleNode {
       final String propName = attrName.getStringValue();
       // Skip the write when the value is unchanged to avoid a needless MVCC version bump (which would
       // make concurrent updaters of this record fail with ConcurrentModificationException).
-      if (!valuesEqual(doc.getProperty(propName), newValue))
+      // A missing property must always be written, even when the new value is null: getProperty() returns null both
+      // for an absent property and for a present-but-null one, so without the hasProperty() guard `set x = null` on a
+      // record without x would be wrongly skipped, leaving x undefined instead of defined-with-null.
+      if (!doc.hasProperty(propName) || !valuesEqual(doc.getProperty(propName), newValue))
         doc.setProperty(propName, newValue);
       break;
     case OPERATOR_MINUSASSIGN:

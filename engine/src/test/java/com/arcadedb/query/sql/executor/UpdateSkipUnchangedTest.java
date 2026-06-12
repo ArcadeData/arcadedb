@@ -69,6 +69,25 @@ public class UpdateSkipUnchangedTest extends TestHelper {
     assertThat(rs.next().<Number>getProperty("counter").intValue()).isEqualTo(2);
   }
 
+  /**
+   * The unchanged-skip must not be confused by a null value: setting a previously-absent property to null must make
+   * it DEFINED (present with null), because getProperty() returns null for both absent and present-null. Otherwise
+   * {@code SET x = null} on a record without x would be wrongly skipped, leaving x undefined.
+   */
+  @Test
+  void updateSettingAbsentPropertyToNullMakesItDefined() {
+    database.transaction(() ->
+        database.command("sql", "UPDATE Account SET extra = null WHERE name = 'ACME'"));
+
+    final ResultSet defined = database.query("sql", "SELECT FROM Account WHERE extra is defined");
+    assertThat(defined.hasNext()).as("extra must be defined after SET extra = null").isTrue();
+    defined.close();
+
+    final ResultSet notDefined = database.query("sql", "SELECT FROM Account WHERE extra is not defined");
+    assertThat(notDefined.hasNext()).as("extra must not be reported as not-defined").isFalse();
+    notDefined.close();
+  }
+
   /** A mix of unchanged and changed assignments still persists the changed one. */
   @Test
   void updateMixedChangedAndUnchangedWrites() {
