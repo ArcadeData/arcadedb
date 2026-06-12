@@ -1000,6 +1000,11 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       transaction.updateRecordInCache(record);
       transaction.updateBucketRecordDelta(bucket.getFileId(), +1);
 
+      // TRACK USER DOCUMENTS (NOT INTERNAL RECORDS LIKE EDGE SEGMENTS) SO A ROLLBACK CAN RESET THEIR IDENTITY AND ALLOW
+      // A CLEAN RE-INSERT INSTEAD OF AN UPDATE OF A MISSING RECORD (ISSUE #4562).
+      if (record instanceof MutableDocument)
+        transaction.registerNewRecord(record);
+
       if (record instanceof MutableDocument doc)
         indexer.createDocument(doc, doc.getType(), bucket);
 

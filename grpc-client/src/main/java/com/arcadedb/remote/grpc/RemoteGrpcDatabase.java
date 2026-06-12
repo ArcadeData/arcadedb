@@ -228,6 +228,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     if (transactionId != null)
       throw new TransactionException("Transaction already begun");
 
+    txCreatedRecords.clear();
+
     BeginTransactionRequest request =
         BeginTransactionRequest.newBuilder().setDatabase(getName()).setCredentials(buildCredentials())
             .setIsolation(mapIsolationLevel(isolationLevel)).build();
@@ -273,7 +275,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     logTx("COMMIT(local)", null);
     checkCrossThreadUse("before CommitTransaction");
 
-    callUnaryVoid("CommitTransaction", () -> {
+    boolean committed = false;
+    try {
+      callUnaryVoid("CommitTransaction", () -> {
 
       try {
 
@@ -311,7 +315,16 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         debugTx = null;
       }
 
-    });
+      });
+      committed = true;
+    } finally {
+      if (committed)
+        // SUCCESSFUL COMMIT: THE ASSIGNED RIDs ARE DURABLE, JUST DROP THE TRACKING
+        txCreatedRecords.clear();
+      else
+        // FAILED COMMIT = SERVER-SIDE ROLLBACK: RESET CREATED RECORDS SO THEY CAN BE CLEANLY RE-INSERTED (ISSUE #4562)
+        resetCreatedRecordsIdentity();
+    }
   }
 
   @Override
@@ -326,7 +339,8 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     logTx("ROLLBACK(local)", null);
     checkCrossThreadUse("before RollbackTransaction");
 
-    callUnaryVoid("RollbackTransaction", () -> {
+    try {
+      callUnaryVoid("RollbackTransaction", () -> {
 
       try {
 
@@ -362,7 +376,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         debugTx = null;
       }
 
-    });
+      });
+    } finally {
+      // RESET CREATED RECORDS SO THEY CAN BE CLEANLY RE-INSERTED AFTER THE ROLLBACK (ISSUE #4562)
+      resetCreatedRecordsIdentity();
+    }
   }
 
   /**
@@ -744,7 +762,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
         }
 
         // Construct a DatabaseRID bound to this remote database so asX() resolves correctly.
-        return newRID(ridStr);
+        final RID newRID = newRID(ridStr);
+        trackCreatedRecord(record);
+        return newRID;
       } catch (StatusRuntimeException | StatusException e) {
         handleGrpcException(e);
         return null;
