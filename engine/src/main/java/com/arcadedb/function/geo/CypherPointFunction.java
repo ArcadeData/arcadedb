@@ -35,6 +35,9 @@ import java.util.Map;
  *   <li>Cartesian 2D: {@code point({x: a, y: b})}</li>
  *   <li>Cartesian 3D: {@code point({x: a, y: b, z: c})}</li>
  * </ul>
+ * <p>Also supports an ArcadeDB-specific 2-arg positional form {@code point(x, y)}, equivalent to
+ * {@code point({longitude: x, latitude: y})} per the universal GIS {@code (x, y)} convention. Neo4j
+ * has no such positional form.</p>
  * <p>The returned map contains the coordinate keys and a {@code crs} field indicating
  * the coordinate reference system.</p>
  * <p>Numeric coordinate keys that resolve to a {@link String} are coerced to {@link Number}
@@ -52,19 +55,21 @@ public class CypherPointFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args == null || args.length == 0 || args.length > 2)
-      throw new CommandExecutionException("point() requires either one map argument (point({...})) or two numeric arguments (point(latitude, longitude))");
+      throw new CommandExecutionException("point() requires either one map argument (point({...})) or two numeric arguments (point(x, y))");
 
-    // 2-arg positional form: point(latitude, longitude) → WGS-84 2D
+    // 2-arg positional form: point(x, y) ≡ point(longitude, latitude) → WGS-84 2D.
+    // Follows the universal GIS convention where the first ordinate is x (longitude) and the
+    // second is y (latitude). Neo4j has no positional form; this is an ArcadeDB extension (issue #4578).
     if (args.length == 2) {
       if (args[0] == null || args[1] == null)
         return null;
-      final double lat = coerceCoordinate("latitude", args[0]);
-      final double lon = coerceCoordinate("longitude", args[1]);
+      final double x = coerceCoordinate("x", args[0]);
+      final double y = coerceCoordinate("y", args[1]);
       final Map<String, Object> result = new LinkedHashMap<>();
-      result.put("latitude", lat);
-      result.put("longitude", lon);
-      result.put("x", lon);
-      result.put("y", lat);
+      result.put("longitude", x);
+      result.put("latitude", y);
+      result.put("x", x);
+      result.put("y", y);
       result.put("crs", "WGS-84");
       result.put("srid", 4326);
       return result;

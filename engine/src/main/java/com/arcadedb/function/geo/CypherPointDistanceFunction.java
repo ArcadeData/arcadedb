@@ -49,13 +49,21 @@ public class CypherPointDistanceFunction implements StatelessFunction {
     final Map<?, ?> p1 = (Map<?, ?>) args[0];
     final Map<?, ?> p2 = (Map<?, ?>) args[1];
 
+    final boolean geo1 = isGeographic(p1);
+    final boolean geo2 = isGeographic(p2);
+
+    // Points in different coordinate reference systems (WGS-84 vs Cartesian) are not comparable.
+    // Matching the Neo4j reference implementation, return null instead of silently computing a
+    // meaningless Euclidean distance over the lon/lat numerics (issue #4577).
+    if (geo1 != geo2)
+      return null;
+
     // WGS-84: use Haversine formula
-    if (p1.containsKey("longitude") && p1.containsKey("latitude") &&
-        p2.containsKey("longitude") && p2.containsKey("latitude")) {
-      final Number lat1n = (Number) p1.get("latitude");
-      final Number lon1n = (Number) p1.get("longitude");
-      final Number lat2n = (Number) p2.get("latitude");
-      final Number lon2n = (Number) p2.get("longitude");
+    if (geo1) {
+      final Number lon1n = coordinate(p1, "longitude", "x");
+      final Number lat1n = coordinate(p1, "latitude", "y");
+      final Number lon2n = coordinate(p2, "longitude", "x");
+      final Number lat2n = coordinate(p2, "latitude", "y");
       if (lat1n == null || lon1n == null || lat2n == null || lon2n == null)
         return null;
       return haversineDistance(lat1n.doubleValue(), lon1n.doubleValue(), lat2n.doubleValue(), lon2n.doubleValue());
@@ -80,6 +88,35 @@ public class CypherPointDistanceFunction implements StatelessFunction {
       sumSq += dz * dz;
     }
     return Math.sqrt(sumSq);
+  }
+
+  /**
+   * Returns {@code true} when the point is in a geographic (WGS-84) coordinate reference system.
+   * Prefers the explicit {@code crs} field set by {@code point()}; falls back to the presence of
+   * {@code longitude}/{@code latitude} keys for raw maps that carry no {@code crs}.
+   */
+  private static boolean isGeographic(final Map<?, ?> p) {
+    final Object crs = p.get("crs");
+    if (crs instanceof String s) {
+      if (s.startsWith("WGS-84"))
+        return true;
+      if (s.startsWith("cartesian"))
+        return false;
+    }
+    return p.containsKey("longitude") && p.containsKey("latitude");
+  }
+
+  /**
+   * Reads a numeric ordinate, preferring {@code primaryKey} (e.g. {@code longitude}) and falling
+   * back to {@code fallbackKey} (e.g. {@code x}) so WGS-84 points constructed via either key style
+   * resolve correctly. Returns {@code null} when neither key holds a {@link Number}.
+   */
+  private static Number coordinate(final Map<?, ?> p, final String primaryKey, final String fallbackKey) {
+    final Object v = p.get(primaryKey);
+    if (v instanceof Number n)
+      return n;
+    final Object f = p.get(fallbackKey);
+    return f instanceof Number n ? n : null;
   }
 
   private double haversineDistance(final double lat1, final double lon1, final double lat2, final double lon2) {
