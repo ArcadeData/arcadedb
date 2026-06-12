@@ -19,6 +19,7 @@
 package com.arcadedb.function.procedure;
 
 import com.arcadedb.log.LogManager;
+import com.arcadedb.query.opencypher.procedures.CypherProcedureRegistry;
 
 import java.util.Collection;
 import java.util.Collections;
@@ -47,6 +48,14 @@ import java.util.logging.Level;
 public final class ProcedureRegistry {
   private static final String APOC_PREFIX = "apoc.";
   private static final Map<String, Procedure> PROCEDURES = new ConcurrentHashMap<>();
+
+  static {
+    // Ensure built-in procedures are registered.
+    // CypherProcedureRegistry's static initializer registers them into this registry.
+    // Mirrors FunctionRegistry: forcing CypherProcedureRegistry to load here guarantees its instances are published
+    // into this unified registry before any external clear()/reset() runs, so both registries stay in sync.
+    CypherProcedureRegistry.size();
+  }
 
   private ProcedureRegistry() {
     // Utility class - prevent instantiation
