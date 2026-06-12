@@ -48,7 +48,13 @@ public class SQLFunctionMax extends SQLAggregatedFunction {
     Object max = null;
     for (Object item : params) {
       if (item instanceof Collection<?> collection) {
-        for (final Object subitem : collection) {
+        for (Object subitem : collection) {
+          if (subitem instanceof Number subNumber && max instanceof Number maxNumber &&//
+              !subitem.getClass().equals(max.getClass())) {
+            final Number[] converted = Type.castComparableNumber(subNumber, maxNumber);
+            subitem = converted[0];
+            max = converted[1];
+          }
           if (max == null || subitem != null && ((Comparable) subitem).compareTo(max) > 0)
             max = subitem;
         }
