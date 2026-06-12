@@ -49,10 +49,12 @@ import com.arcadedb.utility.Pair;
 
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -76,6 +78,10 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private final    RemoteSchema                         schema                    = new RemoteSchema(this);
   private          boolean                              open                      = true;
+  // Records created inside the current transaction. If the transaction is rolled back (explicitly or by a failed
+  // commit), their server-assigned RID no longer exists, so the identity is reset to provisional letting the same
+  // in-memory object be cleanly re-inserted in a later transaction, matching the embedded engine (issue #4562).
+  protected final  List<MutableDocument>                txCreatedRecords          = new ArrayList<>();
   private          RemoteTransactionExplicitLock        explicitLock;
   private          int                                  cachedHashCode            = 0;
   private volatile ReadConsistency                      readConsistency           = ReadConsistency.EVENTUAL;
@@ -239,12 +245,15 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
         // RETRY
         lastException = e;
         setSessionId(null);
+        // The tx (server-side) is gone: reset records created in it so a retry/re-save inserts cleanly (issue #4562)
+        resetCreatedRecordsIdentity();
 
         if (error != null)
           error.call(e);
 
       } catch (final Exception e) {
         setSessionId(null);
+        resetCreatedRecordsIdentity();
 
         if (error != null)
           error.call(e);
@@ -295,6 +304,8 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (getSessionId() != null)
       throw new TransactionException("Transaction already begun");
 
+    txCreatedRecords.clear();
+
     // For STICKY strategy: pin to a concrete cluster member before the HTTP call so
     // that begin, command, and commit all reach the same physical node. Prefer the
     // leader (already resolved from the cluster topology) to avoid an extra LB hop.
@@ -337,6 +348,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     if (getSessionId() == null)
       throw new TransactionException("Transaction not begun");
 
+    boolean committed = false;
     try {
       HttpRequest request =
           createRequestBuilder("POST", getUrl("commit", databaseName)).POST(HttpRequest.BodyPublishers.noBody())
@@ -353,11 +365,18 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
 
         throw new TransactionException("Error on transaction commit", detail);
       }
+      committed = true;
     } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
       throw e;
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction commit", e);
     } finally {
+      if (committed)
+        // SUCCESSFUL COMMIT: THE ASSIGNED RIDs ARE DURABLE, JUST DROP THE TRACKING
+        txCreatedRecords.clear();
+      else
+        // FAILED COMMIT = SERVER-SIDE ROLLBACK: RESET CREATED RECORDS SO THEY CAN BE CLEANLY RE-INSERTED (ISSUE #4562)
+        resetCreatedRecordsIdentity();
       setSessionId(null);
     }
   }
@@ -383,8 +402,29 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } catch (final Exception e) {
       throw new TransactionException("Error on transaction rollback", e);
     } finally {
+      resetCreatedRecordsIdentity();
       setSessionId(null);
     }
+  }
+
+  /**
+   * Tracks a record created in the current transaction so its identity can be reset if the transaction is rolled
+   * back (issue #4562). Only meaningful inside an explicit transaction: outside one each save is auto-committed and
+   * the assigned RID is durable.
+   */
+  protected void trackCreatedRecord(final MutableDocument record) {
+    if (getSessionId() != null)
+      txCreatedRecords.add(record);
+  }
+
+  /**
+   * Resets to provisional the identity of every record created in the (now rolled-back) transaction, so re-saving the
+   * same in-memory object cleanly inserts a new record instead of being treated as an update of a missing record.
+   */
+  protected void resetCreatedRecordsIdentity() {
+    for (final MutableDocument r : txCreatedRecords)
+      r.setIdentity(null);
+    txCreatedRecords.clear();
   }
 
   @Override
@@ -771,6 +811,7 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     } else {
       final ResultSet result = command("sql", "insert into " + record.getTypeName() + " content " + json);
       rid = result.next().getIdentity().get();
+      trackCreatedRecord(record);
     }
     return rid;
   }
@@ -786,7 +827,9 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     json.remove(RID_PROPERTY);  // Remove @rid to avoid SQL parsing issues
     final ResultSet result = command("sql",
         "insert into " + record.getTypeName() + " bucket " + bucketName + " content " + json);
-    return result.next().getIdentity().get();
+    final RID newRID = result.next().getIdentity().get();
+    trackCreatedRecord(record);
+    return newRID;
   }
 
   protected Map<String, Object> mapArgs(final Object[] args) {

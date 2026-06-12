@@ -271,6 +271,66 @@ class Issue4562RollbackDeleteTest extends BaseGraphServerTest {
     assertSaveOfDeletedRecordThrows(httpDb);
   }
 
+  /**
+   * After a transaction is rolled back (here by a failed commit on a unique violation), a record created in that
+   * transaction must have its identity reset to provisional, so re-saving the same in-memory object cleanly INSERTs a
+   * new record instead of being treated as an update of a now-missing record. Must match the embedded engine on both
+   * transports (issue #4562 follow-up).
+   */
+  @Test
+  void recreateAfterFailedCommitInsertsCleanlyOnGrpc() {
+    assertRecreateAfterFailedCommitInsertsCleanly(grpc);
+  }
+
+  @Test
+  void recreateAfterFailedCommitInsertsCleanlyOnHttp() {
+    assertRecreateAfterFailedCommitInsertsCleanly(httpDb);
+  }
+
+  private void assertRecreateAfterFailedCommitInsertsCleanly(final RemoteDatabase db) {
+    // seed: svt1 owns uuid1
+    db.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    final MutableVertex svt1 = db.newVertex(TYPE);
+    final String uuid1 = UUID.randomUUID().toString();
+    svt1.set("svex", uuid1);
+    svt1.set("svuuid", uuid1);
+    svt1.save();
+    db.commit();
+
+    // tx that fails on commit: svt2 duplicates uuid1, svt3 is a fresh record created in the same tx
+    db.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    final MutableVertex svt2 = db.newVertex(TYPE);
+    svt2.set("svex", "svt2");
+    svt2.set("svuuid", uuid1); // duplicate -> commit fails
+    svt2.save();
+
+    final MutableVertex svt3 = db.newVertex(TYPE);
+    svt3.set("svex", "svt3");
+    svt3.set("svuuid", UUID.randomUUID().toString());
+    svt3.save();
+    assertThat(svt3.getIdentity()).as("svt3 has an optimistic RID before the failed commit").isNotNull();
+
+    boolean failed = false;
+    try {
+      db.commit();
+    } catch (Exception ex) {
+      failed = true;
+    }
+    assertThat(failed).as("commit must fail on the unique violation").isTrue();
+
+    // both records created in the rolled-back tx must be provisional again
+    assertThat(svt2.getIdentity()).as("svt2 identity reset after the rolled-back commit").isNull();
+    assertThat(svt3.getIdentity()).as("svt3 identity reset after the rolled-back commit").isNull();
+
+    // re-saving the same svt3 object must cleanly INSERT, not fail with RecordNotFoundException
+    db.begin(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    svt3.save();
+    assertThat(svt3.getIdentity()).as("svt3 gets a fresh RID on re-insert").isNotNull();
+    db.commit();
+
+    assertThat(countAll(db)).as("svt1 + re-inserted svt3").isEqualTo(2);
+  }
+
   private void assertSaveOfDeletedRecordThrows(final RemoteDatabase db) {
     db.begin();
     final MutableVertex v = db.newVertex(TYPE);

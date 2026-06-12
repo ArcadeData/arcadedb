@@ -72,6 +72,10 @@ public class TransactionContext implements Transaction {
   private final IntIntHashMap                        bucketRecordDelta     = new IntIntHashMap();
   private final Map<RID, Record>                     immutableRecordsCache = new HashMap<>(1024);
   private final Map<RID, Record>                     modifiedRecordsCache  = new HashMap<>(1024);
+  // Records created in this transaction (they got an optimistically-assigned RID at creation time). On rollback that
+  // RID no longer exists, so the identity is reset to provisional (null) letting the same in-memory object be cleanly
+  // re-inserted in a later transaction instead of being treated as an update of a missing record (issue #4562).
+  private final List<Record>                         newRecords            = new ArrayList<>();
   private final TransactionIndexContext              indexChanges;
   private final Map<PageId, ImmutablePage>           immutablePages        = new HashMap<>(64);
   private final RidHashSet                            deletedRecordsInTx    = new RidHashSet();
@@ -175,6 +179,16 @@ public class TransactionContext implements Transaction {
     return rec;
   }
 
+  /**
+   * Tracks a record created in the current transaction so that, if the transaction is rolled back, its
+   * optimistically-assigned identity can be reset to provisional (see {@link #rollback()}). Only records whose
+   * {@code save()} decides create-vs-update on the presence of a RID (i.e. {@link MutableDocument} and its subtypes)
+   * need this; internal records such as edge segments are never re-saved by user code.
+   */
+  public void registerNewRecord(final Record record) {
+    newRecords.add(record);
+  }
+
   public void updateRecordInCache(final Record record) {
     if (database.isReadYourWrites()) {
       final RID rid = record.getIdentity();
@@ -256,6 +270,15 @@ public class TransactionContext implements Transaction {
     newPages = null;
     updatedRecords = null;
 
+    // RECORDS CREATED IN THIS TX HAVE NO COMMITTED VERSION TO RELOAD TO: PULL THEM OUT OF THE MODIFIED-RECORDS CACHE SO
+    // THE RELOAD LOOP BELOW LEAVES THEIR IN-MEMORY CONTENT INTACT (reload() WOULD WIPE map/buffer), THEN RESET THEIR
+    // IDENTITY TO PROVISIONAL SO THE SAME OBJECT CAN BE CLEANLY RE-INSERTED INSTEAD OF UPDATING A MISSING RECORD (#4562).
+    for (final Record r : newRecords) {
+      final RID rid = r.getIdentity();
+      if (rid != null)
+        modifiedRecordsCache.remove(rid);
+    }
+
     // RELOAD PREVIOUS VERSION OF MODIFIED RECORDS
     if (database.isOpen())
       for (final Record r : modifiedRecordsCache.values())
@@ -264,6 +287,9 @@ public class TransactionContext implements Transaction {
         } catch (final Exception e) {
           // IGNORE EXCEPTION (RECORD DELETED OR TYPE REMOVED)
         }
+
+    for (final Record r : newRecords)
+      ((RecordInternal) r).setIdentity(null);
 
     reset();
   }
@@ -825,6 +851,7 @@ public class TransactionContext implements Transaction {
     immutablePages.clear();
     bucketRecordDelta.clear();
     deletedRecordsInTx.clear();
+    newRecords.clear();
     afterCommitCallbacks = null;
     registeredCallbackKeys = null;
     txId = -1;
