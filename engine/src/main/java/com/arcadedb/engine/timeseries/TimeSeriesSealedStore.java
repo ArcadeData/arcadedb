@@ -108,6 +108,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private volatile long             globalMinTs    = Long.MAX_VALUE;  // volatile: read without write lock
   private volatile long             globalMaxTs    = Long.MIN_VALUE;  // volatile: read without write lock
   private          boolean          headerDirty;
+  // Counts how many times downsampleBlocks actually rewrote the sealed file (i.e., selected at least one
+  // block to downsample). Used by tests to assert idempotency: a steady-state cycle must not rewrite.
+  private          long             downsampleRewriteCount;
 
   static final class BlockEntry {
     final long     minTimestamp;
@@ -122,6 +125,11 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     long           blockStartOffset; // file offset where block meta begins (for lazy CRC)
     int            storedCRC;        // CRC32 stored on disk (-1 if written inline, not yet flushed)
     volatile boolean crcValidated;   // true after first successful CRC check (volatile: read without lock)
+    // Coarsest granularity (ms) this block has already been downsampled to; 0 = raw / never downsampled.
+    // In-memory only (not persisted): it makes downsampling idempotent across maintenance cycles within a
+    // running process. After a restart the marker resets to 0, so a single follow-up downsampling cycle may
+    // re-touch an already-coarse block once before re-marking it; that is harmless and self-healing.
+    long           downsampledGranularityMs;
 
     BlockEntry(final long minTs, final long maxTs, final int sampleCount, final int columnCount,
         final double[] mins, final double[] maxs, final double[] sums) {
@@ -824,9 +832,18 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         toKeep.add(entry);
         continue;
       }
-      // Check if block is already at target resolution (density check)
-      if (entry.sampleCount <= 1 || (entry.sampleCount > 1
-          && (entry.maxTimestamp - entry.minTimestamp) / (entry.sampleCount - 1) >= granularityMs)) {
+      // Check if block is already at target resolution and must be left untouched (idempotency).
+      // 1. A single-sample block can never be reduced further.
+      // 2. A block already downsampled to this granularity (or coarser) is skipped via its marker. This is
+      //    the authoritative check: it also covers zero-span blocks (maxTs == minTs) produced when a prior
+      //    downsampling collapsed every tag-group into a single bucket - those have an average spacing of 0
+      //    and would otherwise be re-selected on every maintenance cycle (issue #4599).
+      // 3. Fallback density heuristic for raw blocks: if the average sample spacing already meets the target
+      //    granularity, downsampling would not reduce the block, so skip it. Expressed as a multiplication to
+      //    avoid integer-division truncation at the boundary.
+      if (entry.sampleCount <= 1
+          || entry.downsampledGranularityMs >= granularityMs
+          || (entry.maxTimestamp - entry.minTimestamp) >= granularityMs * (long) (entry.sampleCount - 1)) {
         toKeep.add(entry);
         continue;
       }
@@ -989,8 +1006,9 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     }
 
     // Rewrite sealed file: toKeep blocks (raw copy) + new downsampled blocks
+    downsampleRewriteCount++;
     rewriteWithBlocks(toKeep, newBlocksCompressed, newBlocksMeta, newBlocksMins, newBlocksMaxs, newBlocksSums,
-        newBlocksTagDV);
+        newBlocksTagDV, granularityMs);
     } finally {
       directoryLock.writeLock().unlock();
     }
@@ -1005,7 +1023,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
   private void rewriteWithBlocks(final List<BlockEntry> retained,
       final List<byte[][]> newCompressed, final List<long[]> newMeta,
       final List<double[]> newMins, final List<double[]> newMaxs, final List<double[]> newSums,
-      final List<String[][]> newTagDistinctValues) throws IOException {
+      final List<String[][]> newTagDistinctValues, final long newBlocksGranularityMs) throws IOException {
 
     final int colCount = columns.size();
     final String tempPath = basePath + ".ts.sealed.tmp";
@@ -1047,6 +1065,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final BlockEntry entry = writeNewBlockToFile(tempFile, (int) meta[2], meta[0], meta[1],
               newCompressed.get(b), newMins.get(b), newMaxs.get(b), newSums.get(b), colCount,
               newTagDistinctValues != null ? newTagDistinctValues.get(b) : null);
+          // Mark the freshly downsampled block so future cycles at the same (or finer) granularity skip it.
+          entry.downsampledGranularityMs = newBlocksGranularityMs;
           newDirectory.add(entry);
         }
       }
@@ -1097,6 +1117,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     final BlockEntry newEntry = writeNewBlockToFile(tempFile, oldEntry.sampleCount, oldEntry.minTimestamp,
         oldEntry.maxTimestamp, compressedCols, oldEntry.columnMins, oldEntry.columnMaxs, oldEntry.columnSums,
         colCount, oldEntry.tagDistinctValues);
+    // Preserve the in-memory downsampling marker across the file rewrite so idempotency survives compaction.
+    newEntry.downsampledGranularityMs = oldEntry.downsampledGranularityMs;
     target.add(newEntry);
   }
 
@@ -1239,6 +1261,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
           final BlockEntry old = retained.get(i);
           entry = writeNewBlockToFile(tempFile, old.sampleCount, old.minTimestamp, old.maxTimestamp,
               retainedBytes.get(i), old.columnMins, old.columnMaxs, old.columnSums, colCount, old.tagDistinctValues);
+          // Preserve the in-memory downsampling marker across compaction's file rewrite.
+          entry.downsampledGranularityMs = old.downsampledGranularityMs;
         } else {
           final int b = spec.idx();
           final long[] meta = newMeta.get(b);
@@ -1484,6 +1508,20 @@ public class TimeSeriesSealedStore implements AutoCloseable {
     directoryLock.readLock().lock();
     try {
       return blockDirectory.size();
+    } finally {
+      directoryLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Returns how many times {@link #downsampleBlocks} actually rewrote the sealed file. A steady-state
+   * maintenance cycle (nothing new old enough to reduce) must not increment this. Used by regression tests
+   * to assert downsampling idempotency (issue #4599).
+   */
+  long getDownsampleRewriteCount() {
+    directoryLock.readLock().lock();
+    try {
+      return downsampleRewriteCount;
     } finally {
       directoryLock.readLock().unlock();
     }
