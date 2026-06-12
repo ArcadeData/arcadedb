@@ -29,6 +29,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * End-to-end PromQL integration tests: parse → evaluate against live TimeSeries data.
@@ -64,6 +65,34 @@ class PromQLEvaluatorIntegrationTest extends TestHelper {
     // rate() over a counter-like series should produce non-negative values
     for (final PromQLResult.VectorSample sample : iv.samples())
       assertThat(sample.value()).isGreaterThanOrEqualTo(0.0);
+  }
+
+  @Test
+  void rateExtrapolatesToRangeWindow() {
+    // Regression for #4598: rate()/increase() must extrapolate to the full matrix window (Prometheus
+    // semantics), not divide by the actual span between samples. Two sparse counter samples 60s apart,
+    // centered inside a 5-minute window: first=1000 @120s, last=1100 @180s.
+    database.command("sql", "CREATE TIMESERIES TYPE sparse_counter TIMESTAMP ts FIELDS (value DOUBLE)");
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO sparse_counter SET ts = 120000, value = 1000.0");
+      database.command("sql", "INSERT INTO sparse_counter SET ts = 180000, value = 1100.0");
+    });
+
+    final PromQLEvaluator evaluator = new PromQLEvaluator(getDatabaseInternal());
+
+    // Prometheus reference: resultValue=100, sampledInterval=60s, durationToStart=durationToEnd=120s,
+    // both >= 1.1*avg(60s) so each contributes avg/2=30s -> extrapolateToInterval=120s,
+    // factor=120/60=2.0 -> rate = 100 * 2.0 / 300 = 0.6667/s (the old code returned 100/60 = 1.667/s).
+    final PromQLExpr rateExpr = new PromQLParser("rate(sparse_counter[5m])").parse();
+    final PromQLResult.InstantVector rateIv = (PromQLResult.InstantVector) evaluator.evaluateInstant(rateExpr, 300000L);
+    assertThat(rateIv.samples()).hasSize(1);
+    assertThat(rateIv.samples().getFirst().value()).isCloseTo(0.6667, within(0.001));
+
+    // increase = rate * range = 200 (the old code returned the raw 100).
+    final PromQLExpr incExpr = new PromQLParser("increase(sparse_counter[5m])").parse();
+    final PromQLResult.InstantVector incIv = (PromQLResult.InstantVector) evaluator.evaluateInstant(incExpr, 300000L);
+    assertThat(incIv.samples()).hasSize(1);
+    assertThat(incIv.samples().getFirst().value()).isCloseTo(200.0, within(0.1));
   }
 
   @Test

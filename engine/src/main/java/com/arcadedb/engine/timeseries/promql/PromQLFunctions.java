@@ -34,28 +34,14 @@ public final class PromQLFunctions {
 
   /**
    * Per-second rate of increase, with counter-reset handling.
+   * <p>
+   * Extrapolates the sampled increase to the full matrix range window, matching Prometheus
+   * {@code rate()} semantics: the result is normalized over the requested range (e.g. {@code [5m]})
+   * rather than over the actual span between the first and last sample. Without this, sparse data
+   * (few samples spread across a wide window) would over-estimate the rate.
    */
   public static double rate(final RangeSeries series) {
-    final List<double[]> values = series.values();
-    if (values.size() < 2)
-      return 0.0;
-    final double[] first = values.getFirst();
-    final double[] last = values.getLast();
-    final double durationSec = (last[0] - first[0]) / 1000.0;
-    if (durationSec <= 0)
-      return 0.0;
-
-    double totalIncrease = 0;
-    double prev = first[1];
-    for (int i = 1; i < values.size(); i++) {
-      final double current = values.get(i)[1];
-      if (current < prev)
-        totalIncrease += current; // counter reset
-      else
-        totalIncrease += current - prev;
-      prev = current;
-    }
-    return totalIncrease / durationSec;
+    return extrapolatedRate(series, true);
   }
 
   /**
@@ -78,22 +64,85 @@ public final class PromQLFunctions {
 
   /**
    * Total increase over the range, with counter-reset handling.
+   * <p>
+   * Extrapolates the sampled increase to the full matrix range window, matching Prometheus
+   * {@code increase()} semantics (which is defined as {@code rate() * range}). Without this, sparse
+   * data would under-count the increase relative to the requested window.
    */
   public static double increase(final RangeSeries series) {
+    return extrapolatedRate(series, false);
+  }
+
+  /**
+   * Shared extrapolation logic for {@code rate()} and {@code increase()}, faithfully porting
+   * Prometheus' {@code extrapolatedRate}. The counter-reset-corrected total increase is scaled so it
+   * covers the full requested matrix window, with boundary handling that avoids over-extrapolating
+   * beyond the available samples and prevents extrapolating a counter below zero.
+   *
+   * @param isRate when {@code true} the result is divided by the range duration to yield a per-second
+   *               rate ({@code rate()}); when {@code false} the absolute extrapolated increase is
+   *               returned ({@code increase()}).
+   */
+  private static double extrapolatedRate(final RangeSeries series, final boolean isRate) {
     final List<double[]> values = series.values();
     if (values.size() < 2)
       return 0.0;
-    double totalIncrease = 0;
-    double prev = values.getFirst()[1];
+
+    final double[] first = values.getFirst();
+    final double[] last = values.getLast();
+
+    // Counter-reset-corrected total increase across the sampled points.
+    double resultValue = 0;
+    double prev = first[1];
     for (int i = 1; i < values.size(); i++) {
       final double current = values.get(i)[1];
       if (current < prev)
-        totalIncrease += current; // counter reset
+        resultValue += current; // counter reset
       else
-        totalIncrease += current - prev;
+        resultValue += current - prev;
       prev = current;
     }
-    return totalIncrease;
+
+    final double sampledInterval = (last[0] - first[0]) / 1000.0;
+    if (sampledInterval <= 0)
+      return 0.0;
+
+    final double rangeStartSec = series.rangeStartMs() / 1000.0;
+    final double rangeEndSec = series.rangeEndMs() / 1000.0;
+    final double rangeSec = rangeEndSec - rangeStartSec;
+    if (rangeSec <= 0)
+      return 0.0;
+
+    double durationToStart = (first[0] / 1000.0) - rangeStartSec;
+    final double durationToEnd = rangeEndSec - (last[0] / 1000.0);
+    final double averageDurationBetweenSamples = sampledInterval / (values.size() - 1);
+
+    // Counters can't be negative. If the counter has positive slope and a non-negative first value,
+    // extrapolate back only as far as the projected zero point to avoid producing negative values.
+    if (resultValue > 0 && first[1] >= 0) {
+      final double durationToZero = sampledInterval * (first[1] / resultValue);
+      if (durationToZero < durationToStart)
+        durationToStart = durationToZero;
+    }
+
+    final double extrapolationThreshold = averageDurationBetweenSamples * 1.1;
+    double extrapolateToInterval = sampledInterval;
+
+    if (durationToStart < extrapolationThreshold)
+      extrapolateToInterval += durationToStart;
+    else
+      extrapolateToInterval += averageDurationBetweenSamples / 2;
+
+    if (durationToEnd < extrapolationThreshold)
+      extrapolateToInterval += durationToEnd;
+    else
+      extrapolateToInterval += averageDurationBetweenSamples / 2;
+
+    double factor = extrapolateToInterval / sampledInterval;
+    if (isRate)
+      factor /= rangeSec;
+
+    return resultValue * factor;
   }
 
   public static double sumOverTime(final RangeSeries series) {

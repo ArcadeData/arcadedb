@@ -36,7 +36,12 @@ public sealed interface PromQLResult {
   record InstantVector(List<VectorSample> samples) implements PromQLResult {
   }
 
-  record RangeSeries(Map<String, String> labels, List<double[]> values) {
+  /**
+   * A range-vector series together with the requested matrix window boundaries
+   * ({@code rangeStartMs}, {@code rangeEndMs}). The boundaries let range functions such as
+   * {@code rate()}/{@code increase()} extrapolate to the full window, matching Prometheus semantics.
+   */
+  record RangeSeries(Map<String, String> labels, List<double[]> values, long rangeStartMs, long rangeEndMs) {
   }
 
   record RangeVector(List<RangeSeries> series) implements PromQLResult {

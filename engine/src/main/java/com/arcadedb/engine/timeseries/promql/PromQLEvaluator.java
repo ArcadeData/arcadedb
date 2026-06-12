@@ -257,7 +257,7 @@ public class PromQLEvaluator {
 
     final List<RangeSeries> result = new ArrayList<>();
     for (final Map.Entry<String, List<double[]>> entry : seriesByLabels.entrySet())
-      result.add(new RangeSeries(labelsMap.get(entry.getKey()), entry.getValue()));
+      result.add(new RangeSeries(labelsMap.get(entry.getKey()), entry.getValue(), queryStart, queryEnd));
     return new RangeVector(result);
   }
 
