@@ -54,9 +54,13 @@ public class LetExpressionStep extends AbstractExecutionStep {
         final long beginTime = context.isProfiling() ? System.nanoTime() : 0;
         try {
 
-          final ResultInternal result = (ResultInternal) source.next();
+          final Result result = source.next();
           final Object value = expression.execute(result, context);
-          result.setMetadata(varName.getStringValue(), value);
+          // Not every upstream Result is a ResultInternal (e.g. wrapper Results): guard the cast to avoid a
+          // ClassCastException. When the row cannot carry per-row metadata, the LET value is still exposed through
+          // the context variable below, so $varName keeps resolving.
+          if (result instanceof ResultInternal resultInternal)
+            resultInternal.setMetadata(varName.getStringValue(), value);
           context.setVariable(varName.getStringValue(), value);
           return result;
 

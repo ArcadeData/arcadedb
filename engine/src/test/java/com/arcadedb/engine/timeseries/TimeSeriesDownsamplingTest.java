@@ -242,6 +242,127 @@ class TimeSeriesDownsamplingTest extends TestHelper {
     }
   }
 
+  /**
+   * Regression for issue #4599: when a prior downsampling collapses every tag-group into a single bucket,
+   * the resulting block has maxTs == minTs (zero span) and more than one sample. Its average sample spacing
+   * is 0, so the old density check kept re-selecting it for downsampling on every maintenance cycle, wasting
+   * CPU/IO by rewriting an identical sealed file forever. After the fix the block carries a downsampling
+   * marker and is left untouched on subsequent cycles.
+   */
+  @Test
+  void zeroSpanBlockNotReDownsampledEveryCycle() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final List<ColumnDefinition> columns = createTestColumns();
+
+    database.begin();
+    final TimeSeriesEngine engine = new TimeSeriesEngine(db, "ds_zerospan", columns, 1);
+
+    // Two sensors, three samples each, all inside the same 60s bucket [0,60000).
+    final long[] timestamps = { 0, 10000, 20000, 5000, 15000, 25000 };
+    final Object[] sensors = { "sensor_A", "sensor_A", "sensor_A", "sensor_B", "sensor_B", "sensor_B" };
+    final Object[] temps = { 10.0, 20.0, 30.0, 100.0, 200.0, 300.0 };
+    engine.appendSamples(timestamps, sensors, temps);
+    database.commit();
+
+    try {
+      database.begin();
+      engine.compactAll();
+      database.commit();
+
+      final List<DownsamplingTier> tiers = List.of(new DownsamplingTier(1L, 60000L));
+
+      // First downsampling: collapses to one block with two samples, both at bucket ts 0 -> maxTs == minTs.
+      engine.applyDownsampling(tiers, 60001L);
+      final long rewritesAfterFirst = engine.getShard(0).getSealedStore().getDownsampleRewriteCount();
+      assertThat(rewritesAfterFirst).isEqualTo(1L);
+
+      // Sanity: the produced block is genuinely zero-span with more than one sample (the bug trigger).
+      assertThat(engine.getShard(0).getSealedStore().getBlockCount()).isEqualTo(1);
+      assertThat(engine.getShard(0).getSealedStore().getBlockMinTimestamp(0))
+          .isEqualTo(engine.getShard(0).getSealedStore().getBlockMaxTimestamp(0));
+
+      // Subsequent cycles must be true no-ops: no further rewrites.
+      engine.applyDownsampling(tiers, 60001L);
+      engine.applyDownsampling(tiers, 60001L);
+      assertThat(engine.getShard(0).getSealedStore().getDownsampleRewriteCount()).isEqualTo(rewritesAfterFirst);
+
+      // Data must remain correct after the repeated cycles.
+      database.begin();
+      final List<Object[]> result = engine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
+      database.commit();
+
+      assertThat(result).hasSize(2);
+      double avgA = 0, avgB = 0;
+      for (final Object[] row : result) {
+        assertThat((long) row[0]).isEqualTo(0L);
+        if ("sensor_A".equals(row[1]))
+          avgA = (double) row[2];
+        else if ("sensor_B".equals(row[1]))
+          avgB = (double) row[2];
+      }
+      assertThat(avgA).isCloseTo(20.0, Offset.offset(0.001));
+      assertThat(avgB).isCloseTo(200.0, Offset.offset(0.001));
+    } finally {
+      engine.close();
+    }
+  }
+
+  /**
+   * Regression for issue #4599: applyDownsampling must process tiers oldest-cutoff-first regardless of the
+   * order in which they were declared. An unsorted list (coarse-granularity tier declared before a finer one
+   * that targets older data) must not cause a block to be downsampled twice in a single pass nor yield a
+   * result different from the sorted declaration.
+   */
+  @Test
+  void tierOrderIndependence() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+    final List<ColumnDefinition> columns = createTestColumns();
+
+    database.begin();
+    final TimeSeriesEngine sortedEngine = new TimeSeriesEngine(db, "ds_tier_sorted", columns, 1);
+    final TimeSeriesEngine unsortedEngine = new TimeSeriesEngine(db, "ds_tier_unsorted", columns, 1);
+
+    final long[] timestamps = new long[120];
+    final Object[] sensors = new Object[120];
+    final Object[] temps = new Object[120];
+    for (int i = 0; i < 120; i++) {
+      timestamps[i] = i * 1000L;
+      sensors[i] = "sensor_A";
+      temps[i] = 10.0;
+    }
+    sortedEngine.appendSamples(timestamps, sensors, temps);
+    unsortedEngine.appendSamples(timestamps.clone(), sensors.clone(), temps.clone());
+    database.commit();
+
+    try {
+      database.begin();
+      sortedEngine.compactAll();
+      unsortedEngine.compactAll();
+      database.commit();
+
+      final long nowMs = 200000L;
+      final DownsamplingTier fine = new DownsamplingTier(100L, 60000L);    // newer cutoff, finer granularity
+      final DownsamplingTier coarse = new DownsamplingTier(50000L, 120000L); // older cutoff, coarser granularity
+
+      sortedEngine.applyDownsampling(List.of(fine, coarse), nowMs);
+      unsortedEngine.applyDownsampling(List.of(coarse, fine), nowMs);
+
+      database.begin();
+      final List<Object[]> sorted = sortedEngine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
+      final List<Object[]> unsorted = unsortedEngine.query(Long.MIN_VALUE, Long.MAX_VALUE, null, null);
+      database.commit();
+
+      assertThat(unsorted).hasSameSizeAs(sorted);
+      for (int i = 0; i < sorted.size(); i++) {
+        assertThat((long) unsorted.get(i)[0]).isEqualTo((long) sorted.get(i)[0]);
+        assertThat((double) unsorted.get(i)[2]).isCloseTo((double) sorted.get(i)[2], Offset.offset(0.001));
+      }
+    } finally {
+      sortedEngine.close();
+      unsortedEngine.close();
+    }
+  }
+
   @Test
   void multiTagGrouping() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;

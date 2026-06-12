@@ -523,7 +523,14 @@ public class TimeSeriesEngine implements AutoCloseable {
         numericColIndices.add(c);
     }
 
-    for (final DownsamplingTier tier : tiers) {
+    // Process tiers oldest-cutoff-first (afterMs ascending). The doc contract promises this order, but the
+    // configured list is not guaranteed sorted: an unsorted list could downsample the same block twice in
+    // one pass (a fine-granularity tier touching old data first, then a coarse tier touching it again).
+    // Sort a defensive copy so behaviour is deterministic regardless of how the tiers were declared (#4599).
+    final List<DownsamplingTier> orderedTiers = new ArrayList<>(tiers);
+    orderedTiers.sort(Comparator.comparingLong(DownsamplingTier::afterMs));
+
+    for (final DownsamplingTier tier : orderedTiers) {
       final long cutoffTs = nowMs - tier.afterMs();
       runSealedMaintenanceReplicated(
           shard -> shard.getSealedStore().downsampleBlocks(cutoffTs, tier.granularityMs(), tsColIdx, tagColIndices,

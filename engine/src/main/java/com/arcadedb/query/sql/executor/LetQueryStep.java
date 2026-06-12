@@ -53,14 +53,14 @@ public class LetQueryStep extends AbstractExecutionStep {
 
       @Override
       public Result next() {
-        final ResultInternal result = (ResultInternal) source.next();
+        final Result result = source.next();
         if (result != null) {
           calculate(result, context);
         }
         return result;
       }
 
-      private void calculate(final ResultInternal result, final CommandContext context) {
+      private void calculate(final Result result, final CommandContext context) {
         final long beginTime = System.nanoTime();
 
         final BasicCommandContext subCtx = new BasicCommandContext();
@@ -68,7 +68,11 @@ public class LetQueryStep extends AbstractExecutionStep {
         subCtx.setParentWithoutOverridingChild(context);
         final InternalExecutionPlan subExecutionPlan = query.createExecutionPlan(subCtx);
         final List<Result> value = toList(new LocalResultSet(subExecutionPlan));
-        result.setMetadata(varName.getStringValue(), value);
+        // Not every upstream Result is a ResultInternal (e.g. wrapper Results): guard the cast to avoid a
+        // ClassCastException. When the row cannot carry per-row metadata, the LET value is still exposed through
+        // the context variable below, so $varName keeps resolving.
+        if (result instanceof ResultInternal resultInternal)
+          resultInternal.setMetadata(varName.getStringValue(), value);
         context.setVariable(varName.getStringValue(), value);
 
         cost = System.nanoTime() - beginTime;
