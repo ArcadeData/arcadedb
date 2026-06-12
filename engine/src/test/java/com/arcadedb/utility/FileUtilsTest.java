@@ -27,6 +27,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Arrays;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -173,6 +174,47 @@ class FileUtilsTest {
 
     final byte[] readContent = FileUtils.readFileAsBytes(file.toFile());
     assertThat(readContent).isEqualTo(content);
+  }
+
+  // Issue #4575: readFileAsBytes must return the complete file content. A single FileInputStream.read(byte[]) call may
+  // return fewer than the requested bytes, so a large file could come back partially read with trailing zero bytes.
+  @Test
+  void readFileAsBytesReadsLargeFileFully() throws Exception {
+    final Path file = tempDir.resolve("large.bin");
+    final byte[] content = new byte[5 * 1024 * 1024 + 7];
+    for (int i = 0; i < content.length; i++)
+      // every byte is non-zero so any unread tail would show up as a 0 mismatch
+      content[i] = (byte) ((i % 255) + 1);
+
+    Files.write(file, content);
+
+    final byte[] readContent = FileUtils.readFileAsBytes(file.toFile());
+    assertThat(readContent).isEqualTo(content);
+  }
+
+  // Issue #4575: the maxBytes overload must also fill the buffer fully instead of dropping the read() return value.
+  @Test
+  void readFileAsBytesWithMaxBytesReadsFully() throws Exception {
+    final Path file = tempDir.resolve("large-max.bin");
+    final int size = 3 * 1024 * 1024 + 11;
+    final byte[] content = new byte[size];
+    for (int i = 0; i < content.length; i++)
+      content[i] = (byte) ((i % 255) + 1);
+
+    Files.write(file, content);
+
+    // request exactly the file size: the whole content must come back
+    final byte[] full = FileUtils.readFileAsBytes(file.toFile(), size);
+    assertThat(full).isEqualTo(content);
+
+    // request fewer than the file size: only the requested prefix must come back
+    final int prefix = 1024 * 1024 + 3;
+    final byte[] partial = FileUtils.readFileAsBytes(file.toFile(), prefix);
+    assertThat(partial).isEqualTo(Arrays.copyOf(content, prefix));
+
+    // request more than the file size: only the available bytes are returned (no trailing zeros)
+    final byte[] over = FileUtils.readFileAsBytes(file.toFile(), size + 4096);
+    assertThat(over).isEqualTo(content);
   }
 
   @Test
