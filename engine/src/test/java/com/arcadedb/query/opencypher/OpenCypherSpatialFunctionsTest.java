@@ -62,7 +62,7 @@ class OpenCypherSpatialFunctionsTest {
     // Create a simple ping with a point location
     database.transaction(() ->
       database.command("opencypher",
-          "CREATE (ping:Ping {location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')})"));
+          "CREATE (ping:Ping {location: point(2.3522, 48.8566), time: datetime('2024-01-01T12:00:00')})"));
 
     // Retrieve the ping and check that location is stored correctly
     try (final ResultSet rs = database.query("opencypher", "MATCH (p:Ping) RETURN p.location as loc")) {
@@ -78,9 +78,9 @@ class OpenCypherSpatialFunctionsTest {
     // Create two pings with point locations
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (ping1:Ping {id: 1, location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')})");
+          "CREATE (ping1:Ping {id: 1, location: point(2.3522, 48.8566), time: datetime('2024-01-01T12:00:00')})");
       database.command("opencypher",
-          "CREATE (ping2:Ping {id: 2, location: point(48.8606, 2.3376), time: datetime('2024-01-01T12:05:00')})");
+          "CREATE (ping2:Ping {id: 2, location: point(2.3376, 48.8606), time: datetime('2024-01-01T12:05:00')})");
     });
 
     // This should NOT throw NumberFormatException
@@ -110,11 +110,11 @@ class OpenCypherSpatialFunctionsTest {
       database.command("opencypher",
           """
           CREATE (p1:Person {name: 'Alice'})-[:OWNS]->(d1:Device {imei: 'IMEI_001'})-[:GENERATED]->\
-          (ping1:Ping {location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')})""");
+          (ping1:Ping {location: point(2.3522, 48.8566), time: datetime('2024-01-01T12:00:00')})""");
       database.command("opencypher",
           """
           CREATE (p2:Person {name: 'Bob'})-[:OWNS]->(d2:Device {imei: 'IMEI_002'})-[:GENERATED]->\
-          (ping2:Ping {location: point(48.8606, 2.3376), time: datetime('2024-01-01T12:05:00')})""");
+          (ping2:Ping {location: point(2.3376, 48.8606), time: datetime('2024-01-01T12:05:00')})""");
     });
 
     // Query with distance in WHERE clause - reproduces the original issue
@@ -142,9 +142,9 @@ class OpenCypherSpatialFunctionsTest {
     // Create two pings with known distance
     database.transaction(() -> {
       database.command("opencypher",
-          "CREATE (ping1:Ping {id: 1, location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')})");
+          "CREATE (ping1:Ping {id: 1, location: point(2.3522, 48.8566), time: datetime('2024-01-01T12:00:00')})");
       database.command("opencypher",
-          "CREATE (ping2:Ping {id: 2, location: point(48.8606, 2.3376), time: datetime('2024-01-01T12:05:00')})");
+          "CREATE (ping2:Ping {id: 2, location: point(2.3376, 48.8606), time: datetime('2024-01-01T12:05:00')})");
     });
 
     // Test default (meters for Cypher style)
@@ -192,7 +192,7 @@ class OpenCypherSpatialFunctionsTest {
         database.command("opencypher",
             "CREATE (p:Person {name: 'Suspect_" + i + "'})-[:OWNS]->" +
             "(d:Device {imei: 'IMEI_" + i + "', num: '06" + i + "0000000'})-[:GENERATED]->" +
-            "(ping:Ping {location: point(" + lat + ", " + lon + "), " +
+            "(ping:Ping {location: point(" + lon + ", " + lat + "), " +
             "time: datetime('2024-01-01T12:0" + i + ":00')})");
       }
     });
@@ -240,12 +240,12 @@ class OpenCypherSpatialFunctionsTest {
       database.command("opencypher",
           """
           MATCH (d:Device {imei: 'IMEI_001'}) \
-          CREATE (ping:Ping {location: point(48.8566, 2.3522), time: datetime('2024-01-01T12:00:00')}), \
+          CREATE (ping:Ping {location: point(2.3522, 48.8566), time: datetime('2024-01-01T12:00:00')}), \
           (d)-[:GENERATED]->(ping)""");
       database.command("opencypher",
           """
           MATCH (d:Device {imei: 'IMEI_002'}) \
-          CREATE (ping:Ping {location: point(48.8606, 2.3376), time: datetime('2024-01-01T12:05:00')}), \
+          CREATE (ping:Ping {location: point(2.3376, 48.8606), time: datetime('2024-01-01T12:05:00')}), \
           (d)-[:GENERATED]->(ping)""");
     });
 
