@@ -116,13 +116,18 @@ public class UnwindStep extends AbstractExecutionStep {
       final List<String> nextFields = unwindFields.subList(1, unwindFields.size());
 
       final Object fieldValue = doc.getProperty(firstField);
-      if (fieldValue == null || fieldValue instanceof Record) {
-        result.addAll(unwind(doc, nextFields, context));
-        return result;
-      }
-
-      if (!(fieldValue instanceof Iterable) && !fieldValue.getClass().isArray()) {
-        result.addAll(unwind(doc, nextFields, context));
+      if (fieldValue == null || fieldValue instanceof Record
+          || (!(fieldValue instanceof Iterable) && !fieldValue.getClass().isArray())) {
+        // Null, Record or scalar value: there is nothing to flatten, so a single row is forwarded.
+        // Always forward a defensive copy (never the upstream instance) so that downstream mutations
+        // - e.g. a later UNWIND field or a projection step calling setElement(null) - cannot corrupt
+        // the shared input record. The unwound property keeps its original value: a scalar behaves
+        // like a single-element collection.
+        final ResultInternal unwindedDoc = new ResultInternal(context.getDatabase());
+        copy(doc, unwindedDoc);
+        if (doc.isElement())
+          unwindedDoc.setElement(doc.getElement().get());
+        result.addAll(unwind(unwindedDoc, nextFields, context));
         return result;
       }
 
