@@ -339,6 +339,14 @@ public final class VectorUtils {
    * @return cosine similarity value between -1 and 1
    */
   public static float cosineSimilarity(final float[] v1, final float[] v2) {
+    // Issue #4583: a zero-magnitude vector yields an undefined cosine (0/0). The JVector SIMD path
+    // returns NaN (and throws an AssertionError when run with -ea) while the scalar fallback below
+    // returns 0.0f, so the same query could rank differently depending on whether the JVM has the
+    // Vector API enabled, and NaN would poison Float.compare ordering. Guard up front and return a
+    // consistent 0.0f sentinel (distance 1.0 for the 1 - score callers). isZeroVector short-circuits
+    // on the first non-zero element, so this is O(1) for the common non-degenerate case.
+    if (isZeroVector(v1) || isZeroVector(v2))
+      return 0.0f;
     try {
       final VectorizationProvider vp = VectorizationProvider.getInstance();
       final VectorFloat<?> jv1 = vp.getVectorTypeSupport().createFloatVector(v1);
@@ -350,7 +358,9 @@ public final class VectorUtils {
       double normA = 0.0;
       double normB = 0.0;
       for (int i = 0; i < v1.length; i++) {
-        dotProduct += v1[i] * v2[i];
+        // Cast operands to double before multiplying so the dot-product accumulates at the same
+        // precision as normA/normB instead of forming a float product first (issue #4583).
+        dotProduct += (double) v1[i] * v2[i];
         normA += (double) v1[i] * v1[i];
         normB += (double) v2[i] * v2[i];
       }
