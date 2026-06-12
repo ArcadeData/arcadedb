@@ -222,4 +222,31 @@ class JsonSerializerTest extends TestHelper {
       assertThat(json.getString(Property.PROPERTY_TYPES_PROPERTY)).contains("c:" + Type.LONG.getId());
     }
   }
+
+  /**
+   * Issue #4601: a DATE property must be serialized to JSON as epoch DAYS (the encoding the server
+   * decodes), not epoch milliseconds. Otherwise a java.util.Date written through the remote client is
+   * read back by the server as a huge out-of-range day count and silently dropped to null.
+   */
+  @Test
+  void dateTypeSerializedAsEpochDays() {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().createDocumentType("DateJsonType");
+      type.createProperty("d", Type.DATE);
+    });
+
+    final java.time.LocalDate localDate = java.time.LocalDate.of(2026, 6, 12);
+    final long expectedDays = localDate.toEpochDay();
+    final java.util.Date javaDate = java.util.Date.from(localDate.atStartOfDay(java.time.ZoneOffset.UTC).toInstant());
+
+    database.transaction(() -> {
+      // A java.util.Date assigned to a DATE property (mirrors the remote client path).
+      final MutableDocument doc = database.newDocument("DateJsonType").set("d", javaDate);
+      assertThat(doc.toJSON(false).getLong("d")).isEqualTo(expectedDays);
+
+      // A LocalDate assigned to a DATE property must encode the same way.
+      final MutableDocument doc2 = database.newDocument("DateJsonType").set("d", localDate);
+      assertThat(doc2.toJSON(false).getLong("d")).isEqualTo(expectedDays);
+    });
+  }
 }

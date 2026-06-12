@@ -45,6 +45,7 @@ import java.time.temporal.Temporal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Calendar;
 import java.util.Date;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -416,7 +417,12 @@ public class JsonSerializer {
       for (final Iterator it = c.iterator(); it.hasNext(); )
         array.put(convertToJSONType(it.next(), null));
       value = array;
-    } else if (value instanceof Date date)
+    } else if (type == Type.DATE && (value instanceof Date || value instanceof Calendar || value instanceof Temporal))
+      // Issue #4601: a DATE value is encoded as epoch DAYS on the wire (the server decodes a DATE number
+      // as days). A plain Date.getTime() would emit milliseconds, which the server reads as days and the
+      // resulting out-of-range value is silently dropped to null.
+      value = DateUtils.dateToEpochDays(value);
+    else if (value instanceof Date date)
       value = date.getTime();
     else if (value instanceof Temporal)
       value = DateUtils.dateTimeToTimestamp(value, type != null ? DateUtils.getPrecisionFromType(type) :
