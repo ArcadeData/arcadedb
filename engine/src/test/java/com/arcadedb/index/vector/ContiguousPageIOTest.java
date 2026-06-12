@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.vector;
 
+import com.arcadedb.database.Binary;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
@@ -27,7 +28,10 @@ import com.arcadedb.engine.ComponentFile;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests write/read symmetry for ContiguousPageWriter and ContiguousPageReader.
@@ -163,6 +167,87 @@ class ContiguousPageIOTest {
 
       reader.close();
 
+    }
+  }
+
+  /**
+   * Regression test for issue #4584: ContiguousPageReader.seek(n) must apply the file
+   * offset for every position, not only for seek(0). With a non-zero offset the logical
+   * address mapping must stay monotonic (seek(0) -> offset, seek(1) -> offset+1, ...).
+   */
+  @Test
+  void readWithNonZeroOffset() throws Exception {
+    DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    Database database = factory.create();
+
+    try (database) {
+      final DatabaseInternal dbInternal = (DatabaseInternal) database;
+      database.begin();
+
+      final int pageSize = 65536;
+
+      final LSMVectorIndexGraphFile graphFile = new LSMVectorIndexGraphFile(
+          dbInternal,
+          "test-offset-io",
+          dbInternal.getDatabasePath(),
+          ComponentFile.MODE.READ_WRITE,
+          pageSize
+      );
+
+      final ContiguousPageWriter writer = new ContiguousPageWriter(
+          dbInternal,
+          graphFile.getFileId(),
+          pageSize
+      );
+
+      // Simulate a 64-byte header region that the caller addresses past via the offset.
+      final long offset = 64L;
+      while (writer.position() < offset)
+        writer.writeInt(0);
+
+      // Write known magic values right after the header.
+      final int[] magic = { 0xDEADBEEF, 0xCAFEBABE, 0xFEEDFACE };
+      for (final int v : magic)
+        writer.writeInt(v);
+
+      final long totalBytesWritten = writer.position();
+      writer.close();
+
+      database.commit();
+
+      final ContiguousPageReader reader = new ContiguousPageReader(
+          dbInternal,
+          graphFile.getFileId(),
+          pageSize,
+          totalBytesWritten,
+          offset);
+
+      // The caller's logical length excludes the header region.
+      assertThat(reader.length()).isEqualTo(totalBytesWritten - offset);
+
+      // Every seek must land at physical position (logical + offset).
+      for (int i = 0; i < magic.length; i++) {
+        reader.seek((long) i * Binary.INT_SERIALIZED_SIZE);
+        assertThat(reader.readInt())
+            .as("Value at logical position %d (physical %d)", i * Binary.INT_SERIALIZED_SIZE,
+                offset + (long) i * Binary.INT_SERIALIZED_SIZE)
+            .isEqualTo(magic[i]);
+      }
+
+      // Caller-space round-trip: getPosition() mirrors the value passed to seek().
+      reader.seek(0);
+      assertThat(reader.getPosition()).isEqualTo(0L);
+      reader.seek(1);
+      assertThat(reader.getPosition()).isEqualTo(1L);
+
+      // Seeking past the caller-visible length (which excludes the header) must fail.
+      assertThatThrownBy(() -> reader.seek(totalBytesWritten - offset + 1))
+          .isInstanceOf(IOException.class);
+
+      reader.close();
     }
   }
 }
