@@ -29,6 +29,7 @@ import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 import org.junit.jupiter.api.AfterEach;
@@ -50,6 +51,7 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -834,5 +836,117 @@ class RemoteHttpComponentTest {
     reader.join();
 
     assertThat(failure.get()).isNull();
+  }
+
+  // Regression tests for issue #4580: httpCommand's catch-all must not bury a malformed server
+  // response or a callback-side bug as a generic RemoteException.
+
+  /**
+   * A HTTP 200 with a body that is not valid JSON is a protocol/transport problem. It must surface as a
+   * clearly-labelled RemoteException ("Malformed server response") carrying the JSONException as cause, so it
+   * is distinguishable from a network failure or a callback bug.
+   */
+  @Test
+  void httpCommandMalformedJsonResponseThrowsLabelledRemoteException() throws Exception {
+    withOneShotHttp200Server("this is { not : valid : json", port -> {
+      final TestableRemoteHttpComponent c = new TestableRemoteHttpComponent("127.0.0.1", port, "root", "test");
+      try {
+        assertThatThrownBy(() -> c.httpCommand("GET", null, "server", null, null, null, false, false,
+            (response, json) -> json))
+            .isInstanceOf(RemoteException.class)
+            .hasMessageContaining("Malformed server response")
+            .hasCauseInstanceOf(JSONException.class);
+      } finally {
+        c.close();
+      }
+    });
+  }
+
+  /**
+   * A RuntimeException thrown from inside the callback (e.g. a NPE or any client-side bug) must propagate
+   * unchanged - same type, same message, original stack trace - instead of being wrapped as a generic
+   * RemoteException that hides the real cause.
+   */
+  @Test
+  void httpCommandCallbackRuntimeExceptionPropagatesUnchanged() throws Exception {
+    withOneShotHttp200Server("{}", port -> {
+      final TestableRemoteHttpComponent c = new TestableRemoteHttpComponent("127.0.0.1", port, "root", "test");
+      try {
+        assertThatThrownBy(() -> c.httpCommand("GET", null, "server", null, null, null, false, false,
+            (response, json) -> {
+              throw new IllegalStateException("callback boom");
+            }))
+            .isInstanceOf(IllegalStateException.class)
+            .hasMessage("callback boom");
+      } finally {
+        c.close();
+      }
+    });
+  }
+
+  /**
+   * A checked exception thrown from the callback (declared by the {@link RemoteHttpComponent.Callback}
+   * interface) is still wrapped as a RemoteException: it cannot propagate as-is and there is no more specific
+   * type to surface. This documents the preserved behaviour for the non-RuntimeException case.
+   */
+  @Test
+  void httpCommandCallbackCheckedExceptionWrappedAsRemoteException() throws Exception {
+    withOneShotHttp200Server("{}", port -> {
+      final TestableRemoteHttpComponent c = new TestableRemoteHttpComponent("127.0.0.1", port, "root", "test");
+      try {
+        assertThatThrownBy(() -> c.httpCommand("GET", null, "server", null, null, null, false, false,
+            (response, json) -> {
+              throw new java.text.ParseException("checked failure", 0);
+            }))
+            .isInstanceOf(RemoteException.class)
+            .hasCauseInstanceOf(java.text.ParseException.class);
+      } finally {
+        c.close();
+      }
+    });
+  }
+
+  @FunctionalInterface
+  private interface ServerAction {
+    void run(int port) throws Exception;
+  }
+
+  /**
+   * Starts a single-shot loopback HTTP server that replies to one request with "HTTP/1.1 200 OK" and the
+   * given body, then runs {@code action} against its port. The server thread drains the request headers
+   * before writing the response so the client does not block on the request body.
+   */
+  private void withOneShotHttp200Server(final String responseBody, final ServerAction action) throws Exception {
+    try (final ServerSocket serverSocket = new ServerSocket(0)) {
+      final int port = serverSocket.getLocalPort();
+
+      final Thread serverThread = new Thread(() -> {
+        try (final Socket client = serverSocket.accept()) {
+          final InputStream in = client.getInputStream();
+          final byte[] buf = new byte[8192];
+          int total = 0;
+          while (total < buf.length) {
+            final int n = in.read(buf, total, buf.length - total);
+            if (n < 0)
+              break;
+            total += n;
+            if (new String(buf, 0, total, StandardCharsets.ISO_8859_1).contains("\r\n\r\n"))
+              break;
+          }
+          final byte[] body = responseBody.getBytes(StandardCharsets.UTF_8);
+          final byte[] header = ("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " + body.length
+              + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.ISO_8859_1);
+          client.getOutputStream().write(header);
+          client.getOutputStream().write(body);
+          client.getOutputStream().flush();
+        } catch (final Exception ignored) {
+          // best-effort: the test assertions cover the client side
+        }
+      });
+      serverThread.setDaemon(true);
+      serverThread.start();
+
+      action.run(port);
+    }
   }
 }

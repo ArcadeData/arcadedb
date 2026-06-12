@@ -34,6 +34,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.network.HostUtil;
 import com.arcadedb.network.binary.QuorumNotReachedException;
 import com.arcadedb.network.binary.ServerIsNotTheLeaderException;
+import com.arcadedb.serializer.json.JSONException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.Pair;
 import com.arcadedb.utility.RWLockContext;
@@ -325,7 +326,15 @@ public class RemoteHttpComponent extends RWLockContext {
           throw lastException;
         }
 
-        final JSONObject jsonResponse = new JSONObject(response.body());
+        // The server returned HTTP 200 but the body is not valid JSON: this is a protocol/transport
+        // problem, not a callback bug. Surface it as a clearly-labelled RemoteException (issue #4580)
+        // so it is not confused with a network failure or buried as a generic error.
+        final JSONObject jsonResponse;
+        try {
+          jsonResponse = new JSONObject(response.body());
+        } catch (final JSONException e) {
+          throw new RemoteException("Malformed server response for operation '" + operation + "'", e);
+        }
 
         if (callback == null)
           return null;
@@ -385,10 +394,14 @@ public class RemoteHttpComponent extends RWLockContext {
         }
         LogManager.instance().log(this, Level.WARNING,
             "Election in progress, retrying after %dms (retry=%d/%d)...", null, delayMs, retry, maxRetry);
-      } catch (final RemoteException | DuplicatedKeyException | TransactionException | TimeoutException |
-                     SecurityException | RecordNotFoundException e) {
+      } catch (final RuntimeException e) {
+        // Propagate any RuntimeException unchanged (issue #4580): a callback-side bug (e.g. NPE), a
+        // malformed-response RemoteException, or a typed ArcadeDB exception (DuplicatedKeyException,
+        // TransactionException, TimeoutException, SecurityException, RecordNotFoundException, ...) must
+        // keep its original type and stack trace instead of being buried as a generic RemoteException.
         throw e;
       } catch (final Exception e) {
+        // Only checked exceptions thrown by the callback reach here: wrap them as a RemoteException.
         throw new RemoteException("Error on executing remote operation " + operation + " (cause: " + e.getMessage() + ")", e);
       }
     }
