@@ -4385,4 +4385,54 @@ class GraphAnalyticalViewTest extends TestHelper {
 
     gav.drop();
   }
+
+  /**
+   * Regression for issue #4585: getDegrees() must zero the caller's buffer before filling it.
+   * Callers reuse buffers (zero-GC pattern), so a missing CSR or an oversized buffer must not leave
+   * stale values that the overlay would then accumulate onto.
+   */
+  @Test
+  void getDegreesClearsReusedBuffer() {
+    // A -> B -> C
+    database.getSchema().createVertexType("Person");
+    database.getSchema().createEdgeType("FOLLOWS");
+
+    database.begin();
+    final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+    final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+    final MutableVertex c = database.newVertex("Person").set("name", "Charlie").save();
+    a.newEdge("FOLLOWS", b);
+    b.newEdge("FOLLOWS", c);
+    database.commit();
+
+    final GraphAnalyticalView gav = new GraphAnalyticalView(database);
+    gav.build(new String[] { "Person" }, new String[] { "FOLLOWS" });
+
+    final int nodeCount = gav.getNodeCount();
+    assertThat(nodeCount).isEqualTo(3);
+
+    // Case 1: oversized buffer pre-filled with stale sentinel values. The CSR fast path only writes
+    // indices [0, nodeCount); the tail must be zeroed, not left stale.
+    final int[] degrees = new int[nodeCount + 3];
+    Arrays.fill(degrees, 999);
+    gav.getDegrees(degrees, Vertex.DIRECTION.OUT, "FOLLOWS");
+
+    final int idA = gav.getNodeId(a.getIdentity());
+    final int idB = gav.getNodeId(b.getIdentity());
+    final int idC = gav.getNodeId(c.getIdentity());
+    assertThat(degrees[idA]).isEqualTo(1); // A -> B
+    assertThat(degrees[idB]).isEqualTo(1); // B -> C
+    assertThat(degrees[idC]).isEqualTo(0); // C has no outgoing
+    for (int i = nodeCount; i < degrees.length; i++)
+      assertThat(degrees[i]).as("tail index %d must be zeroed", i).isEqualTo(0);
+
+    // Case 2: missing CSR for the requested edge type (no edges of that type in the view). The whole
+    // buffer must come back zeroed instead of retaining stale values.
+    Arrays.fill(degrees, 999);
+    gav.getDegrees(degrees, Vertex.DIRECTION.OUT, "NONEXISTENT");
+    for (int i = 0; i < degrees.length; i++)
+      assertThat(degrees[i]).as("missing-CSR index %d must be zeroed", i).isEqualTo(0);
+
+    gav.drop();
+  }
 }
