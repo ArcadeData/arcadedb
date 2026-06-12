@@ -412,4 +412,116 @@ class CompositeIndexPartialKeySelectTest extends TestHelper {
       });
     }
   }
+
+  /**
+   * Regression tests for #4600: when a query filters on a strict prefix of a composite index and a
+   * dedicated shorter index on that prefix exists, the planner must prefer the shorter full-key
+   * index over a partial-key scan on the composite index. The partial-key scan is both more
+   * expensive and historically problematic on compacted LSM segments. The choice must be
+   * deterministic regardless of index iteration order (polymorphic types expose a HashSet).
+   */
+  @Nested
+  class Issue4600PreferExactMatchIndex {
+    private static final String DB_PATH = "target/databases/Issue4600PreferExactMatchIndex";
+
+    private Database database;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      database = new DatabaseFactory(DB_PATH).create();
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (database != null && database.isOpen())
+        database.drop();
+    }
+
+    private String plan(final String query, final Object... params) {
+      return database.query("sql", query, params).getExecutionPlan().get().prettyPrint(0, 3);
+    }
+
+    // #4600: WHERE a=? prefers the dedicated (a) index over the composite (a,b), composite created first
+    @Test
+    void prefersSingleIndexCompositeCreatedFirst() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE T");
+        database.command("sql", "CREATE PROPERTY T.a STRING");
+        database.command("sql", "CREATE PROPERTY T.b STRING");
+        database.command("sql", "CREATE INDEX ON T (a, b) UNIQUE");
+        database.command("sql", "CREATE INDEX ON T (a) NOTUNIQUE");
+      });
+      database.transaction(() -> {
+        assertThat(plan("EXPLAIN SELECT b FROM T WHERE a = 'x'")).contains("T[a]").doesNotContain("T[a,b]");
+        // projection variants from the issue must all pick the same index
+        assertThat(plan("EXPLAIN SELECT @rid FROM T WHERE a = 'x'")).contains("T[a]").doesNotContain("T[a,b]");
+        assertThat(plan("EXPLAIN SELECT count(*) FROM T WHERE a = 'x'")).contains("T[a]").doesNotContain("T[a,b]");
+      });
+    }
+
+    // #4600: same outcome when the single-property index is created before the composite one
+    @Test
+    void prefersSingleIndexSingleCreatedFirst() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE T");
+        database.command("sql", "CREATE PROPERTY T.a STRING");
+        database.command("sql", "CREATE PROPERTY T.b STRING");
+        database.command("sql", "CREATE INDEX ON T (a) NOTUNIQUE");
+        database.command("sql", "CREATE INDEX ON T (a, b) UNIQUE");
+      });
+      database.transaction(() ->
+          assertThat(plan("EXPLAIN SELECT b FROM T WHERE a = 'x'")).contains("T[a]").doesNotContain("T[a,b]"));
+    }
+
+    // #4600: reporter's exact production scenario - polymorphic type exposes a HashSet of indexes,
+    // which previously made the planner non-deterministically pick the composite index.
+    @Test
+    void prefersSingleIndexOnPolymorphicType() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE Base");
+        database.command("sql", "CREATE DOCUMENT TYPE Resource EXTENDS Base");
+        database.command("sql", "CREATE PROPERTY Resource.instanceId STRING");
+        database.command("sql", "CREATE PROPERTY Resource.hash STRING");
+        database.command("sql", "CREATE INDEX ON Resource (instanceId, hash) UNIQUE");
+        database.command("sql", "CREATE INDEX ON Resource (instanceId) NOTUNIQUE");
+      });
+      database.transaction(() ->
+          assertThat(plan("EXPLAIN SELECT hash FROM Resource WHERE instanceId = :id", "x"))
+              .contains("Resource[instanceId]").doesNotContain("Resource[instanceId,hash]"));
+    }
+
+    // #4600: a full-key predicate on the composite index must still use the composite index
+    @Test
+    void fullCompositeKeyStillUsesCompositeIndex() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE T");
+        database.command("sql", "CREATE PROPERTY T.a STRING");
+        database.command("sql", "CREATE PROPERTY T.b STRING");
+        database.command("sql", "CREATE INDEX ON T (a, b) UNIQUE");
+        database.command("sql", "CREATE INDEX ON T (a) NOTUNIQUE");
+      });
+      database.transaction(() ->
+          assertThat(plan("EXPLAIN SELECT * FROM T WHERE a = 'x' AND b = 'y'")).contains("T[a,b]"));
+    }
+
+    // #4600: the selected index must still return correct results
+    @Test
+    void queryReturnsCorrectResults() {
+      database.transaction(() -> {
+        database.command("sql", "CREATE DOCUMENT TYPE T");
+        database.command("sql", "CREATE PROPERTY T.a STRING");
+        database.command("sql", "CREATE PROPERTY T.b STRING");
+        database.command("sql", "CREATE INDEX ON T (a, b) UNIQUE");
+        database.command("sql", "CREATE INDEX ON T (a) NOTUNIQUE");
+      });
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO T SET a = 'x', b = 'b1'");
+        database.command("sql", "INSERT INTO T SET a = 'x', b = 'b2'");
+        database.command("sql", "INSERT INTO T SET a = 'y', b = 'b3'");
+      });
+      database.transaction(() ->
+          assertThat(database.query("sql", "SELECT b FROM T WHERE a = 'x'").stream().count()).isEqualTo(2));
+    }
+  }
 }
