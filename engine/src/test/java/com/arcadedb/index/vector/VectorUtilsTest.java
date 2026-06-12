@@ -84,6 +84,40 @@ class VectorUtilsTest {
   }
 
   @Test
+  void cosineSimilarityZeroVectorIsConsistentSentinel() {
+    // Issue #4583: a zero-magnitude vector has an undefined cosine similarity (0/0). The JVector
+    // SIMD path returns NaN while the scalar fallback returns 0.0f, so the same query could rank
+    // differently depending on whether the JVM has the Vector API enabled, and NaN would poison
+    // Float.compare ordering. Both paths must now agree on the 0.0f sentinel (distance 1.0 for the
+    // 1 - score callers).
+    final float[] zero = { 0.0f, 0.0f, 0.0f };
+    final float[] vec = { 1.0f, 2.0f, 3.0f };
+
+    final float zeroZero = VectorUtils.cosineSimilarity(zero, zero);
+    final float zeroVec = VectorUtils.cosineSimilarity(zero, vec);
+    final float vecZero = VectorUtils.cosineSimilarity(vec, zero);
+
+    assertThat(Float.isNaN(zeroZero)).isFalse();
+    assertThat(Float.isNaN(zeroVec)).isFalse();
+    assertThat(Float.isNaN(vecZero)).isFalse();
+    assertThat(zeroZero).isEqualTo(0.0f);
+    assertThat(zeroVec).isEqualTo(0.0f);
+    assertThat(vecZero).isEqualTo(0.0f);
+  }
+
+  @Test
+  void cosineSimilarityKnownValues() {
+    // Sanity-pin the non-degenerate cases so the zero-vector guard does not regress real scores.
+    final float[] a = { 1.0f, 0.0f, 0.0f };
+    final float[] b = { 0.0f, 1.0f, 0.0f };
+    final float[] c = { -1.0f, 0.0f, 0.0f };
+
+    assertThat(VectorUtils.cosineSimilarity(a, a)).isCloseTo(1.0f, within(1e-6f));
+    assertThat(VectorUtils.cosineSimilarity(a, b)).isCloseTo(0.0f, within(1e-6f));
+    assertThat(VectorUtils.cosineSimilarity(a, c)).isCloseTo(-1.0f, within(1e-6f));
+  }
+
+  @Test
   void toFloatArrayPassesThroughFloatArrayUnchanged() {
     // The encoding-aware overload only intercepts byte[] inputs - any other type, including
     // float[], delegates straight to the bare overload, which returns the input array reference
