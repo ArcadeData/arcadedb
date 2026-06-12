@@ -125,8 +125,24 @@ class DeltaOverlay {
    * Creates a new overlay by merging this overlay with a transaction delta.
    * The previous overlay is not modified.
    */
-  @SuppressWarnings("unchecked")
   DeltaOverlay merge(final TxDelta delta, final NodeIdMapping baseMapping) {
+    return merge(delta, baseMapping, null);
+  }
+
+  /**
+   * Creates a new overlay by merging this overlay with a transaction delta.
+   * The previous overlay is not modified.
+   * <p>
+   * When {@code baseCsrPerType} is non-null (post-compaction delta re-application, see issue #4588),
+   * an added edge whose both endpoints are base nodes and that the freshly built base CSR already
+   * contains is skipped, unless the same edge is masked as deleted (either by an earlier buffered
+   * delta or within this delta). The compaction scan is read-committed and non-atomic, so a buffered
+   * delta may already be reflected in the new base CSR; re-adding it to the overlay would surface a
+   * duplicate neighbour and inflate the delta edge counter.
+   */
+  @SuppressWarnings("unchecked")
+  DeltaOverlay merge(final TxDelta delta, final NodeIdMapping baseMapping,
+      final Map<String, CSRAdjacencyIndex> baseCsrPerType) {
     // Copy mutable structures from previous overlay
     final Map<RID, Integer> newOverflowIds = new HashMap<>(overflowNodeIds);
     final List<RID> overflowRIDsList = new ArrayList<>(Arrays.asList(overflowIdToRID));
@@ -171,12 +187,41 @@ class DeltaOverlay {
       }
     }
 
+    // Pre-resolve edges this same delta deletes, so a delete + re-add of the same edge within one
+    // transaction is not mistakenly skipped by the base-CSR dedup below (#4588). Only needed on the
+    // re-application path (baseCsrPerType != null).
+    Set<Long> sameDeltaDeleted = null;
+    if (baseCsrPerType != null && !delta.deletedEdges.isEmpty()) {
+      sameDeltaDeleted = new HashSet<>();
+      for (final TxDelta.EdgeDelta ed : delta.deletedEdges) {
+        final int s = resolveNodeId(ed.source, baseMapping, newOverflowIds);
+        final int t = resolveNodeId(ed.target, baseMapping, newOverflowIds);
+        if (s >= 0 && t >= 0)
+          sameDeltaDeleted.add(packEdge(s, t));
+      }
+    }
+
     // Process added edges
     for (final TxDelta.EdgeDelta ed : delta.addedEdges) {
       final int srcId = resolveNodeId(ed.source, baseMapping, newOverflowIds);
       final int tgtId = resolveNodeId(ed.target, baseMapping, newOverflowIds);
       if (srcId < 0 || tgtId < 0)
         continue; // endpoint not in view
+      // Post-compaction re-application: if the freshly built base CSR already contains this edge (the
+      // read-committed scan crossed its bucket after it committed), re-adding it would duplicate the
+      // neighbour and inflate the counter. Skip it unless it is masked as deleted, in which case the
+      // overlay must keep the explicit add to reinstate it. See issue #4588.
+      if (baseCsrPerType != null && srcId < baseNodeCount && tgtId < baseNodeCount) {
+        final CSRAdjacencyIndex csr = baseCsrPerType.get(ed.edgeType);
+        if (csr != null && csr.hasForwardEdge(srcId, tgtId)) {
+          final long packed = packEdge(srcId, tgtId);
+          final Set<Long> prevDel = newDeletedEdges.get(ed.edgeType);
+          final boolean masked = (prevDel != null && prevDel.contains(packed))
+              || (sameDeltaDeleted != null && sameDeltaDeleted.contains(packed));
+          if (!masked)
+            continue; // already represented by the fresh base CSR
+        }
+      }
       newAddedEdges.computeIfAbsent(ed.edgeType, k -> new ArrayList<>())
           .add(new long[] { srcId, tgtId });
       newDeltaEdgeCount++;

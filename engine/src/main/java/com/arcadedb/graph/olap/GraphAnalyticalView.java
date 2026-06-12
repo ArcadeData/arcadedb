@@ -1426,7 +1426,10 @@ public class GraphAnalyticalView implements GraphTraversalProvider {
                   if (!buffered.isEmpty()) {
                     DeltaOverlay overlay = new DeltaOverlay(result.getMapping().size());
                     for (final TxDelta d : buffered) {
-                      overlay = overlay.merge(d, result.getMapping());
+                      // Dedup against the fresh base CSR: a buffered delta committed before the scan
+                      // crossed its bucket is already in the new base, so re-merging it blindly would
+                      // create duplicate neighbours. See issue #4588.
+                      overlay = overlay.merge(d, result.getMapping(), result.getCsrPerType());
                       // Edge property updates have no overlay representation, so a delta buffered
                       // during this rebuild may not be reflected in the fresh CSR (if it committed
                       // after the relevant bucket was scanned). Flag a follow-up rebuild (#4513).
