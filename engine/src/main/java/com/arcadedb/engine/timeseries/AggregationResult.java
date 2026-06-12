@@ -102,8 +102,10 @@ public final class AggregationResult {
     return switch (type) {
       case SUM, COUNT -> v1 + v2;
       case AVG -> (v1 * c1 + v2 * c2) / (c1 + c2);
-      case MIN -> Math.min(v1, v2);
-      case MAX -> Math.max(v1, v2);
+      // NaN policy (issue #4596): NaN is treated as absent and skipped, so a real value always
+      // wins over a NaN running value. Order-independent and consistent with the other MIN/MAX paths.
+      case MIN -> Double.isNaN(v2) ? v1 : Double.isNaN(v1) ? v2 : Math.min(v1, v2);
+      case MAX -> Double.isNaN(v2) ? v1 : Double.isNaN(v1) ? v2 : Math.max(v1, v2);
     };
   }
 }
