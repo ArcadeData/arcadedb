@@ -83,24 +83,23 @@ public class ContiguousPageReader implements RandomAccessReader {
 
   @Override
   public void seek(final long position) throws IOException {
-    if (position < 0 || position > totalBytes)
-      throw new IOException("Invalid seek position: " + position + " (length=" + totalBytes + ")");
+    // The caller addresses the data start as logical 0; the base offset (typically 0 for
+    // jvector 4.0.0-rc.7+) is applied unconditionally so the mapping stays monotonic.
+    if (position < 0 || position > totalBytes - offset)
+      throw new IOException("Invalid seek position: " + position + " (length=" + (totalBytes - offset) + ")");
 
-    this.logicalPosition = position;
-
-    if (logicalPosition == 0 && offset > 0)
-      // Apply optional offset for reading (typically 0 for jvector 4.0.0-rc.7+)
-      logicalPosition += offset;
+    this.logicalPosition = position + offset;
   }
 
   @Override
   public long getPosition() {
-    return logicalPosition;
+    // Report the caller-space position (excluding the base offset) so seek(getPosition()) round-trips.
+    return logicalPosition - offset;
   }
 
   @Override
   public long length() {
-    return totalBytes;
+    return totalBytes - offset;
   }
 
   @Override
