@@ -42,9 +42,10 @@ public class NotBlock extends BooleanExpression {
     if (sub == null) {
       return true;
     }
-    final boolean result = sub.evaluate(currentRecord, context);
+    final Boolean result = sub.evaluate(currentRecord, context);
     if (negate) {
-      return !result;
+      // SQL three-valued logic: NOT UNKNOWN is UNKNOWN.
+      return result == null ? null : !result;
     }
     return result;
   }
@@ -54,9 +55,10 @@ public class NotBlock extends BooleanExpression {
     if (sub == null)
       return null;
 
-    final boolean result = sub.evaluate(currentRecord, context);
+    final Boolean result = sub.evaluate(currentRecord, context);
     if (negate)
-      return !result;
+      // SQL three-valued logic: NOT UNKNOWN is UNKNOWN.
+      return result == null ? null : !result;
 
     return result;
   }
