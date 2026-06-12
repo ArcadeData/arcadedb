@@ -59,9 +59,11 @@ public class InCondition extends BooleanExpression {
     final Object leftVal = evaluateLeft(currentRecord, context);
     final Object rightVal = evaluateRight(currentRecord, context);
     if (rightVal == null)
-      return false;
+      return null;
 
-    final boolean result = evaluateExpression(leftVal, rightVal);
+    final Boolean result = evaluateExpressionThreeValued(leftVal, rightVal);
+    if (result == null)
+      return null;
     return not != result;
   }
 
@@ -99,9 +101,11 @@ public class InCondition extends BooleanExpression {
     final Object leftVal = evaluateLeft(currentRecord, context);
     final Object rightVal = evaluateRight(currentRecord, context);
     if (rightVal == null)
-      return false;
+      return null;
 
-    final boolean result = evaluateExpression(leftVal, rightVal);
+    final Boolean result = evaluateExpressionThreeValued(leftVal, rightVal);
+    if (result == null)
+      return null;
     return not != result;
   }
 
@@ -148,45 +152,98 @@ public class InCondition extends BooleanExpression {
         .collect(Collectors.toSet());
   }
 
-  protected static boolean evaluateExpression(Object iLeft, final Object iRight) {
+  /**
+   * Two-valued membership test (kept for callers that do not implement SQL three-valued logic).
+   * Maps UNKNOWN to {@code false}.
+   */
+  protected static boolean evaluateExpression(final Object iLeft, final Object iRight) {
+    return Boolean.TRUE.equals(evaluateExpressionThreeValued(iLeft, iRight));
+  }
+
+  /**
+   * SQL three-valued membership test ({@code iLeft IN iRight}).
+   *
+   * @return {@code Boolean.TRUE} on a definite match, {@code Boolean.FALSE} on a definite
+   * non-match, or {@code null} (UNKNOWN) when the left value is null or no match was found but the
+   * right collection contains a null element. UNKNOWN is mapped to false at the WHERE boundary.
+   */
+  protected static Boolean evaluateExpressionThreeValued(Object iLeft, final Object iRight) {
     if (iLeft instanceof Result r && !r.isElement()) {
       final Set<String> names = r.getPropertyNames();
       if (names.size() == 1)
         iLeft = r.getProperty(names.iterator().next());
     }
     if (MultiValue.isMultiValue(iRight)) {
-      if (iRight instanceof Set<?> set)
-        return set.contains(iLeft);
+      if (iRight instanceof Set<?> set) {
+        if (iLeft != null && set.contains(iLeft))
+          return Boolean.TRUE;
+        if (set.isEmpty())
+          return Boolean.FALSE;
+        // No match: UNKNOWN if the search value is null or the set holds a null element, else FALSE.
+        return (iLeft == null || set.contains(null)) ? null : Boolean.FALSE;
+      }
 
+      boolean sawNull = false;
+      boolean empty = true;
       for (final Object o : MultiValue.getMultiValueIterable(iRight, false)) {
-        if (QueryOperatorEquals.equals(iLeft, o) || (iLeft == null && o == null))
-          return true;
+        empty = false;
+        if (iLeft == null || o == null) {
+          sawNull = true;
+          continue;
+        }
+        if (QueryOperatorEquals.equals(iLeft, o))
+          return Boolean.TRUE;
         if (MultiValue.isMultiValue(iLeft) && MultiValue.getSize(iLeft) == 1) {
 
           final Object item = MultiValue.getFirstValue(iLeft);
           if (item instanceof Result result && result.getPropertyNames().size() == 1) {
             final Object propValue = result.getProperty(result.getPropertyNames().iterator().next());
             if (QueryOperatorEquals.equals(propValue, o))
-              return true;
+              return Boolean.TRUE;
           }
         }
 
       }
+      if (empty)
+        return Boolean.FALSE;
+      return sawNull ? null : Boolean.FALSE;
     } else if (iRight.getClass().isArray()) {
-      for (final Object o : (Object[]) iRight) {
-        if (QueryOperatorEquals.equals(iLeft, o) || (iLeft == null && o == null))
-          return true;
+      final Object[] array = (Object[]) iRight;
+      boolean sawNull = false;
+      for (final Object o : array) {
+        if (iLeft == null || o == null) {
+          sawNull = true;
+          continue;
+        }
+        if (QueryOperatorEquals.equals(iLeft, o))
+          return Boolean.TRUE;
       }
+      if (array.length == 0)
+        return Boolean.FALSE;
+      return sawNull ? null : Boolean.FALSE;
     } else if (iRight instanceof ResultSet rsRight) {
+      boolean sawNull = false;
+      boolean empty = true;
       rsRight.reset();
       while (rsRight.hasNext()) {
-        if (QueryOperatorEquals.equals(iLeft, rsRight.next())) {
-          return true;
+        empty = false;
+        final Object o = rsRight.next();
+        if (iLeft == null || o == null) {
+          sawNull = true;
+          continue;
         }
+        if (QueryOperatorEquals.equals(iLeft, o))
+          return Boolean.TRUE;
       }
+      if (empty)
+        return Boolean.FALSE;
+      return sawNull ? null : Boolean.FALSE;
     }
 
-    return CodeUtils.compare(iLeft, iRight);
+    // Scalar right-hand side: degrade to an equality test (e.g. IN with a single non-collection value).
+    if (iLeft == null)
+      return null;
+    return CodeUtils.compare(iLeft, iRight) ? Boolean.TRUE : Boolean.FALSE;
   }
 
   public void toString(final Map<String, Object> params, final StringBuilder builder) {
