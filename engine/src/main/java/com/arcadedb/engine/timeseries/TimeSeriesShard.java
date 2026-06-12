@@ -701,7 +701,7 @@ public class TimeSeriesShard implements AutoCloseable {
     while (chunkStart < totalSamples) {
       int chunkEnd;
       if (compactionBucketIntervalMs > 0) {
-        final long bucketStart = (sortedTs[chunkStart] / compactionBucketIntervalMs) * compactionBucketIntervalMs;
+        final long bucketStart = Math.floorDiv(sortedTs[chunkStart], compactionBucketIntervalMs) * compactionBucketIntervalMs;
         final long bucketEnd = bucketStart + compactionBucketIntervalMs;
         chunkEnd = chunkStart;
         final int maxEnd = Math.min(chunkStart + SEALED_BLOCK_SIZE, totalSamples);

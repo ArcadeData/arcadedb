@@ -266,7 +266,7 @@ public class TimeSeriesEngine implements AutoCloseable {
     while (iter.hasNext()) {
       final Object[] row = iter.next();
       final long ts = (long) row[0];
-      final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
+      final long bucketTs = bucketIntervalMs > 0 ? Math.floorDiv(ts, bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
       final double value;
 
       if (columnIndex + 1 < row.length && row[columnIndex + 1] instanceof Number)
@@ -331,8 +331,8 @@ public class TimeSeriesEngine implements AutoCloseable {
     final long firstBucket;
     final int maxBuckets;
     if (useFlatMode && actualMin <= actualMax) {
-      firstBucket = (actualMin / bucketIntervalMs) * bucketIntervalMs;
-      final long computedBuckets = (actualMax - firstBucket) / bucketIntervalMs + 2;
+      firstBucket = Math.floorDiv(actualMin, bucketIntervalMs) * bucketIntervalMs;
+      final long computedBuckets = Math.floorDiv(actualMax - firstBucket, bucketIntervalMs) + 2;
       if (computedBuckets > MultiColumnAggregationResult.MAX_FLAT_BUCKETS)
         // Will trigger map-mode fallback in MultiColumnAggregationResult constructor
         maxBuckets = MultiColumnAggregationResult.MAX_FLAT_BUCKETS + 1;
@@ -412,7 +412,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             if (tagFilter != null && !tagFilter.matches(row))
               continue;
             final long ts = (long) row[0];
-            final long bucketTs = (ts / bucketIntervalMs) * bucketIntervalMs;
+            final long bucketTs = Math.floorDiv(ts, bucketIntervalMs) * bucketIntervalMs;
             for (int r = 0; r < reqCount; r++) {
               if (isCount[r])
                 rowValues[r] = 1.0;
@@ -455,7 +455,7 @@ public class TimeSeriesEngine implements AutoCloseable {
             if (tagFilter != null && !tagFilter.matches(row))
               continue;
             final long ts = (long) row[0];
-            final long bucketTs = bucketIntervalMs > 0 ? (ts / bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
+            final long bucketTs = bucketIntervalMs > 0 ? Math.floorDiv(ts, bucketIntervalMs) * bucketIntervalMs : singleBucketTs;
 
             for (int r = 0; r < reqCount; r++) {
               if (isCount[r])

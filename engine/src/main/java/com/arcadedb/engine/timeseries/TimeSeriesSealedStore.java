@@ -501,7 +501,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             continue;
 
           final long bucketTs = bucketIntervalMs > 0
-              ? (timestamps[i] / bucketIntervalMs) * bucketIntervalMs
+              ? Math.floorDiv(timestamps[i], bucketIntervalMs) * bucketIntervalMs
               : singleBucketTs;
 
           accumulateSample(result, bucketTs, values[i], type);
@@ -570,8 +570,8 @@ public class TimeSeriesSealedStore implements AutoCloseable {
         // FAST_PATH: block is homogeneous for the filtered tag, so block-level stats are valid
         if (tagMatch == BlockMatchResult.FAST_PATH
             && bucketIntervalMs > 0 && entry.minTimestamp >= fromTs && entry.maxTimestamp <= toTs) {
-          final long blockMinBucket = (entry.minTimestamp / bucketIntervalMs) * bucketIntervalMs;
-          final long blockMaxBucket = (entry.maxTimestamp / bucketIntervalMs) * bucketIntervalMs;
+          final long blockMinBucket = Math.floorDiv(entry.minTimestamp, bucketIntervalMs) * bucketIntervalMs;
+          final long blockMaxBucket = Math.floorDiv(entry.maxTimestamp, bucketIntervalMs) * bucketIntervalMs;
 
           if (blockMinBucket == blockMaxBucket) {
             // FAST PATH: use block-level stats directly — no decompression needed
@@ -664,7 +664,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
             for (int i = rangeStart; i < rangeEnd; i++) {
               if (!matchesTagConditions(tagCols, filterConditions, i))
                 continue;
-              final long bucketTs = (timestamps[i] / bucketIntervalMs) * bucketIntervalMs;
+              final long bucketTs = Math.floorDiv(timestamps[i], bucketIntervalMs) * bucketIntervalMs;
               for (int r = 0; r < reqCount; r++) {
                 if (isCount[r])
                   result.accumulateSingleStat(bucketTs, r, 1.0, 1);
@@ -678,7 +678,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
             int segStart = rangeStart;
             while (segStart < rangeEnd) {
-              final long bucketTs = (timestamps[segStart] / bucketIntervalMs) * bucketIntervalMs;
+              final long bucketTs = Math.floorDiv(timestamps[segStart], bucketIntervalMs) * bucketIntervalMs;
               final long nextBucketTs = bucketTs + bucketIntervalMs;
 
               // Find end of this bucket's segment
@@ -870,7 +870,7 @@ public class TimeSeriesSealedStore implements AutoCloseable {
 
       // Group samples by (tagValues list, bucketTs)
       for (int i = 0; i < timestamps.length; i++) {
-        final long bucketTs = (timestamps[i] / granularityMs) * granularityMs;
+        final long bucketTs = Math.floorDiv(timestamps[i], granularityMs) * granularityMs;
 
         // Build tag key as List<String> to avoid ambiguity with null bytes in tag values
         final List<String> tagKey = new ArrayList<>(tagData.length);
