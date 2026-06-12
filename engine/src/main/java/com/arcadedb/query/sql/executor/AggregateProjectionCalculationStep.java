@@ -203,12 +203,12 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
         }
       }
 
-      // Memory optimization: Clear the element reference from the input Result after processing
-      // This releases the full Document object and allows it to be garbage collected
-      // We've already extracted all needed values into the key and preAggr
-      if (next instanceof ResultInternal) {
-        ((ResultInternal) next).setElement(null);
-      }
+      // NOTE: we must NOT clear the element reference of the input Result here (issue #4590).
+      // Doing so is a destructive side effect on a row we do not own exclusively: when the same
+      // Result instance is referenced elsewhere (e.g. a materialized LET variable, a shared
+      // ResultSet replayed via reset(), or a parallel sub-plan) later reads of getElement()
+      // would silently return null. The local "next" reference is released at the end of each
+      // loop iteration anyway, so the previous micro-optimization provided no real GC benefit.
     } finally {
       if (context.isProfiling())
         cost += System.nanoTime() - begin;
