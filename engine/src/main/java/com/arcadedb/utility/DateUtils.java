@@ -122,6 +122,29 @@ public class DateUtils {
     return value;
   }
 
+  /**
+   * Converts a temporal value to the number of days since the epoch, the canonical encoding for the
+   * {@link com.arcadedb.schema.Type#DATE} type both on disk and on the remote JSON wire. Mirrors the
+   * {@code TYPE_DATE} branch of the binary serializer so the remote path and the embedded binary path
+   * agree: a {@code java.util.Date} written to a DATE property over the remote client used to be
+   * serialized as epoch milliseconds, which the server then decoded as epoch days, silently losing the
+   * value (issue #4601).
+   */
+  public static Long dateToEpochDays(final Object value) {
+    return switch (value) {
+      case null -> null;
+      case LocalDate localDate -> localDate.toEpochDay();
+      case LocalDateTime localDateTime -> localDateTime.toLocalDate().toEpochDay();
+      case Date date -> date.getTime() / MS_IN_A_DAY;
+      case Calendar calendar -> calendar.getTimeInMillis() / MS_IN_A_DAY;
+      case Instant instant -> instant.atZone(UTC_ZONE_ID).toLocalDate().toEpochDay();
+      case ZonedDateTime zonedDateTime -> zonedDateTime.toLocalDate().toEpochDay();
+      case Number number -> number.longValue();
+      default ->
+          throw new IllegalArgumentException("Cannot convert value of type '" + value.getClass() + "' to epoch days for a DATE value");
+    };
+  }
+
   public static Long dateTimeToTimestamp(final Object value, final ChronoUnit precisionToUse) {
     return dateTimeToTimestamp(null, value, precisionToUse);
   }

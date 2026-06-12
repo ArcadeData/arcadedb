@@ -26,6 +26,7 @@ import com.arcadedb.integration.misc.IntegrationUtils;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.remote.RemoteDatabase;
+import com.arcadedb.remote.RemoteMutableVertex;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Type;
 import com.arcadedb.utility.DateUtils;
@@ -34,7 +35,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.Date;
 
 import static com.arcadedb.server.BaseGraphServerTest.DEFAULT_PASSWORD_FOR_TESTS;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -98,6 +101,56 @@ class RemoteDateIT {
         assertThat(result.toElement().get("vstart")).isEqualTo(vstart.toString());
       }
 
+    } finally {
+      arcadeDBServer.stop();
+    }
+  }
+
+  /**
+   * Issue #4601: a non-null java.util.Date assigned to a DATE property through the remote client
+   * was silently persisted as null, because the JSON serializer encoded the value as epoch
+   * milliseconds while the server decodes a DATE number as epoch days.
+   */
+  @Test
+  void dateTypeWithJavaUtilDateRemote() {
+    final ContextConfiguration serverConfiguration = new ContextConfiguration();
+    final String rootPath = IntegrationUtils.setRootPath(serverConfiguration);
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, rootPath + "/databases");
+    serverConfiguration.setValue(GlobalConfiguration.SERVER_ROOT_PASSWORD, DEFAULT_PASSWORD_FOR_TESTS);
+
+    final ArcadeDBServer arcadeDBServer = new ArcadeDBServer(serverConfiguration);
+    arcadeDBServer.start();
+
+    try {
+      final Database database = arcadeDBServer.getOrCreateDatabase("remotedate");
+      database.command("sql", "alter database `arcadedb.dateTimeImplementation` `java.time.LocalDateTime`");
+      database.transaction(() -> {
+        final DocumentType type = database.getSchema().createVertexType("TestDateVertex");
+        type.createProperty("dateValue", Type.DATE);
+        type.createProperty("dateTimeValue", Type.DATETIME);
+      });
+
+      // 2026-06-12 15:30:45.123 UTC
+      final Date date = Date.from(LocalDateTime.of(2026, 6, 12, 15, 30, 45, 123_000_000).toInstant(ZoneOffset.UTC));
+
+      final int httpPort = arcadeDBServer.getHttpServer().getPort();
+      final RemoteDatabase remote = new RemoteDatabase("localhost", httpPort, "remotedate", "root", DEFAULT_PASSWORD_FOR_TESTS);
+
+      remote.transaction(() -> {
+        final RemoteMutableVertex v = remote.newVertex("TestDateVertex");
+        v.set("dateValue", date);
+        v.set("dateTimeValue", date);
+        v.save();
+      });
+
+      try (final ResultSet resultSet = remote.query("sql", "select dateValue, dateTimeValue from TestDateVertex")) {
+        final Result result = resultSet.next();
+        // The DATETIME path already works and is used as the control.
+        assertThat(result.<Object>getProperty("dateTimeValue")).isNotNull();
+        // Issue #4601: the DATE value must not be silently dropped.
+        assertThat(result.<Object>getProperty("dateValue")).isNotNull();
+        assertThat(result.<Object>getProperty("dateValue").toString()).startsWith("2026-06-12");
+      }
     } finally {
       arcadeDBServer.stop();
     }
