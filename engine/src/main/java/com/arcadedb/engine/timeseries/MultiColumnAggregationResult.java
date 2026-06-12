@@ -280,12 +280,29 @@ public final class MultiColumnAggregationResult {
   public double getValue(final long bucketTs, final int requestIndex) {
     if (flatMode) {
       final int idx = flatIndex(bucketTs);
-      if (idx >= 0 && idx < maxBuckets && bucketUsed[idx])
+      if (idx >= 0 && idx < maxBuckets && bucketUsed[idx]) {
+        if (isUnusedMinMax(flatCounts[idx], requestIndex))
+          return Double.NaN;
         return flatValues[idx][requestIndex];
+      }
       return 0.0;
     }
     final double[] vals = valuesByBucket.get(bucketTs);
-    return vals != null ? vals[requestIndex] : 0.0;
+    if (vals == null)
+      return 0.0;
+    if (isUnusedMinMax(countsByBucket.get(bucketTs), requestIndex))
+      return Double.NaN;
+    return vals[requestIndex];
+  }
+
+  /**
+   * A bucket is flagged used as soon as any request touches it, but a MIN/MAX request that received
+   * no data keeps its {@code Double.MAX_VALUE} / {@code -Double.MAX_VALUE} init sentinel. Surface that
+   * as NaN (the absent marker, issue #4596) instead of leaking the sentinel as if it were data.
+   */
+  private boolean isUnusedMinMax(final long[] counts, final int requestIndex) {
+    final AggregationType type = types[requestIndex];
+    return (type == AggregationType.MIN || type == AggregationType.MAX) && counts != null && counts[requestIndex] == 0;
   }
 
   public long getCount(final long bucketTs, final int requestIndex) {
