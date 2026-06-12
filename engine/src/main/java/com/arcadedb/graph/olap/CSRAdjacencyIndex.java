@@ -18,6 +18,8 @@
  */
 package com.arcadedb.graph.olap;
 
+import java.util.Arrays;
+
 /**
  * Compressed Sparse Row (CSR) adjacency index for high-performance graph traversal.
  * <p>
@@ -125,6 +127,20 @@ public class CSRAdjacencyIndex {
    */
   public int inNeighbor(final int nodeId, final int index) {
     return bwdNeighbors[bwdOffsets[nodeId] + index];
+  }
+
+  /**
+   * Returns true if the forward (outgoing) edge {@code src -> tgt} exists in this base CSR.
+   * Each node's neighbour slice is stored sorted, so this is a binary search over that slice.
+   * <p>
+   * Used during post-compaction delta re-application to skip a buffered edge the CSR scan already
+   * captured, which would otherwise be appended a second time onto the base neighbour list and show
+   * up as a duplicate. See issue #4588.
+   */
+  public boolean hasForwardEdge(final int src, final int tgt) {
+    if (src < 0 || src >= nodeCount)
+      return false;
+    return Arrays.binarySearch(fwdNeighbors, fwdOffsets[src], fwdOffsets[src + 1], tgt) >= 0;
   }
 
   /**
