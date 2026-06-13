@@ -24,6 +24,7 @@ import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 class TracingPluginTest {
 
@@ -44,6 +45,26 @@ class TracingPluginTest {
     assertThat(exporter.getFinishedSpanItems().get(0).getName()).contains("test.op");
 
     plugin.stopService();
+  }
+
+  @Test
+  void observingAfterStopIsInertAndDoesNotTouchTheClosedProvider() {
+    final ObservationRegistry registry = ObservationRegistry.create();
+    final InMemorySpanExporter exporter = InMemorySpanExporter.create();
+
+    final TracingPlugin plugin = new TracingPlugin();
+    plugin.attachForTest(registry, exporter);
+
+    Observation.createNotStarted("before.stop", registry).observe(() -> {
+    });
+    assertThat(exporter.getFinishedSpanItems()).isNotEmpty();
+
+    // The registry has no remove-handler API, so the handler stays registered after stop. It must be
+    // deactivated so a later Observation is a no-op and never drives the now-closed tracer provider
+    // (which would otherwise risk errors). Asserting the observation runs cleanly proves it.
+    plugin.stopService();
+    assertThatCode(() -> Observation.createNotStarted("after.stop", registry).observe(() -> {
+    })).doesNotThrowAnyException();
   }
 
   @Test

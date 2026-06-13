@@ -23,6 +23,7 @@ import io.opentelemetry.api.common.AttributeKey;
 import io.micrometer.observation.ObservationRegistry;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import io.opentelemetry.sdk.trace.data.SpanData;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * request produces an exported span, and an inbound W3C {@code traceparent} header is continued by
  * the production handler wiring. Uses an in-memory exporter rather than the OTLP exporter.
  */
+@Tag("slow")
 class ServerTracingIT extends BaseGraphServerTest {
 
   @Override
