@@ -124,9 +124,13 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         .lowCardinalityKeyValue("path", pathTemplate(exchange))
         .lowCardinalityKeyValue("db", databaseTag(exchange));
     observation.start();
-    final Observation.Scope observationScope = observation.openScope();
+    // Open the scope inside the try so that if a misbehaving handler throws on scope-open the
+    // catch/finally still runs: the observation is stopped (not leaked) and the request is answered
+    // with an error rather than propagating an uncaught exception.
+    Observation.Scope observationScope = null;
 
     try {
+      observationScope = observation.openScope();
       LogManager.instance().setContext(httpServer.getServer().getServerName());
 
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
@@ -382,7 +386,8 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
         LogManager.instance().log(this, Level.WARNING, "Error tagging tracing observation", t);
       }
       try {
-        observationScope.close();
+        if (observationScope != null)
+          observationScope.close();
       } catch (final Throwable t) {
         LogManager.instance().log(this, Level.WARNING, "Error closing tracing observation scope", t);
       }

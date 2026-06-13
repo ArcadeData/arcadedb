@@ -59,48 +59,6 @@ spans - with the OTel SDK kept entirely off the core/server compile classpath.
 - Classpath isolation: `mvn -pl server dependency:tree | grep opentelemetry` -> none.
 - Retro-compat: existing `HttpRedMetricsIT` / `PrometheusEngineMetricsIT` stay green untouched.
 
-## Files changed
-
-- `pom.xml` - `micrometer-tracing` (1.6.5) + `opentelemetry` (1.55.0) version properties, two
-  import-scope BOMs, `tracing` module registration.
-- `tracing/` (new module) - `pom.xml`, SPI registration, `package-info`, `TracingPlugin`, tests
-  (`TracingPluginTest`, `TraceparentPropagationTest`, `ServerTracingIT`).
-- `engine/.../GlobalConfiguration.java` - `SERVER_METRICS_TRACING_ENABLED/ENDPOINT/SAMPLING_RATE`.
-- `server/.../ArcadeDBServer.java` - shared `ObservationRegistry` + getter.
-- `server/.../http/handler/AbstractServerHttpHandler.java` - span-only Observation wrapper +
-  lazy `RequestReplyReceiverContext` for inbound `traceparent`. Pillar 1 timer untouched.
-- `server/.../ObservationRegistryIT.java`, `.../http/HttpObservationIT.java` - new server tests.
-- `package/arcadedb-builder.sh` - `tracing` in `SHADED_MODULES` + module description.
-- `ATTRIBUTIONS.md`, `NOTICE` - OpenTelemetry + Micrometer Tracing (Apache-2.0; folded the
-  micrometer-tracing NOTICE).
-
-## Test results
-
-- `tracing` module: `TracingPluginTest` (2), `TraceparentPropagationTest` (1), `ServerTracingIT` (1) - green (verify/failsafe).
-- `server`: `ObservationRegistryIT` (1), `HttpObservationIT` (1) green; existing `HttpRedMetricsIT` (2)
-  and 433 server unit tests green (no regressions).
-- `metrics`: 5 tests green (retro-compat: `/prometheus` + OTLP unaffected).
-- `engine` `ConfigurationTest`: green (new keys don't break config snapshot).
-- Classpath isolation: `mvn -pl server dependency:tree | grep -i opentelemetry` -> none.
-- Version alignment: tracing module resolves `micrometer-observation:1.16.5` (matches core).
-
-## Self-review (1 cycle, code-reviewer agent)
-
-Applied: BatchSpanProcessor in production (non-blocking export; tests use SimpleSpanProcessor seam);
-sampling key `Float`-typed to avoid double->float precision loss; single `getTracer` local; single
-`attachForTest` seam; `isActive()` returns `enabled`; endpoint null/blank guard; effective
-endpoint+samplingRate logged at startup; micrometer-tracing pinned to 1.6.5 to align with core
-1.16.5. Deferred (per plan): outbound Raft span propagation.
-
-## Progress log
-
-- T0: analysis complete; tracking doc created.
-- T1-T10: module scaffolded, config keys, ObservationRegistry, HTTP Observation, TracingPlugin,
-  traceparent continuation, builder flag, attributions, full build + isolation verified, self-review
-  applied. Complete.
-- Code review (Gemini bot, PR #4604): isolated optional-tracing cleanup from the core HTTP path
-  (per-step try/catch) and added graceful endpoint-init failure handling in TracingPlugin.
-
 ## Multi-protocol tracing (extension beyond HTTP)
 
 Goal: cover the other wire protocols (Postgres/Bolt/Redis/Mongo/gRPC), not just HTTP.
@@ -125,7 +83,7 @@ the existing `QueryMetricsRecorder` decoupling (engine has Micrometer only at te
 - **Deferred (per spec)**: gRPC inbound `traceparent` continuation (needs OTel on the gRPC
   interceptor + io.grpc.Metadata extraction). Query spans still give gRPC root spans.
 
-Tests: `LocalDatabaseQueryTracerTest` (engine, fake tracer: protocol/language/type/query + span
-close, and NO_OP default); `ServerTracingIT.httpCommandProducesQuerySpanNestedUnderTheHttpSpan`
-(real server: HTTP POST /command -> `arcadedb.query` span tagged protocol=http, child of the HTTP
-span). Regression: 157 SQL execution tests, redisw 32, server HTTP ITs - all green.
+Test coverage: `LocalDatabaseQueryTracerTest` (engine, fake tracer: protocol/language/type/query +
+span close, and the NO_OP default); `ServerTracingIT.httpCommandProducesQuerySpanNestedUnderTheHttpSpan`
+(real server: HTTP POST /command -> `arcadedb.query` span tagged `protocol=http`, child of the HTTP
+span).

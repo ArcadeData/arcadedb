@@ -23,6 +23,7 @@ import io.micrometer.common.KeyValue;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
@@ -30,6 +31,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -42,9 +44,18 @@ import static org.assertj.core.api.Assertions.assertThat;
 @Tag("slow")
 class HttpObservationIT extends BaseGraphServerTest {
 
+  // The ObservationRegistry has no remove-handler API, so the probe is gated by this flag and
+  // deactivated after the test, leaving it inert even though it stays registered.
+  private final AtomicBoolean probeActive = new AtomicBoolean(true);
+
   @Override
   protected int getServerCount() {
     return 1;
+  }
+
+  @AfterEach
+  void deactivateProbe() {
+    probeActive.set(false);
   }
 
   @Test
@@ -55,16 +66,17 @@ class HttpObservationIT extends BaseGraphServerTest {
     final ObservationHandler<Observation.Context> probe = new ObservationHandler<>() {
       @Override
       public boolean supportsContext(final Observation.Context context) {
-        return true;
+        return probeActive.get();
       }
 
       @Override
       public void onStop(final Observation.Context context) {
-        stopped.add(context);
+        if (probeActive.get())
+          stopped.add(context);
       }
     };
-    // Attach the probe for the lifetime of this test's server. It plays the role the tracing
-    // plugin's handler would: it makes the otherwise no-op Observation observable.
+    // Attach the probe for this test. It plays the role the tracing plugin's handler would: it makes
+    // the otherwise no-op Observation observable.
     registry.observationConfig().observationHandler(probe);
 
     final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/ready").openConnection();
