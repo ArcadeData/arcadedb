@@ -41,8 +41,10 @@ import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.database.QueryMetricsRecorder;
+import com.arcadedb.database.QueryTracer;
 import com.arcadedb.server.monitor.EngineMetricsBinder;
 import com.arcadedb.server.monitor.MicrometerQueryMetricsRecorder;
+import com.arcadedb.server.monitor.MicrometerQueryTracer;
 import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.plugin.PluginManager;
@@ -236,6 +238,11 @@ public class ArcadeDBServer {
       }
       LogManager.instance().log(this, Level.INFO, "Metrics Collection Started");
     }
+
+    // Register the engine-boundary query tracer regardless of the metrics flag: it opens a span only
+    // when the optional tracing plugin has attached a tracer to the ObservationRegistry, and is a
+    // zero-cost no-op otherwise. This gives every wire protocol query/command spans from one point.
+    QueryTracer.Holder.register(new MicrometerQueryTracer(observationRegistry));
 
     security = new ServerSecurity(this, configuration, serverRootPath + "/config");
     security.startService();

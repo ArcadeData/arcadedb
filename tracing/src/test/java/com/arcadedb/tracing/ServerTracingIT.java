@@ -19,6 +19,7 @@
 package com.arcadedb.tracing;
 
 import com.arcadedb.server.BaseGraphServerTest;
+import io.opentelemetry.api.common.AttributeKey;
 import io.micrometer.observation.ObservationRegistry;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import io.opentelemetry.sdk.trace.data.SpanData;
@@ -26,6 +27,8 @@ import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -78,6 +81,49 @@ class ServerTracingIT extends BaseGraphServerTest {
       // It must be a child of the inbound span carried by the traceparent header.
       assertThat(span.getTraceId()).isEqualTo(parentTraceId);
       assertThat(span.getParentSpanId()).isEqualTo("00f067aa0ba902b7");
+    } finally {
+      plugin.stopService();
+    }
+  }
+
+  @Test
+  void httpCommandProducesQuerySpanNestedUnderTheHttpSpan() throws Exception {
+    final ObservationRegistry registry = getServer(0).getObservationRegistry();
+    final InMemorySpanExporter exporter = InMemorySpanExporter.create();
+    final TracingPlugin plugin = new TracingPlugin();
+    plugin.attachForTest(registry, exporter);
+
+    try {
+      final HttpURLConnection c = (HttpURLConnection) new URL("http://localhost:2480/api/v1/command/graph").openConnection();
+      c.setRequestMethod("POST");
+      c.setDoOutput(true);
+      c.setRequestProperty("Authorization",
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+      c.setRequestProperty("Content-Type", "application/json");
+      c.getOutputStream().write("{\"language\":\"sql\",\"command\":\"SELECT 1 AS one\"}".getBytes(StandardCharsets.UTF_8));
+      c.connect();
+      assertThat(c.getResponseCode()).isEqualTo(200);
+      c.disconnect();
+
+      // The engine-boundary QueryTracer must produce an arcadedb.query span tagged with the
+      // originating protocol (http here), nested under the HTTP request span.
+      SpanData querySpan = null;
+      SpanData httpSpan = null;
+      for (int attempt = 0; attempt < 100 && querySpan == null; attempt++) {
+        final List<SpanData> spans = exporter.getFinishedSpanItems();
+        querySpan = spans.stream().filter(s -> "arcadedb.query".equals(s.getName())).findFirst().orElse(null);
+        httpSpan = spans.stream().filter(s -> "arcadedb.http.server.requests".equals(s.getName())).findFirst().orElse(null);
+        if (querySpan == null)
+          Thread.sleep(20);
+      }
+
+      assertThat(querySpan).as("an arcadedb.query span must be produced for the command").isNotNull();
+      // The span must be tagged with the originating wire protocol.
+      assertThat(querySpan.getAttributes().get(AttributeKey.stringKey("protocol"))).isEqualTo("http");
+      assertThat(httpSpan).as("the enclosing HTTP span must be present").isNotNull();
+      // In-process nesting: the query span is a child of the HTTP request span (same trace).
+      assertThat(querySpan.getTraceId()).isEqualTo(httpSpan.getTraceId());
+      assertThat(querySpan.getParentSpanId()).isEqualTo(httpSpan.getSpanId());
     } finally {
       plugin.stopService();
     }

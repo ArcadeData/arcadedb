@@ -140,7 +140,11 @@ public class RedisNetworkExecutor extends Thread {
 
       final String cmdString = ((String) cmd).toUpperCase(Locale.ENGLISH);
 
-      try {
+      // Redis maps commands directly to engine operations rather than going through
+      // Database.query/command, so the engine-boundary span never fires for it. Open one here so
+      // Redis is traced like the other protocols. No-op unless the tracing plugin is active.
+      try (final QueryTracer.Span span = QueryTracer.Holder.begin(
+          selectedDatabase != null ? selectedDatabase.getName() : null, "redis", "command", cmdString)) {
         switch (cmdString) {
           case "DECR":
             decrBy(list);
