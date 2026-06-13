@@ -44,6 +44,7 @@ import io.opentelemetry.sdk.trace.export.SimpleSpanProcessor;
 import io.opentelemetry.sdk.trace.export.SpanExporter;
 import io.opentelemetry.sdk.trace.samplers.Sampler;
 
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
 /**
@@ -53,10 +54,11 @@ import java.util.logging.Level;
  * is confined to this module and never reaches the core/server compile classpath.
  */
 public class TracingPlugin implements ServerPlugin {
-  private boolean           enabled;
-  private String            endpoint;
-  private double            samplingRate;
-  private SdkTracerProvider tracerProvider;
+  private boolean                       enabled;
+  private String                        endpoint;
+  private double                        samplingRate;
+  private SdkTracerProvider             tracerProvider;
+  private DeactivatableObservationHandler attachedHandler;
 
   @Override
   public void configure(final ArcadeDBServer server, final ContextConfiguration configuration) {
@@ -98,6 +100,13 @@ public class TracingPlugin implements ServerPlugin {
 
   @Override
   public void stopService() {
+    // Deactivate the handler BEFORE closing the provider: the ObservationRegistry has no
+    // remove-handler API, so the handler stays registered, but once deactivated it is a no-op and
+    // never touches the closed tracer provider.
+    if (attachedHandler != null) {
+      attachedHandler.deactivate();
+      attachedHandler = null;
+    }
     if (tracerProvider != null) {
       tracerProvider.close();
       tracerProvider = null;
@@ -133,9 +142,10 @@ public class TracingPlugin implements ServerPlugin {
     });
     final Propagator propagator = new OtelPropagator(otel.getPropagators(), otelTracer);
 
-    registry.observationConfig().observationHandler(new ObservationHandler.FirstMatchingCompositeObservationHandler(
+    attachedHandler = new DeactivatableObservationHandler(new ObservationHandler.FirstMatchingCompositeObservationHandler(
         new PropagatingReceiverTracingObservationHandler<>(tracer, propagator),
         new DefaultTracingObservationHandler(tracer)));
+    registry.observationConfig().observationHandler(attachedHandler);
   }
 
   /**
@@ -144,5 +154,72 @@ public class TracingPlugin implements ServerPlugin {
    */
   void attachForTest(final ObservationRegistry registry, final SpanExporter exporter) {
     attach(registry, SimpleSpanProcessor.create(exporter), 1.0);
+  }
+
+  /**
+   * Wraps the tracing handler so it can be turned off on {@link #stopService()}. The
+   * {@link ObservationRegistry} offers no API to remove a handler, so once the plugin stops this
+   * gates every callback to a no-op - preventing the (now closed) tracer provider from being used by
+   * later Observations.
+   */
+  private static final class DeactivatableObservationHandler implements ObservationHandler<io.micrometer.observation.Observation.Context> {
+    private final ObservationHandler<io.micrometer.observation.Observation.Context> delegate;
+    private final AtomicBoolean                                                     active = new AtomicBoolean(true);
+
+    private DeactivatableObservationHandler(final ObservationHandler<io.micrometer.observation.Observation.Context> delegate) {
+      this.delegate = delegate;
+    }
+
+    private void deactivate() {
+      active.set(false);
+    }
+
+    @Override
+    public boolean supportsContext(final io.micrometer.observation.Observation.Context context) {
+      return active.get() && delegate.supportsContext(context);
+    }
+
+    @Override
+    public void onStart(final io.micrometer.observation.Observation.Context context) {
+      if (active.get())
+        delegate.onStart(context);
+    }
+
+    @Override
+    public void onError(final io.micrometer.observation.Observation.Context context) {
+      if (active.get())
+        delegate.onError(context);
+    }
+
+    @Override
+    public void onEvent(final io.micrometer.observation.Observation.Event event,
+        final io.micrometer.observation.Observation.Context context) {
+      if (active.get())
+        delegate.onEvent(event, context);
+    }
+
+    @Override
+    public void onScopeOpened(final io.micrometer.observation.Observation.Context context) {
+      if (active.get())
+        delegate.onScopeOpened(context);
+    }
+
+    @Override
+    public void onScopeClosed(final io.micrometer.observation.Observation.Context context) {
+      if (active.get())
+        delegate.onScopeClosed(context);
+    }
+
+    @Override
+    public void onScopeReset(final io.micrometer.observation.Observation.Context context) {
+      if (active.get())
+        delegate.onScopeReset(context);
+    }
+
+    @Override
+    public void onStop(final io.micrometer.observation.Observation.Context context) {
+      if (active.get())
+        delegate.onStop(context);
+    }
   }
 }

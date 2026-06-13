@@ -23,6 +23,7 @@ import io.micrometer.common.KeyValue;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * optional plugin would attach, proving the instrumentation point fires with bounded tags. In
  * production with no tracer attached the same Observation is a zero-overhead no-op.
  */
+@Tag("slow")
 class HttpObservationIT extends BaseGraphServerTest {
 
   @Override
