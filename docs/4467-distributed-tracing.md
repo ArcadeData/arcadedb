@@ -98,3 +98,34 @@ endpoint+samplingRate logged at startup; micrometer-tracing pinned to 1.6.5 to a
 - T1-T10: module scaffolded, config keys, ObservationRegistry, HTTP Observation, TracingPlugin,
   traceparent continuation, builder flag, attributions, full build + isolation verified, self-review
   applied. Complete.
+- Code review (Gemini bot, PR #4604): isolated optional-tracing cleanup from the core HTTP path
+  (per-step try/catch) and added graceful endpoint-init failure handling in TracingPlugin.
+
+## Multi-protocol tracing (extension beyond HTTP)
+
+Goal: cover the other wire protocols (Postgres/Bolt/Redis/Mongo/gRPC), not just HTTP.
+
+Design: a single **engine-boundary** instrumentation point rather than five handler passes, mirroring
+the existing `QueryMetricsRecorder` decoupling (engine has Micrometer only at test scope):
+
+- **`engine` `QueryTracer`** SPI (`com.arcadedb.database`): `beginQuery(protocol,db,language,type,query)`
+  returns a `Span` (AutoCloseable); `Holder` is a volatile NO_OP-default registry; `Holder.begin(...)`
+  reads the protocol from `ProtocolContext`. No Micrometer types in engine main.
+- **`LocalDatabase.query()/command()`** (the 7 terminal overloads) wrap execution in
+  `try (QueryTracer.Span span = QueryTracer.Holder.begin(...))`, alongside the existing metric recorder.
+  Every protocol that funnels through `Database.query/command` (HTTP, Bolt, Postgres, Mongo, gRPC) is
+  covered from this one point; spans nest under the HTTP request span and are root spans otherwise.
+- **`server` `MicrometerQueryTracer`** opens a span-only `Observation` (`arcadedb.query`) on the shared
+  registry: low-card tags `protocol/db/language/type`; query text as a high-card span attribute
+  (`db.statement`). `isNoop()` short-circuit => zero allocation when tracing is off. Registered
+  unconditionally in `ArcadeDBServer`. Defensive close (failure can't disturb the query path).
+- **Redis**: `RedisNetworkExecutor.executeCommand` maps commands directly to engine ops (it does not
+  call `Database.query/command`), so a `QueryTracer` span is opened there directly (protocol=redis,
+  type=command, statement=command verb).
+- **Deferred (per spec)**: gRPC inbound `traceparent` continuation (needs OTel on the gRPC
+  interceptor + io.grpc.Metadata extraction). Query spans still give gRPC root spans.
+
+Tests: `LocalDatabaseQueryTracerTest` (engine, fake tracer: protocol/language/type/query + span
+close, and NO_OP default); `ServerTracingIT.httpCommandProducesQuerySpanNestedUnderTheHttpSpan`
+(real server: HTTP POST /command -> `arcadedb.query` span tagged protocol=http, child of the HTTP
+span). Regression: 157 SQL execution tests, redisw 32, server HTTP ITs - all green.
