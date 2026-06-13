@@ -80,6 +80,8 @@
         <testcontainers.version>2.0.5</testcontainers.version>
         <logback-classic.version>1.5.34</logback-classic.version>
         <micrometer.version>1.17.0</micrometer.version>
+        <micrometer-tracing.version>1.6.5</micrometer-tracing.version>
+        <opentelemetry.version>1.55.0</opentelemetry.version>
         <postgres.version>42.7.11</postgres.version>
 
         <assertj-core.version>3.27.7</assertj-core.version>
@@ -131,6 +133,7 @@
         <module>server</module>
         <module>ha-raft</module>
         <module>metrics</module>
+        <module>tracing</module>
         <module>integration</module>
         <module>console</module>
         <module>gremlin</module>
@@ -490,6 +493,22 @@
                 <groupId>org.assertj</groupId>
                 <artifactId>assertj-bom</artifactId>
                 <version>${assertj-core.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <!-- OpenTelemetry + Micrometer Tracing BOMs: consumed only by the optional `tracing`
+                 module so the OTel SDK stays off the core/server compile classpath. -->
+            <dependency>
+                <groupId>io.micrometer</groupId>
+                <artifactId>micrometer-tracing-bom</artifactId>
+                <version>${micrometer-tracing.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+            <dependency>
+                <groupId>io.opentelemetry</groupId>
+                <artifactId>opentelemetry-bom</artifactId>
+                <version>${opentelemetry.version}</version>
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>

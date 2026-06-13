@@ -60,6 +60,7 @@ import io.micrometer.core.instrument.binder.jvm.JvmThreadMetrics;
 import io.micrometer.core.instrument.binder.system.ProcessorMetrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.observation.ObservationRegistry;
 
 import java.io.File;
 import java.io.IOException;
@@ -89,6 +90,10 @@ public class ArcadeDBServer {
   private final       String                                serverName;
   private             String                                hostAddress;
   private final       boolean                               replicationLifecycleEventsEnabled;
+  // Shared spine for Micrometer Observations. Starts with no handlers, so Observations are no-ops
+  // (zero overhead) until the optional tracing plugin attaches a tracing handler. Metrics continue
+  // to be recorded by the dedicated Micrometer timers, independently of this registry.
+  private final       ObservationRegistry                   observationRegistry                  = ObservationRegistry.create();
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
@@ -135,6 +140,15 @@ public class ArcadeDBServer {
 
   public ContextConfiguration getConfiguration() {
     return configuration;
+  }
+
+  /**
+   * Shared Micrometer {@link ObservationRegistry} used to instrument server hot paths once and emit
+   * both metrics and (when the optional tracing plugin registers a tracer) spans. With no tracer
+   * attached the registry has no handlers and Observations are no-ops.
+   */
+  public ObservationRegistry getObservationRegistry() {
+    return observationRegistry;
   }
 
   public void setSnapshotInstallInProgress(final boolean inProgress) {
