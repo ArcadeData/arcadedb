@@ -239,6 +239,31 @@ The following table lists runtime dependencies bundled with ArcadeDB distributio
 | io.micrometer | micrometer-registry-otlp | 1.16.5 | Apache 2.0 | https://micrometer.io/ |
 | org.hdrhistogram | HdrHistogram | 2.2.2 | Public Domain / CC0 | https://hdrhistogram.github.io/HdrHistogram/ |
 
+### Distributed Tracing (Optional)
+
+Used only by the optional `tracing` module (OpenTelemetry distributed tracing). Confined to that
+plugin; not on the core/server compile classpath.
+
+| Group ID | Artifact ID | Version | License | Homepage |
+|----------|-------------|---------|---------|----------|
+| io.micrometer | micrometer-tracing | 1.6.5 | Apache 2.0 | https://micrometer.io/ |
+| io.micrometer | micrometer-tracing-bridge-otel | 1.6.5 | Apache 2.0 | https://micrometer.io/ |
+| io.opentelemetry | opentelemetry-sdk | 1.55.0 | Apache 2.0 | https://opentelemetry.io/ |
+| io.opentelemetry | opentelemetry-api | 1.55.0 | Apache 2.0 | https://opentelemetry.io/ |
+| io.opentelemetry | opentelemetry-context | 1.55.0 | Apache 2.0 | https://opentelemetry.io/ |
+| io.opentelemetry | opentelemetry-sdk-trace | 1.55.0 | Apache 2.0 | https://opentelemetry.io/ |
+| io.opentelemetry | opentelemetry-sdk-common | 1.55.0 | Apache 2.0 | https://opentelemetry.io/ |
+| io.opentelemetry | opentelemetry-exporter-otlp | 1.55.0 | Apache 2.0 | https://opentelemetry.io/ |
+| io.opentelemetry | opentelemetry-exporter-otlp-common | 1.55.0 | Apache 2.0 | https://opentelemetry.io/ |
+| io.opentelemetry | opentelemetry-exporter-common | 1.55.0 | Apache 2.0 | https://opentelemetry.io/ |
+| io.opentelemetry | opentelemetry-exporter-sender-okhttp | 1.55.0 | Apache 2.0 | https://opentelemetry.io/ |
+| io.opentelemetry | opentelemetry-extension-trace-propagators | 1.55.0 | Apache 2.0 | https://opentelemetry.io/ |
+| io.opentelemetry.semconv | opentelemetry-semconv | 1.37.0 | Apache 2.0 | https://opentelemetry.io/ |
+| com.squareup.okhttp3 | okhttp | 5.2.1 | Apache 2.0 | https://square.github.io/okhttp/ |
+| com.squareup.okio | okio | 3.16.1 | Apache 2.0 | https://square.github.io/okio/ |
+| org.jetbrains.kotlin | kotlin-stdlib | 2.2.20 | Apache 2.0 | https://kotlinlang.org/ |
+| org.jetbrains | annotations | 13.0 | Apache 2.0 | https://github.com/JetBrains/java-annotations |
+
 ---
 
 ## Test Dependencies

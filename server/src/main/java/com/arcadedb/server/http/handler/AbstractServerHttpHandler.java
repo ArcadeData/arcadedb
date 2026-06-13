@@ -33,6 +33,8 @@ import com.arcadedb.server.security.ServerSecurityException;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.micrometer.core.instrument.Metrics;
 import io.micrometer.core.instrument.Timer;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.transport.RequestReplyReceiverContext;
 import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
@@ -102,6 +104,27 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     // arcadedb.http.requests Micrometer timer. When no tracer is registered this is metrics-only.
     final long httpStartNanos = System.nanoTime();
     ProtocolContext.set("http");
+
+    // Span-only Observation wrapping request handling. With no tracer registered the server's
+    // ObservationRegistry has no handlers, so this is a zero-overhead no-op and the default
+    // (tracing-disabled) behavior is unchanged. When the optional tracing plugin attaches a tracer
+    // the same code emits an OTLP span (continuing an inbound traceparent when present). HTTP
+    // latency metrics remain on the dedicated arcadedb.http.requests timer recorded in finally.
+    final Observation observation = Observation.createNotStarted("arcadedb.http.server.requests",
+            () -> {
+              // Built lazily: the supplier is only invoked when a tracer is attached, so the
+              // default (tracing-disabled) path allocates nothing. The carrier lets the tracing
+              // handler read an inbound W3C traceparent header to continue an upstream trace.
+              final RequestReplyReceiverContext<HttpServerExchange, Object> ctx = new RequestReplyReceiverContext<>(
+                  (carrier, key) -> carrier.getRequestHeaders().getFirst(key));
+              ctx.setCarrier(exchange);
+              return ctx;
+            }, httpServer.getServer().getObservationRegistry())
+        .lowCardinalityKeyValue("method", exchange.getRequestMethod().toString())
+        .lowCardinalityKeyValue("path", pathTemplate(exchange))
+        .lowCardinalityKeyValue("db", databaseTag(exchange));
+    observation.start();
+    final Observation.Scope observationScope = observation.openScope();
 
     try {
       LogManager.instance().setContext(httpServer.getServer().getServerName());
@@ -350,6 +373,11 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
+      // Finish the span (status known now) and detach the trace scope before recording metrics.
+      observation.lowCardinalityKeyValue("status", Integer.toString(exchange.getStatusCode()));
+      observationScope.close();
+      observation.stop();
+
       ProtocolContext.clear();
       LogManager.instance().setContext(null);
 
