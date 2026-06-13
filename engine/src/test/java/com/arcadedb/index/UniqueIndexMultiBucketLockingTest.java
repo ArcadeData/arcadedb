@@ -22,6 +22,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -115,6 +116,71 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
   }
 
   /**
+   * Concurrent variant of {@link #uniquenessEnforcedAcrossBucketsAfterOptimisation()}: many threads
+   * race to insert the SAME key at once. With the per-bucket locking fix exactly one insert must win
+   * and the others must be rejected, proving the reduced lock scope did not weaken concurrent
+   * duplicate detection.
+   */
+  @Test
+  @Tag("slow")
+  void uniquenessEnforcedUnderConcurrentDuplicateInserts() throws Exception {
+    database.transaction(() -> {
+      final DocumentType type = database.getSchema().buildDocumentType()
+          .withName(TYPE_NAME).withTotalBuckets(BUCKETS).create();
+      type.createProperty("transaction_id", Long.class);
+    });
+
+    database.command("sql", "CREATE INDEX " + INDEX_NAME + " ON " + TYPE_NAME + " (transaction_id) UNIQUE");
+
+    try {
+      final int             threads    = BUCKETS;
+      final long            sharedKey  = 777L;
+      final CountDownLatch  start      = new CountDownLatch(1);
+      final CountDownLatch  done       = new CountDownLatch(threads);
+      final AtomicInteger   successes  = new AtomicInteger(0);
+      final AtomicInteger   duplicates = new AtomicInteger(0);
+      final AtomicReference<Throwable> unexpected = new AtomicReference<>();
+
+      for (int t = 0; t < threads; t++) {
+        new Thread(() -> {
+          try {
+            start.await();
+            database.transaction(() -> {
+              final MutableDocument doc = database.newDocument(TYPE_NAME);
+              doc.set("transaction_id", sharedKey);
+              doc.save();
+            });
+            successes.incrementAndGet();
+          } catch (final DuplicatedKeyException e) {
+            duplicates.incrementAndGet();
+          } catch (final NeedRetryException e) {
+            // Retries exhausted under contention is acceptable: the record was not inserted
+          } catch (final Throwable e) {
+            unexpected.compareAndSet(null, e);
+          } finally {
+            done.countDown();
+          }
+        }).start();
+      }
+
+      start.countDown();  // release all threads at once for maximum contention
+      final boolean completed = done.await(30, TimeUnit.SECONDS);
+      assertThat(completed).as("Threads did not finish within 30 s").isTrue();
+      assertThat(unexpected.get()).isNull();
+      assertThat(successes.get()).as("Exactly one concurrent insert must win").isEqualTo(1);
+      assertThat(duplicates.get()).as("At least one insert must be rejected as a duplicate").isGreaterThanOrEqualTo(1);
+
+      // Exactly one record with the shared key must exist on disk
+      final ResultSet rs = database.query("sql",
+          "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE transaction_id = " + sharedKey);
+      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
+      rs.close();
+    } finally {
+      database.command("sql", "DROP TYPE " + TYPE_NAME + " IF EXISTS UNSAFE");
+    }
+  }
+
+  /**
    * Regression test for ops#433 Error 1: concurrent writers on a multi-bucket
    * type with a UNIQUE index must not time out during CREATE INDEX.
    *
@@ -181,7 +247,8 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
       // CREATE INDEX while the writers are running
       database.command("sql", "CREATE INDEX " + INDEX_NAME + " ON " + TYPE_NAME + " (transaction_id) UNIQUE");
 
-      writersDone.await(30, TimeUnit.SECONDS);
+      final boolean completed = writersDone.await(30, TimeUnit.SECONDS);
+      assertThat(completed).as("Writer threads did not finish within 30 s").isTrue();
 
       assertThat(writerError.get())
           .as("No lock-timeout should occur with the per-bucket locking fix")
