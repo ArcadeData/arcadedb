@@ -373,10 +373,24 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
               .log(this, getErrorLogLevel(), "Error on command execution (%s): %s", getClass().getSimpleName(), e.getMessage());
       sendErrorResponse(exchange, 500, "Internal error", e, null);
     } finally {
-      // Finish the span (status known now) and detach the trace scope before recording metrics.
-      observation.lowCardinalityKeyValue("status", Integer.toString(exchange.getStatusCode()));
-      observationScope.close();
-      observation.stop();
+      // Finalize the optional tracing span. Each step is isolated so a failure in the optional
+      // tracing layer can never skip the core cleanup or the RED timer below; closing the scope is
+      // attempted independently to avoid thread-local context leaking across pooled worker threads.
+      try {
+        observation.lowCardinalityKeyValue("status", Integer.toString(exchange.getStatusCode()));
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.WARNING, "Error tagging tracing observation", t);
+      }
+      try {
+        observationScope.close();
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.WARNING, "Error closing tracing observation scope", t);
+      }
+      try {
+        observation.stop();
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.WARNING, "Error stopping tracing observation", t);
+      }
 
       ProtocolContext.clear();
       LogManager.instance().setContext(null);

@@ -73,9 +73,20 @@ public class TracingPlugin implements ServerPlugin {
     samplingRate = configuration.getValueAsFloat(GlobalConfiguration.SERVER_METRICS_TRACING_SAMPLING_RATE);
 
     // Export off the request thread: BatchSpanProcessor buffers spans and ships them on a background
-    // worker, so observation.stop() in the HTTP handler never blocks on a network call.
-    final SpanExporter exporter = OtlpGrpcSpanExporter.builder().setEndpoint(endpoint).build();
-    attach(server.getObservationRegistry(), BatchSpanProcessor.builder(exporter).build(), samplingRate);
+    // worker, so observation.stop() in the HTTP handler never blocks on a network call. A malformed
+    // endpoint must degrade gracefully (tracing disabled) rather than fail server startup.
+    try {
+      final SpanExporter exporter = OtlpGrpcSpanExporter.builder().setEndpoint(endpoint).build();
+      attach(server.getObservationRegistry(), BatchSpanProcessor.builder(exporter).build(), samplingRate);
+    } catch (final Exception e) {
+      enabled = false;
+      if (tracerProvider != null) {
+        tracerProvider.close();
+        tracerProvider = null;
+      }
+      LogManager.instance()
+          .log(this, Level.SEVERE, "Failed to initialize OpenTelemetry tracing (endpoint=%s), tracing disabled", e, endpoint);
+    }
   }
 
   @Override
