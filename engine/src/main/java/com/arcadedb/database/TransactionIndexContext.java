@@ -264,12 +264,11 @@ public class TransactionIndexContext {
       modifiedFiles.add(index.getFileId());
 
       if (index.isUnique()) {
-        // LOCK ALL THE FILES IMPACTED BY THE INDEX KEYS TO CHECK FOR UNIQUE CONSTRAINT
-        // TODO: OPTIMIZE LOCKING IF STRATEGY IS PARTITIONED: LOCK ONLY THE RELEVANT INDEX
-        final DocumentType type = schema.getType(index.getTypeName());
-        for (final int bid : type.getBucketIds(false))
-          modifiedFiles.add(bid);
+        // Lock only the data bucket this index entry belongs to (not all buckets of the type).
+        // Cross-bucket uniqueness is serialised through the per-bucket index file locks below.
+        modifiedFiles.add(index.getAssociatedBucketId());
 
+        final DocumentType type = schema.getType(index.getTypeName());
         for (final TypeIndex typeIndex : type.getAllIndexes(true))
           for (final IndexInternal idx : typeIndex.getIndexesOnBuckets())
             modifiedFiles.add(idx.getFileId());
