@@ -82,6 +82,7 @@ public class ArcadeGraph implements Graph, Closeable {
   //private final   ArcadeVariableFeatures graphVariables = new ArcadeVariableFeatures();
   private final        ArcadeGraphTransaction      transaction;
   protected final      BasicDatabase               database;
+  private final        boolean                     sharedDatabase;
   protected final      BaseConfiguration           configuration  = new BaseConfiguration();
   private final static Iterator<Vertex>            EMPTY_VERTICES = Collections.emptyIterator();
   private final static Iterator<Edge>              EMPTY_EDGES    = Collections.emptyIterator();
@@ -115,13 +116,19 @@ public class ArcadeGraph implements Graph, Closeable {
     }
 
     this.database = db;
+    this.sharedDatabase = false;
 
     this.transaction = new ArcadeGraphTransaction(this);
     init();
   }
 
   protected ArcadeGraph(final BasicDatabase database) {
+    this(database, false);
+  }
+
+  protected ArcadeGraph(final BasicDatabase database, final boolean sharedDatabase) {
     this.database = database;
+    this.sharedDatabase = sharedDatabase;
     this.transaction = new ArcadeGraphTransaction(this);
     init();
   }
@@ -147,6 +154,15 @@ public class ArcadeGraph implements Graph, Closeable {
 
   public static ArcadeGraph open(final BasicDatabase database) {
     return new ArcadeGraph(database);
+  }
+
+  /**
+   * Opens a graph backed by a database whose lifecycle is managed externally (e.g. by ArcadeDBServer).
+   * Closing this graph will NOT close the underlying database, preventing unintended shutdown of a
+   * shared server-managed database.
+   */
+  public static ArcadeGraph openShared(final BasicDatabase database) {
+    return new ArcadeGraph(database, true);
   }
 
 
@@ -418,11 +434,16 @@ public class ArcadeGraph implements Graph, Closeable {
     }
 
     if (this.database != null) {
-      if (this.database.isTransactionActive())
-        this.database.commit();
-
-      this.database.close();
-
+      if (sharedDatabase) {
+        // Database lifecycle is managed externally; do not close it.
+        // Roll back any open transaction to avoid leaving stale state.
+        if (this.database.isTransactionActive())
+          this.database.rollback();
+      } else {
+        if (this.database.isTransactionActive())
+          this.database.commit();
+        this.database.close();
+      }
     }
   }
 
