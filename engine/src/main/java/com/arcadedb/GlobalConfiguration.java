@@ -546,7 +546,8 @@ public enum GlobalConfiguration {
   SERVER_METRICS_LOGGING("arcadedb.serverMetrics.logging", SCOPE.SERVER, "True to enable metrics logging", Boolean.class, false),
 
   SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
-      "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath)", Boolean.class, false),
+      "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath). Note: query/command spans include the statement text as the db.statement span attribute, which may contain sensitive data, so secure the OTLP collector endpoint",
+      Boolean.class, false),
 
   SERVER_METRICS_TRACING_ENDPOINT("arcadedb.serverMetrics.tracing.endpoint", SCOPE.SERVER, "OTLP trace export endpoint", String.class,
       "http://localhost:4317"),
