@@ -254,8 +254,9 @@ public class ArcadeGraphManager implements GraphManager {
     }
 
     try {
-      // Create ArcadeGraph wrapper for the database
-      final ArcadeGraph arcadeGraph = ArcadeGraph.open(serverInstance.getDatabase(databaseName));
+      // Create ArcadeGraph wrapper for the database.
+      // Use openShared so that ArcadeGraph.close() does not close the server-managed database.
+      final ArcadeGraph arcadeGraph = ArcadeGraph.openShared(serverInstance.getDatabase(databaseName));
       graphs.put(databaseName, arcadeGraph);
       traversalSources.put(databaseName, arcadeGraph.traversal());
 
