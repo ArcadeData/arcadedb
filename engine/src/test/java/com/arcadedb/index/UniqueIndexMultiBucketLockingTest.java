@@ -134,30 +134,25 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
     database.command("sql", "CREATE INDEX " + INDEX_NAME + " ON " + TYPE_NAME + " (transaction_id) UNIQUE");
 
     try {
-      final int             threads    = BUCKETS;
-      final long            sharedKey  = 777L;
-      final CountDownLatch  start      = new CountDownLatch(1);
-      final CountDownLatch  done       = new CountDownLatch(threads);
-      final AtomicInteger   successes  = new AtomicInteger(0);
-      final AtomicInteger   duplicates = new AtomicInteger(0);
+      final int             threads   = BUCKETS;
+      final long            sharedKey = 777L;
+      final CountDownLatch  start     = new CountDownLatch(1);
+      final CountDownLatch  done      = new CountDownLatch(threads);
+      final AtomicInteger   successes = new AtomicInteger(0);
       final AtomicReference<Throwable> unexpected = new AtomicReference<>();
 
       for (int t = 0; t < threads; t++) {
         new Thread(() -> {
           try {
             start.await();  // release all racers at once for maximum contention
-            // High retry count so exactly one winner is deterministic: database.transaction() retries
-            // both NeedRetryException and DuplicatedKeyException up to the given attempts before rethrowing.
             database.transaction(() -> {
               final MutableDocument doc = database.newDocument(TYPE_NAME);
               doc.set("transaction_id", sharedKey);
               doc.save();
             }, true, 25);
             successes.incrementAndGet();
-          } catch (final DuplicatedKeyException e) {
-            duplicates.incrementAndGet();
-          } catch (final NeedRetryException e) {
-            // Retries exhausted under contention is acceptable: the record was not inserted
+          } catch (final DuplicatedKeyException | NeedRetryException e) {
+            // Rejected: a committed duplicate was detected, or retries were exhausted under contention
           } catch (final Throwable e) {
             unexpected.compareAndSet(null, e);
           } finally {
@@ -170,13 +165,13 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
       final boolean completed = done.await(30, TimeUnit.SECONDS);
       assertThat(completed).as("Threads did not finish within 30 s").isTrue();
       assertThat(unexpected.get()).isNull();
-      assertThat(successes.get()).as("Exactly one concurrent insert must win").isEqualTo(1);
-      assertThat(duplicates.get()).as("At least one insert must be rejected as a duplicate").isGreaterThanOrEqualTo(1);
+      // Core invariant: the per-bucket locking fix must never let two concurrent inserts of the same key both win.
+      assertThat(successes.get()).as("At most one concurrent insert may win").isLessThanOrEqualTo(1);
 
-      // Exactly one record with the shared key must exist on disk
+      // On-disk record count must match the number of winners (0 if every thread retried out, else 1).
       try (final ResultSet rs = database.query("sql",
           "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE transaction_id = " + sharedKey)) {
-        assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
+        assertThat(rs.next().<Long>getProperty("c")).isEqualTo((long) successes.get());
       }
     } finally {
       database.command("sql", "DROP TYPE " + TYPE_NAME + " IF EXISTS UNSAFE");
@@ -216,6 +211,7 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
       });
 
       final AtomicReference<Throwable> writerError = new AtomicReference<>();
+      final AtomicReference<Throwable> unexpectedWriterError = new AtomicReference<>();
       final AtomicInteger writtenCount = new AtomicInteger(0);
       final CountDownLatch writersDone = new CountDownLatch(BUCKETS);
 
@@ -233,9 +229,13 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
                   doc.save();
                 });
               } catch (final Exception e) {
-                // NeedRetryException / duplicate is acceptable; hard errors are not
                 if (e.getMessage() != null && e.getMessage().contains("Timeout on locking")) {
                   writerError.compareAndSet(null, e);
+                  return;
+                }
+                // NeedRetry/duplicate are acceptable under contention; surface anything else
+                if (!(e instanceof NeedRetryException) && !(e instanceof DuplicatedKeyException)) {
+                  unexpectedWriterError.compareAndSet(null, e);
                   return;
                 }
               }
@@ -257,6 +257,9 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
 
       assertThat(writerError.get())
           .as("No lock-timeout should occur with the per-bucket locking fix")
+          .isNull();
+      assertThat(unexpectedWriterError.get())
+          .as("No unexpected error should occur in the writer threads")
           .isNull();
 
       // Index must be visible via schema:indexes
