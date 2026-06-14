@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index;
 
+import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.MutableDocument;
@@ -144,7 +145,7 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
       for (int t = 0; t < threads; t++) {
         new Thread(() -> {
           try {
-            start.await();
+            start.await();  // release all racers at once for maximum contention
             // High retry count so exactly one winner is deterministic: database.transaction() retries
             // both NeedRetryException and DuplicatedKeyException up to the given attempts before rethrowing.
             database.transaction(() -> {
@@ -162,10 +163,10 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
           } finally {
             done.countDown();
           }
-        }).start();
+        }, "dup-racer-" + t).start();
       }
 
-      start.countDown();  // release all threads at once for maximum contention
+      start.countDown();
       final boolean completed = done.await(30, TimeUnit.SECONDS);
       assertThat(completed).as("Threads did not finish within 30 s").isTrue();
       assertThat(unexpected.get()).isNull();
@@ -196,8 +197,10 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
   @Test
   @Tag("slow")
   void createUniqueIndexWhileConcurrentWritesDoNotTimeout() throws Exception {
-    final long origTimeout = GlobalConfiguration.COMMIT_LOCK_TIMEOUT.getValueAsLong();
-    GlobalConfiguration.COMMIT_LOCK_TIMEOUT.setValue(1_000L);  // short: 1 s
+    // Per-database override (not JVM-global) so the short timeout cannot leak into other tests.
+    final ContextConfiguration cfg = database.getConfiguration();
+    final long origTimeout = cfg.getValueAsLong(GlobalConfiguration.COMMIT_LOCK_TIMEOUT);
+    cfg.setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, 1_000L);  // short: 1 s
 
     try {
       database.transaction(() -> {
@@ -240,7 +243,7 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
           } finally {
             writersDone.countDown();
           }
-        });
+        }, "writer-" + w);
         writers.add(t);
       }
 
@@ -263,7 +266,7 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
       }
 
     } finally {
-      GlobalConfiguration.COMMIT_LOCK_TIMEOUT.setValue(origTimeout);
+      cfg.setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, origTimeout);
       database.command("sql", "DROP TYPE " + TYPE_NAME + " IF EXISTS UNSAFE");
     }
   }
