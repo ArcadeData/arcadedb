@@ -37,6 +37,9 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
+import java.io.RandomAccessFile;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -495,6 +498,94 @@ class LSMTreeIndexCompactionTest extends TestHelper {
       }
 
       issue3714Db.transaction(() -> assertThat(issue3714Db.countType("Metadata", false)).isEqualTo(totalKeys));
+    }
+  }
+
+  /**
+   * Regression test for #430: after an unclean shutdown during compaction the compacted index header
+   * may record a page count that is one higher than the number of pages that actually reached disk.
+   * The engine must serve the pages that are present rather than returning empty results.
+   */
+  @Nested
+  class Issue430UncleanShutdownCompactedIndex {
+    private static final String DB_PATH    = "target/databases/Issue430UncleanShutdownCompactedIndex";
+    private static final int    PAGE_SIZE  = 4 * 1024;
+    private static final int    RECORD_TOT = 500;
+
+    private Database testDb;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      testDb = new DatabaseFactory(DB_PATH).create();
+      testDb.transaction(() -> {
+        final var type = testDb.getSchema().buildDocumentType().withName("Item").withTotalBuckets(1).create();
+        type.createProperty("id", Integer.class);
+        testDb.getSchema().buildTypeIndex("Item", new String[] { "id" })
+            .withType(Schema.INDEX_TYPE.LSM_TREE).withUnique(true).withPageSize(PAGE_SIZE).create();
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (testDb != null && testDb.isOpen())
+        testDb.drop();
+    }
+
+    @Test
+    void pointLookupAndRangeScanSurviveInflatedHeaderPageCount() throws Exception {
+      // Insert enough records to produce multiple pages in the compacted index.
+      testDb.transaction(() -> {
+        for (int i = 0; i < RECORD_TOT; i++)
+          testDb.command("sql", "INSERT INTO Item SET id = " + i);
+      });
+
+      // Force compaction so a compacted index file is created.
+      for (final Index idx : testDb.getSchema().getIndexes()) {
+        if (idx instanceof TypeIndex) {
+          ((IndexInternal) idx).scheduleCompaction();
+          ((IndexInternal) idx).compact();
+        }
+      }
+
+      // Verify the compacted index file exists and has more than one page.
+      final Path dbDir = Path.of(DB_PATH);
+      final Optional<Path> compactedFile = Files.walk(dbDir)
+          .filter(p -> p.toString().endsWith(".uctidx") || p.toString().endsWith(".nuctidx"))
+          .findFirst();
+      assertThat(compactedFile).as("Compacted index file must exist after compaction").isPresent();
+
+      final long fileSize = Files.size(compactedFile.get());
+      final long pageCount = fileSize / PAGE_SIZE;
+      assertThat(pageCount).as("Compacted index must have at least 2 pages for this test to be meaningful").isGreaterThan(1);
+
+      // Close the database cleanly so all pages are flushed.
+      testDb.close();
+      testDb = null;
+
+      // Simulate the unclean-shutdown scenario: inflate compactedPageNumberOfSeries in page 0 by 1.
+      // Physical layout: [version:4][contentSize:4][valuesFreePos:4][entryCount:4][immutable:1][compactedPageNumSeries:4]
+      // => compactedPageNumSeries starts at byte offset 17 of the file.
+      final int COMPACTED_PAGE_NUM_SERIES_OFFSET = 17;
+      try (RandomAccessFile raf = new RandomAccessFile(compactedFile.get().toFile(), "rw")) {
+        raf.seek(COMPACTED_PAGE_NUM_SERIES_OFFSET);
+        final int originalCount = raf.readInt();
+        assertThat(originalCount).as("compactedPageNumberOfSeries in page 0 must equal the file page count").isEqualTo((int) pageCount);
+        raf.seek(COMPACTED_PAGE_NUM_SERIES_OFFSET);
+        raf.writeInt(originalCount + 1); // simulate the crash: header says one more page than exists on disk
+      }
+
+      // Reopen the database. Without the fix, lookups return empty. With the fix, data is returned.
+      testDb = new DatabaseFactory(DB_PATH).open();
+
+      // Point lookup exercises searchInCompactedIndex: must find data despite the inflated header.
+      final IndexCursor pointCursor = testDb.lookupByKey("Item", new String[] { "id" }, new Object[] { 0 });
+      assertThat(pointCursor.hasNext()).as("Point lookup must return results after inflated-header recovery").isTrue();
+
+      // Range scan exercises newIterators: must also return results.
+      final Index idx = testDb.getSchema().getIndexByName("Item[id]");
+      final IndexCursor rangeCursor = ((RangeIndex) idx).range(true, new Object[] { 0 }, true, new Object[] { 9 }, true);
+      assertThat(rangeCursor.hasNext()).as("Range scan must return results after inflated-header recovery").isTrue();
     }
   }
 

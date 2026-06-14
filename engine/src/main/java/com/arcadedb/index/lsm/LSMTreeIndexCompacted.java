@@ -269,17 +269,23 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       return Collections.emptyList();
     }
 
+    final int effectivePageCount;
     if (mainPageCount > totalPages) {
-      // PAGES > TOTAL PAGES. THIS SHOULD NEVER HAPPEN
+      // Header page count is ahead of physical pages - this can happen after an unclean shutdown
+      // where async-flushed compaction pages did not all reach disk before the header was updated.
+      // Serve what is physically present rather than returning empty.
       LogManager.instance()
-          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has an invalid pageNumber=%d totalPages=%d", null, getName(),
-              mainPageCount, totalPages);
-      return Collections.emptyList();
+          .log(this, Level.WARNING,
+              "Compacted index '%s' main page 0 has an invalid pageNumber=%d totalPages=%d; serving %d available pages (some entries may be missing due to an unclean shutdown)",
+              null, getName(), mainPageCount, totalPages, totalPages);
+      effectivePageCount = totalPages;
+    } else {
+      effectivePageCount = mainPageCount;
     }
 
     final List<LSMTreeIndexUnderlyingCompactedSeriesCursor> iterators = new ArrayList<>();
 
-    for (int rootPageNumber = mainPageCount - 1; rootPageNumber > 0; ) {
+    for (int rootPageNumber = effectivePageCount - 1; rootPageNumber > 0; ) {
       final BasePage lastPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), rootPageNumber), pageSize);
 
       final int rootPageCount = getCompactedPageNumberOfSeries(lastPage);
@@ -413,15 +419,21 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       return;
     }
 
+    final int effectivePageCount;
     if (mainPageCount > totalPages) {
-      // PAGES > TOTAL PAGES. THIS SHOULD NEVER HAPPEN
+      // Header page count is ahead of physical pages - this can happen after an unclean shutdown
+      // where async-flushed compaction pages did not all reach disk before the header was updated.
+      // Serve what is physically present rather than returning empty.
       LogManager.instance()
-          .log(this, Level.WARNING, "Compacted index '%s' main page 0 has an invalid pageNumber=%d totalPages=%d", null, getName(),
-              mainPageCount, totalPages);
-      return;
+          .log(this, Level.WARNING,
+              "Compacted index '%s' main page 0 has an invalid pageNumber=%d totalPages=%d; serving %d available pages (some entries may be missing due to an unclean shutdown)",
+              null, getName(), mainPageCount, totalPages, totalPages);
+      effectivePageCount = totalPages;
+    } else {
+      effectivePageCount = mainPageCount;
     }
 
-    for (int pageNumber = mainPageCount - 1; pageNumber > 0; ) {
+    for (int pageNumber = effectivePageCount - 1; pageNumber > 0; ) {
       final BasePage lastPage = database.getTransaction().getPage(new PageId(database, file.getFileId(), pageNumber), pageSize);
 
       final int rootPageCount = getCompactedPageNumberOfSeries(lastPage);
