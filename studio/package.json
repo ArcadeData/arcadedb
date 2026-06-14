@@ -41,7 +41,7 @@
     "jquery": "^4.0.0",
     "marked": "^18.0.5",
     "jszip": "^3.10.1",
-    "pdfmake": "^0.3.9",
+    "pdfmake": "^0.3.11",
     "swagger-ui-dist": "^5.32.6",
     "sweetalert2": "^11.26.25"
   },
