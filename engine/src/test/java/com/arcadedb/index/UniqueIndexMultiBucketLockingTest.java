@@ -70,14 +70,14 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
     database.command("sql", "CREATE INDEX " + INDEX_NAME + " ON " + TYPE_NAME + " (transaction_id) UNIQUE");
 
     try {
-      final ResultSet rs = database.query("sql",
-          "SELECT FROM schema:indexes WHERE name = '" + INDEX_NAME + "'");
-      assertThat(rs.hasNext()).as("schema:indexes should return the custom-named TypeIndex").isTrue();
-      final Result row = rs.next();
-      assertThat(row.<String>getProperty("name")).isEqualTo(INDEX_NAME);
-      assertThat(row.<Boolean>getProperty("unique")).isTrue();
-      assertThat(rs.hasNext()).isFalse();
-      rs.close();
+      try (final ResultSet rs = database.query("sql",
+          "SELECT FROM schema:indexes WHERE name = '" + INDEX_NAME + "'")) {
+        assertThat(rs.hasNext()).as("schema:indexes should return the custom-named TypeIndex").isTrue();
+        final Result row = rs.next();
+        assertThat(row.<String>getProperty("name")).isEqualTo(INDEX_NAME);
+        assertThat(row.<Boolean>getProperty("unique")).isTrue();
+        assertThat(rs.hasNext()).isFalse();
+      }
     } finally {
       database.command("sql", "DROP TYPE " + TYPE_NAME + " IF EXISTS UNSAFE");
     }
@@ -145,11 +145,13 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
         new Thread(() -> {
           try {
             start.await();
+            // High retry count so exactly one winner is deterministic: database.transaction() retries
+            // both NeedRetryException and DuplicatedKeyException up to the given attempts before rethrowing.
             database.transaction(() -> {
               final MutableDocument doc = database.newDocument(TYPE_NAME);
               doc.set("transaction_id", sharedKey);
               doc.save();
-            });
+            }, true, 25);
             successes.incrementAndGet();
           } catch (final DuplicatedKeyException e) {
             duplicates.incrementAndGet();
@@ -171,10 +173,10 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
       assertThat(duplicates.get()).as("At least one insert must be rejected as a duplicate").isGreaterThanOrEqualTo(1);
 
       // Exactly one record with the shared key must exist on disk
-      final ResultSet rs = database.query("sql",
-          "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE transaction_id = " + sharedKey);
-      assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
-      rs.close();
+      try (final ResultSet rs = database.query("sql",
+          "SELECT count(*) AS c FROM " + TYPE_NAME + " WHERE transaction_id = " + sharedKey)) {
+        assertThat(rs.next().<Long>getProperty("c")).isEqualTo(1L);
+      }
     } finally {
       database.command("sql", "DROP TYPE " + TYPE_NAME + " IF EXISTS UNSAFE");
     }
@@ -255,10 +257,10 @@ class UniqueIndexMultiBucketLockingTest extends TestHelper {
           .isNull();
 
       // Index must be visible via schema:indexes
-      final ResultSet rs = database.query("sql",
-          "SELECT FROM schema:indexes WHERE name = '" + INDEX_NAME + "'");
-      assertThat(rs.hasNext()).isTrue();
-      rs.close();
+      try (final ResultSet rs = database.query("sql",
+          "SELECT FROM schema:indexes WHERE name = '" + INDEX_NAME + "'")) {
+        assertThat(rs.hasNext()).isTrue();
+      }
 
     } finally {
       GlobalConfiguration.COMMIT_LOCK_TIMEOUT.setValue(origTimeout);
