@@ -4,7 +4,7 @@
   "license": "Apache-2.0",
   "main": "index.js",
   "scripts": {
-    "test": "jest --runInBand --ci --reporters=default --reporters=jest-junit --detectOpenHandles"
+    "test": "NODE_OPTIONS=--experimental-vm-modules jest --runInBand --ci --reporters=default --reporters=jest-junit --detectOpenHandles"
   },
   "keywords": [],
   "author": "",
