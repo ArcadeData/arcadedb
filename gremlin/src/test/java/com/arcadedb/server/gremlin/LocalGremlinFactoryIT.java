@@ -30,7 +30,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class LocalGremlinFactoryIT {
-  private static final String DATABASE_NAME = "local-database-factory";
+  private static final String DATABASE_NAME = "./target/databases/local-database-factory";
 
   @Test
   void okPoolRelease() {
@@ -69,9 +69,9 @@ class LocalGremlinFactoryIT {
 
   @AfterAll
   static void endTest() {
-    DatabaseFactory.getActiveDatabaseInstances().stream().map(d -> {
-      d.drop();
-      return null;
-    });
+    try (DatabaseFactory factory = new DatabaseFactory(DATABASE_NAME)) {
+      if (factory.exists())
+        factory.open().drop();
+    }
   }
 }
