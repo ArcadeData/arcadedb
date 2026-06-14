@@ -59,6 +59,20 @@ spans - with the OTel SDK kept entirely off the core/server compile classpath.
 - Classpath isolation: `mvn -pl server dependency:tree | grep opentelemetry` -> none.
 - Retro-compat: existing `HttpRedMetricsIT` / `PrometheusEngineMetricsIT` stay green untouched.
 
+## Packaging
+
+The optional `tracing` module ships in the **full** distribution (`arcadedb-*.tar.gz` and the
+`arcadedata/arcadedb` Docker image), mirroring `metrics`: `package/pom.xml` depends on
+`arcadedb-tracing` (shaded classifier), and `package/src/main/assembly/full.xml` excludes it from the
+wildcard `/lib` set then re-includes it in the plugin set. The lean flavors (`minimal`, `headless`,
+`base`) exclude it (like `metrics`), so the OTel SDK is not carried there. The OTel SDK is bundled
+inside the tracing shaded jar (not loose in `/lib`). The modular builder (`arcadedb-builder.sh`) also
+exposes it via `SHADED_MODULES` for custom distributions.
+
+Version alignment: `micrometer-tracing` tracks the `micrometer` line - with `micrometer` at `1.17.0`,
+`micrometer-tracing` is `1.7.0` (OTel `1.62.0`). The tracing BOM must match, otherwise its
+`micrometer-bom` import would pin the whole reactor's micrometer-observation to the older line.
+
 ## Multi-protocol tracing (extension beyond HTTP)
 
 Goal: cover the other wire protocols (Postgres/Bolt/Redis/Mongo/gRPC), not just HTTP.
