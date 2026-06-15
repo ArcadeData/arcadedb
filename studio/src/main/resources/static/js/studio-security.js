@@ -98,10 +98,12 @@ function showCreateUserForm() {
   $("#userName").val("").prop("disabled", false);
   $("#userPassword").val("").attr("placeholder", "Min 4 characters");
   $("#userDatabasesTable tbody tr:not([data-db='*'])").remove();
-  $("#userDatabasesTable tbody tr[data-db='*'] .user-group-select").val("admin");
 
-  loadDatabasesForUserForm();
-  new bootstrap.Modal(document.getElementById("createUserModal")).show();
+  ensureGroupsLoaded(function () {
+    populateWildcardGroupSelect("admin");
+    loadDatabasesForUserForm();
+    new bootstrap.Modal(document.getElementById("createUserModal")).show();
+  });
 }
 
 function editUser(name) {
@@ -112,52 +114,125 @@ function editUser(name) {
   $("#userPassword").val("").attr("placeholder", "Leave blank to keep current");
   $("#userDatabasesTable tbody tr:not([data-db='*'])").remove();
 
-  // Load user data
+  // Load the available groups first so every assigned group (including custom ones) can be
+  // pre-selected in the per-database selects, then load the user data.
+  ensureGroupsLoaded(function () {
+    jQuery
+      .ajax({
+        type: "GET",
+        url: "api/v1/server/users",
+        beforeSend: function (xhr) {
+          xhr.setRequestHeader("Authorization", globalCredentials);
+        },
+      })
+      .done(function (data) {
+        var users = data.result || [];
+        var userData = null;
+        for (var i = 0; i < users.length; i++) {
+          if (users[i].name === name) {
+            userData = users[i];
+            break;
+          }
+        }
+
+        if (!userData) return;
+
+        var databases = userData.databases || {};
+        var dbKeys = Object.keys(databases);
+
+        // Set the * row
+        var hasWildcard = false;
+        for (var j = 0; j < dbKeys.length; j++) {
+          var dbName = dbKeys[j];
+          var groups = databases[dbName];
+          if (!Array.isArray(groups)) groups = [groups];
+
+          if (dbName === "*") {
+            hasWildcard = true;
+            populateWildcardGroupSelect(groups[0] || "admin");
+          } else {
+            appendDatabaseRow(dbName, groups[0] || "admin");
+          }
+        }
+
+        if (!hasWildcard)
+          populateWildcardGroupSelect("*");
+
+        loadDatabasesForUserForm();
+        new bootstrap.Modal(document.getElementById("createUserModal")).show();
+      });
+  });
+}
+
+// Fetches the latest group definitions so the user form can offer every assignable group
+// (including custom, per-database groups) instead of a hardcoded admin/* list. See issue #4638.
+function ensureGroupsLoaded(callback) {
   jQuery
     .ajax({
       type: "GET",
-      url: "api/v1/server/users",
+      url: "api/v1/server/groups",
       beforeSend: function (xhr) {
         xhr.setRequestHeader("Authorization", globalCredentials);
       },
     })
     .done(function (data) {
-      var users = data.result || [];
-      var userData = null;
-      for (var i = 0; i < users.length; i++) {
-        if (users[i].name === name) {
-          userData = users[i];
-          break;
-        }
-      }
-
-      if (!userData) return;
-
-      var databases = userData.databases || {};
-      var dbKeys = Object.keys(databases);
-
-      // Set the * row
-      var hasWildcard = false;
-      for (var j = 0; j < dbKeys.length; j++) {
-        var dbName = dbKeys[j];
-        var groups = databases[dbName];
-        if (!Array.isArray(groups)) groups = [groups];
-        var groupStr = groups.join(", ");
-
-        if (dbName === "*") {
-          hasWildcard = true;
-          $("#userDatabasesTable tbody tr[data-db='*'] .user-group-select").val(groups[0] || "admin");
-        } else {
-          appendDatabaseRow(dbName, groups[0] || "admin");
-        }
-      }
-
-      if (!hasWildcard)
-        $("#userDatabasesTable tbody tr[data-db='*'] .user-group-select").val("*");
-
-      loadDatabasesForUserForm();
-      new bootstrap.Modal(document.getElementById("createUserModal")).show();
+      groupsData = data.result || {};
+      callback();
+    })
+    .fail(function () {
+      // Fall back to whatever is already cached (or hardcoded defaults) so the form still opens
+      callback();
     });
+}
+
+// Returns the group names assignable for a database: the default groups defined under "*"
+// (e.g. admin) plus any groups defined specifically for that database.
+function getGroupNamesForDatabase(dbName) {
+  var names = [];
+  var databases = (groupsData && groupsData.databases) ? groupsData.databases : {};
+
+  var collect = function (entry) {
+    if (!entry || !entry.groups) return;
+    var keys = Object.keys(entry.groups);
+    for (var i = 0; i < keys.length; i++)
+      if (names.indexOf(keys[i]) < 0) names.push(keys[i]);
+  };
+
+  // Default groups under "*" apply to every database
+  collect(databases["*"]);
+
+  // Database-specific groups
+  if (dbName && dbName !== "*")
+    collect(databases[dbName]);
+
+  // Fallback when the group list could not be loaded
+  if (names.length === 0) {
+    names.push("admin");
+    names.push("*");
+  }
+
+  return names;
+}
+
+// Builds the <option> list for a user group <select>, ensuring the currently assigned group
+// is always present even if it has since been removed from the group definitions.
+function buildGroupOptionsHtml(dbName, selectedGroup) {
+  var names = getGroupNamesForDatabase(dbName);
+  if (selectedGroup && names.indexOf(selectedGroup) < 0)
+    names.push(selectedGroup);
+
+  var html = "";
+  for (var i = 0; i < names.length; i++) {
+    var name = names[i];
+    var label = name === "*" ? "* (default)" : name;
+    html += '<option value="' + escapeHtml(name) + '"' + (name === selectedGroup ? " selected" : "") + ">" + escapeHtml(label) + "</option>";
+  }
+  return html;
+}
+
+// Populates the static "* (all databases)" row group select with the available groups.
+function populateWildcardGroupSelect(selectedGroup) {
+  $("#userDatabasesTable tbody tr[data-db='*'] .user-group-select").html(buildGroupOptionsHtml("*", selectedGroup));
 }
 
 function loadDatabasesForUserForm() {
@@ -184,8 +259,7 @@ function appendDatabaseRow(dbName, selectedGroup) {
     "<td><code>" + escapeHtml(dbName) + "</code></td>" +
     '<td><div class="input-group input-group-sm">' +
     '<select class="form-select user-group-select">' +
-    '<option value="admin"' + (selectedGroup === "admin" ? " selected" : "") + '>admin</option>' +
-    '<option value="*"' + (selectedGroup === "*" ? " selected" : "") + '>* (default)</option>' +
+    buildGroupOptionsHtml(dbName, selectedGroup) +
     "</select></div></td>" +
     '<td><button class="btn btn-sm btn-outline-danger remove-db-row"><i class="fa fa-times"></i></button></td>' +
     "</tr>";
