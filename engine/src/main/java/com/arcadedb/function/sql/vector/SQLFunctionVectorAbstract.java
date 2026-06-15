@@ -28,6 +28,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.utility.IntHashSet;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -47,22 +48,56 @@ import java.util.Set;
  */
 public abstract class SQLFunctionVectorAbstract extends SQLFunctionAbstract {
   private static final String VECTOR_PREFIX = "vector.";
-  private final String alias;
+  private final String       alias;
+  private final List<String> aliases;
 
   protected SQLFunctionVectorAbstract(final String name) {
+    this(name, (String[]) null);
+  }
+
+  /**
+   * Registers the function under {@code name} plus optional synonym names. Each synonym (given in
+   * dotted {@code vector.xxx} form) is exposed both as-is and as its camelCase variant, e.g. passing
+   * {@code "vector.l2Norm"} makes the function reachable as {@code vector.l2Norm} and {@code vectorL2Norm}
+   * in addition to the primary {@code vector.magnitude} / {@code vectorMagnitude} names.
+   *
+   * @param name          the primary (dotted) function name
+   * @param extraDottedNames optional additional dotted names to expose as aliases
+   */
+  protected SQLFunctionVectorAbstract(final String name, final String... extraDottedNames) {
     super(name);
     // Auto-generate alias for backward compatibility: vector.xxx -> vectorXxx
-    if (name.startsWith(VECTOR_PREFIX)) {
-      final String suffix = name.substring(VECTOR_PREFIX.length());
-      this.alias = "vector" + Character.toUpperCase(suffix.charAt(0)) + suffix.substring(1);
+    this.alias = camelCaseAlias(name);
+    if (extraDottedNames == null || extraDottedNames.length == 0) {
+      this.aliases = List.of();
     } else {
-      this.alias = null;
+      final List<String> a = new ArrayList<>(extraDottedNames.length * 2);
+      for (final String extra : extraDottedNames) {
+        a.add(extra);
+        final String camel = camelCaseAlias(extra);
+        if (camel != null && !camel.equals(extra))
+          a.add(camel);
+      }
+      this.aliases = List.copyOf(a);
     }
+  }
+
+  private static String camelCaseAlias(final String name) {
+    if (name != null && name.startsWith(VECTOR_PREFIX)) {
+      final String suffix = name.substring(VECTOR_PREFIX.length());
+      return "vector" + Character.toUpperCase(suffix.charAt(0)) + suffix.substring(1);
+    }
+    return null;
   }
 
   @Override
   public String getAlias() {
     return alias;
+  }
+
+  @Override
+  public List<String> getAliases() {
+    return aliases;
   }
 
   /**

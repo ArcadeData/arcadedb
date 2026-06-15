@@ -33,10 +33,10 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionSparseVectorCreate extends SQLFunctionVectorAbstract {
+public class SQLFunctionVectorSparseCreate extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.sparseCreate";
 
-  public SQLFunctionSparseVectorCreate() {
+  public SQLFunctionVectorSparseCreate() {
     super(NAME);
   }
 

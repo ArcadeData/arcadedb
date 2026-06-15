@@ -97,6 +97,20 @@ public interface Function {
   }
 
   /**
+   * Returns additional alias names beyond the primary {@link #getAlias()}.
+   * <p>
+   * A function may expose several backward-compatible or synonymous names (e.g.
+   * {@code vector.magnitude} is also registered as {@code vector.l2Norm} / {@code vectorL2Norm}).
+   * Each name returned here is registered as an extra lookup key for the same function instance.
+   * </p>
+   *
+   * @return an unmodifiable list of additional names, or an empty list if none
+   */
+  default java.util.List<String> getAliases() {
+    return java.util.List.of();
+  }
+
+  /**
    * Validates the arguments before execution.
    * Default implementation checks argument count against min/max bounds.
    *

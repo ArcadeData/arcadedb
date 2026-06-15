@@ -29,7 +29,8 @@ import java.util.Locale;
  * Supported transformations:
  * - LINEAR: No transformation (identity)
  * - SIGMOID: S-shaped curve to [0, 1], maps 0 to 0.5
- * - LOG: Natural logarithm (must be positive)
+ * - TANH: Hyperbolic tangent, S-shaped curve to (-1, 1), maps 0 to 0
+ * - LOG / LN: Natural logarithm (must be positive); LN is the clearer synonym
  * - EXP: Exponential function
  *
  * Usage: vectorScoreTransform(score, 'method')
@@ -43,7 +44,10 @@ public class SQLFunctionVectorScoreTransform extends SQLFunctionVectorAbstract {
   public enum TransformMethod {
     LINEAR,
     SIGMOID,
+    TANH,
     LOG,
+    // LN is a synonym of LOG (natural logarithm); kept separate so valueOf() accepts both spellings.
+    LN,
     EXP
   }
 
@@ -84,7 +88,8 @@ public class SQLFunctionVectorScoreTransform extends SQLFunctionVectorAbstract {
       final TransformMethod method = TransformMethod.valueOf(methodStr);
       return applyTransform(score, method);
     } catch (final IllegalArgumentException e) {
-      throw new CommandSQLParsingException("Unknown transform method: " + methodStr + ". Supported: LINEAR, SIGMOID, LOG, EXP");
+      throw new CommandSQLParsingException(
+          "Unknown transform method: " + methodStr + ". Supported: LINEAR, SIGMOID, TANH, LOG, LN, EXP");
     }
   }
 
@@ -92,9 +97,10 @@ public class SQLFunctionVectorScoreTransform extends SQLFunctionVectorAbstract {
     return switch (method) {
       case LINEAR -> score;
       case SIGMOID -> sigmoid(score);
-      case LOG -> {
+      case TANH -> (float) Math.tanh(score);
+      case LOG, LN -> {
         if (score <= 0)
-          throw new CommandSQLParsingException("LOG transform requires positive score, found: " + score);
+          throw new CommandSQLParsingException(method + " transform requires positive score, found: " + score);
         yield (float) Math.log(score);
       }
       case EXP -> (float) Math.exp(score);

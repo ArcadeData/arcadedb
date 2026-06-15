@@ -19,11 +19,13 @@
 package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * Performs element-wise vector addition.
- * Returns a new vector where each component is the sum of corresponding components.
+ * Performs element-wise vector addition, or scalar broadcasting.
+ * With two vectors, returns the element-wise sum. With a vector and a scalar (in either order), the
+ * scalar is added to every element, e.g. {@code vectorAdd([1,2,3], 4) = [5,6,7]}.
  * <p>
  * Uses scalar implementation which is 7-11x faster than JVector for typical vector sizes (< 1024).
  * JVector overhead from object allocation and conversion dominates actual computation cost.
@@ -43,19 +45,40 @@ public class SQLFunctionVectorAdd extends SQLFunctionVectorAbstract {
     validateNotNull(params[0], "Vector1");
     validateNotNull(params[1], "Vector2");
 
-    final float[] v1 = toFloatArray(params[0]);
-    final float[] v2 = toFloatArray(params[1]);
+    final Object a = params[0];
+    final Object b = params[1];
+    final boolean aScalar = a instanceof Number;
+    final boolean bScalar = b instanceof Number;
+
+    if (aScalar && bScalar)
+      throw new CommandSQLParsingException("At least one argument of " + NAME + " must be a vector");
+
+    // vector + scalar (broadcast)
+    if (bScalar)
+      return broadcast(toFloatArray(a), ((Number) b).floatValue());
+    // scalar + vector (broadcast) - addition is commutative
+    if (aScalar)
+      return broadcast(toFloatArray(b), ((Number) a).floatValue());
+
+    // vector + vector (element-wise)
+    final float[] v1 = toFloatArray(a);
+    final float[] v2 = toFloatArray(b);
     validateSameDimension(v1, v2);
 
-    // Scalar implementation - significantly faster than JVector for typical sizes
     final float[] result = new float[v1.length];
-    for (int i = 0; i < v1.length; i++) {
+    for (int i = 0; i < v1.length; i++)
       result[i] = v1[i] + v2[i];
-    }
+    return result;
+  }
+
+  private static float[] broadcast(final float[] v, final float scalar) {
+    final float[] result = new float[v.length];
+    for (int i = 0; i < v.length; i++)
+      result[i] = v[i] + scalar;
     return result;
   }
 
   public String getSyntax() {
-    return NAME + "(<vector1>, <vector2>)";
+    return NAME + "(<vector1>, <vector2> | <scalar>)";
   }
 }

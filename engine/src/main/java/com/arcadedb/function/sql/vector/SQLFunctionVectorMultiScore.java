@@ -41,7 +41,7 @@ import java.util.Set;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionMultiVectorScore extends SQLFunctionVectorAbstract {
+public class SQLFunctionVectorMultiScore extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.multiScore";
 
   private static final Set<String> OPTIONS = Set.of("weights");
@@ -53,7 +53,7 @@ public class SQLFunctionMultiVectorScore extends SQLFunctionVectorAbstract {
     WEIGHTED
   }
 
-  public SQLFunctionMultiVectorScore() {
+  public SQLFunctionVectorMultiScore() {
     super(NAME);
   }
 

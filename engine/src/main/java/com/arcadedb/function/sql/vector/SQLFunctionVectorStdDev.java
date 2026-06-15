@@ -54,23 +54,8 @@ public class SQLFunctionVectorStdDev extends SQLFunctionVectorAbstract {
     if (vector.length == 0)
       throw new CommandSQLParsingException("Vector cannot be empty");
 
-    // Calculate mean
-    double sum = 0.0;
-    for (final float value : vector) {
-      sum += value;
-    }
-    final double mean = sum / vector.length;
-
-    // Calculate variance: average of squared differences from mean
-    double varianceSum = 0.0;
-    for (final float value : vector) {
-      final double diff = value - mean;
-      varianceSum += diff * diff;
-    }
-    final double variance = varianceSum / vector.length;
-
-    // Standard deviation is square root of variance
-    return (float) Math.sqrt(variance);
+    // Standard deviation is the square root of the variance (reuses SQLFunctionVectorVariance).
+    return (float) Math.sqrt(SQLFunctionVectorVariance.variance(vector));
   }
 
 

@@ -25,6 +25,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 /**
  * Clips (clamps) vector elements to a specified range.
  * Any value below min becomes min, any value above max becomes max.
+ * <p>
+ * Also available as {@code vector.clamp} / {@code vectorClamp} (the standard Java/Math term).
  *
  * Formula: clipped[i] = max(min, min(max, value[i]))
  *
@@ -36,7 +38,7 @@ public class SQLFunctionVectorClip extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.clip";
 
   public SQLFunctionVectorClip() {
-    super(NAME);
+    super(NAME, "vector.clamp");
   }
 
   @Override
