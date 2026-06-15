@@ -318,11 +318,14 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     register(SQLFunctionVectorSubtract.NAME, new SQLFunctionVectorSubtract());
     register(SQLFunctionVectorMultiply.NAME, new SQLFunctionVectorMultiply());
     register(SQLFunctionVectorScale.NAME, new SQLFunctionVectorScale());
-    // Vector Aggregations
-    register(SQLFunctionVectorSum.NAME, new SQLFunctionVectorSum());
-    register(SQLFunctionVectorAvg.NAME, new SQLFunctionVectorAvg());
-    register(SQLFunctionVectorMin.NAME, new SQLFunctionVectorMin());
-    register(SQLFunctionVectorMax.NAME, new SQLFunctionVectorMax());
+    // Vector Aggregations: registered as classes (not instances) so a fresh, isolated instance is created
+    // per query. These functions accumulate per-row state in instance fields; sharing a single instance
+    // leaked that state across independent queries (issue #3099: repeated SELECT vector.sum(...) returned
+    // increasing results) and was not thread-safe for concurrent queries.
+    register(SQLFunctionVectorSum.NAME, SQLFunctionVectorSum.class);
+    register(SQLFunctionVectorAvg.NAME, SQLFunctionVectorAvg.class);
+    register(SQLFunctionVectorMin.NAME, SQLFunctionVectorMin.class);
+    register(SQLFunctionVectorMax.NAME, SQLFunctionVectorMax.class);
     // Reranking Functions
     register(SQLFunctionVectorRRFScore.NAME, new SQLFunctionVectorRRFScore());
     register(SQLFunctionVectorNormalizeScores.NAME, new SQLFunctionVectorNormalizeScores());

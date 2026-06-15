@@ -48,7 +48,9 @@ public class SQLFunctionVectorHasInf extends SQLFunctionVectorAbstract {
     if (vectorObj == null)
       return null;
 
-    final float[] vector = toFloatArray(vectorObj);
+    // Null-tolerant conversion (issue #3099): a NULL element is mapped to NaN, which is not infinite, so it
+    // is correctly ignored here instead of crashing the conversion.
+    final float[] vector = toFloatArrayNaNForNull(vectorObj);
 
     if (vector.length == 0)
       throw new CommandSQLParsingException("Vector cannot be empty");

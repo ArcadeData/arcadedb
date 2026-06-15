@@ -45,7 +45,9 @@ public class SQLFunctionVectorDimension extends SQLFunctionVectorAbstract {
     final Object vector = params[0];
 
     return switch (vector) {
-      case null -> throw new CommandSQLParsingException("Vector cannot be null");
+      // Issue #3099: a NULL argument returns 0, consistent with .size()/.length() on a null collection,
+      // instead of throwing.
+      case null -> 0;
       case float[] floatArray -> floatArray.length;
       case Object[] objArray -> objArray.length;
       case List<?> list -> list.size();
