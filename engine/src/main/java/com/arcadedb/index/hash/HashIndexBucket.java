@@ -709,13 +709,12 @@ public class HashIndexBucket extends PaginatedComponent {
   private void ensureDirectoryCapacity(final int numEntries) throws IOException {
     final int entriesPerPage = (pageSize - BasePage.PAGE_HEADER_SIZE) / Binary.INT_SERIALIZED_SIZE;
     final int neededPages = (numEntries + entriesPerPage - 1) / entriesPerPage;
-    final int currentDirPages = bucketsStartPage - directoryStartPage;
+    // doubleDirectory() increments globalDepth before calling this, so the pre-doubling
+    // directory holds (1 << (globalDepth - 1)) entries across this many pages.
+    final int currentDirEntries = 1 << (globalDepth - 1);
+    final int currentDirPages = (currentDirEntries + entriesPerPage - 1) / entriesPerPage;
 
     if (neededPages > currentDirPages) {
-      // We need more directory pages. Since bucket pages come after directory pages,
-      // we need to shift things. For simplicity, allocate directory pages at the end
-      // and update directoryStartPage. Actually, since the directory may be small and
-      // we'd need to move bucket pointers, let's use a simpler approach:
       // Allocate new directory pages at the end of the file and update the start page.
 
       final int newDirStartPage = getTotalPages();

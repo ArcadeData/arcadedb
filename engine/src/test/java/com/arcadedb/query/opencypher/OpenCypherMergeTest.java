@@ -28,12 +28,14 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -1441,6 +1443,117 @@ class OpenCypherMergeTest {
 
       final ResultSet cCount = db.query("opencypher", "MATCH (c:C) RETURN count(c) AS cnt");
       assertThat(cCount.next().<Number>getProperty("cnt").longValue()).isEqualTo(1L);
+    }
+  }
+
+  /**
+   * Regression test for issue #352: IndexException 'Unsupported key type for hash index: -108'
+   * during MERGE on Account vertices with a composite UNIQUE HASH index on (bank, number).
+   *
+   * The root defect was in HashIndexBucket.ensureDirectoryCapacity(): the current directory
+   * page count was computed as bucketsStartPage - directoryStartPage, which becomes permanently
+   * negative after the first directory reallocation (bucketsStartPage is always 2 and never
+   * updated, while directoryStartPage grows to a large page number). Every subsequent
+   * doubling then triggered a wasteful reallocation, widening the metadata write window
+   * and increasing exposure to crash-induced corruption.
+   */
+  @Nested
+  class MergeCompositeHashIndexRegression {
+    private static final String DB_PATH = "./target/databases/issue-352-composite-hash-merge";
+
+    private DatabaseFactory factory;
+    private Database        db;
+
+    @BeforeEach
+    void setUp() {
+      FileUtils.deleteRecursively(new File(DB_PATH));
+      factory = new DatabaseFactory(DB_PATH);
+      db = factory.create();
+      db.transaction(() -> {
+        final VertexType account = db.getSchema().createVertexType("Account");
+        account.createProperty("bank", String.class);
+        account.createProperty("number", String.class);
+        // Small page size forces many bucket splits and directory doublings within a
+        // manageable record count, exercising ensureDirectoryCapacity reallocation.
+        db.getSchema()
+            .buildTypeIndex("Account", new String[] { "bank", "number" })
+            .withType(Schema.INDEX_TYPE.HASH)
+            .withUnique(true)
+            .withPageSize(512)
+            .create();
+      });
+    }
+
+    @AfterEach
+    void tearDown() {
+      if (db != null && db.isOpen())
+        db.drop();
+      db = null;
+    }
+
+    @Test
+    @Tag("slow")
+    void compositeHashIndexSurvivesDirectoryReallocAndReopen() {
+      final int banks = 5;
+      final int accountsPerBank = 400;
+
+      // Insert 2 000 accounts via Cypher MERGE to force multiple directory doublings
+      // and at least one directory-page reallocation (512-byte pages hold 126 directory
+      // entries; reallocation triggers when the virtual directory exceeds 126 slots).
+      for (int b = 0; b < banks; b++) {
+        final String bankName = "bank_" + b;
+        db.transaction(() -> {
+          for (int n = 0; n < accountsPerBank; n++) {
+            final Map<String, Object> params = new HashMap<>();
+            params.put("bank", bankName);
+            params.put("number", String.format("%06d", n));
+            try (final ResultSet rs = db.command("opencypher",
+                "MERGE (:Account {bank: $bank, number: $number})", params)) {
+              while (rs.hasNext())
+                rs.next();
+            }
+          }
+        });
+      }
+
+      // Close and reopen: exercises loadMetadata() from disk, the path that reads
+      // the key-type bytes that would be corrupted by the stale-formula bug.
+      db.close();
+      db = factory.open();
+
+      // All accounts must still be findable after reopen.
+      db.transaction(() -> {
+        for (int b = 0; b < banks; b++) {
+          for (int n = 0; n < accountsPerBank; n++) {
+            final Map<String, Object> params = new HashMap<>();
+            params.put("bank", "bank_" + b);
+            params.put("number", String.format("%06d", n));
+            try (final ResultSet rs = db.query("opencypher",
+                "MATCH (a:Account {bank: $bank, number: $number}) RETURN a", params)) {
+              assertThat(rs.hasNext())
+                  .withFailMessage("Account bank_%d/%s not found after reopen", b, String.format("%06d", n))
+                  .isTrue();
+            }
+          }
+        }
+      });
+
+      // Re-merging an existing account must NOT create a duplicate.
+      db.transaction(() -> {
+        final Map<String, Object> params = new HashMap<>();
+        params.put("bank", "bank_0");
+        params.put("number", "000001");
+        try (final ResultSet rs = db.command("opencypher",
+            "MERGE (:Account {bank: $bank, number: $number})", params)) {
+          while (rs.hasNext())
+            rs.next();
+        }
+      });
+
+      try (final ResultSet rs = db.query("opencypher", "MATCH (a:Account) RETURN count(a) AS cnt")) {
+        assertThat(rs.next().<Number>getProperty("cnt").longValue())
+            .isEqualTo((long) banks * accountsPerBank);
+      }
     }
   }
 }
