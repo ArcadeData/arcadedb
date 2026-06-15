@@ -89,6 +89,28 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
         functions.put(alias.toLowerCase(Locale.ENGLISH), function);
       }
       FunctionRegistry.register(sqlFunction);
+    } else if (function instanceof Class<?> clazz && SQLFunction.class.isAssignableFrom(clazz)) {
+      // Class-based (stateful) registration: getFunctionInstance() creates a fresh instance per call, so we
+      // do not register in the unified FunctionRegistry. We still honor the function's alias by mapping the
+      // alias name to the same class, otherwise backward-compatible names (e.g. vectorSum -> vector.sum)
+      // would stop resolving once a stateful function moves from instance to class registration.
+      final String alias = aliasOfFunctionClass(clazz);
+      if (alias != null) {
+        functions.put(alias.toLowerCase(Locale.ENGLISH), function);
+      }
+    }
+  }
+
+  /**
+   * Probes a function class for its declared alias by instantiating it via the no-arg constructor (the same
+   * constructor {@link #getFunctionInstance(String)} relies on). Returns {@code null} when the function has no
+   * alias or cannot be instantiated, in which case only the primary name is registered.
+   */
+  private static String aliasOfFunctionClass(final Class<?> clazz) {
+    try {
+      return ((SQLFunction) clazz.getConstructor().newInstance()).getAlias();
+    } catch (final Exception e) {
+      return null;
     }
   }
 

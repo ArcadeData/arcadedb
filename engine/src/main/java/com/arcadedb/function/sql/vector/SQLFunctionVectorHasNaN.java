@@ -48,7 +48,9 @@ public class SQLFunctionVectorHasNaN extends SQLFunctionVectorAbstract {
     if (vectorObj == null)
       return null;
 
-    final float[] vector = toFloatArray(vectorObj);
+    // Null-tolerant conversion (issue #3099): a NULL element (e.g. from sqrt(-1.0) coerced to NULL inside a
+    // collection) is mapped to NaN and detected below, instead of crashing the conversion.
+    final float[] vector = toFloatArrayNaNForNull(vectorObj);
 
     if (vector.length == 0)
       throw new CommandSQLParsingException("Vector cannot be empty");
