@@ -103,4 +103,24 @@ public abstract class SQLFunctionAbstract implements SQLFunction {
       throw new CommandSQLParsingException(e.getMessage());
     }
   }
+
+  /**
+   * Null-tolerant variant of {@link #toFloatArray(Object)} that maps {@code null} collection elements to
+   * {@link Float#NaN}. Used by the validity-check functions (vector.hasNaN / vector.hasInf) so a NULL produced
+   * by an invalid SQL math op (e.g. sqrt(-1.0), coerced to NULL inside a collection) is detected as NaN rather
+   * than crashing the conversion. Delegates to {@link com.arcadedb.index.vector.VectorUtils#toFloatArrayNaNForNull(Object)}.
+   *
+   * @param vector The input vector (can be float[], double[], Object[], or List)
+   *
+   * @return float array representation, with null elements replaced by {@link Float#NaN}
+   *
+   * @throws CommandSQLParsingException if input type is invalid or contains non-numeric, non-null elements
+   */
+  protected float[] toFloatArrayNaNForNull(final Object vector) {
+    try {
+      return VectorUtils.toFloatArrayNaNForNull(vector);
+    } catch (final IllegalArgumentException e) {
+      throw new CommandSQLParsingException(e.getMessage());
+    }
+  }
 }
