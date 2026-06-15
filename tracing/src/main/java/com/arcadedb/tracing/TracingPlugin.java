@@ -25,6 +25,8 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
 import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.TraceContext;
 import io.micrometer.tracing.Tracer;
 import io.micrometer.tracing.handler.DefaultTracingObservationHandler;
 import io.micrometer.tracing.handler.PropagatingReceiverTracingObservationHandler;
@@ -54,6 +56,8 @@ import java.util.logging.Level;
  * is confined to this module and never reaches the core/server compile classpath.
  */
 public class TracingPlugin implements ServerPlugin {
+  // OpenTelemetry's invalid/no-span trace id (all zeros): treated as "no active trace".
+  private static final String           INVALID_TRACE_ID = "00000000000000000000000000000000";
   private boolean                       enabled;
   private String                        endpoint;
   private double                        samplingRate;
@@ -103,6 +107,7 @@ public class TracingPlugin implements ServerPlugin {
     // Deactivate the handler BEFORE closing the provider: the ObservationRegistry has no
     // remove-handler API, so the handler stays registered, but once deactivated it is a no-op and
     // never touches the closed tracer provider.
+    LogManager.setTraceContextSupplier(null);
     if (attachedHandler != null) {
       attachedHandler.deactivate();
       attachedHandler = null;
@@ -146,6 +151,21 @@ public class TracingPlugin implements ServerPlugin {
         new PropagatingReceiverTracingObservationHandler<>(tracer, propagator),
         new DefaultTracingObservationHandler(tracer)));
     registry.observationConfig().observationHandler(attachedHandler);
+
+    // Expose the active trace context to the core logger (issue #4466) without the core taking an
+    // OpenTelemetry dependency. The HTTP handler reads this when populating its per-request
+    // correlation, so JSON/text logs carry the traceId. Returns null when no real span is active so
+    // logging degrades cleanly. Cleared in stopService().
+    LogManager.setTraceContextSupplier(() -> {
+      final Span span = tracer.currentSpan();
+      if (span == null)
+        return null;
+      final TraceContext context = span.context();
+      final String traceId = context.traceId();
+      if (traceId == null || traceId.isEmpty() || INVALID_TRACE_ID.equals(traceId))
+        return null;
+      return new String[] { traceId, context.spanId() };
+    });
   }
 
   /**

@@ -46,6 +46,7 @@ import io.undertow.util.StatusCodes;
 import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Deque;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -132,6 +133,20 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     try {
       observationScope = observation.openScope();
       LogManager.instance().setContext(httpServer.getServer().getServerName());
+
+      // Per-request correlation context (issue #4466). requestId always works (generated when the
+      // client sends no X-Request-Id); db comes from the path template; traceId/spanId are populated
+      // only when the optional tracing plugin has registered a supplier - the observation scope is
+      // already open above, so the active span is visible here. Cleared in the finally block to avoid
+      // leaking across pooled Undertow worker threads.
+      String correlationRequestId = exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID);
+      if (correlationRequestId == null || correlationRequestId.isEmpty())
+        correlationRequestId = UUID.randomUUID().toString();
+      exchange.getResponseHeaders()
+          .put(HttpString.tryFromString(IdempotencyCache.HEADER_REQUEST_ID), correlationRequestId);
+      final String[] traceContext = LogManager.instance().currentTraceContext();
+      LogManager.instance().setCorrelation(correlationRequestId, databaseTag(exchange),
+          traceContext == null ? null : traceContext[0], traceContext == null ? null : traceContext[1]);
 
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
@@ -399,6 +414,7 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       ProtocolContext.clear();
       LogManager.instance().setContext(null);
+      LogManager.instance().clearCorrelation();
 
       Timer.builder("arcadedb.http.requests")
           .description("HTTP request duration")
