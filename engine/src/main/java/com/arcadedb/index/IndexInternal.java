@@ -27,6 +27,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.ExcludeFromJacocoGeneratedReport;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -50,6 +51,16 @@ public interface IndexInternal extends Index {
   boolean setStatus(INDEX_STATUS[] expectedStatuses, INDEX_STATUS newStatus);
 
   default void flush() {
+  }
+
+  /**
+   * Performs a lightweight structural/metadata integrity check of the index, independent of record content, and
+   * returns a list of human-readable problem descriptions. An empty list means the index metadata is healthy.
+   * Used by CHECK DATABASE to surface on-disk corruption (e.g. a damaged hash index metadata page, issue #352)
+   * proactively, before it manifests as a cryptic failure during a query.
+   */
+  default List<String> checkIntegrity() {
+    return Collections.emptyList();
   }
 
   void close();

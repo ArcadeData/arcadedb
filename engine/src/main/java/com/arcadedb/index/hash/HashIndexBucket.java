@@ -70,6 +70,11 @@ public class HashIndexBucket extends PaginatedComponent {
   static final int META_KEY_TYPES_START    = 9;                      // byte[] (variable)
   // After key types: nullStrategy(1), unique(1), dirStartPage(4), bucketsStartPage(4), bucketCount(4)
 
+  // Upper bound on the number of key components used to sanity-check the (possibly corrupt) count read
+  // from the metadata page before it is trusted to size arrays and walk the page. Composite indexes have
+  // very few columns in practice; this is a generous ceiling that still catches a garbage byte.
+  static final int MAX_SANE_KEY_COUNT = 64;
+
   // Bucket page header offsets (relative to PAGE_HEADER_SIZE)
   static final int BUCKET_LOCAL_DEPTH     = 0;                       // short (2)
   static final int BUCKET_ENTRY_COUNT     = 2;                       // short (2)
@@ -654,16 +659,38 @@ public class HashIndexBucket extends PaginatedComponent {
     globalDepth = metaPage.readInt(META_GLOBAL_DEPTH);
     totalEntries = metaPage.readInt(META_TOTAL_ENTRIES);
 
+    final int rawNumKeys = metaPage.readByte(META_NUMBER_OF_KEYS) & 0xFF;
+
+    // Sanity-guard the key count read from the (possibly corrupt) metadata page before using it to size
+    // arrays and walk the page. Without this a garbage count byte would either blow up with an
+    // IndexOutOfBounds deep in this loop, or - far worse - silently load an invalid key type that only
+    // surfaces much later as the cryptic "Unsupported key type for hash index: -108" during a search
+    // (issue #352). Clamping to 0 keeps the database openable so the corrupt index can be dropped/rebuilt.
+    final int maxKeysForPage = (metaPage.getMaxContentSize() - META_KEY_TYPES_START) / Binary.BYTE_SERIALIZED_SIZE;
+    final boolean numKeysCorrupt = rawNumKeys < 1 || rawNumKeys > MAX_SANE_KEY_COUNT || rawNumKeys > maxKeysForPage;
+    final int numKeys = numKeysCorrupt ? 0 : rawNumKeys;
+
+    boolean metadataCorrupt = numKeysCorrupt;
+
     int pos = META_KEY_TYPES_START;
-    final int numKeys = metaPage.readByte(META_NUMBER_OF_KEYS) & 0xFF;
     binaryKeyTypes = new byte[numKeys];
     keyTypes = new Type[numKeys];
     for (int i = 0; i < numKeys; i++) {
       binaryKeyTypes[i] = metaPage.readByte(pos);
       keyTypes[i] = Type.getByBinaryType(binaryKeyTypes[i]);
+      if (!isSupportedKeyType(binaryKeyTypes[i]))
+        metadataCorrupt = true;
       pos += Binary.BYTE_SERIALIZED_SIZE;
     }
-    nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.values()[metaPage.readByte(pos) & 0xFF];
+
+    final int nullStrategyOrdinal = metaPage.readByte(pos) & 0xFF;
+    final LSMTreeIndexAbstract.NULL_STRATEGY[] strategies = LSMTreeIndexAbstract.NULL_STRATEGY.values();
+    if (nullStrategyOrdinal < strategies.length)
+      nullStrategy = strategies[nullStrategyOrdinal];
+    else {
+      nullStrategy = LSMTreeIndexAbstract.NULL_STRATEGY.SKIP;
+      metadataCorrupt = true;
+    }
     pos += Binary.BYTE_SERIALIZED_SIZE;
     // unique is already set from constructor
     pos += Binary.BYTE_SERIALIZED_SIZE;
@@ -673,6 +700,130 @@ public class HashIndexBucket extends PaginatedComponent {
     bucketsStartPage = metaPage.readInt(pos);
     pos += Binary.INT_SERIALIZED_SIZE;
     bucketCount = metaPage.readInt(pos);
+
+    if (metadataCorrupt)
+      LogManager.instance().log(this, Level.SEVERE,
+          "Corrupted metadata detected on hash index '%s' (fileId=%d): %s. The index must be rebuilt (DROP and "
+              + "recreate it). Raw metadata page 0 dump (content bytes):%n%s",
+          null, getName(), fileId, describeMetadata(rawNumKeys), dumpMetadataPage(metaPage));
+  }
+
+  /**
+   * Returns true if the given binary type is one this hash index can serialize/deserialize as a key
+   * component. Mirrors the supported cases in {@link #getSerializedValueSize}; used to validate the key
+   * types loaded from the metadata page so corruption is detected up front instead of deep in a search.
+   */
+  static boolean isSupportedKeyType(final byte type) {
+    switch (type) {
+    case BinaryTypes.TYPE_BOOLEAN:
+    case BinaryTypes.TYPE_BYTE:
+    case BinaryTypes.TYPE_SHORT:
+    case BinaryTypes.TYPE_INT:
+    case BinaryTypes.TYPE_LONG:
+    case BinaryTypes.TYPE_FLOAT:
+    case BinaryTypes.TYPE_DOUBLE:
+    case BinaryTypes.TYPE_DATE:
+    case BinaryTypes.TYPE_DATETIME:
+    case BinaryTypes.TYPE_DATETIME_MICROS:
+    case BinaryTypes.TYPE_DATETIME_NANOS:
+    case BinaryTypes.TYPE_DATETIME_SECOND:
+    case BinaryTypes.TYPE_STRING:
+    case BinaryTypes.TYPE_BINARY:
+    case BinaryTypes.TYPE_COMPRESSED_RID:
+    case BinaryTypes.TYPE_DECIMAL:
+    case BinaryTypes.TYPE_UUID:
+      return true;
+    default:
+      return false;
+    }
+  }
+
+  /**
+   * Human-readable one-line summary of the parsed metadata fields, used in corruption diagnostics.
+   */
+  private String describeMetadata(final int rawNumKeys) {
+    return "globalDepth=" + globalDepth + ", totalEntries=" + totalEntries + ", numberOfKeys=" + rawNumKeys
+        + ", keyTypes=" + formatKeyTypes() + ", directoryStartPage=" + directoryStartPage + ", bucketsStartPage="
+        + bucketsStartPage + ", bucketCount=" + bucketCount + ", unique=" + unique;
+  }
+
+  /**
+   * Formats the loaded key types as signed value + hex, flagging any that are not valid hash index key types.
+   */
+  private String formatKeyTypes() {
+    final StringBuilder buffer = new StringBuilder(2 + binaryKeyTypes.length * 12);
+    buffer.append('[');
+    for (int i = 0; i < binaryKeyTypes.length; i++) {
+      if (i > 0)
+        buffer.append(", ");
+      final byte type = binaryKeyTypes[i];
+      buffer.append(type).append("(0x").append(String.format("%02X", type & 0xFF)).append(')');
+      if (!isSupportedKeyType(type))
+        buffer.append("=INVALID");
+    }
+    return buffer.append(']').toString();
+  }
+
+  /**
+   * Hex dump of the leading content bytes of the metadata page, so the actual on-disk bytes are captured
+   * in the log when corruption is detected.
+   */
+  private String dumpMetadataPage(final BasePage page) {
+    final int len = Math.min(page.getMaxContentSize(), 48);
+    final StringBuilder hex = new StringBuilder(len * 3);
+    for (int i = 0; i < len; i++) {
+      if (i > 0 && i % 16 == 0)
+        hex.append('\n');
+      hex.append(String.format("%02X ", page.readByte(i) & 0xFF));
+    }
+    return hex.toString();
+  }
+
+  /**
+   * Builds a rich, actionable exception for an unrecognized key type encountered while parsing an entry.
+   * The bare type value (e.g. -108) is meaningless on its own; this adds the index identity, the loaded
+   * key types, the page/offset being parsed, and the remediation step.
+   */
+  private IndexException unsupportedKeyType(final byte type, final int offset) {
+    return new IndexException(
+        "Unsupported key type for hash index '" + getName() + "' (fileId=" + fileId + "): " + type + " (0x"
+            + String.format("%02X", type & 0xFF) + ") while parsing entry at content offset " + offset
+            + ". Loaded key types=" + formatKeyTypes()
+            + ". This means the index metadata or a bucket page is corrupted; rebuild the index (DROP and recreate it).");
+  }
+
+  /**
+   * Validates the loaded metadata (key types, directory/bucket page pointers, counters) and returns a list of
+   * human-readable problems; an empty list means healthy. Independent of record content, so CHECK DATABASE can
+   * surface a corrupt metadata page (issue #352) proactively instead of waiting for a query to fail with a
+   * cryptic "Unsupported key type for hash index: -108".
+   */
+  public List<String> checkMetadataIntegrity() {
+    final List<String> problems = new ArrayList<>();
+
+    if (binaryKeyTypes == null || binaryKeyTypes.length == 0)
+      problems.add("no key types loaded (the metadata page reports an invalid key count)");
+    else
+      for (int i = 0; i < binaryKeyTypes.length; i++)
+        if (!isSupportedKeyType(binaryKeyTypes[i]))
+          problems.add("invalid key type at column " + i + ": " + binaryKeyTypes[i] + " (0x"
+              + String.format("%02X", binaryKeyTypes[i] & 0xFF) + ")");
+
+    if (globalDepth < 0)
+      problems.add("invalid globalDepth=" + globalDepth);
+    if (directoryStartPage < 1)
+      problems.add("invalid directoryStartPage=" + directoryStartPage);
+    if (bucketsStartPage < 1)
+      problems.add("invalid bucketsStartPage=" + bucketsStartPage);
+    if (bucketCount < 1)
+      problems.add("invalid bucketCount=" + bucketCount);
+
+    if (!problems.isEmpty())
+      LogManager.instance().log(this, Level.SEVERE,
+          "CHECK DATABASE found corrupted metadata on hash index '%s' (fileId=%d): %s. The index must be rebuilt "
+              + "(DROP and recreate it).", null, getName(), fileId, problems);
+
+    return problems;
   }
 
   // ─── DIRECTORY OPERATIONS ────────────────────────────────
@@ -1386,7 +1537,7 @@ public class HashIndexBucket extends PaginatedComponent {
     case BinaryTypes.TYPE_UUID:
       return 16; // Two longs
     default:
-      throw new IndexException("Unsupported key type for hash index: " + type);
+      throw unsupportedKeyType(type, offset);
     }
   }
 
@@ -1421,7 +1572,7 @@ public class HashIndexBucket extends PaginatedComponent {
     case BinaryTypes.TYPE_UUID:
       return 16;
     default:
-      throw new IndexException("Unsupported key type for hash index: " + type);
+      throw unsupportedKeyType(type, offset);
     }
   }
 

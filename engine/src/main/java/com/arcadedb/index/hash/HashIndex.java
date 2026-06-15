@@ -521,6 +521,11 @@ public class HashIndex implements IndexInternal {
   }
 
   @Override
+  public List<String> checkIntegrity() {
+    return bucket.checkMetadataIntegrity();
+  }
+
+  @Override
   public void setTypeIndex(final TypeIndex typeIndex) {
     this.typeIndex = typeIndex;
   }

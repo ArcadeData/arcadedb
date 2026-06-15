@@ -67,6 +67,7 @@ public class DatabaseChecker {
     result.put("warnings", new LinkedHashSet<>());
     result.put("deletedRecordsAfterFix", new LinkedHashSet<>());
     result.put("corruptedRecords", new LinkedHashSet<>());
+    result.put("corruptedIndexes", new LinkedHashSet<>());
 
     checkEdges();
 
@@ -78,6 +79,8 @@ public class DatabaseChecker {
 
     checkExternalProperties();
 
+    final Set<Index> corruptMetadataIndexes = checkIndexes();
+
     final Set<Integer> affectedBuckets = new HashSet<>();
     for (final RID rid : (Collection<RID>) result.get("corruptedRecords"))
       if (rid != null)
@@ -87,6 +90,10 @@ public class DatabaseChecker {
     for (final Index index : database.getSchema().getIndexes())
       if (affectedBuckets.contains(index.getAssociatedBucketId()))
         affectedIndexes.add(index);
+
+    // Indexes whose own metadata is corrupt (e.g. a damaged hash index metadata page) must be rebuilt even when
+    // no record corruption pointed at their bucket.
+    affectedIndexes.addAll(corruptMetadataIndexes);
 
     final Set<String> rebuildIndexes = affectedIndexes.stream().map(x -> x.getName()).collect(Collectors.toSet());
     result.put("rebuiltIndexes", rebuildIndexes);
@@ -369,6 +376,51 @@ public class DatabaseChecker {
     ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
     if (fix)
       ((LinkedHashSet<RID>) result.get("deletedRecordsAfterFix")).addAll(orphanedExternalRecords);
+  }
+
+  /**
+   * Checks the structural integrity of each index's own metadata (independent of record content) and returns the
+   * set of indexes found corrupt. Catches damage like a hash index metadata page with an invalid key type (issue
+   * #352) proactively, instead of letting it surface as a cryptic failure during a query. On FIX, the returned
+   * indexes are rebuilt by the caller together with the record-corruption-affected ones.
+   */
+  private Set<Index> checkIndexes() {
+    if (verboseLevel > 0)
+      LogManager.instance().log(this, Level.INFO, "Checking index metadata...");
+
+    final List<String> warnings = new ArrayList<>();
+    final Set<String>  corruptedIndexNames = new LinkedHashSet<>();
+    final Set<Index>   corruptedIndexes    = new HashSet<>();
+
+    for (final Index index : database.getSchema().getIndexes()) {
+      if (types != null && !types.isEmpty()) {
+        final String typeName = index.getTypeName();
+        if (typeName == null || !types.contains(typeName))
+          continue;
+      }
+
+      final List<String> problems;
+      try {
+        problems = ((IndexInternal) index).checkIntegrity();
+      } catch (final Exception e) {
+        warnings.add("index '" + index.getName() + "': integrity check failed: " + e.getMessage());
+        corruptedIndexNames.add(index.getName());
+        corruptedIndexes.add(index);
+        continue;
+      }
+
+      if (!problems.isEmpty()) {
+        corruptedIndexNames.add(index.getName());
+        corruptedIndexes.add(index);
+        for (final String problem : problems)
+          warnings.add("index '" + index.getName() + "': " + problem);
+      }
+    }
+
+    ((LinkedHashSet<String>) result.get("corruptedIndexes")).addAll(corruptedIndexNames);
+    ((LinkedHashSet<String>) result.get("warnings")).addAll(warnings);
+
+    return corruptedIndexes;
   }
 
   private void checkBuckets(final Map<String, Object> result) {
