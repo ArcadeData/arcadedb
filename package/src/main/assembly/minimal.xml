@@ -119,6 +119,7 @@
                 <exclude>com.arcadedb:arcadedb-grpcw</exclude>
                 <exclude>com.arcadedb:arcadedb-graphql</exclude>
                 <exclude>com.arcadedb:arcadedb-metrics</exclude>
+                <exclude>com.arcadedb:arcadedb-tracing</exclude>
             </excludes>
         </dependencySet>
         <!-- Plugin modules in separate directory -->

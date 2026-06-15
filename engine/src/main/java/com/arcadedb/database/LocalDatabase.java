@@ -1565,7 +1565,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try {
+    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, new ContextConfiguration());
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -1577,7 +1577,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try {
+    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, new ContextConfiguration(), parameters);
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -1590,7 +1590,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try {
+    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, configuration, parameters);
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -1608,7 +1608,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen(true, "Cannot execute command on a read only database");
     stats.commands.incrementAndGet();
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try {
+    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "command", query)) {
       return getQueryEngine(language).command(query, configuration, parameters);
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "command");
@@ -1639,7 +1639,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try {
+    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
       return getQueryEngine(language).query(query, new ContextConfiguration());
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
@@ -1651,7 +1651,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try {
+    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "query");
@@ -1663,7 +1663,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     checkDatabaseIsOpen();
     stats.queries.incrementAndGet();
     final long start = QueryMetricsRecorder.Holder.startNanos();
-    try {
+    try (final QueryTracer.Span span = QueryTracer.Holder.begin(name, language, "query", query)) {
       return getQueryEngine(language).query(query, new ContextConfiguration(), parameters);
     } finally {
       QueryMetricsRecorder.Holder.record(start, name, language, "query");

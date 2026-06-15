@@ -120,6 +120,7 @@
                 <exclude>com.arcadedb:arcadedb-grpcw</exclude>
                 <exclude>com.arcadedb:arcadedb-graphql</exclude>
                 <exclude>com.arcadedb:arcadedb-metrics</exclude>
+                <exclude>com.arcadedb:arcadedb-tracing</exclude>
             </excludes>
         </dependencySet>
         <!-- Plugin modules in separate directory -->
@@ -136,6 +137,7 @@
                 <include>com.arcadedb:arcadedb-grpcw</include>
                 <include>com.arcadedb:arcadedb-graphql</include>
                 <include>com.arcadedb:arcadedb-metrics</include>
+                <include>com.arcadedb:arcadedb-tracing</include>
             </includes>
             <useTransitiveDependencies>false</useTransitiveDependencies>
         </dependencySet>
