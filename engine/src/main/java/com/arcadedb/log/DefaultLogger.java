@@ -284,7 +284,7 @@ public class DefaultLogger implements Logger {
       } else {
         for (final Handler h : log.getHandlers()) {
           if (h instanceof ConsoleHandler && !h.getFormatter().getClass().equals(desired.getClass()))
-            h.setFormatter(selectConsoleFormatter());
+            h.setFormatter(desired);
         }
       }
     } catch (final Exception e) {

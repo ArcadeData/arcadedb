@@ -58,9 +58,10 @@ public class LogManager {
 
   /**
    * Registers (or, with {@code null}, clears) the supplier used to read the active trace context.
-   * Called by the tracing plugin on configure/stop. {@code volatile} so worker threads observe it.
+   * Called by the tracing plugin on configure/stop. Instance method (consistent with the rest of the
+   * {@link LogManager} API) backed by a process-wide {@code volatile} field so worker threads observe it.
    */
-  public static void setTraceContextSupplier(final TraceContextSupplier supplier) {
+  public void setTraceContextSupplier(final TraceContextSupplier supplier) {
     traceContextSupplier = supplier;
   }
 

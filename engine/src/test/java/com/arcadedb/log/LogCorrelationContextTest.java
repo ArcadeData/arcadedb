@@ -28,7 +28,7 @@ class LogCorrelationContextTest {
   @AfterEach
   void clear() {
     LogManager.instance().clearCorrelation();
-    LogManager.setTraceContextSupplier(null);
+    LogManager.instance().setTraceContextSupplier(null);
   }
 
   @Test
@@ -60,7 +60,7 @@ class LogCorrelationContextTest {
 
   @Test
   void traceContextSupplierFeedsCurrentTraceContext() {
-    LogManager.setTraceContextSupplier(() -> new String[] { "tid", "sid" });
+    LogManager.instance().setTraceContextSupplier(() -> new String[] { "tid", "sid" });
     final String[] ctx = LogManager.instance().currentTraceContext();
     assertThat(ctx).containsExactly("tid", "sid");
   }
@@ -72,7 +72,7 @@ class LogCorrelationContextTest {
 
   @Test
   void currentTraceContextSwallowsSupplierFailure() {
-    LogManager.setTraceContextSupplier(() -> {
+    LogManager.instance().setTraceContextSupplier(() -> {
       throw new RuntimeException("boom");
     });
     assertThat(LogManager.instance().currentTraceContext()).isNull();
