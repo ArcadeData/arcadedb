@@ -22,19 +22,24 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.List;
+
 /**
- * Converts a sparse vector to dense representation.
- * Returns a float[] array with all elements including zeros.
+ * Checks if a vector contains any NULL element.
+ * <p>
+ * Unlike {@code vector.hasNaN}, this distinguishes a genuine NULL (a missing element, e.g. produced by an
+ * invalid SQL math op coerced to NULL inside a collection literal) from a NaN float value. Primitive
+ * float[]/double[]/int[]/long[] inputs can never hold a NULL and therefore always return {@code false}.
  *
- * Example: sparseVectorToDense(sparseVectorCreate([0, 2], [0.5, 0.3]))
- * → [0.5, 0.0, 0.3]
+ * Example: vectorHasNull([1.0, 2.0, 3.0]) = false
+ *          vectorHasNull([1.0, sqrt(-1.0), 3.0]) = true
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionSparseVectorToDense extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vector.sparseToDense";
+public class SQLFunctionVectorHasNull extends SQLFunctionVectorAbstract {
+  public static final String NAME = "vector.hasNull";
 
-  public SQLFunctionSparseVectorToDense() {
+  public SQLFunctionVectorHasNull() {
     super(NAME);
   }
 
@@ -45,17 +50,29 @@ public class SQLFunctionSparseVectorToDense extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException(getSyntax());
 
     final Object vectorObj = params[0];
-
     if (vectorObj == null)
       return null;
 
-    if (!(vectorObj instanceof SparseVector sparse))
-      throw new CommandSQLParsingException("Expected SparseVector, found: " + vectorObj.getClass().getSimpleName());
+    // Only object-typed collections can carry a NULL element; scan them directly.
+    if (vectorObj instanceof List<?> list) {
+      for (final Object elem : list)
+        if (elem == null)
+          return true;
+      return false;
+    }
+    if (vectorObj instanceof Object[] array) {
+      for (final Object elem : array)
+        if (elem == null)
+          return true;
+      return false;
+    }
 
-    return sparse.toDense();
+    // Primitive arrays / strings cannot contain NULLs; toFloatArray validates the type and throws otherwise.
+    toFloatArray(vectorObj);
+    return false;
   }
 
   public String getSyntax() {
-    return NAME + "(<sparse_vector>)";
+    return NAME + "(<vector>)";
   }
 }

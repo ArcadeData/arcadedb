@@ -35,10 +35,10 @@ import com.arcadedb.query.sql.executor.CommandContext;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionSparseVectorDot extends SQLFunctionVectorAbstract {
+public class SQLFunctionVectorSparseDot extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.sparseDot";
 
-  public SQLFunctionSparseVectorDot() {
+  public SQLFunctionVectorSparseDot() {
     super(NAME);
   }
 

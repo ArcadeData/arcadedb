@@ -28,7 +28,7 @@ import com.arcadedb.function.text.ToLowerFunction;
 import com.arcadedb.function.node.AbstractNodeFunction;
 import com.arcadedb.function.sql.geo.SQLFunctionGeoDistance;
 import com.arcadedb.function.sql.time.SQLFunctionTimeBucket;
-import com.arcadedb.function.sql.vector.SQLFunctionMultiVectorScore;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorMultiScore;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorScoreTransform;
 import com.arcadedb.function.text.ToUpperFunction;
 import com.arcadedb.function.util.UtilCompress;
@@ -311,12 +311,12 @@ class LocaleSensitivityTest {
     assertThat(resultLower).isNotNull();
   }
 
-  // ========= SQLFunctionMultiVectorScore =========
+  // ========= SQLFunctionVectorMultiScore =========
 
   @Test
   void multiVectorScoreMinMethodUnderTurkishLocale() {
     // "min".toUpperCase(tr_TR) -> "MİN" (i -> İ) != "MIN"
-    final SQLFunctionMultiVectorScore fn = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore fn = new SQLFunctionVectorMultiScore();
     final List<Double> scores = List.of(0.9, 0.7, 0.8);
     final Object resultLower = fn.execute(null, null, null, new Object[]{scores, "min"}, null);
     final Object resultUpper = fn.execute(null, null, null, new Object[]{scores, "MIN"}, null);

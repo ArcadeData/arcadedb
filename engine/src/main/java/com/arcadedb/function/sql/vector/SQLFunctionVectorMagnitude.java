@@ -27,6 +27,9 @@ import com.arcadedb.query.sql.executor.CommandContext;
  * Calculates the magnitude (Euclidean length) of a vector.
  * This is the L2 norm: sqrt(sum of squared components).
  * <p>
+ * Also available as {@code vector.l2Norm} / {@code vectorL2Norm}, symmetric with
+ * {@code vector.l1Norm} and {@code vector.lInfNorm}.
+ * <p>
  * Delegates to {@link VectorUtils#magnitude(float[])}.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
@@ -35,7 +38,7 @@ public class SQLFunctionVectorMagnitude extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.magnitude";
 
   public SQLFunctionVectorMagnitude() {
-    super(NAME);
+    super(NAME, "vector.l2Norm");
   }
 
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,

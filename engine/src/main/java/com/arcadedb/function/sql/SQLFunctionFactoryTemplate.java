@@ -55,11 +55,8 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
    */
   public void register(final SQLFunction function) {
     functions.put(function.getName().toLowerCase(Locale.ENGLISH), function);
-    // Register alias if provided (for backward compatibility)
-    final String alias = function.getAlias();
-    if (alias != null) {
-      functions.put(alias.toLowerCase(Locale.ENGLISH), function);
-    }
+    // Register the primary alias and any additional aliases (for backward compatibility / synonyms)
+    registerAliasKeys(function, function);
     // Also register in the unified FunctionRegistry for cross-engine access
     FunctionRegistry.register(function);
   }
@@ -81,34 +78,42 @@ public abstract class SQLFunctionFactoryTemplate implements SQLFunctionFactory {
    */
   public void register(final String name, final Object function) {
     functions.put(name.toLowerCase(Locale.ENGLISH), function);
-    // If it's an instance (not a class), also register in unified registry and handle alias
+    // If it's an instance (not a class), also register in unified registry and handle aliases
     if (function instanceof SQLFunction sqlFunction) {
-      // Register alias if provided (for backward compatibility)
-      final String alias = sqlFunction.getAlias();
-      if (alias != null) {
-        functions.put(alias.toLowerCase(Locale.ENGLISH), function);
-      }
+      registerAliasKeys(sqlFunction, function);
       FunctionRegistry.register(sqlFunction);
     } else if (function instanceof Class<?> clazz && SQLFunction.class.isAssignableFrom(clazz)) {
       // Class-based (stateful) registration: getFunctionInstance() creates a fresh instance per call, so we
-      // do not register in the unified FunctionRegistry. We still honor the function's alias by mapping the
-      // alias name to the same class, otherwise backward-compatible names (e.g. vectorSum -> vector.sum)
+      // do not register in the unified FunctionRegistry. We still honor the function's alias(es) by mapping
+      // those names to the same class, otherwise backward-compatible names (e.g. vectorSum -> vector.sum)
       // would stop resolving once a stateful function moves from instance to class registration.
-      final String alias = aliasOfFunctionClass(clazz);
-      if (alias != null) {
-        functions.put(alias.toLowerCase(Locale.ENGLISH), function);
-      }
+      final SQLFunction probe = probeFunctionInstance(clazz);
+      if (probe != null)
+        registerAliasKeys(probe, function);
     }
   }
 
   /**
-   * Probes a function class for its declared alias by instantiating it via the no-arg constructor (the same
-   * constructor {@link #getFunctionInstance(String)} relies on). Returns {@code null} when the function has no
-   * alias or cannot be instantiated, in which case only the primary name is registered.
+   * Maps the primary {@link SQLFunction#getAlias()} and every {@link SQLFunction#getAliases()} entry to the
+   * given map value (an instance or a class). The value, not the probe, is stored so class-based stateful
+   * functions still get a fresh instance per call via {@link #getFunctionInstance(String)}.
    */
-  private static String aliasOfFunctionClass(final Class<?> clazz) {
+  private void registerAliasKeys(final SQLFunction probe, final Object value) {
+    final String alias = probe.getAlias();
+    if (alias != null)
+      functions.put(alias.toLowerCase(Locale.ENGLISH), value);
+    for (final String extra : probe.getAliases())
+      functions.put(extra.toLowerCase(Locale.ENGLISH), value);
+  }
+
+  /**
+   * Probes a function class by instantiating it via the no-arg constructor (the same constructor
+   * {@link #getFunctionInstance(String)} relies on). Returns {@code null} when it cannot be instantiated, in
+   * which case only the primary name is registered.
+   */
+  private static SQLFunction probeFunctionInstance(final Class<?> clazz) {
     try {
-      return ((SQLFunction) clazz.getConstructor().newInstance()).getAlias();
+      return (SQLFunction) clazz.getConstructor().newInstance();
     } catch (final Exception e) {
       return null;
     }

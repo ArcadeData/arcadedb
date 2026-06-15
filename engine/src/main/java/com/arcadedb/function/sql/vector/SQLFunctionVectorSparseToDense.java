@@ -23,20 +23,18 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
- * Calculates the L∞ norm (Chebyshev norm or infinity norm) of a vector.
- * Returns the maximum absolute value of any element.
+ * Converts a sparse vector to dense representation.
+ * Returns a float[] array with all elements including zeros.
  *
- * Formula: L∞ = max(|x_i|)
- *
- * Example: vectorLInfNorm([3, 4, 2]) = 4
- *          vectorLInfNorm([-1, -5, 3]) = 5
+ * Example: sparseVectorToDense(sparseVectorCreate([0, 2], [0.5, 0.3]))
+ * → [0.5, 0.0, 0.3]
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionVectorLInfNorm extends SQLFunctionVectorAbstract {
-  public static final String NAME = "vector.lInfNorm";
+public class SQLFunctionVectorSparseToDense extends SQLFunctionVectorAbstract {
+  public static final String NAME = "vector.sparseToDense";
 
-  public SQLFunctionVectorLInfNorm() {
+  public SQLFunctionVectorSparseToDense() {
     super(NAME);
   }
 
@@ -47,24 +45,17 @@ public class SQLFunctionVectorLInfNorm extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException(getSyntax());
 
     final Object vectorObj = params[0];
+
     if (vectorObj == null)
       return null;
 
-    final float[] vector = toFloatArray(vectorObj);
+    if (!(vectorObj instanceof SparseVector sparse))
+      throw new CommandSQLParsingException("Expected SparseVector, found: " + vectorObj.getClass().getSimpleName());
 
-    if (vector.length == 0)
-      throw new CommandSQLParsingException("Vector cannot be empty");
-
-    // Calculate L∞ norm: max absolute value
-    float maxAbs = 0.0f;
-    for (final float value : vector)
-      maxAbs = Math.max(maxAbs, Math.abs(value));
-
-    return maxAbs;
+    return sparse.toDense();
   }
 
-
   public String getSyntax() {
-    return NAME + "(<vector>)";
+    return NAME + "(<sparse_vector>)";
   }
 }

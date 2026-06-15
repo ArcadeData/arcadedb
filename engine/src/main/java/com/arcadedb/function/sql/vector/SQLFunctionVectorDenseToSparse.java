@@ -37,10 +37,10 @@ import java.util.List;
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
-public class SQLFunctionDenseVectorToSparse extends SQLFunctionVectorAbstract {
+public class SQLFunctionVectorDenseToSparse extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.denseToSparse";
 
-  public SQLFunctionDenseVectorToSparse() {
+  public SQLFunctionVectorDenseToSparse() {
     super(NAME);
   }
 

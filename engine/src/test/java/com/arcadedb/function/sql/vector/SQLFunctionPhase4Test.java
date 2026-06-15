@@ -37,7 +37,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void sparseVectorCreate() {
-    final SQLFunctionSparseVectorCreate function = new SQLFunctionSparseVectorCreate();
+    final SQLFunctionVectorSparseCreate function = new SQLFunctionVectorSparseCreate();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -56,7 +56,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void sparseVectorCreateWithDimensions() {
-    final SQLFunctionSparseVectorCreate function = new SQLFunctionSparseVectorCreate();
+    final SQLFunctionVectorSparseCreate function = new SQLFunctionVectorSparseCreate();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -74,7 +74,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void sparseVectorDot() {
-    final SQLFunctionSparseVectorDot function = new SQLFunctionSparseVectorDot();
+    final SQLFunctionVectorSparseDot function = new SQLFunctionVectorSparseDot();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -92,7 +92,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void sparseVectorDotIdentical() {
-    final SQLFunctionSparseVectorDot function = new SQLFunctionSparseVectorDot();
+    final SQLFunctionVectorSparseDot function = new SQLFunctionVectorSparseDot();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -120,7 +120,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void sparseVectorToDense() {
-    final SQLFunctionSparseVectorToDense function = new SQLFunctionSparseVectorToDense();
+    final SQLFunctionVectorSparseToDense function = new SQLFunctionVectorSparseToDense();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -137,7 +137,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void denseVectorToSparse() {
-    final SQLFunctionDenseVectorToSparse function = new SQLFunctionDenseVectorToSparse();
+    final SQLFunctionVectorDenseToSparse function = new SQLFunctionVectorDenseToSparse();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -155,7 +155,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void denseVectorToSparseWithThreshold() {
-    final SQLFunctionDenseVectorToSparse function = new SQLFunctionDenseVectorToSparse();
+    final SQLFunctionVectorDenseToSparse function = new SQLFunctionVectorDenseToSparse();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -192,7 +192,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreMax() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -206,7 +206,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreMin() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -220,7 +220,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreAvg() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -234,7 +234,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreWeighted() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -249,7 +249,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreWeightedWithOptionsMap() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -263,7 +263,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreRejectsUnknownOption() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -275,7 +275,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreSingleValue() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -289,7 +289,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreMaxCaseSensitive() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -305,7 +305,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void sparseVectorCreateMismatchedArrays() {
-    final SQLFunctionSparseVectorCreate function = new SQLFunctionSparseVectorCreate();
+    final SQLFunctionVectorSparseCreate function = new SQLFunctionVectorSparseCreate();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -325,7 +325,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void sparseVectorDotDimensionMismatch() {
-    final SQLFunctionSparseVectorDot function = new SQLFunctionSparseVectorDot();
+    final SQLFunctionVectorSparseDot function = new SQLFunctionVectorSparseDot();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -341,7 +341,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreInvalidMethod() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -354,7 +354,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreWeightedMismatch() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -367,7 +367,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void sparseVectorToDenseNull() {
-    final SQLFunctionSparseVectorToDense function = new SQLFunctionSparseVectorToDense();
+    final SQLFunctionVectorSparseToDense function = new SQLFunctionVectorSparseToDense();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -377,7 +377,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void denseVectorToSparseNull() {
-    final SQLFunctionDenseVectorToSparse function = new SQLFunctionDenseVectorToSparse();
+    final SQLFunctionVectorDenseToSparse function = new SQLFunctionVectorDenseToSparse();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -387,7 +387,7 @@ class SQLFunctionPhase4Test extends TestHelper {
 
   @Test
   void multiVectorScoreNull() {
-    final SQLFunctionMultiVectorScore function = new SQLFunctionMultiVectorScore();
+    final SQLFunctionVectorMultiScore function = new SQLFunctionVectorMultiScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
@@ -398,8 +398,8 @@ class SQLFunctionPhase4Test extends TestHelper {
   @Test
   void sparseVectorRoundTrip() {
     // Test converting dense -> sparse -> dense preserves values
-    final SQLFunctionDenseVectorToSparse toSparse = new SQLFunctionDenseVectorToSparse();
-    final SQLFunctionSparseVectorToDense toDense = new SQLFunctionSparseVectorToDense();
+    final SQLFunctionVectorDenseToSparse toSparse = new SQLFunctionVectorDenseToSparse();
+    final SQLFunctionVectorSparseToDense toDense = new SQLFunctionVectorSparseToDense();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 

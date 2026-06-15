@@ -54,11 +54,23 @@ public class SQLFunctionVectorVariance extends SQLFunctionVectorAbstract {
     if (vector.length == 0)
       throw new CommandSQLParsingException("Vector cannot be empty");
 
+    return (float) variance(vector);
+  }
+
+  /**
+   * Computes the population variance of a vector's elements: {@code (1/n) * Σ(x_i - mean)^2}.
+   * Shared with {@link SQLFunctionVectorStdDev} so standard deviation is just {@code sqrt(variance(...))}
+   * and the mean/squared-difference logic lives in one place.
+   *
+   * @param vector the (non-empty) input vector
+   *
+   * @return the population variance as a double
+   */
+  static double variance(final float[] vector) {
     // Calculate mean
     double sum = 0.0;
-    for (final float value : vector) {
+    for (final float value : vector)
       sum += value;
-    }
     final double mean = sum / vector.length;
 
     // Calculate variance: average of squared differences from mean
@@ -68,9 +80,8 @@ public class SQLFunctionVectorVariance extends SQLFunctionVectorAbstract {
       varianceSum += diff * diff;
     }
 
-    return (float) (varianceSum / vector.length);
+    return varianceSum / vector.length;
   }
-
 
   public String getSyntax() {
     return NAME + "(<vector>)";
