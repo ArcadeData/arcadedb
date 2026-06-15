@@ -22,6 +22,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.MutableDocument;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
@@ -493,11 +494,15 @@ public class MergeStep extends AbstractExecutionStep {
       final Vertex.DIRECTION fromDir, final Vertex.DIRECTION otherEnd,
       final String relType, final Map<String, Object> relProps) {
     for (final Edge edge : from.getEdges(fromDir, relType)) {
-      if (!target.equals(edge.getVertex(otherEnd)))
-        continue;
-      if (relProps != null && !matchesProperties(edge, relProps))
-        continue;
-      return edge;
+      try {
+        if (!target.equals(edge.getVertex(otherEnd)))
+          continue;
+        if (relProps != null && !matchesProperties(edge, relProps))
+          continue;
+        return edge;
+      } catch (final RecordNotFoundException ignored) {
+        // Ghost edge: record was concurrently deleted. Skip and continue.
+      }
     }
     return null;
   }
@@ -761,35 +766,39 @@ public class MergeStep extends AbstractExecutionStep {
         final Identifiable id = it.next();
         if (!(id instanceof Edge edge))
           continue;
-        if (relProps != null && !matchesProperties(edge, relProps))
-          continue;
+        try {
+          if (relProps != null && !matchesProperties(edge, relProps))
+            continue;
 
-        final Direction dir = relPattern.getDirection();
-        final NodePattern nextPattern = pathPattern.getNode(nodeIndex + 1);
+          final Direction dir = relPattern.getDirection();
+          final NodePattern nextPattern = pathPattern.getNode(nodeIndex + 1);
 
-        if (dir == Direction.OUT || dir == Direction.BOTH) {
-          final Vertex sourceV = edge.getVertex(Vertex.DIRECTION.OUT);
-          final Vertex targetV = edge.getVertex(Vertex.DIRECTION.IN);
-          if (matchesNodePattern(sourceV, nodePattern, currentResult) && matchesNodePattern(targetV, nextPattern, currentResult)) {
-            final ResultInternal stepResult = copyResult(currentResult);
-            if (nodePattern.getVariable() != null)
-              stepResult.setProperty(nodePattern.getVariable(), sourceV);
-            if (relPattern.getVariable() != null)
-              stepResult.setProperty(relPattern.getVariable(), edge);
-            traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+          if (dir == Direction.OUT || dir == Direction.BOTH) {
+            final Vertex sourceV = edge.getVertex(Vertex.DIRECTION.OUT);
+            final Vertex targetV = edge.getVertex(Vertex.DIRECTION.IN);
+            if (matchesNodePattern(sourceV, nodePattern, currentResult) && matchesNodePattern(targetV, nextPattern, currentResult)) {
+              final ResultInternal stepResult = copyResult(currentResult);
+              if (nodePattern.getVariable() != null)
+                stepResult.setProperty(nodePattern.getVariable(), sourceV);
+              if (relPattern.getVariable() != null)
+                stepResult.setProperty(relPattern.getVariable(), edge);
+              traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+            }
           }
-        }
-        if (dir == Direction.IN || dir == Direction.BOTH) {
-          final Vertex sourceV = edge.getVertex(Vertex.DIRECTION.IN);
-          final Vertex targetV = edge.getVertex(Vertex.DIRECTION.OUT);
-          if (matchesNodePattern(sourceV, nodePattern, currentResult) && matchesNodePattern(targetV, nextPattern, currentResult)) {
-            final ResultInternal stepResult = copyResult(currentResult);
-            if (nodePattern.getVariable() != null)
-              stepResult.setProperty(nodePattern.getVariable(), sourceV);
-            if (relPattern.getVariable() != null)
-              stepResult.setProperty(relPattern.getVariable(), edge);
-            traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+          if (dir == Direction.IN || dir == Direction.BOTH) {
+            final Vertex sourceV = edge.getVertex(Vertex.DIRECTION.IN);
+            final Vertex targetV = edge.getVertex(Vertex.DIRECTION.OUT);
+            if (matchesNodePattern(sourceV, nodePattern, currentResult) && matchesNodePattern(targetV, nextPattern, currentResult)) {
+              final ResultInternal stepResult = copyResult(currentResult);
+              if (nodePattern.getVariable() != null)
+                stepResult.setProperty(nodePattern.getVariable(), sourceV);
+              if (relPattern.getVariable() != null)
+                stepResult.setProperty(relPattern.getVariable(), edge);
+              traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
+            }
           }
+        } catch (final RecordNotFoundException ignored) {
+          // Ghost edge: record was concurrently deleted. Skip and continue.
         }
       }
     }
@@ -815,29 +824,38 @@ public class MergeStep extends AbstractExecutionStep {
     final Vertex.DIRECTION otherEnd = inbound ? Vertex.DIRECTION.OUT : Vertex.DIRECTION.IN;
 
     for (final Edge edge : vertex.getEdges(edgeDir, relType)) {
-      if (relProps != null && !matchesProperties(edge, relProps))
-        continue;
-
-      final Vertex nextV = edge.getVertex(otherEnd);
-      final ResultInternal stepResult = copyResult(currentResult);
-      if (relPattern.getVariable() != null)
-        stepResult.setProperty(relPattern.getVariable(), edge);
-
-      traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, results);
-    }
-
-    // For undirected patterns also traverse the reverse direction
-    if (relPattern.getDirection() == Direction.BOTH) {
-      for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN, relType)) {
+      try {
         if (relProps != null && !matchesProperties(edge, relProps))
           continue;
 
-        final Vertex nextV = edge.getVertex(Vertex.DIRECTION.OUT);
+        final Vertex nextV = edge.getVertex(otherEnd);
         final ResultInternal stepResult = copyResult(currentResult);
         if (relPattern.getVariable() != null)
           stepResult.setProperty(relPattern.getVariable(), edge);
 
         traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, results);
+      } catch (final RecordNotFoundException ignored) {
+        // Ghost edge: segment pointer exists but record was concurrently deleted.
+        // Skip and continue - the edge does not satisfy the MERGE pattern.
+      }
+    }
+
+    // For undirected patterns also traverse the reverse direction
+    if (relPattern.getDirection() == Direction.BOTH) {
+      for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN, relType)) {
+        try {
+          if (relProps != null && !matchesProperties(edge, relProps))
+            continue;
+
+          final Vertex nextV = edge.getVertex(Vertex.DIRECTION.OUT);
+          final ResultInternal stepResult = copyResult(currentResult);
+          if (relPattern.getVariable() != null)
+            stepResult.setProperty(relPattern.getVariable(), edge);
+
+          traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, results);
+        } catch (final RecordNotFoundException ignored) {
+          // Ghost edge: see above.
+        }
       }
     }
   }
