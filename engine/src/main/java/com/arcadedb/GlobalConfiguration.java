@@ -545,6 +545,16 @@ public enum GlobalConfiguration {
 
   SERVER_METRICS_LOGGING("arcadedb.serverMetrics.logging", SCOPE.SERVER, "True to enable metrics logging", Boolean.class, false),
 
+  SERVER_METRICS_TRACING_ENABLED("arcadedb.serverMetrics.tracing.enabled", SCOPE.SERVER,
+      "Enable OpenTelemetry distributed tracing (requires the optional tracing plugin on the classpath). Note: query/command spans include the statement text as the db.statement span attribute, which may contain sensitive data, so secure the OTLP collector endpoint",
+      Boolean.class, false),
+
+  SERVER_METRICS_TRACING_ENDPOINT("arcadedb.serverMetrics.tracing.endpoint", SCOPE.SERVER, "OTLP trace export endpoint", String.class,
+      "http://localhost:4317"),
+
+  SERVER_METRICS_TRACING_SAMPLING_RATE("arcadedb.serverMetrics.tracing.samplingRate", SCOPE.SERVER,
+      "Parent-based trace sampling ratio in [0.0,1.0]", Float.class, 0.0f),
+
   SERVER_READINESS_REQUIRES_HA("arcadedb.server.readinessRequiresHA", SCOPE.SERVER,
       "When true and HA is active, /api/v1/ready also requires the node to have joined the Raft group and be caught up. Default false preserves current readiness behavior.",
       Boolean.class, false),

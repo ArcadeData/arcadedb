@@ -41,8 +41,10 @@ import com.arcadedb.server.event.ServerEventLog;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.mcp.MCPConfiguration;
 import com.arcadedb.database.QueryMetricsRecorder;
+import com.arcadedb.database.QueryTracer;
 import com.arcadedb.server.monitor.EngineMetricsBinder;
 import com.arcadedb.server.monitor.MicrometerQueryMetricsRecorder;
+import com.arcadedb.server.monitor.MicrometerQueryTracer;
 import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.plugin.PluginManager;
@@ -60,6 +62,7 @@ import io.micrometer.core.instrument.binder.jvm.JvmThreadMetrics;
 import io.micrometer.core.instrument.binder.system.ProcessorMetrics;
 import io.micrometer.core.instrument.logging.LoggingMeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.micrometer.observation.ObservationRegistry;
 
 import java.io.File;
 import java.io.IOException;
@@ -89,6 +92,10 @@ public class ArcadeDBServer {
   private final       String                                serverName;
   private             String                                hostAddress;
   private final       boolean                               replicationLifecycleEventsEnabled;
+  // Shared spine for Micrometer Observations. Starts with no handlers, so Observations are no-ops
+  // (zero overhead) until the optional tracing plugin attaches a tracing handler. Metrics continue
+  // to be recorded by the dedicated Micrometer timers, independently of this registry.
+  private final       ObservationRegistry                   observationRegistry                  = ObservationRegistry.create();
   private             FileServerEventLog                    eventLog;
   private             PluginManager                         pluginManager;
   private             String                                serverRootPath;
@@ -135,6 +142,15 @@ public class ArcadeDBServer {
 
   public ContextConfiguration getConfiguration() {
     return configuration;
+  }
+
+  /**
+   * Shared Micrometer {@link ObservationRegistry} used to instrument server hot paths once and emit
+   * both metrics and (when the optional tracing plugin registers a tracer) spans. With no tracer
+   * attached the registry has no handlers and Observations are no-ops.
+   */
+  public ObservationRegistry getObservationRegistry() {
+    return observationRegistry;
   }
 
   public void setSnapshotInstallInProgress(final boolean inProgress) {
@@ -222,6 +238,11 @@ public class ArcadeDBServer {
       }
       LogManager.instance().log(this, Level.INFO, "Metrics Collection Started");
     }
+
+    // Register the engine-boundary query tracer regardless of the metrics flag: it opens a span only
+    // when the optional tracing plugin has attached a tracer to the ObservationRegistry, and is a
+    // zero-cost no-op otherwise. This gives every wire protocol query/command spans from one point.
+    QueryTracer.Holder.register(new MicrometerQueryTracer(observationRegistry));
 
     security = new ServerSecurity(this, configuration, serverRootPath + "/config");
     security.startService();

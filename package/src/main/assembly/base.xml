@@ -123,6 +123,7 @@
                 <exclude>com.arcadedb:arcadedb-graphql</exclude>
                 <exclude>com.arcadedb:arcadedb-studio</exclude>
                 <exclude>com.arcadedb:arcadedb-metrics</exclude>
+                <exclude>com.arcadedb:arcadedb-tracing</exclude>
             </excludes>
         </dependencySet>
         <!-- Plugin modules in separate directory (none for base) -->

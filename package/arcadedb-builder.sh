@@ -26,7 +26,7 @@ MAVEN_CENTRAL_BASE="https://repo1.maven.org/maven2/com/arcadedb"
 GITHUB_RELEASES_BASE="https://github.com/arcadedata/arcadedb/releases/download"
 
 # Module metadata
-SHADED_MODULES="gremlin redisw mongodbw postgresw grpcw metrics"
+SHADED_MODULES="gremlin redisw mongodbw postgresw grpcw metrics tracing"
 REGULAR_MODULES="console studio graphql"
 
 # Module descriptions for interactive menu
@@ -43,6 +43,7 @@ get_module_description() {
   grpcw) echo "gRPC wire protocol support" ;;
   graphql) echo "GraphQL API support" ;;
   metrics) echo "Prometheus metrics integration" ;;
+  tracing) echo "OpenTelemetry distributed tracing (OTLP export) - optional plugin" ;;
   *) echo "Unknown module" ;;
   esac
 }
