@@ -106,7 +106,10 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
   /**
    * Sums the RRF terms over an array-like rank source. Primitive arrays are iterated directly (no boxing,
    * per the engine's GC-awareness policy); {@code Object[]}/{@code List} skip null elements (the item is
-   * absent from that ranking list).
+   * absent from that ranking list). {@code float[]}/{@code double[]} are accepted for symmetry with the
+   * other vector functions, but every element must still be an integer-valued rank - {@link #rankTerm}
+   * rejects any non-integer (e.g. {@code 1.5}) regardless of the array type, so a float that lost precision
+   * cannot silently slip through.
    */
   private static double rrfFromArray(final Object arrayLike, final long k) {
     double score = 0.0;

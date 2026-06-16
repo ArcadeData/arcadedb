@@ -28,6 +28,11 @@ import com.arcadedb.query.sql.method.conversion.SQLMethodAsVector;
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -305,7 +310,7 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
   void rrfScoreKSetOnlyViaOptionsMap() {
     final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
     final float result = (float) fn.execute(null, null, null,
-        new Object[] { 1L, 5L, 10L, java.util.Map.of("k", 100L) }, ctx());
+        new Object[] { 1L, 5L, 10L, Map.of("k", 100L) }, ctx());
     assertThat(result).isCloseTo((1.0f / 101) + (1.0f / 105) + (1.0f / 110), Offset.offset(1e-5f));
   }
 
@@ -487,7 +492,7 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
     assertThat((float) fn.execute(null, null, null, new Object[] { new int[] { 1, 5, 10 } }, ctx()))
         .isCloseTo((1.0f / 61) + (1.0f / 65) + (1.0f / 70), Offset.offset(1e-5f));
     assertThat((float) fn.execute(null, null, null,
-        new Object[] { java.util.List.of(1L, 5L, 10L), java.util.Map.of("k", 100L) }, ctx()))
+        new Object[] { List.of(1L, 5L, 10L), Map.of("k", 100L) }, ctx()))
         .isCloseTo((1.0f / 101) + (1.0f / 105) + (1.0f / 110), Offset.offset(1e-5f));
   }
 
@@ -496,7 +501,7 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
     final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
     final float expected = (1.0f / 61) + (1.0f / 65);
     // variadic with a null rank
-    final java.util.List<Object> variadic = new java.util.ArrayList<>(java.util.Arrays.asList(null, 1L, 5L));
+    final List<Object> variadic = new ArrayList<>(Arrays.asList(null, 1L, 5L));
     assertThat((float) fn.execute(null, null, null, variadic.toArray(), ctx())).isCloseTo(expected, Offset.offset(1e-5f));
     // array form with a null element must behave the same (the item is absent from that ranking list)
     assertThat((float) fn.execute(null, null, null, new Object[] { variadic }, ctx())).isCloseTo(expected, Offset.offset(1e-5f));
@@ -564,5 +569,38 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
     assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { int8, binary, "INT8" }, ctx()))
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("INT8");
+  }
+
+  @Test
+  void dequantizeInt8ThreeArgWithResultAndNullScalarsStillUsesEmbeddedMinMax() {
+    // (result, null, null): the result object's embedded min/max must win - the null scalars must NOT
+    // short-circuit the whole call to null (the QuantizationResult check runs before the scalar null-guard).
+    final SQLFunctionVectorQuantizeInt8 q = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorDequantizeInt8 dq = new SQLFunctionVectorDequantizeInt8();
+
+    final Object qr = q.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final float[] expected = (float[]) dq.execute(null, null, null, new Object[] { qr }, ctx());
+    final float[] withNullScalars = (float[]) dq.execute(null, null, null, new Object[] { qr, null, null }, ctx());
+    assertThat(withNullScalars).isNotNull().containsExactly(expected);
+  }
+
+  @Test
+  void approxDistanceExplicitBinaryWithInt8ResultsGivesParsingError() {
+    // The BINARY path is reached for (int8, int8, 'BINARY') and (int8, binary, 'BINARY'). It must surface a
+    // CommandSQLParsingException naming BinaryQuantizationResult, never a raw ClassCastException.
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    final Object int8a = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object int8b = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 1.0f, 3.0f } }, ctx());
+    final Object binary = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { int8a, int8b, "BINARY" }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("BinaryQuantizationResult");
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { int8a, binary, "BINARY" }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("BinaryQuantizationResult");
   }
 }

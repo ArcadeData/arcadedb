@@ -72,18 +72,22 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException(getSyntax());
 
     final Object quantizedObj = params[0];
-    final Object minObj = params[1];
-    final Object maxObj = params[2];
-
-    if (quantizedObj == null || minObj == null || maxObj == null)
+    if (quantizedObj == null)
       return null;
 
     // If a QuantizationResult is passed in the 3-arg form, its own min/max are authoritative (they were
     // computed at quantization time). Use them and ignore the explicit scalars, so the redundant call
-    // vectorDequantizeInt8(vectorQuantizeInt8([...]), min, max) is always correct even if the caller
-    // passes a different/wrong min/max (issue #3099).
+    // vectorDequantizeInt8(vectorQuantizeInt8([...]), min, max) is always correct even when the caller
+    // passes a different/wrong - or null - min/max (issue #3099). This must run before the null-guard on
+    // the scalars, otherwise (result, null, null) would wrongly short-circuit to null.
     if (quantizedObj instanceof QuantizationResult qr)
       return dequantize(qr.quantized(), qr.min(), qr.max());
+
+    final Object minObj = params[1];
+    final Object maxObj = params[2];
+
+    if (minObj == null || maxObj == null)
+      return null;
 
     // Parse quantized bytes
     final byte[] quantized = toByteArray(quantizedObj);
@@ -164,6 +168,6 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<result>) | " + NAME + "(<quantized_bytes>, <min>, <max>)";
+    return NAME + "(<result> | <quantized_bytes>, <min>, <max>)";
   }
 }
