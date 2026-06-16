@@ -128,7 +128,11 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   }
 
   private byte[] toByteArray(final Object quantized) {
-    if (quantized instanceof byte[] byteArray) {
+    if (quantized instanceof QuantizationResult qr) {
+      // Accept the result object in the (result, min, max) form too, so the redundant-min/max call
+      // vectorDequantizeInt8(vectorQuantizeInt8([...]), min, max) works (issue #3099).
+      return qr.quantized();
+    } else if (quantized instanceof byte[] byteArray) {
       return byteArray;
     } else if (quantized instanceof Object[] objArray) {
       final byte[] result = new byte[objArray.length];

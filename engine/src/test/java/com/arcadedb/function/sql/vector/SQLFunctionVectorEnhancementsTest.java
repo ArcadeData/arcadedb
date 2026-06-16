@@ -362,6 +362,19 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
   }
 
   @Test
+  void dequantizeInt8AcceptsResultObjectInThreeArgFormToo() {
+    // The exact form from the issue: result object passed with redundant min/max must not error.
+    final SQLFunctionVectorQuantizeInt8 q = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorDequantizeInt8 dq = new SQLFunctionVectorDequantizeInt8();
+
+    final Object qr = q.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final float[] back = (float[]) dq.execute(null, null, null, new Object[] { qr, 1.0f, 3.0f }, ctx());
+    assertThat(back).hasSize(3);
+    assertThat(back[0]).isCloseTo(1.0f, Offset.offset(0.05f));
+    assertThat(back[2]).isCloseTo(3.0f, Offset.offset(0.05f));
+  }
+
+  @Test
   void approxDistanceInfersTypeFromResultObjects() {
     final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
     final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
