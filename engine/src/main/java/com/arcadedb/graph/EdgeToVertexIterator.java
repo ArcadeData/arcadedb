@@ -42,7 +42,9 @@ public class EdgeToVertexIterator implements ResettableIterator<Vertex> {
 
   @Override
   public Vertex next() {
-    return edgeIterator.next().getVertex(direction == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT);
+    // The neighbor sits at the opposite end of the edge from the traversal direction.
+    final Vertex.DIRECTION neighborEnd = direction == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+    return edgeIterator.next().getVertex(neighborEnd);
   }
 
   @Override

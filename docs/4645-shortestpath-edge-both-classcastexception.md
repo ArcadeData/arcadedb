@@ -30,4 +30,22 @@ When `direction:BOTH`, `SQLFunctionShortestPath.getVerticesAndEdges()` recurses 
 
 Run: `mvn test -pl engine -Dtest=SQLFunctionShortestPathTest`
 
-Results: 12 tests run, 0 failures, 0 errors.
+Results: 14 tests run, 0 failures, 0 errors.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4646
+
+## Review cycles
+
+### Cycle 1 - HEAD 73b365f4 (gemini-code-assist review + claude review)
+
+Applied:
+- Gemini (high): `EdgeToVertexIterable` now throws `IllegalArgumentException` for a non-empty, non-resettable iterator instead of silently returning an empty iterator (with explanatory comment - also subsumes Claude's "add a comment" suggestion).
+- Claude: extracted the direction flip in `EdgeToVertexIterator.next()` to a `neighborEnd` local variable.
+- Claude: regression test now asserts the middle element equals the edge RID.
+- Claude: added `edgeTrueDirectionBothReverseAsymmetric` (search b->a, empty OUT side exercises the IN half).
+- Claude: added `edgeTrueDirectionIn` (pure IN direction with edge:true).
+
+Skipped with rationale:
+- Claude suggested removing this `docs/4645-*.md` file. Kept it: the `resolve-issue` workflow creates this tracking doc by design and folds review-cycle history into it. The bot is unaware of this committed convention.

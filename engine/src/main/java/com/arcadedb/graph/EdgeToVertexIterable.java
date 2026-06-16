@@ -38,8 +38,13 @@ public class EdgeToVertexIterable implements Iterable<Vertex> {
   @Override
   public Iterator<Vertex> iterator() {
     final Iterator<Edge> iter = edges.iterator();
-    if (!(iter instanceof ResettableIterator))
+    if (iter instanceof ResettableIterator)
+      return new EdgeToVertexIterator((ResettableIterator<Edge>) iter, direction);
+
+    // The only non-ResettableIterator expected here is GraphEngine.EMPTY_EDGE_LIST's Collections.emptyIterator().
+    // An empty iterator is safe to map to an empty result; a non-empty one would be silently dropped, so fail loudly.
+    if (!iter.hasNext())
       return Collections.emptyIterator();
-    return new EdgeToVertexIterator((ResettableIterator<Edge>) iter, direction);
+    throw new IllegalArgumentException("The edges iterator must be an instance of ResettableIterator when not empty");
   }
 }
