@@ -264,12 +264,8 @@ public final class VectorUtils {
    * {@code []} (or an empty string for {@code NUMPY}).
    */
   public static String formatVector(final float[] vector, final StringFormat format) {
-    final String separator = switch (format) {
-      case MATLAB -> " ";
-      case MATLAB_COLUMN -> "; ";
-      default -> ", ";
-    };
     if (format == StringFormat.PRETTY) {
+      // PRETTY builds its own newline-delimited layout and does not use the single-line separator below.
       final StringBuilder sb = new StringBuilder("[\n");
       for (int i = 0; i < vector.length; i++) {
         sb.append("  ").append(vector[i]);
@@ -280,6 +276,11 @@ public final class VectorUtils {
       return sb.append("]").toString();
     }
 
+    final String separator = switch (format) {
+      case MATLAB -> " ";
+      case MATLAB_COLUMN -> "; ";
+      default -> ", ";
+    };
     final StringBuilder sb = new StringBuilder();
     for (int i = 0; i < vector.length; i++) {
       if (i > 0)

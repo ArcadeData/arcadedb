@@ -98,10 +98,12 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
     return (float) rrfScore;
   }
 
-  // Ranks are integer positions, so only integer-typed arrays/collections are accepted here. A float[]/
-  // double[] (typically a score or embedding vector passed by mistake) is deliberately NOT array-like: it
-  // falls through to the variadic path and is rejected as a non-number rank, a clearer error than treating
-  // each element as a rank and complaining it is not an integer.
+  // Ranks are integer positions, so only integer-typed arrays/collections are accepted here. Object[] and
+  // List are the shapes the query engine produces for a literal ranking list (e.g. SELECT vectorRRFScore([
+  // r1, r2, ...])), so both stay array-like even though their elements are validated as integers per item.
+  // A float[]/double[] (typically a score or embedding vector passed by mistake) is deliberately NOT
+  // array-like: it falls through to the variadic path and is rejected as a non-number rank, a clearer error
+  // than treating each element as a rank and complaining it is not an integer.
   private static boolean isArrayLike(final Object value) {
     return value instanceof int[] || value instanceof long[] || value instanceof Object[] || value instanceof List;
   }
