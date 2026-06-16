@@ -204,6 +204,36 @@ class SQLFunctionShortestPathTest {
   }
 
   @Test
+  void edgeTrueDirectionBothWithAsymmetricEdges() throws Exception {
+    TestHelper.executeInNewDatabase("testEdgeBothAsymmetric", graph -> {
+      final MutableVertex[] verts = new MutableVertex[2];
+
+      graph.transaction(() -> {
+        graph.getSchema().createVertexType("BugSP_V");
+        graph.getSchema().createEdgeType("BugSP_E");
+
+        verts[0] = graph.newVertex("BugSP_V").set("name", "a").save();
+        verts[1] = graph.newVertex("BugSP_V").set("name", "b").save();
+        verts[0].newEdge("BugSP_E", verts[1]);
+      });
+
+      function = new SQLFunctionShortestPath();
+
+      final Map<String, Object> options = new HashMap<>();
+      options.put("direction", "BOTH");
+      options.put("edge", true);
+
+      final List<RID> result = function.execute(null, null, null, new Object[] { verts[0], verts[1], options },
+          new BasicCommandContext());
+
+      // expected: [a-rid, edge-rid, b-rid]
+      assertThat(result).hasSize(3);
+      assertThat(result.getFirst()).isEqualTo(verts[0].getIdentity());
+      assertThat(result.getLast()).isEqualTo(verts[1].getIdentity());
+    });
+  }
+
+  @Test
   void rejectsUnknownOption() throws Exception {
     TestHelper.executeInNewDatabase("testShortestPathUnknownOption", graph -> {
       setUpDatabase(graph);

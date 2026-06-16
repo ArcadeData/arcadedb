@@ -18,6 +18,9 @@
  */
 package com.arcadedb.graph;
 
+import com.arcadedb.utility.ResettableIterator;
+
+import java.util.Collections;
 import java.util.Iterator;
 
 /**
@@ -34,6 +37,9 @@ public class EdgeToVertexIterable implements Iterable<Vertex> {
 
   @Override
   public Iterator<Vertex> iterator() {
-    return new EdgeToVertexIterator((EdgeIterator) edges.iterator(), direction);
+    final Iterator<Edge> iter = edges.iterator();
+    if (!(iter instanceof ResettableIterator))
+      return Collections.emptyIterator();
+    return new EdgeToVertexIterator((ResettableIterator<Edge>) iter, direction);
   }
 }
