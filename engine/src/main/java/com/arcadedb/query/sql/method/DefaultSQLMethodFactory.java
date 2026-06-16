@@ -47,6 +47,7 @@ import com.arcadedb.query.sql.method.conversion.SQLMethodAsRecord;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsSet;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsShort;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsString;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsVector;
 import com.arcadedb.query.sql.method.conversion.SQLMethodConvert;
 import com.arcadedb.query.sql.method.geo.SQLMethodIntersectsWith;
 import com.arcadedb.query.sql.method.geo.SQLMethodIsWithin;
@@ -132,6 +133,7 @@ public final class DefaultSQLMethodFactory implements SQLMethodFactory {
     register(SQLMethodAsSet.NAME, new SQLMethodAsSet());
     register(SQLMethodAsShort.NAME, new SQLMethodAsShort());
     register(SQLMethodAsString.NAME, new SQLMethodAsString());
+    register(SQLMethodAsVector.NAME, new SQLMethodAsVector());
     register(SQLMethodConvert.NAME, new SQLMethodConvert());
 
     // Geo
