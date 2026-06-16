@@ -26,12 +26,90 @@ import java.util.logging.Level;
  * @author Luca Garulli
  */
 public class LogManager {
-  private static final LogContext CONTEXT_INSTANCE = new LogContext();
-  private static final LogManager instance         = new LogManager();
-  private              boolean    debug            = false;
-  private              Logger     logger;
+  private static final LogContext                    CONTEXT_INSTANCE     = new LogContext();
+  private static final ThreadLocal<Correlation>      CORRELATION_INSTANCE = new ThreadLocal<>();
+  private static final LogManager                    instance             = new LogManager();
+  private static volatile TraceContextSupplier       traceContextSupplier = null;
+  private              boolean                        debug                = false;
+  private              Logger                         logger;
 
   static class LogContext extends ThreadLocal<String> {
+  }
+
+  /**
+   * Per-request correlation fields read by the log formatters. {@code requestId} and {@code database}
+   * always work; {@code traceId}/{@code spanId} are populated only when the optional tracing plugin
+   * is active (otherwise null). All fields may be null.
+   */
+  public record Correlation(String requestId, String database, String traceId, String spanId) {
+  }
+
+  /**
+   * SPI letting the optional {@code tracing} plugin expose the currently active trace context to the
+   * core logger without the core taking an OpenTelemetry dependency. Unset by default (no tracer).
+   */
+  @FunctionalInterface
+  public interface TraceContextSupplier {
+    /**
+     * @return a 2-element array {@code [traceId, spanId]}, or {@code null} when no span is active.
+     */
+    String[] currentTraceContext();
+  }
+
+  /**
+   * Registers (or, with {@code null}, clears) the supplier used to read the active trace context.
+   * Called by the tracing plugin on configure/stop. Instance method (consistent with the rest of the
+   * {@link LogManager} API) backed by a process-wide {@code volatile} field so worker threads observe it.
+   */
+  public void setTraceContextSupplier(final TraceContextSupplier supplier) {
+    traceContextSupplier = supplier;
+  }
+
+  /**
+   * Reads the active trace context via the registered supplier, swallowing any failure so a tracing
+   * fault never breaks logging. Returns {@code null} when no supplier is registered or no span active.
+   */
+  public String[] currentTraceContext() {
+    final TraceContextSupplier supplier = traceContextSupplier;
+    if (supplier == null)
+      return null;
+    try {
+      return supplier.currentTraceContext();
+    } catch (final Exception e) {
+      return null;
+    }
+  }
+
+  public void setCorrelation(final String requestId, final String database, final String traceId, final String spanId) {
+    CORRELATION_INSTANCE.set(new Correlation(requestId, database, traceId, spanId));
+  }
+
+  public Correlation getCorrelation() {
+    return CORRELATION_INSTANCE.get();
+  }
+
+  public void clearCorrelation() {
+    CORRELATION_INSTANCE.remove();
+  }
+
+  public String getRequestId() {
+    final Correlation c = CORRELATION_INSTANCE.get();
+    return c == null ? null : c.requestId();
+  }
+
+  public String getDatabaseContext() {
+    final Correlation c = CORRELATION_INSTANCE.get();
+    return c == null ? null : c.database();
+  }
+
+  public String getTraceId() {
+    final Correlation c = CORRELATION_INSTANCE.get();
+    return c == null ? null : c.traceId();
+  }
+
+  public String getSpanId() {
+    final Correlation c = CORRELATION_INSTANCE.get();
+    return c == null ? null : c.spanId();
   }
 
   protected LogManager() {

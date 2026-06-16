@@ -18,10 +18,13 @@
  */
 package com.arcadedb.tracing;
 
+import com.arcadedb.log.LogManager;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -65,6 +68,33 @@ class TracingPluginTest {
     plugin.stopService();
     assertThatCode(() -> Observation.createNotStarted("after.stop", registry).observe(() -> {
     })).doesNotThrowAnyException();
+  }
+
+  @Test
+  void traceContextSupplierExposesActiveTraceIdToLogManager() {
+    final ObservationRegistry registry = ObservationRegistry.create();
+    final InMemorySpanExporter exporter = InMemorySpanExporter.create();
+
+    final TracingPlugin plugin = new TracingPlugin();
+    plugin.attachForTest(registry, exporter);
+    try {
+      // No span is active yet, so the core logger sees no trace context.
+      assertThat(LogManager.instance().currentTraceContext()).as("no span active yet").isNull();
+
+      // Inside the observation scope the supplier must surface the active span's ids to the core logger.
+      final AtomicReference<String[]> captured = new AtomicReference<>();
+      Observation.createNotStarted("test.op", registry)
+          .observe(() -> captured.set(LogManager.instance().currentTraceContext()));
+
+      assertThat(captured.get()).as("trace context inside the span").isNotNull();
+      assertThat(captured.get()[0]).as("traceId").isNotBlank().isNotEqualTo("00000000000000000000000000000000");
+      assertThat(captured.get()[1]).as("spanId").isNotBlank();
+    } finally {
+      plugin.stopService();
+    }
+
+    // The supplier is cleared on stop so the core logger degrades back to requestId-only correlation.
+    assertThat(LogManager.instance().currentTraceContext()).isNull();
   }
 
   @Test
