@@ -37,6 +37,9 @@ public class SQLMethodAsSparse extends AbstractSQLMethod {
 
   public static final String NAME = "assparse";
 
+  // Stateless function: reuse a single shared instance instead of allocating one per method call.
+  private static final SQLFunctionVectorDenseToSparse DENSE_TO_SPARSE = new SQLFunctionVectorDenseToSparse();
+
   public SQLMethodAsSparse() {
     super(NAME, 0, 1);
   }
@@ -52,6 +55,6 @@ public class SQLMethodAsSparse extends AbstractSQLMethod {
         new Object[] { value };
 
     // Reuse the function implementation so dense->sparse logic lives in one place.
-    return new SQLFunctionVectorDenseToSparse().execute(null, currentRecord, null, fnParams, context);
+    return DENSE_TO_SPARSE.execute(null, currentRecord, null, fnParams, context);
   }
 }

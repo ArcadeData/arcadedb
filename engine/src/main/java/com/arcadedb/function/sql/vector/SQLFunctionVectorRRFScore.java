@@ -59,10 +59,12 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
     if (params == null || params.length < 1)
       throw new CommandSQLParsingException(getSyntax());
 
-    // Array form: vectorRRFScore([r1, r2, ...] [, { k: <long> }]) - ranks grouped in a single array/list,
-    // consistent with vector.multiScore's array input.
+    final Object[] rankElements;
+    long k = DEFAULT_K;
+
     if (isArrayLike(params[0])) {
-      long k = DEFAULT_K;
+      // Array form: vectorRRFScore([r1, r2, ...] [, { k: <long> }]) - ranks grouped in a single array/list,
+      // consistent with vector.multiScore's array input.
       if (params.length == 2) {
         if (params[1] instanceof Map<?, ?> rawMap)
           k = new FunctionOptions(NAME, rawMap, OPTIONS).getLong("k", DEFAULT_K);
@@ -71,39 +73,29 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
       } else if (params.length > 2) {
         throw new CommandSQLParsingException(getSyntax());
       }
-      return (float) rrf(toFloatArray(params[0]), k);
+      rankElements = toObjectArray(params[0]);
+    } else {
+      // Variadic form: ranks as positional args, optional trailing { k } map.
+      // k is configured ONLY via a trailing options map { k: <long> }. A bare trailing number is always a
+      // rank, never k: ranks of 60+ are legitimate, so the previous "last number >= 60 is k" heuristic
+      // silently dropped a real rank and produced wrong results for >2 ranking lists (issue #3099).
+      int rankCount = params.length;
+      final Object lastParam = params[params.length - 1];
+      if (lastParam instanceof Map<?, ?> rawMap) {
+        k = new FunctionOptions(NAME, rawMap, OPTIONS).getLong("k", DEFAULT_K);
+        rankCount = params.length - 1;
+      }
+      rankElements = new Object[rankCount];
+      System.arraycopy(params, 0, rankElements, 0, rankCount);
     }
 
-    long k = DEFAULT_K;
-    int rankCount = params.length;
-
-    // k is configured ONLY via a trailing options map { k: <long> }. A bare trailing number is always a
-    // rank, never k: ranks of 60+ are legitimate, so the previous "last number >= 60 is k" heuristic
-    // silently dropped a real rank and produced wrong results for >2 ranking lists (issue #3099).
-    final Object lastParam = params[params.length - 1];
-    if (lastParam instanceof Map<?, ?> rawMap) {
-      final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
-      k = opts.getLong("k", DEFAULT_K);
-      rankCount = params.length - 1;
-    }
-
-    // Calculate RRF score
+    // Both forms share the same per-rank handling: a null rank is skipped (the item is absent from that
+    // ranking list), and every present rank must be a positive integer.
     double rrfScore = 0.0;
-    for (int i = 0; i < rankCount; i++) {
-      final Object rankObj = params[i];
+    for (final Object rankObj : rankElements) {
       if (rankObj == null)
         continue;
-
-      final long rank;
-      if (rankObj instanceof Number num)
-        rank = num.longValue();
-      else
-        throw new CommandSQLParsingException("Rank values must be numbers, found: " + rankObj.getClass().getSimpleName());
-
-      if (rank <= 0)
-        throw new CommandSQLParsingException("Rank values must be positive integers, found: " + rank);
-
-      rrfScore += 1.0 / (k + rank);
+      rrfScore += 1.0 / (k + toRank(rankObj));
     }
 
     return (float) rrfScore;
@@ -114,14 +106,47 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
         || value instanceof Object[] || value instanceof List;
   }
 
-  private static double rrf(final float[] ranks, final long k) {
-    double score = 0.0;
-    for (final float rank : ranks) {
-      if (rank <= 0)
-        throw new CommandSQLParsingException("Rank values must be positive integers, found: " + rank);
-      score += 1.0 / (k + rank);
+  /** Boxes any array-like (primitive array, Object[] or List) into an Object[] so null elements survive. */
+  private static Object[] toObjectArray(final Object arrayLike) {
+    if (arrayLike instanceof Object[] o)
+      return o;
+    if (arrayLike instanceof List<?> l)
+      return l.toArray();
+    if (arrayLike instanceof int[] a) {
+      final Object[] r = new Object[a.length];
+      for (int i = 0; i < a.length; i++)
+        r[i] = a[i];
+      return r;
     }
-    return score;
+    if (arrayLike instanceof long[] a) {
+      final Object[] r = new Object[a.length];
+      for (int i = 0; i < a.length; i++)
+        r[i] = a[i];
+      return r;
+    }
+    if (arrayLike instanceof float[] a) {
+      final Object[] r = new Object[a.length];
+      for (int i = 0; i < a.length; i++)
+        r[i] = a[i];
+      return r;
+    }
+    final double[] a = (double[]) arrayLike;
+    final Object[] r = new Object[a.length];
+    for (int i = 0; i < a.length; i++)
+      r[i] = a[i];
+    return r;
+  }
+
+  /** Validates a single rank value: must be a positive integer. */
+  private static long toRank(final Object rankObj) {
+    if (!(rankObj instanceof Number num))
+      throw new CommandSQLParsingException("Rank values must be numbers, found: " + rankObj.getClass().getSimpleName());
+    final double d = num.doubleValue();
+    if (d <= 0)
+      throw new CommandSQLParsingException("Rank values must be positive integers, found: " + num);
+    if (Double.isInfinite(d) || d != Math.rint(d))
+      throw new CommandSQLParsingException("Rank values must be integers, found: " + num);
+    return num.longValue();
   }
 
   public String getSyntax() {

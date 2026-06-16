@@ -386,6 +386,20 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
         .hasMessageContaining("Cannot infer");
   }
 
+  @Test
+  void approxDistanceRejectsMixedQuantizationTypes() {
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    final Object int8 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object binary = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { binary, int8 }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Cannot mix");
+  }
+
   // ========== asSparse() method (#4) ==========
 
   @Test
@@ -420,6 +434,30 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
     assertThat((float) fn.execute(null, null, null,
         new Object[] { java.util.List.of(1L, 5L, 10L), java.util.Map.of("k", 100L) }, ctx()))
         .isCloseTo((1.0f / 101) + (1.0f / 105) + (1.0f / 110), Offset.offset(1e-5f));
+  }
+
+  @Test
+  void rrfScoreSkipsNullRanksConsistentlyInBothForms() {
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    final float expected = (1.0f / 61) + (1.0f / 65);
+    // variadic with a null rank
+    final java.util.List<Object> variadic = new java.util.ArrayList<>(java.util.Arrays.asList(null, 1L, 5L));
+    assertThat((float) fn.execute(null, null, null, variadic.toArray(), ctx())).isCloseTo(expected, Offset.offset(1e-5f));
+    // array form with a null element must behave the same (the item is absent from that ranking list)
+    assertThat((float) fn.execute(null, null, null, new Object[] { variadic }, ctx())).isCloseTo(expected, Offset.offset(1e-5f));
+  }
+
+  @Test
+  void rrfScoreRejectsNonIntegerRanksInBothForms() {
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    // array form
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { new double[] { 1.5, 5.0 } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("integers");
+    // variadic form - no longer silently truncates 1.5 -> 1
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { 1.5, 5.0 }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("integers");
   }
 
   // ========== MATLAB_COLUMN format (#21) ==========

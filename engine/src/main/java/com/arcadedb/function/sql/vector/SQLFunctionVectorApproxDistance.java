@@ -95,9 +95,16 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
   }
 
   private static QuantizationType inferType(final Object q1Obj, final Object q2Obj) {
-    if (q1Obj instanceof BinaryQuantizationResult || q2Obj instanceof BinaryQuantizationResult)
+    final boolean binary = q1Obj instanceof BinaryQuantizationResult || q2Obj instanceof BinaryQuantizationResult;
+    final boolean int8 = q1Obj instanceof QuantizationResult || q2Obj instanceof QuantizationResult;
+
+    if (binary && int8)
+      throw new CommandSQLParsingException(
+          "Cannot mix INT8 and BINARY quantization results in vector.approxDistance(): both arguments must be "
+              + "the same quantization type.");
+    if (binary)
       return QuantizationType.BINARY;
-    if (q1Obj instanceof QuantizationResult || q2Obj instanceof QuantizationResult)
+    if (int8)
       return QuantizationType.INT8;
     throw new CommandSQLParsingException(
         "Cannot infer the quantization type from raw arrays: pass the result of vector.quantizeInt8()/"
