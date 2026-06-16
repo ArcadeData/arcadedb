@@ -559,6 +559,14 @@ public enum GlobalConfiguration {
       "When true and HA is active, /api/v1/ready also requires the node to have joined the Raft group and be caught up. Default false preserves current readiness behavior.",
       Boolean.class, false),
 
+  SERVER_LOG_FORMAT("arcadedb.server.logFormat", SCOPE.SERVER,
+      "Console log format: 'text' (default, human-readable) or 'json' (one JSON object per line with correlation fields)",
+      String.class, "text"),
+
+  SERVER_LOG_INCLUDE_TRACE("arcadedb.server.logIncludeTrace", SCOPE.SERVER,
+      "In text log mode, append [traceId=...] to each line while a trace is active. Default false preserves current text output.",
+      Boolean.class, false),
+
   //paths
   SERVER_ROOT_PATH("arcadedb.server.rootPath", SCOPE.SERVER,
       "Root path in the file system where the server is looking for files. By default is the current directory", String.class,

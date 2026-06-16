@@ -72,6 +72,7 @@ public class AnsiLogFormatter extends LogFormatter {
     }
 
     buffer.append(message);
+    appendTraceTag(buffer);
 
     return AnsiCode.format(buffer.toString());
   }

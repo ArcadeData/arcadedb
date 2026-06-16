@@ -46,6 +46,7 @@ import io.undertow.util.StatusCodes;
 import java.security.MessageDigest;
 import java.util.Base64;
 import java.util.Deque;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.logging.Level;
@@ -53,6 +54,10 @@ import java.util.logging.Level;
 public abstract class AbstractServerHttpHandler implements HttpHandler {
   private static final String AUTHORIZATION_BASIC  = "Basic";
   private static final String AUTHORIZATION_BEARER = "Bearer";
+  // Cached once: tryFromString scans/validates the header name, wasteful to repeat on every request.
+  private static final HttpString REQUEST_ID_HEADER = HttpString.tryFromString(IdempotencyCache.HEADER_REQUEST_ID);
+  // Upper bound on a client-supplied X-Request-Id we echo and log, to keep a hostile value bounded.
+  private static final int        MAX_REQUEST_ID_LENGTH = 128;
   protected final HttpServer httpServer;
 
   public AbstractServerHttpHandler(final HttpServer httpServer) {
@@ -132,6 +137,21 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     try {
       observationScope = observation.openScope();
       LogManager.instance().setContext(httpServer.getServer().getServerName());
+
+      // Per-request correlation context (issue #4466). requestId always works (generated when the
+      // client sends no X-Request-Id); db comes from the path template; traceId/spanId are populated
+      // only when the optional tracing plugin has registered a supplier - the observation scope is
+      // already open above, so the active span is visible here. Cleared in the finally block to avoid
+      // leaking across pooled Undertow worker threads.
+      String correlationRequestId = sanitizeRequestId(exchange.getRequestHeaders().getFirst(IdempotencyCache.HEADER_REQUEST_ID));
+      if (correlationRequestId == null)
+        correlationRequestId = UUID.randomUUID().toString();
+      exchange.getResponseHeaders().put(REQUEST_ID_HEADER, correlationRequestId);
+      // The supplier is an SPI: tolerate an array shorter than 2 (or null) instead of indexing blindly.
+      final String[] traceContext = LogManager.instance().currentTraceContext();
+      final String traceId = traceContext != null && traceContext.length > 0 ? traceContext[0] : null;
+      final String spanId = traceContext != null && traceContext.length > 1 ? traceContext[1] : null;
+      LogManager.instance().setCorrelation(correlationRequestId, databaseTag(exchange), traceId, spanId);
 
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/json");
 
@@ -399,6 +419,10 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
 
       ProtocolContext.clear();
       LogManager.instance().setContext(null);
+      // Invariant: the correlation context stays populated until here, AFTER observation.stop() above
+      // has fired the tracing/observation handlers. LogCorrelationIT relies on reading the requestId
+      // inside an ObservationHandler.onStop callback, so this clear must remain the last step.
+      LogManager.instance().clearCorrelation();
 
       Timer.builder("arcadedb.http.requests")
           .description("HTTP request duration")
@@ -423,6 +447,31 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
     if (match != null)
       return match.getMatchedTemplate();
     return exchange.getRelativePath();
+  }
+
+  /**
+   * Sanitizes a client-supplied {@code X-Request-Id} before it is echoed in the response and stored in
+   * the log correlation context: drops control characters (which could corrupt a log line) and caps the
+   * length, returning {@code null} when nothing usable remains so the caller generates a fresh id.
+   * Allocates only when the input actually needs cleaning, keeping the request hot path cheap.
+   * Package-private for direct unit testing.
+   */
+  static String sanitizeRequestId(final String raw) {
+    if (raw == null || raw.isEmpty())
+      return null;
+    final int len = Math.min(raw.length(), MAX_REQUEST_ID_LENGTH);
+    StringBuilder cleaned = null;
+    for (int i = 0; i < len; i++) {
+      final char c = raw.charAt(i);
+      if (c < 0x20 || c == 0x7F) {
+        if (cleaned == null)
+          cleaned = new StringBuilder(len).append(raw, 0, i);
+      } else if (cleaned != null)
+        cleaned.append(c);
+    }
+    final String result = cleaned != null ? cleaned.toString()
+        : raw.length() > MAX_REQUEST_ID_LENGTH ? raw.substring(0, MAX_REQUEST_ID_LENGTH) : raw;
+    return result.isEmpty() ? null : result;
   }
 
   /**

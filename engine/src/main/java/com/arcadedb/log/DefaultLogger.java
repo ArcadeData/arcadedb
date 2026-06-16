@@ -274,20 +274,36 @@ public class DefaultLogger implements Logger {
       // ASSURE TO HAVE THE LOG FORMATTER TO THE CONSOLE EVEN IF NO CONFIGURATION FILE IS TAKEN
       final java.util.logging.Logger log = java.util.logging.Logger.getLogger("");
 
+      final java.util.logging.Formatter desired = selectConsoleFormatter();
+
       if (log.getHandlers().length == 0) {
         // SET DEFAULT LOG FORMATTER
         final Handler h = new ConsoleHandler();
-        h.setFormatter(new AnsiLogFormatter());
+        h.setFormatter(desired);
         log.addHandler(h);
       } else {
         for (final Handler h : log.getHandlers()) {
-          if (h instanceof ConsoleHandler && !h.getFormatter().getClass().equals(AnsiLogFormatter.class))
-            h.setFormatter(new AnsiLogFormatter());
+          if (h instanceof ConsoleHandler && !h.getFormatter().getClass().equals(desired.getClass()))
+            h.setFormatter(desired);
         }
       }
     } catch (final Exception e) {
       System.err.println("Error while installing custom formatter. Logging could be disabled. Cause: " + e);
     }
+  }
+
+  /**
+   * Selects the console log formatter from {@code arcadedb.server.logFormat}: {@code json} yields a
+   * {@link JsonLogFormatter}, anything else (default {@code text}) keeps the existing
+   * {@link AnsiLogFormatter}. Resolved via {@link SystemVariableResolver} - the same mechanism this
+   * class already uses for {@code arcadedb.installCustomFormatter} - because this runs before
+   * GlobalConfiguration values are guaranteed initialized.
+   */
+  static java.util.logging.Formatter selectConsoleFormatter() {
+    final String format = SystemVariableResolver.INSTANCE.resolveSystemVariables("${arcadedb.server.logFormat}", "text");
+    if ("json".equalsIgnoreCase(format))
+      return new JsonLogFormatter();
+    return new AnsiLogFormatter();
   }
 
   public void log(final Object requester, final Level level, String message, final Throwable exception,

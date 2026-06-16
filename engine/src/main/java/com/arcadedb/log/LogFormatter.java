@@ -18,6 +18,7 @@
  */
 package com.arcadedb.log;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.utility.AnsiCode;
 
 import java.io.PrintWriter;
@@ -25,7 +26,6 @@ import java.io.StringWriter;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.IllegalFormatException;
-import java.util.logging.Formatter;
 import java.util.logging.Formatter;
 import java.util.logging.Level;
 import java.util.logging.LogRecord;
@@ -124,8 +124,24 @@ public class LogFormatter extends Formatter {
     }
 
     buffer.append(message);
+    appendTraceTag(buffer);
 
     return AnsiCode.format(buffer.toString(), false);
+  }
+
+  /**
+   * Appends {@code [traceId=...]} to {@code buffer} when {@code arcadedb.server.logIncludeTrace} is
+   * enabled and a trace is currently active. The configuration is read only when a trace id is
+   * present, so the common (no-trace) path does no work and the default text output is byte-identical
+   * to before. Shared by {@link LogFormatter} and {@code AnsiLogFormatter}.
+   */
+  protected void appendTraceTag(final StringBuilder buffer) {
+    final String traceId = LogManager.instance().getTraceId();
+    if (traceId != null && GlobalConfiguration.SERVER_LOG_INCLUDE_TRACE.getValueAsBoolean()) {
+      buffer.append(" [traceId=");
+      buffer.append(traceId);
+      buffer.append("]");
+    }
   }
 
   protected String getSourceClassSimpleName(final String iSourceClassName) {
