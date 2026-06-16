@@ -44,6 +44,10 @@ import java.util.Locale;
  *                                             returned by vectorQuantizeInt8()/vectorQuantizeBinary()
  * - vectorApproxDistance(quantized1, quantized2, 'INT8' | 'BINARY')
  *
+ * INT8 accepts a QuantizationResult or a raw int8 byte array. BINARY requires the BinaryQuantizationResult
+ * returned by vectorQuantizeBinary() (the packed bits alone are not enough - the Hamming distance needs the
+ * original length carried by the result object).
+ *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
@@ -95,20 +99,23 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
   }
 
   private static QuantizationType inferType(final Object q1Obj, final Object q2Obj) {
-    final boolean binary = q1Obj instanceof BinaryQuantizationResult || q2Obj instanceof BinaryQuantizationResult;
-    final boolean int8 = q1Obj instanceof QuantizationResult || q2Obj instanceof QuantizationResult;
+    final boolean b1 = q1Obj instanceof BinaryQuantizationResult;
+    final boolean b2 = q2Obj instanceof BinaryQuantizationResult;
+    final boolean i1 = q1Obj instanceof QuantizationResult;
+    final boolean i2 = q2Obj instanceof QuantizationResult;
 
-    if (binary && int8)
+    // The two-argument form infers the type from result objects: both arguments must be one (no mixing a
+    // result object with a raw array, where inference would be unreliable).
+    if (!(b1 || i1) || !(b2 || i2))
+      throw new CommandSQLParsingException(
+          "Cannot infer the quantization type: the two-argument form requires the result objects of "
+              + "vector.quantizeInt8()/vector.quantizeBinary() for both arguments. For raw byte arrays, specify "
+              + "'INT8' / 'BINARY' as the third argument.");
+    if ((b1 || b2) && (i1 || i2))
       throw new CommandSQLParsingException(
           "Cannot mix INT8 and BINARY quantization results in vector.approxDistance(): both arguments must be "
               + "the same quantization type.");
-    if (binary)
-      return QuantizationType.BINARY;
-    if (int8)
-      return QuantizationType.INT8;
-    throw new CommandSQLParsingException(
-        "Cannot infer the quantization type from raw arrays: pass the result of vector.quantizeInt8()/"
-            + "vector.quantizeBinary(), or specify 'INT8' / 'BINARY' as the third argument.");
+    return b1 || b2 ? QuantizationType.BINARY : QuantizationType.INT8;
   }
 
   /**

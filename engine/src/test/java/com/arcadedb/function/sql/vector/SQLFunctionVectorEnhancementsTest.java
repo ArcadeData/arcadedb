@@ -372,16 +372,52 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
     final Object i2 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
     assertThat((float) ad.execute(null, null, null, new Object[] { i1, i2 }, ctx())).isEqualTo(0.0f);
 
-    // BINARY inferred from BinaryQuantizationResult objects
+    // Differently-shaped vectors -> non-zero distance (int8 is normalized per-vector, so the distance
+    // reflects the relative shape; [1,2,3] and [1,1,3] differ at index 1).
+    final Object i3 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object i4 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 1.0f, 3.0f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { i3, i4 }, ctx())).isGreaterThan(0.0f);
+
+    // BINARY inferred from BinaryQuantizationResult objects; identical -> 0
     final Object b1 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
     final Object b2 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
     assertThat((float) ad.execute(null, null, null, new Object[] { b1, b2 }, ctx())).isEqualTo(0.0f);
+
+    // Mirrored vectors -> two bits differ -> normalized Hamming distance 2/3
+    final Object b3 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    final Object b4 = qb.execute(null, null, null, new Object[] { new float[] { 0.9f, 0.5f, 0.1f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { b3, b4 }, ctx())).isCloseTo(2.0f / 3, Offset.offset(1e-5f));
   }
 
   @Test
-  void approxDistanceRawArraysStillRequireExplicitType() {
+  void approxDistanceExplicitTypeWithResultObjects() {
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
     final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    // 3-arg explicit form must also accept the result objects
+    final Object i1 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object i2 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { i1, i2, "INT8" }, ctx())).isEqualTo(0.0f);
+
+    final Object b1 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    final Object b2 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { b1, b2, "BINARY" }, ctx())).isEqualTo(0.0f);
+  }
+
+  @Test
+  void approxDistanceTwoArgFormRequiresResultObjects() {
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    // raw arrays cannot be inferred
     assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { new byte[] { 1, 2 }, new byte[] { 1, 2 } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Cannot infer");
+
+    // mixing a result object with a raw array is also rejected in the 2-arg form
+    final Object i1 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { i1, new byte[] { 1, 2, 3 } }, ctx()))
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("Cannot infer");
   }
