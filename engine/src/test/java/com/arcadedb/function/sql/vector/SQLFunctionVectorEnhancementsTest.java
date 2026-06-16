@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsSparse;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsVector;
 
 import org.assertj.core.data.Offset;
@@ -341,5 +342,92 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
     final SQLFunctionVectorNormalizeScores fn = new SQLFunctionVectorNormalizeScores();
     assertThat((float[]) fn.execute(null, null, null, new Object[] { new float[] { 3.0f, 3.0f, 3.0f } }, ctx()))
         .containsExactly(0.5f, 0.5f, 0.5f);
+  }
+
+  // ========== int8 quantization ergonomics (#8/#9/#10) ==========
+
+  @Test
+  void dequantizeInt8AcceptsResultObjectDirectly() {
+    final SQLFunctionVectorQuantizeInt8 q = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorDequantizeInt8 dq = new SQLFunctionVectorDequantizeInt8();
+
+    final Object qr = q.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    // Pass the result object directly - no need to unpack quantized()/min()/max().
+    final float[] back = (float[]) dq.execute(null, null, null, new Object[] { qr }, ctx());
+
+    assertThat(back).hasSize(3);
+    assertThat(back[0]).isCloseTo(1.0f, Offset.offset(0.05f));
+    assertThat(back[1]).isCloseTo(2.0f, Offset.offset(0.05f));
+    assertThat(back[2]).isCloseTo(3.0f, Offset.offset(0.05f));
+  }
+
+  @Test
+  void approxDistanceInfersTypeFromResultObjects() {
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    // INT8 inferred from QuantizationResult objects; identical vectors -> distance 0
+    final Object i1 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object i2 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { i1, i2 }, ctx())).isEqualTo(0.0f);
+
+    // BINARY inferred from BinaryQuantizationResult objects
+    final Object b1 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    final Object b2 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { b1, b2 }, ctx())).isEqualTo(0.0f);
+  }
+
+  @Test
+  void approxDistanceRawArraysStillRequireExplicitType() {
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { new byte[] { 1, 2 }, new byte[] { 1, 2 } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Cannot infer");
+  }
+
+  // ========== asSparse() method (#4) ==========
+
+  @Test
+  void asSparseConvertsDenseDroppingZeros() {
+    final SQLMethodAsSparse m = new SQLMethodAsSparse();
+    final SparseVector sv = (SparseVector) m.execute(new float[] { 0.5f, 0.0f, 0.3f }, null, ctx(), new Object[0]);
+    assertThat(sv.getDimensions()).isEqualTo(3);
+    assertThat(sv.getNonZeroCount()).isEqualTo(2);
+    assertThat(sv.get(0)).isEqualTo(0.5f);
+    assertThat(sv.get(1)).isEqualTo(0.0f);
+    assertThat(sv.get(2)).isEqualTo(0.3f);
+  }
+
+  @Test
+  void asSparseHonoursThresholdAndWorksInSql() {
+    final SQLMethodAsSparse m = new SQLMethodAsSparse();
+    final SparseVector sv = (SparseVector) m.execute(new float[] { 0.5f, 0.05f, 0.3f }, null, ctx(), new Object[] { 0.1f });
+    assertThat(sv.getNonZeroCount()).isEqualTo(2); // 0.05 dropped by the 0.1 threshold
+
+    try (final ResultSet rs = database.query("sql", "SELECT [0.5, 0.0, 0.3].asSparse() as r")) {
+      assertThat(rs.hasNext()).isTrue();
+    }
+  }
+
+  // ========== RRF array-of-ranks input (#14) ==========
+
+  @Test
+  void rrfScoreAcceptsArrayOfRanks() {
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    assertThat((float) fn.execute(null, null, null, new Object[] { new int[] { 1, 5, 10 } }, ctx()))
+        .isCloseTo((1.0f / 61) + (1.0f / 65) + (1.0f / 70), Offset.offset(1e-5f));
+    assertThat((float) fn.execute(null, null, null,
+        new Object[] { java.util.List.of(1L, 5L, 10L), java.util.Map.of("k", 100L) }, ctx()))
+        .isCloseTo((1.0f / 101) + (1.0f / 105) + (1.0f / 110), Offset.offset(1e-5f));
+  }
+
+  // ========== MATLAB_COLUMN format (#21) ==========
+
+  @Test
+  void matlabColumnFormatAndRoundTrip() {
+    assertThat(str("SELECT `vector.toString`([1.0, 2.0, 3.0], 'MATLAB_COLUMN') as r")).isEqualTo("[1.0; 2.0; 3.0]");
+    // semicolons parse back like the other separators
+    assertThat(vec("SELECT '[1.0; 2.0; 3.0]'.asVector() as r")).containsExactly(1.0f, 2.0f, 3.0f);
   }
 }

@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorQuantizeInt8.QuantizationResult;
 import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.List;
 
@@ -30,12 +31,15 @@ import java.util.List;
  * Algorithm:
  * Inverse of quantization: value = ((quantized + 128) / 255) * (max - min) + min
  *
- * Signature: vectorDequantizeInt8(quantized_bytes, min, max)
+ * Signatures:
+ * - vectorDequantizeInt8(result)            - pass the result of vectorQuantizeInt8() directly (min/max
+ *                                             come from the result, no need to unpack)
+ * - vectorDequantizeInt8(quantized_bytes, min, max)
  *
  * Note: Dequantized values are approximations due to precision loss during quantization.
  * Original vector cannot be perfectly recovered.
  *
- * Example: vectorDequantizeInt8(quantized_bytes, 0.1, 0.9) → [0.1, 0.5, 0.9] (approximate)
+ * Example: vectorDequantizeInt8(vectorQuantizeInt8([0.1, 0.5, 0.9])) → [0.1, 0.5, 0.9] (approximate)
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -49,7 +53,22 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 3)
+    if (params == null || params.length < 1)
+      throw new CommandSQLParsingException(getSyntax());
+
+    // Object form: vectorDequantizeInt8(<result of vectorQuantizeInt8>) - min/max come from the result.
+    if (params.length == 1) {
+      final Object quantizedObj = params[0];
+      if (quantizedObj == null)
+        return null;
+      if (!(quantizedObj instanceof QuantizationResult qr))
+        throw new CommandSQLParsingException(
+            "Single-argument form expects the result of vector.quantizeInt8(), found: " + quantizedObj.getClass()
+                .getSimpleName() + ". Otherwise call vector.dequantizeInt8(<bytes>, <min>, <max>).");
+      return dequantize(qr.quantized(), qr.min(), qr.max());
+    }
+
+    if (params.length != 3)
       throw new CommandSQLParsingException(getSyntax());
 
     final Object quantizedObj = params[0];
@@ -77,13 +96,16 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException("Max must be a number, found: " + maxObj.getClass().getSimpleName());
     }
 
+    return dequantize(quantized, min, max);
+  }
+
+  private float[] dequantize(final byte[] quantized, final float min, final float max) {
     if (quantized.length == 0)
       throw new CommandSQLParsingException("Quantized vector cannot be empty");
 
     if (min > max)
       throw new CommandSQLParsingException("Min (" + min + ") must be <= max (" + max + ")");
 
-    // Dequantize
     final float[] result = new float[quantized.length];
     final float range = max - min;
 
@@ -135,6 +157,6 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<quantized_bytes>, <min>, <max>)";
+    return NAME + "(<result> | <quantized_bytes>, <min>, <max>)";
   }
 }

@@ -23,6 +23,7 @@ import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -30,12 +31,15 @@ import java.util.Set;
  * Reciprocal Rank Fusion (RRF) scoring function for combining multiple ranking lists.
  * Computes: RRF = Σ (1 / (k + rank_i)) for each ranking provided.
  *
- * Usage: vectorRRFScore(rank1, rank2, rank3, ..., [{ k: <long> }])
- * where k is the constant (default 60, set only via the trailing options map), and ranks are integer
+ * Usage:
+ * - vectorRRFScore(rank1, rank2, rank3, ..., [{ k: <long> }])   (variadic ranks)
+ * - vectorRRFScore([rank1, rank2, ...], [{ k: <long> }])         (ranks grouped in an array)
+ *
+ * k is the constant (default 60, set only via the trailing options map), and ranks are integer
  * positions. Every positional numeric argument is always treated as a rank.
  *
  * Example: vectorRRFScore(1, 5, 10) = 1/61 + 1/65 + 1/70 ≈ 0.0456
- *          vectorRRFScore(1, 5, 10, { k: 100 }) = 1/101 + 1/105 + 1/110
+ *          vectorRRFScore([1, 5, 10], { k: 100 }) = 1/101 + 1/105 + 1/110
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -54,6 +58,21 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
       final CommandContext context) {
     if (params == null || params.length < 1)
       throw new CommandSQLParsingException(getSyntax());
+
+    // Array form: vectorRRFScore([r1, r2, ...] [, { k: <long> }]) - ranks grouped in a single array/list,
+    // consistent with vector.multiScore's array input.
+    if (isArrayLike(params[0])) {
+      long k = DEFAULT_K;
+      if (params.length == 2) {
+        if (params[1] instanceof Map<?, ?> rawMap)
+          k = new FunctionOptions(NAME, rawMap, OPTIONS).getLong("k", DEFAULT_K);
+        else
+          throw new CommandSQLParsingException("Second argument of the array form must be an options map { k: <long> }");
+      } else if (params.length > 2) {
+        throw new CommandSQLParsingException(getSyntax());
+      }
+      return (float) rrf(toFloatArray(params[0]), k);
+    }
 
     long k = DEFAULT_K;
     int rankCount = params.length;
@@ -90,7 +109,22 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
     return (float) rrfScore;
   }
 
+  private static boolean isArrayLike(final Object value) {
+    return value instanceof float[] || value instanceof double[] || value instanceof int[] || value instanceof long[]
+        || value instanceof Object[] || value instanceof List;
+  }
+
+  private static double rrf(final float[] ranks, final long k) {
+    double score = 0.0;
+    for (final float rank : ranks) {
+      if (rank <= 0)
+        throw new CommandSQLParsingException("Rank values must be positive integers, found: " + rank);
+      score += 1.0 / (k + rank);
+    }
+    return score;
+  }
+
   public String getSyntax() {
-    return NAME + "(<rank1>, <rank2>, ..., [{ k: <long> }])";
+    return NAME + "(<rank1>, <rank2>, ... | [<ranks>], [{ k: <long> }])";
   }
 }

@@ -20,6 +20,8 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorQuantizeBinary.BinaryQuantizationResult;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorQuantizeInt8.QuantizationResult;
 import com.arcadedb.query.sql.executor.CommandContext;
 
 import java.util.Locale;
@@ -30,14 +32,17 @@ import java.util.Locale;
  *
  * 1. INT8 Mode: Computes L2 distance directly on int8 bytes
  *    - Much faster than dequantizing and computing on floats
- *    - Result is approximate but preserves ranking order
+ *    - Result is approximate but preserves the top-k ordering of the true distances
  *
  * 2. BINARY Mode: Computes Hamming distance on binary quantized vectors
  *    - Very fast (count differing bits)
  *    - 1 operation per 8 dimensions
  *    - Returns normalized Hamming distance [0, 1]
  *
- * Signature: vectorApproxDistance(quantized1, quantized2, 'INT8' | 'BINARY')
+ * Signatures:
+ * - vectorApproxDistance(result1, result2)  - the quantization type is inferred from the result objects
+ *                                             returned by vectorQuantizeInt8()/vectorQuantizeBinary()
+ * - vectorApproxDistance(quantized1, quantized2, 'INT8' | 'BINARY')
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -56,36 +61,47 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
   @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 3)
+    if (params == null || (params.length != 2 && params.length != 3))
       throw new CommandSQLParsingException(getSyntax());
 
     final Object q1Obj = params[0];
     final Object q2Obj = params[1];
-    final Object typeObj = params[2];
 
-    if (q1Obj == null || q2Obj == null || typeObj == null)
+    if (q1Obj == null || q2Obj == null)
       return null;
 
-    // Parse type
-    final String typeStr;
-    if (typeObj instanceof String str) {
-      typeStr = str.toUpperCase(Locale.ROOT);
+    final QuantizationType type;
+    if (params.length == 3) {
+      // Explicit type string (works with raw byte arrays as well as result objects).
+      final Object typeObj = params[2];
+      if (typeObj == null)
+        return null;
+      if (!(typeObj instanceof String str))
+        throw new CommandSQLParsingException("Type must be a string, found: " + typeObj.getClass().getSimpleName());
+      try {
+        type = QuantizationType.valueOf(str.toUpperCase(Locale.ROOT));
+      } catch (final IllegalArgumentException e) {
+        throw new CommandSQLParsingException("Unknown quantization type: " + str + ". Supported: INT8, BINARY");
+      }
     } else {
-      throw new CommandSQLParsingException("Type must be a string, found: " + typeObj.getClass().getSimpleName());
-    }
-
-    // Parse quantization type
-    QuantizationType type;
-    try {
-      type = QuantizationType.valueOf(typeStr);
-    } catch (final IllegalArgumentException e) {
-      throw new CommandSQLParsingException("Unknown quantization type: " + typeStr + ". Supported: INT8, BINARY");
+      // Infer the quantization type from the result objects produced by vector.quantizeInt8/quantizeBinary.
+      type = inferType(q1Obj, q2Obj);
     }
 
     return switch (type) {
       case INT8 -> computeInt8Distance(q1Obj, q2Obj);
       case BINARY -> computeBinaryDistance(q1Obj, q2Obj);
     };
+  }
+
+  private static QuantizationType inferType(final Object q1Obj, final Object q2Obj) {
+    if (q1Obj instanceof BinaryQuantizationResult || q2Obj instanceof BinaryQuantizationResult)
+      return QuantizationType.BINARY;
+    if (q1Obj instanceof QuantizationResult || q2Obj instanceof QuantizationResult)
+      return QuantizationType.INT8;
+    throw new CommandSQLParsingException(
+        "Cannot infer the quantization type from raw arrays: pass the result of vector.quantizeInt8()/"
+            + "vector.quantizeBinary(), or specify 'INT8' / 'BINARY' as the third argument.");
   }
 
   /**
@@ -126,7 +142,9 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
   }
 
   private byte[] toByteArray(final Object quantized) {
-    if (quantized instanceof byte[] byteArray) {
+    if (quantized instanceof QuantizationResult qr) {
+      return qr.quantized();
+    } else if (quantized instanceof byte[] byteArray) {
       return byteArray;
     } else if (quantized instanceof Object[] objArray) {
       final byte[] result = new byte[objArray.length];
@@ -144,6 +162,6 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<quantized1>, <quantized2>, <type>)";
+    return NAME + "(<quantized1>, <quantized2> [, <type>])";
   }
 }
