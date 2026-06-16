@@ -209,4 +209,47 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
         new Object[] { new float[] { 0.0f, 2.0f, 4.0f }, 0.0f, "GMEAN" }, ctx()))
         .isEqualTo(0.0f);
   }
+
+  // ========== asString() vector support + vectorToString delegation ==========
+
+  private String str(final String sql) {
+    try (final ResultSet rs = database.query("sql", sql)) {
+      return rs.next().getProperty("r");
+    }
+  }
+
+  @Test
+  void asStringFormatsCollectionLiteral() {
+    assertThat(str("SELECT [1.0, 2.0, 3.0].asString() as r")).isEqualTo("[1.0, 2.0, 3.0]");
+    assertThat(str("SELECT [1.0, 2.0, 3.0].asString('MATLAB') as r")).isEqualTo("[1.0 2.0 3.0]");
+    assertThat(str("SELECT [1.0, 2.0, 3.0].asString('NUMPY') as r")).isEqualTo("1.0, 2.0, 3.0");
+    assertThat(str("SELECT [1.0, 2.0, 3.0].asString('JULIA') as r")).isEqualTo("[1.0, 2.0, 3.0]");
+  }
+
+  @Test
+  void asStringFormatsStoredFloatArray() {
+    database.command("sql", "CREATE DOCUMENT TYPE Emb2");
+    database.command("sql", "CREATE PROPERTY Emb2.v ARRAY_OF_FLOATS");
+    database.transaction(() -> database.command("sql", "INSERT INTO Emb2 SET v = [0.5, 0.25, 0.75]"));
+
+    assertThat(str("SELECT v.asString('PYTHON') as r FROM Emb2")).isEqualTo("[0.5, 0.25, 0.75]");
+  }
+
+  @Test
+  void asStringLeavesNonVectorsUnchanged() {
+    // A plain string is returned as-is, not parsed/reformatted as a vector.
+    assertThat(str("SELECT 'hello'.asString() as r")).isEqualTo("hello");
+  }
+
+  @Test
+  void asStringAndVectorToStringAgree() {
+    assertThat(str("SELECT [0.5, 0.25].asString('PRETTY') as r"))
+        .isEqualTo(str("SELECT `vector.toString`([0.5, 0.25], 'PRETTY') as r"));
+  }
+
+  @Test
+  void vectorToStringSupportsJuliaAndNumpy() {
+    assertThat(str("SELECT `vector.toString`([1.0, 2.0], 'JULIA') as r")).isEqualTo("[1.0, 2.0]");
+    assertThat(str("SELECT `vector.toString`([1.0, 2.0], 'NUMPY') as r")).isEqualTo("1.0, 2.0");
+  }
 }

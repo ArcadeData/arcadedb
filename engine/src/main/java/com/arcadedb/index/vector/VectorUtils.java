@@ -216,6 +216,68 @@ public final class VectorUtils {
   }
 
   /**
+   * Human-readable string formats for a vector, shared by the {@code vector.toString()} SQL function and
+   * the {@code asString()} SQL method.
+   * <ul>
+   *   <li>{@code COMPACT}: single line {@code [1.0, 2.0, 3.0]} (default)</li>
+   *   <li>{@code PRETTY}: one element per line</li>
+   *   <li>{@code PYTHON}: Python list literal {@code [1.0, 2.0, 3.0]}</li>
+   *   <li>{@code MATLAB}: space-separated row vector {@code [1.0 2.0 3.0]}</li>
+   *   <li>{@code JULIA}: Julia vector literal {@code [1.0, 2.0, 3.0]}</li>
+   *   <li>{@code NUMPY}: bare comma-separated {@code 1.0, 2.0, 3.0} (no brackets), suitable for
+   *       {@code numpy.fromstring(..., sep=",")}</li>
+   * </ul>
+   */
+  public enum StringFormat {
+    COMPACT,
+    PRETTY,
+    PYTHON,
+    MATLAB,
+    JULIA,
+    NUMPY
+  }
+
+  /**
+   * Parses a (case-insensitive) format name into a {@link StringFormat}.
+   *
+   * @throws IllegalArgumentException with the list of supported formats when the name is unknown
+   */
+  public static StringFormat parseStringFormat(final String name) {
+    try {
+      return StringFormat.valueOf(name.toUpperCase(java.util.Locale.ROOT));
+    } catch (final IllegalArgumentException e) {
+      throw new IllegalArgumentException("Unknown format: " + name + ". Supported: COMPACT, PRETTY, PYTHON, MATLAB, JULIA, NUMPY");
+    }
+  }
+
+  /**
+   * Renders a vector to a string using the given {@link StringFormat}. An empty vector renders as
+   * {@code []} (or an empty string for {@code NUMPY}).
+   */
+  public static String formatVector(final float[] vector, final StringFormat format) {
+    final String separator = format == StringFormat.MATLAB ? " " : ", ";
+    if (format == StringFormat.PRETTY) {
+      final StringBuilder sb = new StringBuilder("[\n");
+      for (int i = 0; i < vector.length; i++) {
+        sb.append("  ").append(vector[i]);
+        if (i < vector.length - 1)
+          sb.append(",");
+        sb.append("\n");
+      }
+      return sb.append("]").toString();
+    }
+
+    final StringBuilder sb = new StringBuilder();
+    for (int i = 0; i < vector.length; i++) {
+      if (i > 0)
+        sb.append(separator);
+      sb.append(vector[i]);
+    }
+    // NUMPY emits a bare comma-separated list (no brackets) for numpy.fromstring(); all others bracket it.
+    return format == StringFormat.NUMPY ? sb.toString() : "[" + sb + "]";
+  }
+
+  /**
    * Encoding-aware variant of {@link #toFloatArray(Object)} for callers operating in an index
    * context. When {@code encoding == INT8} a {@code byte[]} input is dequantized via
    * {@link #dequantizeInt8ToFloat(byte[])}; for any other encoding the call delegates to the
