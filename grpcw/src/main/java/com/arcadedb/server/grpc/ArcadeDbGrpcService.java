@@ -46,6 +46,7 @@ import com.arcadedb.schema.EdgeType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.security.SecurityDatabaseUser;
 import com.arcadedb.serializer.JsonSerializer;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.grpc.InsertOptions.ConflictMode;
@@ -1694,6 +1695,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 effective);
           } else {
 
+            // Issue #4644: a later chunk may be dispatched on a different pool thread than the one
+            // that began the transaction; re-bind the transaction to this thread before inserting.
+            ctx.bindToCurrentThread();
+
             // -------- Subsequent chunks: optionally validate option consistency --------
             if (c.hasOptions()) {
               InsertOptions prev = firstOptsRef.get();
@@ -1748,6 +1753,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Status.INTERNAL, leaving the client without an InsertSummary. Instead, surface those as
           // structured errors in totals.errors and still deliver the summary.
           try {
+            // Issue #4644: onCompleted may run on a different pool thread than the onNext that began
+            // the transaction; re-bind it to this thread so the deferred commit finds it.
+            ctx.bindToCurrentThread();
             ctx.flushCommit(true); // commit if not validate-only
           } catch (Exception commitEx) {
             recordCommitException(totals, commitEx);
@@ -2884,6 +2892,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final String sessionId = UUID.randomUUID().toString();
     long received = 0;
 
+    // Issue #4644: ArcadeDB transactions are bound to the calling thread via the DatabaseContext
+    // ThreadLocal. The gRPC serializing executor may run onNext (which calls db.begin()) and
+    // onCompleted (which calls db.commit()) on different pool threads, so the transaction begun on
+    // one callback thread must be explicitly re-bound onto whichever thread runs the next callback,
+    // otherwise the deferred commit fails with "Transaction not begun". We capture the active
+    // transaction and its security user here and re-apply them in bindToCurrentThread().
+    private com.arcadedb.database.TransactionContext tx;
+    private SecurityDatabaseUser                     txUser;
+
     InsertContext(InsertOptions opts) {
 
       this.opts = opts;
@@ -2900,33 +2917,81 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           db.begin();
         }
       }
+
+      captureTransaction();
+    }
+
+    /**
+     * Issue #4644: re-bind the transaction begun on a previous callback thread onto the thread that
+     * is about to run the current callback. gRPC serializes a call's StreamObserver callbacks but
+     * does not pin them to a single thread, so begin/insert/commit can land on different pool
+     * threads. This is a no-op when the transaction is already bound to the current thread (the
+     * common no-hop case), so it never rolls back its own active transaction.
+     */
+    void bindToCurrentThread() {
+      if (tx == null)
+        return;
+
+      final DatabaseContext.DatabaseContextTL tl = DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath());
+      if (tl != null && tl.getLastTransaction() == tx)
+        return; // already bound to this thread
+
+      final DatabaseContext.DatabaseContextTL rebound = DatabaseContext.INSTANCE.init((DatabaseInternal) db, tx);
+      rebound.setCurrentUser(txUser);
+    }
+
+    /**
+     * Issue #4644: snapshot the transaction (and its security user) currently bound to this thread so
+     * it can be re-bound on the next callback thread by {@link #bindToCurrentThread()}.
+     */
+    private void captureTransaction() {
+      final DatabaseContext.DatabaseContextTL tl = DatabaseContext.INSTANCE.getContextIfExists(db.getDatabasePath());
+      if (tl != null) {
+        tx = tl.getLastTransaction();
+        txUser = tl.getCurrentUser();
+      } else {
+        tx = null;
+        txUser = null;
+      }
     }
 
     void flushCommit(boolean end) {
 
       if (opts.getValidateOnly()) {
-        if (end)
+        if (end) {
           db.rollback();
+          tx = null;
+        }
         return;
       }
       switch (opts.getTransactionMode()) {
         case PER_ROW -> {
           db.commit();
-          if (!end)
+          if (!end) {
             db.begin();
+            captureTransaction();
+          } else
+            tx = null;
         }
         case PER_REQUEST -> {
-          if (end)
+          if (end) {
             db.commit();
+            tx = null;
+          }
         }
         case PER_BATCH -> {
           db.commit();
-          if (!end)
+          if (!end) {
             db.begin();
+            captureTransaction();
+          } else
+            tx = null;
         }
         case PER_STREAM -> {
-          if (end)
+          if (end) {
             db.commit();
+            tx = null;
+          }
         }
         default -> {
         }
