@@ -187,12 +187,15 @@ public final class VectorUtils {
     if (vectorObj instanceof String s) {
       final String trimmed = s.trim();
       final String inner = trimmed.startsWith("[") && trimmed.endsWith("]") ? trimmed.substring(1, trimmed.length() - 1) : trimmed;
-      if (inner.isEmpty())
+      final String cleaned = inner.trim();
+      if (cleaned.isEmpty())
         return new float[0];
-      final String[] parts = inner.split(",");
+      // Split on commas and/or whitespace so every asString()/vector.toString() format round-trips:
+      // comma-separated (COMPACT/PYTHON/JULIA/NUMPY), space-separated (MATLAB) and multi-line (PRETTY).
+      final String[] parts = cleaned.split("[,\\s]+");
       final float[] result = new float[parts.length];
       for (int i = 0; i < parts.length; i++)
-        result[i] = Float.parseFloat(parts[i].trim());
+        result[i] = Float.parseFloat(parts[i]);
       return result;
     }
     throw new IllegalArgumentException("Vector must be an array or list, found: " + vectorObj.getClass().getSimpleName());

@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsVector;
 
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
@@ -251,5 +252,40 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
   void vectorToStringSupportsJuliaAndNumpy() {
     assertThat(str("SELECT `vector.toString`([1.0, 2.0], 'JULIA') as r")).isEqualTo("[1.0, 2.0]");
     assertThat(str("SELECT `vector.toString`([1.0, 2.0], 'NUMPY') as r")).isEqualTo("1.0, 2.0");
+  }
+
+  // ========== asVector(): the inverse of asString() ==========
+
+  private float[] vec(final String sql) {
+    try (final ResultSet rs = database.query("sql", sql)) {
+      return rs.next().getProperty("r");
+    }
+  }
+
+  @Test
+  void asVectorParsesEveryAsStringFormat() {
+    // COMPACT / PYTHON / JULIA (bracketed, comma)
+    assertThat(vec("SELECT '[1.0, 2.0, 3.0]'.asVector() as r")).containsExactly(1.0f, 2.0f, 3.0f);
+    // MATLAB (bracketed, space-separated)
+    assertThat(vec("SELECT '[1.0 2.0 3.0]'.asVector() as r")).containsExactly(1.0f, 2.0f, 3.0f);
+    // NUMPY (bare, comma-separated)
+    assertThat(vec("SELECT '1.0, 2.0, 3.0'.asVector() as r")).containsExactly(1.0f, 2.0f, 3.0f);
+    // PRETTY (multi-line) - exercised via the method directly since a raw newline cannot be a SQL string literal
+    final Object pretty = new SQLMethodAsVector().execute("[\n  1.0,\n  2.0,\n  3.0\n]", null, ctx(), new Object[0]);
+    assertThat((float[]) pretty).containsExactly(1.0f, 2.0f, 3.0f);
+  }
+
+  @Test
+  void asVectorRoundTripsWithAsStringForAllFormats() {
+    for (final String fmt : new String[] { "COMPACT", "PRETTY", "PYTHON", "MATLAB", "JULIA", "NUMPY" }) {
+      final float[] back = vec("SELECT [0.5, 0.25, 0.75].asString('" + fmt + "').asVector() as r");
+      assertThat(back).as("round-trip via %s", fmt).containsExactly(0.5f, 0.25f, 0.75f);
+    }
+  }
+
+  @Test
+  void asVectorAcceptsListAndScalar() {
+    assertThat(vec("SELECT [1.0, 2.0, 3.0].asVector() as r")).containsExactly(1.0f, 2.0f, 3.0f);
+    assertThat(vec("SELECT (5.0).asVector() as r")).containsExactly(5.0f);
   }
 }
