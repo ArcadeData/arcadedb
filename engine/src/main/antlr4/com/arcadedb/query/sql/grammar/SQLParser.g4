@@ -1504,6 +1504,9 @@ identifier
     | TYPES
     | STATUS
     | COUNT
+    // Allow DISTINCT as a function name (e.g. distinct(*), distinct(field)) for backward compatibility.
+    // As the whole projection it is still translated to the DISTINCT clause; nested usage raises a clear error.
+    | DISTINCT
     | DATE
     | TIME
     | TIMESTAMP
