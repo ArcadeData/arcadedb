@@ -104,9 +104,12 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
     final boolean i1 = q1Obj instanceof QuantizationResult;
     final boolean i2 = q2Obj instanceof QuantizationResult;
 
+    final boolean q1Recognized = b1 || i1;
+    final boolean q2Recognized = b2 || i2;
+
     // The two-argument form infers the type from result objects: each argument must be a recognized result
     // object (no mixing a result object with a raw array, where inference would be unreliable).
-    if (!(b1 || i1) || !(b2 || i2))
+    if (!q1Recognized || !q2Recognized)
       throw new CommandSQLParsingException(
           "Cannot infer the quantization type: the two-argument form requires the result objects of "
               + "vector.quantizeInt8()/vector.quantizeBinary() for both arguments. For raw byte arrays, specify "

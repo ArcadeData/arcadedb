@@ -36,6 +36,9 @@ import java.util.List;
  *                                             come from the result, no need to unpack)
  * - vectorDequantizeInt8(quantized_bytes, min, max)
  *
+ * If a result is passed to the 3-arg form, its embedded min/max are authoritative (they were used at
+ * quantization time, so only they reconstruct the original scale) and the scalar arguments are ignored.
+ *
  * Note: Dequantized values are approximations due to precision loss during quantization.
  * Original vector cannot be perfectly recovered.
  *
@@ -168,6 +171,6 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<result>[, ignored-min, ignored-max] | <quantized_bytes>, <min>, <max>)";
+    return NAME + "(<result> | <quantized_bytes>, <min>, <max>)";
   }
 }

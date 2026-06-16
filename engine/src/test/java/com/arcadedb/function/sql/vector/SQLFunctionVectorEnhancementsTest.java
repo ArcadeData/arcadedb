@@ -510,14 +510,27 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
   @Test
   void rrfScoreRejectsNonIntegerRanksInBothForms() {
     final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
-    // array form
-    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { new double[] { 1.5, 5.0 } }, ctx()))
+    // array form (a list/Object[] of ranks)
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { List.of(1.5, 5.0) }, ctx()))
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("integers");
     // variadic form - no longer silently truncates 1.5 -> 1
     assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { 1.5, 5.0 }, ctx()))
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("integers");
+  }
+
+  @Test
+  void rrfScoreRejectsFloatArrayAsNonNumberRank() {
+    // A float[]/double[] is a score/embedding vector, not a list of integer ranks: it is not treated as an
+    // array of ranks, so it is rejected as a non-number rank (clearer than "must be integers" per element).
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("numbers");
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { new double[] { 1.0, 2.0 } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("numbers");
   }
 
   // ========== MATLAB_COLUMN format (#21) ==========
@@ -550,7 +563,7 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
   @Test
   void rrfScoreRejectsNonFiniteRanks() {
     final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
-    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { new double[] { Double.NaN } }, ctx()))
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { new Object[] { Double.NaN } }, ctx()))
         .isInstanceOf(CommandSQLParsingException.class)
         .hasMessageContaining("finite");
     assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { Double.POSITIVE_INFINITY }, ctx()))
