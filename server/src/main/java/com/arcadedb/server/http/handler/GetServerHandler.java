@@ -27,6 +27,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QueryEngineManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.HAReplicatedDatabase;
 import com.arcadedb.server.HAServerPlugin;
@@ -93,6 +94,9 @@ public class GetServerHandler extends AbstractServerHttpHandler {
       final JSONArray databases = new JSONArray();
 
       for (String dbName : httpServer.getServer().getDatabaseNames()) {
+        // Never expose reserved internal databases (e.g. the Raft control directory '.raft').
+        if (ArcadeDBServer.isReservedDatabaseName(dbName))
+          continue;
         final ServerDatabase db = httpServer.getServer().getDatabase(dbName);
         final JSONObject databaseJSON = new JSONObject();
         databaseJSON.put("name", db.getName());

@@ -62,6 +62,13 @@ public class FetchFromRidsStep extends AbstractExecutionStep {
 
           final Identifiable nextDoc;
           try {
+            // Eagerly verify the record exists before wrapping it. Under READ_COMMITTED isolation,
+            // lookupByRID(rid, false) returns a lazy stub without touching the bucket, so a missing
+            // RID would only surface as RecordNotFoundException later during materialization (escaping
+            // as "Error on transaction commit"). The existence probe keeps this step isolation
+            // independent: a RID that cannot be resolved is simply skipped. See issue #4643.
+            if (!context.getDatabase().existsRecord(nextRid))
+              continue;
             nextDoc = context.getDatabase().lookupByRID(nextRid, false);
           } catch (final RecordNotFoundException e) {
             continue;
