@@ -245,8 +245,13 @@ public class SQLQueryEngine implements QueryEngine {
       }
     }
 
-    if (sqlFunction == null)
+    if (sqlFunction == null) {
+      if ("distinct".equalsIgnoreCase(name))
+        throw new CommandExecutionException(
+            "'distinct' is supported only as the whole SELECT projection (e.g. `SELECT distinct(field)` or `SELECT DISTINCT field`), "
+                + "not nested inside another function or as the base of a method");
       throw new CommandExecutionException("Unknown function name '" + name + "'");
+    }
 
     return sqlFunction;
   }

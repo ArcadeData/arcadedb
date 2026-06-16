@@ -1909,6 +1909,43 @@ public class SelectStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void distinctFunctionIssue2966() {
+    // https://github.com/ArcadeData/arcadedb/issues/2966
+    // distinct(*) and distinct(field) must work as the whole projection (translated to the DISTINCT clause),
+    // while nesting distinct() inside another function or using it as a method base must raise a clear error.
+    int count = 0;
+    try (final ResultSet result = database.query("sql", "SELECT distinct(*) FROM (SELECT expand([1,2,3,1]) AS x)")) {
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+    }
+    assertThat(count).isEqualTo(3);
+
+    count = 0;
+    try (final ResultSet result = database.query("sql", "SELECT distinct(x) FROM (SELECT expand([1,2,3,1]) AS x)")) {
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+    }
+    assertThat(count).isEqualTo(3);
+
+    // Nested usage is not supported: must fail with a clear, actionable message (not "Unknown function name 'distinct'").
+    assertThatThrownBy(() -> database.query("sql", "SELECT first(distinct(*)) FROM (SELECT expand([1,2,3,1]) AS x)").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("'distinct' is supported only as the whole SELECT projection");
+
+    assertThatThrownBy(() -> database.query("sql", "SELECT distinct(*).type() FROM (SELECT expand([1,2,3,1]) AS x)").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("'distinct' is supported only as the whole SELECT projection");
+
+    assertThatThrownBy(() -> database.query("sql", "SELECT first(distinct(x)) FROM (SELECT expand([1,2,3,1]) AS x)").close())
+        .isInstanceOf(CommandExecutionException.class)
+        .hasMessageContaining("'distinct' is supported only as the whole SELECT projection");
+  }
+
+  @Test
   void distinct1() {
     final String className = "testDistinct1";
     final DocumentType clazz = database.getSchema().createDocumentType(className);
