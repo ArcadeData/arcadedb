@@ -30,10 +30,12 @@ import java.util.Set;
  * Reciprocal Rank Fusion (RRF) scoring function for combining multiple ranking lists.
  * Computes: RRF = Σ (1 / (k + rank_i)) for each ranking provided.
  *
- * Usage: vectorRRFScore(rank1, rank2, rank3, ..., k)
- * where k is the constant (default 60), and ranks are integer positions.
+ * Usage: vectorRRFScore(rank1, rank2, rank3, ..., [{ k: <long> }])
+ * where k is the constant (default 60, set only via the trailing options map), and ranks are integer
+ * positions. Every positional numeric argument is always treated as a rank.
  *
- * Example: vectorRRFScore(1, 5, 10, 60) = 1/61 + 1/65 + 1/70 ≈ 0.0456
+ * Example: vectorRRFScore(1, 5, 10) = 1/61 + 1/65 + 1/70 ≈ 0.0456
+ *          vectorRRFScore(1, 5, 10, { k: 100 }) = 1/101 + 1/105 + 1/110
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -56,19 +58,14 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
     long k = DEFAULT_K;
     int rankCount = params.length;
 
-    // Trailing options map takes precedence over the legacy "last Number >= 60 is k" heuristic.
+    // k is configured ONLY via a trailing options map { k: <long> }. A bare trailing number is always a
+    // rank, never k: ranks of 60+ are legitimate, so the previous "last number >= 60 is k" heuristic
+    // silently dropped a real rank and produced wrong results for >2 ranking lists (issue #3099).
     final Object lastParam = params[params.length - 1];
     if (lastParam instanceof Map<?, ?> rawMap) {
       final FunctionOptions opts = new FunctionOptions(NAME, rawMap, OPTIONS);
       k = opts.getLong("k", DEFAULT_K);
       rankCount = params.length - 1;
-    } else if (params.length >= 2 && lastParam instanceof Number num) {
-      // Legacy disambiguation: treat a large trailing number as k.
-      final long val = num.longValue();
-      if (val >= 60) {
-        k = val;
-        rankCount = params.length - 1;
-      }
     }
 
     // Calculate RRF score
@@ -94,6 +91,6 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<rank1>, <rank2>, ..., [<k> | { k: <long> }])";
+    return NAME + "(<rank1>, <rank2>, ..., [{ k: <long> }])";
   }
 }
