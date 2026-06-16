@@ -23,6 +23,7 @@ package com.arcadedb.query.sql.parser;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.bucketselectionstrategy.PartitionedBucketSelectionStrategy;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.exception.NeedRetryException;
@@ -36,11 +37,14 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
@@ -75,11 +79,34 @@ public class RebuildIndexStatement extends DDLStatement {
     }
 
     final AtomicLong total = new AtomicLong();
+    final AtomicLong misplaced = new AtomicLong();
+    // Types found to contain records sitting outside their partition hash-target bucket (issue #832).
+    final Set<DocumentType> typesToRepartition = ConcurrentHashMap.newKeySet();
 
     final Database database = context.getDatabase();
 
     final Index.BuildIndexCallback callback = (document, totalIndexed) -> {
       total.incrementAndGet();
+
+      // Issue #832: with a partitioned bucket selection strategy a record's index entry must live in
+      // the sub-index of the bucket its key hashes to, because partition-aware index pruning at query
+      // time only searches that one bucket. A record physically stored in a different bucket (placed
+      // by round-robin/thread before the strategy was switched, relocated by manual bucket ops, or
+      // imported) would be silently unreachable. The rebuild does not relocate records (that is
+      // REBUILD TYPE ... WITH repartition = true); it detects the mismatch and flags the type so the
+      // planner fans out across all buckets and results stay correct until a repartition runs.
+      final DocumentType docType = document.getType();
+      if (docType.getBucketSelectionStrategy() instanceof PartitionedBucketSelectionStrategy) {
+        try {
+          final int targetBucketId = docType.getBucketIdByRecord(document, false).getFileId();
+          if (targetBucketId != document.getIdentity().getBucketId()) {
+            misplaced.incrementAndGet();
+            typesToRepartition.add(docType);
+          }
+        } catch (final Exception e) {
+          // Validation must never break a rebuild: skip records the strategy cannot route.
+        }
+      }
 
       if (totalIndexed % 100000 == 0) {
         System.out.print(".");
@@ -107,6 +134,21 @@ public class RebuildIndexStatement extends DDLStatement {
       }
       result.setProperty("indexes", indexList);
       result.setProperty("totalIndexed", total.get());
+      result.setProperty("recordsMisplaced", misplaced.get());
+
+      // Raise needsRepartition once per affected type and tell the operator how to fix it. Doing
+      // this after the build (not inside the per-record scan) avoids repeated schema saves and keeps
+      // the warning to one line per type.
+      for (final DocumentType docType : typesToRepartition) {
+        if (docType instanceof LocalDocumentType ldt && !ldt.isNeedsRepartition()) {
+          ldt.setNeedsRepartition(true);
+          LogManager.instance().log(this, Level.WARNING,
+              "Rebuild of index found records of type '%s' stored outside their partition hash-target bucket; "
+                  + "partition-aware pruning is now disabled (queries fan out across all buckets and stay correct). "
+                  + "Run `REBUILD TYPE %s WITH repartition = true` to relocate the records and re-enable pruning",
+              null, docType.getName(), docType.getName());
+        }
+      }
 
     } catch (Exception e) {
       LogManager.instance()
