@@ -88,6 +88,13 @@ public class ArcadeDBServer {
   public enum STATUS {OFFLINE, STARTING, ONLINE, SHUTTING_DOWN}
 
   public static final String                                CONFIG_SERVER_CONFIGURATION_FILENAME = "config/server-configuration.json";
+
+  /**
+   * Prefix that marks reserved internal databases (e.g. the Raft control directory {@code .raft}).
+   * Reserved databases may live under the server database directory but are not user databases: they
+   * must not be registered at startup, nor exposed through the server/cluster status APIs.
+   */
+  public static final String                                RESERVED_DATABASE_PREFIX             = ".";
   private final       ContextConfiguration                  configuration;
   private final       String                                serverName;
   private             String                                hostAddress;
@@ -566,6 +573,14 @@ public class ArcadeDBServer {
     return Collections.unmodifiableSet(databases.keySet());
   }
 
+  /**
+   * Returns {@code true} if the given name belongs to a reserved internal database (e.g. the Raft
+   * control directory {@code .raft}) that must not be exposed as a user database.
+   */
+  public static boolean isReservedDatabaseName(final String databaseName) {
+    return databaseName != null && databaseName.startsWith(RESERVED_DATABASE_PREFIX);
+  }
+
   public ServerDatabase registerDatabase(final String databaseName, final DatabaseInternal database) {
     final ServerDatabase serverDatabase = new ServerDatabase(this, database);
     final ServerDatabase existing = databases.putIfAbsent(databaseName, serverDatabase);
@@ -749,7 +764,10 @@ public class ArcadeDBServer {
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_DATABASE_LOADATSTARTUP)) {
         final File[] databaseDirectories = databaseDir.listFiles(File::isDirectory);
         for (final File f : databaseDirectories)
-          getDatabase(f.getName());
+          // Skip reserved internal databases (e.g. the Raft control directory '.raft'): they are not
+          // user databases and must not be registered nor leak into the server/cluster status APIs.
+          if (!isReservedDatabaseName(f.getName()))
+            getDatabase(f.getName());
       }
     }
   }
