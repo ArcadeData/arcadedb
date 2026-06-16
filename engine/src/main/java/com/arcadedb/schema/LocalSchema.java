@@ -1431,18 +1431,34 @@ public class LocalSchema implements Schema {
     boolean saveConfiguration = false;
     try {
       File file = new File(databasePath + File.separator + SCHEMA_FILE_NAME);
+      final File prevFile = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
       if (!file.exists() || file.length() == 0) {
-        file = new File(databasePath + File.separator + SCHEMA_PREV_FILE_NAME);
+        file = prevFile;
         if (!file.exists())
           return;
 
         LogManager.instance().log(this, Level.WARNING, "Could not find schema file, loading the previous version saved");
       }
 
-      final JSONObject root;
+      JSONObject root;
       try (final FileInputStream fis = new FileInputStream(file)) {
         final String fileContent = FileUtils.readStreamAsString(fis, encoding);
         root = new JSONObject(fileContent);
+      } catch (final Exception e) {
+        // The primary schema.json is non-empty but unparseable: this is the classic "server killed in the middle of a
+        // schema save" corruption (issue #1249). Fall back to the previous good copy saved in schema.prev.json instead
+        // of letting the schema reset to empty (which would make every type/index disappear even though the records are
+        // still on disk). Self-heal by flagging a rewrite so the next save restores a valid schema.json.
+        if (file != prevFile && prevFile.exists() && prevFile.length() > 0) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Schema file '%s' is corrupt (%s), loading the previous version saved in '%s'", null, file.getName(),
+              e.getMessage(), prevFile.getName());
+          try (final FileInputStream fis = new FileInputStream(prevFile)) {
+            root = new JSONObject(FileUtils.readStreamAsString(fis, encoding));
+          }
+          saveConfiguration = true;
+        } else
+          throw e;
       }
 
       if (root.names() == null || root.names().isEmpty())
