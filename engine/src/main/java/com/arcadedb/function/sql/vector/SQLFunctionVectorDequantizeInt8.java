@@ -168,6 +168,6 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<result> | <quantized_bytes>, <min>, <max>)";
+    return NAME + "(<result>[, ignored-min, ignored-max] | <quantized_bytes>, <min>, <max>)";
   }
 }

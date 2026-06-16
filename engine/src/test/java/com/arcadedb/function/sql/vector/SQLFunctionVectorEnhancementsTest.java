@@ -527,6 +527,8 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
     assertThat(str("SELECT `vector.toString`([1.0, 2.0, 3.0], 'MATLAB_COLUMN') as r")).isEqualTo("[1.0; 2.0; 3.0]");
     // semicolons parse back like the other separators
     assertThat(vec("SELECT '[1.0; 2.0; 3.0]'.asVector() as r")).containsExactly(1.0f, 2.0f, 3.0f);
+    // and without the space after the semicolon (the [,;\s]+ separator regex must collapse it)
+    assertThat(vec("SELECT '[1.0;2.0;3.0]'.asVector() as r")).containsExactly(1.0f, 2.0f, 3.0f);
   }
 
   // ========== review follow-ups: edge cases ==========
