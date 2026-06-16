@@ -26,6 +26,7 @@ import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -552,6 +553,15 @@ public class TypeIndex implements RangeIndex, IndexInternal {
 
     if (isFullText) {
       // Full-text searches must scan all buckets to ensure complete results
+      return indexesOnBuckets;
+    }
+
+    // Partition mapping is stale: some records may sit outside the bucket their key hashes to
+    // (issue #832 / #4087). Pruning to the single hash-target sub-index would miss them, so fan out
+    // across every sub-index until a `REBUILD TYPE ... WITH repartition = true` relocates the records
+    // and clears the flag. Mirrors the cluster-scan planner's gate in SelectExecutionPlanner.
+    if (type instanceof LocalDocumentType ldt && ldt.isNeedsRepartition()) {
+      ldt.warnIfNeedsRepartition();
       return indexesOnBuckets;
     }
 
