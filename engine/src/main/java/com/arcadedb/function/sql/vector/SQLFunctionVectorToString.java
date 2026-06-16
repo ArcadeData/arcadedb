@@ -20,18 +20,16 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.index.vector.VectorUtils;
 import com.arcadedb.query.sql.executor.CommandContext;
-import java.util.Locale;
 
 /**
  * Converts a vector to a human-readable string representation.
- * Supports different formats for different use cases.
- *
- * Formats:
- * - 'COMPACT': Single line "[1.0, 2.0, 3.0]" (default)
- * - 'PRETTY': Multi-line with formatting
- * - 'PYTHON': Python list format
- * - 'MATLAB': MATLAB format
+ * Supports different formats for different use cases (see {@link VectorUtils.StringFormat}):
+ * COMPACT (default), PRETTY, PYTHON, MATLAB, JULIA, NUMPY.
+ * <p>
+ * Equivalent to the {@code asString()} SQL method on a vector value (e.g. {@code embedding.asString('PYTHON')});
+ * both share {@link VectorUtils#formatVector(float[], VectorUtils.StringFormat)}.
  *
  * Example: vectorToString([0.5, 0.25, 0.75]) = "[0.5, 0.25, 0.75]"
  *
@@ -39,13 +37,6 @@ import java.util.Locale;
  */
 public class SQLFunctionVectorToString extends SQLFunctionVectorAbstract {
   public static final String NAME = "vector.toString";
-
-  public enum Format {
-    COMPACT,
-    PRETTY,
-    PYTHON,
-    MATLAB
-  }
 
   public SQLFunctionVectorToString() {
     super(NAME);
@@ -67,72 +58,19 @@ public class SQLFunctionVectorToString extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException("Vector cannot be empty");
 
     // Parse format (default: COMPACT)
-    Format format = Format.COMPACT;
+    VectorUtils.StringFormat format = VectorUtils.StringFormat.COMPACT;
     if (params.length == 2 && params[1] != null) {
-      if (params[1] instanceof String formatStr) {
-        try {
-          format = Format.valueOf(formatStr.toUpperCase(Locale.ROOT));
-        } catch (final IllegalArgumentException e) {
-          throw new CommandSQLParsingException("Unknown format: " + formatStr + ". Supported: COMPACT, PRETTY, PYTHON, MATLAB");
-        }
-      } else {
+      if (!(params[1] instanceof String formatStr))
         throw new CommandSQLParsingException("Format must be a string, found: " + params[1].getClass().getSimpleName());
+      try {
+        format = VectorUtils.parseStringFormat(formatStr);
+      } catch (final IllegalArgumentException e) {
+        throw new CommandSQLParsingException(e.getMessage());
       }
     }
 
-    return switch (format) {
-      case COMPACT -> formatCompact(vector);
-      case PRETTY -> formatPretty(vector);
-      case PYTHON -> formatPython(vector);
-      case MATLAB -> formatMatlab(vector);
-    };
+    return VectorUtils.formatVector(vector, format);
   }
-
-  private String formatCompact(final float[] vector) {
-    final StringBuilder sb = new StringBuilder("[");
-    for (int i = 0; i < vector.length; i++) {
-      if (i > 0)
-        sb.append(", ");
-      sb.append(vector[i]);
-    }
-    sb.append("]");
-    return sb.toString();
-  }
-
-  private String formatPretty(final float[] vector) {
-    final StringBuilder sb = new StringBuilder("[\n");
-    for (int i = 0; i < vector.length; i++) {
-      sb.append("  ").append(vector[i]);
-      if (i < vector.length - 1)
-        sb.append(",");
-      sb.append("\n");
-    }
-    sb.append("]");
-    return sb.toString();
-  }
-
-  private String formatPython(final float[] vector) {
-    final StringBuilder sb = new StringBuilder("[");
-    for (int i = 0; i < vector.length; i++) {
-      if (i > 0)
-        sb.append(", ");
-      sb.append(vector[i]);
-    }
-    sb.append("]");
-    return sb.toString();
-  }
-
-  private String formatMatlab(final float[] vector) {
-    final StringBuilder sb = new StringBuilder("[");
-    for (int i = 0; i < vector.length; i++) {
-      if (i > 0)
-        sb.append(" ");
-      sb.append(vector[i]);
-    }
-    sb.append("]");
-    return sb.toString();
-  }
-
 
   public String getSyntax() {
     return NAME + "(<vector> [, <format>])";
