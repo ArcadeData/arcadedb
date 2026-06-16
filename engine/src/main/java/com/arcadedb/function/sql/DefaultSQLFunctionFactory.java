@@ -125,6 +125,7 @@ import com.arcadedb.function.sql.vector.SQLFunctionVectorBoost;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorClip;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorCosineSimilarity;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorDenseToSparse;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorDequantizeBinary;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorDequantizeInt8;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorDimension;
 import com.arcadedb.function.sql.vector.SQLFunctionVectorDiscover;
@@ -348,6 +349,7 @@ public final class DefaultSQLFunctionFactory extends SQLFunctionFactoryTemplate 
     // Quantization & Optimization
     register(SQLFunctionVectorQuantizeInt8.NAME, new SQLFunctionVectorQuantizeInt8());
     register(SQLFunctionVectorQuantizeBinary.NAME, new SQLFunctionVectorQuantizeBinary());
+    register(SQLFunctionVectorDequantizeBinary.NAME, new SQLFunctionVectorDequantizeBinary());
     register(SQLFunctionVectorDequantizeInt8.NAME, new SQLFunctionVectorDequantizeInt8());
     register(SQLFunctionVectorApproxDistance.NAME, new SQLFunctionVectorApproxDistance());
     // Vector Analysis

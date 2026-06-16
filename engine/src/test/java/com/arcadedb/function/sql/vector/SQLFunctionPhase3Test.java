@@ -52,20 +52,19 @@ class SQLFunctionPhase3Test extends TestHelper {
   }
 
   @Test
-  void vectorRRFScoreWithCustomK() {
+  void vectorRRFScoreTrailingNumberIsAlwaysARank() {
     final SQLFunctionVectorRRFScore function = new SQLFunctionVectorRRFScore();
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);
 
-    // RRF Score with all ranks using default k=60: 1/(60+1) + 1/(60+5) + 1/(60+10) + 1/(60+100)
-    // Since 100 >= 60, it's treated as k value, so: 1/(100+1) + 1/(100+5) + 1/(100+10)
+    // Issue #3099: a trailing number >= 60 is now treated as a legitimate rank, not as k. k is only set
+    // via the { k: ... } options map. So all four numbers are ranks with the default k=60.
     final float result = (float) function.execute(null, null, null,
         new Object[] { 1L, 5L, 10L, 100L },
         context);
 
-    // With k=100: 1/101 + 1/105 + 1/110
-    final float expected = (1.0f / 101) + (1.0f / 105) + (1.0f / 110);
-    assertThat(result).isCloseTo(expected, Offset.offset(0.01f));
+    final float expected = (1.0f / 61) + (1.0f / 65) + (1.0f / 70) + (1.0f / 160);
+    assertThat(result).isCloseTo(expected, Offset.offset(0.0001f));
   }
 
   @Test

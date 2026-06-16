@@ -22,6 +22,8 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.CommandContext;
 
+import java.util.Arrays;
+
 /**
  * Normalizes scores using min-max normalization to [0, 1] range.
  * Formula: normalized = (value - min) / (max - min)
@@ -66,12 +68,10 @@ public class SQLFunctionVectorNormalizeScores extends SQLFunctionVectorAbstract 
         max = score;
     }
 
-    // Handle edge case: all values are the same
+    // Handle edge case: all values are the same -> fill with the midpoint
     if (min == max) {
       final float[] result = new float[scores.length];
-      for (int i = 0; i < scores.length; i++) {
-        result[i] = 0.5f; // Midpoint for uniform values
-      }
+      Arrays.fill(result, 0.5f);
       return result;
     }
 

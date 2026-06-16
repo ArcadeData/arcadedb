@@ -288,4 +288,58 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
     assertThat(vec("SELECT [1.0, 2.0, 3.0].asVector() as r")).containsExactly(1.0f, 2.0f, 3.0f);
     assertThat(vec("SELECT (5.0).asVector() as r")).containsExactly(5.0f);
   }
+
+  // ========== vectorRRFScore: trailing number is a rank, not k (issue #3099) ==========
+
+  @Test
+  void rrfScoreTreatsAllPositionalNumbersAsRanks() {
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    // Three lists where the last rank is 75 (>= 60). Previously 75 was silently swallowed as k; now it is
+    // a rank with the default k=60.
+    final float result = (float) fn.execute(null, null, null, new Object[] { 1L, 5L, 75L }, ctx());
+    assertThat(result).isCloseTo((1.0f / 61) + (1.0f / 65) + (1.0f / 135), Offset.offset(1e-5f));
+  }
+
+  @Test
+  void rrfScoreKSetOnlyViaOptionsMap() {
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    final float result = (float) fn.execute(null, null, null,
+        new Object[] { 1L, 5L, 10L, java.util.Map.of("k", 100L) }, ctx());
+    assertThat(result).isCloseTo((1.0f / 101) + (1.0f / 105) + (1.0f / 110), Offset.offset(1e-5f));
+  }
+
+  // ========== vectorDequantizeBinary ==========
+
+  @Test
+  void dequantizeBinaryRoundTripsSignsThroughQuantize() {
+    final SQLFunctionVectorQuantizeBinary quantize = new SQLFunctionVectorQuantizeBinary();
+    final SQLFunctionVectorDequantizeBinary dequantize = new SQLFunctionVectorDequantizeBinary();
+
+    // median of [0.1, 0.5, 0.9] is 0.5: bits = [0, 1, 1] -> [-1, 1, 1] by default
+    final Object q = quantize.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    assertThat((float[]) dequantize.execute(null, null, null, new Object[] { q }, ctx()))
+        .containsExactly(-1.0f, 1.0f, 1.0f);
+
+    // custom low/high reconstruction values
+    final Object q2 = quantize.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    assertThat((float[]) dequantize.execute(null, null, null, new Object[] { q2, 0.0f, 1.0f }, ctx()))
+        .containsExactly(0.0f, 1.0f, 1.0f);
+  }
+
+  @Test
+  void dequantizeBinaryRejectsNonResult() {
+    final SQLFunctionVectorDequantizeBinary fn = new SQLFunctionVectorDequantizeBinary();
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { new float[] { 1.0f } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("vector.quantizeBinary");
+  }
+
+  // ========== vectorNormalizeScores uniform-input micro-opt ==========
+
+  @Test
+  void normalizeScoresUniformReturnsMidpoints() {
+    final SQLFunctionVectorNormalizeScores fn = new SQLFunctionVectorNormalizeScores();
+    assertThat((float[]) fn.execute(null, null, null, new Object[] { new float[] { 3.0f, 3.0f, 3.0f } }, ctx()))
+        .containsExactly(0.5f, 0.5f, 0.5f);
+  }
 }
