@@ -78,6 +78,13 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
     if (quantizedObj == null || minObj == null || maxObj == null)
       return null;
 
+    // If a QuantizationResult is passed in the 3-arg form, its own min/max are authoritative (they were
+    // computed at quantization time). Use them and ignore the explicit scalars, so the redundant call
+    // vectorDequantizeInt8(vectorQuantizeInt8([...]), min, max) is always correct even if the caller
+    // passes a different/wrong min/max (issue #3099).
+    if (quantizedObj instanceof QuantizationResult qr)
+      return dequantize(qr.quantized(), qr.min(), qr.max());
+
     // Parse quantized bytes
     final byte[] quantized = toByteArray(quantizedObj);
 
@@ -128,11 +135,7 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   }
 
   private byte[] toByteArray(final Object quantized) {
-    if (quantized instanceof QuantizationResult qr) {
-      // Accept the result object in the (result, min, max) form too, so the redundant-min/max call
-      // vectorDequantizeInt8(vectorQuantizeInt8([...]), min, max) works (issue #3099).
-      return qr.quantized();
-    } else if (quantized instanceof byte[] byteArray) {
+    if (quantized instanceof byte[] byteArray) {
       return byteArray;
     } else if (quantized instanceof Object[] objArray) {
       final byte[] result = new byte[objArray.length];

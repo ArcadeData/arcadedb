@@ -29,7 +29,7 @@ import com.arcadedb.query.sql.method.AbstractSQLMethod;
  * {@code vector.denseToSparse()}: {@code embedding.asSparse()} / {@code embedding.asSparse(0.01)},
  * consistent with the {@code asString()} / {@code asVector()} conversion-method family.
  *
- * Example: {@code [0.5, 0.0, 0.3].asSparse()} -> SparseVector indices=[0, 2] values=[0.5, 0.3]
+ * Example: {@code [0.5, 0.0, 0.3].asSparse()} → SparseVector indices=[0, 2] values=[0.5, 0.3]
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -37,7 +37,9 @@ public class SQLMethodAsSparse extends AbstractSQLMethod {
 
   public static final String NAME = "assparse";
 
-  // Stateless function: reuse a single shared instance instead of allocating one per method call.
+  // Thread-safe: SQLFunctionVectorDenseToSparse holds no mutable state (all work is in local variables of
+  // execute()), so a single shared instance can be reused across concurrent queries instead of allocating
+  // one per method call.
   private static final SQLFunctionVectorDenseToSparse DENSE_TO_SPARSE = new SQLFunctionVectorDenseToSparse();
 
   public SQLMethodAsSparse() {

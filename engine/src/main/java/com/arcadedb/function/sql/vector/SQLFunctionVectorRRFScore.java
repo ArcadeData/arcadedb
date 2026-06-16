@@ -130,9 +130,11 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
 
   /** Returns the RRF term {@code 1/(k+rank)}, validating that {@code rank} is a positive integer. */
   private static double rankTerm(final double rank, final long k) {
+    if (Double.isNaN(rank) || Double.isInfinite(rank))
+      throw new CommandSQLParsingException("Rank values must be finite numbers, found: " + rank);
     if (rank <= 0)
       throw new CommandSQLParsingException("Rank values must be positive integers, found: " + rank);
-    if (Double.isInfinite(rank) || rank != Math.rint(rank))
+    if (rank != Math.rint(rank))
       throw new CommandSQLParsingException("Rank values must be integers, found: " + rank);
     return 1.0 / (k + rank);
   }

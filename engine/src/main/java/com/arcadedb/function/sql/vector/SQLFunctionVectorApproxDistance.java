@@ -104,8 +104,8 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
     final boolean i1 = q1Obj instanceof QuantizationResult;
     final boolean i2 = q2Obj instanceof QuantizationResult;
 
-    // The two-argument form infers the type from result objects: both arguments must be one (no mixing a
-    // result object with a raw array, where inference would be unreliable).
+    // The two-argument form infers the type from result objects: each argument must be a recognized result
+    // object (no mixing a result object with a raw array, where inference would be unreliable).
     if (!(b1 || i1) || !(b2 || i2))
       throw new CommandSQLParsingException(
           "Cannot infer the quantization type: the two-argument form requires the result objects of "
@@ -171,7 +171,10 @@ public class SQLFunctionVectorApproxDistance extends SQLFunctionVectorAbstract {
       }
       return result;
     } else {
-      throw new CommandSQLParsingException("Quantized vector must be a byte array, found: " + quantized.getClass().getSimpleName());
+      // Also reached when a BinaryQuantizationResult is passed to the INT8 path (mixed types in the
+      // explicit 3-arg form), hence the explicit hint about the expected INT8 inputs.
+      throw new CommandSQLParsingException(
+          "INT8 distance expects a vector.quantizeInt8() result or a byte array, found: " + quantized.getClass().getSimpleName());
     }
   }
 

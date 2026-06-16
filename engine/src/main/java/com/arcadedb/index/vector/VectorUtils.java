@@ -192,7 +192,9 @@ public final class VectorUtils {
         return new float[0];
       // Split on commas, semicolons and/or whitespace so every asString()/vector.toString() format
       // round-trips: comma-separated (COMPACT/PYTHON/JULIA/NUMPY), space-separated (MATLAB),
-      // semicolon-separated (MATLAB_COLUMN) and multi-line (PRETTY).
+      // semicolon-separated (MATLAB_COLUMN) and multi-line (PRETTY). This is intentionally lenient: a
+      // string mixing separators (e.g. "1.0, 2.0; 3.0") is accepted even though no format emits one, so
+      // hand-written input parses without fuss.
       final String[] parts = cleaned.split("[,;\\s]+");
       final float[] result = new float[parts.length];
       for (int i = 0; i < parts.length; i++)
