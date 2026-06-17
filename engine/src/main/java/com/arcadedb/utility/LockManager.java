@@ -21,30 +21,80 @@ package com.arcadedb.utility;
 import com.arcadedb.log.LogManager;
 
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Level;
 
 /**
- * Lock manager implementation.
+ * Per-resource lock manager with <b>FIFO-fair</b> hand-off.
+ * <p>
+ * A resource is owned by a {@code REQUESTER} (a thread, an HTTP session id, ...), not by the
+ * acquiring thread, so a lock may legitimately be acquired on one thread and released on another
+ * (e.g. session-scoped explicit locks). Ownership is therefore tracked by requester, while waiting
+ * threads are parked/unparked individually via {@link LockSupport}.
+ * <p>
+ * <b>Fairness.</b> When a held resource is released, ownership is handed off to the <i>oldest</i>
+ * waiter (queue head) rather than waking every waiter to race for it. This eliminates the
+ * thundering-herd starvation of the previous {@code CountDownLatch}-based design, where a waiter
+ * could keep losing the wake-up race for the whole timeout and spuriously fail on a hot resource
+ * (e.g. a single-bucket type under concurrent write load) even though the lock was being acquired
+ * and released continuously. Under contention the cost per release drops from O(waiters) wake-ups to
+ * a single {@code unpark}.
+ * <p>
+ * Deadlock avoidance is the caller's responsibility (acquire resources in a globally consistent
+ * order); this class does not change that contract - it only changes how a single contended resource
+ * is handed among its waiters.
+ * <p>
+ * Semantics preserved from the historical implementation:
+ * <ul>
+ *   <li>{@link #tryLock} returns {@link LOCK_STATUS#YES} on acquisition, {@link LOCK_STATUS#ALREADY_ACQUIRED}
+ *       when the same requester already owns the resource (non-counting: a single {@link #unlock}
+ *       releases it), and {@link LOCK_STATUS#NO} when the wait times out or the thread is interrupted.</li>
+ *   <li>{@code timeout > 0} waits up to that many milliseconds; {@code timeout <= 0} waits indefinitely
+ *       until the lock is acquired (used by index compaction).</li>
+ *   <li>{@link #unlock} is a no-op for a resource that is not held, and throws {@link LockException}
+ *       when the requester is not the owner.</li>
+ *   <li>{@link #close} releases every resource and wakes all waiters.</li>
+ * </ul>
  */
 public class LockManager<RESOURCE, REQUESTER> {
   public enum LOCK_STATUS {NO, YES, ALREADY_ACQUIRED}
 
-  private final ConcurrentHashMap<RESOURCE, DistributedLock> lockManager = new ConcurrentHashMap<>(256);
+  private final ConcurrentHashMap<RESOURCE, ResourceLock<REQUESTER>> lockManager = new ConcurrentHashMap<>(256);
 
-  private class DistributedLock {
-    final REQUESTER      owner;
-    final CountDownLatch lock;
-    final long           when;
+  /**
+   * State of one resource: its current owner and the FIFO queue of waiting requesters. All fields are
+   * guarded by the monitor of the instance. {@code removed} marks the instance as detached from the
+   * map (freed with no waiters, or closed) so a thread that captured it just before removal retries
+   * instead of operating on a stale node.
+   */
+  private static final class ResourceLock<R> {
+    R                         owner;
+    long                      when;
+    final ArrayDeque<Waiter<R>> queue = new ArrayDeque<>();
+    boolean                   removed;
+  }
 
-    private DistributedLock(final REQUESTER owner) {
-      this.owner = owner;
-      this.lock = new CountDownLatch(1);
-      this.when = System.currentTimeMillis();
+  /**
+   * One waiting requester. {@code granted} is set by the releasing thread when ownership is handed to
+   * this waiter; {@code cancelled} is set when the waiter gives up (timeout/interrupt/close) - cancelled
+   * waiters are skipped (and dropped) lazily during hand-off, so cancellation is O(1).
+   */
+  private static final class Waiter<R> {
+    final R      requester;
+    final Thread thread;
+    boolean      granted;
+    boolean      cancelled;
+
+    Waiter(final R requester, final Thread thread) {
+      this.requester = requester;
+      this.thread = thread;
     }
   }
 
@@ -55,78 +105,160 @@ public class LockManager<RESOURCE, REQUESTER> {
     if (requester == null)
       throw new IllegalArgumentException("Requester is null");
 
-    final DistributedLock lock = new DistributedLock(requester);
+    final Thread current = Thread.currentThread();
 
-    DistributedLock currentLock = lockManager.putIfAbsent(resource, lock);
-    if (currentLock != null) {
-      if (currentLock.owner.equals(requester)) {
-        // SAME RESOURCE/SERVER, ALREADY LOCKED
-        LogManager.instance().log(this, Level.FINE, "Resource '%s' already locked by requester '%s'", resource, currentLock.owner);
-        return LOCK_STATUS.ALREADY_ACQUIRED;
-      } else {
-        // TRY TO RE-LOCK IT UNTIL TIMEOUT IS EXPIRED
-        final long startTime = System.nanoTime();
-        do {
-          try {
-            if (timeout > 0) {
-              final long remaining = timeout - TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime);
-              if (remaining <= 0)
-                break;
-              currentLock.lock.await(remaining, TimeUnit.MILLISECONDS);
-            } else
-              currentLock.lock.await();
+    // --- Registration: take the free resource, detect re-entrancy, or enqueue as a waiter. ---
+    ResourceLock<REQUESTER> rl = null;
+    Waiter<REQUESTER> waiter = null;
+    for (; ; ) {
+      final ResourceLock<REQUESTER> candidate = lockManager.computeIfAbsent(resource, k -> new ResourceLock<>());
+      synchronized (candidate) {
+        if (candidate.removed)
+          // Captured a node that was detached from the map between computeIfAbsent and here; retry.
+          continue;
 
-            currentLock = lockManager.putIfAbsent(resource, lock);
+        if (candidate.owner == null) {
+          // Free: acquire immediately.
+          candidate.owner = requester;
+          candidate.when = System.currentTimeMillis();
+          return LOCK_STATUS.YES;
+        }
 
-          } catch (final InterruptedException e) {
-            Thread.currentThread().interrupt();
-            break;
-          }
-        } while (currentLock != null && (timeout == 0 || TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - startTime) < timeout));
+        if (candidate.owner.equals(requester)) {
+          LogManager.instance().log(this, Level.FINE, "Resource '%s' already locked by requester '%s'", resource, candidate.owner);
+          return LOCK_STATUS.ALREADY_ACQUIRED;
+        }
+
+        // Held by someone else: join the FIFO queue and wait below.
+        waiter = new Waiter<>(requester, current);
+        candidate.queue.addLast(waiter);
+        rl = candidate;
       }
+      break;
     }
 
-    return currentLock == null ? LOCK_STATUS.YES : LOCK_STATUS.NO;
+    // --- Wait: parked until handed ownership (granted), the deadline passes, interrupted, or closed. ---
+    final long deadlineNanos = timeout > 0 ? System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeout) : 0L;
+    boolean interrupted = false;
+    try {
+      for (; ; ) {
+        synchronized (rl) {
+          if (waiter.granted)
+            // Ownership was handed to us by a releasing thread: we are now the owner and must unlock later.
+            return LOCK_STATUS.YES;
+          if (rl.removed) {
+            // The manager was closed while we waited.
+            waiter.cancelled = true;
+            return LOCK_STATUS.NO;
+          }
+          if (interrupted) {
+            waiter.cancelled = true;
+            return LOCK_STATUS.NO;
+          }
+          if (timeout > 0 && deadlineNanos - System.nanoTime() <= 0) {
+            waiter.cancelled = true;
+            return LOCK_STATUS.NO;
+          }
+        }
+
+        // Park OUTSIDE the monitor so a releasing thread can hand off without blocking. A handoff (or
+        // close) calls unpark; park may also return spuriously - the loop re-checks state either way.
+        if (timeout > 0)
+          LockSupport.parkNanos(deadlineNanos - System.nanoTime());
+        else
+          LockSupport.park();
+
+        if (Thread.interrupted())
+          interrupted = true;
+      }
+    } finally {
+      if (interrupted)
+        current.interrupt();
+    }
   }
 
   public void unlock(final RESOURCE resource, final REQUESTER requester) {
     if (resource == null)
       throw new IllegalArgumentException("Resource to unlock is null");
 
-    final DistributedLock owner = lockManager.get(resource);
-    if (owner != null) {
-      if (!owner.owner.equals(requester))
+    final ResourceLock<REQUESTER> rl = lockManager.get(resource);
+    if (rl == null)
+      // Not held.
+      return;
+
+    Waiter<REQUESTER> next = null;
+    synchronized (rl) {
+      if (rl.removed || rl.owner == null)
+        // Already released by a concurrent unlock/close.
+        return;
+
+      if (!rl.owner.equals(requester))
         throw new LockException(
-            "Cannot unlock resource '" + resource + "' because owner '" + owner.owner + "' <> requester '" + requester + "'");
+            "Cannot unlock resource '" + resource + "' because owner '" + rl.owner + "' <> requester '" + requester + "'");
 
-      lockManager.remove(resource);
+      // Hand off to the oldest live waiter, skipping (and dropping) any that gave up.
+      Waiter<REQUESTER> head;
+      while ((head = rl.queue.pollFirst()) != null && head.cancelled)
+        ; // discard cancelled waiters
 
-      // NOTIFY ANY WAITERS
-      owner.lock.countDown();
+      if (head != null) {
+        rl.owner = head.requester;
+        rl.when = System.currentTimeMillis();
+        head.granted = true;
+        next = head;
+      } else {
+        // No waiters: free the resource and detach the node from the map atomically with marking it removed.
+        rl.owner = null;
+        rl.removed = true;
+        lockManager.remove(resource, rl);
+      }
     }
+
+    if (next != null)
+      LockSupport.unpark(next.thread);
   }
 
   public void close() {
-    for (final Iterator<Map.Entry<RESOURCE, DistributedLock>> it = lockManager.entrySet().iterator(); it.hasNext(); ) {
-      final Map.Entry<RESOURCE, DistributedLock> entry = it.next();
-      final DistributedLock lock = entry.getValue();
-
+    for (final Iterator<Map.Entry<RESOURCE, ResourceLock<REQUESTER>>> it = lockManager.entrySet().iterator(); it.hasNext(); ) {
+      final ResourceLock<REQUESTER> rl = it.next().getValue();
       it.remove();
 
-      // NOTIFY ANY WAITERS
-      lock.lock.countDown();
+      final List<Thread> toWake;
+      synchronized (rl) {
+        rl.removed = true;
+        rl.owner = null;
+        if (rl.queue.isEmpty())
+          continue;
+        toWake = new ArrayList<>(rl.queue.size());
+        for (final Waiter<REQUESTER> w : rl.queue) {
+          w.cancelled = true;
+          toWake.add(w.thread);
+        }
+        rl.queue.clear();
+      }
+
+      // Wake waiters outside the monitor; each observes removed==true and returns NO.
+      for (final Thread t : toWake)
+        LockSupport.unpark(t);
     }
   }
 
   public String toString() {
     final StringBuilder sb = new StringBuilder();
-    for (final Map.Entry<RESOURCE, DistributedLock> entry : lockManager.entrySet())
-      sb.append("\n- '").append(entry.getKey()).append("', owner='").append(entry.getValue().owner)
-          .append("' on ").append(
-              DateTimeFormatter.ofPattern("HH:mm:ss.SSS").format(DateUtils.millisToLocalDateTime(entry.getValue().when, null)))
-          .append(" (")
-          .append(entry.getValue().lock.getCount())
-          .append(" waiters)");
+    for (final Map.Entry<RESOURCE, ResourceLock<REQUESTER>> entry : lockManager.entrySet()) {
+      final ResourceLock<REQUESTER> rl = entry.getValue();
+      final REQUESTER owner;
+      final long when;
+      final int waiters;
+      synchronized (rl) {
+        owner = rl.owner;
+        when = rl.when;
+        waiters = rl.queue.size();
+      }
+      sb.append("\n- '").append(entry.getKey()).append("', owner='").append(owner)
+          .append("' on ").append(DateTimeFormatter.ofPattern("HH:mm:ss.SSS").format(DateUtils.millisToLocalDateTime(when, null)))
+          .append(" (").append(waiters).append(" waiters)");
+    }
     return sb.toString();
   }
 }
