@@ -35,8 +35,8 @@ import java.util.List;
  * Example: denseVectorToSparse([0.5, 0.0, 0.3], 0.0)
  * → SparseVector with indices=[0, 2], values=[0.5, 0.3]
  *
- * Contract: this function is stateless (all work lives in execute() locals), so a single instance may be
- * shared across concurrent queries - {@code SQLMethodAsSparse} relies on this. Keep it stateless.
+ * Contract: this function is stateless (all work lives in execute() locals) and must remain so, so a single
+ * instance can be safely shared across concurrent queries. Do not add mutable instance fields.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */

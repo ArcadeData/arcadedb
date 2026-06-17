@@ -500,10 +500,12 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
   void rrfScoreSkipsNullRanksConsistentlyInBothForms() {
     final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
     final float expected = (1.0f / 61) + (1.0f / 65);
-    // variadic with a null rank
+    // A null rank means "this item is absent from that ranking list" and is skipped (contributes 0), so only
+    // ranks 1 and 5 score. Here the null is in position 0 - the item is absent from the FIRST ranking list,
+    // not ranked last - and the result must equal scoring just [1, 5].
     final List<Object> variadic = new ArrayList<>(Arrays.asList(null, 1L, 5L));
     assertThat((float) fn.execute(null, null, null, variadic.toArray(), ctx())).isCloseTo(expected, Offset.offset(1e-5f));
-    // array form with a null element must behave the same (the item is absent from that ranking list)
+    // array form with the same null element must behave identically.
     assertThat((float) fn.execute(null, null, null, new Object[] { variadic }, ctx())).isCloseTo(expected, Offset.offset(1e-5f));
   }
 
@@ -602,7 +604,8 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
   @Test
   void approxDistanceExplicitBinaryWithInt8ResultsGivesParsingError() {
     // The BINARY path is reached for (int8, int8, 'BINARY') and (int8, binary, 'BINARY'). It must surface a
-    // CommandSQLParsingException naming BinaryQuantizationResult, never a raw ClassCastException.
+    // CommandSQLParsingException naming BinaryQuantizationResult, never a raw ClassCastException. The asserted
+    // message text is owned by SQLFunctionVectorApproxDistance.computeBinaryDistance() - keep them in sync.
     final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
     final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
     final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();

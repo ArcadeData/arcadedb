@@ -134,7 +134,11 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
     if (!(explicit instanceof Number num))
       return true;
     final float value = num.floatValue();
-    final float tolerance = 1e-4f * Math.max(1.0f, Math.max(Math.abs(value), Math.abs(embedded)));
+    // Relative tolerance because float rounding error scales with magnitude (it is measured in ULPs). 1e-5
+    // is ~100x the float epsilon (~1.2e-7), comfortably absorbing a float->JSON-double->float round-trip of
+    // the embedded value while still rejecting a min/max that genuinely differs. The Math.max(1, ...) floor
+    // keeps the window from collapsing to ~0 for embedded values near zero.
+    final float tolerance = 1e-5f * Math.max(1.0f, Math.max(Math.abs(value), Math.abs(embedded)));
     return Math.abs(value - embedded) > tolerance;
   }
 

@@ -100,7 +100,8 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
 
   // Ranks are integer positions, so only integer-typed arrays/collections are accepted here. Object[] and
   // List are the shapes the query engine produces for a literal ranking list (e.g. SELECT vectorRRFScore([
-  // r1, r2, ...])), so both stay array-like even though their elements are validated as integers per item.
+  // r1, r2, ...])); this also covers boxed arrays like Integer[]/Long[] (an Integer[] is an Object[]). Both
+  // stay array-like even though their elements are validated as integers per item.
   // A float[]/double[] (typically a score or embedding vector passed by mistake) is deliberately NOT
   // array-like: it falls through to the variadic path and is rejected as a non-number rank, a clearer error
   // than treating each element as a rank and complaining it is not an integer. Other integer-typed primitive
@@ -144,6 +145,6 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<rank1>, <rank2>, ... | [<ranks>], [{ k: <long> }])";
+    return NAME + "(<rank1>, <rank2>, ... [, { k: <long> }]) | " + NAME + "([<ranks>] [, { k: <long> }])";
   }
 }
