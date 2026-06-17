@@ -43,13 +43,15 @@ import java.util.stream.Stream;
  * The optional 5th argument is a configuration map. Supported keys:
  * <ul>
  *   <li>{@code skipRelTypes} - a relationship type (string) or list of types to exclude from traversal</li>
+ *   <li>{@code skipVertexTypes} - a vertex (node) type (string) or list of types to treat as barriers; as
+ *   soon as the traversal reaches a vertex of one of these types the branch is pruned immediately</li>
  * </ul>
  * </p>
  * <p>
  * Example Cypher usage:
  * <pre>
  * MATCH (a:Person {name: 'Alice'}), (b:Person {name: 'Bob'})
- * CALL algo.allSimplePaths(a, b, ['KNOWS','FRIEND'], 5, { skipRelTypes: ['FRIEND'] })
+ * CALL algo.allSimplePaths(a, b, ['KNOWS','FRIEND'], 5, { skipRelTypes: ['FRIEND'], skipVertexTypes: ['Company'] })
  * YIELD path
  * </pre>
  * </p>
@@ -78,7 +80,8 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
   public String getDescription() {
     return """
         Find all simple paths (without repeated nodes) between two nodes up to a maximum depth, \
-        optionally excluding relationship types via { skipRelTypes: [...] }\
+        optionally excluding relationship types via { skipRelTypes: [...] } and/or vertex types via \
+        { skipVertexTypes: [...] }\
         """;
   }
 
@@ -95,7 +98,9 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     final Vertex endNode = extractVertex(args[1], "endNode");
     final String[] relTypes = extractRelTypes(args[2]);
     final int maxDepth = ((Number) args[3]).intValue();
-    final Set<String> skipRelTypes = args.length > 4 ? extractSkipRelTypes(args[4]) : Collections.emptySet();
+    final Map<String, Object> options = args.length > 4 ? extractMap(args[4], "options") : null;
+    final Set<String> skipRelTypes = extractSkipTypes(options, "skipRelTypes");
+    final Set<String> skipVertexTypes = extractSkipTypes(options, "skipVertexTypes");
 
     if (maxDepth < 1)
       throw new IllegalArgumentException(getName() + "(): maxDepth must be at least 1");
@@ -107,7 +112,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     currentPath.add(startNode);
     visited.add(startNode.getIdentity());
 
-    findPaths(startNode, endNode, relTypes, skipRelTypes, maxDepth, currentPath, visited, allPaths, context);
+    findPaths(startNode, endNode, relTypes, skipRelTypes, skipVertexTypes, maxDepth, currentPath, visited, allPaths, context);
 
     return allPaths.stream().map(pathElements -> {
       final List<Object> nodes = new ArrayList<>();
@@ -133,15 +138,11 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
     });
   }
 
-  private Set<String> extractSkipRelTypes(final Object arg) {
-    if (arg == null)
-      return Collections.emptySet();
-
-    final Map<String, Object> options = extractMap(arg, "options");
+  private Set<String> extractSkipTypes(final Map<String, Object> options, final String optionKey) {
     if (options == null || options.isEmpty())
       return Collections.emptySet();
 
-    final Object value = options.get("skipRelTypes");
+    final Object value = options.get(optionKey);
     if (value == null)
       return Collections.emptySet();
 
@@ -155,7 +156,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
   }
 
   private void findPaths(final Vertex current, final Vertex target, final String[] relTypes,
-                         final Set<String> skipRelTypes, final int remainingDepth,
+                         final Set<String> skipRelTypes, final Set<String> skipVertexTypes, final int remainingDepth,
                          final List<Object> currentPath, final Set<RID> visited,
                          final List<List<Object>> allPaths, final CommandContext context) {
 
@@ -176,6 +177,11 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
         continue;
 
       final Vertex neighbor = edge.getInVertex();
+
+      // Early pruning: a barrier vertex type halts the expansion of this branch immediately
+      if (!skipVertexTypes.isEmpty() && skipVertexTypes.contains(neighbor.getTypeName()))
+        continue;
+
       final RID neighborId = neighbor.getIdentity();
 
       if (!visited.contains(neighborId)) {
@@ -183,7 +189,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
         currentPath.add(edge);
         currentPath.add(neighbor);
 
-        findPaths(neighbor, target, relTypes, skipRelTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
+        findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
 
         currentPath.removeLast();
         currentPath.removeLast();
@@ -200,6 +206,11 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
         continue;
 
       final Vertex neighbor = edge.getOutVertex();
+
+      // Early pruning: a barrier vertex type halts the expansion of this branch immediately
+      if (!skipVertexTypes.isEmpty() && skipVertexTypes.contains(neighbor.getTypeName()))
+        continue;
+
       final RID neighborId = neighbor.getIdentity();
 
       if (!visited.contains(neighborId)) {
@@ -207,7 +218,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
         currentPath.add(edge);
         currentPath.add(neighbor);
 
-        findPaths(neighbor, target, relTypes, skipRelTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
+        findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
 
         currentPath.removeLast();
         currentPath.removeLast();

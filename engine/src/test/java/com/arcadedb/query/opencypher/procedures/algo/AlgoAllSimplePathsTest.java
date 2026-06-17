@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
@@ -53,6 +54,7 @@ class AlgoAllSimplePathsTest {
       factory.open().drop();
     database = factory.create();
     database.getSchema().createVertexType("Person");
+    database.getSchema().createVertexType("Gateway");
     database.getSchema().createEdgeType("KNOWS");
     database.getSchema().createEdgeType("FRIEND");
     database.getSchema().createEdgeType("WORKS_WITH");
@@ -62,11 +64,13 @@ class AlgoAllSimplePathsTest {
     //   A -[FRIEND]-> C -[FRIEND]-> D
     //   A -[KNOWS]-> C -[KNOWS]-> D   (additional KNOWS path via C)
     //   B -[WORKS_WITH]-> C
+    //   A -[KNOWS]-> G -[KNOWS]-> D   (G is a Gateway vertex acting as a barrier)
     database.transaction(() -> {
       final MutableVertex a = database.newVertex("Person").set("name", "A").save();
       final MutableVertex b = database.newVertex("Person").set("name", "B").save();
       final MutableVertex c = database.newVertex("Person").set("name", "C").save();
       final MutableVertex d = database.newVertex("Person").set("name", "D").save();
+      final MutableVertex g = database.newVertex("Gateway").set("name", "G").save();
 
       a.newEdge("KNOWS", b).save();
       b.newEdge("KNOWS", d).save();
@@ -78,6 +82,9 @@ class AlgoAllSimplePathsTest {
       c.newEdge("KNOWS", d).save();
 
       b.newEdge("WORKS_WITH", c).save();
+
+      a.newEdge("KNOWS", g).save();
+      g.newEdge("KNOWS", d).save();
     });
   }
 
@@ -197,6 +204,88 @@ class AlgoAllSimplePathsTest {
     }
 
     assertThat(countEmptyOpts).isEqualTo(countNoOpts);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void allSimplePathsSkipsVertexTypeViaOptions() {
+    // With skipVertexTypes = ['Gateway'] the path A-[KNOWS]->G(Gateway)-[KNOWS]->D must disappear
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+        CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {skipVertexTypes: ['Gateway']}) YIELD path \
+        RETURN path""");
+
+    final List<Result> results = new ArrayList<>();
+    while (rs.hasNext())
+      results.add(rs.next());
+
+    assertThat(results).isNotEmpty();
+
+    for (final Result r : results) {
+      final Map<String, Object> path = (Map<String, Object>) r.getProperty("path");
+      final List<Object> nodes = (List<Object>) path.get("nodes");
+      for (final Object node : nodes) {
+        final String typeName = node instanceof Vertex v ? v.getTypeName() : null;
+        assertThat(typeName).isNotEqualTo("Gateway");
+      }
+    }
+  }
+
+  @Test
+  void allSimplePathsSkipVertexTypePrunesGatewayPath() {
+    // Count of paths must drop by exactly one (the single Gateway path) when Gateway is skipped
+    final ResultSet rsAll = database.query("opencypher",
+        """
+        MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+        CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5) YIELD path \
+        RETURN path""");
+    int countAll = 0;
+    while (rsAll.hasNext()) {
+      rsAll.next();
+      countAll++;
+    }
+
+    final ResultSet rsSkip = database.query("opencypher",
+        """
+        MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+        CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {skipVertexTypes: 'Gateway'}) YIELD path \
+        RETURN path""");
+    int countSkip = 0;
+    while (rsSkip.hasNext()) {
+      rsSkip.next();
+      countSkip++;
+    }
+
+    assertThat(countSkip).isEqualTo(countAll - 1);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void allSimplePathsSkipsBothVertexAndRelTypes() {
+    // Combining skipRelTypes and skipVertexTypes must apply both filters
+    final ResultSet rs = database.query("opencypher",
+        """
+        MATCH (a:Person {name:'A'}), (d:Person {name:'D'}) \
+        CALL algo.allSimplePaths(a, d, ['KNOWS','FRIEND','WORKS_WITH'], 5, {skipRelTypes: ['FRIEND'], skipVertexTypes: ['Gateway']}) YIELD path \
+        RETURN path""");
+
+    final List<Result> results = new ArrayList<>();
+    while (rs.hasNext())
+      results.add(rs.next());
+
+    assertThat(results).isNotEmpty();
+
+    for (final Result r : results) {
+      final Map<String, Object> path = (Map<String, Object>) r.getProperty("path");
+      final List<Object> rels = (List<Object>) path.get("relationships");
+      for (final Object rel : rels)
+        assertThat(rel instanceof Edge edge ? edge.getTypeName() : null).isNotEqualTo("FRIEND");
+
+      final List<Object> nodes = (List<Object>) path.get("nodes");
+      for (final Object node : nodes)
+        assertThat(node instanceof Vertex v ? v.getTypeName() : null).isNotEqualTo("Gateway");
+    }
   }
 
   @Test
