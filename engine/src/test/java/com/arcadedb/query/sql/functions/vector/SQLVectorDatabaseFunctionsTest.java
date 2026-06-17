@@ -525,8 +525,9 @@ class SQLVectorDatabaseFunctionsTest extends TestHelper {
 
       assertThat(rs.hasNext()).isTrue();
       final Result result = rs.next();
-      assertThat(result.<Float>getProperty("avg_magnitude")).isNotNull();
-      assertThat(result.<Float>getProperty("sparsity_pct")).isNotNull();
+      // AVG() always returns a Double (issue #4518), so use the matching type witness here.
+      assertThat(result.<Double>getProperty("avg_magnitude")).isNotNull();
+      assertThat(result.<Double>getProperty("sparsity_pct")).isNotNull();
     });
   }
 

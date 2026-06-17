@@ -20,6 +20,7 @@ package com.arcadedb.function.sql.vector;
 
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.function.sql.vector.SQLFunctionVectorQuantizeInt8.QuantizationResult;
 import com.arcadedb.query.sql.executor.CommandContext;
 import java.util.List;
 
@@ -30,12 +31,20 @@ import java.util.List;
  * Algorithm:
  * Inverse of quantization: value = ((quantized + 128) / 255) * (max - min) + min
  *
- * Signature: vectorDequantizeInt8(quantized_bytes, min, max)
+ * Signatures:
+ * - vectorDequantizeInt8(result)            - pass the result of vectorQuantizeInt8() directly (min/max
+ *                                             come from the result, no need to unpack)
+ * - vectorDequantizeInt8(quantized_bytes, min, max)
+ *
+ * A result's embedded min/max are authoritative (they were used at quantization time, so only they
+ * reconstruct the original scale). When a result is passed to the 3-arg form, the explicit min/max must be
+ * null or match the embedded values (the redundant call is supported); scalars that conflict are rejected,
+ * since applying them would dequantize to a wrong scale.
  *
  * Note: Dequantized values are approximations due to precision loss during quantization.
  * Original vector cannot be perfectly recovered.
  *
- * Example: vectorDequantizeInt8(quantized_bytes, 0.1, 0.9) → [0.1, 0.5, 0.9] (approximate)
+ * Example: vectorDequantizeInt8(vectorQuantizeInt8([0.1, 0.5, 0.9])) → [0.1, 0.5, 0.9] (approximate)
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -49,14 +58,49 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   @Override
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params == null || params.length != 3)
+    if (params == null || params.length < 1)
+      throw new CommandSQLParsingException(getSyntax());
+
+    // Object form: vectorDequantizeInt8(<result of vectorQuantizeInt8>) - min/max come from the result.
+    if (params.length == 1) {
+      final Object quantizedObj = params[0];
+      if (quantizedObj == null)
+        return null;
+      if (!(quantizedObj instanceof QuantizationResult qr))
+        throw new CommandSQLParsingException(
+            "Single-argument form expects the result of vector.quantizeInt8(), found: " + quantizedObj.getClass()
+                .getSimpleName() + ". Otherwise call vector.dequantizeInt8(<bytes>, <min>, <max>).");
+      return dequantize(qr.quantized(), qr.min(), qr.max());
+    }
+
+    // 2-arg form is intentionally unsupported: either 1 (result object) or 3 (bytes, min, max).
+    if (params.length != 3)
       throw new CommandSQLParsingException(getSyntax());
 
     final Object quantizedObj = params[0];
+    if (quantizedObj == null)
+      return null;
+
     final Object minObj = params[1];
     final Object maxObj = params[2];
 
-    if (quantizedObj == null || minObj == null || maxObj == null)
+    // A QuantizationResult's own min/max are authoritative (computed at quantization time, so only they
+    // reconstruct the original scale). Issue #3099 requires the redundant 3-arg call to succeed, so explicit
+    // scalars that are null - or that match the embedded values - are accepted and the embedded values used.
+    // Scalars that conflict with the embedded values would dequantize to a wrong scale and are almost
+    // certainly a caller mistake, so they are rejected loudly rather than silently ignored. This runs before
+    // the scalar null-guard below, otherwise (result, null, null) would wrongly short-circuit to null.
+    if (quantizedObj instanceof QuantizationResult qr) {
+      if (conflictsWithEmbedded(minObj, qr.min()))
+        throw new CommandSQLParsingException("Explicit min (" + minObj + ") conflicts with the result's embedded min ("
+            + qr.min() + "); omit min/max when passing a vector.quantizeInt8() result.");
+      if (conflictsWithEmbedded(maxObj, qr.max()))
+        throw new CommandSQLParsingException("Explicit max (" + maxObj + ") conflicts with the result's embedded max ("
+            + qr.max() + "); omit min/max when passing a vector.quantizeInt8() result.");
+      return dequantize(qr.quantized(), qr.min(), qr.max());
+    }
+
+    if (minObj == null || maxObj == null)
       return null;
 
     // Parse quantized bytes
@@ -77,13 +121,34 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException("Max must be a number, found: " + maxObj.getClass().getSimpleName());
     }
 
+    return dequantize(quantized, min, max);
+  }
+
+  /**
+   * A null explicit scalar is a no-op (the embedded value is used). A non-null scalar conflicts unless it is
+   * numeric and equal to the embedded value within a small relative tolerance (absorbing float round-trip).
+   */
+  private static boolean conflictsWithEmbedded(final Object explicit, final float embedded) {
+    if (explicit == null)
+      return false;
+    if (!(explicit instanceof Number num))
+      return true;
+    final float value = num.floatValue();
+    // Relative tolerance because float rounding error scales with magnitude (it is measured in ULPs). 1e-5
+    // is ~100x the float epsilon (~1.2e-7), comfortably absorbing a float->JSON-double->float round-trip of
+    // the embedded value while still rejecting a min/max that genuinely differs. The Math.max(1, ...) floor
+    // keeps the window from collapsing to ~0 for embedded values near zero.
+    final float tolerance = 1e-5f * Math.max(1.0f, Math.max(Math.abs(value), Math.abs(embedded)));
+    return Math.abs(value - embedded) > tolerance;
+  }
+
+  private float[] dequantize(final byte[] quantized, final float min, final float max) {
     if (quantized.length == 0)
       throw new CommandSQLParsingException("Quantized vector cannot be empty");
 
     if (min > max)
       throw new CommandSQLParsingException("Min (" + min + ") must be <= max (" + max + ")");
 
-    // Dequantize
     final float[] result = new float[quantized.length];
     final float range = max - min;
 
@@ -135,6 +200,6 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<quantized_bytes>, <min>, <max>)";
+    return NAME + "(<result>) | " + NAME + "(<quantized_bytes>, <min>, <max>)";
   }
 }

@@ -190,9 +190,12 @@ public final class VectorUtils {
       final String cleaned = inner.trim();
       if (cleaned.isEmpty())
         return new float[0];
-      // Split on commas and/or whitespace so every asString()/vector.toString() format round-trips:
-      // comma-separated (COMPACT/PYTHON/JULIA/NUMPY), space-separated (MATLAB) and multi-line (PRETTY).
-      final String[] parts = cleaned.split("[,\\s]+");
+      // Split on commas, semicolons and/or whitespace so every asString()/vector.toString() format
+      // round-trips: comma-separated (COMPACT/PYTHON/JULIA/NUMPY), space-separated (MATLAB),
+      // semicolon-separated (MATLAB_COLUMN) and multi-line (PRETTY). This is intentionally lenient: a
+      // string mixing separators (e.g. "1.0, 2.0; 3.0") is accepted even though no format emits one, so
+      // hand-written input parses without fuss.
+      final String[] parts = cleaned.split("[,;\\s]+");
       final float[] result = new float[parts.length];
       for (int i = 0; i < parts.length; i++)
         result[i] = Float.parseFloat(parts[i]);
@@ -226,6 +229,7 @@ public final class VectorUtils {
    *   <li>{@code PRETTY}: one element per line</li>
    *   <li>{@code PYTHON}: Python list literal {@code [1.0, 2.0, 3.0]}</li>
    *   <li>{@code MATLAB}: space-separated row vector {@code [1.0 2.0 3.0]}</li>
+   *   <li>{@code MATLAB_COLUMN}: semicolon-separated column vector {@code [1.0; 2.0; 3.0]}</li>
    *   <li>{@code JULIA}: Julia vector literal {@code [1.0, 2.0, 3.0]}</li>
    *   <li>{@code NUMPY}: bare comma-separated {@code 1.0, 2.0, 3.0} (no brackets), suitable for
    *       {@code numpy.fromstring(..., sep=",")}</li>
@@ -236,6 +240,7 @@ public final class VectorUtils {
     PRETTY,
     PYTHON,
     MATLAB,
+    MATLAB_COLUMN,
     JULIA,
     NUMPY
   }
@@ -249,7 +254,8 @@ public final class VectorUtils {
     try {
       return StringFormat.valueOf(name.toUpperCase(java.util.Locale.ROOT));
     } catch (final IllegalArgumentException e) {
-      throw new IllegalArgumentException("Unknown format: " + name + ". Supported: COMPACT, PRETTY, PYTHON, MATLAB, JULIA, NUMPY");
+      throw new IllegalArgumentException(
+          "Unknown format: " + name + ". Supported: COMPACT, PRETTY, PYTHON, MATLAB, MATLAB_COLUMN, JULIA, NUMPY");
     }
   }
 
@@ -258,8 +264,8 @@ public final class VectorUtils {
    * {@code []} (or an empty string for {@code NUMPY}).
    */
   public static String formatVector(final float[] vector, final StringFormat format) {
-    final String separator = format == StringFormat.MATLAB ? " " : ", ";
     if (format == StringFormat.PRETTY) {
+      // PRETTY builds its own newline-delimited layout and does not use the single-line separator below.
       final StringBuilder sb = new StringBuilder("[\n");
       for (int i = 0; i < vector.length; i++) {
         sb.append("  ").append(vector[i]);
@@ -270,6 +276,11 @@ public final class VectorUtils {
       return sb.append("]").toString();
     }
 
+    final String separator = switch (format) {
+      case MATLAB -> " ";
+      case MATLAB_COLUMN -> "; ";
+      default -> ", ";
+    };
     final StringBuilder sb = new StringBuilder();
     for (int i = 0; i < vector.length; i++) {
       if (i > 0)
