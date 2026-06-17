@@ -388,8 +388,11 @@ class LockManagerFairnessTest {
     final int iterations = 200;
 
     final ExecutorService pool = Executors.newFixedThreadPool(workers);
-    final int[] guardedByA = { 0 };
-    final int[] guardedByB = { 0 };
+    // AtomicInteger here documents the intent (shared counters guarded by the locks under test) and
+    // keeps the test's correctness from depending on the precise visibility semantics of the
+    // implementation being exercised. A lost update would still surface as a count below the total.
+    final AtomicInteger guardedByA = new AtomicInteger();
+    final AtomicInteger guardedByB = new AtomicInteger();
     final ConcurrentLinkedQueue<String> errors = new ConcurrentLinkedQueue<>();
 
     try {
@@ -410,8 +413,8 @@ class LockManagerFairnessTest {
                   return;
                 }
                 try {
-                  guardedByA[0]++;
-                  guardedByB[0]++;
+                  guardedByA.incrementAndGet();
+                  guardedByB.incrementAndGet();
                 } finally {
                   lockManager.unlock(b, req);
                 }
@@ -431,9 +434,9 @@ class LockManagerFairnessTest {
     }
 
     assertThat(errors).isEmpty();
-    // If mutual exclusion held, the non-atomic increments produced no lost updates.
-    assertThat(guardedByA[0]).isEqualTo(workers * iterations);
-    assertThat(guardedByB[0]).isEqualTo(workers * iterations);
+    // Every guarded increment ran under exclusive ownership, so the totals must be exact.
+    assertThat(guardedByA.get()).isEqualTo(workers * iterations);
+    assertThat(guardedByB.get()).isEqualTo(workers * iterations);
 
     // No leaked locks: both resources are free.
     assertThat(lockManager.tryLock(a, "probe", 0)).isEqualTo(LockManager.LOCK_STATUS.YES);

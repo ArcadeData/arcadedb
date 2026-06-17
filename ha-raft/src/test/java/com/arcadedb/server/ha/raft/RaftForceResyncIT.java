@@ -26,6 +26,7 @@ import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.io.IOException;
 import java.net.HttpURLConnection;
@@ -119,6 +120,7 @@ class RaftForceResyncIT extends BaseRaftHATest {
    * download must leave the database open, serving, and still replicating.
    */
   @Test
+  @Timeout(120)
   void failedResyncKeepsDatabaseOpenAndServing() {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);

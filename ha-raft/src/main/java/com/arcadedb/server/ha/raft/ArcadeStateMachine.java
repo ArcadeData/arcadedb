@@ -869,6 +869,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Package-private (not private) so ArcadeStateMachineBootstrapMismatchTest can exercise the
    * install-failure recovery path directly instead of via reflection.
    */
+  // @VisibleForTesting
   void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
     final String dbName = decoded.databaseName();
     final String chosenFingerprint = decoded.bootstrapFingerprint();
@@ -992,6 +993,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       lifecycleExecutor.submit(() -> {
         if (needsSnapshotDownload.compareAndSet(true, false))
           triggerSnapshotDownload();
+        else
+          // Another path (notifyLeaderChanged or the watchdog) already cleared the flag and is driving
+          // the download; skip this retry. Logged so operators can trace why this submission did nothing.
+          LogManager.instance().log(this, Level.INFO,
+              "Bootstrap snapshot retry skipped for '%s': download already triggered by another path", dbName);
       });
     }
   }
