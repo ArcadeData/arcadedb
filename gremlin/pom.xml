@@ -42,6 +42,13 @@
         <commons-beanutils.version>1.11.0</commons-beanutils.version>
         <commons-lang3.version>3.20.0</commons-lang3.version>
         <groovy.version>4.0.28</groovy.version>
+        <!--
+          Pinned to 4.9.1 because Apache TinkerPop 3.8.x still ships its gremlin-language parser with the
+          ATN serialization format version 3, which only an ANTLR 4.9.x runtime can deserialize. The engine
+          module moved to 4.13.2 (ATN v4) to fix issue #4647 (incompatibility with Hibernate 6 / Spring 6).
+          To let both runtimes coexist on the assembled server classpath, the shade plugin below relocates
+          this 4.9.1 runtime (and TinkerPop's bundled parser references) to com.arcadedb.shaded.antlr.
+        -->
         <antlr4.version>4.9.1</antlr4.version>
     </properties>
 
@@ -177,6 +184,35 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
+                <configuration>
+                    <!--
+                      Keep arcadedb-engine out of this shaded jar (it is shipped as its own artifact in the
+                      distribution, exactly like the bolt/postgresw/etc. shaded jars). Gremlin is the only
+                      wire-protocol module that pulls engine into its shade, via its direct compile dependency
+                      on arcadedb-integration. Bundling it here is both a duplicate-class smell and, with the
+                      ANTLR relocation below, a correctness bug: engine's SQL/Cypher parsers are generated
+                      against ANTLR 4.13.2 (ATN v4) and would be rewritten to point at the relocated 4.9.1
+                      (ATN v3) runtime, breaking them. Excluding the artifact leaves only TinkerPop's
+                      gremlin-language parser to be relocated, which is what we want.
+                    -->
+                    <artifactSet>
+                        <excludes>
+                            <exclude>com.arcadedb:arcadedb-engine</exclude>
+                        </excludes>
+                    </artifactSet>
+                    <!--
+                      Relocate the bundled ANTLR 4.9.1 runtime (and TinkerPop's gremlin-language parser
+                      references to it) into a private namespace so it does not collide with the engine's
+                      ANTLR 4.13.2 runtime on the assembled server classpath (issue #4647). TinkerPop 3.8.x
+                      still ships its parser with the ATN v3 format, which only a 4.9.x runtime can read.
+                    -->
+                    <relocations>
+                        <relocation>
+                            <pattern>org.antlr</pattern>
+                            <shadedPattern>com.arcadedb.shaded.antlr</shadedPattern>
+                        </relocation>
+                    </relocations>
+                </configuration>
             </plugin>
         </plugins>
     </build>
