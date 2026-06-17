@@ -136,6 +136,8 @@ public class SQLFunctionVectorRRFScore extends SQLFunctionVectorAbstract {
       throw new CommandSQLParsingException("Rank values must be finite numbers, found: " + rank);
     if (rank <= 0)
       throw new CommandSQLParsingException("Rank values must be positive integers, found: " + rank);
+    // Math.rint (not a (long) cast) so the integer test stays correct for magnitudes beyond long range:
+    // a value equal to its nearest integer is integer-valued; 1.5 != rint(1.5)==2.0 correctly rejects.
     if (rank != Math.rint(rank))
       throw new CommandSQLParsingException("Rank values must be integers, found: " + rank);
     return 1.0 / (k + rank);
