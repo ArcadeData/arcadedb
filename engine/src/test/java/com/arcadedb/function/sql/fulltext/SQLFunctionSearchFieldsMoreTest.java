@@ -152,7 +152,7 @@ class SQLFunctionSearchFieldsMoreTest extends TestHelper {
   void nonExistentRID() {
     assertThatThrownBy(() ->
       database.query("sql", "SELECT FROM Article WHERE SEARCH_FIELDS_MORE(['title', 'body'], [#99:999]) = true"))
-      .hasMessageContaining("Bucket with id '99' was not found");
+      .hasMessageContaining("Record #99:999 not found");
   }
 
   @Test

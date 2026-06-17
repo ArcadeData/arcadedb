@@ -22,10 +22,16 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.exception.CommandSQLParsingException;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.query.sql.method.conversion.SQLMethodAsSparse;
 import com.arcadedb.query.sql.method.conversion.SQLMethodAsVector;
 
 import org.assertj.core.data.Offset;
 import org.junit.jupiter.api.Test;
+
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -304,7 +310,7 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
   void rrfScoreKSetOnlyViaOptionsMap() {
     final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
     final float result = (float) fn.execute(null, null, null,
-        new Object[] { 1L, 5L, 10L, java.util.Map.of("k", 100L) }, ctx());
+        new Object[] { 1L, 5L, 10L, Map.of("k", 100L) }, ctx());
     assertThat(result).isCloseTo((1.0f / 101) + (1.0f / 105) + (1.0f / 110), Offset.offset(1e-5f));
   }
 
@@ -341,5 +347,278 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
     final SQLFunctionVectorNormalizeScores fn = new SQLFunctionVectorNormalizeScores();
     assertThat((float[]) fn.execute(null, null, null, new Object[] { new float[] { 3.0f, 3.0f, 3.0f } }, ctx()))
         .containsExactly(0.5f, 0.5f, 0.5f);
+  }
+
+  // ========== int8 quantization ergonomics (#8/#9/#10) ==========
+
+  @Test
+  void dequantizeInt8AcceptsResultObjectDirectly() {
+    final SQLFunctionVectorQuantizeInt8 q = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorDequantizeInt8 dq = new SQLFunctionVectorDequantizeInt8();
+
+    final Object qr = q.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    // Pass the result object directly - no need to unpack quantized()/min()/max().
+    final float[] back = (float[]) dq.execute(null, null, null, new Object[] { qr }, ctx());
+
+    assertThat(back).hasSize(3);
+    assertThat(back[0]).isCloseTo(1.0f, Offset.offset(0.05f));
+    assertThat(back[1]).isCloseTo(2.0f, Offset.offset(0.05f));
+    assertThat(back[2]).isCloseTo(3.0f, Offset.offset(0.05f));
+  }
+
+  @Test
+  void dequantizeInt8AcceptsResultObjectInThreeArgFormToo() {
+    // The exact form from the issue: result object passed with redundant min/max must not error.
+    final SQLFunctionVectorQuantizeInt8 q = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorDequantizeInt8 dq = new SQLFunctionVectorDequantizeInt8();
+
+    final Object qr = q.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final float[] back = (float[]) dq.execute(null, null, null, new Object[] { qr, 1.0f, 3.0f }, ctx());
+    assertThat(back).hasSize(3);
+    assertThat(back[0]).isCloseTo(1.0f, Offset.offset(0.05f));
+    assertThat(back[2]).isCloseTo(3.0f, Offset.offset(0.05f));
+  }
+
+  @Test
+  void approxDistanceInfersTypeFromResultObjects() {
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    // INT8 inferred from QuantizationResult objects; identical vectors -> distance 0
+    final Object i1 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object i2 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { i1, i2 }, ctx())).isEqualTo(0.0f);
+
+    // Differently-shaped vectors -> non-zero distance (int8 is normalized per-vector, so the distance
+    // reflects the relative shape; [1,2,3] and [1,1,3] differ at index 1).
+    final Object i3 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object i4 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 1.0f, 3.0f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { i3, i4 }, ctx())).isGreaterThan(0.0f);
+
+    // BINARY inferred from BinaryQuantizationResult objects; identical -> 0
+    final Object b1 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    final Object b2 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { b1, b2 }, ctx())).isEqualTo(0.0f);
+
+    // Mirrored vectors -> two bits differ -> normalized Hamming distance 2/3
+    final Object b3 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    final Object b4 = qb.execute(null, null, null, new Object[] { new float[] { 0.9f, 0.5f, 0.1f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { b3, b4 }, ctx())).isCloseTo(2.0f / 3, Offset.offset(1e-5f));
+  }
+
+  @Test
+  void approxDistanceExplicitTypeWithResultObjects() {
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    // 3-arg explicit form must also accept the result objects
+    final Object i1 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object i2 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { i1, i2, "INT8" }, ctx())).isEqualTo(0.0f);
+
+    final Object b1 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    final Object b2 = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+    assertThat((float) ad.execute(null, null, null, new Object[] { b1, b2, "BINARY" }, ctx())).isEqualTo(0.0f);
+  }
+
+  @Test
+  void approxDistanceTwoArgFormRequiresResultObjects() {
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    // raw arrays cannot be inferred
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { new byte[] { 1, 2 }, new byte[] { 1, 2 } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Cannot infer");
+
+    // mixing a result object with a raw array is also rejected in the 2-arg form
+    final Object i1 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { i1, new byte[] { 1, 2, 3 } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Cannot infer");
+  }
+
+  @Test
+  void approxDistanceRejectsMixedQuantizationTypes() {
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    final Object int8 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object binary = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { binary, int8 }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Cannot mix");
+  }
+
+  // ========== asSparse() method (#4) ==========
+
+  @Test
+  void asSparseConvertsDenseDroppingZeros() {
+    final SQLMethodAsSparse m = new SQLMethodAsSparse();
+    final SparseVector sv = (SparseVector) m.execute(new float[] { 0.5f, 0.0f, 0.3f }, null, ctx(), new Object[0]);
+    assertThat(sv.getDimensions()).isEqualTo(3);
+    assertThat(sv.getNonZeroCount()).isEqualTo(2);
+    assertThat(sv.get(0)).isEqualTo(0.5f);
+    assertThat(sv.get(1)).isEqualTo(0.0f);
+    assertThat(sv.get(2)).isEqualTo(0.3f);
+  }
+
+  @Test
+  void asSparseHonoursThresholdAndWorksInSql() {
+    final SQLMethodAsSparse m = new SQLMethodAsSparse();
+    final SparseVector sv = (SparseVector) m.execute(new float[] { 0.5f, 0.05f, 0.3f }, null, ctx(), new Object[] { 0.1f });
+    assertThat(sv.getNonZeroCount()).isEqualTo(2); // 0.05 dropped by the 0.1 threshold
+
+    try (final ResultSet rs = database.query("sql", "SELECT [0.5, 0.0, 0.3].asSparse() as r")) {
+      assertThat(rs.hasNext()).isTrue();
+      final SparseVector fromSql = (SparseVector) rs.next().getProperty("r");
+      assertThat(fromSql.getDimensions()).isEqualTo(3);
+      assertThat(fromSql.getNonZeroCount()).isEqualTo(2);
+      assertThat(fromSql.get(0)).isEqualTo(0.5f);
+      assertThat(fromSql.get(1)).isEqualTo(0.0f);
+      assertThat(fromSql.get(2)).isEqualTo(0.3f);
+    }
+  }
+
+  // ========== RRF array-of-ranks input (#14) ==========
+
+  @Test
+  void rrfScoreAcceptsArrayOfRanks() {
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    assertThat((float) fn.execute(null, null, null, new Object[] { new int[] { 1, 5, 10 } }, ctx()))
+        .isCloseTo((1.0f / 61) + (1.0f / 65) + (1.0f / 70), Offset.offset(1e-5f));
+    assertThat((float) fn.execute(null, null, null,
+        new Object[] { List.of(1L, 5L, 10L), Map.of("k", 100L) }, ctx()))
+        .isCloseTo((1.0f / 101) + (1.0f / 105) + (1.0f / 110), Offset.offset(1e-5f));
+  }
+
+  @Test
+  void rrfScoreSkipsNullRanksConsistentlyInBothForms() {
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    final float expected = (1.0f / 61) + (1.0f / 65);
+    // A null rank means "this item is absent from that ranking list" and is skipped (contributes 0), so only
+    // ranks 1 and 5 score. Here the null is in position 0 - the item is absent from the FIRST ranking list,
+    // not ranked last - and the result must equal scoring just [1, 5].
+    final List<Object> variadic = new ArrayList<>(Arrays.asList(null, 1L, 5L));
+    assertThat((float) fn.execute(null, null, null, variadic.toArray(), ctx())).isCloseTo(expected, Offset.offset(1e-5f));
+    // array form with the same null element must behave identically.
+    assertThat((float) fn.execute(null, null, null, new Object[] { variadic }, ctx())).isCloseTo(expected, Offset.offset(1e-5f));
+  }
+
+  @Test
+  void rrfScoreRejectsNonIntegerRanksInBothForms() {
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    // array form (a list/Object[] of ranks)
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { List.of(1.5, 5.0) }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("integers");
+    // variadic form - no longer silently truncates 1.5 -> 1
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { 1.5, 5.0 }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("integers");
+  }
+
+  @Test
+  void rrfScoreRejectsFloatArrayAsNonNumberRank() {
+    // A float[]/double[] is a score/embedding vector, not a list of integer ranks: it is not treated as an
+    // array of ranks, so it is rejected as a non-number rank (clearer than "must be integers" per element).
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("numbers");
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { new double[] { 1.0, 2.0 } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("numbers");
+  }
+
+  // ========== MATLAB_COLUMN format (#21) ==========
+
+  @Test
+  void matlabColumnFormatAndRoundTrip() {
+    assertThat(str("SELECT `vector.toString`([1.0, 2.0, 3.0], 'MATLAB_COLUMN') as r")).isEqualTo("[1.0; 2.0; 3.0]");
+    // semicolons parse back like the other separators
+    assertThat(vec("SELECT '[1.0; 2.0; 3.0]'.asVector() as r")).containsExactly(1.0f, 2.0f, 3.0f);
+    // and without the space after the semicolon (the [,;\s]+ separator regex must collapse it)
+    assertThat(vec("SELECT '[1.0;2.0;3.0]'.asVector() as r")).containsExactly(1.0f, 2.0f, 3.0f);
+  }
+
+  // ========== review follow-ups: edge cases ==========
+
+  @Test
+  void dequantizeInt8ThreeArgRejectsConflictingMinMaxWhenGivenResult() {
+    // A QuantizationResult carries its own authoritative min/max. The redundant 3-arg form is supported
+    // (issue #3099) only when the explicit scalars match the embedded values; scalars that conflict would
+    // dequantize to a wrong scale, so they are rejected loudly rather than silently ignored.
+    final SQLFunctionVectorQuantizeInt8 q = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorDequantizeInt8 dq = new SQLFunctionVectorDequantizeInt8();
+
+    final Object qr = q.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    assertThatThrownBy(() -> dq.execute(null, null, null, new Object[] { qr, -99.0f, 99.0f }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("conflicts with the result's embedded");
+  }
+
+  @Test
+  void rrfScoreRejectsNonFiniteRanks() {
+    final SQLFunctionVectorRRFScore fn = new SQLFunctionVectorRRFScore();
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { new Object[] { Double.NaN } }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("finite");
+    assertThatThrownBy(() -> fn.execute(null, null, null, new Object[] { Double.POSITIVE_INFINITY }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("finite");
+  }
+
+  @Test
+  void approxDistanceExplicitTypeRejectsMixedTypesWithHelpfulMessage() {
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    final Object int8 = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object binary = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+
+    // Explicit INT8 with a binary result for the second arg: the error must name the expected INT8 inputs.
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { int8, binary, "INT8" }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("INT8");
+  }
+
+  @Test
+  void dequantizeInt8ThreeArgWithResultAndNullScalarsStillUsesEmbeddedMinMax() {
+    // (result, null, null): the result object's embedded min/max must win - the null scalars must NOT
+    // short-circuit the whole call to null (the QuantizationResult check runs before the scalar null-guard).
+    final SQLFunctionVectorQuantizeInt8 q = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorDequantizeInt8 dq = new SQLFunctionVectorDequantizeInt8();
+
+    final Object qr = q.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final float[] expected = (float[]) dq.execute(null, null, null, new Object[] { qr }, ctx());
+    final float[] withNullScalars = (float[]) dq.execute(null, null, null, new Object[] { qr, null, null }, ctx());
+    assertThat(withNullScalars).isNotNull().containsExactly(expected);
+  }
+
+  @Test
+  void approxDistanceExplicitBinaryWithInt8ResultsGivesParsingError() {
+    // The BINARY path is reached for (int8, int8, 'BINARY') and (int8, binary, 'BINARY'). It must surface a
+    // CommandSQLParsingException naming BinaryQuantizationResult, never a raw ClassCastException. The asserted
+    // message text is owned by SQLFunctionVectorApproxDistance.computeBinaryDistance() - keep them in sync.
+    final SQLFunctionVectorQuantizeInt8 qi = new SQLFunctionVectorQuantizeInt8();
+    final SQLFunctionVectorQuantizeBinary qb = new SQLFunctionVectorQuantizeBinary();
+    final SQLFunctionVectorApproxDistance ad = new SQLFunctionVectorApproxDistance();
+
+    final Object int8a = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
+    final Object int8b = qi.execute(null, null, null, new Object[] { new float[] { 1.0f, 1.0f, 3.0f } }, ctx());
+    final Object binary = qb.execute(null, null, null, new Object[] { new float[] { 0.1f, 0.5f, 0.9f } }, ctx());
+
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { int8a, int8b, "BINARY" }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Expected BinaryQuantizationResult");
+    assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { int8a, binary, "BINARY" }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("Expected BinaryQuantizationResult");
   }
 }
