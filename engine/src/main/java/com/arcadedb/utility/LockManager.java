@@ -99,6 +99,8 @@ public class LockManager<RESOURCE, REQUESTER> {
       synchronized (candidate) {
         if (candidate.removed)
           // Captured a node that was detached from the map between computeIfAbsent and here; retry.
+          // This could only spin indefinitely under continuous close() churn; close() is a one-shot
+          // shutdown call, so in practice the retry resolves on the next iteration.
           continue;
 
         if (candidate.owner == null) {

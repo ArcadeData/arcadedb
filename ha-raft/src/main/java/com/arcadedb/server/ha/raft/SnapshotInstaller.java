@@ -227,8 +227,13 @@ public final class SnapshotInstaller {
    * Resolves the on-disk path of a database whether or not it is currently open, so callers no longer
    * need to keep the database open just to read its path before an install. When the database is not
    * registered the path is derived from {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY}.
+   * <p>
+   * Package-private and intended only for the install call sites, which invoke it on an open database
+   * just before closing it. Note the side effect: {@code getDatabase} will <i>open and register</i> a
+   * deregistered-but-on-disk database, so do not call this as a pure read on a database meant to stay
+   * closed.
    */
-  public static String resolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
+  static String resolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
     // Best-effort: the exists/get pair is not atomic, but it only resolves a path before the download
     // phase (no data at risk) and getDatabase returns a valid path even if it has to reopen.
     if (server.existsDatabase(databaseName))
@@ -239,8 +244,13 @@ public final class SnapshotInstaller {
 
   /**
    * Closes and deregisters the local database if it is currently registered. No-op when the database
-   * is absent (late joiner with no local copy). Closing through the embedded instance mirrors the
-   * resync/bootstrap install paths.
+   * is absent (late joiner with no local copy).
+   * <p>
+   * Closes the embedded instance directly ({@code getEmbedded().close()}) rather than the wrapper
+   * ({@code db.close()}): the install does a local file swap, so it must close the underlying
+   * {@code LocalDatabase} without the replicated-close semantics the HA wrapper would apply. This
+   * unifies the previously divergent call sites (the Ratis install path used {@code db.close()}; the
+   * resync/bootstrap paths used {@code getEmbedded().close()}) on the form correct for a file swap.
    */
   private static void closeLocalDatabaseIfOpen(final ArcadeDBServer server, final String databaseName) {
     if (server.existsDatabase(databaseName)) {
@@ -672,6 +682,8 @@ public final class SnapshotInstaller {
           Files.move(entry, backupDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
         }
       }
+      // All originals are now in backup; the catch below uses this to decide whether dbDir holds
+      // partially-installed new files (must be cleared) or un-moved originals (must be kept).
       liveMovedToBackup = true;
 
       // Phase 2: move new snapshot files to the live dir (skip the .snapshot-complete marker).
