@@ -134,8 +134,7 @@ class LockManagerFairnessTest {
     longWaiter.start();
     awaitParked(longWaiter, 5000);
 
-    // Let the short waiter's 200ms budget expire while the holder still holds the lock.
-    Thread.sleep(500);
+    // The short waiter parks until its own 200ms budget expires, then returns NO - no wall-clock sleep.
     shortWaiter.join(5000);
     assertThat(shortResult.get()).isEqualTo(LockManager.LOCK_STATUS.NO);
 

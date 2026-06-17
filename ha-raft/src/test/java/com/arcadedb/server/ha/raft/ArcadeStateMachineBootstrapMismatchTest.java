@@ -32,7 +32,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
-import java.lang.reflect.Method;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -119,13 +118,9 @@ class ArcadeStateMachineBootstrapMismatchTest {
         DB_NAME, "0".repeat(64), Long.MAX_VALUE);
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
 
-    final Method applyBootstrap = ArcadeStateMachine.class.getDeclaredMethod(
-        "applyBootstrapFingerprintEntry", RaftLogEntryCodec.DecodedEntry.class, long.class);
-    applyBootstrap.setAccessible(true);
-
     // Must not throw. Before the fix this RuntimeException propagated to applyTransaction, which
     // halted the state machine and triggered emergency server shutdown.
-    assertThatNoException().isThrownBy(() -> applyBootstrap.invoke(sm, decoded, 1L));
+    assertThatNoException().isThrownBy(() -> sm.applyBootstrapFingerprintEntry(decoded, 1L));
 
     // The database must remain open and registered (download-before-close leaves it intact).
     assertThat(localDb.isOpen()).as("Database stays open after a failed bootstrap install").isTrue();
@@ -160,11 +155,7 @@ class ArcadeStateMachineBootstrapMismatchTest {
         DB_NAME, realFingerprint, realLastTxId);
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
 
-    final Method applyBootstrap = ArcadeStateMachine.class.getDeclaredMethod(
-        "applyBootstrapFingerprintEntry", RaftLogEntryCodec.DecodedEntry.class, long.class);
-    applyBootstrap.setAccessible(true);
-
-    assertThatNoException().isThrownBy(() -> applyBootstrap.invoke(sm, decoded, 1L));
+    assertThatNoException().isThrownBy(() -> sm.applyBootstrapFingerprintEntry(decoded, 1L));
 
     // Baseline must be recorded even on a match.
     final ArcadeStateMachine.BootstrapBaseline baseline = sm.getBootstrapBaseline(DB_NAME);

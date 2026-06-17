@@ -68,14 +68,13 @@ public class LockManager<RESOURCE, REQUESTER> {
 
   /**
    * One waiting requester. {@code granted} is set by the releasing thread when ownership is handed to
-   * this waiter; {@code cancelled} is set when the waiter gives up (timeout/interrupt/close) - cancelled
-   * waiters are skipped (and dropped) lazily during hand-off, so cancellation is O(1).
+   * this waiter. A waiter that gives up removes itself from the queue under the monitor, so the queue
+   * only ever holds live waiters.
    */
   private static final class Waiter<R> {
     final R      requester;
     final Thread thread;
     boolean      granted;
-    boolean      cancelled;
 
     Waiter(final R requester, final Thread thread) {
       this.requester = requester;
@@ -137,8 +136,9 @@ public class LockManager<RESOURCE, REQUESTER> {
             // Handed ownership by a releasing thread: we own it now and must unlock later.
             return LOCK_STATUS.YES;
           if (interrupted || (timeout > 0 && deadlineNanos - System.nanoTime() <= 0)) {
-            // Give up: leave the queue immediately so cancelled waiters never accumulate between unlocks.
-            waiter.cancelled = true;
+            // Give up: leave the queue immediately so abandoned waiters never accumulate between
+            // unlocks. ArrayDeque.remove is O(n), but the queue is bounded by concurrent waiters and
+            // give-ups are rare under fair hand-off, so the scan is cheap for commit-level locking.
             rl.queue.remove(waiter);
             return LOCK_STATUS.NO;
           }
@@ -200,6 +200,10 @@ public class LockManager<RESOURCE, REQUESTER> {
   }
 
   public void close() {
+    // close() is a shutdown operation. There is a narrow window between it.remove() (detaching the node
+    // from the map) and synchronized(rl) below in which a concurrent tryLock could computeIfAbsent a
+    // fresh node for the same key, re-opening that resource after the sweep passes it. Acceptable for
+    // shutdown: old waiters on the detached node still wake with NO; a resurrected node is not swept.
     for (final Iterator<Map.Entry<RESOURCE, ResourceLock<REQUESTER>>> it = lockManager.entrySet().iterator(); it.hasNext(); ) {
       final ResourceLock<REQUESTER> rl = it.next().getValue();
       it.remove();
@@ -211,10 +215,8 @@ public class LockManager<RESOURCE, REQUESTER> {
         if (rl.queue.isEmpty())
           continue;
         toWake = new ArrayList<>(rl.queue.size());
-        for (final Waiter<REQUESTER> w : rl.queue) {
-          w.cancelled = true;
+        for (final Waiter<REQUESTER> w : rl.queue)
           toWake.add(w.thread);
-        }
         rl.queue.clear();
       }
 

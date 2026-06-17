@@ -180,15 +180,15 @@ public final class SnapshotInstaller {
       // must be closed before the file move so no open handles point at the directory being swapped.
       closeLocalDatabaseIfOpen(server, databaseName);
 
-      // Swap: live -> backup, new -> live. atomicSwap restores the backup itself if the second rename
-      // fails, so on an IOException here the live directory already holds the previous copy.
+      // Swap: live -> backup, new -> live. atomicSwap restores the original live files on a failure in
+      // either phase (see its contract), so on an IOException here dbPath holds the previous copy.
       try {
         atomicSwap(dbPath, snapshotNew, snapshotBackup);
       } catch (final IOException swapEx) {
-        // Live files were restored by atomicSwap; bring the previous database back online so the node
-        // keeps serving instead of being stuck with a closed, deregistered database.
+        // Reopen the restored previous database so the node keeps serving. Leave the pending marker in
+        // place: if atomicSwap's own restore was interrupted, recoverPendingSnapshotSwaps reconciles
+        // dbPath (and removes the leftover .snapshot-new) on the next startup.
         reopenQuietly(server, databaseName);
-        Files.deleteIfExists(pendingMarker);
         throw swapEx;
       }
 
@@ -203,12 +203,12 @@ public final class SnapshotInstaller {
         server.getDatabase(databaseName);
       } catch (final RuntimeException openEx) {
         // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
-        // previous local copy and reopen it so the node is never left with a closed database.
+        // previous local copy and reopen it so the node is never left with a closed database. Leave the
+        // pending marker for startup reconciliation if the rollback itself is interrupted.
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Installed snapshot for '%s' failed to open; rolling back to the previous local copy", openEx, databaseName);
         rollbackToBackup(dbPath, snapshotBackup);
         reopenQuietly(server, databaseName);
-        Files.deleteIfExists(pendingMarker);
         throw new IOException("Snapshot for '" + databaseName
             + "' downloaded but failed to open; rolled back to the previous local copy", openEx);
       }
@@ -287,7 +287,9 @@ public final class SnapshotInstaller {
 
   /**
    * Deletes every non-{@code .snapshot*} entry in the live database directory. Used before restoring
-   * a backup so files that exist only in a failed snapshot are not left behind.
+   * a backup so files that exist only in a failed snapshot are not left behind. Not transactional: a
+   * crash partway leaves dbPath partially cleared, but the caller keeps the {@code .snapshot-pending}
+   * marker on failure so {@link #recoverPendingSnapshotSwaps} restores the backup on the next startup.
    */
   private static void clearLiveDatabaseFiles(final Path dbPath) throws IOException {
     try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dbPath)) {
@@ -645,31 +647,34 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Atomically swaps a new snapshot directory into the live database path.
+   * Swaps a new snapshot directory into the live database path:
    * <ol>
-   *   <li>Rename live contents by moving all files from {@code dbDir} to {@code backupDir}
-   *       (skipping {@code .snapshot-*} directories and the pending marker)</li>
-   *   <li>Move all files from {@code newDir} to {@code dbDir}
-   *       (skipping the {@code .snapshot-complete} marker)</li>
+   *   <li>move live contents from {@code dbDir} to {@code backupDir} (skipping {@code .snapshot-*});</li>
+   *   <li>move the new files from {@code newDir} to {@code dbDir} (skipping {@code .snapshot-complete}).</li>
    * </ol>
-   * If step 2 fails, attempts to restore from backup.
+   * Guarantee on failure: if a move in <i>either</i> phase throws, the live directory is restored to its
+   * original contents before the exception propagates, so {@code dbDir} is never left in an intermediate
+   * state - a phase-1 failure leaves the un-moved originals in place and moves the backed-up ones back; a
+   * phase-2 failure clears the partially-installed new files first, then restores the originals. (A crash
+   * mid-restore is still reconciled on startup by {@link #recoverPendingSnapshotSwaps} via the pending
+   * marker the caller leaves in place.)
    */
   private static void atomicSwap(final Path dbDir, final Path newDir, final Path backupDir) throws IOException {
-    // Ensure backup directory exists
     Files.createDirectories(backupDir);
 
-    // Move live files to backup (skip .snapshot-* dirs and .snapshot-pending marker)
-    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dbDir)) {
-      for (final Path entry : stream) {
-        final String name = entry.getFileName().toString();
-        if (name.startsWith(".snapshot"))
-          continue;
-        Files.move(entry, backupDir.resolve(name), StandardCopyOption.REPLACE_EXISTING);
-      }
-    }
-
-    // Move new snapshot files to live dir (skip .snapshot-complete marker)
+    boolean liveMovedToBackup = false;
     try {
+      // Phase 1: move live files to backup (skip .snapshot-* dirs and the pending marker).
+      try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dbDir)) {
+        for (final Path entry : stream) {
+          if (entry.getFileName().toString().startsWith(".snapshot"))
+            continue;
+          Files.move(entry, backupDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
+        }
+      }
+      liveMovedToBackup = true;
+
+      // Phase 2: move new snapshot files to the live dir (skip the .snapshot-complete marker).
       try (final DirectoryStream<Path> stream = Files.newDirectoryStream(newDir)) {
         for (final Path entry : stream) {
           final String name = entry.getFileName().toString();
@@ -679,9 +684,13 @@ public final class SnapshotInstaller {
         }
       }
     } catch (final IOException e) {
-      // Swap failed - try to restore from backup
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-          "Snapshot swap failed, restoring from backup: %s", e, e.getMessage());
+          "Snapshot swap failed, restoring live database from backup: %s", e, e.getMessage());
+      // If phase 2 had started, partially-installed new files are now in dbDir and must be cleared
+      // before restoring the originals; if phase 1 failed partway, the un-moved originals are still in
+      // dbDir, so restoreBackup just moves the backed-up ones back to reconstruct the full set.
+      if (liveMovedToBackup)
+        clearLiveDatabaseFiles(dbDir);
       restoreBackup(dbDir, backupDir);
       throw new IOException("Snapshot swap failed for " + dbDir, e);
     }

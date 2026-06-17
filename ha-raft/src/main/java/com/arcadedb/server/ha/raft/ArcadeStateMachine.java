@@ -865,8 +865,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *       transaction-delta path is needed because at first formation the Ratis log is empty.</li>
    * </ul>
    * The committed baseline is recorded in {@link #bootstrapBaselines} for status export and tests.
+   * <p>
+   * Package-private (not private) so ArcadeStateMachineBootstrapMismatchTest can exercise the
+   * install-failure recovery path directly instead of via reflection.
    */
-  private void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
+  void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
     final String dbName = decoded.databaseName();
     final String chosenFingerprint = decoded.bootstrapFingerprint();
     final long chosenLastTxId = decoded.bootstrapLastTxId();
