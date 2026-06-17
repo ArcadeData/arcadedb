@@ -49,3 +49,30 @@ Applied:
 
 Skipped with rationale:
 - Claude suggested removing this `docs/4645-*.md` file. Kept it: the `resolve-issue` workflow creates this tracking doc by design and folds review-cycle history into it. The bot is unaware of this committed convention.
+
+### Cycle 2 - HEAD 705af13ba
+
+- claude-review workflow re-ran on 705af13ba and completed clean (no new actionable comments).
+- gemini's consumer bot (being sunset) did not auto re-trigger on the new SHA; its single cycle-1 inline concern (silent-swallow on `EdgeToVertexIterable`) was already resolved in cycle 1 and a resolution reply was posted in the thread.
+- No code changes required.
+
+## CI status triage (HEAD 705af13ba)
+
+7 CI test failures, all confirmed unrelated to this change (which only touches the shortestPath edge-to-vertex traversal path):
+
+Pre-existing on main (HEAD 898aebe60, verified by running on a clean main checkout):
+- `LockFilesInOrderFileMigrationTest.lockFilesInOrderThrowsWithMigrationMessageWhenFileMigratedByCompaction`
+- `SQLVectorDatabaseFunctionsTest.phase6VectorStatistics`
+- `SQLFunctionSearchFieldsMoreTest.nonExistentRID`
+
+Flaky in CI (pass deterministically locally on this branch):
+- `DatabaseRIDTest.bareRidThrowsWhenNoActiveDatabaseContext`
+- `LSMVectorIndexRebuildTest.timerShouldResetOnNewMutations`
+- `QueryEngineManagerPoolTest.submittedTasksRunOnPoolThread`
+- `Issue4510ForceApplyPartialDeltaTest.forceApplyFullPageOverVersionGapIsApplied`
+
+Change-specific verification: `SQLFunctionShortestPathTest` (14 tests) and the broader graph suite (342 tests) all pass locally.
+
+## Final state
+
+clean-approval - all actionable bot feedback addressed; cycle-2 re-review clean; CI failures triaged as pre-existing/flaky and unrelated. Merge is the developer's decision.
