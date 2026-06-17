@@ -24,10 +24,10 @@ import com.arcadedb.utility.ResettableIterator;
  * Created by luigidellaquila on 02/07/16.
  */
 public class EdgeToVertexIterator implements ResettableIterator<Vertex> {
-  private final EdgeIterator     edgeIterator;
-  private final Vertex.DIRECTION direction;
+  private final ResettableIterator<Edge> edgeIterator;
+  private final Vertex.DIRECTION         direction;
 
-  public EdgeToVertexIterator(final EdgeIterator iterator, final Vertex.DIRECTION direction) {
+  public EdgeToVertexIterator(final ResettableIterator<Edge> iterator, final Vertex.DIRECTION direction) {
     if (direction == Vertex.DIRECTION.BOTH)
       throw new IllegalArgumentException("edge to vertex iterator does not support BOTH as direction");
 
@@ -42,7 +42,9 @@ public class EdgeToVertexIterator implements ResettableIterator<Vertex> {
 
   @Override
   public Vertex next() {
-    return edgeIterator.next().getVertex(direction);
+    // The neighbor sits at the opposite end of the edge from the traversal direction.
+    final Vertex.DIRECTION neighborEnd = direction == Vertex.DIRECTION.OUT ? Vertex.DIRECTION.IN : Vertex.DIRECTION.OUT;
+    return edgeIterator.next().getVertex(neighborEnd);
   }
 
   @Override

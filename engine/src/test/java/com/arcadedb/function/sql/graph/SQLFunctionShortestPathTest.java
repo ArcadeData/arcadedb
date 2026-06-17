@@ -204,6 +204,107 @@ class SQLFunctionShortestPathTest {
   }
 
   @Test
+  void edgeTrueDirectionBothWithAsymmetricEdges() throws Exception {
+    TestHelper.executeInNewDatabase("testEdgeBothAsymmetric", graph -> {
+      final MutableVertex[] verts = new MutableVertex[2];
+      final RID[] edgeRid = new RID[1];
+
+      graph.transaction(() -> {
+        graph.getSchema().createVertexType("BugSP_V");
+        graph.getSchema().createEdgeType("BugSP_E");
+
+        verts[0] = graph.newVertex("BugSP_V").set("name", "a").save();
+        verts[1] = graph.newVertex("BugSP_V").set("name", "b").save();
+        edgeRid[0] = verts[0].newEdge("BugSP_E", verts[1]).getIdentity();
+      });
+
+      function = new SQLFunctionShortestPath();
+
+      final Map<String, Object> options = new HashMap<>();
+      options.put("direction", "BOTH");
+      options.put("edge", true);
+
+      final List<RID> result = function.execute(null, null, null, new Object[] { verts[0], verts[1], options },
+          new BasicCommandContext());
+
+      // expected: [a-rid, edge-rid, b-rid]
+      assertThat(result).hasSize(3);
+      assertThat(result.getFirst()).isEqualTo(verts[0].getIdentity());
+      assertThat(result.get(1)).isEqualTo(edgeRid[0]);
+      assertThat(result.getLast()).isEqualTo(verts[1].getIdentity());
+    });
+  }
+
+  @Test
+  void edgeTrueDirectionBothReverseAsymmetric() throws Exception {
+    // Mirror of edgeTrueDirectionBothWithAsymmetricEdges: search from the destination back to the source,
+    // so the OUT side of the start vertex is empty and the IN half of the fix is exercised.
+    TestHelper.executeInNewDatabase("testEdgeBothReverseAsymmetric", graph -> {
+      final MutableVertex[] verts = new MutableVertex[2];
+      final RID[] edgeRid = new RID[1];
+
+      graph.transaction(() -> {
+        graph.getSchema().createVertexType("BugSP_V");
+        graph.getSchema().createEdgeType("BugSP_E");
+
+        verts[0] = graph.newVertex("BugSP_V").set("name", "a").save();
+        verts[1] = graph.newVertex("BugSP_V").set("name", "b").save();
+        edgeRid[0] = verts[0].newEdge("BugSP_E", verts[1]).getIdentity();
+      });
+
+      function = new SQLFunctionShortestPath();
+
+      final Map<String, Object> options = new HashMap<>();
+      options.put("direction", "BOTH");
+      options.put("edge", true);
+
+      // search b -> a
+      final List<RID> result = function.execute(null, null, null, new Object[] { verts[1], verts[0], options },
+          new BasicCommandContext());
+
+      // expected: [b-rid, edge-rid, a-rid]
+      assertThat(result).hasSize(3);
+      assertThat(result.getFirst()).isEqualTo(verts[1].getIdentity());
+      assertThat(result.get(1)).isEqualTo(edgeRid[0]);
+      assertThat(result.getLast()).isEqualTo(verts[0].getIdentity());
+    });
+  }
+
+  @Test
+  void edgeTrueDirectionIn() throws Exception {
+    // Pure IN traversal with edge:true: from b, follow incoming edges back to a.
+    TestHelper.executeInNewDatabase("testEdgeDirectionIn", graph -> {
+      final MutableVertex[] verts = new MutableVertex[2];
+      final RID[] edgeRid = new RID[1];
+
+      graph.transaction(() -> {
+        graph.getSchema().createVertexType("BugSP_V");
+        graph.getSchema().createEdgeType("BugSP_E");
+
+        verts[0] = graph.newVertex("BugSP_V").set("name", "a").save();
+        verts[1] = graph.newVertex("BugSP_V").set("name", "b").save();
+        edgeRid[0] = verts[0].newEdge("BugSP_E", verts[1]).getIdentity();
+      });
+
+      function = new SQLFunctionShortestPath();
+
+      final Map<String, Object> options = new HashMap<>();
+      options.put("direction", "IN");
+      options.put("edge", true);
+
+      // a -OUT-> b, so from b the IN edge leads to a
+      final List<RID> result = function.execute(null, null, null, new Object[] { verts[1], verts[0], options },
+          new BasicCommandContext());
+
+      // expected: [b-rid, edge-rid, a-rid]
+      assertThat(result).hasSize(3);
+      assertThat(result.getFirst()).isEqualTo(verts[1].getIdentity());
+      assertThat(result.get(1)).isEqualTo(edgeRid[0]);
+      assertThat(result.getLast()).isEqualTo(verts[0].getIdentity());
+    });
+  }
+
+  @Test
   void rejectsUnknownOption() throws Exception {
     TestHelper.executeInNewDatabase("testShortestPathUnknownOption", graph -> {
       setUpDatabase(graph);
