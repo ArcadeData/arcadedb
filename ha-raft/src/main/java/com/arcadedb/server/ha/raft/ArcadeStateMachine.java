@@ -503,7 +503,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           if (server.existsDatabase(dbName)) {
             final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);
             final String databasePath = db.getDatabasePath();
-            db.close();
+            db.getEmbedded().close();
             server.removeDatabase(dbName);
             SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
           }
@@ -973,7 +973,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
         reinstalling from leader-shipped full snapshot""",
         dbName, localLastTxId, localFingerprint.substring(0, Math.min(8, localFingerprint.length())),
         chosenLastTxId, chosenFingerprint.substring(0, Math.min(8, chosenFingerprint.length())));
-    installFromLeaderForBootstrap(dbName);
+    try {
+      installFromLeaderForBootstrap(dbName);
+    } catch (final RuntimeException e) {
+      // The install failed (e.g. leader unreachable during cluster restart). The snapshot download
+      // failed before the atomic swap, so the original database files are still on disk. Reopen
+      // the database to keep it accessible rather than propagating the exception to applyTransaction
+      // which would halt the state machine and trigger an emergency server shutdown.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Failed to install snapshot during bootstrap for database '%s': %s. " +
+          "Reopening from existing local state and scheduling async retry.",
+          dbName, e.getMessage());
+      if (!server.existsDatabase(dbName)) {
+        try {
+          server.getDatabase(dbName);
+        } catch (final Exception reopenEx) {
+          // Cannot recover: escalate to the critical-error halt path in applyTransaction.
+          throw new RuntimeException("Cannot reopen database '" + dbName + "' after failed bootstrap install", reopenEx);
+        }
+      }
+      // Schedule an async retry that will succeed once a stable leader is available.
+      if (needsSnapshotDownload.compareAndSet(false, true))
+        lifecycleExecutor.submit(this::triggerSnapshotDownload);
+    }
   }
 
   /**
@@ -1165,7 +1187,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         if (server.existsDatabase(dbName)) {
           final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);
           final String databasePath = db.getDatabasePath();
-          db.close();
+          db.getEmbedded().close();
           server.removeDatabase(dbName);
           SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
         }
