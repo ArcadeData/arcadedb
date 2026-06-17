@@ -548,8 +548,9 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
 
   @Test
   void dequantizeInt8ThreeArgIgnoresExplicitMinMaxWhenGivenResult() {
-    // A QuantizationResult carries its own authoritative min/max. If the caller passes different scalars in
-    // the 3-arg form, the result's values must win so the dequantization stays correct (no silent wrong scale).
+    // A QuantizationResult carries its own authoritative min/max. Issue #3099 requires the redundant 3-arg
+    // form to succeed (not error); the result's own values must win over the explicit scalars so the
+    // dequantization stays on the correct scale (no silent wrong scale from caller-supplied min/max).
     final SQLFunctionVectorQuantizeInt8 q = new SQLFunctionVectorQuantizeInt8();
     final SQLFunctionVectorDequantizeInt8 dq = new SQLFunctionVectorDequantizeInt8();
 
@@ -613,9 +614,9 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
 
     assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { int8a, int8b, "BINARY" }, ctx()))
         .isInstanceOf(CommandSQLParsingException.class)
-        .hasMessageContaining("BinaryQuantizationResult");
+        .hasMessageContaining("Expected BinaryQuantizationResult");
     assertThatThrownBy(() -> ad.execute(null, null, null, new Object[] { int8a, binary, "BINARY" }, ctx()))
         .isInstanceOf(CommandSQLParsingException.class)
-        .hasMessageContaining("BinaryQuantizationResult");
+        .hasMessageContaining("Expected BinaryQuantizationResult");
   }
 }

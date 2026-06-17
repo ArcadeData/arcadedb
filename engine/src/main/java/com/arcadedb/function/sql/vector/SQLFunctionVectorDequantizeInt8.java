@@ -36,8 +36,9 @@ import java.util.List;
  *                                             come from the result, no need to unpack)
  * - vectorDequantizeInt8(quantized_bytes, min, max)
  *
- * If a result is passed to the 3-arg form, its embedded min/max are authoritative (they were used at
- * quantization time, so only they reconstruct the original scale) and the scalar arguments are ignored.
+ * A result's embedded min/max are authoritative (they were used at quantization time, so only they
+ * reconstruct the original scale): when a result is passed to the 3-arg form, any explicit min/max are
+ * ignored in favour of the result's own (the redundant 3-arg call is supported but the scalars never win).
  *
  * Note: Dequantized values are approximations due to precision loss during quantization.
  * Original vector cannot be perfectly recovered.
@@ -79,10 +80,12 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
       return null;
 
     // If a QuantizationResult is passed in the 3-arg form, its own min/max are authoritative (they were
-    // computed at quantization time). Use them and ignore the explicit scalars, so the redundant call
-    // vectorDequantizeInt8(vectorQuantizeInt8([...]), min, max) is always correct even when the caller
-    // passes a different/wrong - or null - min/max (issue #3099). This must run before the null-guard on
-    // the scalars, otherwise (result, null, null) would wrongly short-circuit to null.
+    // computed at quantization time, so only they reconstruct the original scale). Use them and ignore the
+    // explicit scalars: issue #3099 explicitly requires the redundant call vectorDequantizeInt8(
+    // vectorQuantizeInt8([...]), min, max) to succeed (not error), and applying caller scalars would instead
+    // yield a wrong scale. A per-row warning is avoided on purpose - this is a scalar function and the
+    // redundant form fires once per record. This must run before the null-guard on the scalars below,
+    // otherwise (result, null, null) would wrongly short-circuit to null.
     if (quantizedObj instanceof QuantizationResult qr)
       return dequantize(qr.quantized(), qr.min(), qr.max());
 
@@ -171,6 +174,6 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
   }
 
   public String getSyntax() {
-    return NAME + "(<result> | <quantized_bytes>, <min>, <max>)";
+    return NAME + "(<result>) | " + NAME + "(<quantized_bytes>, <min>, <max>)";
   }
 }
