@@ -19,6 +19,7 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
@@ -154,31 +155,151 @@ public final class SnapshotInstaller {
     final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
     final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
 
-    downloadWithRetry(databaseName, snapshotNew, leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken,
-        maxRetries, retryBaseMs, server);
+    // PHASE 1 - DOWNLOAD with the live database STILL OPEN and serving. A snapshot download can take
+    // minutes; closing the database up-front (the historical behaviour) meant any failure - leader
+    // unreachable, election in progress, network blip, bad token - left the database closed and
+    // deregistered, surfacing as DatabaseIsClosedException on every subsequent transaction with no
+    // automatic recovery. By staging the download into .snapshot-new first we touch the live files
+    // only once a complete, validated snapshot is on disk.
+    try {
+      downloadWithRetry(databaseName, snapshotNew, leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken,
+          maxRetries, retryBaseMs, server);
+    } catch (final IOException e) {
+      // Download failed: the live database has not been touched and is still open. Drop the staging
+      // directory and rethrow so the caller (or Raft) can retry later without losing availability.
+      deleteDirectoryIfExists(snapshotNew);
+      Files.deleteIfExists(pendingMarker);
+      throw e;
+    }
 
     // Mark download as complete
     Files.writeString(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE), "");
 
-    // Set server-wide flag BEFORE closing databases so HTTP handlers return 503
+    // PHASE 2 - SWAP. Set the server-wide flag BEFORE closing the database so HTTP handlers return 503
+    // while the files are being moved.
     server.setSnapshotInstallInProgress(true);
     try {
-      // Swap: live -> backup, new -> live
-      atomicSwap(dbPath, snapshotNew, snapshotBackup);
+      // Close + deregister the live database now that a complete snapshot is staged on disk. The DB
+      // must be closed before the file move so no open handles point at the directory being swapped.
+      closeLocalDatabaseIfOpen(server, databaseName);
 
-      // Cleanup
-      deleteDirectoryIfExists(snapshotBackup);
-      Files.deleteIfExists(pendingMarker);
+      // Swap: live -> backup, new -> live. atomicSwap restores the backup itself if the second rename
+      // fails, so on an IOException here the live directory already holds the previous copy.
+      try {
+        atomicSwap(dbPath, snapshotNew, snapshotBackup);
+      } catch (final IOException swapEx) {
+        // Live files were restored by atomicSwap; bring the previous database back online so the node
+        // keeps serving instead of being stuck with a closed, deregistered database.
+        reopenQuietly(server, databaseName);
+        Files.deleteIfExists(pendingMarker);
+        throw swapEx;
+      }
+
+      // Swap succeeded: live = new snapshot, .snapshot-backup = previous copy (retained until the new
+      // snapshot is confirmed to open). Cleanup then validate the install by reopening.
       cleanupWalFiles(dbPath);
       // Remove the completion marker from the now-live directory
       Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_FILE));
 
-      // Re-open the database so the server registers it
-      server.getDatabase(databaseName);
+      try {
+        // Re-open the database so the server registers it (also validates the snapshot is loadable)
+        server.getDatabase(databaseName);
+      } catch (final RuntimeException openEx) {
+        // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
+        // previous local copy and reopen it so the node is never left with a closed database.
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Installed snapshot for '%s' failed to open; rolling back to the previous local copy", openEx, databaseName);
+        rollbackToBackup(dbPath, snapshotBackup);
+        reopenQuietly(server, databaseName);
+        Files.deleteIfExists(pendingMarker);
+        throw new IOException("Snapshot for '" + databaseName
+            + "' downloaded but failed to open; rolled back to the previous local copy", openEx);
+      }
+
+      // Success: drop the retained backup and clear the pending marker.
+      deleteDirectoryIfExists(snapshotBackup);
+      Files.deleteIfExists(pendingMarker);
 
       HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
     } finally {
       server.setSnapshotInstallInProgress(false);
+    }
+  }
+
+  /**
+   * Resolves the on-disk path of a database whether or not it is currently open, so callers no longer
+   * need to keep the database open just to read its path before an install. When the database is not
+   * registered the path is derived from {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY}.
+   */
+  public static String resolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
+    if (server.existsDatabase(databaseName))
+      return ((DatabaseInternal) server.getDatabase(databaseName)).getDatabasePath();
+    return server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
+        + File.separator + databaseName;
+  }
+
+  /**
+   * Closes and deregisters the local database if it is currently registered. No-op when the database
+   * is absent (late joiner with no local copy). Closing through the embedded instance mirrors the
+   * resync/bootstrap install paths.
+   */
+  private static void closeLocalDatabaseIfOpen(final ArcadeDBServer server, final String databaseName) {
+    if (server.existsDatabase(databaseName)) {
+      final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
+      db.getEmbedded().close();
+      server.removeDatabase(databaseName);
+    }
+  }
+
+  /**
+   * Best-effort reopen used by the rollback paths: a failure here must not mask the original cause,
+   * so it only logs. {@link ArcadeDBServer#getDatabase} opens and registers the database from disk
+   * when it is not already registered.
+   */
+  private static void reopenQuietly(final ArcadeDBServer server, final String databaseName) {
+    try {
+      server.getDatabase(databaseName);
+    } catch (final Exception e) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+          "Failed to reopen database '%s' after a snapshot-install rollback; manual intervention may be required",
+          e, databaseName);
+    }
+  }
+
+  /**
+   * Rolls the live database directory back to the retained {@code .snapshot-backup} copy after a
+   * post-swap failure. Clears the failed snapshot files first so entries present only in the failed
+   * snapshot do not linger, then moves the backup contents back into place.
+   */
+  private static void rollbackToBackup(final Path dbPath, final Path snapshotBackup) {
+    try {
+      if (!Files.isDirectory(snapshotBackup)) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Cannot roll back snapshot install for %s: backup directory is missing", null, dbPath);
+        return;
+      }
+      clearLiveDatabaseFiles(dbPath);
+      restoreBackup(dbPath, snapshotBackup);
+    } catch (final IOException e) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+          "Failed to roll back snapshot install for %s: %s", e, dbPath, e.getMessage());
+    }
+  }
+
+  /**
+   * Deletes every non-{@code .snapshot*} entry in the live database directory. Used before restoring
+   * a backup so files that exist only in a failed snapshot are not left behind.
+   */
+  private static void clearLiveDatabaseFiles(final Path dbPath) throws IOException {
+    try (final DirectoryStream<Path> stream = Files.newDirectoryStream(dbPath)) {
+      for (final Path entry : stream) {
+        if (entry.getFileName().toString().startsWith(".snapshot"))
+          continue;
+        if (Files.isDirectory(entry))
+          FileUtils.deleteRecursively(entry.toFile());
+        else
+          Files.delete(entry);
+      }
     }
   }
 
