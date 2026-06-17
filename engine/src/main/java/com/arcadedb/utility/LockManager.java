@@ -201,6 +201,13 @@ public class LockManager<RESOURCE, REQUESTER> {
       LockSupport.unpark(next.thread);
   }
 
+  /**
+   * Shutdown: frees every resource and wakes all queued waiters with {@link LOCK_STATUS#NO}. A waiter
+   * that won an in-flight hand-off (its {@code granted} was set by a concurrent {@link #unlock}) just
+   * before its node is detached here is <i>intentionally abandoned</i>: {@code tryLock} checks
+   * {@code removed} before {@code granted}, so that waiter returns NO rather than YES. This is correct
+   * for shutdown - the node is gone from the map and could never be unlocked anyway.
+   */
   public void close() {
     // close() is a shutdown operation. There is a narrow window between it.remove() (detaching the node
     // from the map) and synchronized(rl) below in which a concurrent tryLock could computeIfAbsent a

@@ -60,7 +60,13 @@ class LockManagerFairnessTest {
     lockManager.close();
   }
 
-  /** Spin-wait until {@code t} is parked (WAITING or TIMED_WAITING) or the deadline passes. */
+  /**
+   * Spin-wait until {@code t} is parked (WAITING or TIMED_WAITING). The waiter is added to the FIFO
+   * queue (under the resource monitor) strictly before it parks, so observing the parked state proves
+   * it is already enqueued - which is what the FIFO-order tests rely on. If the budget elapses without
+   * the thread parking, fail loudly rather than returning silently: a silent return would let a test
+   * proceed with a non-deterministic enqueue order instead of surfacing the (CI-load) hiccup.
+   */
   private static void awaitParked(final Thread t, final long timeoutMs) throws InterruptedException {
     final long deadline = System.currentTimeMillis() + timeoutMs;
     while (System.currentTimeMillis() < deadline) {
@@ -69,6 +75,9 @@ class LockManagerFairnessTest {
         return;
       Thread.sleep(1);
     }
+    assertThat(t.getState())
+        .as("thread '%s' did not park within %dms (enqueue ordering would be non-deterministic)", t.getName(), timeoutMs)
+        .isIn(Thread.State.WAITING, Thread.State.TIMED_WAITING);
   }
 
   /**

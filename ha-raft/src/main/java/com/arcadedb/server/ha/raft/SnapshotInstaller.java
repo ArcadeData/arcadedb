@@ -229,11 +229,11 @@ public final class SnapshotInstaller {
    * registered the path is derived from {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY}.
    * <p>
    * Package-private and intended only for the install call sites, which invoke it on an open database
-   * just before closing it. Note the side effect: {@code getDatabase} will <i>open and register</i> a
-   * deregistered-but-on-disk database, so do not call this as a pure read on a database meant to stay
-   * closed.
+   * just before closing it. The name embeds the side effect: {@code getDatabase} will <i>open and
+   * register</i> a deregistered-but-on-disk database, so do not call this as a pure read on a database
+   * meant to stay closed.
    */
-  static String resolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
+  static String openAndResolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
     // Best-effort: the exists/get pair is not atomic, but it only resolves a path before the download
     // phase (no data at risk) and getDatabase returns a valid path even if it has to reopen.
     if (server.existsDatabase(databaseName))
@@ -251,6 +251,13 @@ public final class SnapshotInstaller {
    * {@code LocalDatabase} without the replicated-close semantics the HA wrapper would apply. This
    * unifies the previously divergent call sites (the Ratis install path used {@code db.close()}; the
    * resync/bootstrap paths used {@code getEmbedded().close()}) on the form correct for a file swap.
+   * <p>
+   * The {@code existsDatabase}/{@code getDatabase} pair is not atomic. This relies on the assumption
+   * that two snapshot installs for the same database are never in flight at once: the install drivers
+   * (Raft apply/bootstrap recovery, the operator-triggered resync, the health-monitor watchdog) are
+   * not expected to overlap on a single database. If that assumption is ever broken, two concurrent
+   * installs could both pass the {@code existsDatabase} check and the second {@code close} would see an
+   * already-closed instance.
    */
   private static void closeLocalDatabaseIfOpen(final ArcadeDBServer server, final String databaseName) {
     if (server.existsDatabase(databaseName)) {
@@ -662,12 +669,18 @@ public final class SnapshotInstaller {
    *   <li>move live contents from {@code dbDir} to {@code backupDir} (skipping {@code .snapshot-*});</li>
    *   <li>move the new files from {@code newDir} to {@code dbDir} (skipping {@code .snapshot-complete}).</li>
    * </ol>
+   * "Atomic" here is from the live database's perspective: the swap either fully completes or the
+   * original live files are restored, never a half-installed mix. It is <i>not</i> crash-atomic - a
+   * process crash mid-swap is reconciled on startup by {@link #recoverPendingSnapshotSwaps} via the
+   * pending marker the caller leaves in place.
+   * <p>
    * Guarantee on failure: if a move in <i>either</i> phase throws, the live directory is restored to its
    * original contents before the exception propagates, so {@code dbDir} is never left in an intermediate
    * state - a phase-1 failure leaves the un-moved originals in place and moves the backed-up ones back; a
-   * phase-2 failure clears the partially-installed new files first, then restores the originals. (A crash
-   * mid-restore is still reconciled on startup by {@link #recoverPendingSnapshotSwaps} via the pending
-   * marker the caller leaves in place.)
+   * phase-2 failure clears the partially-installed new files first, then restores the originals. If the
+   * in-catch restore itself throws (e.g. {@link #clearLiveDatabaseFiles} fails), the IOException
+   * propagates with dbDir partially swapped and the caller's pending marker still present, so
+   * {@link #recoverPendingSnapshotSwaps} finishes the reconciliation on the next startup.
    */
   private static void atomicSwap(final Path dbDir, final Path newDir, final Path backupDir) throws IOException {
     Files.createDirectories(backupDir);
