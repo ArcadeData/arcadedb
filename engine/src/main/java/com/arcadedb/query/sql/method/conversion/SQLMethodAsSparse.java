@@ -37,9 +37,8 @@ public class SQLMethodAsSparse extends AbstractSQLMethod {
 
   public static final String NAME = "assparse";
 
-  // Thread-safe: SQLFunctionVectorDenseToSparse holds no mutable state (all work is in local variables of
-  // execute()), so a single shared instance can be reused across concurrent queries instead of allocating
-  // one per method call.
+  // Shared instance reused across concurrent queries (no per-call allocation). Safe because
+  // SQLFunctionVectorDenseToSparse is documented and required to be stateless - see its class Javadoc.
   private static final SQLFunctionVectorDenseToSparse DENSE_TO_SPARSE = new SQLFunctionVectorDenseToSparse();
 
   public SQLMethodAsSparse() {

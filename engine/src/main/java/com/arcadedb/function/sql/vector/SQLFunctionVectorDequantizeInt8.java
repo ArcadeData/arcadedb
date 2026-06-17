@@ -37,8 +37,9 @@ import java.util.List;
  * - vectorDequantizeInt8(quantized_bytes, min, max)
  *
  * A result's embedded min/max are authoritative (they were used at quantization time, so only they
- * reconstruct the original scale): when a result is passed to the 3-arg form, any explicit min/max are
- * ignored in favour of the result's own (the redundant 3-arg call is supported but the scalars never win).
+ * reconstruct the original scale). When a result is passed to the 3-arg form, the explicit min/max must be
+ * null or match the embedded values (the redundant call is supported); scalars that conflict are rejected,
+ * since applying them would dequantize to a wrong scale.
  *
  * Note: Dequantized values are approximations due to precision loss during quantization.
  * Original vector cannot be perfectly recovered.
@@ -72,6 +73,7 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
       return dequantize(qr.quantized(), qr.min(), qr.max());
     }
 
+    // 2-arg form is intentionally unsupported: either 1 (result object) or 3 (bytes, min, max).
     if (params.length != 3)
       throw new CommandSQLParsingException(getSyntax());
 
@@ -79,18 +81,24 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
     if (quantizedObj == null)
       return null;
 
-    // If a QuantizationResult is passed in the 3-arg form, its own min/max are authoritative (they were
-    // computed at quantization time, so only they reconstruct the original scale). Use them and ignore the
-    // explicit scalars: issue #3099 explicitly requires the redundant call vectorDequantizeInt8(
-    // vectorQuantizeInt8([...]), min, max) to succeed (not error), and applying caller scalars would instead
-    // yield a wrong scale. A per-row warning is avoided on purpose - this is a scalar function and the
-    // redundant form fires once per record. This must run before the null-guard on the scalars below,
-    // otherwise (result, null, null) would wrongly short-circuit to null.
-    if (quantizedObj instanceof QuantizationResult qr)
-      return dequantize(qr.quantized(), qr.min(), qr.max());
-
     final Object minObj = params[1];
     final Object maxObj = params[2];
+
+    // A QuantizationResult's own min/max are authoritative (computed at quantization time, so only they
+    // reconstruct the original scale). Issue #3099 requires the redundant 3-arg call to succeed, so explicit
+    // scalars that are null - or that match the embedded values - are accepted and the embedded values used.
+    // Scalars that conflict with the embedded values would dequantize to a wrong scale and are almost
+    // certainly a caller mistake, so they are rejected loudly rather than silently ignored. This runs before
+    // the scalar null-guard below, otherwise (result, null, null) would wrongly short-circuit to null.
+    if (quantizedObj instanceof QuantizationResult qr) {
+      if (conflictsWithEmbedded(minObj, qr.min()))
+        throw new CommandSQLParsingException("Explicit min (" + minObj + ") conflicts with the result's embedded min ("
+            + qr.min() + "); omit min/max when passing a vector.quantizeInt8() result.");
+      if (conflictsWithEmbedded(maxObj, qr.max()))
+        throw new CommandSQLParsingException("Explicit max (" + maxObj + ") conflicts with the result's embedded max ("
+            + qr.max() + "); omit min/max when passing a vector.quantizeInt8() result.");
+      return dequantize(qr.quantized(), qr.min(), qr.max());
+    }
 
     if (minObj == null || maxObj == null)
       return null;
@@ -114,6 +122,20 @@ public class SQLFunctionVectorDequantizeInt8 extends SQLFunctionVectorAbstract {
     }
 
     return dequantize(quantized, min, max);
+  }
+
+  /**
+   * A null explicit scalar is a no-op (the embedded value is used). A non-null scalar conflicts unless it is
+   * numeric and equal to the embedded value within a small relative tolerance (absorbing float round-trip).
+   */
+  private static boolean conflictsWithEmbedded(final Object explicit, final float embedded) {
+    if (explicit == null)
+      return false;
+    if (!(explicit instanceof Number num))
+      return true;
+    final float value = num.floatValue();
+    final float tolerance = 1e-4f * Math.max(1.0f, Math.max(Math.abs(value), Math.abs(embedded)));
+    return Math.abs(value - embedded) > tolerance;
   }
 
   private float[] dequantize(final byte[] quantized, final float min, final float max) {

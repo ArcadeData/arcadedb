@@ -547,18 +547,17 @@ class SQLFunctionVectorEnhancementsTest extends TestHelper {
   // ========== review follow-ups: edge cases ==========
 
   @Test
-  void dequantizeInt8ThreeArgIgnoresExplicitMinMaxWhenGivenResult() {
-    // A QuantizationResult carries its own authoritative min/max. Issue #3099 requires the redundant 3-arg
-    // form to succeed (not error); the result's own values must win over the explicit scalars so the
-    // dequantization stays on the correct scale (no silent wrong scale from caller-supplied min/max).
+  void dequantizeInt8ThreeArgRejectsConflictingMinMaxWhenGivenResult() {
+    // A QuantizationResult carries its own authoritative min/max. The redundant 3-arg form is supported
+    // (issue #3099) only when the explicit scalars match the embedded values; scalars that conflict would
+    // dequantize to a wrong scale, so they are rejected loudly rather than silently ignored.
     final SQLFunctionVectorQuantizeInt8 q = new SQLFunctionVectorQuantizeInt8();
     final SQLFunctionVectorDequantizeInt8 dq = new SQLFunctionVectorDequantizeInt8();
 
     final Object qr = q.execute(null, null, null, new Object[] { new float[] { 1.0f, 2.0f, 3.0f } }, ctx());
-    final float[] withResultMinMax = (float[]) dq.execute(null, null, null, new Object[] { qr }, ctx());
-    // Deliberately bogus explicit min/max - must be ignored in favour of the result's own.
-    final float[] withBogusMinMax = (float[]) dq.execute(null, null, null, new Object[] { qr, -99.0f, 99.0f }, ctx());
-    assertThat(withBogusMinMax).containsExactly(withResultMinMax);
+    assertThatThrownBy(() -> dq.execute(null, null, null, new Object[] { qr, -99.0f, 99.0f }, ctx()))
+        .isInstanceOf(CommandSQLParsingException.class)
+        .hasMessageContaining("conflicts with the result's embedded");
   }
 
   @Test
