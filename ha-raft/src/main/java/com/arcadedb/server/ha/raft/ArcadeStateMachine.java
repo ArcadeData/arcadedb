@@ -966,20 +966,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
     try {
       installFromLeaderForBootstrap(dbName);
     } catch (final RuntimeException e) {
-      // The bootstrap snapshot install failed - typically because the leader is transiently
-      // unreachable during a cluster restart (election still in progress). This entry is applied on
-      // the Raft StateMachineUpdater thread, so letting the exception propagate to applyTransaction
-      // would trip the critical-error halt and shut the server down, leaving the database closed
-      // (DatabaseIsClosedException on every client request). That is never the right response to a
-      // transient leader-unavailability: SnapshotInstaller downloads before touching the live files,
-      // so on failure the local database is intact (open, or reopenable). Recover in place and retry
-      // asynchronously once a stable leader is available.
+      // Applied on the Raft StateMachineUpdater thread: letting this propagate trips the critical-error
+      // halt and shuts the server down, leaving the database closed. A transient leader unavailability
+      // during restart must not do that - install downloads before touching the live files, so the
+      // local copy is intact. Keep it and retry asynchronously.
       LogManager.instance().log(this, Level.SEVERE,
           "Failed to install snapshot during bootstrap for database '%s': %s. "
               + "Keeping the local copy and scheduling an async retry once a leader is reachable.",
           dbName, e.getMessage());
-      // Safety net: SnapshotInstaller now rolls back + reopens on failure, but if the database was
-      // left deregistered for any reason, reopen it from the intact local files.
+      // Safety net: install rolls back + reopens on failure; reopen here if left deregistered for any reason.
       if (!server.existsDatabase(dbName)) {
         try {
           server.getDatabase(dbName);
@@ -988,11 +983,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
           throw new RuntimeException("Cannot reopen database '" + dbName + "' after a failed bootstrap install", reopenEx);
         }
       }
-      // Schedule an off-thread retry that will succeed once a stable leader is available. Mirrors the
-      // gap-detection watchdog (reinitialize): flag the pending download, then submit a consumer that
-      // clears the flag and runs it. Clearing the flag is important - it lets the HealthMonitor
-      // persistent-lag backstop (recoverFromPersistentLag) re-arm later if this attempt also fails on
-      // a still-quiet cluster, so the follower never stays diverged until a manual restart.
+      // Flag the pending download and run it off-thread; clearing the flag lets the HealthMonitor
+      // persistent-lag backstop re-arm if this retry also fails on a still-quiet cluster.
       needsSnapshotDownload.set(true);
       lifecycleExecutor.submit(() -> {
         if (needsSnapshotDownload.compareAndSet(true, false))

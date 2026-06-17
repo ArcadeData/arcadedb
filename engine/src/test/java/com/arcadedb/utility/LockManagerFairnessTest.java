@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -105,7 +106,7 @@ class LockManagerFairnessTest {
     for (final Thread w : waiters)
       w.join(10_000);
 
-    final List<String> expected = new java.util.ArrayList<>();
+    final List<String> expected = new ArrayList<>();
     for (int i = 0; i < n; i++)
       expected.add("w" + i);
     assertThat(acquireOrder).containsExactlyElementsOf(expected);

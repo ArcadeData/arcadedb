@@ -32,36 +32,21 @@ import java.util.concurrent.locks.LockSupport;
 import java.util.logging.Level;
 
 /**
- * Per-resource lock manager with <b>FIFO-fair</b> hand-off.
+ * Per-resource lock manager with FIFO-fair hand-off. Releasing a resource hands ownership to the
+ * oldest waiter (a single {@link LockSupport} unpark) instead of waking every waiter to race for it,
+ * which removes the thundering-herd starvation of the previous {@code CountDownLatch} design (a waiter
+ * could lose the wake-up race for the whole timeout and spuriously time out on a hot resource).
+ * Ownership is keyed by {@code REQUESTER} (thread, HTTP session id, ...), not the acquiring thread, so
+ * a lock may be acquired on one thread and released on another. Deadlock avoidance remains the
+ * caller's responsibility (acquire in a globally consistent order).
  * <p>
- * A resource is owned by a {@code REQUESTER} (a thread, an HTTP session id, ...), not by the
- * acquiring thread, so a lock may legitimately be acquired on one thread and released on another
- * (e.g. session-scoped explicit locks). Ownership is therefore tracked by requester, while waiting
- * threads are parked/unparked individually via {@link LockSupport}.
+ * Semantics: {@code timeout > 0} waits that many ms then returns {@link LOCK_STATUS#NO}; {@code timeout <= 0}
+ * waits indefinitely (index compaction); re-acquiring by the same owner is {@link LOCK_STATUS#ALREADY_ACQUIRED}
+ * (non-counting - one {@link #unlock} releases); {@link #unlock} is a no-op when not held and throws
+ * {@link LockException} on a non-owner; {@link #close} frees all and wakes all waiters with NO.
  * <p>
- * <b>Fairness.</b> When a held resource is released, ownership is handed off to the <i>oldest</i>
- * waiter (queue head) rather than waking every waiter to race for it. This eliminates the
- * thundering-herd starvation of the previous {@code CountDownLatch}-based design, where a waiter
- * could keep losing the wake-up race for the whole timeout and spuriously fail on a hot resource
- * (e.g. a single-bucket type under concurrent write load) even though the lock was being acquired
- * and released continuously. Under contention the cost per release drops from O(waiters) wake-ups to
- * a single {@code unpark}.
- * <p>
- * Deadlock avoidance is the caller's responsibility (acquire resources in a globally consistent
- * order); this class does not change that contract - it only changes how a single contended resource
- * is handed among its waiters.
- * <p>
- * Semantics preserved from the historical implementation:
- * <ul>
- *   <li>{@link #tryLock} returns {@link LOCK_STATUS#YES} on acquisition, {@link LOCK_STATUS#ALREADY_ACQUIRED}
- *       when the same requester already owns the resource (non-counting: a single {@link #unlock}
- *       releases it), and {@link LOCK_STATUS#NO} when the wait times out or the thread is interrupted.</li>
- *   <li>{@code timeout > 0} waits up to that many milliseconds; {@code timeout <= 0} waits indefinitely
- *       until the lock is acquired (used by index compaction).</li>
- *   <li>{@link #unlock} is a no-op for a resource that is not held, and throws {@link LockException}
- *       when the requester is not the owner.</li>
- *   <li>{@link #close} releases every resource and wakes all waiters.</li>
- * </ul>
+ * The uncontended fast path takes the per-resource monitor (and creates the node when the resource is
+ * free) rather than a single lock-free CAS; negligible for commit-level locking.
  */
 public class LockManager<RESOURCE, REQUESTER> {
   public enum LOCK_STATUS {NO, YES, ALREADY_ACQUIRED}
@@ -143,20 +128,18 @@ public class LockManager<RESOURCE, REQUESTER> {
     try {
       for (; ; ) {
         synchronized (rl) {
+          // 'removed' (close) is checked before 'granted' so a waiter that wins the grant-vs-close
+          // race abandons the grant and returns NO: the node is gone from the map, so it could not be
+          // released anyway. (close() has already emptied the queue.)
+          if (rl.removed)
+            return LOCK_STATUS.NO;
           if (waiter.granted)
-            // Ownership was handed to us by a releasing thread: we are now the owner and must unlock later.
+            // Handed ownership by a releasing thread: we own it now and must unlock later.
             return LOCK_STATUS.YES;
-          if (rl.removed) {
-            // The manager was closed while we waited.
+          if (interrupted || (timeout > 0 && deadlineNanos - System.nanoTime() <= 0)) {
+            // Give up: leave the queue immediately so cancelled waiters never accumulate between unlocks.
             waiter.cancelled = true;
-            return LOCK_STATUS.NO;
-          }
-          if (interrupted) {
-            waiter.cancelled = true;
-            return LOCK_STATUS.NO;
-          }
-          if (timeout > 0 && deadlineNanos - System.nanoTime() <= 0) {
-            waiter.cancelled = true;
+            rl.queue.remove(waiter);
             return LOCK_STATUS.NO;
           }
         }
@@ -196,11 +179,9 @@ public class LockManager<RESOURCE, REQUESTER> {
         throw new LockException(
             "Cannot unlock resource '" + resource + "' because owner '" + rl.owner + "' <> requester '" + requester + "'");
 
-      // Hand off to the oldest live waiter, skipping (and dropping) any that gave up.
-      Waiter<REQUESTER> head;
-      while ((head = rl.queue.pollFirst()) != null && head.cancelled)
-        ; // discard cancelled waiters
-
+      // Hand off to the oldest waiter. The queue holds only live waiters (a waiter that gives up removes
+      // itself under this same monitor), so the head is always a valid grantee.
+      final Waiter<REQUESTER> head = rl.queue.pollFirst();
       if (head != null) {
         rl.owner = head.requester;
         rl.when = System.currentTimeMillis();

@@ -155,12 +155,9 @@ public final class SnapshotInstaller {
     final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
     final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
 
-    // PHASE 1 - DOWNLOAD with the live database STILL OPEN and serving. A snapshot download can take
-    // minutes; closing the database up-front (the historical behaviour) meant any failure - leader
-    // unreachable, election in progress, network blip, bad token - left the database closed and
-    // deregistered, surfacing as DatabaseIsClosedException on every subsequent transaction with no
-    // automatic recovery. By staging the download into .snapshot-new first we touch the live files
-    // only once a complete, validated snapshot is on disk.
+    // PHASE 1 - DOWNLOAD into .snapshot-new with the live database STILL OPEN. The historical behaviour
+    // closed it up-front, so any download failure (leader unreachable, network blip) left it closed and
+    // deregistered with no recovery. Staging first means we touch the live files only on success.
     try {
       downloadWithRetry(databaseName, snapshotNew, leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken,
           maxRetries, retryBaseMs, server);
@@ -232,6 +229,8 @@ public final class SnapshotInstaller {
    * registered the path is derived from {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY}.
    */
   public static String resolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
+    // Best-effort: the exists/get pair is not atomic, but it only resolves a path before the download
+    // phase (no data at risk) and getDatabase returns a valid path even if it has to reopen.
     if (server.existsDatabase(databaseName))
       return ((DatabaseInternal) server.getDatabase(databaseName)).getDatabasePath();
     return server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
