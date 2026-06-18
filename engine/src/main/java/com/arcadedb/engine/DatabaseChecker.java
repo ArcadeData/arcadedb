@@ -50,6 +50,7 @@ public class DatabaseChecker {
   private       boolean             compress     = false;
   private       Set<Object>         buckets      = Collections.emptySet();
   private       Set<String>         types        = Collections.emptySet();
+  private       int                 maxWarnings  = 100_000;
   private final Map<String, Object> result       = new HashMap<>();
 
   public DatabaseChecker(final Database database) {
@@ -68,6 +69,8 @@ public class DatabaseChecker {
     result.put("deletedRecordsAfterFix", new LinkedHashSet<>());
     result.put("corruptedRecords", new LinkedHashSet<>());
     result.put("corruptedIndexes", new LinkedHashSet<>());
+    result.put("totalWarnings", 0L);
+    result.put("totalCorruptedRecords", 0L);
 
     checkEdges();
 
@@ -213,12 +216,17 @@ public class DatabaseChecker {
           continue;
 
       if (type instanceof LocalEdgeType) {
-        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkEdges(type.getName(), fix, verboseLevel);
+        final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
+        final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
+        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkEdges(type.getName(), fix, verboseLevel,
+            maxWarnings - currentWarnings, maxWarnings - currentCorrupted);
 
         updateStats(stats);
 
         ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
         ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
+        result.put("totalWarnings", (Long) result.get("totalWarnings") + (Long) stats.get("totalWarnings"));
+        result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + (Long) stats.get("totalCorruptedRecords"));
       }
     }
   }
@@ -233,12 +241,17 @@ public class DatabaseChecker {
           continue;
 
       if (type instanceof LocalVertexType) {
-        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkVertices(type.getName(), fix, verboseLevel);
+        final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
+        final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
+        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkVertices(type.getName(), fix, verboseLevel,
+            maxWarnings - currentWarnings, maxWarnings - currentCorrupted);
 
         updateStats(stats);
 
         ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
         ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
+        result.put("totalWarnings", (Long) result.get("totalWarnings") + (Long) stats.get("totalWarnings"));
+        result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + (Long) stats.get("totalCorruptedRecords"));
       }
     }
   }
@@ -265,6 +278,11 @@ public class DatabaseChecker {
 
   public DatabaseChecker setCompress(final boolean compress) {
     this.compress = compress;
+    return this;
+  }
+
+  public DatabaseChecker setMaxWarnings(final int maxWarnings) {
+    this.maxWarnings = maxWarnings;
     return this;
   }
 

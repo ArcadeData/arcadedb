@@ -19,10 +19,14 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.database.Record;
+import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeLinkedList;
 import com.arcadedb.graph.MutableVertex;
@@ -39,6 +43,7 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -304,6 +309,74 @@ class CheckDatabaseTest extends TestHelper {
     assertThat(indexes.size()).isEqualTo(1);
 
     assertThat(indexes.getFirst().countEntries()).isEqualTo((Long) row.getProperty("totalActiveVertices"));
+  }
+
+  /**
+   * Regression test for issue #474: CHECK DATABASE OOM on large databases with many stale edges.
+   * Verifies that the maxWarnings cap prevents unbounded memory growth: the in-memory warnings
+   * collection is capped while totalWarnings reflects the actual count of all findings.
+   * Uses an isolated database that is dropped at the end.
+   */
+  @Test
+  void checkWarningCapPreventsOOM() {
+    final String dbPath = "./target/databases/CheckWarningCapOOM";
+    final DatabaseFactory factory = new DatabaseFactory(dbPath);
+    if (factory.exists())
+      factory.open().drop();
+
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("Node");
+      db.getSchema().createEdgeType("Link");
+
+      // Create a small graph: 1 hub vertex connected to 20 leaf vertices.
+      // Then delete 10 leaf vertices at low level, creating stale edge references
+      // (simulates the HA copy scenario that left Johan's database with stale edges).
+      final int leaves = 20;
+      final int toDelete = 10;
+      final MutableVertex[] hub = new MutableVertex[1];
+      db.transaction(() -> hub[0] = db.newVertex("Node").set("hub", true).save());
+
+      db.transaction(() -> {
+        for (int i = 0; i < leaves; i++) {
+          final MutableVertex leaf = db.newVertex("Node").set("i", i).save();
+          hub[0].newEdge("Link", leaf);
+        }
+      });
+
+      db.transaction(() -> {
+        final Iterator<Record> it = db.iterateType("Node", false);
+        int deleted = 0;
+        while (it.hasNext() && deleted < toDelete) {
+          final Record rec = it.next();
+          if (rec.getIdentity().equals(hub[0].getIdentity()))
+            continue;
+          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+          deleted++;
+        }
+      });
+
+      // Run with a cap of 3 — far below the actual number of findings.
+      final Map<String, Object> result = new DatabaseChecker(db)
+          .setVerboseLevel(0)
+          .setMaxWarnings(3)
+          .check();
+
+      final Collection<String> warnings = (Collection<String>) result.get("warnings");
+      final long totalWarnings = (Long) result.get("totalWarnings");
+
+      // The in-memory list must never exceed the cap.
+      assertThat(warnings.size()).isLessThanOrEqualTo(3);
+
+      // totalWarnings must reflect that more findings exist beyond the cap.
+      assertThat(totalWarnings).isGreaterThan(3);
+
+      // Corrupted records counter must be non-zero.
+      final long totalCorruptedRecords = (Long) result.get("totalCorruptedRecords");
+      assertThat(totalCorruptedRecords).isGreaterThan(0);
+    } finally {
+      db.drop();
+    }
   }
 
   @Override
