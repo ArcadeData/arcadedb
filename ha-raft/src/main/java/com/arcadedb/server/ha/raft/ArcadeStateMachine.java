@@ -984,7 +984,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
         try {
           server.getDatabase(dbName);
         } catch (final Exception reopenEx) {
-          // Cannot recover locally: escalate to the critical-error halt path in applyTransaction.
+          // Deliberate last resort: the database is both unusable and unreopenable, so there is nothing
+          // safe to serve. Unlike the transient leader-unavailable case above (local copy intact, retried
+          // async), this is unrecoverable locally, so we intentionally DO let it reach applyTransaction's
+          // critical-error halt rather than mask data loss behind a node that keeps running.
           throw new RuntimeException("Cannot reopen database '" + dbName + "' after a failed bootstrap install", reopenEx);
         }
       }

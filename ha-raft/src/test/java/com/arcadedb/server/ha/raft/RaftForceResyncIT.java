@@ -156,6 +156,15 @@ class RaftForceResyncIT extends BaseRaftHATest {
     assertThat(Path.of(dbPath).resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR)).doesNotExist();
     assertThat(Path.of(dbPath).resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR)).doesNotExist();
 
+    // The follower itself accepts a write-and-commit after the failed install (forwarded to the leader
+    // in Raft). This directly documents the absence of DatabaseIsClosedException: a closed/deregistered
+    // database - the original outage - would throw here rather than commit.
+    final Database followerDb = getServerDatabase(followerIndex, dbName);
+    followerDb.transaction(() -> followerDb.newVertex("ResyncFail").set("index", 99).save());
+    assertClusterConsistency();
+    assertThat(getServerDatabase(followerIndex, dbName).countType("ResyncFail", true))
+        .as("Follower commits a write after a failed install (no DatabaseIsClosedException)").isEqualTo(11);
+
     // Forward replication still works: writes committed on the leader after the failed install reach
     // the follower.
     leaderDb.transaction(() -> {
@@ -164,7 +173,7 @@ class RaftForceResyncIT extends BaseRaftHATest {
     });
     assertClusterConsistency();
     assertThat(getServerDatabase(followerIndex, dbName).countType("ResyncFail", true))
-        .as("Follower receives writes committed after the failed install").isEqualTo(15);
+        .as("Follower receives writes committed after the failed install").isEqualTo(16);
   }
 
   private JSONObject resync(final int serverIndex, final String databaseName) throws Exception {

@@ -105,9 +105,11 @@ public final class SnapshotInstaller {
   private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
 
   /**
-   * Names of databases with an install currently in flight. The lifecycle assumes installs for a given
-   * database never overlap (see {@link #closeLocalDatabaseIfOpen}); this set turns a violation of that
-   * assumption from a silent double-close into a logged WARNING so it is diagnosable after the fact.
+   * Absolute database directory paths with an install currently in flight. The lifecycle assumes
+   * installs for a given database never overlap (see {@link #closeLocalDatabaseIfOpen}); this set turns
+   * a violation of that assumption from a silent double-close into a logged WARNING so it is
+   * diagnosable after the fact. Keyed by resolved path (not database name) so two logical servers in
+   * the same JVM - which use distinct database directories - never raise a spurious overlap warning.
    */
   private static final Set<String> INSTALLS_IN_FLIGHT = ConcurrentHashMap.newKeySet();
 
@@ -153,9 +155,11 @@ public final class SnapshotInstaller {
 
     // The lifecycle assumes installs for a given database never overlap (see closeLocalDatabaseIfOpen).
     // If they ever do, log it loudly rather than silently double-closing: this set makes the violation
-    // diagnosable. Tracked across both phases and cleared in the outer finally so a download failure
-    // does not leak the entry.
-    if (!INSTALLS_IN_FLIGHT.add(databaseName))
+    // diagnosable. Keyed by resolved path so distinct logical servers do not collide on database name.
+    // Tracked across both phases and cleared in the outer finally so a download failure does not leak
+    // the entry.
+    final String inFlightKey = dbPath.toString();
+    if (!INSTALLS_IN_FLIGHT.add(inFlightKey))
       LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
           "Concurrent snapshot install detected for '%s'; the install lifecycle assumes these never overlap "
               + "for the same database - this may indicate a coordination bug in the HA layer", null, databaseName);
@@ -241,7 +245,7 @@ public final class SnapshotInstaller {
         server.setSnapshotInstallInProgress(false);
       }
     } finally {
-      INSTALLS_IN_FLIGHT.remove(databaseName);
+      INSTALLS_IN_FLIGHT.remove(inFlightKey);
     }
   }
 
@@ -737,17 +741,23 @@ public final class SnapshotInstaller {
         }
       }
     } catch (final IOException e) {
+      // Log the root cause FIRST, before any restore step can throw and mask it.
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
           "Snapshot swap failed, restoring live database from backup: %s", e, e.getMessage());
       // If phase 2 had started, partially-installed new files are now in dbDir and must be cleared
       // before restoring the originals; if phase 1 failed partway, the un-moved originals are still in
       // dbDir, so restoreBackup just moves the backed-up ones back to reconstruct the full set.
-      // Catch-inside-a-catch: if clearLiveDatabaseFiles (or restoreBackup) throws here, the IOException
-      // propagates with the originals still safe in backupDir and the caller's .snapshot-pending marker
-      // intact, so recoverPendingSnapshotSwaps completes the restore on the next startup.
-      if (liveMovedToBackup)
-        clearLiveDatabaseFiles(dbDir);
-      restoreBackup(dbDir, backupDir);
+      try {
+        if (liveMovedToBackup)
+          clearLiveDatabaseFiles(dbDir);
+        restoreBackup(dbDir, backupDir);
+      } catch (final IOException restoreEx) {
+        // Catch-inside-a-catch: the restore itself failed. Attach the root cause so it is never lost,
+        // then propagate. The originals are still safe in backupDir and the caller's .snapshot-pending
+        // marker is intact, so recoverPendingSnapshotSwaps completes the restore on the next startup.
+        restoreEx.addSuppressed(e);
+        throw restoreEx;
+      }
       throw new IOException("Snapshot swap failed for " + dbDir, e);
     }
 
