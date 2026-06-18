@@ -27,6 +27,7 @@ import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.CSRVertexIterable;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeToVertexIterable;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
@@ -378,8 +379,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
           try {
             v = vertexIterator.next();
             neighborVertexIdentity = v.getIdentity();
-          } catch (final RecordNotFoundException ignored) {
+          } catch (final RecordNotFoundException e) {
             // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+            GhostEdgeReporter.reportSkipped(e);
             continue;
           }
 
@@ -450,8 +452,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
           try {
             v = vertexIterator.next();
             neighborVertexIdentity = v.getIdentity();
-          } catch (final RecordNotFoundException ignored) {
+          } catch (final RecordNotFoundException e) {
             // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+            GhostEdgeReporter.reportSkipped(e);
             continue;
           }
 

@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
@@ -208,9 +209,10 @@ public class PatternPredicateExpression implements BooleanExpression {
           if (edge.getIn().equals(endVertex)) {
             return true;
           }
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException e) {
           // Ghost edge: segment pointer exists but the backing edge record is gone (e.g. an HA
           // resync/rolled-back transaction left a dangling pointer). Skip it - it cannot satisfy the pattern.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }
@@ -230,8 +232,9 @@ public class PatternPredicateExpression implements BooleanExpression {
           if (edge.getOut().equals(endVertex)) {
             return true;
           }
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException e) {
           // Ghost edge - same case: dangling segment pointer to a missing edge record. Skip it.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }
@@ -265,8 +268,9 @@ public class PatternPredicateExpression implements BooleanExpression {
         try {
           if (matchesNodePattern(edge.getInVertex(), endNodePattern, context))
             return true;
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException e) {
           // Ghost edge: segment pointer exists but the backing edge/target record is gone. Skip it.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }
@@ -285,8 +289,9 @@ public class PatternPredicateExpression implements BooleanExpression {
         try {
           if (matchesNodePattern(edge.getOutVertex(), endNodePattern, context))
             return true;
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException e) {
           // Ghost edge - same case: dangling segment pointer to a missing edge record. Skip it.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }

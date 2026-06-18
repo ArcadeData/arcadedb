@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.olap.GraphAlgorithms;
@@ -175,8 +176,9 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
             final Object w = edge.get(weightProperty);
             wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
           }
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException e) {
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
 
@@ -192,8 +194,9 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
               final Object w = edge.get(weightProperty);
               wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
             }
-          } catch (final RecordNotFoundException ignored) {
+          } catch (final RecordNotFoundException e) {
             // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+            GhostEdgeReporter.reportSkipped(e);
           }
         }
       }

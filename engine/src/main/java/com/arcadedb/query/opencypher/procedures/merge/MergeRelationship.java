@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.merge;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
@@ -170,8 +171,9 @@ public class MergeRelationship implements CypherProcedure {
         if (allMatch) {
           return edge;
         }
-      } catch (final RecordNotFoundException ignored) {
+      } catch (final RecordNotFoundException e) {
         // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+        GhostEdgeReporter.reportSkipped(e);
       }
     }
 

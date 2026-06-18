@@ -24,6 +24,7 @@ import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
@@ -432,8 +433,9 @@ public class ShortestPathStep extends AbstractExecutionStep {
           final RID connected = dir == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
           if (connected.equals(to.getIdentity()))
             return edge;
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException e) {
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }

@@ -21,10 +21,11 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
-import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
@@ -166,8 +167,9 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
           }
           edgeList.add(new int[] { i, j });
           edgeWeights.add(w);
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException e) {
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }

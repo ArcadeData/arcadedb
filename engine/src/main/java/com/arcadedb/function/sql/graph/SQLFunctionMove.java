@@ -24,6 +24,7 @@ import com.arcadedb.database.Identifiable;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.CSRVertexIterable;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
@@ -114,9 +115,10 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
           return results;
         }
         return edge.getVertex(iDirection);
-      } catch (final RecordNotFoundException ignored) {
+      } catch (final RecordNotFoundException e) {
         // Ghost edge: backing record missing; no endpoint to resolve.
-        return iDirection == Vertex.DIRECTION.BOTH ? new ArrayList<Vertex>() : null;
+        GhostEdgeReporter.reportSkipped(e);
+        return iDirection == Vertex.DIRECTION.BOTH ? new ArrayList<>() : null;
       }
     }
 

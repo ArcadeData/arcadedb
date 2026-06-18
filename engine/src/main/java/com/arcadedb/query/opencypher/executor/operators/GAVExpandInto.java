@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -141,8 +142,9 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
               if (other.getIdentity().equals(target.getIdentity()))
                 return true;
             }
-          } catch (final RecordNotFoundException ignored) {
+          } catch (final RecordNotFoundException e) {
             // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+            GhostEdgeReporter.reportSkipped(e);
           }
         }
         return false;

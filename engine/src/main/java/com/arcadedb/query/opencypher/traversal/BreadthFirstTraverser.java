@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.traversal;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
@@ -190,8 +191,9 @@ public class BreadthFirstTraverser extends GraphTraverser {
 
             final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
             queue.add(new PathWithDepth(newPath, depth + 1));
-          } catch (final RecordNotFoundException ignored) {
+          } catch (final RecordNotFoundException e) {
             // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+            GhostEdgeReporter.reportSkipped(e);
           }
         }
       }

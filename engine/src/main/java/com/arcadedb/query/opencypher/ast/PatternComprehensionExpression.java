@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
@@ -259,8 +260,9 @@ public class PatternComprehensionExpression implements Expression {
       final Vertex nextVertex;
       try {
         nextVertex = edgeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-      } catch (final RecordNotFoundException ignored) {
+      } catch (final RecordNotFoundException e) {
         // Ghost edge: dangling segment pointer to a missing edge/target record. Undo the visit mark and skip.
+        GhostEdgeReporter.reportSkipped(e);
         visitedEdges.remove(edgeRid);
         continue;
       }
@@ -342,8 +344,9 @@ public class PatternComprehensionExpression implements Expression {
       final Vertex targetVertex;
       try {
         targetVertex = edgeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-      } catch (final RecordNotFoundException ignored) {
+      } catch (final RecordNotFoundException e) {
         // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+        GhostEdgeReporter.reportSkipped(e);
         continue;
       }
 

@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -119,8 +120,9 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
         try {
           if (ridToIdx.containsKey(e.getIn()))
             edgeCount++;
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException rnf) {
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+          GhostEdgeReporter.reportSkipped(rnf);
         }
       }
     }
@@ -148,8 +150,9 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
             eW[ec] = 1.0;
           }
           ec++;
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException rnf) {
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+          GhostEdgeReporter.reportSkipped(rnf);
         }
       }
     }

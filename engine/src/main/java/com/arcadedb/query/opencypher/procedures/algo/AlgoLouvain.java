@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.Database;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -135,8 +136,9 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
           }
           nodeDegree[i] += w;
           totalWeight += w;
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException e) {
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }
@@ -170,8 +172,9 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
             }
             final int neighborComm = community[neighborIdx];
             neighborCommunityWeight.merge(neighborComm, w, Double::sum);
-          } catch (final RecordNotFoundException ignored) {
+          } catch (final RecordNotFoundException e) {
             // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+            GhostEdgeReporter.reportSkipped(e);
           }
         }
 
@@ -262,8 +265,9 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
               w = num.doubleValue();
           }
           modularity += w - (nodeDegree[i] * nodeDegree[j]) / (2.0 * totalWeight);
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException e) {
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }

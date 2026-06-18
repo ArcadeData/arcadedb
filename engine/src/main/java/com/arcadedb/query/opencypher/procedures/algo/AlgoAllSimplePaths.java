@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -191,14 +192,19 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           currentPath.add(edge);
           currentPath.add(neighbor);
 
-          findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
-
-          currentPath.removeLast();
-          currentPath.removeLast();
-          visited.remove(neighborId);
+          // try-finally so the path/visited bookkeeping is unwound even if the recursion throws,
+          // leaving no dirty state for the rest of this branch.
+          try {
+            findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
+          } finally {
+            currentPath.removeLast();
+            currentPath.removeLast();
+            visited.remove(neighborId);
+          }
         }
-      } catch (final RecordNotFoundException ignored) {
+      } catch (final RecordNotFoundException e) {
         // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+        GhostEdgeReporter.reportSkipped(e);
       }
     }
 
@@ -224,14 +230,19 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           currentPath.add(edge);
           currentPath.add(neighbor);
 
-          findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
-
-          currentPath.removeLast();
-          currentPath.removeLast();
-          visited.remove(neighborId);
+          // try-finally so the path/visited bookkeeping is unwound even if the recursion throws,
+          // leaving no dirty state for the rest of this branch.
+          try {
+            findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
+          } finally {
+            currentPath.removeLast();
+            currentPath.removeLast();
+            visited.remove(neighborId);
+          }
         }
-      } catch (final RecordNotFoundException ignored) {
+      } catch (final RecordNotFoundException e) {
         // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+        GhostEdgeReporter.reportSkipped(e);
       }
     }
   }

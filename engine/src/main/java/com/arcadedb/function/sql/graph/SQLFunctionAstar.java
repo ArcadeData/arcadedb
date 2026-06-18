@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
@@ -277,8 +278,9 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
         final Vertex neighbor = getNeighbor(node, edge, ctx.getDatabase());
         if (neighbor != null)
           result.put(neighbor, getDistance(edge));
-      } catch (final RecordNotFoundException ignored) {
+      } catch (final RecordNotFoundException rnf) {
         // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+        GhostEdgeReporter.reportSkipped(rnf);
       }
     }
     return result;
@@ -348,8 +350,9 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
           e = next;
           break;
         }
-      } catch (final RecordNotFoundException ignored) {
+      } catch (final RecordNotFoundException rnf) {
         // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+        GhostEdgeReporter.reportSkipped(rnf);
       }
     }
     if (e != null) {

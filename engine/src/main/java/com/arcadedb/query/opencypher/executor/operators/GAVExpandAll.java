@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GAVVertex;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
@@ -133,8 +134,9 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
               final Vertex targetVertex;
               try {
                 targetVertex = getTargetVertex(edge, sourceVertex);
-              } catch (final RecordNotFoundException ignored) {
+              } catch (final RecordNotFoundException e) {
                 // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+                GhostEdgeReporter.reportSkipped(e);
                 continue;
               }
               if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))

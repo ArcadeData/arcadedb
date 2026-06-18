@@ -21,6 +21,7 @@ package com.arcadedb.query.opencypher.procedures.path;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -135,8 +136,9 @@ public class PathSpanningTree extends AbstractPathProcedure {
               allPaths.add(new ArrayList<>(newPath));
               queue.add(new PathLevel(newPath, neighbor, current.level + 1));
             }
-          } catch (final RecordNotFoundException ignored) {
+          } catch (final RecordNotFoundException e) {
             // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+            GhostEdgeReporter.reportSkipped(e);
           }
         }
       }

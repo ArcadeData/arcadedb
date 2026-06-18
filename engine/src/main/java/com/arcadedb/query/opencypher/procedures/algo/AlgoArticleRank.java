@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
@@ -240,8 +241,9 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
             final Integer neighborIdx = ridToIdx.get(edge.getIn());
             if (neighborIdx != null)
               newScores[neighborIdx] += scores[i] / denom;
-          } catch (final RecordNotFoundException ignored) {
+          } catch (final RecordNotFoundException e) {
             // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+            GhostEdgeReporter.reportSkipped(e);
           }
         }
       }
