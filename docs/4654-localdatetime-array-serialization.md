@@ -85,6 +85,20 @@ out of scope for this fix.
   import, added `localDateConsistentBetweenPutAndArrayPaths` test, documented the release-note
   callout and known limitation above.
 
+- **e8b2d8e** (final): post-review poll returned only a non-actionable `test` stub comment from
+  the claude bot; no further substantive feedback. gemini-code-assist (being sunset 2026-06-18)
+  did not re-review after cycle 1; all its cycle-1 findings were addressed. All actionable items
+  across all cycles are resolved.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4655
+
+## Final state
+
+max-cycles-reached (4 cycles) - all actionable bot feedback resolved; remaining notes are
+documented out-of-scope/pre-existing items. Working tree clean, all tests passing.
+
 ## Status
 
 Implementation complete, all tests passing.
