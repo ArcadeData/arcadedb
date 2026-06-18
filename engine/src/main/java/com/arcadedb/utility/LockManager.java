@@ -247,10 +247,12 @@ public class LockManager<RESOURCE, REQUESTER> {
         when = rl.when;
         waiters = rl.queue.size();
       }
-      // owner can be null for a resource caught in a transitional free state; render it explicitly
-      // as <free> rather than the string "null" so operators reading diagnostics are not confused.
+      // owner can be null for a resource caught in a transitional free state; render it explicitly as
+      // <free> (and the timestamp as N/A rather than the epoch 00:00:00.000) so operators reading
+      // diagnostics are not confused.
       sb.append("\n- '").append(entry.getKey()).append("', owner='").append(owner != null ? owner : "<free>")
-          .append("' on ").append(DateTimeFormatter.ofPattern("HH:mm:ss.SSS").format(DateUtils.millisToLocalDateTime(when, null)))
+          .append("' on ")
+          .append(owner != null ? DateTimeFormatter.ofPattern("HH:mm:ss.SSS").format(DateUtils.millisToLocalDateTime(when, null)) : "N/A")
           .append(" (").append(waiters).append(" waiters)");
     }
     return sb.toString();

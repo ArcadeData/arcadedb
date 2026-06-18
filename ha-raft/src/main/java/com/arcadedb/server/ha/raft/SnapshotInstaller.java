@@ -231,7 +231,9 @@ public final class SnapshotInstaller {
    * Package-private and intended only for the install call sites, which invoke it on an open database
    * just before closing it. The name embeds the side effect: {@code getDatabase} will <i>open and
    * register</i> a deregistered-but-on-disk database, so do not call this as a pure read on a database
-   * meant to stay closed.
+   * meant to stay closed. This is safe for the install paths only because two installs for the same
+   * database are never in flight at once (see {@link #closeLocalDatabaseIfOpen}); a re-register racing a
+   * deliberate deregistration elsewhere would be a misuse.
    */
   static String openAndResolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
     // Best-effort: the exists/get pair is not atomic, but it only resolves a path before the download

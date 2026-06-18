@@ -64,6 +64,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -990,15 +991,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Flag the pending download and run it off-thread; clearing the flag lets the HealthMonitor
       // persistent-lag backstop re-arm if this retry also fails on a still-quiet cluster.
       needsSnapshotDownload.set(true);
-      lifecycleExecutor.submit(() -> {
-        if (needsSnapshotDownload.compareAndSet(true, false))
-          triggerSnapshotDownload();
-        else
-          // Another path (notifyLeaderChanged or the watchdog) already cleared the flag and is driving
-          // the download; skip this retry. Logged so operators can trace why this submission did nothing.
-          LogManager.instance().log(this, Level.INFO,
-              "Bootstrap snapshot retry skipped for '%s': download already triggered by another path", dbName);
-      });
+      // We are inside the catch on the Raft StateMachineUpdater thread: a RejectedExecutionException from
+      // a shut-down executor (server stopping) must not escape, or it would reach applyTransaction's
+      // critical-error halt - the very outcome this handler exists to prevent. The flag stays set, so the
+      // HealthMonitor backstop still drives the download once the server is up again.
+      try {
+        lifecycleExecutor.submit(() -> {
+          if (needsSnapshotDownload.compareAndSet(true, false))
+            triggerSnapshotDownload();
+          else
+            // Another path (notifyLeaderChanged or the watchdog) already cleared the flag and is driving
+            // the download; skip this retry. Logged so operators can trace why this submission did nothing.
+            LogManager.instance().log(this, Level.INFO,
+                "Bootstrap snapshot retry skipped for '%s': download already triggered by another path", dbName);
+        });
+      } catch (final RejectedExecutionException ree) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Cannot schedule bootstrap snapshot retry for '%s': executor is shut down; "
+                + "the HealthMonitor backstop will retry once the server is available", null, dbName);
+      }
     }
   }
 
