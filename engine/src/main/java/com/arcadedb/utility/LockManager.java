@@ -191,6 +191,9 @@ public class LockManager<RESOURCE, REQUESTER> {
         next = head;
       } else {
         // No waiters: free the resource and detach the node from the map atomically with marking it removed.
+        // A tryLock arriving right after this detach computeIfAbsents a brand-new node for the same key and
+        // may acquire it immediately - that is correct: it is a fresh, independent resource instance, while
+        // any in-flight waiters are parked on this now-removed node and are handed off (or woken NO) here.
         rl.owner = null;
         rl.removed = true;
         lockManager.remove(resource, rl);
@@ -242,15 +245,18 @@ public class LockManager<RESOURCE, REQUESTER> {
       final REQUESTER owner;
       final long when;
       final int waiters;
+      final boolean removed;
       synchronized (rl) {
         owner = rl.owner;
         when = rl.when;
         waiters = rl.queue.size();
+        removed = rl.removed;
       }
-      // owner can be null for a resource caught in a transitional free state; render it explicitly as
-      // <free> (and the timestamp as N/A rather than the epoch 00:00:00.000) so operators reading
-      // diagnostics are not confused.
-      sb.append("\n- '").append(entry.getKey()).append("', owner='").append(owner != null ? owner : "<free>")
+      // owner can be null for a resource caught in a transitional state; render it explicitly (and the
+      // timestamp as N/A rather than the epoch 00:00:00.000) so operators reading diagnostics are not
+      // confused: <detached> for a node already removed from the map (during shutdown), <free> otherwise.
+      final String ownerLabel = owner != null ? String.valueOf(owner) : (removed ? "<detached>" : "<free>");
+      sb.append("\n- '").append(entry.getKey()).append("', owner='").append(ownerLabel)
           .append("' on ")
           .append(owner != null ? DateTimeFormatter.ofPattern("HH:mm:ss.SSS").format(DateUtils.millisToLocalDateTime(when, null)) : "N/A")
           .append(" (").append(waiters).append(" waiters)");

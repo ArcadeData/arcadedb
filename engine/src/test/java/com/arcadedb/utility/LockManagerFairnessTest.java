@@ -235,7 +235,10 @@ class LockManagerFairnessTest {
       waiter.start();
       awaitParked(waiter, 2000);
 
-      // Release right around the 30ms deadline to force the grant-vs-timeout race.
+      // Release right around the 30ms deadline to force the grant-vs-timeout race. Under heavy CI load
+      // the waiter may have already timed out before this unlock, degrading the round to a plain timeout
+      // - that is fine: the no-leak assertion below holds in both the grant-won and timed-out outcomes,
+      // so the test passes even on rounds where the race window is never actually hit.
       Thread.sleep(30);
       lockManager.unlock(resource, "holder");
 

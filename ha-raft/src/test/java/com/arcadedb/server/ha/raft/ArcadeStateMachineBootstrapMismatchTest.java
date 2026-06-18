@@ -98,6 +98,8 @@ class ArcadeStateMachineBootstrapMismatchTest {
     when(mockServer.getConfiguration()).thenReturn(config);
     when(mockServer.existsDatabase(DB_NAME)).thenAnswer(inv -> dbRegistered.get());
 
+    // The server arg is null: the only path exercised here is getEmbedded().close() (via
+    // closeLocalDatabaseIfOpen), which dereferences the wrapped localDb, not the server, so null is safe.
     final ServerDatabase serverDb = new ServerDatabase(null, localDb);
     when(mockServer.getDatabase(DB_NAME)).thenReturn(serverDb);
     doAnswer(inv -> {
@@ -141,6 +143,8 @@ class ArcadeStateMachineBootstrapMismatchTest {
     when(mockServer.getConfiguration()).thenReturn(config);
     when(mockServer.existsDatabase(DB_NAME)).thenReturn(true);
 
+    // The server arg is null: the only path exercised here is getEmbedded().close() (via
+    // closeLocalDatabaseIfOpen), which dereferences the wrapped localDb, not the server, so null is safe.
     final ServerDatabase serverDb = new ServerDatabase(null, localDb);
     when(mockServer.getDatabase(DB_NAME)).thenReturn(serverDb);
 

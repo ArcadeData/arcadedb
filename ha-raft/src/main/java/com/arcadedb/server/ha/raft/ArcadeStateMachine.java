@@ -504,7 +504,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
           // once a complete copy is on disk, rolling back on failure, so a failed download never
           // leaves this database closed (DatabaseIsClosedException).
           if (server.existsDatabase(dbName))
-            SnapshotInstaller.install(dbName, SnapshotInstaller.openAndResolveDatabasePath(server, dbName),
+            SnapshotInstaller.install(dbName, SnapshotInstaller.ensureOpenAndResolveDatabasePath(server, dbName),
                 leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
         }
 
@@ -830,7 +830,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       try {
         // install() keeps the database open during the download and rolls back on failure, so a
         // failed restore never leaves it closed.
-        SnapshotInstaller.install(databaseName, SnapshotInstaller.openAndResolveDatabasePath(server, databaseName),
+        SnapshotInstaller.install(databaseName, SnapshotInstaller.ensureOpenAndResolveDatabasePath(server, databaseName),
             leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
       } catch (final IOException e) {
         throw new RuntimeException("Failed to install snapshot for restored database '" + databaseName + "'", e);
@@ -1031,7 +1031,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // failed bootstrap install never leaves the database closed.
       final RaftHAServer raft = raftHAServer;
       final String clusterToken = raft != null ? raft.getClusterToken() : null;
-      SnapshotInstaller.install(dbName, SnapshotInstaller.openAndResolveDatabasePath(server, dbName),
+      SnapshotInstaller.install(dbName, SnapshotInstaller.ensureOpenAndResolveDatabasePath(server, dbName),
           () -> raft != null ? raft.getLeaderHttpAddress() : null,
           () -> raft != null ? raft.getLeaderHttpsAddress() : null,
           clusterToken, server);
@@ -1084,7 +1084,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // once a complete snapshot is on disk, rolling back on failure. A failed resync therefore never
       // leaves the database closed (the cause of the operator-visible DatabaseIsClosedException).
       final String clusterToken = raft.getClusterToken();
-      SnapshotInstaller.install(dbName, SnapshotInstaller.openAndResolveDatabasePath(server, dbName),
+      SnapshotInstaller.install(dbName, SnapshotInstaller.ensureOpenAndResolveDatabasePath(server, dbName),
           raft::getLeaderHttpAddress, raft::getLeaderHttpsAddress, clusterToken, server);
       LogManager.instance().log(this, Level.INFO, "Database '%s' resynced from leader on operator request", dbName);
     } catch (final IOException e) {
@@ -1187,7 +1187,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // install() keeps the database open during the download and rolls back on failure, so a
         // watchdog-triggered resync never leaves it closed.
         if (server.existsDatabase(dbName))
-          SnapshotInstaller.install(dbName, SnapshotInstaller.openAndResolveDatabasePath(server, dbName),
+          SnapshotInstaller.install(dbName, SnapshotInstaller.ensureOpenAndResolveDatabasePath(server, dbName),
               leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
       }
       LogManager.instance().log(this, Level.INFO, "Snapshot download triggered by watchdog completed");

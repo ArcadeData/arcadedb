@@ -41,6 +41,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.KeyStore;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.logging.Level;
@@ -102,6 +104,13 @@ public final class SnapshotInstaller {
    */
   private static final AtomicBoolean PLAIN_HTTP_FALLBACK_WARNED = new AtomicBoolean(false);
 
+  /**
+   * Names of databases with an install currently in flight. The lifecycle assumes installs for a given
+   * database never overlap (see {@link #closeLocalDatabaseIfOpen}); this set turns a violation of that
+   * assumption from a silent double-close into a logged WARNING so it is diagnosable after the fact.
+   */
+  private static final Set<String> INSTALLS_IN_FLIGHT = ConcurrentHashMap.newKeySet();
+
   private SnapshotInstaller() {
   }
 
@@ -142,84 +151,97 @@ public final class SnapshotInstaller {
     final Path snapshotBackup = dbPath.resolve(SNAPSHOT_BACKUP_DIR);
     final Path pendingMarker = dbPath.resolve(SNAPSHOT_PENDING_FILE);
 
-    // Clean up any leftover state from a previous failed attempt
-    deleteDirectoryIfExists(snapshotNew);
-    deleteDirectoryIfExists(snapshotBackup);
-    Files.deleteIfExists(pendingMarker);
+    // The lifecycle assumes installs for a given database never overlap (see closeLocalDatabaseIfOpen).
+    // If they ever do, log it loudly rather than silently double-closing: this set makes the violation
+    // diagnosable. Tracked across both phases and cleared in the outer finally so a download failure
+    // does not leak the entry.
+    if (!INSTALLS_IN_FLIGHT.add(databaseName))
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Concurrent snapshot install detected for '%s'; the install lifecycle assumes these never overlap "
+              + "for the same database - this may indicate a coordination bug in the HA layer", null, databaseName);
 
-    Files.createDirectories(snapshotNew);
-
-    // Write the pending marker BEFORE starting extraction
-    Files.writeString(pendingMarker, "");
-
-    final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
-    final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
-
-    // PHASE 1 - DOWNLOAD into .snapshot-new with the live database STILL OPEN. The historical behaviour
-    // closed it up-front, so any download failure (leader unreachable, network blip) left it closed and
-    // deregistered with no recovery. Staging first means we touch the live files only on success.
     try {
-      downloadWithRetry(databaseName, snapshotNew, leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken,
-          maxRetries, retryBaseMs, server);
-    } catch (final IOException e) {
-      // Download failed: the live database has not been touched and is still open. Drop the staging
-      // directory and rethrow so the caller (or Raft) can retry later without losing availability.
+      // Clean up any leftover state from a previous failed attempt
       deleteDirectoryIfExists(snapshotNew);
-      Files.deleteIfExists(pendingMarker);
-      throw e;
-    }
-
-    // Mark download as complete
-    Files.writeString(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE), "");
-
-    // PHASE 2 - SWAP. Set the server-wide flag BEFORE closing the database so HTTP handlers return 503
-    // while the files are being moved.
-    server.setSnapshotInstallInProgress(true);
-    try {
-      // Close + deregister the live database now that a complete snapshot is staged on disk. The DB
-      // must be closed before the file move so no open handles point at the directory being swapped.
-      closeLocalDatabaseIfOpen(server, databaseName);
-
-      // Swap: live -> backup, new -> live. atomicSwap restores the original live files on a failure in
-      // either phase (see its contract), so on an IOException here dbPath holds the previous copy.
-      try {
-        atomicSwap(dbPath, snapshotNew, snapshotBackup);
-      } catch (final IOException swapEx) {
-        // Reopen the restored previous database so the node keeps serving. Leave the pending marker in
-        // place: if atomicSwap's own restore was interrupted, recoverPendingSnapshotSwaps reconciles
-        // dbPath (and removes the leftover .snapshot-new) on the next startup.
-        reopenQuietly(server, databaseName);
-        throw swapEx;
-      }
-
-      // Swap succeeded: live = new snapshot, .snapshot-backup = previous copy (retained until the new
-      // snapshot is confirmed to open). Cleanup then validate the install by reopening.
-      cleanupWalFiles(dbPath);
-      // Remove the completion marker from the now-live directory
-      Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_FILE));
-
-      try {
-        // Re-open the database so the server registers it (also validates the snapshot is loadable)
-        server.getDatabase(databaseName);
-      } catch (final RuntimeException openEx) {
-        // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
-        // previous local copy and reopen it so the node is never left with a closed database. Leave the
-        // pending marker for startup reconciliation if the rollback itself is interrupted.
-        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-            "Installed snapshot for '%s' failed to open; rolling back to the previous local copy", openEx, databaseName);
-        rollbackToBackup(dbPath, snapshotBackup);
-        reopenQuietly(server, databaseName);
-        throw new IOException("Snapshot for '" + databaseName
-            + "' downloaded but failed to open; rolled back to the previous local copy", openEx);
-      }
-
-      // Success: drop the retained backup and clear the pending marker.
       deleteDirectoryIfExists(snapshotBackup);
       Files.deleteIfExists(pendingMarker);
 
-      HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
+      Files.createDirectories(snapshotNew);
+
+      // Write the pending marker BEFORE starting extraction
+      Files.writeString(pendingMarker, "");
+
+      final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
+      final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
+
+      // PHASE 1 - DOWNLOAD into .snapshot-new with the live database STILL OPEN. The historical behaviour
+      // closed it up-front, so any download failure (leader unreachable, network blip) left it closed and
+      // deregistered with no recovery. Staging first means we touch the live files only on success.
+      try {
+        downloadWithRetry(databaseName, snapshotNew, leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken,
+            maxRetries, retryBaseMs, server);
+      } catch (final IOException e) {
+        // Download failed: the live database has not been touched and is still open. Drop the staging
+        // directory and rethrow so the caller (or Raft) can retry later without losing availability.
+        deleteDirectoryIfExists(snapshotNew);
+        Files.deleteIfExists(pendingMarker);
+        throw e;
+      }
+
+      // Mark download as complete
+      Files.writeString(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE), "");
+
+      // PHASE 2 - SWAP. Set the server-wide flag BEFORE closing the database so HTTP handlers return 503
+      // while the files are being moved.
+      server.setSnapshotInstallInProgress(true);
+      try {
+        // Close + deregister the live database now that a complete snapshot is staged on disk. The DB
+        // must be closed before the file move so no open handles point at the directory being swapped.
+        closeLocalDatabaseIfOpen(server, databaseName);
+
+        // Swap: live -> backup, new -> live. atomicSwap restores the original live files on a failure in
+        // either phase (see its contract), so on an IOException here dbPath holds the previous copy.
+        try {
+          atomicSwap(dbPath, snapshotNew, snapshotBackup);
+        } catch (final IOException swapEx) {
+          // Reopen the restored previous database so the node keeps serving. Leave the pending marker in
+          // place: if atomicSwap's own restore was interrupted, recoverPendingSnapshotSwaps reconciles
+          // dbPath (and removes the leftover .snapshot-new) on the next startup.
+          reopenQuietly(server, databaseName);
+          throw swapEx;
+        }
+
+        // Swap succeeded: live = new snapshot, .snapshot-backup = previous copy (retained until the new
+        // snapshot is confirmed to open). Cleanup then validate the install by reopening.
+        cleanupWalFiles(dbPath);
+        // Remove the completion marker from the now-live directory
+        Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_FILE));
+
+        try {
+          // Re-open the database so the server registers it (also validates the snapshot is loadable)
+          server.getDatabase(databaseName);
+        } catch (final RuntimeException openEx) {
+          // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
+          // previous local copy and reopen it so the node is never left with a closed database. Leave the
+          // pending marker for startup reconciliation if the rollback itself is interrupted.
+          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+              "Installed snapshot for '%s' failed to open; rolling back to the previous local copy", openEx, databaseName);
+          rollbackToBackup(dbPath, snapshotBackup);
+          reopenQuietly(server, databaseName);
+          throw new IOException("Snapshot for '" + databaseName
+              + "' downloaded but failed to open; rolled back to the previous local copy", openEx);
+        }
+
+        // Success: drop the retained backup and clear the pending marker.
+        deleteDirectoryIfExists(snapshotBackup);
+        Files.deleteIfExists(pendingMarker);
+
+        HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
+      } finally {
+        server.setSnapshotInstallInProgress(false);
+      }
     } finally {
-      server.setSnapshotInstallInProgress(false);
+      INSTALLS_IN_FLIGHT.remove(databaseName);
     }
   }
 
@@ -235,7 +257,7 @@ public final class SnapshotInstaller {
    * database are never in flight at once (see {@link #closeLocalDatabaseIfOpen}); a re-register racing a
    * deliberate deregistration elsewhere would be a misuse.
    */
-  static String openAndResolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
+  static String ensureOpenAndResolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
     // Best-effort: the exists/get pair is not atomic, but it only resolves a path before the download
     // phase (no data at risk) and getDatabase returns a valid path even if it has to reopen.
     if (server.existsDatabase(databaseName))
@@ -299,8 +321,12 @@ public final class SnapshotInstaller {
       clearLiveDatabaseFiles(dbPath);
       restoreBackup(dbPath, snapshotBackup);
     } catch (final IOException e) {
+      // dbPath may be partially cleared here. The caller leaves the .snapshot-pending marker in place,
+      // so recoverPendingSnapshotSwaps reconciles dbPath from the retained backup on the next startup -
+      // call this out so operators know that marker is the recovery hook to look for.
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-          "Failed to roll back snapshot install for %s: %s", e, dbPath, e.getMessage());
+          "Failed to roll back snapshot install for %s: %s. Leaving the .snapshot-pending marker so startup "
+              + "recovery (recoverPendingSnapshotSwaps) restores the backup on the next restart", e, dbPath, e.getMessage());
     }
   }
 
@@ -716,6 +742,9 @@ public final class SnapshotInstaller {
       // If phase 2 had started, partially-installed new files are now in dbDir and must be cleared
       // before restoring the originals; if phase 1 failed partway, the un-moved originals are still in
       // dbDir, so restoreBackup just moves the backed-up ones back to reconstruct the full set.
+      // Catch-inside-a-catch: if clearLiveDatabaseFiles (or restoreBackup) throws here, the IOException
+      // propagates with the originals still safe in backupDir and the caller's .snapshot-pending marker
+      // intact, so recoverPendingSnapshotSwaps completes the restore on the next startup.
       if (liveMovedToBackup)
         clearLiveDatabaseFiles(dbDir);
       restoreBackup(dbDir, backupDir);
