@@ -201,6 +201,8 @@ public final class SnapshotInstaller {
       try {
         // Close + deregister the live database now that a complete snapshot is staged on disk. The DB
         // must be closed before the file move so no open handles point at the directory being swapped.
+        // This deliberately closes the embedded instance directly (skipping the HA wrapper's replicated-
+        // close semantics): this is a local file swap, not a cluster-wide close. See closeLocalDatabaseIfOpen.
         closeLocalDatabaseIfOpen(server, databaseName);
 
         // Swap: live -> backup, new -> live. atomicSwap restores the original live files on a failure in
@@ -777,6 +779,9 @@ public final class SnapshotInstaller {
   private static void restoreBackup(final Path dbDir, final Path backupDir) throws IOException {
     try (final DirectoryStream<Path> stream = Files.newDirectoryStream(backupDir)) {
       for (final Path entry : stream)
+        // REPLACE_EXISTING is required for the phase-1 partial-failure path: some originals may never
+        // have left dbDir, so the backed-up copies must overwrite whatever partial state is there to
+        // reconstruct the exact original set without leaving stale files behind.
         Files.move(entry, dbDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
     }
     deleteDirectoryIfExists(backupDir);

@@ -95,6 +95,11 @@ public class LockManager<RESOURCE, REQUESTER> {
     ResourceLock<REQUESTER> rl = null;
     Waiter<REQUESTER> waiter = null;
     for (; ; ) {
+      // computeIfAbsent allocates a ResourceLock even when the resource is free: acceptable because this
+      // is commit-level locking (once per transaction), not a tight loop - do not reuse this manager on a
+      // hot path without revisiting that. Lock ordering: computeIfAbsent holds the CHM bin lock while the
+      // mapping function runs and returns before we take the per-node monitor below, so the bin lock is
+      // always strictly outer - no inversion. Do not move the synchronized(candidate) inside the lambda.
       final ResourceLock<REQUESTER> candidate = lockManager.computeIfAbsent(resource, k -> new ResourceLock<>());
       synchronized (candidate) {
         if (candidate.removed)

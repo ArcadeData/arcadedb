@@ -980,6 +980,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "Keeping the local copy and scheduling an async retry once a leader is reachable.",
           dbName, e.getMessage());
       // Safety net: install rolls back + reopens on failure; reopen here if left deregistered for any reason.
+      // This branch should be unreachable on the normal failed-download case - install() is download-before-
+      // close, so a download failure never touches the live files and leaves the DB open. It guards against
+      // unexpected future changes (or a failure in a later install phase) that could leave it deregistered.
       if (!server.existsDatabase(dbName)) {
         try {
           server.getDatabase(dbName);

@@ -225,21 +225,26 @@ class LockManagerFairnessTest {
   @Tag("slow")
   void grantRacingTimeoutNeverLeaksTheLock() throws Exception {
     final String resource = "race";
-    final int rounds = 400;
+    final int rounds = 250;
+    // A wider absolute window (100ms vs a few ms) makes scheduling jitter a smaller fraction of the
+    // timing, so the grant-vs-timeout race is hit far more often than with a tiny budget - exercising the
+    // interesting grant-just-before-deadline path on healthy machines while staying inside @Timeout(60).
+    final long waiterTimeoutMs = 100;
 
     for (int r = 0; r < rounds; r++) {
       assertThat(lockManager.tryLock(resource, "holder", 0)).isEqualTo(LockManager.LOCK_STATUS.YES);
 
       final AtomicReference<LockManager.LOCK_STATUS> waiterResult = new AtomicReference<>();
-      final Thread waiter = new Thread(() -> waiterResult.set(lockManager.tryLock(resource, "waiter", 30)), "waiter");
+      final Thread waiter = new Thread(() -> waiterResult.set(lockManager.tryLock(resource, "waiter", waiterTimeoutMs)),
+          "waiter");
       waiter.start();
       awaitParked(waiter, 2000);
 
-      // Release right around the 30ms deadline to force the grant-vs-timeout race. Under heavy CI load
-      // the waiter may have already timed out before this unlock, degrading the round to a plain timeout
-      // - that is fine: the no-leak assertion below holds in both the grant-won and timed-out outcomes,
-      // so the test passes even on rounds where the race window is never actually hit.
-      Thread.sleep(30);
+      // Release just before the waiter's deadline to bias toward the grant-wins outcome (the case that
+      // exercises the no-leak hand-off). Under heavy CI load the waiter may still time out first, degrading
+      // the round to a plain timeout - that is fine: the no-leak assertion below holds in both the grant-won
+      // and timed-out outcomes, so the test passes even on rounds where the race window is never hit.
+      Thread.sleep(waiterTimeoutMs - 5);
       lockManager.unlock(resource, "holder");
 
       waiter.join(5000);
