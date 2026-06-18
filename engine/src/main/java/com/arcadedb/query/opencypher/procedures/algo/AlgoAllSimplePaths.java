@@ -203,6 +203,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           }
         }
       } catch (final RecordNotFoundException e) {
+        // Only the outer edge.get*Vertex() above can land here; the recursion has its own per-edge catches.
         GhostEdgeReporter.reportSkipped(e);
       }
     }
@@ -240,6 +241,7 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           }
         }
       } catch (final RecordNotFoundException e) {
+        // Only the outer edge.get*Vertex() above can land here; the recursion has its own per-edge catches.
         GhostEdgeReporter.reportSkipped(e);
       }
     }

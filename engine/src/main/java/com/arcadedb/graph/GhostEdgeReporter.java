@@ -53,8 +53,7 @@ public final class GhostEdgeReporter {
     final long total = totalSkipped.incrementAndGet();
 
     LogManager.instance().log(GhostEdgeReporter.class, Level.FINE,
-        "Skipped ghost edge during traversal (%s); total skipped since startup=%d",
-        cause != null ? cause.getMessage() : null, total);
+        "Skipped ghost edge during traversal (%s); total skipped since startup=%d", cause.getMessage(), total);
 
     final long now = System.nanoTime();
     final long last = lastWarningNanos.get();

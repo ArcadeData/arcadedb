@@ -1007,7 +1007,9 @@ public class GraphEngine {
             counts[i]++;
         } catch (final RecordNotFoundException rnf) {
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it (the fill
-          // pass below skips it identically, so counts and adjacency stay consistent).
+          // pass below skips it identically, so counts and adjacency stay consistent: an edge record is
+          // only deleted, never resurrected, during a read query, so a pass-1 ghost is still a ghost in
+          // pass 2).
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

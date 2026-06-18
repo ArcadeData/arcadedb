@@ -372,7 +372,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         while (vertexIterator.hasNext() && edgeIterator.hasNext()) {
           // Advance the edge iterator first (getIdentity never loads the record); then resolve the
           // neighbor vertex, which lazily loads the edge. A ghost edge throws there - both iterators
-          // have advanced once, so skipping keeps them in lockstep.
+          // have advanced once, so skipping keeps them in lockstep. This relies on getFirst() being an
+          // EdgeToVertexIterable (see getVerticesAndEdges): it is vertexIterator.next(), not
+          // v.getIdentity(), that triggers the edge-record load. Keep that coupling if refactoring.
           final RID neighborEdgeIdentity = edgeIterator.next().getIdentity();
           final Vertex v;
           final RID neighborVertexIdentity;
@@ -444,7 +446,9 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         while (vertexIterator.hasNext() && edgeIterator.hasNext()) {
           // Advance the edge iterator first (getIdentity never loads the record); then resolve the
           // neighbor vertex, which lazily loads the edge. A ghost edge throws there - both iterators
-          // have advanced once, so skipping keeps them in lockstep.
+          // have advanced once, so skipping keeps them in lockstep. This relies on getFirst() being an
+          // EdgeToVertexIterable (see getVerticesAndEdges): it is vertexIterator.next(), not
+          // v.getIdentity(), that triggers the edge-record load. Keep that coupling if refactoring.
           final RID neighborEdgeIdentity = edgeIterator.next().getIdentity();
           final Vertex v;
           final RID neighborVertexIdentity;
