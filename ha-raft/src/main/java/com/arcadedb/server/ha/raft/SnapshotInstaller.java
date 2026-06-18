@@ -226,8 +226,13 @@ public final class SnapshotInstaller {
           server.getDatabase(databaseName);
         } catch (final RuntimeException openEx) {
           // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
-          // previous local copy and reopen it so the node is never left with a closed database. Leave the
-          // pending marker for startup reconciliation if the rollback itself is interrupted.
+          // previous local copy and reopen it so the node is never left with a closed database.
+          // The pending marker is intentionally NOT cleared here: it is dropped only on the success path
+          // below. If rollbackToBackup succeeds, the next startup's recoverSingleDatabase sees both
+          // .snapshot-new and .snapshot-backup gone (!hasCompleteMarker && !hasBackup), logs "orphaned
+          // snapshot directory", and clears the marker - so leaving it is harmless and keeps recovery
+          // logic in one place. If the rollback was instead interrupted, that same startup pass restores
+          // the backup. Either way the marker is the single recovery hook.
           LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
               "Installed snapshot for '%s' failed to open; rolling back to the previous local copy", openEx, databaseName);
           rollbackToBackup(dbPath, snapshotBackup);
@@ -250,18 +255,22 @@ public final class SnapshotInstaller {
   }
 
   /**
-   * Resolves the on-disk path of a database whether or not it is currently open, so callers no longer
-   * need to keep the database open just to read its path before an install. When the database is not
-   * registered the path is derived from {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY}.
-   * <p>
+   * Resolves the on-disk path of a database, so callers no longer need to keep it open just to read its
+   * path before an install. Two cases:
+   * <ul>
+   *   <li>database registered (or deregistered-but-on-disk, which {@code existsDatabase} reports as
+   *       present): returns its live {@code getDatabasePath()}. Note the side effect - {@code getDatabase}
+   *       <i>opens and registers</i> a deregistered-but-on-disk database, so do not call this as a pure
+   *       read on a database meant to stay closed;</li>
+   *   <li>database absent: derives the path from {@link GlobalConfiguration#SERVER_DATABASE_DIRECTORY}
+   *       without opening anything (nothing to open).</li>
+   * </ul>
    * Package-private and intended only for the install call sites, which invoke it on an open database
-   * just before closing it. The name embeds the side effect: {@code getDatabase} will <i>open and
-   * register</i> a deregistered-but-on-disk database, so do not call this as a pure read on a database
-   * meant to stay closed. This is safe for the install paths only because two installs for the same
-   * database are never in flight at once (see {@link #closeLocalDatabaseIfOpen}); a re-register racing a
-   * deliberate deregistration elsewhere would be a misuse.
+   * just before closing it. The conditional open is safe for the install paths only because two installs
+   * for the same database are never in flight at once (see {@link #closeLocalDatabaseIfOpen}); a
+   * re-register racing a deliberate deregistration elsewhere would be a misuse.
    */
-  static String ensureOpenAndResolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
+  static String resolveDatabasePath(final ArcadeDBServer server, final String databaseName) {
     // Best-effort: the exists/get pair is not atomic, but it only resolves a path before the download
     // phase (no data at risk) and getDatabase returns a valid path even if it has to reopen.
     if (server.existsDatabase(databaseName))

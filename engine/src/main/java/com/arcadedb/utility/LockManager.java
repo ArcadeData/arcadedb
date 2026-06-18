@@ -149,7 +149,10 @@ public class LockManager<RESOURCE, REQUESTER> {
         // Park OUTSIDE the monitor so a releasing thread can hand off without blocking. A handoff (or
         // close) calls unpark; park may also return spuriously - the loop re-checks state either way.
         if (timeout > 0)
-          LockSupport.parkNanos(deadlineNanos - System.nanoTime());
+          // Math.max(1L, ...) guards the case where the deadline already passed between the check above
+          // and here: parkNanos(<=0) returns immediately (correct, just an extra loop), the clamp keeps
+          // the intent explicit and always parks for a positive duration.
+          LockSupport.parkNanos(Math.max(1L, deadlineNanos - System.nanoTime()));
         else
           LockSupport.park();
 
