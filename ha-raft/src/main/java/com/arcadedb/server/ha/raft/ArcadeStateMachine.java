@@ -64,6 +64,7 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -499,14 +500,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
           LogManager.instance().log(this, Level.INFO,
               "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
 
-          // Close and deregister the database before the swap
-          if (server.existsDatabase(dbName)) {
-            final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);
-            final String databasePath = db.getDatabasePath();
-            db.close();
-            server.removeDatabase(dbName);
-            SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
-          }
+          // install() downloads the snapshot with the database still open and only closes + swaps it
+          // once a complete copy is on disk, rolling back on failure, so a failed download never
+          // leaves this database closed (DatabaseIsClosedException).
+          if (server.existsDatabase(dbName))
+            SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+                leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
         }
 
         LogManager.instance().log(this, Level.INFO, "Full resync from leader completed");
@@ -825,22 +824,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
         return;
       }
 
-      String databasePath;
-      if (server.existsDatabase(databaseName)) {
-        final DatabaseInternal db = (DatabaseInternal) server.getDatabase(databaseName);
-        databasePath = db.getDatabasePath();
-        db.getEmbedded().close();
-        server.removeDatabase(databaseName);
-      } else {
-        databasePath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
-            + File.separator + databaseName;
-      }
-
       final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
       final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
       try {
-        SnapshotInstaller.install(databaseName, databasePath, leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+        // install() keeps the database open during the download and rolls back on failure, so a
+        // failed restore never leaves it closed.
+        SnapshotInstaller.install(databaseName, SnapshotInstaller.resolveDatabasePath(server, databaseName),
+            leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
       } catch (final IOException e) {
         throw new RuntimeException("Failed to install snapshot for restored database '" + databaseName + "'", e);
       }
@@ -875,8 +866,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    *       transaction-delta path is needed because at first formation the Ratis log is empty.</li>
    * </ul>
    * The committed baseline is recorded in {@link #bootstrapBaselines} for status export and tests.
+   * <p>
+   * Package-private (not private) so ArcadeStateMachineBootstrapMismatchTest can exercise the
+   * install-failure recovery path directly instead of via reflection.
    */
-  private void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
+  // @VisibleForTesting
+  void applyBootstrapFingerprintEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long index) {
     final String dbName = decoded.databaseName();
     final String chosenFingerprint = decoded.bootstrapFingerprint();
     final long chosenLastTxId = decoded.bootstrapLastTxId();
@@ -973,7 +968,55 @@ public class ArcadeStateMachine extends BaseStateMachine {
         reinstalling from leader-shipped full snapshot""",
         dbName, localLastTxId, localFingerprint.substring(0, Math.min(8, localFingerprint.length())),
         chosenLastTxId, chosenFingerprint.substring(0, Math.min(8, chosenFingerprint.length())));
-    installFromLeaderForBootstrap(dbName);
+    try {
+      installFromLeaderForBootstrap(dbName);
+    } catch (final RuntimeException e) {
+      // Applied on the Raft StateMachineUpdater thread: letting this propagate trips the critical-error
+      // halt and shuts the server down, leaving the database closed. A transient leader unavailability
+      // during restart must not do that - install downloads before touching the live files, so the
+      // local copy is intact. Keep it and retry asynchronously.
+      LogManager.instance().log(this, Level.SEVERE,
+          "Failed to install snapshot during bootstrap for database '%s': %s. "
+              + "Keeping the local copy and scheduling an async retry once a leader is reachable.",
+          dbName, e.getMessage());
+      // Safety net: install rolls back + reopens on failure; reopen here if left deregistered for any reason.
+      // This branch should be unreachable on the normal failed-download case - install() is download-before-
+      // close, so a download failure never touches the live files and leaves the DB open. It guards against
+      // unexpected future changes (or a failure in a later install phase) that could leave it deregistered.
+      if (!server.existsDatabase(dbName)) {
+        try {
+          server.getDatabase(dbName);
+        } catch (final Exception reopenEx) {
+          // Deliberate last resort: the database is both unusable and unreopenable, so there is nothing
+          // safe to serve. Unlike the transient leader-unavailable case above (local copy intact, retried
+          // async), this is unrecoverable locally, so we intentionally DO let it reach applyTransaction's
+          // critical-error halt rather than mask data loss behind a node that keeps running.
+          throw new RuntimeException("Cannot reopen database '" + dbName + "' after a failed bootstrap install", reopenEx);
+        }
+      }
+      // Flag the pending download and run it off-thread; clearing the flag lets the HealthMonitor
+      // persistent-lag backstop re-arm if this retry also fails on a still-quiet cluster.
+      needsSnapshotDownload.set(true);
+      // We are inside the catch on the Raft StateMachineUpdater thread: a RejectedExecutionException from
+      // a shut-down executor (server stopping) must not escape, or it would reach applyTransaction's
+      // critical-error halt - the very outcome this handler exists to prevent. The flag stays set, so the
+      // HealthMonitor backstop still drives the download once the server is up again.
+      try {
+        lifecycleExecutor.submit(() -> {
+          if (needsSnapshotDownload.compareAndSet(true, false))
+            triggerSnapshotDownload();
+          else
+            // Another path (notifyLeaderChanged or the watchdog) already cleared the flag and is driving
+            // the download; skip this retry. Logged so operators can trace why this submission did nothing.
+            LogManager.instance().log(this, Level.INFO,
+                "Bootstrap snapshot retry skipped for '%s': download already triggered by another path", dbName);
+        });
+      } catch (final RejectedExecutionException ree) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Cannot schedule bootstrap snapshot retry for '%s': executor is shut down; "
+                + "the HealthMonitor backstop will retry once the server is available", null, dbName);
+      }
+    }
   }
 
   /**
@@ -988,21 +1031,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     }
 
     try {
-      String databasePath;
-      if (server.existsDatabase(dbName)) {
-        final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);
-        databasePath = db.getDatabasePath();
-        db.getEmbedded().close();
-        server.removeDatabase(dbName);
-      } else {
-        databasePath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
-            + File.separator + dbName;
-      }
       // Resolve the leader address on each retry: the bootstrap-mismatch entry is applied
       // during Raft log replay on startup, which can race ahead of leader election on this peer.
+      // install() keeps the local copy open during the download and rolls back on failure, so a
+      // failed bootstrap install never leaves the database closed.
       final RaftHAServer raft = raftHAServer;
       final String clusterToken = raft != null ? raft.getClusterToken() : null;
-      SnapshotInstaller.install(dbName, databasePath,
+      SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
           () -> raft != null ? raft.getLeaderHttpAddress() : null,
           () -> raft != null ? raft.getLeaderHttpsAddress() : null,
           clusterToken, server);
@@ -1050,20 +1085,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
         "Operator-triggered resync of database '%s' from leader: dropping local copy and re-acquiring full snapshot", dbName);
 
     try {
-      final String databasePath;
-      if (server.existsDatabase(dbName)) {
-        final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);
-        databasePath = db.getDatabasePath();
-        db.getEmbedded().close();
-        server.removeDatabase(dbName);
-      } else {
-        databasePath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
-            + File.separator + dbName;
-      }
       // Resolve the leader address on each retry (it can change mid-operation if leadership moves).
+      // install() keeps the local copy open and serving during the download and only closes + swaps
+      // once a complete snapshot is on disk, rolling back on failure. A failed resync therefore never
+      // leaves the database closed (the cause of the operator-visible DatabaseIsClosedException).
       final String clusterToken = raft.getClusterToken();
-      SnapshotInstaller.install(dbName, databasePath, raft::getLeaderHttpAddress, raft::getLeaderHttpsAddress,
-          clusterToken, server);
+      SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+          raft::getLeaderHttpAddress, raft::getLeaderHttpsAddress, clusterToken, server);
       LogManager.instance().log(this, Level.INFO, "Database '%s' resynced from leader on operator request", dbName);
     } catch (final IOException e) {
       throw new ReplicationException("Failed to resync database '" + dbName + "' from leader", e);
@@ -1162,13 +1190,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
       final String clusterToken = raftHAServer.getClusterToken();
       for (final String dbName : server.getDatabaseNames()) {
-        if (server.existsDatabase(dbName)) {
-          final DatabaseInternal db = (DatabaseInternal) server.getDatabase(dbName);
-          final String databasePath = db.getDatabasePath();
-          db.close();
-          server.removeDatabase(dbName);
-          SnapshotInstaller.install(dbName, databasePath, leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
-        }
+        // install() keeps the database open during the download and rolls back on failure, so a
+        // watchdog-triggered resync never leaves it closed.
+        if (server.existsDatabase(dbName))
+          SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+              leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
       }
       LogManager.instance().log(this, Level.INFO, "Snapshot download triggered by watchdog completed");
     } catch (final Exception e) {

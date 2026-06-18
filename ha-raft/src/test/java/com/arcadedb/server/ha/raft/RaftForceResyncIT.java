@@ -18,17 +18,25 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.ContextConfiguration;
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.server.ArcadeDBServer;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
+import java.io.IOException;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Integration tests for the operator-triggered emergency resync endpoint
@@ -40,6 +48,14 @@ class RaftForceResyncIT extends BaseRaftHATest {
   protected int getServerCount() {
     // 3 nodes so a majority (2) is still available while one follower is being resynced.
     return 3;
+  }
+
+  @Override
+  protected void onServerConfiguration(final ContextConfiguration config) {
+    super.onServerConfiguration(config);
+    // Keep the failed-install regression test fast: one retry, short backoff.
+    config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES, 1);
+    config.setValue(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS, 100L);
   }
 
   @Test
@@ -94,6 +110,70 @@ class RaftForceResyncIT extends BaseRaftHATest {
     final String body = new String(conn.getErrorStream().readAllBytes(), StandardCharsets.UTF_8);
     assertThat(new JSONObject(body).getString("error", "")).contains("leader");
     conn.disconnect();
+  }
+
+  /**
+   * Regression test for the production incident where a resync against an unreachable/unstable leader
+   * left the follower's database closed and deregistered, surfacing as {@code DatabaseIsClosedException}
+   * on every subsequent transaction. {@link SnapshotInstaller#install} now downloads the snapshot with
+   * the database still open and only closes + swaps once a complete copy is on disk, so a failed
+   * download must leave the database open, serving, and still replicating.
+   */
+  @Test
+  @Timeout(120)
+  void failedResyncKeepsDatabaseOpenAndServing() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+    final String dbName = getDatabaseName();
+
+    final Database leaderDb = getServerDatabase(leaderIndex, dbName);
+    leaderDb.transaction(() -> {
+      if (!leaderDb.getSchema().existsType("ResyncFail"))
+        leaderDb.getSchema().createVertexType("ResyncFail");
+      for (int i = 0; i < 10; i++)
+        leaderDb.newVertex("ResyncFail").set("index", i).save();
+    });
+    assertClusterConsistency();
+
+    final ArcadeDBServer followerServer = getServer(followerIndex);
+    final String dbPath = ((DatabaseInternal) followerServer.getDatabase(dbName)).getDatabasePath();
+    final String token = getRaftPlugin(followerIndex).getRaftHAServer().getClusterToken();
+
+    // Simulate a resync whose download can never succeed (unreachable leader endpoint). The install
+    // must fail without ever touching the live database.
+    assertThatThrownBy(() ->
+        SnapshotInstaller.install(dbName, dbPath, () -> "127.0.0.1:1", () -> null, token, followerServer))
+        .isInstanceOf(IOException.class);
+
+    // The follower database is still open and holds its data - no DatabaseIsClosedException.
+    assertThat(followerServer.existsDatabase(dbName)).as("Database stays registered after a failed install").isTrue();
+    assertThat(getServerDatabase(followerIndex, dbName).countType("ResyncFail", true))
+        .as("Follower keeps its data after a failed install").isEqualTo(10);
+
+    // No staging markers or directories left behind.
+    assertThat(Path.of(dbPath).resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE)).doesNotExist();
+    assertThat(Path.of(dbPath).resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR)).doesNotExist();
+    assertThat(Path.of(dbPath).resolve(SnapshotInstaller.SNAPSHOT_BACKUP_DIR)).doesNotExist();
+
+    // The follower itself accepts a write-and-commit after the failed install (forwarded to the leader
+    // in Raft). This directly documents the absence of DatabaseIsClosedException: a closed/deregistered
+    // database - the original outage - would throw here rather than commit.
+    final Database followerDb = getServerDatabase(followerIndex, dbName);
+    followerDb.transaction(() -> followerDb.newVertex("ResyncFail").set("index", 99).save());
+    assertClusterConsistency();
+    assertThat(getServerDatabase(followerIndex, dbName).countType("ResyncFail", true))
+        .as("Follower commits a write after a failed install (no DatabaseIsClosedException)").isEqualTo(11);
+
+    // Forward replication still works: writes committed on the leader after the failed install reach
+    // the follower.
+    leaderDb.transaction(() -> {
+      for (int i = 10; i < 15; i++)
+        leaderDb.newVertex("ResyncFail").set("index", i).save();
+    });
+    assertClusterConsistency();
+    assertThat(getServerDatabase(followerIndex, dbName).countType("ResyncFail", true))
+        .as("Follower receives writes committed after the failed install").isEqualTo(16);
   }
 
   private JSONObject resync(final int serverIndex, final String databaseName) throws Exception {
