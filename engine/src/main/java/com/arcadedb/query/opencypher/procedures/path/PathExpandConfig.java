@@ -224,12 +224,15 @@ public class PathExpandConfig extends AbstractPathProcedure {
             currentPath.add(edge);
             currentPath.add(neighbor);
 
-            expandDFS(neighbor, relTypes, labelFilter, currentDepth + 1, minDepth, maxDepth,
-                currentPath, visited, allPaths, context, limit);
-
-            currentPath.removeLast();
-            currentPath.removeLast();
-            visited.remove(neighborId);
+            // try-finally so the path/visited bookkeeping is unwound even if the recursion throws.
+            try {
+              expandDFS(neighbor, relTypes, labelFilter, currentDepth + 1, minDepth, maxDepth,
+                  currentPath, visited, allPaths, context, limit);
+            } finally {
+              currentPath.removeLast();
+              currentPath.removeLast();
+              visited.remove(neighborId);
+            }
           }
         } catch (final RecordNotFoundException e) {
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.

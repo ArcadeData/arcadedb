@@ -127,4 +127,16 @@ class AlgoGhostEdgeTest {
     assertProcedureDoesNotThrow("CALL algo.louvain() YIELD node, communityId RETURN node, communityId");
     assertProcedureDoesNotThrow("CALL algo.betweenness() YIELD node, score RETURN node, score");
   }
+
+  /**
+   * Variable-length MATCH exercises the BFS/DFS path traversers; it must skip the ghost rather than
+   * throw while expanding.
+   */
+  @Test
+  void variableLengthTraversalSkipsGhostEdge() {
+    buildGraphWithGhostEdge();
+
+    assertProcedureDoesNotThrow(
+        "MATCH p = (a:Node {name:'A'})-[:LINK*1..5]->(c:Node) RETURN p");
+  }
 }

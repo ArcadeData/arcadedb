@@ -70,8 +70,8 @@ public final class GhostEdgeReporter {
     return totalSkipped.get();
   }
 
-  // @VisibleForTesting
-  public static void resetForTests() {
+  // @VisibleForTesting (package-private: only GhostEdgeReporterTest, in this package, calls it)
+  static void resetForTests() {
     totalSkipped.set(0);
     lastWarningNanos.set(Long.MIN_VALUE);
   }

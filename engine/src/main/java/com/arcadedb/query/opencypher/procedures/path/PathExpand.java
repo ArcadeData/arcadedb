@@ -157,13 +157,16 @@ public class PathExpand extends AbstractPathProcedure {
           currentPath.add(edge);
           currentPath.add(neighbor);
 
-          expandPaths(neighbor, relTypes, labelFilter, currentDepth + 1, minDepth, maxDepth,
-              currentPath, visited, allPaths, context);
-
-          // Backtrack
-          currentPath.removeLast();
-          currentPath.removeLast();
-          visited.remove(neighborId);
+          // try-finally so the path/visited bookkeeping is unwound even if the recursion throws.
+          try {
+            expandPaths(neighbor, relTypes, labelFilter, currentDepth + 1, minDepth, maxDepth,
+                currentPath, visited, allPaths, context);
+          } finally {
+            // Backtrack
+            currentPath.removeLast();
+            currentPath.removeLast();
+            visited.remove(neighborId);
+          }
         }
       } catch (final RecordNotFoundException e) {
         // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
