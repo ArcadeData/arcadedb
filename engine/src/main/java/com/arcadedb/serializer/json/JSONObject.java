@@ -590,7 +590,13 @@ public class JSONObject implements Map<String, Object> {
       case Map map -> new JSONObject(map).getInternal();
       case Document document -> document.toJSON(false).getInternal();
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
-      default -> throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
+      case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
+      case Date date -> new JsonPrimitive(date.getTime());
+      case LocalDate localDate ->
+          new JsonPrimitive(localDate.atStartOfDay().toInstant(ZoneId.systemDefault().getRules().getOffset(Instant.now())).toEpochMilli());
+      case TemporalAccessor temporalAccessor -> new JsonPrimitive(DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS));
+      case Duration duration -> new JsonPrimitive(Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
+      default -> new JsonPrimitive(object.toString());
     };
   }
 

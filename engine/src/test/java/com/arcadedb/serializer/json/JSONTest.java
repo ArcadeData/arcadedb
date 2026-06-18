@@ -23,6 +23,7 @@ import org.junit.jupiter.api.Test;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZonedDateTime;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -220,6 +221,53 @@ class JSONTest extends TestHelper {
     assertThat(deserialized.getString("singleQuote")).isEqualTo("It's a test");
     assertThat(deserialized.getString("allTogether")).isEqualTo("& < > \" '");
     assertThat(deserialized.getString("multipleAmpersands")).isEqualTo("a && b &&& c");
+  }
+
+  @Test
+  void temporalTypesInArrays() {
+    final LocalDateTime ldt = LocalDateTime.of(2024, 6, 15, 10, 30, 0);
+    final LocalDate ld = LocalDate.of(2024, 6, 15);
+    final Date d = new Date(1_000_000L);
+
+    // LocalDateTime inside a List → put(String, Object) → JSONArray constructor
+    JSONObject json = new JSONObject().put("dates", List.of(ldt));
+    assertThat(json.getJSONArray("dates").length()).isEqualTo(1);
+    assertThat(json.getJSONArray("dates").get(0)).isInstanceOf(Number.class);
+
+    // LocalDate inside a List
+    json = new JSONObject().put("dates", List.of(ld));
+    assertThat(json.getJSONArray("dates").length()).isEqualTo(1);
+    assertThat(json.getJSONArray("dates").get(0)).isInstanceOf(Number.class);
+
+    // java.util.Date inside a List
+    json = new JSONObject().put("dates", List.of(d));
+    assertThat(json.getJSONArray("dates").length()).isEqualTo(1);
+    assertThat(json.getJSONArray("dates").get(0)).isInstanceOf(Number.class);
+
+    // JSONArray.put(Object) with LocalDateTime
+    final JSONArray arr = new JSONArray();
+    arr.put((Object) ldt);
+    assertThat(arr.length()).isEqualTo(1);
+    assertThat(arr.get(0)).isInstanceOf(Number.class);
+
+    // JSONArray(Collection) constructor with temporal elements
+    final JSONArray arrFromColl = new JSONArray(List.of(ldt, ld, d));
+    assertThat(arrFromColl.length()).isEqualTo(3);
+    for (int i = 0; i < 3; i++)
+      assertThat(arrFromColl.get(i)).isInstanceOf(Number.class);
+
+    // JSONArray(Object[]) constructor with temporal elements
+    final JSONArray arrFromArr = new JSONArray(new Object[] { ldt, ld, d });
+    assertThat(arrFromArr.length()).isEqualTo(3);
+    for (int i = 0; i < 3; i++)
+      assertThat(arrFromArr.get(i)).isInstanceOf(Number.class);
+
+    // Mixed temporal types round-trip through JSON string
+    json = new JSONObject().put("mixed", List.of(ldt, ld));
+    final JSONObject deserialized = new JSONObject(json.toString());
+    assertThat(deserialized.getJSONArray("mixed").length()).isEqualTo(2);
+    for (int i = 0; i < 2; i++)
+      assertThat(deserialized.getJSONArray("mixed").get(i)).isInstanceOf(Number.class);
   }
 
   @Test
