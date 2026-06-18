@@ -177,8 +177,7 @@ public class JSONObject implements Map<String, Object> {
         // SAVE AS STRING
         object.addProperty(name, dateTimeFormat.format(temporalAccessor));
     }
-    case Duration duration -> object.addProperty(name,
-        Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
+    case Duration duration -> object.addProperty(name, duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
     case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
     case Map map -> object.add(name, new JSONObject(map).getInternal());
     case Class<?> clazz -> object.addProperty(name, clazz.getName());
@@ -598,6 +597,7 @@ public class JSONObject implements Map<String, Object> {
         yield timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
       }
       case Duration duration -> new JsonPrimitive(duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
+      case Class<?> clazz -> new JsonPrimitive(clazz.getName());
       default -> new JsonPrimitive(object.toString());
     };
   }

@@ -28,6 +28,7 @@ import java.time.LocalTime;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Test JSON parser and it support for types.
@@ -240,10 +241,10 @@ class JSONTest extends TestHelper {
     assertThat(json.getJSONArray("dates").length()).isEqualTo(1);
     assertThat(json.getJSONArray("dates").get(0)).isInstanceOf(Number.class);
 
-    // java.util.Date inside a List
+    // java.util.Date inside a List - value is deterministic (epoch millis)
     json = new JSONObject().put("dates", List.of(d));
     assertThat(json.getJSONArray("dates").length()).isEqualTo(1);
-    assertThat(json.getJSONArray("dates").get(0)).isInstanceOf(Number.class);
+    assertThat(((Number) json.getJSONArray("dates").get(0)).longValue()).isEqualTo(1_000_000L);
 
     // JSONArray.put(Object) with LocalDateTime
     final JSONArray arr = new JSONArray();
@@ -283,15 +284,38 @@ class JSONTest extends TestHelper {
 
   @Test
   void durationInArrayPreservesPrecisionAndSign() {
-    // Leading-zero nanoseconds must not be lost (5ns -> 0.000000005, not collapsed).
+    // Leading-zero nanoseconds must not be lost (5ns must not collapse to 0.5s).
     final JSONArray smallNanos = new JSONArray(List.of(Duration.ofSeconds(5, 5)));
-    assertThat(smallNanos.getDouble(0)).isEqualTo(5 + 5 / 1_000_000_000.0);
+    assertThat(smallNanos.getDouble(0)).isCloseTo(5.000000005, within(1e-12));
 
-    // Negative durations stored as (negative seconds, positive nanos) must serialize correctly.
+    // Negative durations stored as (negative seconds, positive nanos) must serialize correctly,
+    // not as the naive "-6.999999995" that "%d.%d" formatting would produce.
     final Duration negative = Duration.ofSeconds(-5).minusNanos(5); // -5.000000005s
     final JSONArray neg = new JSONArray(List.of(negative));
-    assertThat(neg.getDouble(0)).isEqualTo(negative.toSeconds() + negative.toNanosPart() / 1_000_000_000.0);
+    assertThat(neg.getDouble(0)).isCloseTo(-5.000000005, within(1e-12));
     assertThat(neg.getDouble(0)).isLessThan(0.0);
+  }
+
+  @Test
+  void enumAndClassInArrays() {
+    // Enum serializes to its name(); the array path must mirror put(String, Object).
+    final JSONArray enums = new JSONArray(List.of(java.time.DayOfWeek.MONDAY, java.time.Month.JUNE));
+    assertThat(enums.getString(0)).isEqualTo("MONDAY");
+    assertThat(enums.getString(1)).isEqualTo("JUNE");
+
+    // Class serializes to its fully-qualified name (matching put(String, Object)), not toString().
+    final JSONArray classes = new JSONArray(List.of(String.class));
+    assertThat(classes.getString(0)).isEqualTo("java.lang.String");
+  }
+
+  @Test
+  void durationConsistentBetweenPutAndArrayPaths() {
+    // put(String, Object) and the array path (objectToElement) must produce the same value.
+    final Duration duration = Duration.ofSeconds(5, 5); // 5.000000005s
+    final double viaPut = new JSONObject().put("d", duration).getDouble("d");
+    final double viaArray = new JSONArray(List.of(duration)).getDouble(0);
+    assertThat(viaPut).isEqualTo(viaArray);
+    assertThat(viaPut).isCloseTo(5.000000005, within(1e-12));
   }
 
   @Test
