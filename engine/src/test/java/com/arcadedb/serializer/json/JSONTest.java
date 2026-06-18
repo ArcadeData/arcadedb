@@ -21,9 +21,10 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
-import java.time.ZonedDateTime;
+import java.time.LocalTime;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -268,6 +269,29 @@ class JSONTest extends TestHelper {
     assertThat(deserialized.getJSONArray("mixed").length()).isEqualTo(2);
     for (int i = 0; i < 2; i++)
       assertThat(deserialized.getJSONArray("mixed").get(i)).isInstanceOf(Number.class);
+  }
+
+  @Test
+  void unsupportedTemporalInArrayFallsBackToString() {
+    // LocalTime is a TemporalAccessor that DateUtils.dateTimeToTimestamp does not support and
+    // returns null for; the array serializer must fall back to toString() rather than NPE.
+    final LocalTime time = LocalTime.of(13, 45, 30);
+    final JSONArray arr = new JSONArray(List.of(time));
+    assertThat(arr.length()).isEqualTo(1);
+    assertThat(arr.get(0)).isEqualTo(time.toString());
+  }
+
+  @Test
+  void durationInArrayPreservesPrecisionAndSign() {
+    // Leading-zero nanoseconds must not be lost (5ns -> 0.000000005, not collapsed).
+    final JSONArray smallNanos = new JSONArray(List.of(Duration.ofSeconds(5, 5)));
+    assertThat(smallNanos.getDouble(0)).isEqualTo(5 + 5 / 1_000_000_000.0);
+
+    // Negative durations stored as (negative seconds, positive nanos) must serialize correctly.
+    final Duration negative = Duration.ofSeconds(-5).minusNanos(5); // -5.000000005s
+    final JSONArray neg = new JSONArray(List.of(negative));
+    assertThat(neg.getDouble(0)).isEqualTo(negative.toSeconds() + negative.toNanosPart() / 1_000_000_000.0);
+    assertThat(neg.getDouble(0)).isLessThan(0.0);
   }
 
   @Test

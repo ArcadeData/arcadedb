@@ -592,10 +592,12 @@ public class JSONObject implements Map<String, Object> {
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
       case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
       case Date date -> new JsonPrimitive(date.getTime());
-      case LocalDate localDate ->
-          new JsonPrimitive(localDate.atStartOfDay().toInstant(ZoneId.systemDefault().getRules().getOffset(Instant.now())).toEpochMilli());
-      case TemporalAccessor temporalAccessor -> new JsonPrimitive(DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS));
-      case Duration duration -> new JsonPrimitive(Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
+      case LocalDate localDate -> new JsonPrimitive(localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli());
+      case TemporalAccessor temporalAccessor -> {
+        final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
+        yield timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
+      }
+      case Duration duration -> new JsonPrimitive(duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
       default -> new JsonPrimitive(object.toString());
     };
   }
