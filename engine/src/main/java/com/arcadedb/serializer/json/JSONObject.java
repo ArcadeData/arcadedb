@@ -35,7 +35,6 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.math.BigDecimal;
 import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -160,10 +159,8 @@ public class JSONObject implements Map<String, Object> {
     }
     case LocalDate localDate -> {
       if (dateFormatAsString == null)
-        // SAVE AS TIMESTAMP
-        object.addProperty(name,
-            localDate.atStartOfDay().toInstant(ZoneId.systemDefault().getRules().getOffset(Instant.now()))
-                .toEpochMilli());
+        // SAVE AS TIMESTAMP (resolve the offset for the target date's midnight, DST-correct)
+        object.addProperty(name, localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli());
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));

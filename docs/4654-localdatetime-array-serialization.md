@@ -49,6 +49,42 @@ Test `temporalTypesInArrays` covers:
 
 Run: `mvn test -pl engine -Dtest=JSONTest`
 
+## Release-note callout
+
+The `Duration` serialization formula was corrected in both `put(String, Object)` and
+`objectToElement()`. The old `"%d.%d".formatted(toSeconds(), toNanosPart())` form was lossy
+(e.g. a 5.000000005s duration serialized as `5.5`, and negative durations as `-6.999999995`).
+The new arithmetic form (`toSeconds() + toNanosPart()/1e9`) is correct. Applications that
+previously stored a `Duration` via JSON and parsed it back numerically will see a different
+(now correct) value. This is a behavioral change worth a release note.
+
+The `LocalDate` epoch-millis path in `put()` was also unified with `objectToElement()` to use
+the DST-correct `atStartOfDay(ZoneId.systemDefault())` form, so the two paths no longer diverge
+on dates that fall in a different DST period than the moment of serialization.
+
+## Known limitation (out of scope)
+
+`Duration` is serialized as a `double` of seconds. For very large second counts (> ~10^7) the
+nanosecond part can be lost to floating-point rounding. Preserving sub-nanosecond precision for
+large durations would require a different wire format (e.g. total nanoseconds as a `long`) and is
+out of scope for this fix.
+
+## Review cycles
+
+- **a972ec9** (initial): added temporal/Enum cases to `objectToElement()`, regression test.
+  gemini-code-assist flagged 3 high-priority issues (LocalDate DST offset, TemporalAccessor null
+  NPE, Duration precision/sign).
+- **318c3ca**: applied all 3 gemini fixes + 2 edge-case tests. claude bot review: align Duration
+  between `put()` and array path, add `Class<?>` case, replace tautological assertions with concrete
+  values, add Enum coverage; declined removing this docs file (established convention).
+- **090d4eb**: fixed `put()` Duration to match the array path (kills latent bug), added `Class<?>`
+  case to `objectToElement()`, concrete value assertions, Enum/Class tests, cross-path consistency
+  test. claude bot review: unify `LocalDate` path between `put()` and array path (the remaining
+  divergence), noted Duration-double precision limit and breaking-change release note.
+- **(this commit)**: unified `put()` LocalDate on the DST-correct form, removed now-unused `Instant`
+  import, added `localDateConsistentBetweenPutAndArrayPaths` test, documented the release-note
+  callout and known limitation above.
+
 ## Status
 
-Implementation complete, tests passing.
+Implementation complete, all tests passing.

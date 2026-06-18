@@ -309,6 +309,16 @@ class JSONTest extends TestHelper {
   }
 
   @Test
+  void localDateConsistentBetweenPutAndArrayPaths() {
+    // put(String, Object) and the array path (objectToElement) must produce the same epoch-millis
+    // for a LocalDate, both using the DST-correct atStartOfDay(ZoneId) form.
+    final LocalDate ld = LocalDate.of(2024, 6, 15);
+    final long viaPut = new JSONObject().put("d", ld).getLong("d");
+    final long viaArray = ((Number) new JSONArray(List.of(ld)).get(0)).longValue();
+    assertThat(viaPut).isEqualTo(viaArray);
+  }
+
+  @Test
   void durationConsistentBetweenPutAndArrayPaths() {
     // put(String, Object) and the array path (objectToElement) must produce the same value.
     final Duration duration = Duration.ofSeconds(5, 5); // 5.000000005s
