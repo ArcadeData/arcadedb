@@ -147,7 +147,6 @@ public class SQLFunctionDuanSSSP extends SQLFunctionMathAbstract {
             }
           }
         } catch (final RecordNotFoundException e) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(e);
         }
       }

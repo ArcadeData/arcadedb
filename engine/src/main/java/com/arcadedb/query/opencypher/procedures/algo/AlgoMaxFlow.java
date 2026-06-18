@@ -130,7 +130,6 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
           // For undirected: also add reverse capacity
           capacity[j][i] += cap;
         } catch (final RecordNotFoundException rnf) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

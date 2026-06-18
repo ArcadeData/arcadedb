@@ -101,7 +101,9 @@ public class AlgoMST extends AbstractAlgoProcedure {
 
     final Map<RID, Integer> ridToIdx = buildRidIndex(vertices);
 
-    // Collect edges — two passes to allocate primitive arrays without reallocation
+    // Collect edges — two passes to allocate primitive arrays without reallocation. Ghost edges are
+    // skipped identically in both passes (same getEdges() order), so the pass-2 fill never exceeds the
+    // pass-1 count and the arrays are always sized correctly.
     // Pass 1: count
     int edgeCount = 0;
     for (int i = 0; i < n; i++) {
@@ -113,7 +115,6 @@ public class AlgoMST extends AbstractAlgoProcedure {
           if (ridToIdx.containsKey(e.getIn()))
             edgeCount++;
         } catch (final RecordNotFoundException rnf) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }
@@ -143,7 +144,6 @@ public class AlgoMST extends AbstractAlgoProcedure {
           }
           ec++;
         } catch (final RecordNotFoundException rnf) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

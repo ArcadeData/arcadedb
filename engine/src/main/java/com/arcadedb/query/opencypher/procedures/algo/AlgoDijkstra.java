@@ -134,7 +134,6 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
             bestEdge = edge;
           }
         } catch (final RecordNotFoundException e) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(e);
         }
       }

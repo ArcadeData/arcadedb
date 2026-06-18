@@ -434,7 +434,6 @@ public class ShortestPathStep extends AbstractExecutionStep {
           if (connected.equals(to.getIdentity()))
             return edge;
         } catch (final RecordNotFoundException e) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(e);
         }
       }

@@ -203,7 +203,6 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           }
         }
       } catch (final RecordNotFoundException e) {
-        // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
         GhostEdgeReporter.reportSkipped(e);
       }
     }
@@ -241,7 +240,6 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
           }
         }
       } catch (final RecordNotFoundException e) {
-        // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
         GhostEdgeReporter.reportSkipped(e);
       }
     }

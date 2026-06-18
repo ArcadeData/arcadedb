@@ -22,6 +22,7 @@ import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.QueryEngineManager;
 
+import io.micrometer.core.instrument.FunctionCounter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 
@@ -77,10 +78,11 @@ public final class PoolMetrics implements MeterBinder {
         () -> svsp.getPoolStats().completedTasks(),
         () -> svsp.getPoolStats().callerRunFallbacks());
 
-    // Not a pool, but a graph data-integrity signal surfaced the same way: cumulative ghost (dangling)
-    // edges skipped during traversal. Lets operators spot a corrupted graph from dashboards without
-    // parsing logs; complements the throttled WARNING already emitted by GhostEdgeReporter.
-    Gauge.builder("arcadedb.graph.ghost_edges_skipped", GhostEdgeReporter::getTotalSkipped)
+    // Not a pool, but a graph data-integrity signal surfaced the same way. A monotonic FunctionCounter
+    // (not a gauge) so dashboards can compute a rate() and alert on a sudden spike of corruption,
+    // complementing the throttled WARNING already emitted by GhostEdgeReporter.
+    FunctionCounter.builder("arcadedb.graph.ghost_edges_skipped", GhostEdgeReporter.class,
+            c -> GhostEdgeReporter.getTotalSkipped())
         .description("Cumulative ghost (dangling) edges skipped during graph traversal since startup. "
             + "Sustained growth indicates a data-integrity anomaly, e.g. incomplete HA replication or a partially rolled-back transaction.")
         .register(registry);

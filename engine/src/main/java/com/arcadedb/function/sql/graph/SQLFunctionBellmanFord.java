@@ -168,7 +168,6 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
           edgeList.add(new int[] { i, j });
           edgeWeights.add(w);
         } catch (final RecordNotFoundException rnf) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

@@ -134,7 +134,6 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
           if (w < weightMatrix[i][j])
             weightMatrix[i][j] = w;
         } catch (final RecordNotFoundException rnf) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

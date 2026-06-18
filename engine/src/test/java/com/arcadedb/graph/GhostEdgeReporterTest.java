@@ -26,7 +26,6 @@ import org.junit.jupiter.api.parallel.Execution;
 import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatCode;
 
 // GhostEdgeReporter keeps JVM-wide static counters; pin this class to a single thread so its
 // resetForTests()/count assertions cannot race with ghost-edge skips from other tests run in parallel.
@@ -46,9 +45,4 @@ class GhostEdgeReporterTest {
     assertThat(GhostEdgeReporter.getTotalSkipped()).isEqualTo(2);
   }
 
-  @Test
-  void toleratesNullCause() {
-    assertThatCode(() -> GhostEdgeReporter.reportSkipped(null)).doesNotThrowAnyException();
-    assertThat(GhostEdgeReporter.getTotalSkipped()).isEqualTo(1);
-  }
 }

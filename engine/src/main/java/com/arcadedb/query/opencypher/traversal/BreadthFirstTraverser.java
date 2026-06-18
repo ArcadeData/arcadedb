@@ -192,7 +192,6 @@ public class BreadthFirstTraverser extends GraphTraverser {
             final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
             queue.add(new PathWithDepth(newPath, depth + 1));
           } catch (final RecordNotFoundException e) {
-            // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
             GhostEdgeReporter.reportSkipped(e);
           }
         }

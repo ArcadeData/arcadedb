@@ -177,7 +177,6 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
             wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
           }
         } catch (final RecordNotFoundException e) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(e);
         }
       }
@@ -195,7 +194,6 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
               wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
             }
           } catch (final RecordNotFoundException e) {
-            // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
             GhostEdgeReporter.reportSkipped(e);
           }
         }

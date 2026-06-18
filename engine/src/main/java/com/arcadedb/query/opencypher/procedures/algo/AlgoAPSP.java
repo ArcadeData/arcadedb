@@ -186,7 +186,6 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
           if (w < dist[i][j])
             dist[i][j] = w;
         } catch (final RecordNotFoundException rnf) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

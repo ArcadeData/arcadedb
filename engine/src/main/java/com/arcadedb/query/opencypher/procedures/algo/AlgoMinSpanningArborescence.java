@@ -109,7 +109,9 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
       return Stream.empty();
     final int rootIdx = rootIdxObj;
 
-    // Collect all directed edges as primitive arrays (two-pass, OUT direction = directed edges)
+    // Collect all directed edges as primitive arrays (two-pass, OUT direction = directed edges). Ghost
+    // edges are skipped identically in both passes (same getEdges() order), so the pass-2 fill never
+    // exceeds the pass-1 count and the arrays are always sized correctly.
     // Pass 1: count
     int edgeCount = 0;
     for (int i = 0; i < n; i++) {
@@ -121,7 +123,6 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
           if (ridToIdx.containsKey(e.getIn()))
             edgeCount++;
         } catch (final RecordNotFoundException rnf) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }
@@ -151,7 +152,6 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
           }
           ec++;
         } catch (final RecordNotFoundException rnf) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

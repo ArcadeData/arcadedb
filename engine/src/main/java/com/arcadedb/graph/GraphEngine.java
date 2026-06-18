@@ -1005,10 +1005,10 @@ public class GraphEngine {
         try {
           if (ridToIdx.containsKey(neighborRid(e, vid, dir)))
             counts[i]++;
-        } catch (final RecordNotFoundException ex) {
+        } catch (final RecordNotFoundException rnf) {
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it (the fill
           // pass below skips it identically, so counts and adjacency stay consistent).
-          GhostEdgeReporter.reportSkipped(ex);
+          GhostEdgeReporter.reportSkipped(rnf);
         }
       }
     }
@@ -1027,9 +1027,9 @@ public class GraphEngine {
           final Integer j = ridToIdx.get(nid);
           if (j != null)
             adj[i][pos[i]++] = j;
-        } catch (final RecordNotFoundException ex) {
+        } catch (final RecordNotFoundException rnf) {
           // Ghost edge: skipped identically to the counting pass above, so pos[i] never exceeds counts[i].
-          GhostEdgeReporter.reportSkipped(ex);
+          GhostEdgeReporter.reportSkipped(rnf);
         }
       }
     }

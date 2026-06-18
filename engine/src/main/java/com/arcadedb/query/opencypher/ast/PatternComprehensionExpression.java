@@ -345,7 +345,6 @@ public class PatternComprehensionExpression implements Expression {
       try {
         targetVertex = edgeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
       } catch (final RecordNotFoundException e) {
-        // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
         GhostEdgeReporter.reportSkipped(e);
         continue;
       }

@@ -279,7 +279,6 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
         if (neighbor != null)
           result.put(neighbor, getDistance(edge));
       } catch (final RecordNotFoundException rnf) {
-        // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
         GhostEdgeReporter.reportSkipped(rnf);
       }
     }
@@ -351,7 +350,6 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
           break;
         }
       } catch (final RecordNotFoundException rnf) {
-        // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
         GhostEdgeReporter.reportSkipped(rnf);
       }
     }

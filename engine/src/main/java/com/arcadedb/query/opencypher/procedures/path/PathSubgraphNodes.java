@@ -128,7 +128,6 @@ public class PathSubgraphNodes extends AbstractPathProcedure {
               queue.add(new VertexLevel(neighbor, current.level + 1));
             }
           } catch (final RecordNotFoundException e) {
-            // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
             GhostEdgeReporter.reportSkipped(e);
           }
         }

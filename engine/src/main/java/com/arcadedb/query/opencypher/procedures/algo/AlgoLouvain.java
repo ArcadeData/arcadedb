@@ -137,7 +137,6 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
           nodeDegree[i] += w;
           totalWeight += w;
         } catch (final RecordNotFoundException e) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(e);
         }
       }
@@ -173,7 +172,6 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
             final int neighborComm = community[neighborIdx];
             neighborCommunityWeight.merge(neighborComm, w, Double::sum);
           } catch (final RecordNotFoundException e) {
-            // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
             GhostEdgeReporter.reportSkipped(e);
           }
         }
@@ -266,7 +264,6 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
           }
           modularity += w - (nodeDegree[i] * nodeDegree[j]) / (2.0 * totalWeight);
         } catch (final RecordNotFoundException e) {
-          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           GhostEdgeReporter.reportSkipped(e);
         }
       }
