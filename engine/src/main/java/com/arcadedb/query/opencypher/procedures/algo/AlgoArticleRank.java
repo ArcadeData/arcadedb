@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
@@ -235,9 +236,13 @@ public class AlgoArticleRank extends AbstractAlgoProcedure {
         final Vertex v = vertices.get(i);
         final double denom = outDegrees[i] + avgOutDeg;
         for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
-          final Integer neighborIdx = ridToIdx.get(edge.getIn());
-          if (neighborIdx != null)
-            newScores[neighborIdx] += scores[i] / denom;
+          try {
+            final Integer neighborIdx = ridToIdx.get(edge.getIn());
+            if (neighborIdx != null)
+              newScores[neighborIdx] += scores[i] / denom;
+          } catch (final RecordNotFoundException ignored) {
+            // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+          }
         }
       }
 

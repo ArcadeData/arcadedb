@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -114,9 +115,14 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
       final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
-      for (final Edge e : edges)
-        if (ridToIdx.containsKey(e.getIn()))
-          edgeCount++;
+      for (final Edge e : edges) {
+        try {
+          if (ridToIdx.containsKey(e.getIn()))
+            edgeCount++;
+        } catch (final RecordNotFoundException ignored) {
+          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+        }
+      }
     }
 
     // Pass 2: fill
@@ -129,18 +135,22 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
       for (final Edge e : edges) {
-        final Integer j = ridToIdx.get(e.getIn());
-        if (j == null)
-          continue;
-        eFrom[ec] = i;
-        eTo[ec] = j;
-        if (weightProperty != null) {
-          final Object w = e.get(weightProperty);
-          eW[ec] = w instanceof Number num ? num.doubleValue() : 1.0;
-        } else {
-          eW[ec] = 1.0;
+        try {
+          final Integer j = ridToIdx.get(e.getIn());
+          if (j == null)
+            continue;
+          eFrom[ec] = i;
+          eTo[ec] = j;
+          if (weightProperty != null) {
+            final Object w = e.get(weightProperty);
+            eW[ec] = w instanceof Number num ? num.doubleValue() : 1.0;
+          } else {
+            eW[ec] = 1.0;
+          }
+          ec++;
+        } catch (final RecordNotFoundException ignored) {
+          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
         }
-        ec++;
       }
     }
 

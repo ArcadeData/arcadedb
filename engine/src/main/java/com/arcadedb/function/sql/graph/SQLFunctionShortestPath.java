@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.CSRVertexIterable;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeToVertexIterable;
@@ -368,9 +369,19 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         final Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
         final Iterator<Edge> edgeIterator = neighbors.getSecond().iterator();
         while (vertexIterator.hasNext() && edgeIterator.hasNext()) {
-          final Vertex v = vertexIterator.next();
-          final RID neighborVertexIdentity = v.getIdentity();
+          // Advance the edge iterator first (getIdentity never loads the record); then resolve the
+          // neighbor vertex, which lazily loads the edge. A ghost edge throws there - both iterators
+          // have advanced once, so skipping keeps them in lockstep.
           final RID neighborEdgeIdentity = edgeIterator.next().getIdentity();
+          final Vertex v;
+          final RID neighborVertexIdentity;
+          try {
+            v = vertexIterator.next();
+            neighborVertexIdentity = v.getIdentity();
+          } catch (final RecordNotFoundException ignored) {
+            // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+            continue;
+          }
 
           if (context.rightVisited.contains(neighborVertexIdentity)) {
             context.previouses.put(neighborVertexIdentity, neighborEdgeIdentity);
@@ -430,9 +441,19 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         final Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
         final Iterator<Edge> edgeIterator = neighbors.getSecond().iterator();
         while (vertexIterator.hasNext() && edgeIterator.hasNext()) {
-          final Vertex v = vertexIterator.next();
-          final RID neighborVertexIdentity = v.getIdentity();
+          // Advance the edge iterator first (getIdentity never loads the record); then resolve the
+          // neighbor vertex, which lazily loads the edge. A ghost edge throws there - both iterators
+          // have advanced once, so skipping keeps them in lockstep.
           final RID neighborEdgeIdentity = edgeIterator.next().getIdentity();
+          final Vertex v;
+          final RID neighborVertexIdentity;
+          try {
+            v = vertexIterator.next();
+            neighborVertexIdentity = v.getIdentity();
+          } catch (final RecordNotFoundException ignored) {
+            // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+            continue;
+          }
 
           if (context.leftVisited.contains(neighborVertexIdentity)) {
             context.nexts.put(neighborVertexIdentity, neighborEdgeIdentity);

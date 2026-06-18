@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
@@ -272,9 +273,13 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
 
     // OLTP fallback
     for (final Edge edge : node.getEdges(paramDirection, paramEdgeTypeNames)) {
-      final Vertex neighbor = getNeighbor(node, edge, ctx.getDatabase());
-      if (neighbor != null)
-        result.put(neighbor, getDistance(edge));
+      try {
+        final Vertex neighbor = getNeighbor(node, edge, ctx.getDatabase());
+        if (neighbor != null)
+          result.put(neighbor, getDistance(edge));
+      } catch (final RecordNotFoundException ignored) {
+        // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+      }
     }
     return result;
   }
@@ -338,9 +343,13 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
     Edge e = null;
     while (edges.hasNext()) {
       final Edge next = edges.next();
-      if (next.getOut().equals(target.getIdentity()) || next.getIn().equals(target.getIdentity())) {
-        e = next;
-        break;
+      try {
+        if (next.getOut().equals(target.getIdentity()) || next.getIn().equals(target.getIdentity())) {
+          e = next;
+          break;
+        }
+      } catch (final RecordNotFoundException ignored) {
+        // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
       }
     }
     if (e != null) {

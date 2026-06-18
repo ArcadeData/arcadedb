@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -129,7 +130,13 @@ public class GAVExpandAll extends AbstractPhysicalOperator {
             if (oltpFallbackEdges.hasNext()) {
               final Edge edge = oltpFallbackEdges.next();
               final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
-              final Vertex targetVertex = getTargetVertex(edge, sourceVertex);
+              final Vertex targetVertex;
+              try {
+                targetVertex = getTargetVertex(edge, sourceVertex);
+              } catch (final RecordNotFoundException ignored) {
+                // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+                continue;
+              }
               if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
                 continue;
               addResultWithTarget(targetVertex);

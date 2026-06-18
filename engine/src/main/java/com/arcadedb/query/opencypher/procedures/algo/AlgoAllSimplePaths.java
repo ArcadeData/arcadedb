@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -176,24 +177,28 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
       if (!skipRelTypes.isEmpty() && skipRelTypes.contains(edge.getTypeName()))
         continue;
 
-      final Vertex neighbor = edge.getInVertex();
+      try {
+        final Vertex neighbor = edge.getInVertex();
 
-      // Early pruning: a barrier vertex type halts the expansion of this branch immediately
-      if (!skipVertexTypes.isEmpty() && skipVertexTypes.contains(neighbor.getTypeName()))
-        continue;
+        // Early pruning: a barrier vertex type halts the expansion of this branch immediately
+        if (!skipVertexTypes.isEmpty() && skipVertexTypes.contains(neighbor.getTypeName()))
+          continue;
 
-      final RID neighborId = neighbor.getIdentity();
+        final RID neighborId = neighbor.getIdentity();
 
-      if (!visited.contains(neighborId)) {
-        visited.add(neighborId);
-        currentPath.add(edge);
-        currentPath.add(neighbor);
+        if (!visited.contains(neighborId)) {
+          visited.add(neighborId);
+          currentPath.add(edge);
+          currentPath.add(neighbor);
 
-        findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
+          findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
 
-        currentPath.removeLast();
-        currentPath.removeLast();
-        visited.remove(neighborId);
+          currentPath.removeLast();
+          currentPath.removeLast();
+          visited.remove(neighborId);
+        }
+      } catch (final RecordNotFoundException ignored) {
+        // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
       }
     }
 
@@ -205,24 +210,28 @@ public class AlgoAllSimplePaths extends AbstractAlgoProcedure {
       if (!skipRelTypes.isEmpty() && skipRelTypes.contains(edge.getTypeName()))
         continue;
 
-      final Vertex neighbor = edge.getOutVertex();
+      try {
+        final Vertex neighbor = edge.getOutVertex();
 
-      // Early pruning: a barrier vertex type halts the expansion of this branch immediately
-      if (!skipVertexTypes.isEmpty() && skipVertexTypes.contains(neighbor.getTypeName()))
-        continue;
+        // Early pruning: a barrier vertex type halts the expansion of this branch immediately
+        if (!skipVertexTypes.isEmpty() && skipVertexTypes.contains(neighbor.getTypeName()))
+          continue;
 
-      final RID neighborId = neighbor.getIdentity();
+        final RID neighborId = neighbor.getIdentity();
 
-      if (!visited.contains(neighborId)) {
-        visited.add(neighborId);
-        currentPath.add(edge);
-        currentPath.add(neighbor);
+        if (!visited.contains(neighborId)) {
+          visited.add(neighborId);
+          currentPath.add(edge);
+          currentPath.add(neighbor);
 
-        findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
+          findPaths(neighbor, target, relTypes, skipRelTypes, skipVertexTypes, remainingDepth - 1, currentPath, visited, allPaths, context);
 
-        currentPath.removeLast();
-        currentPath.removeLast();
-        visited.remove(neighborId);
+          currentPath.removeLast();
+          currentPath.removeLast();
+          visited.remove(neighborId);
+        }
+      } catch (final RecordNotFoundException ignored) {
+        // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
       }
     }
   }

@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
@@ -130,14 +131,18 @@ public class GAVExpandInto extends AbstractPhysicalOperator {
       private boolean isConnectedOLTP(final Vertex source, final Vertex target) {
         final Vertex.DIRECTION arcadeDirection = direction.toArcadeDirection();
         for (final Edge edge : source.getEdges(arcadeDirection, edgeTypes)) {
-          if (arcadeDirection == Vertex.DIRECTION.BOTH) {
-            // source can be either endpoint, so check both sides
-            if (edge.getOutVertex().getIdentity().equals(target.getIdentity()) || edge.getInVertex().getIdentity().equals(target.getIdentity()))
-              return true;
-          } else {
-            final Vertex other = arcadeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-            if (other.getIdentity().equals(target.getIdentity()))
-              return true;
+          try {
+            if (arcadeDirection == Vertex.DIRECTION.BOTH) {
+              // source can be either endpoint, so check both sides
+              if (edge.getOutVertex().getIdentity().equals(target.getIdentity()) || edge.getInVertex().getIdentity().equals(target.getIdentity()))
+                return true;
+            } else {
+              final Vertex other = arcadeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+              if (other.getIdentity().equals(target.getIdentity()))
+                return true;
+            }
+          } catch (final RecordNotFoundException ignored) {
+            // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           }
         }
         return false;

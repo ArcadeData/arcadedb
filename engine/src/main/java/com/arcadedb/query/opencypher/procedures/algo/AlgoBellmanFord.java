@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -237,17 +238,21 @@ public class AlgoBellmanFord extends AbstractAlgoProcedure {
           v.getEdges(Vertex.DIRECTION.OUT, relTypes) :
           v.getEdges(Vertex.DIRECTION.OUT);
       for (final Edge edge : edges) {
-        final int j = graph.indexOf(edge.getIn());
-        if (j < 0)
-          continue;
-        double w = 1.0;
-        if (weightProperty != null && !weightProperty.isEmpty()) {
-          final Object wObj = edge.get(weightProperty);
-          if (wObj instanceof Number num)
-            w = num.doubleValue();
+        try {
+          final int j = graph.indexOf(edge.getIn());
+          if (j < 0)
+            continue;
+          double w = 1.0;
+          if (weightProperty != null && !weightProperty.isEmpty()) {
+            final Object wObj = edge.get(weightProperty);
+            if (wObj instanceof Number num)
+              w = num.doubleValue();
+          }
+          edgeList.add(new int[] { i, j });
+          weightList.add(w);
+        } catch (final RecordNotFoundException ignored) {
+          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
         }
-        edgeList.add(new int[] { i, j });
-        weightList.add(w);
       }
     }
   }

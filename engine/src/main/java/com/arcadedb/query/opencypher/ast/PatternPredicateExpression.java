@@ -18,6 +18,7 @@
  */
 package com.arcadedb.query.opencypher.ast;
 
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -203,8 +204,13 @@ public class PatternPredicateExpression implements BooleanExpression {
 
       while (outEdges.hasNext()) {
         final Edge edge = outEdges.next();
-        if (edge.getIn().equals(endVertex)) {
-          return true;
+        try {
+          if (edge.getIn().equals(endVertex)) {
+            return true;
+          }
+        } catch (final RecordNotFoundException ignored) {
+          // Ghost edge: segment pointer exists but the backing edge record is gone (e.g. an HA
+          // resync/rolled-back transaction left a dangling pointer). Skip it - it cannot satisfy the pattern.
         }
       }
     }
@@ -220,8 +226,12 @@ public class PatternPredicateExpression implements BooleanExpression {
 
       while (inEdges.hasNext()) {
         final Edge edge = inEdges.next();
-        if (edge.getOut().equals(endVertex)) {
-          return true;
+        try {
+          if (edge.getOut().equals(endVertex)) {
+            return true;
+          }
+        } catch (final RecordNotFoundException ignored) {
+          // Ghost edge: see above.
         }
       }
     }
@@ -252,8 +262,12 @@ public class PatternPredicateExpression implements BooleanExpression {
 
       while (outEdges.hasNext()) {
         final Edge edge = outEdges.next();
-        if (matchesNodePattern(edge.getInVertex(), endNodePattern, context))
-          return true;
+        try {
+          if (matchesNodePattern(edge.getInVertex(), endNodePattern, context))
+            return true;
+        } catch (final RecordNotFoundException ignored) {
+          // Ghost edge: segment pointer exists but the backing edge/target record is gone. Skip it.
+        }
       }
     }
 
@@ -268,8 +282,12 @@ public class PatternPredicateExpression implements BooleanExpression {
 
       while (inEdges.hasNext()) {
         final Edge edge = inEdges.next();
-        if (matchesNodePattern(edge.getOutVertex(), endNodePattern, context))
-          return true;
+        try {
+          if (matchesNodePattern(edge.getOutVertex(), endNodePattern, context))
+            return true;
+        } catch (final RecordNotFoundException ignored) {
+          // Ghost edge: see above.
+        }
       }
     }
 

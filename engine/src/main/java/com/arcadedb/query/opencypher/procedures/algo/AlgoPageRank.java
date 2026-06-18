@@ -20,6 +20,7 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.Vertex;
@@ -165,26 +166,34 @@ public class AlgoPageRank extends AbstractAlgoProcedure {
 
       // Always traverse OUT edges
       for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
-        final Integer neighborIdx = ridToIdx.get(edge.getInVertex().getIdentity());
-        if (neighborIdx == null)
-          continue;
-        nbrs.add(new int[]{ neighborIdx });
-        if (wts != null) {
-          final Object w = edge.get(weightProperty);
-          wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
-        }
-      }
-
-      // For BOTH direction, also traverse IN edges (treat undirected edges as bidirectional)
-      if (direction == Vertex.DIRECTION.BOTH) {
-        for (final Edge edge : v.getEdges(Vertex.DIRECTION.IN)) {
-          final Integer neighborIdx = ridToIdx.get(edge.getOutVertex().getIdentity());
+        try {
+          final Integer neighborIdx = ridToIdx.get(edge.getInVertex().getIdentity());
           if (neighborIdx == null)
             continue;
           nbrs.add(new int[]{ neighborIdx });
           if (wts != null) {
             final Object w = edge.get(weightProperty);
             wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+          }
+        } catch (final RecordNotFoundException ignored) {
+          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
+        }
+      }
+
+      // For BOTH direction, also traverse IN edges (treat undirected edges as bidirectional)
+      if (direction == Vertex.DIRECTION.BOTH) {
+        for (final Edge edge : v.getEdges(Vertex.DIRECTION.IN)) {
+          try {
+            final Integer neighborIdx = ridToIdx.get(edge.getOutVertex().getIdentity());
+            if (neighborIdx == null)
+              continue;
+            nbrs.add(new int[]{ neighborIdx });
+            if (wts != null) {
+              final Object w = edge.get(weightProperty);
+              wts.add(w instanceof Number num ? num.doubleValue() : 1.0);
+            }
+          } catch (final RecordNotFoundException ignored) {
+            // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it.
           }
         }
       }
