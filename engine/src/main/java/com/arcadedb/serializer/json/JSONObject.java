@@ -35,7 +35,6 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.math.BigDecimal;
 import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -160,10 +159,8 @@ public class JSONObject implements Map<String, Object> {
     }
     case LocalDate localDate -> {
       if (dateFormatAsString == null)
-        // SAVE AS TIMESTAMP
-        object.addProperty(name,
-            localDate.atStartOfDay().toInstant(ZoneId.systemDefault().getRules().getOffset(Instant.now()))
-                .toEpochMilli());
+        // SAVE AS TIMESTAMP (resolve the offset for the target date's midnight, DST-correct)
+        object.addProperty(name, localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli());
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
@@ -177,8 +174,7 @@ public class JSONObject implements Map<String, Object> {
         // SAVE AS STRING
         object.addProperty(name, dateTimeFormat.format(temporalAccessor));
     }
-    case Duration duration -> object.addProperty(name,
-        Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
+    case Duration duration -> object.addProperty(name, duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
     case Identifiable identifiable -> object.addProperty(name, identifiable.getIdentity().toString());
     case Map map -> object.add(name, new JSONObject(map).getInternal());
     case Class<?> clazz -> object.addProperty(name, clazz.getName());
@@ -590,7 +586,16 @@ public class JSONObject implements Map<String, Object> {
       case Map map -> new JSONObject(map).getInternal();
       case Document document -> document.toJSON(false).getInternal();
       case Identifiable identifiable -> new JsonPrimitive(identifiable.getIdentity().toString());
-      default -> throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
+      case Enum<?> enumValue -> new JsonPrimitive(enumValue.name());
+      case Date date -> new JsonPrimitive(date.getTime());
+      case LocalDate localDate -> new JsonPrimitive(localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli());
+      case TemporalAccessor temporalAccessor -> {
+        final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
+        yield timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
+      }
+      case Duration duration -> new JsonPrimitive(duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
+      case Class<?> clazz -> new JsonPrimitive(clazz.getName());
+      default -> new JsonPrimitive(object.toString());
     };
   }
 
