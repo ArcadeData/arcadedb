@@ -60,11 +60,10 @@ class AlgoGhostEdgeTest {
   }
 
   /**
-   * Build A -[LINK]-> B -[LINK]-> C, then ghost the A->B edge. Both allSimplePaths and dijkstra
-   * traverse live edges and must not throw when they encounter the ghost.
+   * Builds A -[LINK]-> B -[LINK]-> C and then ghosts the A->B edge (deletes only the edge record,
+   * leaving the segment pointer dangling). Returns after the ghost is in place.
    */
-  @Test
-  void algoProceduresSkipGhostEdge() {
+  private void buildGraphWithGhostEdge() {
     database.transaction(() -> {
       final MutableVertex a = database.newVertex("Node").set("name", "A").save();
       final MutableVertex b = database.newVertex("Node").set("name", "B").save();
@@ -73,7 +72,6 @@ class AlgoGhostEdgeTest {
       b.newEdge("LINK", c).set("w", 1.0).save();
     });
 
-    // Ghost the A->B edge: delete its record, leaving the segment pointer dangling.
     final RID ghostRID;
     try (final ResultSet rs = database.query("opencypher",
         "MATCH (a:Node {name:'A'})-[r:LINK]->(b:Node {name:'B'}) RETURN r")) {
@@ -83,25 +81,50 @@ class AlgoGhostEdgeTest {
       final Bucket bucket = database.getSchema().getBucketById(ghostRID.getBucketId());
       bucket.deleteRecord(ghostRID);
     });
+  }
 
-    // allSimplePaths must not throw while expanding across the ghost edge.
+  private void assertProcedureDoesNotThrow(final String cypher) {
     assertThatCode(() -> {
-      try (final ResultSet rs = database.query("opencypher",
-          "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "
-              + "CALL algo.allSimplePaths(a, c, ['LINK'], 10) YIELD path RETURN path")) {
+      try (final ResultSet rs = database.query("opencypher", cypher)) {
         while (rs.hasNext())
           rs.next();
       }
     }).doesNotThrowAnyException();
+  }
 
-    // dijkstra must not throw either (it iterates live edges to rebuild the path / read weights).
-    assertThatCode(() -> {
-      try (final ResultSet rs = database.query("opencypher",
-          "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "
-              + "CALL algo.dijkstra(a, c, 'LINK', 'w') YIELD path, weight RETURN path, weight")) {
-        while (rs.hasNext())
-          rs.next();
-      }
-    }).doesNotThrowAnyException();
+  /**
+   * Path-finding procedures that traverse live edges must skip the ghost rather than throw.
+   */
+  @Test
+  void pathFindingProceduresSkipGhostEdge() {
+    buildGraphWithGhostEdge();
+
+    // allSimplePaths expands live edges from A to C.
+    assertProcedureDoesNotThrow(
+        "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "
+            + "CALL algo.allSimplePaths(a, c, ['LINK'], 10) YIELD path RETURN path");
+
+    // dijkstra iterates live edges to rebuild the path / read weights.
+    assertProcedureDoesNotThrow(
+        "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "
+            + "CALL algo.dijkstra(a, c, 'LINK', 'w') YIELD path, weight RETURN path, weight");
+
+    // path.expand is an APOC-style traversal over live edges (procedures/path/PathExpand).
+    assertProcedureDoesNotThrow(
+        "MATCH (a:Node {name:'A'}) "
+            + "CALL path.expand(a, 'LINK', null, 1, 10) YIELD path RETURN path");
+  }
+
+  /**
+   * Whole-graph analytics with more complex inner loops (PageRank: 2 catch sites, Louvain: 3,
+   * Betweenness: 1) must also tolerate the ghost edge across their projection/relaxation passes.
+   */
+  @Test
+  void analyticsProceduresSkipGhostEdge() {
+    buildGraphWithGhostEdge();
+
+    assertProcedureDoesNotThrow("CALL algo.pagerank() YIELD node, score RETURN node, score");
+    assertProcedureDoesNotThrow("CALL algo.louvain() YIELD node, communityId RETURN node, communityId");
+    assertProcedureDoesNotThrow("CALL algo.betweenness() YIELD node, score RETURN node, score");
   }
 }

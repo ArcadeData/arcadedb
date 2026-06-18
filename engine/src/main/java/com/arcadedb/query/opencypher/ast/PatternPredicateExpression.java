@@ -231,7 +231,7 @@ public class PatternPredicateExpression implements BooleanExpression {
             return true;
           }
         } catch (final RecordNotFoundException ignored) {
-          // Ghost edge: see above.
+          // Ghost edge - same case: dangling segment pointer to a missing edge record. Skip it.
         }
       }
     }
@@ -286,7 +286,7 @@ public class PatternPredicateExpression implements BooleanExpression {
           if (matchesNodePattern(edge.getOutVertex(), endNodePattern, context))
             return true;
         } catch (final RecordNotFoundException ignored) {
-          // Ghost edge: see above.
+          // Ghost edge - same case: dangling segment pointer to a missing edge record. Skip it.
         }
       }
     }
