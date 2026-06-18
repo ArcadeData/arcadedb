@@ -35,7 +35,6 @@ import java.io.IOException;
 import java.io.StringReader;
 import java.math.BigDecimal;
 import java.time.Duration;
-import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -170,10 +169,8 @@ public class JSONObject implements Map<String, Object> {
         object.addProperty(name, dateFormat.format(date.toInstant().atZone(ZoneId.systemDefault())));
     } else if (value instanceof LocalDate localDate) {
       if (dateFormatAsString == null)
-        // SAVE AS TIMESTAMP
-        object.addProperty(name,
-            localDate.atStartOfDay().toInstant(ZoneId.systemDefault().getRules().getOffset(Instant.now()))
-                .toEpochMilli());
+        // SAVE AS TIMESTAMP (resolve the offset for the target date's midnight, DST-correct)
+        object.addProperty(name, localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli());
       else
         // SAVE AS STRING
         object.addProperty(name, dateFormat.format(localDate.atStartOfDay()));
@@ -186,8 +183,7 @@ public class JSONObject implements Map<String, Object> {
         // SAVE AS STRING
         object.addProperty(name, dateTimeFormat.format(temporalAccessor));
     } else if (value instanceof Duration duration) {
-      object.addProperty(name,
-          Double.valueOf("%d.%d".formatted(duration.toSeconds(), duration.toNanosPart())));
+      object.addProperty(name, duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
     } else if (value instanceof Identifiable identifiable) {
       object.addProperty(name, identifiable.getIdentity().toString());
     } else if (value instanceof Map map) {
@@ -195,6 +191,7 @@ public class JSONObject implements Map<String, Object> {
     } else if (value instanceof Class<?> clazz) {
       object.addProperty(name, clazz.getName());
     } else {
+      // GENERIC CASE: TRANSFORM IT TO STRING
       object.addProperty(name, value.toString());
     }
     return this;
@@ -613,10 +610,22 @@ public class JSONObject implements Map<String, Object> {
       return document.toJSON(false).getInternal();
     } else if (object instanceof Identifiable identifiable) {
       return new JsonPrimitive(identifiable.getIdentity().toString());
+    } else if (object instanceof Enum<?> enumValue) {
+      return new JsonPrimitive(enumValue.name());
+    } else if (object instanceof Date date) {
+      return new JsonPrimitive(date.getTime());
+    } else if (object instanceof LocalDate localDate) {
+      return new JsonPrimitive(localDate.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli());
+    } else if (object instanceof TemporalAccessor temporalAccessor) {
+      final Long timestamp = DateUtils.dateTimeToTimestamp(temporalAccessor, ChronoUnit.MILLIS);
+      return timestamp != null ? new JsonPrimitive(timestamp) : new JsonPrimitive(temporalAccessor.toString());
+    } else if (object instanceof Duration duration) {
+      return new JsonPrimitive(duration.toSeconds() + (duration.toNanosPart() / 1_000_000_000.0));
+    } else if (object instanceof Class<?> clazz) {
+      return new JsonPrimitive(clazz.getName());
     } else {
-      throw new IllegalArgumentException("Object of type " + object.getClass() + " not supported");
+      return new JsonPrimitive(object.toString());
     }
-
   }
 
   private JsonElement getElement(final String name) {
