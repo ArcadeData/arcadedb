@@ -24,6 +24,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -138,5 +139,49 @@ class AlgoGhostEdgeTest {
 
     assertProcedureDoesNotThrow(
         "MATCH p = (a:Node {name:'A'})-[:LINK*1..5]->(c:Node) RETURN p");
+  }
+
+  /**
+   * Smoke coverage for the remaining hardened algorithms (the ghost-skip pattern is uniform, so one
+   * run per algorithm over the ghosted graph is enough to confirm none propagate the exception).
+   */
+  @Test
+  void remainingAlgorithmsSkipGhostEdge() {
+    buildGraphWithGhostEdge();
+
+    // Whole-graph algorithms iterate every vertex's edges, including A's ghost out-edge.
+    assertProcedureDoesNotThrow("CALL algo.apsp('w') YIELD source, target, distance RETURN count(*) AS c");
+    assertProcedureDoesNotThrow("CALL algo.articlerank() YIELD node, score RETURN count(*) AS c");
+    assertProcedureDoesNotThrow("CALL algo.mst('w') YIELD source, target, weight RETURN count(*) AS c");
+    assertProcedureDoesNotThrow("CALL algo.longestPath() YIELD node RETURN count(*) AS c");
+
+    // Source/target path algorithms whose start node (A) reaches its neighbor only via the ghost edge.
+    assertProcedureDoesNotThrow(
+        "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "
+            + "CALL algo.kShortestPaths(a, c, 2, 'LINK', 'w') YIELD weight RETURN count(*) AS c");
+    assertProcedureDoesNotThrow(
+        "MATCH (s:Node {name:'A'}), (t:Node {name:'C'}) "
+            + "CALL algo.maxFlow(s, t, 'LINK', 'w') YIELD maxFlow RETURN maxFlow");
+
+    // SQL graph functions (bellmanFord, duanSSSP) iterate live edges via getEdges() too.
+    final RID a;
+    final RID c;
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) RETURN a, c")) {
+      final var row = rs.next();
+      a = ((Vertex) row.getProperty("a")).getIdentity();
+      c = ((Vertex) row.getProperty("c")).getIdentity();
+    }
+    assertSqlDoesNotThrow("SELECT bellmanFord(?, ?, 'w') AS p FROM (SELECT 1)", a, c);
+    assertSqlDoesNotThrow("SELECT duanSSSP(?, ?, 'w') AS p FROM (SELECT 1)", a, c);
+  }
+
+  private void assertSqlDoesNotThrow(final String sql, final Object... params) {
+    assertThatCode(() -> {
+      try (final ResultSet rs = database.query("sql", sql, params)) {
+        while (rs.hasNext())
+          rs.next();
+      }
+    }).doesNotThrowAnyException();
   }
 }

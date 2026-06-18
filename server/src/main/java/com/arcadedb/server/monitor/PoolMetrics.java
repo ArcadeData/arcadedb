@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.index.sparsevector.SparseVectorScoringPool;
 import com.arcadedb.query.QueryEngineManager;
 
@@ -75,6 +76,14 @@ public final class PoolMetrics implements MeterBinder {
         () -> svsp.getPoolStats().queueCapacityRemaining(),
         () -> svsp.getPoolStats().completedTasks(),
         () -> svsp.getPoolStats().callerRunFallbacks());
+
+    // Not a pool, but a graph data-integrity signal surfaced the same way: cumulative ghost (dangling)
+    // edges skipped during traversal. Lets operators spot a corrupted graph from dashboards without
+    // parsing logs; complements the throttled WARNING already emitted by GhostEdgeReporter.
+    Gauge.builder("arcadedb.graph.ghost_edges_skipped", GhostEdgeReporter::getTotalSkipped)
+        .description("Cumulative ghost (dangling) edges skipped during graph traversal since startup. "
+            + "Sustained growth indicates a data-integrity anomaly, e.g. incomplete HA replication or a partially rolled-back transaction.")
+        .register(registry);
   }
 
   private static void bindPool(final MeterRegistry registry, final String poolTag, final String description,

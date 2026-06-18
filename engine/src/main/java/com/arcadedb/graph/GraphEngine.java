@@ -1002,8 +1002,14 @@ public class GraphEngine {
       final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
           v.getEdges(dir, relTypes) : v.getEdges(dir);
       for (final Edge e : edges) {
-        if (ridToIdx.containsKey(neighborRid(e, vid, dir)))
-          counts[i]++;
+        try {
+          if (ridToIdx.containsKey(neighborRid(e, vid, dir)))
+            counts[i]++;
+        } catch (final RecordNotFoundException ex) {
+          // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it (the fill
+          // pass below skips it identically, so counts and adjacency stay consistent).
+          GhostEdgeReporter.reportSkipped(ex);
+        }
       }
     }
     final int[][] adj = new int[n][];
@@ -1016,10 +1022,15 @@ public class GraphEngine {
       final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
           v.getEdges(dir, relTypes) : v.getEdges(dir);
       for (final Edge e : edges) {
-        final RID nid = neighborRid(e, vid, dir);
-        final Integer j = ridToIdx.get(nid);
-        if (j != null)
-          adj[i][pos[i]++] = j;
+        try {
+          final RID nid = neighborRid(e, vid, dir);
+          final Integer j = ridToIdx.get(nid);
+          if (j != null)
+            adj[i][pos[i]++] = j;
+        } catch (final RecordNotFoundException ex) {
+          // Ghost edge: skipped identically to the counting pass above, so pos[i] never exceeds counts[i].
+          GhostEdgeReporter.reportSkipped(ex);
+        }
       }
     }
     return adj;
