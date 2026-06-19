@@ -309,12 +309,7 @@ class CheckDatabaseTest extends TestHelper {
     assertThat(indexes.getFirst().countEntries()).isEqualTo((Long) row.getProperty("totalActiveVertices"));
   }
 
-  /**
-   * Regression test for issue #474: CHECK DATABASE OOM on large databases with many stale edges.
-   * Verifies that the maxWarnings cap prevents unbounded memory growth: the in-memory warnings
-   * collection is capped while totalWarnings reflects the actual count of all findings.
-   * Uses an isolated database that is dropped at the end.
-   */
+  // Regression #474: the maxWarnings cap bounds the in-memory collections while totalWarnings still reports the real scope.
   @Test
   void checkWarningCapPreventsOOM() {
     final String dbPath = "./target/databases/CheckWarningCapOOM";
@@ -379,13 +374,8 @@ class CheckDatabaseTest extends TestHelper {
     }
   }
 
-  /**
-   * Regression test for the totals accounting: {@code totalWarnings} and {@code totalCorruptedRecords} must
-   * count every finding exactly once. The check is restricted to the edge type so a single code path
-   * (checkEdges) is the only contributor and no cap is hit, therefore the raw totals must equal the sizes of
-   * the (deduplicated) collections. A regression that accumulates the totals twice (e.g. both in updateStats
-   * and via an explicit put) makes them twice the collection size and fails here. Drops its database at the end.
-   */
+  // Regression: with one contributing pass and no cap hit, totalWarnings/totalCorruptedRecords must equal the
+  // de-duplicated collection sizes (catches both double-counting and per-occurrence over-counting of duplicates).
   @Test
   void checkTotalsAreNotDoubleCounted() {
     final String dbPath = "./target/databases/CheckTotalsNoDoubleCount";
@@ -435,6 +425,52 @@ class CheckDatabaseTest extends TestHelper {
       // Single contributing pass, unique RIDs/messages, no cap hit: the raw totals must equal the
       // deduplicated collection sizes exactly. Double-counting would make them twice as large.
       assertThat(totalWarnings).isEqualTo((long) warnings.size());
+      assertThat(totalCorruptedRecords).isEqualTo((long) corrupted.size());
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Regression: an edge dangling on BOTH sides makes checkEdges flag the same edgeRID twice. totalCorruptedRecords
+  // must still equal the de-duplicated corrupted set (the old per-occurrence counter over-counted these edges).
+  @Test
+  void checkCorruptedCounterDedupsBothSidesDangling() {
+    final String dbPath = "./target/databases/CheckCorruptedDedupBothSides";
+    final DatabaseFactory factory = new DatabaseFactory(dbPath);
+    if (factory.exists())
+      factory.open().drop();
+
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("Node");
+      db.getSchema().createEdgeType("Link");
+
+      final int pairs = 4;
+      db.transaction(() -> {
+        for (int i = 0; i < pairs; i++) {
+          final MutableVertex out = db.newVertex("Node").set("i", i).save();
+          final MutableVertex in = db.newVertex("Node").set("i", i).save();
+          out.newEdge("Link", in);
+        }
+      });
+
+      // Delete every Node so each edge dangles on both its outgoing and incoming side.
+      db.transaction(() -> {
+        final Iterator<Record> it = db.iterateType("Node", false);
+        while (it.hasNext()) {
+          final Record rec = it.next();
+          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+        }
+      });
+
+      final Map<String, Object> result = new DatabaseChecker(db)
+          .setVerboseLevel(0)
+          .setTypes(Set.of("Link"))
+          .check();
+
+      final Collection<RID> corrupted = (Collection<RID>) result.get("corruptedRecords");
+      final long totalCorruptedRecords = (Long) result.get("totalCorruptedRecords");
+
       assertThat(totalCorruptedRecords).isEqualTo((long) corrupted.size());
     } finally {
       db.drop();

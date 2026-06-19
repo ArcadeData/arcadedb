@@ -576,7 +576,9 @@ public class GraphDatabaseChecker {
     final AtomicLong missingReferenceBack = new AtomicLong();
     final AtomicLong totalWarnings = new AtomicLong();
     final AtomicLong totalCorrupted = new AtomicLong();
-    final List<RID> corruptedRecords = new ArrayList<>();
+    // Use a Set (matching checkVertices) so the same RID flagged on both sides of an edge is recorded once and
+    // totalCorrupted (which counts only genuinely new entries, see addCorrupted) stays aligned with its size.
+    final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
     final List<String> warnings = new ArrayList<>();
 
     final Map<String, Object> stats = new HashMap<>();
@@ -727,8 +729,13 @@ public class GraphDatabaseChecker {
 
   private static <T> void addCorrupted(final Collection<T> corrupted, final AtomicLong totalCorrupted, final int maxCorrupted,
       final T item) {
-    totalCorrupted.incrementAndGet();
-    if (corrupted.size() < maxCorrupted)
-      corrupted.add(item);
+    if (corrupted.size() < maxCorrupted) {
+      // Under the cap: count the record only the first time it is recorded so totalCorrupted stays aligned with the
+      // de-duplicated collection size. Collection.add() returns false for an item already present in a Set.
+      if (corrupted.add(item))
+        totalCorrupted.incrementAndGet();
+    } else
+      // At/over the cap the item is not stored, so de-duplication is no longer possible: count the occurrence.
+      totalCorrupted.incrementAndGet();
   }
 }

@@ -219,10 +219,8 @@ public class DatabaseChecker {
         final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
         final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
         final Map<String, Object> stats = new GraphDatabaseChecker(database).checkEdges(type.getName(), fix, verboseLevel,
-            maxWarnings - currentWarnings, maxWarnings - currentCorrupted);
+            Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
 
-        // NOTE: totalWarnings and totalCorruptedRecords are accumulated by updateStats() above (both are Long
-        // entries in the stats map), so they must NOT be added again here or they would be double-counted.
         updateStats(stats);
 
         ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
@@ -244,10 +242,8 @@ public class DatabaseChecker {
         final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
         final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
         final Map<String, Object> stats = new GraphDatabaseChecker(database).checkVertices(type.getName(), fix, verboseLevel,
-            maxWarnings - currentWarnings, maxWarnings - currentCorrupted);
+            Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
 
-        // NOTE: totalWarnings and totalCorruptedRecords are accumulated by updateStats() above (both are Long
-        // entries in the stats map), so they must NOT be added again here or they would be double-counted.
         updateStats(stats);
 
         ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
@@ -492,6 +488,10 @@ public class DatabaseChecker {
         0F);
   }
 
+  /**
+   * Accumulates every Long entry of the sub-check stats into the global result. This is the single place totals
+   * like totalWarnings/totalCorruptedRecords are summed, so callers must NOT add them again or they double-count.
+   */
   private void updateStats(final Map<String, Object> stats) {
     for (final Map.Entry<String, Object> entry : stats.entrySet()) {
       final Object value = entry.getValue();
