@@ -333,6 +333,35 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
          | { direction, edgeType | edgeTypeNames, maxDepth, edge })""";
   }
 
+  /** A neighbor reached across one live edge: the neighbor vertex plus the RIDs of the vertex and the edge. */
+  private record Neighbor(Vertex vertex, RID vertexRID, RID edgeRID) {
+  }
+
+  /**
+   * Advances the (vertex, edge) iterator pair by one in lockstep and resolves the neighbor reached.
+   * <p>
+   * Read order is load-bearing: the edge iterator is advanced first ({@code getIdentity} never loads the
+   * record), then the neighbor vertex is resolved, which lazily loads the edge record. A ghost edge throws
+   * there - and because both iterators have advanced exactly once, returning {@code null} (skip) keeps them
+   * in lockstep for the next iteration. This relies on {@code getFirst()} being an {@link EdgeToVertexIterable}
+   * (see {@link #getVerticesAndEdges}): it is {@code vertexIterator.next()}, not {@code vertex.getIdentity()},
+   * that triggers the edge-record load. If that iterable is ever refactored to peek-then-advance (advancing
+   * both sides before the deref), the two would desync silently on a ghost - keep the next()-triggers-load
+   * coupling.
+   *
+   * @return the resolved neighbor, or {@code null} if the edge was a ghost (already reported and skipped)
+   */
+  private static Neighbor advanceNeighbor(final Iterator<Vertex> vertexIterator, final Iterator<Edge> edgeIterator) {
+    final RID neighborEdgeIdentity = edgeIterator.next().getIdentity();
+    try {
+      final Vertex v = vertexIterator.next();
+      return new Neighbor(v, v.getIdentity(), neighborEdgeIdentity);
+    } catch (final RecordNotFoundException e) {
+      GhostEdgeReporter.reportSkipped(e);
+      return null;
+    }
+  }
+
   protected List<RID> walkLeft(final ShortestPathContext context) {
     final ArrayDeque<Vertex> nextLevelQueue = new ArrayDeque<>();
     if (!Boolean.TRUE.equals(context.edge)) {
@@ -370,23 +399,12 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         final Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
         final Iterator<Edge> edgeIterator = neighbors.getSecond().iterator();
         while (vertexIterator.hasNext() && edgeIterator.hasNext()) {
-          // Advance the edge iterator first (getIdentity never loads the record); then resolve the
-          // neighbor vertex, which lazily loads the edge. A ghost edge throws there - both iterators
-          // have advanced once, so skipping keeps them in lockstep. This relies on getFirst() being an
-          // EdgeToVertexIterable (see getVerticesAndEdges): it is vertexIterator.next(), not
-          // v.getIdentity(), that triggers the edge-record load. If that iterable is ever refactored to
-          // peek-then-advance (advancing both sides before the deref), the two would desync silently on
-          // a ghost - keep the next()-triggers-load coupling.
-          final RID neighborEdgeIdentity = edgeIterator.next().getIdentity();
-          final Vertex v;
-          final RID neighborVertexIdentity;
-          try {
-            v = vertexIterator.next();
-            neighborVertexIdentity = v.getIdentity();
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-            continue;
-          }
+          final Neighbor neighbor = advanceNeighbor(vertexIterator, edgeIterator);
+          if (neighbor == null)
+            continue; // ghost edge: reported and skipped, iterators stay in lockstep
+          final Vertex v = neighbor.vertex();
+          final RID neighborVertexIdentity = neighbor.vertexRID();
+          final RID neighborEdgeIdentity = neighbor.edgeRID();
 
           if (context.rightVisited.contains(neighborVertexIdentity)) {
             context.previouses.put(neighborVertexIdentity, neighborEdgeIdentity);
@@ -446,23 +464,12 @@ public class SQLFunctionShortestPath extends SQLFunctionMathAbstract {
         final Iterator<Vertex> vertexIterator = neighbors.getFirst().iterator();
         final Iterator<Edge> edgeIterator = neighbors.getSecond().iterator();
         while (vertexIterator.hasNext() && edgeIterator.hasNext()) {
-          // Advance the edge iterator first (getIdentity never loads the record); then resolve the
-          // neighbor vertex, which lazily loads the edge. A ghost edge throws there - both iterators
-          // have advanced once, so skipping keeps them in lockstep. This relies on getFirst() being an
-          // EdgeToVertexIterable (see getVerticesAndEdges): it is vertexIterator.next(), not
-          // v.getIdentity(), that triggers the edge-record load. If that iterable is ever refactored to
-          // peek-then-advance (advancing both sides before the deref), the two would desync silently on
-          // a ghost - keep the next()-triggers-load coupling.
-          final RID neighborEdgeIdentity = edgeIterator.next().getIdentity();
-          final Vertex v;
-          final RID neighborVertexIdentity;
-          try {
-            v = vertexIterator.next();
-            neighborVertexIdentity = v.getIdentity();
-          } catch (final RecordNotFoundException e) {
-            GhostEdgeReporter.reportSkipped(e);
-            continue;
-          }
+          final Neighbor neighbor = advanceNeighbor(vertexIterator, edgeIterator);
+          if (neighbor == null)
+            continue; // ghost edge: reported and skipped, iterators stay in lockstep
+          final Vertex v = neighbor.vertex();
+          final RID neighborVertexIdentity = neighbor.vertexRID();
+          final RID neighborEdgeIdentity = neighbor.edgeRID();
 
           if (context.leftVisited.contains(neighborVertexIdentity)) {
             context.nexts.put(neighborVertexIdentity, neighborEdgeIdentity);

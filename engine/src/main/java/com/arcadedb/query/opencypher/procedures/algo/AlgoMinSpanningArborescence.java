@@ -110,10 +110,10 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
     final int rootIdx = rootIdxObj;
 
     // Collect all directed edges as primitive arrays (two-pass, OUT direction = directed edges). Ghost
-    // edges are skipped identically in both passes (same getEdges() order), so the pass-2 fill never
-    // exceeds the pass-1 count and the arrays are always sized correctly. This is safe because an edge
-    // record is only ever deleted, never resurrected, during a read query: a ghost in pass 1 is still
-    // a ghost in pass 2.
+    // edges are skipped identically in both passes, so the pass-2 fill never exceeds the pass-1 count and
+    // the arrays are always sized correctly. This rests on two read-query invariants: (1) an edge record is
+    // only ever deleted, never resurrected, so a pass-1 ghost is still a ghost in pass 2; (2) the two
+    // getEdges() calls per vertex iterate the same edges in the same order, so counting and filling agree.
     // Pass 1: count
     int edgeCount = 0;
     for (int i = 0; i < n; i++) {

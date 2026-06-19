@@ -1007,9 +1007,10 @@ public class GraphEngine {
             counts[i]++;
         } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it (the fill
-          // pass below skips it identically, so counts and adjacency stay consistent: an edge record is
-          // only deleted, never resurrected, during a read query, so a pass-1 ghost is still a ghost in
-          // pass 2).
+          // pass below skips it identically, so counts and adjacency stay consistent). This holds on two
+          // invariants of a read query: (1) an edge record is only deleted, never resurrected, so a pass-1
+          // ghost is still a ghost in pass 2; (2) the two getEdges() calls per vertex iterate the same
+          // edges in the same order, so the i-th live edge counted here is the i-th live edge filled below.
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

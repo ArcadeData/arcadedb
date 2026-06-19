@@ -45,4 +45,20 @@ class GhostEdgeReporterTest {
     assertThat(GhostEdgeReporter.getTotalSkipped()).isEqualTo(2);
   }
 
+  // Regression: a Long.MIN_VALUE seed made 'now - last' overflow so the very first WARNING never fired on a
+  // JVM with a positive nanoTime(). The first encounter at a realistic positive 'now' must win the slot.
+  @Test
+  void firstWarningFiresAtPositiveNanoTime() {
+    final long now = 600_000_000_000L; // ~10 min of uptime: a typical positive System.nanoTime() reading
+    assertThat(GhostEdgeReporter.shouldEmitWarning(now)).isTrue();
+  }
+
+  @Test
+  void warningIsThrottledWithinTheWindowThenFiresAgain() {
+    final long t0 = 600_000_000_000L;
+    assertThat(GhostEdgeReporter.shouldEmitWarning(t0)).isTrue();                    // first fires
+    assertThat(GhostEdgeReporter.shouldEmitWarning(t0 + 59_000_000_000L)).isFalse(); // 59s later: throttled
+    assertThat(GhostEdgeReporter.shouldEmitWarning(t0 + 60_000_000_000L)).isTrue();  // 60s later: fires again
+  }
+
 }

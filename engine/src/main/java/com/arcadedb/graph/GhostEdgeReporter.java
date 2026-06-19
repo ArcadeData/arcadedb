@@ -39,7 +39,11 @@ import java.util.logging.Level;
 public final class GhostEdgeReporter {
   private static final long       WARNING_WINDOW_NANOS = 60_000_000_000L; // 60s
   private static final AtomicLong totalSkipped         = new AtomicLong();
-  private static final AtomicLong lastWarningNanos     = new AtomicLong(Long.MIN_VALUE);
+  // Seeded one full window in the past (NOT Long.MIN_VALUE): the throttle compares with the overflow-safe
+  // 'now - last >= WINDOW'. Long.MIN_VALUE is not a real nanoTime reading, so 'now - Long.MIN_VALUE' overflows
+  // to a negative value on any JVM where System.nanoTime() is positive, and the first WARNING would never fire.
+  // -WARNING_WINDOW_NANOS is within a real reading's range, so the first ghost encountered always warns.
+  private static final AtomicLong lastWarningNanos     = new AtomicLong(-WARNING_WINDOW_NANOS);
 
   private GhostEdgeReporter() {
   }
@@ -55,13 +59,27 @@ public final class GhostEdgeReporter {
     LogManager.instance().log(GhostEdgeReporter.class, Level.FINE,
         "Skipped ghost edge during traversal (%s); total skipped since startup=%d", cause.getMessage(), total);
 
-    final long now = System.nanoTime();
-    final long last = lastWarningNanos.get();
-    if (now - last >= WARNING_WINDOW_NANOS && lastWarningNanos.compareAndSet(last, now))
+    if (shouldEmitWarning(System.nanoTime()))
       LogManager.instance().log(GhostEdgeReporter.class, Level.WARNING,
           "Ghost (dangling) edges encountered and skipped during traversal (total skipped since startup=%d). "
               + "A dangling edge-segment pointer indicates a data-integrity anomaly, e.g. incomplete HA "
               + "replication or a partially rolled-back transaction.", total);
+  }
+
+  /**
+   * Decides, with overflow-safe elapsed arithmetic, whether a throttled WARNING should fire at {@code now}
+   * and, if so, claims the slot atomically (CAS) so concurrent skips emit at most one WARNING per window.
+   * <p>
+   * Package-private ({@code @VisibleForTesting}) so the throttle can be exercised directly without capturing
+   * log output: the previous {@code Long.MIN_VALUE} seed made {@code now - last} overflow and suppressed the
+   * WARNING forever, a bug invisible to a test that only asserts on the skip count.
+   *
+   * @param now a {@link System#nanoTime()} reading
+   * @return {@code true} iff this caller won the slot and should log the WARNING
+   */
+  static boolean shouldEmitWarning(final long now) {
+    final long last = lastWarningNanos.get();
+    return now - last >= WARNING_WINDOW_NANOS && lastWarningNanos.compareAndSet(last, now);
   }
 
   /** Total ghost edges skipped since JVM startup (monotonic). */
@@ -69,9 +87,15 @@ public final class GhostEdgeReporter {
     return totalSkipped.get();
   }
 
-  // @VisibleForTesting (package-private: only GhostEdgeReporterTest, in this package, calls it)
+  /**
+   * Resets the static counters so each test starts from a clean slate.
+   * <p>
+   * Package-private on purpose ({@code @VisibleForTesting}): it is only reachable from
+   * {@code com.arcadedb.graph.GhostEdgeReporterTest}, which lives in this same package. If that test is
+   * ever moved out of {@code com.arcadedb.graph}, this method must be widened (or the test kept in-package).
+   */
   static void resetForTests() {
     totalSkipped.set(0);
-    lastWarningNanos.set(Long.MIN_VALUE);
+    lastWarningNanos.set(-WARNING_WINDOW_NANOS);
   }
 }

@@ -155,6 +155,12 @@ class AlgoGhostEdgeTest {
     assertProcedureDoesNotThrow("CALL algo.mst('w') YIELD source, target, weight RETURN count(*) AS c");
     assertProcedureDoesNotThrow("CALL algo.longestPath() YIELD node RETURN count(*) AS c");
 
+    // algo.msa (directed minimum spanning arborescence, Chu-Liu/Edmonds) is rooted at A and reaches B only
+    // via A's ghost out-edge: distinct from algo.mst (undirected MST) above, so it needs its own smoke run.
+    assertProcedureDoesNotThrow(
+        "MATCH (a:Node {name:'A'}) "
+            + "CALL algo.msa(a, 'LINK', 'w') YIELD source, target, weight RETURN count(*) AS c");
+
     // Source/target path algorithms whose start node (A) reaches its neighbor only via the ghost edge.
     assertProcedureDoesNotThrow(
         "MATCH (a:Node {name:'A'}), (c:Node {name:'C'}) "

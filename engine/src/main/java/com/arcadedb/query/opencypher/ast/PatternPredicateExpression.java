@@ -206,9 +206,8 @@ public class PatternPredicateExpression implements BooleanExpression {
       while (outEdges.hasNext()) {
         final Edge edge = outEdges.next();
         try {
-          if (edge.getIn().equals(endVertex)) {
+          if (edge.getIn().equals(endVertex))
             return true;
-          }
         } catch (final RecordNotFoundException e) {
           // Ghost edge: segment pointer exists but the backing edge record is gone (e.g. an HA
           // resync/rolled-back transaction left a dangling pointer). Skip it - it cannot satisfy the pattern.
@@ -229,9 +228,8 @@ public class PatternPredicateExpression implements BooleanExpression {
       while (inEdges.hasNext()) {
         final Edge edge = inEdges.next();
         try {
-          if (edge.getOut().equals(endVertex)) {
+          if (edge.getOut().equals(endVertex))
             return true;
-          }
         } catch (final RecordNotFoundException e) {
           GhostEdgeReporter.reportSkipped(e);
         }
