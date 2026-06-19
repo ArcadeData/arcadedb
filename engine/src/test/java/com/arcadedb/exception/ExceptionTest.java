@@ -201,6 +201,26 @@ class ExceptionTest {
   }
 
   @Test
+  void lockTimeoutExceptionIsRetryable() {
+    // A lock-contention timeout is transient and safe to retry, so it MUST be a NeedRetryException
+    // for the engine's retry loops (transaction retry, HTTP 503, Raft apply) to pick it up.
+    final LockTimeoutException ex = new LockTimeoutException("Timeout on locking files during commit");
+    assertThat(ex.getMessage()).isEqualTo("Timeout on locking files during commit");
+    assertThat(ex).isInstanceOf(NeedRetryException.class);
+
+    final RuntimeException cause = new RuntimeException("contended");
+    assertThat(new LockTimeoutException("msg", cause).getCause()).isSameAs(cause);
+  }
+
+  @Test
+  void plainTimeoutExceptionIsNotRetryable() {
+    // Guards the design split: a query/deadline TimeoutException (SQL TIMEOUT clause, MultiIterator)
+    // means "took too long, stop" and must NEVER be retried, so it must stay off the NeedRetryException
+    // hierarchy. This test fails loudly if someone reparents TimeoutException by mistake.
+    assertThat(new TimeoutException("Timeout expired")).isNotInstanceOf(NeedRetryException.class);
+  }
+
+  @Test
   void encryptionException() {
     final EncryptionException ex = new EncryptionException("Encryption failed");
     assertThat(ex.getMessage()).isEqualTo("Encryption failed");
