@@ -35,6 +35,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -134,7 +135,7 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
   }
 
   /** Sends a single-row {@code CONFLICT_UPDATE} {@code InsertStream} and returns the resulting summary. */
-  private InsertSummary upsert(final String typeName, final GrpcRecord row, final java.util.List<String> updateColumns)
+  private InsertSummary upsert(final String typeName, final GrpcRecord row, final List<String> updateColumns)
       throws Exception {
     final CountDownLatch done = new CountDownLatch(1);
     final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
@@ -182,7 +183,7 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
       final GrpcRecord row = GrpcRecord.newBuilder().setType(typeName)
           .putProperties("k", stringValue("a")).putProperties("v", stringValue("changed")).build();
 
-      final InsertSummary summary = upsert(typeName, row, java.util.List.of()); // empty update columns
+      final InsertSummary summary = upsert(typeName, row, List.of()); // empty update columns
 
       assertThat(summary.getUpdated()).isEqualTo(1);
       assertThat(summary.getFailed()).isEqualTo(0);
@@ -255,11 +256,12 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
       final GrpcRecord row = GrpcRecord.newBuilder().setType(typeName)
           .putProperties("k", stringValue("a")).putProperties("v", stringValue("changed")).build();
 
-      final InsertSummary summary = upsert(typeName, row, java.util.List.of("v"));
+      final InsertSummary summary = upsert(typeName, row, List.of("v"));
 
       assertThat(summary.getUpdated()).isEqualTo(1);
       assertThat(summary.getFailed()).isEqualTo(0);
       assertThat(firstString("SELECT v FROM " + typeName + " WHERE k = 'a'", "v")).isEqualTo("changed");
+      assertThat(firstLong("SELECT count(*) AS cnt FROM " + typeName, "cnt")).isEqualTo(1);
     } finally {
       cmd("DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
@@ -277,7 +279,7 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
       final GrpcRecord row = GrpcRecord.newBuilder().setType(typeName)
           .putProperties("k", stringValue("a")).putProperties("v", stringValue("changed")).build();
 
-      final InsertSummary summary = upsert(typeName, row, java.util.List.of()); // empty update columns
+      final InsertSummary summary = upsert(typeName, row, List.of()); // empty update columns
 
       assertThat(summary.getUpdated()).isEqualTo(1);
       assertThat(summary.getFailed()).isEqualTo(0);
@@ -314,7 +316,7 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
           .putProperties("out", stringValue(ridA)).putProperties("in", stringValue(ridB))
           .putProperties("k", stringValue("e1")).putProperties("v", stringValue("changed")).build();
 
-      final InsertSummary summary = upsert(eType, row, java.util.List.of("v"));
+      final InsertSummary summary = upsert(eType, row, List.of("v"));
 
       // Issue #4656 (3): the edge must be updated, not inserted, and not failed.
       assertThat(summary.getUpdated()).isEqualTo(1);

@@ -2228,14 +2228,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     };
   }
 
-  /**
-   * Issue #4656: resolves which columns to write when a {@code CONFLICT_UPDATE} matches an existing
-   * row. When the client supplied an explicit {@code update_columns_on_conflict} list it is honored
-   * verbatim. When that list is empty, every non-key property present on the incoming record is
-   * merged (true upsert/merge), matching SQL {@code UPDATE ... UPSERT} semantics, instead of
-   * silently leaving the row unchanged while still reporting it as {@code updated}. System fields
-   * ({@code @}-prefixed) and, for edges, the {@code out}/{@code in} endpoints are never merged.
-   */
+  // Resolves which columns to write when a CONFLICT_UPDATE matches an existing row. When the client
+  // supplied an explicit update_columns_on_conflict list it is honored verbatim. When that list is
+  // empty, every non-key property present on the incoming record is merged (true upsert/merge),
+  // matching SQL UPDATE ... UPSERT semantics, instead of silently leaving the row unchanged while
+  // still reporting it as updated. System fields (@-prefixed) and, for edges, the out/in endpoints
+  // are never merged.
   private List<String> conflictUpdateColumns(final InsertContext ctx, final Iterable<String> incomingProps,
       final boolean isEdge) {
     if (!ctx.updateCols.isEmpty())
@@ -2257,12 +2255,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return v == null ? null : fromGrpcValue(v);
   }
 
-  /**
-   * Issue #4656: matches an existing record by the configured key columns and, when found, merges
-   * the incoming values onto it. Works uniformly for documents, vertices and edges (the latter two
-   * are {@link MutableDocument} subclasses for query/update purposes). Returns {@code true} when an
-   * existing row was updated, {@code false} when no match was found (the caller then inserts).
-   */
+  // Matches an existing record by the configured key columns and, when found, merges the incoming
+  // values onto it. Works uniformly for documents, vertices and edges (the latter two are
+  // MutableDocument subclasses for query/update purposes). Returns true when an existing row was
+  // updated, false when no match was found (the caller then inserts).
   private boolean tryUpsertByRecord(final InsertContext ctx, final GrpcRecord r, final boolean isEdge) {
     final List<String> keys = ctx.keyCols;
     if (keys.isEmpty())
@@ -2358,15 +2354,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             c.inserted++;
           }
         } else if (isEdge) {
-          // Issue #4656 (3): edges must honor conflict_mode / key_columns like documents and
-          // vertices. newEdge() persists and links the edge immediately, so the upsert/ignore check
-          // has to run before the edge is created, otherwise a match would leave a dangling edge.
+          // Edges must honor conflict_mode / key_columns like documents and vertices. newEdge()
+          // persists and links the edge immediately, so the upsert/ignore check has to run before the
+          // edge is created, otherwise a match would leave a dangling edge.
           if (mode == ConflictMode.CONFLICT_UPDATE && tryUpsertByRecord(ctx, r, true)) {
             c.updated++;
           } else if (mode == ConflictMode.CONFLICT_IGNORE && keyExistsByRecord(ctx, r)) {
             c.ignored++;
           } else {
-            final String outRid = getStringProp(r, "out"); // lookup helper you already have
+            final String outRid = getStringProp(r, "out");
             final String inRid = getStringProp(r, "in");
 
             if (outRid == null || inRid == null) {
@@ -2402,9 +2398,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         switch (ctx.opts.getConflictMode()) {
           case CONFLICT_IGNORE -> c.ignored++;
           case CONFLICT_ABORT, UNRECOGNIZED -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
-          // Issue #4656 (1): a concurrent stream may have inserted the same key between our existence
-          // check and save(). The unique index now guarantees the row exists, so retry the match path
-          // as an update rather than losing the row to a CONFLICT error.
+          // A concurrent stream may have inserted the same key between our existence check and save().
+          // The unique index now guarantees the row exists, so retry the match path as an update
+          // rather than losing the row to a CONFLICT error.
           case CONFLICT_UPDATE -> {
             if (tryUpsertByRecord(ctx, r, isEdge))
               c.updated++;
