@@ -2228,14 +2228,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     };
   }
 
-  // Resolves which columns to write when a CONFLICT_UPDATE matches an existing row. When the client
-  // supplied an explicit update_columns_on_conflict list it is honored verbatim. When that list is
-  // empty, every non-key property present on the incoming record is merged (true upsert/merge),
-  // matching SQL UPDATE ... UPSERT semantics, instead of silently leaving the row unchanged while
-  // still reporting it as updated. System fields (@-prefixed) and, for edges, the out/in endpoints
-  // are never merged.
+  // An empty update list means "merge every non-key property" (true upsert), not a silent no-op.
   private List<String> conflictUpdateColumns(final InsertContext ctx, final Iterable<String> incomingProps,
-      final boolean isEdge) {
+      final boolean excludeEdgeEndpoints) {
     if (!ctx.updateCols.isEmpty())
       return ctx.updateCols;
 
@@ -2243,7 +2238,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     for (final String name : incomingProps) {
       if (name.startsWith("@") || ctx.keyCols.contains(name))
         continue;
-      if (isEdge && ("out".equals(name) || "in".equals(name)))
+      if (excludeEdgeEndpoints && ("out".equals(name) || "in".equals(name)))
         continue;
       cols.add(name);
     }
@@ -2255,10 +2250,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return v == null ? null : fromGrpcValue(v);
   }
 
-  // Matches an existing record by the configured key columns and, when found, merges the incoming
-  // values onto it. Works uniformly for documents, vertices and edges (the latter two are
-  // MutableDocument subclasses for query/update purposes). Returns true when an existing row was
-  // updated, false when no match was found (the caller then inserts).
+  // Returns true when an existing row was matched by key and merged; false when none matched (the
+  // caller then inserts). For an existing edge the out/in endpoints are left intact - the key
+  // columns identify the edge, endpoints are not re-pointed by an upsert.
   private boolean tryUpsertByRecord(final InsertContext ctx, final GrpcRecord r, final boolean isEdge) {
     final List<String> keys = ctx.keyCols;
     if (keys.isEmpty())
@@ -2405,6 +2399,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             if (tryUpsertByRecord(ctx, r, isEdge))
               c.updated++;
             else
+              // The match vanished between the conflict and the retry (transient MVCC window): report
+              // it as a retriable CONFLICT rather than guessing.
               c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
           }
           case CONFLICT_ERROR -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");

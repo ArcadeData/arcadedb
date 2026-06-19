@@ -116,22 +116,24 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
         .setDatabase(getDatabaseName()).setCredentials(credentials()).setCommand(sql).build());
   }
 
-  private String firstString(final String query, final String prop) {
+  private GrpcRecord firstRecord(final String query) {
     final ExecuteQueryResponse resp = authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
         .setDatabase(getDatabaseName()).setCredentials(credentials()).setQuery(query).build());
-    return resp.getResultsList().get(0).getRecordsList().get(0).getPropertiesMap().get(prop).getStringValue();
+    assertThat(resp.getResultsList()).as("query returned no result set: %s", query).isNotEmpty();
+    assertThat(resp.getResultsList().get(0).getRecordsList()).as("query returned no records: %s", query).isNotEmpty();
+    return resp.getResultsList().get(0).getRecordsList().get(0);
+  }
+
+  private String firstString(final String query, final String prop) {
+    return firstRecord(query).getPropertiesMap().get(prop).getStringValue();
   }
 
   private String firstRid(final String query) {
-    final ExecuteQueryResponse resp = authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
-        .setDatabase(getDatabaseName()).setCredentials(credentials()).setQuery(query).build());
-    return resp.getResultsList().get(0).getRecordsList().get(0).getRid();
+    return firstRecord(query).getRid();
   }
 
   private long firstLong(final String query, final String prop) {
-    final ExecuteQueryResponse resp = authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
-        .setDatabase(getDatabaseName()).setCredentials(credentials()).setQuery(query).build());
-    return resp.getResultsList().get(0).getRecordsList().get(0).getPropertiesMap().get(prop).getInt64Value();
+    return firstRecord(query).getPropertiesMap().get(prop).getInt64Value();
   }
 
   /** Sends a single-row {@code CONFLICT_UPDATE} {@code InsertStream} and returns the resulting summary. */
