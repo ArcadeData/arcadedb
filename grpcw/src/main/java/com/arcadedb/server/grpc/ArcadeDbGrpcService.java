@@ -2236,23 +2236,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   // Merges the incoming values onto a matched record. With an explicit update_columns_on_conflict
   // list only those columns are written; with an empty list every non-key property is merged (true
-  // upsert, not a silent no-op). For edges the out/in endpoints are skipped in BOTH cases: they
-  // address the graph topology, and setting them through the MutableDocument view would write plain
-  // properties while bypassing the vertex edge-list bookkeeping the graph engine maintains.
+  // upsert, not a silent no-op). System fields (@-prefixed) are never written. For edges the out/in
+  // endpoints are skipped too: they address the graph topology, and setting them through the
+  // MutableDocument view would write plain properties while bypassing the vertex edge-list
+  // bookkeeping the graph engine maintains.
   private void applyConflictUpdates(final InsertContext ctx, final GrpcRecord r, final boolean isEdge,
       final MutableDocument existing) {
-    if (!ctx.updateCols.isEmpty()) {
-      for (final String col : ctx.updateCols)
-        if (!(isEdge && ("out".equals(col) || "in".equals(col))))
-          existing.set(col, recordValue(r, col));
-    } else {
-      for (final String name : r.getPropertiesMap().keySet()) {
-        if (name.startsWith("@") || ctx.keyColsSet.contains(name))
-          continue;
-        if (isEdge && ("out".equals(name) || "in".equals(name)))
-          continue;
-        existing.set(name, recordValue(r, name));
-      }
+    final Iterable<String> cols = ctx.updateCols.isEmpty() ? r.getPropertiesMap().keySet() : ctx.updateCols;
+    final boolean mergeAll = ctx.updateCols.isEmpty();
+    for (final String col : cols) {
+      if (col.startsWith("@"))
+        continue;
+      if (mergeAll && ctx.keyColsSet.contains(col))
+        continue;
+      if (isEdge && ("out".equals(col) || "in".equals(col)))
+        continue;
+      existing.set(col, recordValue(r, col));
     }
   }
 
@@ -2398,12 +2397,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // The unique index now guarantees the row exists, so retry the match path as an update
           // rather than losing the row to a CONFLICT error.
           case CONFLICT_UPDATE -> {
-            if (tryUpsertByRecord(ctx, r, isEdge))
-              c.updated++;
-            else
-              // The match vanished between the conflict and the retry (transient MVCC window): report
-              // it as a retriable CONFLICT rather than guessing.
-              c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+            try {
+              if (tryUpsertByRecord(ctx, r, isEdge))
+                c.updated++;
+              else
+                // The match vanished between the conflict and the retry (transient MVCC window): report
+                // it as a retriable CONFLICT rather than guessing.
+                c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+            } catch (Exception retryEx) {
+              // A third writer can race the retry too; keep it a predictable CONFLICT instead of
+              // letting it surface as an unexpected DB_ERROR.
+              c.err(ctx.received - 1, "CONFLICT", retryEx.getMessage(), "");
+            }
           }
           case CONFLICT_ERROR -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
         }

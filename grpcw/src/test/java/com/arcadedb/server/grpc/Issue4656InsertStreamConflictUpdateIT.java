@@ -137,9 +137,9 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
     return firstRecord(query).getPropertiesMap().get(prop).getInt64Value();
   }
 
-  /** Runs a single-chunk {@code InsertStream} keyed on column "k" in PER_STREAM mode and returns the summary. */
+  /** Runs a single-chunk {@code InsertStream} in PER_STREAM mode and returns the summary. */
   private InsertSummary runStream(final String typeName, final InsertOptions.ConflictMode mode,
-      final List<String> updateColumns, final GrpcRecord... rows) throws Exception {
+      final List<String> keyColumns, final List<String> updateColumns, final GrpcRecord... rows) throws Exception {
     final CountDownLatch done = new CountDownLatch(1);
     final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
     final AtomicReference<Throwable> errorRef = new AtomicReference<>();
@@ -153,7 +153,7 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
     final InsertOptions.Builder opts = InsertOptions.newBuilder()
         .setDatabase(getDatabaseName()).setCredentials(credentials()).setTargetClass(typeName)
         .setConflictMode(mode)
-        .addKeyColumns("k")
+        .addAllKeyColumns(keyColumns)
         .setTransactionMode(InsertOptions.TransactionMode.PER_STREAM);
     opts.addAllUpdateColumnsOnConflict(updateColumns);
 
@@ -171,10 +171,10 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
     return summaryRef.get();
   }
 
-  /** Sends a single-row {@code CONFLICT_UPDATE} {@code InsertStream} and returns the resulting summary. */
+  /** Sends a single-row {@code CONFLICT_UPDATE} {@code InsertStream} keyed on "k" and returns the summary. */
   private InsertSummary upsert(final String typeName, final GrpcRecord row, final List<String> updateColumns)
       throws Exception {
-    return runStream(typeName, InsertOptions.ConflictMode.CONFLICT_UPDATE, updateColumns, row);
+    return runStream(typeName, InsertOptions.ConflictMode.CONFLICT_UPDATE, List.of("k"), updateColumns, row);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -220,7 +220,7 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
       final GrpcRecord second = GrpcRecord.newBuilder().setType(typeName)
           .putProperties("k", stringValue("a")).putProperties("v", stringValue("second")).build();
 
-      final InsertSummary summary = runStream(typeName, InsertOptions.ConflictMode.CONFLICT_UPDATE, List.of(), first, second);
+      final InsertSummary summary = runStream(typeName, InsertOptions.ConflictMode.CONFLICT_UPDATE, List.of("k"), List.of(), first, second);
 
       // Exactly one row stored, the second occurrence merged on top of the first, no lost-row error.
       assertThat(summary.getFailed()).isEqualTo(0);
@@ -243,32 +243,11 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
     cmd("CREATE INDEX ON " + typeName + "(v) UNIQUE");
     cmd("INSERT INTO " + typeName + " SET v = 'dup'");
     try {
-      final CountDownLatch done = new CountDownLatch(1);
-      final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
-      final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+      final GrpcRecord row = GrpcRecord.newBuilder().setType(typeName).putProperties("v", stringValue("dup")).build();
 
-      final StreamObserver<InsertChunk> req = asyncAuthenticatedStub.insertStream(new StreamObserver<>() {
-        @Override public void onNext(final InsertSummary s) { summaryRef.set(s); }
-        @Override public void onError(final Throwable t) { errorRef.set(t); done.countDown(); }
-        @Override public void onCompleted() { done.countDown(); }
-      });
+      // Empty key_columns on purpose.
+      final InsertSummary summary = runStream(typeName, InsertOptions.ConflictMode.CONFLICT_UPDATE, List.of(), List.of(), row);
 
-      // No addKeyColumns(...) on purpose.
-      req.onNext(InsertChunk.newBuilder()
-          .setSessionId("issue-4656-no-keys").setChunkSeq(0).setLast(true)
-          .setOptions(InsertOptions.newBuilder()
-              .setDatabase(getDatabaseName()).setCredentials(credentials()).setTargetClass(typeName)
-              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_UPDATE)
-              .setTransactionMode(InsertOptions.TransactionMode.PER_STREAM).build())
-          .addRows(GrpcRecord.newBuilder().setType(typeName).putProperties("v", stringValue("dup")).build())
-          .build());
-      req.onCompleted();
-
-      assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
-      assertThat(errorRef.get()).isNull();
-      assertThat(summaryRef.get()).isNotNull();
-
-      final InsertSummary summary = summaryRef.get();
       assertThat(summary.getUpdated()).isEqualTo(0);
       assertThat(summary.getFailed()).isEqualTo(1);
       assertThat(summary.getErrorsList()).anyMatch(e -> "CONFLICT".equals(e.getCode()));
@@ -337,7 +316,7 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
       final GrpcRecord row = GrpcRecord.newBuilder().setType(typeName)
           .putProperties("k", stringValue("a")).putProperties("v", stringValue("changed")).build();
 
-      final InsertSummary summary = runStream(typeName, InsertOptions.ConflictMode.CONFLICT_IGNORE, List.of(), row);
+      final InsertSummary summary = runStream(typeName, InsertOptions.ConflictMode.CONFLICT_IGNORE, List.of("k"), List.of(), row);
 
       assertThat(summary.getIgnored()).isEqualTo(1);
       assertThat(summary.getInserted()).isEqualTo(0);
@@ -391,6 +370,58 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
   }
 
   @Test
+  void edgeConflictUpdateWithEmptyUpdateColumnsMergesWithoutTouchingEndpoints() throws Exception {
+    // Merge-all path on an edge: every non-key property is merged, but out/in must NOT be written
+    // (neither as topology nor as shadowing plain properties), even though the incoming record
+    // carries a mismatched endpoint.
+    final long suffix = System.currentTimeMillis();
+    final String vType = "Issue4656NodeMrg_" + suffix;
+    final String eType = "Issue4656EdgeMrg_" + suffix;
+    cmd("CREATE VERTEX TYPE " + vType);
+    cmd("CREATE PROPERTY " + vType + ".name STRING");
+    cmd("CREATE VERTEX " + vType + " SET name = 'A'");
+    cmd("CREATE VERTEX " + vType + " SET name = 'B'");
+    cmd("CREATE VERTEX " + vType + " SET name = 'C'");
+    cmd("CREATE EDGE TYPE " + eType);
+    cmd("CREATE PROPERTY " + eType + ".k STRING");
+    cmd("CREATE PROPERTY " + eType + ".v STRING");
+    cmd("CREATE INDEX ON " + eType + "(k) UNIQUE");
+
+    final String ridA = firstRid("SELECT FROM " + vType + " WHERE name = 'A'");
+    final String ridB = firstRid("SELECT FROM " + vType + " WHERE name = 'B'");
+    final String ridC = firstRid("SELECT FROM " + vType + " WHERE name = 'C'");
+    cmd("CREATE EDGE " + eType + " FROM " + ridA + " TO " + ridB + " SET k = 'e1', v = 'orig'");
+    try {
+      // Empty update columns, and a deliberately mismatched 'in' endpoint (C instead of B).
+      final GrpcRecord row = GrpcRecord.newBuilder().setType(eType)
+          .putProperties("out", stringValue(ridA)).putProperties("in", stringValue(ridC))
+          .putProperties("k", stringValue("e1")).putProperties("v", stringValue("changed"))
+          .putProperties("w", stringValue("extra")).build();
+
+      final InsertSummary summary = runStream(eType, InsertOptions.ConflictMode.CONFLICT_UPDATE, List.of("k"), List.of(), row);
+
+      assertThat(summary.getUpdated()).isEqualTo(1);
+      assertThat(summary.getFailed()).isEqualTo(0);
+
+      // Non-key, non-endpoint properties were merged.
+      final GrpcRecord edge = firstRecord("SELECT FROM " + eType + " WHERE k = 'e1'");
+      assertThat(edge.getPropertiesMap().get("v").getStringValue()).isEqualTo("changed");
+      assertThat(edge.getPropertiesMap().get("w").getStringValue()).isEqualTo("extra");
+      // out/in were not written as plain properties.
+      assertThat(edge.getPropertiesMap()).doesNotContainKey("out").doesNotContainKey("in");
+      // Topology was not re-pointed: the edge still connects A -> B, not A -> C.
+      assertThat(firstLong("SELECT count(*) AS cnt FROM (SELECT expand(out('" + eType + "')) FROM " + ridA + ") WHERE name = 'B'", "cnt"))
+          .isEqualTo(1);
+      assertThat(firstLong("SELECT count(*) AS cnt FROM (SELECT expand(out('" + eType + "')) FROM " + ridA + ") WHERE name = 'C'", "cnt"))
+          .isEqualTo(0);
+      assertThat(firstLong("SELECT count(*) AS cnt FROM " + eType, "cnt")).isEqualTo(1);
+    } finally {
+      cmd("DROP TYPE " + eType + " IF EXISTS UNSAFE");
+      cmd("DROP TYPE " + vType + " IF EXISTS UNSAFE");
+    }
+  }
+
+  @Test
   void edgeConflictIgnoreSkipsExistingEdge() throws Exception {
     final long suffix = System.currentTimeMillis();
     final String vType = "Issue4656NodeIgn_" + suffix;
@@ -412,7 +443,7 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
           .putProperties("out", stringValue(ridA)).putProperties("in", stringValue(ridB))
           .putProperties("k", stringValue("e1")).putProperties("v", stringValue("changed")).build();
 
-      final InsertSummary summary = runStream(eType, InsertOptions.ConflictMode.CONFLICT_IGNORE, List.of(), row);
+      final InsertSummary summary = runStream(eType, InsertOptions.ConflictMode.CONFLICT_IGNORE, List.of("k"), List.of(), row);
 
       assertThat(summary.getIgnored()).isEqualTo(1);
       assertThat(summary.getInserted()).isEqualTo(0);
