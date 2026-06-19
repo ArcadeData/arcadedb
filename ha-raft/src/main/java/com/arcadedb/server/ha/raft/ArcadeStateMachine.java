@@ -388,6 +388,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       try {
         applyAction.run();
         return;
+        // Catch the whole NeedRetryException hierarchy on purpose: on the follower apply path the only
+        // subclass actually reachable is the engine's MVCC ConcurrentModificationException (page-version
+        // race), which a retry can win. The network subclasses (ServerIsNotTheLeader, QuorumNotReached,
+        // ReplicationQueueFull) are leader/client-side and never thrown while applying WAL pages locally,
+        // so the broad type costs nothing here and stays forward-compatible with future retryable errors.
       } catch (final NeedRetryException e) {
         lastRetry = e;
         LogManager.instance().log(this, Level.WARNING,

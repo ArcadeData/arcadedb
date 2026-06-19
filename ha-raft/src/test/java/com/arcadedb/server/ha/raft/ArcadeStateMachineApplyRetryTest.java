@@ -118,6 +118,22 @@ class ArcadeStateMachineApplyRetryTest {
   }
 
   @Test
+  void zeroRetriesMakesSingleAttemptThenEscalates() {
+    GlobalConfiguration.TX_RETRIES.setValue(0); // boundary: exactly one attempt, no retry
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final AtomicInteger calls = new AtomicInteger();
+    final ConcurrentModificationException cme = new ConcurrentModificationException("page race");
+    // With maxRetries == 0 a retryable error must escalate immediately after the first attempt.
+    assertThatThrownBy(() -> sm.applyWithRetry(6L, () -> {
+      calls.incrementAndGet();
+      throw cme;
+    }))
+        .isInstanceOf(ReplicationException.class)
+        .hasCause(cme);
+    assertThat(calls.get()).isEqualTo(1);
+  }
+
+  @Test
   void doesNotRetryNonRetryableError() {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     final AtomicInteger calls = new AtomicInteger();
