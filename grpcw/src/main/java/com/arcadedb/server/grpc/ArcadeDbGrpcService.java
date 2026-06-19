@@ -2229,31 +2229,35 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     };
   }
 
-  // An empty update list means "merge every non-key property" (true upsert), not a silent no-op.
-  private List<String> conflictUpdateColumns(final InsertContext ctx, final Iterable<String> incomingProps,
-      final boolean excludeEdgeEndpoints) {
-    if (!ctx.updateCols.isEmpty())
-      return ctx.updateCols;
-
-    final List<String> cols = new ArrayList<>();
-    for (final String name : incomingProps) {
-      if (name.startsWith("@") || ctx.keyColsSet.contains(name))
-        continue;
-      if (excludeEdgeEndpoints && ("out".equals(name) || "in".equals(name)))
-        continue;
-      cols.add(name);
-    }
-    return cols;
-  }
-
   private Object recordValue(final GrpcRecord r, final String col) {
     final GrpcValue v = r.getPropertiesMap().get(col);
     return v == null ? null : fromGrpcValue(v);
   }
 
+  // Merges the incoming values onto a matched record. With an explicit update_columns_on_conflict
+  // list only those columns are written; with an empty list every non-key property is merged (true
+  // upsert, not a silent no-op). For edges the out/in endpoints are skipped in BOTH cases: they
+  // address the graph topology, and setting them through the MutableDocument view would write plain
+  // properties while bypassing the vertex edge-list bookkeeping the graph engine maintains.
+  private void applyConflictUpdates(final InsertContext ctx, final GrpcRecord r, final boolean isEdge,
+      final MutableDocument existing) {
+    if (!ctx.updateCols.isEmpty()) {
+      for (final String col : ctx.updateCols)
+        if (!(isEdge && ("out".equals(col) || "in".equals(col))))
+          existing.set(col, recordValue(r, col));
+    } else {
+      for (final String name : r.getPropertiesMap().keySet()) {
+        if (name.startsWith("@") || ctx.keyColsSet.contains(name))
+          continue;
+        if (isEdge && ("out".equals(name) || "in".equals(name)))
+          continue;
+        existing.set(name, recordValue(r, name));
+      }
+    }
+  }
+
   // Returns true when an existing row was matched by key and merged; false when none matched (the
-  // caller then inserts). For an existing edge the out/in endpoints are left intact - the key
-  // columns identify the edge, endpoints are not re-pointed by an upsert.
+  // caller then inserts).
   private boolean tryUpsertByRecord(final InsertContext ctx, final GrpcRecord r, final boolean isEdge) {
     final List<String> keys = ctx.keyCols;
     if (keys.isEmpty())
@@ -2271,10 +2275,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         return false;
 
       final MutableDocument existing = res.getElement().get().asDocument().modify();
-
-      for (final String col : conflictUpdateColumns(ctx, r.getPropertiesMap().keySet(), isEdge))
-        existing.set(col, recordValue(r, col));
-
+      applyConflictUpdates(ctx, r, isEdge, existing);
       existing.save();
       return true;
     }
@@ -2881,8 +2882,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final Database db;
 
     final List<String> keyCols;
-    final Set<String>  keyColsSet;
     final List<String> updateCols;
+    final Set<String> keyColsSet;
 
     long startedAt;
 

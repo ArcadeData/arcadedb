@@ -112,8 +112,9 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
   }
 
   private void cmd(final String sql) {
-    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+    final ExecuteCommandResponse resp = authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
         .setDatabase(getDatabaseName()).setCredentials(credentials()).setCommand(sql).build());
+    assertThat(resp.getSuccess()).as("setup command failed: %s -> %s", sql, resp.getMessage()).isTrue();
   }
 
   private GrpcRecord firstRecord(final String query) {
@@ -226,6 +227,53 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
       assertThat(summary.getInserted() + summary.getUpdated()).isEqualTo(2);
       assertThat(firstLong("SELECT count(*) AS cnt FROM " + typeName, "cnt")).isEqualTo(1);
       assertThat(firstString("SELECT v FROM " + typeName + " WHERE k = 'a'", "v")).isEqualTo("second");
+    } finally {
+      cmd("DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+    }
+  }
+
+  @Test
+  void conflictUpdateWithNoKeyColumnsCannotMatchAndReportsConflict() throws Exception {
+    // Documents current behavior: CONFLICT_UPDATE without key_columns cannot resolve a match
+    // (tryUpsertByRecord/keyExistsByRecord short-circuit on empty keys), so a unique-index duplicate
+    // is reported as a failed row rather than merged. Guards against a silent behavior change.
+    final String typeName = "Issue4656NoKeys_" + System.currentTimeMillis();
+    cmd("CREATE DOCUMENT TYPE " + typeName);
+    cmd("CREATE PROPERTY " + typeName + ".v STRING");
+    cmd("CREATE INDEX ON " + typeName + "(v) UNIQUE");
+    cmd("INSERT INTO " + typeName + " SET v = 'dup'");
+    try {
+      final CountDownLatch done = new CountDownLatch(1);
+      final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
+      final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+      final StreamObserver<InsertChunk> req = asyncAuthenticatedStub.insertStream(new StreamObserver<>() {
+        @Override public void onNext(final InsertSummary s) { summaryRef.set(s); }
+        @Override public void onError(final Throwable t) { errorRef.set(t); done.countDown(); }
+        @Override public void onCompleted() { done.countDown(); }
+      });
+
+      // No addKeyColumns(...) on purpose.
+      req.onNext(InsertChunk.newBuilder()
+          .setSessionId("issue-4656-no-keys").setChunkSeq(0).setLast(true)
+          .setOptions(InsertOptions.newBuilder()
+              .setDatabase(getDatabaseName()).setCredentials(credentials()).setTargetClass(typeName)
+              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_UPDATE)
+              .setTransactionMode(InsertOptions.TransactionMode.PER_STREAM).build())
+          .addRows(GrpcRecord.newBuilder().setType(typeName).putProperties("v", stringValue("dup")).build())
+          .build());
+      req.onCompleted();
+
+      assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
+      assertThat(errorRef.get()).isNull();
+      assertThat(summaryRef.get()).isNotNull();
+
+      final InsertSummary summary = summaryRef.get();
+      assertThat(summary.getUpdated()).isEqualTo(0);
+      assertThat(summary.getFailed()).isEqualTo(1);
+      assertThat(summary.getErrorsList()).anyMatch(e -> "CONFLICT".equals(e.getCode()));
+      // The duplicate was not stored: still exactly the pre-existing row.
+      assertThat(firstLong("SELECT count(*) AS cnt FROM " + typeName, "cnt")).isEqualTo(1);
     } finally {
       cmd("DROP TYPE " + typeName + " IF EXISTS UNSAFE");
     }
