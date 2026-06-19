@@ -87,6 +87,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -2236,7 +2237,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final List<String> cols = new ArrayList<>();
     for (final String name : incomingProps) {
-      if (name.startsWith("@") || ctx.keyCols.contains(name))
+      if (name.startsWith("@") || ctx.keyColsSet.contains(name))
         continue;
       if (excludeEdgeEndpoints && ("out".equals(name) || "in".equals(name)))
         continue;
@@ -2880,6 +2881,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final Database db;
 
     final List<String> keyCols;
+    final Set<String>  keyColsSet;
     final List<String> updateCols;
 
     long startedAt;
@@ -2903,6 +2905,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       this.db = getDatabase(opts.getDatabase(), opts.getCredentials());
 
       this.keyCols = opts.getKeyColumnsList();
+      this.keyColsSet = Set.copyOf(this.keyCols);
 
       this.updateCols = opts.getUpdateColumnsOnConflictList();
 
