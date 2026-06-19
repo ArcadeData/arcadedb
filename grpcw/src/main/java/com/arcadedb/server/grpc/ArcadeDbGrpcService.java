@@ -2228,87 +2228,72 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     };
   }
 
-  private boolean tryUpsertVertex(final InsertContext ctx, final MutableVertex incoming) {
+  /**
+   * Issue #4656: resolves which columns to write when a {@code CONFLICT_UPDATE} matches an existing
+   * row. When the client supplied an explicit {@code update_columns_on_conflict} list it is honored
+   * verbatim. When that list is empty, every non-key property present on the incoming record is
+   * merged (true upsert/merge), matching SQL {@code UPDATE ... UPSERT} semantics, instead of
+   * silently leaving the row unchanged while still reporting it as {@code updated}. System fields
+   * ({@code @}-prefixed) and, for edges, the {@code out}/{@code in} endpoints are never merged.
+   */
+  private List<String> conflictUpdateColumns(final InsertContext ctx, final Iterable<String> incomingProps,
+      final boolean isEdge) {
+    if (!ctx.updateCols.isEmpty())
+      return ctx.updateCols;
 
-    var keys = ctx.keyCols;
+    final List<String> cols = new ArrayList<>();
+    for (final String name : incomingProps) {
+      if (name.startsWith("@") || ctx.keyCols.contains(name))
+        continue;
+      if (isEdge && ("out".equals(name) || "in".equals(name)))
+        continue;
+      cols.add(name);
+    }
+    return cols;
+  }
 
+  private Object recordValue(final GrpcRecord r, final String col) {
+    final GrpcValue v = r.getPropertiesMap().get(col);
+    return v == null ? null : fromGrpcValue(v);
+  }
+
+  /**
+   * Issue #4656: matches an existing record by the configured key columns and, when found, merges
+   * the incoming values onto it. Works uniformly for documents, vertices and edges (the latter two
+   * are {@link MutableDocument} subclasses for query/update purposes). Returns {@code true} when an
+   * existing row was updated, {@code false} when no match was found (the caller then inserts).
+   */
+  private boolean tryUpsertByRecord(final InsertContext ctx, final GrpcRecord r, final boolean isEdge) {
+    final List<String> keys = ctx.keyCols;
     if (keys.isEmpty())
       return false;
 
-    // Read incoming values via the (read-only) document view
-    var inDoc = incoming.asDocument();
+    final String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
+    final Object[] params = keys.stream().map(k -> recordValue(r, k)).toArray();
 
-    String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
-    Object[] params = keys.stream().map(inDoc::get).toArray();
-
-    // Prefer selecting the element so we can get a mutable vertex directly
-    final String sql = "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where;
-
-    try (var rs = ctx.db.query("sql", sql, params)) {
+    try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
       if (!rs.hasNext())
         return false;
 
-      var res = rs.next();
+      final Result res = rs.next();
       if (!res.isElement())
         return false;
 
-      Vertex v = res.getElement().get().asVertex();
+      final MutableDocument existing = res.getElement().get().asDocument().modify();
 
-      MutableVertex existingV = v.modify();
-
-      // Apply the updates
-
-      for (String col : ctx.updateCols) {
-        existingV.set(col, inDoc.get(col));
-      }
-
-      existingV.save();
-
-      return true;
-    }
-  }
-
-  private boolean tryUpsertDocument(InsertContext ctx, MutableDocument incoming) {
-
-    var keys = ctx.keyCols;
-
-    if (keys.isEmpty())
-      return false;
-
-    String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
-    Object[] params = keys.stream().map(incoming::get).toArray();
-
-    try (ResultSet rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
-
-      if (!rs.hasNext()) {
-        return false;
-      }
-
-      var res = rs.next();
-      if (!res.isElement())
-        return false;
-
-      Document d = res.getElement().get().asDocument();
-
-      var existing = d.modify();
-
-      // Apply the updates
-
-      for (String col : ctx.updateCols) {
-        existing.set(col, incoming.get(col));
-      }
+      for (final String col : conflictUpdateColumns(ctx, r.getPropertiesMap().keySet(), isEdge))
+        existing.set(col, recordValue(r, col));
 
       existing.save();
-
       return true;
     }
   }
 
-  private boolean keyExists(final InsertContext ctx, final MutableDocument incoming) {
+  private boolean keyExistsByRecord(final InsertContext ctx, final GrpcRecord r) {
     if (ctx.keyCols.isEmpty())
       return false;
     final String where = String.join(" AND ", ctx.keyCols.stream().map(k -> k + " = ?").toList());
-    final Object[] params = ctx.keyCols.stream().map(incoming::get).toArray();
+    final Object[] params = ctx.keyCols.stream().map(k -> recordValue(r, k)).toArray();
     try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
       return rs.hasNext();
     }
@@ -2359,45 +2344,55 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (ctx.opts.getValidateOnly())
           continue;
 
+        final ConflictMode mode = ctx.opts.getConflictMode();
+
         if (isVertex) {
-          MutableVertex v = ctx.db.newVertex(ctx.opts.getTargetClass());
-          applyGrpcRecord(v, r);
-          if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_UPDATE && tryUpsertVertex(ctx, v)) {
+          if (mode == ConflictMode.CONFLICT_UPDATE && tryUpsertByRecord(ctx, r, false)) {
             c.updated++;
-          } else if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_IGNORE && keyExists(ctx, v)) {
+          } else if (mode == ConflictMode.CONFLICT_IGNORE && keyExistsByRecord(ctx, r)) {
             c.ignored++;
           } else {
+            final MutableVertex v = ctx.db.newVertex(ctx.opts.getTargetClass());
+            applyGrpcRecord(v, r);
             v.save();
             c.inserted++;
           }
         } else if (isEdge) {
-
-          String outRid = getStringProp(r, "out"); // lookup helper you already have
-          String inRid = getStringProp(r, "in");
-
-          if (outRid == null || inRid == null) {
-
-            c.failed++;
-
-            c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
-                .setMessage("Edge requires 'out' and 'in'").build());
-          } else {
-            var outV = ctx.db.lookupByRID(new RID(outRid), false).asVertex(false);
-
-            // Create edge from the OUT vertex. The `in` RID is stored in the edge record; use DatabaseRID so edge.getIn() resolves across threads.
-            MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), ctx.db.newRID(inRid));
-            applyGrpcRecord(e, r); // sets edge properties
-            e.save();
-            c.inserted++;
-          }
-        } else {
-          MutableDocument d = ctx.db.newDocument(ctx.opts.getTargetClass());
-          applyGrpcRecord(d, r);
-          if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_UPDATE && tryUpsertDocument(ctx, d)) {
+          // Issue #4656 (3): edges must honor conflict_mode / key_columns like documents and
+          // vertices. newEdge() persists and links the edge immediately, so the upsert/ignore check
+          // has to run before the edge is created, otherwise a match would leave a dangling edge.
+          if (mode == ConflictMode.CONFLICT_UPDATE && tryUpsertByRecord(ctx, r, true)) {
             c.updated++;
-          } else if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_IGNORE && keyExists(ctx, d)) {
+          } else if (mode == ConflictMode.CONFLICT_IGNORE && keyExistsByRecord(ctx, r)) {
             c.ignored++;
           } else {
+            final String outRid = getStringProp(r, "out"); // lookup helper you already have
+            final String inRid = getStringProp(r, "in");
+
+            if (outRid == null || inRid == null) {
+
+              c.failed++;
+
+              c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
+                  .setMessage("Edge requires 'out' and 'in'").build());
+            } else {
+              final var outV = ctx.db.lookupByRID(new RID(outRid), false).asVertex(false);
+
+              // Create edge from the OUT vertex. The `in` RID is stored in the edge record; use DatabaseRID so edge.getIn() resolves across threads.
+              final MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), ctx.db.newRID(inRid));
+              applyGrpcRecord(e, r); // sets edge properties
+              e.save();
+              c.inserted++;
+            }
+          }
+        } else {
+          if (mode == ConflictMode.CONFLICT_UPDATE && tryUpsertByRecord(ctx, r, false)) {
+            c.updated++;
+          } else if (mode == ConflictMode.CONFLICT_IGNORE && keyExistsByRecord(ctx, r)) {
+            c.ignored++;
+          } else {
+            final MutableDocument d = ctx.db.newDocument(ctx.opts.getTargetClass());
+            applyGrpcRecord(d, r);
             d.save();
             c.inserted++;
           }
@@ -2407,7 +2402,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         switch (ctx.opts.getConflictMode()) {
           case CONFLICT_IGNORE -> c.ignored++;
           case CONFLICT_ABORT, UNRECOGNIZED -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
-          case CONFLICT_UPDATE -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+          // Issue #4656 (1): a concurrent stream may have inserted the same key between our existence
+          // check and save(). The unique index now guarantees the row exists, so retry the match path
+          // as an update rather than losing the row to a CONFLICT error.
+          case CONFLICT_UPDATE -> {
+            if (tryUpsertByRecord(ctx, r, isEdge))
+              c.updated++;
+            else
+              c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+          }
           case CONFLICT_ERROR -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
         }
       } catch (Exception e) {
