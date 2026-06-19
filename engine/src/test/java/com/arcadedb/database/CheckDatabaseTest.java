@@ -21,12 +21,9 @@ package com.arcadedb.database;
 import com.arcadedb.TestHelper;
 import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.engine.LocalBucket;
-import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.database.Record;
-import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.EdgeLinkedList;
 import com.arcadedb.graph.MutableVertex;
@@ -45,6 +42,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -356,24 +354,88 @@ class CheckDatabaseTest extends TestHelper {
         }
       });
 
-      // Run with a cap of 3 — far below the actual number of findings.
+      // Run with a cap of 3, far below the actual number of findings.
       final Map<String, Object> result = new DatabaseChecker(db)
           .setVerboseLevel(0)
           .setMaxWarnings(3)
           .check();
 
       final Collection<String> warnings = (Collection<String>) result.get("warnings");
+      final Collection<RID> corrupted = (Collection<RID>) result.get("corruptedRecords");
       final long totalWarnings = (Long) result.get("totalWarnings");
 
-      // The in-memory list must never exceed the cap.
+      // The in-memory collections must never exceed the cap: this is what prevents the OOM.
       assertThat(warnings.size()).isLessThanOrEqualTo(3);
+      assertThat(corrupted.size()).isLessThanOrEqualTo(3);
 
       // totalWarnings must reflect that more findings exist beyond the cap.
       assertThat(totalWarnings).isGreaterThan(3);
 
-      // Corrupted records counter must be non-zero.
+      // Corrupted records counter must reflect findings beyond the cap too.
       final long totalCorruptedRecords = (Long) result.get("totalCorruptedRecords");
+      assertThat(totalCorruptedRecords).isGreaterThan(3);
+    } finally {
+      db.drop();
+    }
+  }
+
+  /**
+   * Regression test for the totals accounting: {@code totalWarnings} and {@code totalCorruptedRecords} must
+   * count every finding exactly once. The check is restricted to the edge type so a single code path
+   * (checkEdges) is the only contributor and no cap is hit, therefore the raw totals must equal the sizes of
+   * the (deduplicated) collections. A regression that accumulates the totals twice (e.g. both in updateStats
+   * and via an explicit put) makes them twice the collection size and fails here. Drops its database at the end.
+   */
+  @Test
+  void checkTotalsAreNotDoubleCounted() {
+    final String dbPath = "./target/databases/CheckTotalsNoDoubleCount";
+    final DatabaseFactory factory = new DatabaseFactory(dbPath);
+    if (factory.exists())
+      factory.open().drop();
+
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("Node");
+      db.getSchema().createEdgeType("Link");
+
+      final int leaves = 5;
+      final MutableVertex[] hub = new MutableVertex[1];
+      db.transaction(() -> hub[0] = db.newVertex("Node").save());
+      db.transaction(() -> {
+        for (int i = 0; i < leaves; i++) {
+          final MutableVertex leaf = db.newVertex("Node").set("i", i).save();
+          hub[0].newEdge("Link", leaf);
+        }
+      });
+
+      // Delete every leaf vertex at low level so each edge dangles on its incoming side.
+      db.transaction(() -> {
+        final Iterator<Record> it = db.iterateType("Node", false);
+        while (it.hasNext()) {
+          final Record rec = it.next();
+          if (rec.getIdentity().equals(hub[0].getIdentity()))
+            continue;
+          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+        }
+      });
+
+      final Map<String, Object> result = new DatabaseChecker(db)
+          .setVerboseLevel(0)
+          .setTypes(Set.of("Link"))
+          .check();
+
+      final Collection<String> warnings = (Collection<String>) result.get("warnings");
+      final Collection<RID> corrupted = (Collection<RID>) result.get("corruptedRecords");
+      final long totalWarnings = (Long) result.get("totalWarnings");
+      final long totalCorruptedRecords = (Long) result.get("totalCorruptedRecords");
+
+      assertThat(totalWarnings).isGreaterThan(0);
       assertThat(totalCorruptedRecords).isGreaterThan(0);
+
+      // Single contributing pass, unique RIDs/messages, no cap hit: the raw totals must equal the
+      // deduplicated collection sizes exactly. Double-counting would make them twice as large.
+      assertThat(totalWarnings).isEqualTo((long) warnings.size());
+      assertThat(totalCorruptedRecords).isEqualTo((long) corrupted.size());
     } finally {
       db.drop();
     }

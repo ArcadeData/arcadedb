@@ -221,12 +221,12 @@ public class DatabaseChecker {
         final Map<String, Object> stats = new GraphDatabaseChecker(database).checkEdges(type.getName(), fix, verboseLevel,
             maxWarnings - currentWarnings, maxWarnings - currentCorrupted);
 
+        // NOTE: totalWarnings and totalCorruptedRecords are accumulated by updateStats() above (both are Long
+        // entries in the stats map), so they must NOT be added again here or they would be double-counted.
         updateStats(stats);
 
         ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
         ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
-        result.put("totalWarnings", (Long) result.get("totalWarnings") + (Long) stats.get("totalWarnings"));
-        result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + (Long) stats.get("totalCorruptedRecords"));
       }
     }
   }
@@ -246,12 +246,12 @@ public class DatabaseChecker {
         final Map<String, Object> stats = new GraphDatabaseChecker(database).checkVertices(type.getName(), fix, verboseLevel,
             maxWarnings - currentWarnings, maxWarnings - currentCorrupted);
 
+        // NOTE: totalWarnings and totalCorruptedRecords are accumulated by updateStats() above (both are Long
+        // entries in the stats map), so they must NOT be added again here or they would be double-counted.
         updateStats(stats);
 
         ((LinkedHashSet<String>) result.get("warnings")).addAll((Collection<String>) stats.get("warnings"));
         ((LinkedHashSet<RID>) result.get("corruptedRecords")).addAll((Collection<RID>) stats.get("corruptedRecords"));
-        result.put("totalWarnings", (Long) result.get("totalWarnings") + (Long) stats.get("totalWarnings"));
-        result.put("totalCorruptedRecords", (Long) result.get("totalCorruptedRecords") + (Long) stats.get("totalCorruptedRecords"));
       }
     }
   }
