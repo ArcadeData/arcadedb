@@ -49,8 +49,15 @@ public class GraphDatabaseChecker {
   }
 
   public Map<String, Object> checkVertices(final String typeName, final boolean fix, final int verboseLevel) {
+    return checkVertices(typeName, fix, verboseLevel, Integer.MAX_VALUE, Integer.MAX_VALUE);
+  }
+
+  public Map<String, Object> checkVertices(final String typeName, final boolean fix, final int verboseLevel,
+      final int maxWarnings, final int maxCorrupted) {
     final AtomicLong autoFix = new AtomicLong();
     final AtomicLong invalidLinks = new AtomicLong();
+    final AtomicLong totalWarnings = new AtomicLong();
+    final AtomicLong totalCorrupted = new AtomicLong();
     final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
     final List<String> warnings = new ArrayList<>();
     final Set<RID> reconnectOutEdges = new HashSet<>();
@@ -68,8 +75,8 @@ public class GraphDatabaseChecker {
             final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
             record.asVertex(true);
           } catch (Exception e) {
-            warnings.add("vertex " + rid + " cannot be loaded, removing it");
-            corruptedRecords.add(rid);
+            addWarning(warnings, totalWarnings, maxWarnings, "vertex " + rid + " cannot be loaded, removing it");
+            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
           }
           return true;
         }, null);
@@ -81,25 +88,29 @@ public class GraphDatabaseChecker {
 
           final RID vertexIdentity = vertex.getIdentity();
 
-          vertex = checkOutgoingEdges(fix, vertex, warnings, vertexIdentity, invalidLinks, corruptedRecords, reconnectOutEdges);
+          vertex = checkOutgoingEdges(fix, vertex, warnings, totalWarnings, maxWarnings, vertexIdentity, invalidLinks,
+              corruptedRecords, totalCorrupted, maxCorrupted, reconnectOutEdges);
 
-          checkIncomingEdges(fix, vertex, warnings, vertexIdentity, invalidLinks, corruptedRecords, reconnectInEdges);
+          checkIncomingEdges(fix, vertex, warnings, totalWarnings, maxWarnings, vertexIdentity, invalidLinks,
+              corruptedRecords, totalCorrupted, maxCorrupted, reconnectInEdges);
 
         } catch (final Throwable e) {
-          warnings.add("vertex " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")");
-          corruptedRecords.add(record.getIdentity());
+          addWarning(warnings, totalWarnings, maxWarnings,
+              "vertex " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")");
+          addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, record.getIdentity());
         }
 
         return true;
       }, (rid, exception) -> {
-        warnings.add("vertex " + rid + " cannot be loaded (error: " + exception.getMessage() + ")");
-        corruptedRecords.add(rid);
+        addWarning(warnings, totalWarnings, maxWarnings,
+            "vertex " + rid + " cannot be loaded (error: " + exception.getMessage() + ")");
+        addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
         return true;
       });
 
       if (fix) {
         if (!reconnectOutEdges.isEmpty() || !reconnectInEdges.isEmpty())
-          reconnectEdges(reconnectOutEdges, reconnectInEdges, warnings, stats);
+          reconnectEdges(reconnectOutEdges, reconnectInEdges, warnings, totalWarnings, maxWarnings, stats);
 
         for (final RID rid : corruptedRecords) {
           if (rid == null)
@@ -111,7 +122,8 @@ public class GraphDatabaseChecker {
           } catch (final RecordNotFoundException e) {
             // IGNORE IT
           } catch (final Throwable e) {
-            warnings.add("Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
+            addWarning(warnings, totalWarnings, maxWarnings,
+                "Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
           }
         }
       }
@@ -127,13 +139,15 @@ public class GraphDatabaseChecker {
       stats.put("corruptedRecords", corruptedRecords);
       stats.put("invalidLinks", invalidLinks.get());
       stats.put("warnings", warnings);
+      stats.put("totalWarnings", totalWarnings.get());
+      stats.put("totalCorruptedRecords", totalCorrupted.get());
     }
 
     return stats;
   }
 
   private void reconnectEdges(Set<RID> reconnectOutEdges, Set<RID> reconnectInEdges, List<String> warnings,
-      Map<String, Object> stats) {
+      AtomicLong totalWarnings, int maxWarnings, Map<String, Object> stats) {
     // BROWSE ALL THE EDGES AND COLLECT THE ONES PART OF THE RECONNECTION
     final List<EdgeType> edgeTypes = new ArrayList<>();
     for (DocumentType schemaType : database.getSchema().getTypes()) {
@@ -162,7 +176,7 @@ public class GraphDatabaseChecker {
         final EdgeLinkedList outLinkedList = new EdgeLinkedList(vertex, Vertex.DIRECTION.OUT, outChunk);
         outLinkedList.add(e.getIdentity(), e.getIn());
       }
-      warnings.add("reconnected " + outEdgesToReconnect.size() + " outgoing edges");
+      addWarning(warnings, totalWarnings, maxWarnings, "reconnected " + outEdgesToReconnect.size() + " outgoing edges");
       stats.put("outEdgesToReconnect", outEdgesToReconnect);
     }
 
@@ -173,13 +187,14 @@ public class GraphDatabaseChecker {
         final EdgeLinkedList inLinkedList = new EdgeLinkedList(vertex, Vertex.DIRECTION.IN, inChunk);
         inLinkedList.add(e.getIdentity(), e.getOut());
       }
-      warnings.add("reconnected " + inEdgesToReconnect.size() + " incoming edges");
+      addWarning(warnings, totalWarnings, maxWarnings, "reconnected " + inEdgesToReconnect.size() + " incoming edges");
       stats.put("inEdgesToReconnect", inEdgesToReconnect);
     }
   }
 
-  private void checkIncomingEdges(boolean fix, Vertex vertex, List<String> warnings, RID vertexIdentity, AtomicLong invalidLinks,
-      LinkedHashSet<RID> corruptedRecords, Set<RID> reconnectInEdges) {
+  private void checkIncomingEdges(boolean fix, Vertex vertex, List<String> warnings, AtomicLong totalWarnings, int maxWarnings,
+      RID vertexIdentity, AtomicLong invalidLinks, LinkedHashSet<RID> corruptedRecords, AtomicLong totalCorrupted,
+      int maxCorrupted, Set<RID> reconnectInEdges) {
     if (((VertexInternal) vertex).getInEdgesHeadChunk() != null) {
       EdgeLinkedList inEdges = null;
       try {
@@ -193,8 +208,8 @@ public class GraphDatabaseChecker {
           vertex = vertex.modify();
           ((VertexInternal) vertex).setInEdgesHeadChunk(null);
           ((MutableVertex) vertex).save();
-          warnings.add("vertex " + vertexIdentity + " in edges record " + ((VertexInternal) vertex).getInEdgesHeadChunk()
-              + " is not valid, removing it");
+          addWarning(warnings, totalWarnings, maxWarnings, "vertex " + vertexIdentity + " in edges record "
+              + ((VertexInternal) vertex).getInEdgesHeadChunk() + " is not valid, removing it");
         }
       } else {
         final Iterator<Pair<RID, RID>> in = inEdges.entryIterator();
@@ -207,12 +222,12 @@ public class GraphDatabaseChecker {
             boolean removeEntry = false;
 
             if (edgeRID == null) {
-              warnings.add("outgoing edge null from vertex " + vertexIdentity);
+              addWarning(warnings, totalWarnings, maxWarnings, "outgoing edge null from vertex " + vertexIdentity);
               removeEntry = true;
               invalidLinks.incrementAndGet();
             } else if (vertexRID == null) {
-              warnings.add("outgoing vertex null from vertex " + vertexIdentity);
-              corruptedRecords.add(edgeRID);
+              addWarning(warnings, totalWarnings, maxWarnings, "outgoing vertex null from vertex " + vertexIdentity);
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
               removeEntry = true;
               invalidLinks.incrementAndGet();
             } else {
@@ -226,33 +241,35 @@ public class GraphDatabaseChecker {
                 VertexInternal inVertex = null;
 
                 if (edge.getOut() == null || !edge.getOut().isValid()) {
-                  warnings.add("edge " + edgeRID + " has an invalid outgoing link " + edge.getIn());
-                  corruptedRecords.add(edgeRID);
+                  addWarning(warnings, totalWarnings, maxWarnings,
+                      "edge " + edgeRID + " has an invalid outgoing link " + edge.getIn());
+                  addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                   removeEntry = true;
                   invalidLinks.incrementAndGet();
                 } else {
                   try {
                     inVertex = (VertexInternal) edge.getOutVertex().asVertex(true);
                   } catch (final RecordNotFoundException e) {
-                    warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut()
-                        + " that is not found (deleted?)");
-                    corruptedRecords.add(edgeRID);
+                    addWarning(warnings, totalWarnings, maxWarnings,
+                        "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                     removeEntry = true;
-                    corruptedRecords.add(edge.getOut());
+                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getOut());
                     invalidLinks.incrementAndGet();
                   } catch (final Exception e) {
                     // UNKNOWN ERROR ON LOADING
-                    warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut()
-                        + " which cannot be loaded (error: " + e.getMessage() + ")");
-                    corruptedRecords.add(edgeRID);
+                    addWarning(warnings, totalWarnings, maxWarnings,
+                        "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
+                            + e.getMessage() + ")");
+                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                     removeEntry = true;
-                    corruptedRecords.add(edge.getOut());
+                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getOut());
                   }
                 }
 
                 if (!edge.getIn().equals(vertexIdentity)) {
-                  warnings.add("edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected "
-                      + vertexIdentity);
+                  addWarning(warnings, totalWarnings, maxWarnings,
+                      "edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexIdentity);
 
                   // CHECK ALL INCOMING EDGES
                   int totalEdges = 0;
@@ -273,10 +290,10 @@ public class GraphDatabaseChecker {
                     else
                       ++totalEdgesError;
                   }
-                  warnings.add("edge " + edgeRID + " has an incoming link " + edge.getOut() + " different from expected "
-                      + vertexIdentity + ". Found " + totalEdges + " edges, of which " + totalEdgesOk + " are correct, "
-                      + totalEdgesErrorFromSameVertex + " are from the same vertex and " + totalEdgesError
-                      + " are different");
+                  addWarning(warnings, totalWarnings, maxWarnings,
+                      "edge " + edgeRID + " has an incoming link " + edge.getOut() + " different from expected " + vertexIdentity
+                          + ". Found " + totalEdges + " edges, of which " + totalEdgesOk + " are correct, "
+                          + totalEdgesErrorFromSameVertex + " are from the same vertex and " + totalEdgesError + " are different");
 
                   if (totalEdges == totalEdgesErrorFromSameVertex) {
                     // ORIGINAL OUT VERTEX POINTER MUST BE WRONG, CHECKING
@@ -293,29 +310,29 @@ public class GraphDatabaseChecker {
                       // SKIP THE REST OF THE EDGES
                       break;
                     } else {
-                      corruptedRecords.add(edgeRID);
+                      addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                       removeEntry = true;
                       invalidLinks.incrementAndGet();
                     }
                   } else {
-                    corruptedRecords.add(edgeRID);
+                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                     removeEntry = true;
                     invalidLinks.incrementAndGet();
                   }
 
                 } else if (!edge.getOut().equals(vertexRID)) {
-                  warnings.add(
+                  addWarning(warnings, totalWarnings, maxWarnings,
                       "edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexRID);
-                  corruptedRecords.add(edgeRID);
+                  addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                   removeEntry = true;
                   invalidLinks.incrementAndGet();
                 }
 
                 if (((EdgeType) edge.getType()).isBidirectional()) {
                   if (inVertex != null && !inVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.OUT, edge.getTypeName())) {
-                    warnings.add(
-                        "edge " + edgeRID + " was not connected from the incoming vertex " + edge.getOut() + " to the vertex " +
-                            vertexIdentity);
+                    addWarning(warnings, totalWarnings, maxWarnings,
+                        "edge " + edgeRID + " was not connected from the incoming vertex " + edge.getOut() + " to the vertex "
+                            + vertexIdentity);
                     if (fix) {
                       inVertex = inVertex.modify();
                       database.getGraphEngine().connectOutgoingEdge(inVertex, vertexIdentity, edge);
@@ -325,14 +342,15 @@ public class GraphDatabaseChecker {
                 }
 
               } catch (final RecordNotFoundException e) {
-                warnings.add("edge " + edgeRID + " not found");
-                corruptedRecords.add(edgeRID);
+                addWarning(warnings, totalWarnings, maxWarnings, "edge " + edgeRID + " not found");
+                addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                 removeEntry = true;
                 invalidLinks.incrementAndGet();
               } catch (final Exception e) {
                 // UNKNOWN ERROR ON LOADING
-                warnings.add("edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")");
-                corruptedRecords.add(edgeRID);
+                addWarning(warnings, totalWarnings, maxWarnings,
+                    "edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")");
+                addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                 removeEntry = true;
               }
             }
@@ -341,15 +359,15 @@ public class GraphDatabaseChecker {
               in.remove();
           } catch (Exception e) {
             // UNKNOWN ERROR ON LOADING EDGES
-            warnings.add(
+            addWarning(warnings, totalWarnings, maxWarnings,
                 "error on loading incoming edges from vertex " + vertexIdentity + " (error: " + e.getMessage() + ")");
 
             if (fix) {
               vertex = vertex.modify();
               ((VertexInternal) vertex).setInEdgesHeadChunk(null);
               ((MutableVertex) vertex).save();
-              warnings.add("vertex " + vertexIdentity + " in edges record " + ((VertexInternal) vertex).getInEdgesHeadChunk()
-                  + " is not valid, removing it");
+              addWarning(warnings, totalWarnings, maxWarnings, "vertex " + vertexIdentity + " in edges record "
+                  + ((VertexInternal) vertex).getInEdgesHeadChunk() + " is not valid, removing it");
             }
             break;
           }
@@ -358,8 +376,10 @@ public class GraphDatabaseChecker {
     }
   }
 
-  private Vertex checkOutgoingEdges(final boolean fix, Vertex vertex, final List<String> warnings, final RID vertexIdentity,
-      final AtomicLong invalidLinks, final LinkedHashSet<RID> corruptedRecords, final Set<RID> reconnectOutEdges) {
+  private Vertex checkOutgoingEdges(final boolean fix, Vertex vertex, final List<String> warnings,
+      final AtomicLong totalWarnings, final int maxWarnings, final RID vertexIdentity, final AtomicLong invalidLinks,
+      final LinkedHashSet<RID> corruptedRecords, final AtomicLong totalCorrupted, final int maxCorrupted,
+      final Set<RID> reconnectOutEdges) {
     // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
     if (((VertexInternal) vertex).getOutEdgesHeadChunk() != null) {
       EdgeLinkedList outEdges = null;
@@ -374,8 +394,8 @@ public class GraphDatabaseChecker {
           vertex = vertex.modify();
           ((VertexInternal) vertex).setOutEdgesHeadChunk(null);
           ((MutableVertex) vertex).save();
-          warnings.add("vertex " + vertexIdentity + " out edges record " + ((VertexInternal) vertex).getOutEdgesHeadChunk()
-              + " is not valid, removing it");
+          addWarning(warnings, totalWarnings, maxWarnings, "vertex " + vertexIdentity + " out edges record "
+              + ((VertexInternal) vertex).getOutEdgesHeadChunk() + " is not valid, removing it");
         }
       } else {
 
@@ -391,12 +411,12 @@ public class GraphDatabaseChecker {
             VertexInternal outVertex = null;
 
             if (edgeRID == null) {
-              warnings.add("outgoing edge null from vertex " + vertexIdentity);
+              addWarning(warnings, totalWarnings, maxWarnings, "outgoing edge null from vertex " + vertexIdentity);
               removeEntry = true;
               invalidLinks.incrementAndGet();
             } else if (vertexRID == null) {
-              warnings.add("outgoing vertex null from vertex " + vertexIdentity);
-              corruptedRecords.add(edgeRID);
+              addWarning(warnings, totalWarnings, maxWarnings, "outgoing vertex null from vertex " + vertexIdentity);
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
               removeEntry = true;
               invalidLinks.incrementAndGet();
             } else {
@@ -408,27 +428,29 @@ public class GraphDatabaseChecker {
                 final Edge edge = edgeRID.asEdge(true);
 
                 if (edge.getIn() == null || !edge.getIn().isValid()) {
-                  warnings.add("edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
-                  corruptedRecords.add(edgeRID);
+                  addWarning(warnings, totalWarnings, maxWarnings,
+                      "edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
+                  addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                   removeEntry = true;
                   invalidLinks.incrementAndGet();
                 } else {
                   try {
                     outVertex = (VertexInternal) edge.getInVertex().asVertex(true);
                   } catch (final RecordNotFoundException e) {
-                    warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn()
-                        + " that is not found (deleted?)");
-                    corruptedRecords.add(edgeRID);
+                    addWarning(warnings, totalWarnings, maxWarnings,
+                        "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
+                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                     removeEntry = true;
-                    corruptedRecords.add(edge.getIn());
+                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
                     invalidLinks.incrementAndGet();
                   } catch (final Exception e) {
                     // UNKNOWN ERROR ON LOADING
-                    warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn()
-                        + " which cannot be loaded (error: " + e.getMessage() + ")");
-                    corruptedRecords.add(edgeRID);
+                    addWarning(warnings, totalWarnings, maxWarnings,
+                        "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
+                            + e.getMessage() + ")");
+                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                     removeEntry = true;
-                    corruptedRecords.add(edge.getIn());
+                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
                   }
                 }
 
@@ -453,10 +475,10 @@ public class GraphDatabaseChecker {
                     else
                       ++totalEdgesError;
                   }
-                  warnings.add("edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected "
-                      + vertexIdentity + ". Found " + totalEdges + " edges, of which " + totalEdgesOk + " are correct, "
-                      + totalEdgesErrorFromSameVertex + " are from the same vertex and " + totalEdgesError
-                      + " are different");
+                  addWarning(warnings, totalWarnings, maxWarnings,
+                      "edge " + edgeRID + " has an outgoing link " + edge.getOut() + " different from expected " + vertexIdentity
+                          + ". Found " + totalEdges + " edges, of which " + totalEdgesOk + " are correct, "
+                          + totalEdgesErrorFromSameVertex + " are from the same vertex and " + totalEdgesError + " are different");
 
                   if (totalEdges == totalEdgesErrorFromSameVertex) {
                     // ORIGINAL OUT VERTEX POINTER MUST BE WRONG, CHECKING
@@ -474,20 +496,20 @@ public class GraphDatabaseChecker {
                       break;
 
                     } else {
-                      corruptedRecords.add(edgeRID);
+                      addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                       removeEntry = true;
                       invalidLinks.incrementAndGet();
                     }
                   } else {
-                    corruptedRecords.add(edgeRID);
+                    addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                     removeEntry = true;
                     invalidLinks.incrementAndGet();
                   }
 
                 } else if (!edge.getIn().equals(vertexRID)) {
-                  warnings.add(
+                  addWarning(warnings, totalWarnings, maxWarnings,
                       "edge " + edgeRID + " has an incoming link " + edge.getIn() + " different from expected " + vertexRID);
-                  corruptedRecords.add(edgeRID);
+                  addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                   removeEntry = true;
                   invalidLinks.incrementAndGet();
                 }
@@ -495,9 +517,8 @@ public class GraphDatabaseChecker {
                 if (((EdgeType) edge.getType()).isBidirectional()) {
                   // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
                   if (outVertex != null && !outVertex.isConnectedTo(vertexIdentity, Vertex.DIRECTION.IN, edge.getTypeName())) {
-                    warnings.add(
-                        "edge " + edgeRID + " was not connected from the outgoing vertex " + edge.getIn()
-                            + " back to the vertex "
+                    addWarning(warnings, totalWarnings, maxWarnings,
+                        "edge " + edgeRID + " was not connected from the outgoing vertex " + edge.getIn() + " back to the vertex "
                             + vertexIdentity);
                     if (fix) {
                       outVertex = outVertex.modify();
@@ -508,14 +529,15 @@ public class GraphDatabaseChecker {
                 }
 
               } catch (final RecordNotFoundException e) {
-                warnings.add("edge " + edgeRID + " not found");
-                corruptedRecords.add(edgeRID);
+                addWarning(warnings, totalWarnings, maxWarnings, "edge " + edgeRID + " not found");
+                addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                 removeEntry = true;
                 invalidLinks.incrementAndGet();
               } catch (final Exception e) {
                 // UNKNOWN ERROR ON LOADING
-                warnings.add("edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")");
-                corruptedRecords.add(edgeRID);
+                addWarning(warnings, totalWarnings, maxWarnings,
+                    "edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")");
+                addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                 removeEntry = true;
               }
             }
@@ -525,16 +547,15 @@ public class GraphDatabaseChecker {
 
           } catch (Exception e) {
             // UNKNOWN ERROR ON LOADING EDGES
-            warnings.add(
+            addWarning(warnings, totalWarnings, maxWarnings,
                 "error on loading outgoing edges from vertex " + vertexIdentity + " (error: " + e.getMessage() + ")");
 
             if (fix) {
               vertex = vertex.modify();
               ((VertexInternal) vertex).setOutEdgesHeadChunk(null);
               ((MutableVertex) vertex).save();
-              warnings.add(
-                  "vertex " + vertexIdentity + " out edges record " + ((VertexInternal) vertex).getOutEdgesHeadChunk()
-                      + " is not valid, removing it");
+              addWarning(warnings, totalWarnings, maxWarnings, "vertex " + vertexIdentity + " out edges record "
+                  + ((VertexInternal) vertex).getOutEdgesHeadChunk() + " is not valid, removing it");
             }
             break;
           }
@@ -545,10 +566,19 @@ public class GraphDatabaseChecker {
   }
 
   public Map<String, Object> checkEdges(final String typeName, final boolean fix, final int verboseLevel) {
+    return checkEdges(typeName, fix, verboseLevel, Integer.MAX_VALUE, Integer.MAX_VALUE);
+  }
+
+  public Map<String, Object> checkEdges(final String typeName, final boolean fix, final int verboseLevel,
+      final int maxWarnings, final int maxCorrupted) {
     final AtomicLong autoFix = new AtomicLong();
     final AtomicLong invalidLinks = new AtomicLong();
     final AtomicLong missingReferenceBack = new AtomicLong();
-    final List<RID> corruptedRecords = new ArrayList<>();
+    final AtomicLong totalWarnings = new AtomicLong();
+    final AtomicLong totalCorrupted = new AtomicLong();
+    // Use a Set (matching checkVertices) so the same RID flagged on both sides of an edge is recorded once and
+    // totalCorrupted (which counts only genuinely new entries, see addCorrupted) stays aligned with its size.
+    final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
     final List<String> warnings = new ArrayList<>();
 
     final Map<String, Object> stats = new HashMap<>();
@@ -564,8 +594,8 @@ public class GraphDatabaseChecker {
             final Record record = database.getRecordFactory().newImmutableRecord(database, type, rid, view, null);
             record.asEdge(true);
           } catch (Exception e) {
-            warnings.add("edge " + rid + " cannot be loaded, removing it");
-            corruptedRecords.add(rid);
+            addWarning(warnings, totalWarnings, maxWarnings, "edge " + rid + " cannot be loaded, removing it");
+            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
           }
           return true;
         }, null);
@@ -578,17 +608,17 @@ public class GraphDatabaseChecker {
           final Edge edge = record.asEdge(true);
 
           if (edge == null) {
-            warnings.add("edge " + edgeRID + " cannot be loaded");
-            corruptedRecords.add(edgeRID);
+            addWarning(warnings, totalWarnings, maxWarnings, "edge " + edgeRID + " cannot be loaded");
+            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
 
           } else if (edge.getIn() == null || !edge.getIn().isValid()) {
-            warnings.add("edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
-            corruptedRecords.add(edgeRID);
+            addWarning(warnings, totalWarnings, maxWarnings, "edge " + edgeRID + " has an invalid incoming link " + edge.getIn());
+            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
             invalidLinks.incrementAndGet();
 
           } else if (edge.getOut() == null || !edge.getOut().isValid()) {
-            warnings.add("edge " + edgeRID + " has an invalid outgoing link " + edge.getOut());
-            corruptedRecords.add(edgeRID);
+            addWarning(warnings, totalWarnings, maxWarnings, "edge " + edgeRID + " has an invalid outgoing link " + edge.getOut());
+            addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
             invalidLinks.incrementAndGet();
 
           } else {
@@ -601,16 +631,18 @@ public class GraphDatabaseChecker {
                 missingReferenceBack.incrementAndGet();
 
             } catch (final RecordNotFoundException e) {
-              warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
-              corruptedRecords.add(edgeRID);
-              corruptedRecords.add(edge.getIn());
+              addWarning(warnings, totalWarnings, maxWarnings,
+                  "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
               invalidLinks.incrementAndGet();
             } catch (final Exception e) {
               // UNKNOWN ERROR ON LOADING
-              warnings.add("edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
-                  + e.getMessage() + ")");
-              corruptedRecords.add(edgeRID);
-              corruptedRecords.add(edge.getIn());
+              addWarning(warnings, totalWarnings, maxWarnings,
+                  "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
+                      + e.getMessage() + ")");
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
             }
 
             try {
@@ -622,28 +654,31 @@ public class GraphDatabaseChecker {
                 missingReferenceBack.incrementAndGet();
 
             } catch (final RecordNotFoundException e) {
-              warnings.add("edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
-              corruptedRecords.add(edgeRID);
+              addWarning(warnings, totalWarnings, maxWarnings,
+                  "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
               invalidLinks.incrementAndGet();
             } catch (final Exception e) {
               // UNKNOWN ERROR ON LOADING
-              warnings.add(
+              addWarning(warnings, totalWarnings, maxWarnings,
                   "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
                       + e.getMessage() + ")");
-              corruptedRecords.add(edgeRID);
-              corruptedRecords.add(edge.getOut());
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
+              addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getOut());
             }
           }
 
         } catch (final Throwable e) {
-          warnings.add("edge " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")");
-          corruptedRecords.add(edgeRID);
+          addWarning(warnings, totalWarnings, maxWarnings,
+              "edge " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")");
+          addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
         }
 
         return true;
       }, (rid, exception) -> {
-        warnings.add("edge " + rid + " cannot be loaded (error: " + exception.getMessage() + ")");
-        corruptedRecords.add(rid);
+        addWarning(warnings, totalWarnings, maxWarnings,
+            "edge " + rid + " cannot be loaded (error: " + exception.getMessage() + ")");
+        addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
         return true;
       });
 
@@ -658,7 +693,8 @@ public class GraphDatabaseChecker {
           } catch (final RecordNotFoundException e) {
             // IGNORE IT
           } catch (final Throwable e) {
-            warnings.add("Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
+            addWarning(warnings, totalWarnings, maxWarnings,
+                "Cannot fix the record " + rid + ": error on delete (error: " + e.getMessage() + ")");
           }
         }
       }
@@ -675,8 +711,31 @@ public class GraphDatabaseChecker {
       stats.put("invalidLinks", invalidLinks.get());
       stats.put("missingReferenceBack", missingReferenceBack.get());
       stats.put("warnings", warnings);
+      stats.put("totalWarnings", totalWarnings.get());
+      stats.put("totalCorruptedRecords", totalCorrupted.get());
     }
 
     return stats;
+  }
+
+  private static void addWarning(final List<String> warnings, final AtomicLong totalWarnings, final int maxWarnings,
+      final String message) {
+    totalWarnings.incrementAndGet();
+    if (warnings.size() < maxWarnings)
+      warnings.add(message);
+    else
+      LogManager.instance().log(GraphDatabaseChecker.class, Level.WARNING, message);
+  }
+
+  private static <T> void addCorrupted(final Collection<T> corrupted, final AtomicLong totalCorrupted, final int maxCorrupted,
+      final T item) {
+    if (corrupted.size() < maxCorrupted) {
+      // Under the cap: count the record only the first time it is recorded so totalCorrupted stays aligned with the
+      // de-duplicated collection size. Collection.add() returns false for an item already present in a Set.
+      if (corrupted.add(item))
+        totalCorrupted.incrementAndGet();
+    } else
+      // At/over the cap the item is not stored, so de-duplication is no longer possible: count the occurrence.
+      totalCorrupted.incrementAndGet();
   }
 }

@@ -19,6 +19,7 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.DatabaseChecker;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.MutablePage;
 import com.arcadedb.engine.PageId;
@@ -39,7 +40,9 @@ import java.io.IOException;
 import java.util.Collection;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -304,6 +307,174 @@ class CheckDatabaseTest extends TestHelper {
     assertThat(indexes.size()).isEqualTo(1);
 
     assertThat(indexes.getFirst().countEntries()).isEqualTo((Long) row.getProperty("totalActiveVertices"));
+  }
+
+  // Regression #474: the maxWarnings cap bounds the in-memory collections while totalWarnings still reports the real scope.
+  @Test
+  void checkWarningCapPreventsOOM() {
+    final String dbPath = "./target/databases/CheckWarningCapOOM";
+    final DatabaseFactory factory = new DatabaseFactory(dbPath);
+    if (factory.exists())
+      factory.open().drop();
+
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("Node");
+      db.getSchema().createEdgeType("Link");
+
+      // Create a small graph: 1 hub vertex connected to 20 leaf vertices.
+      // Then delete 10 leaf vertices at low level, creating stale edge references
+      // (simulates the HA copy scenario that left Johan's database with stale edges).
+      final int leaves = 20;
+      final int toDelete = 10;
+      final MutableVertex[] hub = new MutableVertex[1];
+      db.transaction(() -> hub[0] = db.newVertex("Node").set("hub", true).save());
+
+      db.transaction(() -> {
+        for (int i = 0; i < leaves; i++) {
+          final MutableVertex leaf = db.newVertex("Node").set("i", i).save();
+          hub[0].newEdge("Link", leaf);
+        }
+      });
+
+      db.transaction(() -> {
+        final Iterator<Record> it = db.iterateType("Node", false);
+        int deleted = 0;
+        while (it.hasNext() && deleted < toDelete) {
+          final Record rec = it.next();
+          if (rec.getIdentity().equals(hub[0].getIdentity()))
+            continue;
+          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+          deleted++;
+        }
+      });
+
+      // Run with a cap of 3, far below the actual number of findings.
+      final Map<String, Object> result = new DatabaseChecker(db)
+          .setVerboseLevel(0)
+          .setMaxWarnings(3)
+          .check();
+
+      final Collection<String> warnings = (Collection<String>) result.get("warnings");
+      final Collection<RID> corrupted = (Collection<RID>) result.get("corruptedRecords");
+      final long totalWarnings = (Long) result.get("totalWarnings");
+
+      // The in-memory collections must never exceed the cap: this is what prevents the OOM.
+      assertThat(warnings.size()).isLessThanOrEqualTo(3);
+      assertThat(corrupted.size()).isLessThanOrEqualTo(3);
+
+      // totalWarnings must reflect that more findings exist beyond the cap.
+      assertThat(totalWarnings).isGreaterThan(3);
+
+      // Corrupted records counter must reflect findings beyond the cap too.
+      final long totalCorruptedRecords = (Long) result.get("totalCorruptedRecords");
+      assertThat(totalCorruptedRecords).isGreaterThan(3);
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Regression: with one contributing pass and no cap hit, totalWarnings/totalCorruptedRecords must equal the
+  // de-duplicated collection sizes (catches both double-counting and per-occurrence over-counting of duplicates).
+  @Test
+  void checkTotalsAreNotDoubleCounted() {
+    final String dbPath = "./target/databases/CheckTotalsNoDoubleCount";
+    final DatabaseFactory factory = new DatabaseFactory(dbPath);
+    if (factory.exists())
+      factory.open().drop();
+
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("Node");
+      db.getSchema().createEdgeType("Link");
+
+      final int leaves = 5;
+      final MutableVertex[] hub = new MutableVertex[1];
+      db.transaction(() -> hub[0] = db.newVertex("Node").save());
+      db.transaction(() -> {
+        for (int i = 0; i < leaves; i++) {
+          final MutableVertex leaf = db.newVertex("Node").set("i", i).save();
+          hub[0].newEdge("Link", leaf);
+        }
+      });
+
+      // Delete every leaf vertex at low level so each edge dangles on its incoming side.
+      db.transaction(() -> {
+        final Iterator<Record> it = db.iterateType("Node", false);
+        while (it.hasNext()) {
+          final Record rec = it.next();
+          if (rec.getIdentity().equals(hub[0].getIdentity()))
+            continue;
+          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+        }
+      });
+
+      final Map<String, Object> result = new DatabaseChecker(db)
+          .setVerboseLevel(0)
+          .setTypes(Set.of("Link"))
+          .check();
+
+      final Collection<String> warnings = (Collection<String>) result.get("warnings");
+      final Collection<RID> corrupted = (Collection<RID>) result.get("corruptedRecords");
+      final long totalWarnings = (Long) result.get("totalWarnings");
+      final long totalCorruptedRecords = (Long) result.get("totalCorruptedRecords");
+
+      assertThat(totalWarnings).isGreaterThan(0);
+      assertThat(totalCorruptedRecords).isGreaterThan(0);
+
+      // Single contributing pass, unique RIDs/messages, no cap hit: the raw totals must equal the
+      // deduplicated collection sizes exactly. Double-counting would make them twice as large.
+      assertThat(totalWarnings).isEqualTo((long) warnings.size());
+      assertThat(totalCorruptedRecords).isEqualTo((long) corrupted.size());
+    } finally {
+      db.drop();
+    }
+  }
+
+  // Regression: an edge dangling on BOTH sides makes checkEdges flag the same edgeRID twice. totalCorruptedRecords
+  // must still equal the de-duplicated corrupted set (the old per-occurrence counter over-counted these edges).
+  @Test
+  void checkCorruptedCounterDedupsBothSidesDangling() {
+    final String dbPath = "./target/databases/CheckCorruptedDedupBothSides";
+    final DatabaseFactory factory = new DatabaseFactory(dbPath);
+    if (factory.exists())
+      factory.open().drop();
+
+    final Database db = factory.create();
+    try {
+      db.getSchema().createVertexType("Node");
+      db.getSchema().createEdgeType("Link");
+
+      final int pairs = 4;
+      db.transaction(() -> {
+        for (int i = 0; i < pairs; i++) {
+          final MutableVertex out = db.newVertex("Node").set("i", i).save();
+          final MutableVertex in = db.newVertex("Node").set("i", i).save();
+          out.newEdge("Link", in);
+        }
+      });
+
+      // Delete every Node so each edge dangles on both its outgoing and incoming side.
+      db.transaction(() -> {
+        final Iterator<Record> it = db.iterateType("Node", false);
+        while (it.hasNext()) {
+          final Record rec = it.next();
+          db.getSchema().getBucketById(rec.getIdentity().getBucketId()).deleteRecord(rec.getIdentity());
+        }
+      });
+
+      final Map<String, Object> result = new DatabaseChecker(db)
+          .setVerboseLevel(0)
+          .setTypes(Set.of("Link"))
+          .check();
+
+      final Collection<RID> corrupted = (Collection<RID>) result.get("corruptedRecords");
+      final long totalCorruptedRecords = (Long) result.get("totalCorruptedRecords");
+
+      assertThat(totalCorruptedRecords).isEqualTo((long) corrupted.size());
+    } finally {
+      db.drop();
+    }
   }
 
   @Override
