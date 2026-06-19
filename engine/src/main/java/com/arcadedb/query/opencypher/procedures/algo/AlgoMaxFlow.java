@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -114,18 +116,22 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
       for (final Edge e : edges) {
-        final Integer j = ridToIdx.get(e.getIn());
-        if (j == null)
-          continue;
-        double cap = 1.0;
-        if (capacityProperty != null && !capacityProperty.isEmpty()) {
-          final Object w = e.get(capacityProperty);
-          if (w instanceof Number num)
-            cap = num.doubleValue();
+        try {
+          final Integer j = ridToIdx.get(e.getIn());
+          if (j == null)
+            continue;
+          double cap = 1.0;
+          if (capacityProperty != null && !capacityProperty.isEmpty()) {
+            final Object w = e.get(capacityProperty);
+            if (w instanceof Number num)
+              cap = num.doubleValue();
+          }
+          capacity[i][j] += cap;
+          // For undirected: also add reverse capacity
+          capacity[j][i] += cap;
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
+          GhostEdgeReporter.reportSkipped(rnf);
         }
-        capacity[i][j] += cap;
-        // For undirected: also add reverse capacity
-        capacity[j][i] += cap;
       }
     }
 

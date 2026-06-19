@@ -321,6 +321,52 @@ class SQLFunctionShortestPathTest {
     });
   }
 
+  /**
+   * Regression: a ghost edge (dangling segment pointer whose backing edge record is gone, as after a
+   * manual HA leader-to-follower copy) must be skipped during edge-mode bidirectional search rather
+   * than throwing RecordNotFoundException. Graph: A->B is ghosted, A->C->B remains; the search must
+   * route around the ghost and return the surviving path.
+   */
+  @Test
+  void edgeModeSkipsGhostEdge() throws Exception {
+    TestHelper.executeInNewDatabase("testShortestPathGhostEdge", graph -> {
+      final MutableVertex[] v = new MutableVertex[3];
+      final RID[] ghost = new RID[1];
+
+      graph.transaction(() -> {
+        graph.getSchema().createVertexType("GNode");
+        graph.getSchema().createEdgeType("GEdge");
+
+        v[0] = graph.newVertex("GNode").set("name", "A").save();
+        v[1] = graph.newVertex("GNode").set("name", "B").save();
+        v[2] = graph.newVertex("GNode").set("name", "C").save();
+
+        ghost[0] = v[0].newEdge("GEdge", v[1]).getIdentity(); // A->B, to be ghosted
+        v[0].newEdge("GEdge", v[2]);                          // A->C
+        v[2].newEdge("GEdge", v[1]);                          // C->B
+      });
+
+      // Delete only the A->B edge record, leaving its segment pointer dangling.
+      graph.transaction(() -> graph.getSchema().getBucketById(ghost[0].getBucketId()).deleteRecord(ghost[0]));
+
+      function = new SQLFunctionShortestPath();
+      final Map<String, Object> options = new HashMap<>();
+      options.put("direction", "OUT");
+      options.put("edge", true);
+
+      final List<RID> result = function.execute(null, null, null, new Object[] { v[0], v[1], options },
+          new BasicCommandContext());
+
+      // The ghost A->B is skipped, so the only surviving route is A -[edge]-> C -[edge]-> B, which in
+      // edge mode is exactly the 5 elements [A, edge(A->C), C, edge(C->B), B].
+      assertThat(result).hasSize(5);
+      assertThat(result.get(0)).isEqualTo(v[0].getIdentity()); // A
+      assertThat(result.get(2)).isEqualTo(v[2].getIdentity()); // C (routed around the ghost)
+      assertThat(result.get(4)).isEqualTo(v[1].getIdentity()); // B
+      assertThat(result).doesNotContain(ghost[0]);
+    });
+  }
+
   private void setUpDatabase(final Database graph) {
     graph.transaction(() -> {
       graph.getSchema().createVertexType("Node");

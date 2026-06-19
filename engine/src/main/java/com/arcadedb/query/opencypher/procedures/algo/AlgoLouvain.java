@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -125,14 +127,18 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     for (int i = 0; i < n; i++) {
       final Vertex v = vertices.get(i);
       for (final Edge edge : v.getEdges(Vertex.DIRECTION.BOTH)) {
-        double w = 1.0;
-        if (weightProperty != null) {
-          final Object wObj = edge.get(weightProperty);
-          if (wObj instanceof Number num)
-            w = num.doubleValue();
+        try {
+          double w = 1.0;
+          if (weightProperty != null) {
+            final Object wObj = edge.get(weightProperty);
+            if (wObj instanceof Number num)
+              w = num.doubleValue();
+          }
+          nodeDegree[i] += w;
+          totalWeight += w;
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
         }
-        nodeDegree[i] += w;
-        totalWeight += w;
       }
     }
     totalWeight /= 2.0; // Each edge counted twice
@@ -150,20 +156,24 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
         // Compute neighbor community weights
         final Map<Integer, Double> neighborCommunityWeight = new HashMap<>();
         for (final Edge edge : v.getEdges(Vertex.DIRECTION.BOTH)) {
-          final Vertex neighbor = edge.getOut().equals(v.getIdentity()) ?
-              edge.getInVertex() : edge.getOutVertex();
-          final Integer neighborIdx = vertexIndex.get(neighbor);
-          if (neighborIdx == null)
-            continue;
+          try {
+            final Vertex neighbor = edge.getOut().equals(v.getIdentity()) ?
+                edge.getInVertex() : edge.getOutVertex();
+            final Integer neighborIdx = vertexIndex.get(neighbor);
+            if (neighborIdx == null)
+              continue;
 
-          double w = 1.0;
-          if (weightProperty != null) {
-            final Object wObj = edge.get(weightProperty);
-            if (wObj instanceof Number num)
-              w = num.doubleValue();
+            double w = 1.0;
+            if (weightProperty != null) {
+              final Object wObj = edge.get(weightProperty);
+              if (wObj instanceof Number num)
+                w = num.doubleValue();
+            }
+            final int neighborComm = community[neighborIdx];
+            neighborCommunityWeight.merge(neighborComm, w, Double::sum);
+          } catch (final RecordNotFoundException e) {
+            GhostEdgeReporter.reportSkipped(e);
           }
-          final int neighborComm = community[neighborIdx];
-          neighborCommunityWeight.merge(neighborComm, w, Double::sum);
         }
 
         // Find best community to move to
@@ -240,18 +250,22 @@ public class AlgoLouvain extends AbstractAlgoProcedure {
     for (int i = 0; i < n; i++) {
       final Vertex v = vertices.get(i);
       for (final Edge edge : v.getEdges(Vertex.DIRECTION.OUT)) {
-        final Vertex neighbor = edge.getInVertex();
-        final Integer j = vertexIndex.get(neighbor);
-        if (j == null || community[i] != community[j])
-          continue;
+        try {
+          final Vertex neighbor = edge.getInVertex();
+          final Integer j = vertexIndex.get(neighbor);
+          if (j == null || community[i] != community[j])
+            continue;
 
-        double w = 1.0;
-        if (weightProperty != null) {
-          final Object wObj = edge.get(weightProperty);
-          if (wObj instanceof Number num)
-            w = num.doubleValue();
+          double w = 1.0;
+          if (weightProperty != null) {
+            final Object wObj = edge.get(weightProperty);
+            if (wObj instanceof Number num)
+              w = num.doubleValue();
+          }
+          modularity += w - (nodeDegree[i] * nodeDegree[j]) / (2.0 * totalWeight);
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
         }
-        modularity += w - (nodeDegree[i] * nodeDegree[j]) / (2.0 * totalWeight);
       }
     }
     return modularity / (2.0 * totalWeight);

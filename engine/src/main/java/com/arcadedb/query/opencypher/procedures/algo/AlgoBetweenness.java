@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -136,20 +138,24 @@ public class AlgoBetweenness extends AbstractAlgoProcedure {
 
         final Vertex vVertex = vertices.get(v);
         for (final Edge edge : vVertex.getEdges(Vertex.DIRECTION.OUT)) {
-          final Vertex neighbor = edge.getInVertex();
-          final Integer w = vertexIndex.get(neighbor);
-          if (w == null)
-            continue;
+          try {
+            final Vertex neighbor = edge.getInVertex();
+            final Integer w = vertexIndex.get(neighbor);
+            if (w == null)
+              continue;
 
-          // First time visiting w?
-          if (dist[w] < 0) {
-            queue.add(w);
-            dist[w] = dist[v] + 1;
-          }
-          // Shortest path to w via v?
-          if (dist[w] == dist[v] + 1) {
-            sigma[w] += sigma[v];
-            predecessors.get(w).add(v);
+            // First time visiting w?
+            if (dist[w] < 0) {
+              queue.add(w);
+              dist[w] = dist[v] + 1;
+            }
+            // Shortest path to w via v?
+            if (dist[w] == dist[v] + 1) {
+              sigma[w] += sigma[v];
+              predecessors.get(w).add(v);
+            }
+          } catch (final RecordNotFoundException e) {
+            GhostEdgeReporter.reportSkipped(e);
           }
         }
       }

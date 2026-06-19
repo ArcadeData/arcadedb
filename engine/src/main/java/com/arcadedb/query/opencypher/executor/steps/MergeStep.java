@@ -25,6 +25,7 @@ import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
@@ -500,8 +501,9 @@ public class MergeStep extends AbstractExecutionStep {
         if (relProps != null && !matchesProperties(edge, relProps))
           continue;
         return edge;
-      } catch (final RecordNotFoundException ignored) {
+      } catch (final RecordNotFoundException e) {
         // Ghost edge: record was concurrently deleted. Skip and continue.
+        GhostEdgeReporter.reportSkipped(e);
       }
     }
     return null;
@@ -797,8 +799,9 @@ public class MergeStep extends AbstractExecutionStep {
               traverseFromNode(pathPattern, nodeIndex + 1, targetV, stepResult, results);
             }
           }
-        } catch (final RecordNotFoundException ignored) {
+        } catch (final RecordNotFoundException e) {
           // Ghost edge: record was concurrently deleted. Skip and continue.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }
@@ -834,9 +837,10 @@ public class MergeStep extends AbstractExecutionStep {
           stepResult.setProperty(relPattern.getVariable(), edge);
 
         traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, results);
-      } catch (final RecordNotFoundException ignored) {
+      } catch (final RecordNotFoundException e) {
         // Ghost edge: segment pointer exists but record was concurrently deleted.
         // Skip and continue - the edge does not satisfy the MERGE pattern.
+        GhostEdgeReporter.reportSkipped(e);
       }
     }
 
@@ -853,8 +857,9 @@ public class MergeStep extends AbstractExecutionStep {
             stepResult.setProperty(relPattern.getVariable(), edge);
 
           traverseFromNode(pathPattern, nodeIndex + 1, nextV, stepResult, results);
-        } catch (final RecordNotFoundException ignored) {
-          // Ghost edge: see above.
+        } catch (final RecordNotFoundException e) {
+          // Ghost edge - same case: segment pointer to a concurrently-deleted edge record. Skip it.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }

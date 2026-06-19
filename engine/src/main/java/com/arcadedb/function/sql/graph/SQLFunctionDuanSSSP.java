@@ -22,7 +22,9 @@ import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
@@ -130,18 +132,22 @@ public class SQLFunctionDuanSSSP extends SQLFunctionMathAbstract {
       final Vertex v = current.rid.asVertex();
 
       for (final Edge edge : v.getEdges(direction)) {
-        final RID neighborRID = getNeighborRID(v, edge, direction);
+        try {
+          final RID neighborRID = getNeighborRID(v, edge, direction);
 
-        if (!visited.contains(neighborRID)) {
-          final double edgeWeight = getEdgeWeight(weightField, edge);
-          final double newDist = current.distance + edgeWeight;
-          final double oldDist = distances.getOrDefault(neighborRID, Double.POSITIVE_INFINITY);
+          if (!visited.contains(neighborRID)) {
+            final double edgeWeight = getEdgeWeight(weightField, edge);
+            final double newDist = current.distance + edgeWeight;
+            final double oldDist = distances.getOrDefault(neighborRID, Double.POSITIVE_INFINITY);
 
-          if (newDist < oldDist) {
-            distances.put(neighborRID, newDist);
-            predecessors.put(neighborRID, current.rid);
-            pq.offer(new VertexDistance(neighborRID, newDist));
+            if (newDist < oldDist) {
+              distances.put(neighborRID, newDist);
+              predecessors.put(neighborRID, current.rid);
+              pq.offer(new VertexDistance(neighborRID, newDist));
+            }
           }
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }

@@ -21,8 +21,10 @@ package com.arcadedb.query.opencypher.executor.steps;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.ShortestPathPattern;
@@ -427,9 +429,13 @@ public class ShortestPathStep extends AbstractExecutionStep {
           from.getEdges(dir);
 
       for (final Edge edge : edges) {
-        final RID connected = dir == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
-        if (connected.equals(to.getIdentity()))
-          return edge;
+        try {
+          final RID connected = dir == Vertex.DIRECTION.OUT ? edge.getIn() : edge.getOut();
+          if (connected.equals(to.getIdentity()))
+            return edge;
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
+        }
       }
     }
     return null;

@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher.procedures.path;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -118,19 +120,23 @@ public class PathSubgraphAll extends AbstractPathProcedure {
             : current.vertex.getEdges(direction);
 
         for (final Edge edge : edges) {
-          final RID edgeId = edge.getIdentity();
-          if (!visitedEdges.contains(edgeId)) {
-            visitedEdges.add(edgeId);
-            reachableEdges.add(edge);
-          }
+          try {
+            final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+            final RID neighborId = neighbor.getIdentity();
 
-          final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-          final RID neighborId = neighbor.getIdentity();
+            final RID edgeId = edge.getIdentity();
+            if (!visitedEdges.contains(edgeId)) {
+              visitedEdges.add(edgeId);
+              reachableEdges.add(edge);
+            }
 
-          if (!visitedNodes.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
-            visitedNodes.add(neighborId);
-            reachableNodes.add(neighbor);
-            queue.add(new VertexLevel(neighbor, current.level + 1));
+            if (!visitedNodes.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
+              visitedNodes.add(neighborId);
+              reachableNodes.add(neighbor);
+              queue.add(new VertexLevel(neighbor, current.level + 1));
+            }
+          } catch (final RecordNotFoundException e) {
+            GhostEdgeReporter.reportSkipped(e);
           }
         }
       }

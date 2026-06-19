@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher.traversal;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.opencypher.ast.PathMode;
@@ -148,24 +150,28 @@ public class DepthFirstTraverser extends GraphTraverser {
 
       // Recursively explore neighbors
       for (final Edge edge : getEdges(vertex)) {
-        if (!matchesTypeFilter(edge))
-          continue;
+        try {
+          if (!matchesTypeFilter(edge))
+            continue;
 
-        if (!matchesPropertyFilter(edge))
-          continue;
+          if (!matchesPropertyFilter(edge))
+            continue;
 
-        // Path mode: TRAIL/ACYCLIC = edge uniqueness, WALK = no restriction
-        if (pathMode != PathMode.WALK && pathContainsEdge(path, edge))
-          continue;
+          // Path mode: TRAIL/ACYCLIC = edge uniqueness, WALK = no restriction
+          if (pathMode != PathMode.WALK && pathContainsEdge(path, edge))
+            continue;
 
-        final Vertex nextVertex = getOtherVertex(edge, vertex);
+          final Vertex nextVertex = getOtherVertex(edge, vertex);
 
-        // ACYCLIC: also enforce vertex uniqueness
-        if (pathMode == PathMode.ACYCLIC && path.containsVertex(nextVertex))
-          continue;
+          // ACYCLIC: also enforce vertex uniqueness
+          if (pathMode == PathMode.ACYCLIC && path.containsVertex(nextVertex))
+            continue;
 
-        final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
-        performDFS(newPath, depth + 1);
+          final TraversalPath newPath = new TraversalPath(path, edge, nextVertex);
+          performDFS(newPath, depth + 1);
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
+        }
       }
     }
 

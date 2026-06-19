@@ -18,7 +18,9 @@
  */
 package com.arcadedb.query.opencypher.executor.operators;
 
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.Direction;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -160,7 +162,15 @@ public class ExpandAll extends AbstractPhysicalOperator {
           if (edgeIterator.hasNext()) {
             final Edge edge = edgeIterator.next();
             final Vertex sourceVertex = currentInputResult.getProperty(sourceVariable);
-            final Vertex targetVertex = getTargetVertex(edge, sourceVertex);
+            final Vertex targetVertex;
+            try {
+              targetVertex = getTargetVertex(edge, sourceVertex);
+            } catch (final RecordNotFoundException e) {
+              // Ghost edge: a dangling segment pointer to a missing edge/target record (e.g. left by an
+              // HA resync or a rolled-back transaction). Skip it - it cannot contribute a row.
+              GhostEdgeReporter.reportSkipped(e);
+              continue;
+            }
 
             if (targetLabel != null && !targetVertex.getType().instanceOf(targetLabel))
               continue;

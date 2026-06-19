@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher.procedures.path;
 
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -167,15 +169,19 @@ public class PathExpandConfig extends AbstractPathProcedure {
           : node.getEdges(direction);
 
       for (final Edge edge : edges) {
-        final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-        final RID neighborId = neighbor.getIdentity();
+        try {
+          final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+          final RID neighborId = neighbor.getIdentity();
 
-        if (!visited.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
-          visited.add(neighborId);
-          final List<Object> newPath = new ArrayList<>(currentPath);
-          newPath.add(edge);
-          newPath.add(neighbor);
-          nextFrontier.add(newPath);
+          if (!visited.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
+            visited.add(neighborId);
+            final List<Object> newPath = new ArrayList<>(currentPath);
+            newPath.add(edge);
+            newPath.add(neighbor);
+            nextFrontier.add(newPath);
+          }
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }
@@ -208,20 +214,28 @@ public class PathExpandConfig extends AbstractPathProcedure {
           return;
         }
 
-        final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
-        final RID neighborId = neighbor.getIdentity();
+        try {
+          final Vertex neighbor = direction == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+          final RID neighborId = neighbor.getIdentity();
 
-        if (!visited.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
-          visited.add(neighborId);
-          currentPath.add(edge);
-          currentPath.add(neighbor);
+          if (!visited.contains(neighborId) && matchesLabels(neighbor, labelFilter)) {
+            visited.add(neighborId);
+            currentPath.add(edge);
+            currentPath.add(neighbor);
 
-          expandDFS(neighbor, relTypes, labelFilter, currentDepth + 1, minDepth, maxDepth,
-              currentPath, visited, allPaths, context, limit);
-
-          currentPath.removeLast();
-          currentPath.removeLast();
-          visited.remove(neighborId);
+            // try-finally so the path/visited bookkeeping is unwound even if the recursion throws.
+            try {
+              expandDFS(neighbor, relTypes, labelFilter, currentDepth + 1, minDepth, maxDepth,
+                  currentPath, visited, allPaths, context, limit);
+            } finally {
+              currentPath.removeLast();
+              currentPath.removeLast();
+              visited.remove(neighborId);
+            }
+          }
+        } catch (final RecordNotFoundException e) {
+          // Only the outer edge.get*Vertex() above can land here; the recursion has its own per-edge catches.
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }
