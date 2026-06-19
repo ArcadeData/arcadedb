@@ -88,7 +88,33 @@ class ArcadeStateMachineApplyRetryTest {
     }))
         .isInstanceOf(ReplicationException.class)
         .hasCause(cme);
-    assertThat(calls.get()).isEqualTo(3); // TX_RETRIES (2) + 1
+    // attempts == maxRetries + 1, computed from config so it can't rot if setUp() changes.
+    assertThat(calls.get()).isEqualTo(GlobalConfiguration.TX_RETRIES.getValueAsInteger() + 1);
+  }
+
+  @Test
+  void interruptDuringBackoffPreservesFlagAndEscalates() {
+    GlobalConfiguration.TX_RETRY_DELAY.setValue(50); // positive delay so the backoff sleep is reached
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final AtomicInteger calls = new AtomicInteger();
+    final ConcurrentModificationException cme = new ConcurrentModificationException("page race");
+    // Pre-set the interrupt flag so Thread.sleep() throws InterruptedException on the first backoff.
+    Thread.currentThread().interrupt();
+    try {
+      // The retry loop must break out, preserve the interrupt flag, and escalate to a ReplicationException
+      // rather than letting the InterruptedException propagate unchecked.
+      assertThatThrownBy(() -> sm.applyWithRetry(5L, () -> {
+        calls.incrementAndGet();
+        throw cme;
+      }))
+          .isInstanceOf(ReplicationException.class)
+          .hasCause(cme);
+      assertThat(calls.get()).isEqualTo(1); // interrupted during the first backoff: no further attempts
+      // Thread.interrupted() both asserts the flag survived and clears it so it can't leak to other tests.
+      assertThat(Thread.interrupted()).isTrue();
+    } finally {
+      Thread.interrupted(); // defensive: ensure the flag is cleared even if an assertion failed
+    }
   }
 
   @Test

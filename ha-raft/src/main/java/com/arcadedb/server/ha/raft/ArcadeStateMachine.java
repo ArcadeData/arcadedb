@@ -364,6 +364,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * {@link ReplicationException}, which {@link #applyTransaction} turns into a snapshot resync.
    * Crucially, a retryable error never reaches the fatal {@code catch (Throwable)} branch that stops
    * the server - "retry" must never mean "crash the node".
+   * <p>
+   * Note on backoff: {@link GlobalConfiguration#TX_RETRY_DELAY} defaults to 100ms and was tuned for
+   * MVCC contention among many concurrent user-transaction threads. The Raft {@code StateMachineUpdater}
+   * is a single sequential thread, so a smaller (or zero) delay is perfectly safe on this path and only
+   * reduces the worst-case latency per entry; the value is read live so it can be tuned independently.
    *
    * @param index       the Raft log index being applied (diagnostics only)
    * @param applyAction the apply dispatch to run
@@ -371,9 +376,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   // @VisibleForTesting
   void applyWithRetry(final long index, final Runnable applyAction) {
-    final int maxRetries = server != null
+    final int maxRetries = Math.max(0, server != null
         ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES)
-        : GlobalConfiguration.TX_RETRIES.getValueAsInteger();
+        : GlobalConfiguration.TX_RETRIES.getValueAsInteger());
     final int retryDelay = server != null
         ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY)
         : GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
@@ -393,6 +398,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
             Thread.sleep(1 + ThreadLocalRandom.current().nextInt(retryDelay));
           } catch (final InterruptedException ie) {
             Thread.currentThread().interrupt();
+            LogManager.instance().log(this, Level.WARNING,
+                "Raft apply retry interrupted at index %d after %d attempt(s); aborting retry loop (likely shutdown)",
+                index, attempt + 1);
             break;
           }
         }
