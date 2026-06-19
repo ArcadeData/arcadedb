@@ -136,9 +136,9 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
     return firstRecord(query).getPropertiesMap().get(prop).getInt64Value();
   }
 
-  /** Sends a single-row {@code CONFLICT_UPDATE} {@code InsertStream} and returns the resulting summary. */
-  private InsertSummary upsert(final String typeName, final GrpcRecord row, final List<String> updateColumns)
-      throws Exception {
+  /** Runs a single-chunk {@code InsertStream} keyed on column "k" in PER_STREAM mode and returns the summary. */
+  private InsertSummary runStream(final String typeName, final InsertOptions.ConflictMode mode,
+      final List<String> updateColumns, final GrpcRecord... rows) throws Exception {
     final CountDownLatch done = new CountDownLatch(1);
     final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
     final AtomicReference<Throwable> errorRef = new AtomicReference<>();
@@ -151,22 +151,29 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
 
     final InsertOptions.Builder opts = InsertOptions.newBuilder()
         .setDatabase(getDatabaseName()).setCredentials(credentials()).setTargetClass(typeName)
-        .setConflictMode(InsertOptions.ConflictMode.CONFLICT_UPDATE)
+        .setConflictMode(mode)
         .addKeyColumns("k")
         .setTransactionMode(InsertOptions.TransactionMode.PER_STREAM);
     opts.addAllUpdateColumnsOnConflict(updateColumns);
 
-    req.onNext(InsertChunk.newBuilder()
+    final InsertChunk.Builder chunk = InsertChunk.newBuilder()
         .setSessionId("issue-4656").setChunkSeq(0).setLast(true)
-        .setOptions(opts.build())
-        .addRows(row)
-        .build());
+        .setOptions(opts.build());
+    for (final GrpcRecord row : rows)
+      chunk.addRows(row);
+    req.onNext(chunk.build());
     req.onCompleted();
 
     assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
     assertThat(errorRef.get()).isNull();
     assertThat(summaryRef.get()).isNotNull();
     return summaryRef.get();
+  }
+
+  /** Sends a single-row {@code CONFLICT_UPDATE} {@code InsertStream} and returns the resulting summary. */
+  private InsertSummary upsert(final String typeName, final GrpcRecord row, final List<String> updateColumns)
+      throws Exception {
+    return runStream(typeName, InsertOptions.ConflictMode.CONFLICT_UPDATE, updateColumns, row);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -189,7 +196,7 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
 
       assertThat(summary.getUpdated()).isEqualTo(1);
       assertThat(summary.getFailed()).isEqualTo(0);
-      // Issue #4656 (2): the row must actually be merged, not silently left unchanged.
+      // The row must actually be merged, not silently left unchanged.
       assertThat(firstString("SELECT v FROM " + typeName + " WHERE k = 'a'", "v")).isEqualTo("changed");
       assertThat(firstLong("SELECT count(*) AS cnt FROM " + typeName, "cnt")).isEqualTo(1);
     } finally {
@@ -199,43 +206,21 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
 
   @Test
   void conflictUpdateWithSameKeyTwiceInOneStreamDoesNotLoseTheRow() throws Exception {
-    // Issue #4656 (1): the same (new) key appearing twice in a single CONFLICT_UPDATE stream must
-    // resolve to one stored row (insert then update/merge), never a lost-row CONFLICT error.
+    // The same (new) key appearing twice in a single CONFLICT_UPDATE stream must resolve to one
+    // stored row (insert then update/merge), never a lost-row CONFLICT error.
     final String typeName = "Issue4656DupInStream_" + System.currentTimeMillis();
     cmd("CREATE DOCUMENT TYPE " + typeName);
     cmd("CREATE PROPERTY " + typeName + ".k STRING");
     cmd("CREATE PROPERTY " + typeName + ".v STRING");
     cmd("CREATE INDEX ON " + typeName + "(k) UNIQUE");
     try {
-      final CountDownLatch done = new CountDownLatch(1);
-      final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
-      final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+      final GrpcRecord first = GrpcRecord.newBuilder().setType(typeName)
+          .putProperties("k", stringValue("a")).putProperties("v", stringValue("first")).build();
+      final GrpcRecord second = GrpcRecord.newBuilder().setType(typeName)
+          .putProperties("k", stringValue("a")).putProperties("v", stringValue("second")).build();
 
-      final StreamObserver<InsertChunk> req = asyncAuthenticatedStub.insertStream(new StreamObserver<>() {
-        @Override public void onNext(final InsertSummary s) { summaryRef.set(s); }
-        @Override public void onError(final Throwable t) { errorRef.set(t); done.countDown(); }
-        @Override public void onCompleted() { done.countDown(); }
-      });
+      final InsertSummary summary = runStream(typeName, InsertOptions.ConflictMode.CONFLICT_UPDATE, List.of(), first, second);
 
-      req.onNext(InsertChunk.newBuilder()
-          .setSessionId("issue-4656-dup-in-stream").setChunkSeq(0).setLast(true)
-          .setOptions(InsertOptions.newBuilder()
-              .setDatabase(getDatabaseName()).setCredentials(credentials()).setTargetClass(typeName)
-              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_UPDATE)
-              .addKeyColumns("k")
-              .setTransactionMode(InsertOptions.TransactionMode.PER_STREAM).build())
-          .addRows(GrpcRecord.newBuilder().setType(typeName)
-              .putProperties("k", stringValue("a")).putProperties("v", stringValue("first")).build())
-          .addRows(GrpcRecord.newBuilder().setType(typeName)
-              .putProperties("k", stringValue("a")).putProperties("v", stringValue("second")).build())
-          .build());
-      req.onCompleted();
-
-      assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
-      assertThat(errorRef.get()).isNull();
-      assertThat(summaryRef.get()).isNotNull();
-
-      final InsertSummary summary = summaryRef.get();
       // Exactly one row stored, the second occurrence merged on top of the first, no lost-row error.
       assertThat(summary.getFailed()).isEqualTo(0);
       assertThat(summary.getInserted() + summary.getUpdated()).isEqualTo(2);
@@ -292,6 +277,31 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
     }
   }
 
+  @Test
+  void conflictIgnoreSkipsExistingVertex() throws Exception {
+    final String typeName = "Issue4656VertexIgn_" + System.currentTimeMillis();
+    cmd("CREATE VERTEX TYPE " + typeName);
+    cmd("CREATE PROPERTY " + typeName + ".k STRING");
+    cmd("CREATE PROPERTY " + typeName + ".v STRING");
+    cmd("CREATE INDEX ON " + typeName + "(k) UNIQUE");
+    cmd("CREATE VERTEX " + typeName + " SET k = 'a', v = 'orig'");
+    try {
+      final GrpcRecord row = GrpcRecord.newBuilder().setType(typeName)
+          .putProperties("k", stringValue("a")).putProperties("v", stringValue("changed")).build();
+
+      final InsertSummary summary = runStream(typeName, InsertOptions.ConflictMode.CONFLICT_IGNORE, List.of(), row);
+
+      assertThat(summary.getIgnored()).isEqualTo(1);
+      assertThat(summary.getInserted()).isEqualTo(0);
+      assertThat(summary.getFailed()).isEqualTo(0);
+      // The pre-existing vertex must be left untouched.
+      assertThat(firstString("SELECT v FROM " + typeName + " WHERE k = 'a'", "v")).isEqualTo("orig");
+      assertThat(firstLong("SELECT count(*) AS cnt FROM " + typeName, "cnt")).isEqualTo(1);
+    } finally {
+      cmd("DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+    }
+  }
+
   // ---------------------------------------------------------------------------------------------
   // (3) Edges honour conflict_mode
   // ---------------------------------------------------------------------------------------------
@@ -320,7 +330,7 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
 
       final InsertSummary summary = upsert(eType, row, List.of("v"));
 
-      // Issue #4656 (3): the edge must be updated, not inserted, and not failed.
+      // The edge must be updated, not inserted, and not failed.
       assertThat(summary.getUpdated()).isEqualTo(1);
       assertThat(summary.getInserted()).isEqualTo(0);
       assertThat(summary.getFailed()).isEqualTo(0);
@@ -350,34 +360,12 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
     final String ridB = firstRid("SELECT FROM " + vType + " WHERE name = 'B'");
     cmd("CREATE EDGE " + eType + " FROM " + ridA + " TO " + ridB + " SET k = 'e1', v = 'orig'");
     try {
-      final CountDownLatch done = new CountDownLatch(1);
-      final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
-      final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+      final GrpcRecord row = GrpcRecord.newBuilder().setType(eType)
+          .putProperties("out", stringValue(ridA)).putProperties("in", stringValue(ridB))
+          .putProperties("k", stringValue("e1")).putProperties("v", stringValue("changed")).build();
 
-      final StreamObserver<InsertChunk> req = asyncAuthenticatedStub.insertStream(new StreamObserver<>() {
-        @Override public void onNext(final InsertSummary s) { summaryRef.set(s); }
-        @Override public void onError(final Throwable t) { errorRef.set(t); done.countDown(); }
-        @Override public void onCompleted() { done.countDown(); }
-      });
+      final InsertSummary summary = runStream(eType, InsertOptions.ConflictMode.CONFLICT_IGNORE, List.of(), row);
 
-      req.onNext(InsertChunk.newBuilder()
-          .setSessionId("issue-4656-edge-ignore").setChunkSeq(0).setLast(true)
-          .setOptions(InsertOptions.newBuilder()
-              .setDatabase(getDatabaseName()).setCredentials(credentials()).setTargetClass(eType)
-              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_IGNORE)
-              .addKeyColumns("k")
-              .setTransactionMode(InsertOptions.TransactionMode.PER_STREAM).build())
-          .addRows(GrpcRecord.newBuilder().setType(eType)
-              .putProperties("out", stringValue(ridA)).putProperties("in", stringValue(ridB))
-              .putProperties("k", stringValue("e1")).putProperties("v", stringValue("changed")).build())
-          .build());
-      req.onCompleted();
-
-      assertThat(done.await(30, TimeUnit.SECONDS)).isTrue();
-      assertThat(errorRef.get()).isNull();
-      assertThat(summaryRef.get()).isNotNull();
-
-      final InsertSummary summary = summaryRef.get();
       assertThat(summary.getIgnored()).isEqualTo(1);
       assertThat(summary.getInserted()).isEqualTo(0);
       assertThat(summary.getFailed()).isEqualTo(0);
