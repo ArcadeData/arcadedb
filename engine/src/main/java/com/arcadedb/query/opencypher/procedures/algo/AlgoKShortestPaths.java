@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -119,17 +121,21 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
       for (final Edge e : edges) {
-        final Integer j = ridToIdx.get(e.getIn());
-        if (j == null)
-          continue;
-        double w = 1.0;
-        if (weightProperty != null && !weightProperty.isEmpty()) {
-          final Object wObj = e.get(weightProperty);
-          if (wObj instanceof Number num)
-            w = num.doubleValue();
+        try {
+          final Integer j = ridToIdx.get(e.getIn());
+          if (j == null)
+            continue;
+          double w = 1.0;
+          if (weightProperty != null && !weightProperty.isEmpty()) {
+            final Object wObj = e.get(weightProperty);
+            if (wObj instanceof Number num)
+              w = num.doubleValue();
+          }
+          if (w < weightMatrix[i][j])
+            weightMatrix[i][j] = w;
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
+          GhostEdgeReporter.reportSkipped(rnf);
         }
-        if (w < weightMatrix[i][j])
-          weightMatrix[i][j] = w;
       }
     }
 

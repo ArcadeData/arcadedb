@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -142,24 +144,28 @@ public class AlgoLongestPathDAG extends AbstractAlgoProcedure {
       final int u = topoOrder[ti];
       final Vertex vu = graph.getVertex(u);
       for (final Edge edge : vu.getEdges(Vertex.DIRECTION.OUT)) {
-        if (relTypes != null) {
-          final String type = edge.getTypeName();
-          boolean found = false;
-          for (final String rt : relTypes)
-            if (rt.equals(type)) { found = true; break; }
-          if (!found) continue;
-        }
-        final int v = graph.indexOf(edge.getIn());
-        if (v < 0) continue;
-        double weight = 1.0;
-        if (weightProperty != null) {
-          final Object w = edge.get(weightProperty);
-          if (w instanceof Number num) weight = num.doubleValue();
-        }
-        final double newDist = dp[u] + weight;
-        if (newDist > dp[v]) {
-          dp[v] = newDist;
-          source[v] = source[u];
+        try {
+          if (relTypes != null) {
+            final String type = edge.getTypeName();
+            boolean found = false;
+            for (final String rt : relTypes)
+              if (rt.equals(type)) { found = true; break; }
+            if (!found) continue;
+          }
+          final int v = graph.indexOf(edge.getIn());
+          if (v < 0) continue;
+          double weight = 1.0;
+          if (weightProperty != null) {
+            final Object w = edge.get(weightProperty);
+            if (w instanceof Number num) weight = num.doubleValue();
+          }
+          final double newDist = dp[u] + weight;
+          if (newDist > dp[v]) {
+            dp[v] = newDist;
+            source[v] = source[u];
+          }
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }

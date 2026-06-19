@@ -21,8 +21,10 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.CSRVertexIterable;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
@@ -103,13 +105,21 @@ public abstract class SQLFunctionMove extends SQLFunctionConfigurableAbstract {
       final String[] iLabels) {
     final Document rec = (Document) iRecord.getRecord();
     if (rec instanceof Edge edge) {
-      if (iDirection == Vertex.DIRECTION.BOTH) {
-        var results = new ArrayList<Vertex>();
-        results.add(edge.getOutVertex());
-        results.add(edge.getInVertex());
-        return results;
+      // Tolerate a ghost edge (dangling segment pointer whose backing edge record is gone): it has no
+      // resolvable endpoints, so return an empty/null result instead of throwing RecordNotFoundException.
+      try {
+        if (iDirection == Vertex.DIRECTION.BOTH) {
+          var results = new ArrayList<Vertex>();
+          results.add(edge.getOutVertex());
+          results.add(edge.getInVertex());
+          return results;
+        }
+        return edge.getVertex(iDirection);
+      } catch (final RecordNotFoundException e) {
+        // Ghost edge: backing record missing; no endpoint to resolve.
+        GhostEdgeReporter.reportSkipped(e);
+        return iDirection == Vertex.DIRECTION.BOTH ? new ArrayList<>() : null;
       }
-      return edge.getVertex(iDirection);
     }
 
     return null;

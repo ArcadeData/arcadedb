@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -171,17 +173,21 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
           v.getEdges(Vertex.DIRECTION.OUT, relTypes) :
           v.getEdges(Vertex.DIRECTION.OUT);
       for (final Edge e : edges) {
-        final int j = graph.indexOf(e.getIn());
-        if (j < 0)
-          continue;
-        final double w;
-        if (weightProperty != null) {
-          final Object wObj = e.get(weightProperty);
-          w = wObj instanceof Number num ? num.doubleValue() : 1.0;
-        } else
-          w = 1.0;
-        if (w < dist[i][j])
-          dist[i][j] = w;
+        try {
+          final int j = graph.indexOf(e.getIn());
+          if (j < 0)
+            continue;
+          final double w;
+          if (weightProperty != null) {
+            final Object wObj = e.get(weightProperty);
+            w = wObj instanceof Number num ? num.doubleValue() : 1.0;
+          } else
+            w = 1.0;
+          if (w < dist[i][j])
+            dist[i][j] = w;
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
+          GhostEdgeReporter.reportSkipped(rnf);
+        }
       }
     }
   }

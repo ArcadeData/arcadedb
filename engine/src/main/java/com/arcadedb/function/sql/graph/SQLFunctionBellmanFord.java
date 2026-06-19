@@ -21,9 +21,11 @@ package com.arcadedb.function.sql.graph;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.function.sql.FunctionOptions;
 import com.arcadedb.function.sql.math.SQLFunctionMathAbstract;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
@@ -144,26 +146,30 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
 
       // OLTP fallback
       for (final Edge edge : v.getEdges(dir)) {
-        final Vertex neighbor;
-        if (dir == Vertex.DIRECTION.OUT)
-          neighbor = edge.getInVertex();
-        else if (dir == Vertex.DIRECTION.IN)
-          neighbor = edge.getOutVertex();
-        else
-          neighbor = edge.getOut().equals(v.getIdentity()) ? edge.getInVertex() : edge.getOutVertex();
+        try {
+          final Vertex neighbor;
+          if (dir == Vertex.DIRECTION.OUT)
+            neighbor = edge.getInVertex();
+          else if (dir == Vertex.DIRECTION.IN)
+            neighbor = edge.getOutVertex();
+          else
+            neighbor = edge.getOut().equals(v.getIdentity()) ? edge.getInVertex() : edge.getOutVertex();
 
-        final Integer j = vertexIndex.get(neighbor);
-        if (j == null)
-          continue;
+          final Integer j = vertexIndex.get(neighbor);
+          if (j == null)
+            continue;
 
-        double w = 1.0;
-        if (weightProperty != null && !weightProperty.isEmpty()) {
-          final Object wObj = edge.get(weightProperty);
-          if (wObj instanceof Number num)
-            w = num.doubleValue();
+          double w = 1.0;
+          if (weightProperty != null && !weightProperty.isEmpty()) {
+            final Object wObj = edge.get(weightProperty);
+            if (wObj instanceof Number num)
+              w = num.doubleValue();
+          }
+          edgeList.add(new int[] { i, j });
+          edgeWeights.add(w);
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
         }
-        edgeList.add(new int[] { i, j });
-        edgeWeights.add(w);
       }
     }
 

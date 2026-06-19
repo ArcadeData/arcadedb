@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher.ast;
 
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
@@ -255,7 +257,15 @@ public class PatternComprehensionExpression implements Expression {
       if (!visitedEdges.add(edgeRid))
         continue;
 
-      final Vertex nextVertex = edgeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+      final Vertex nextVertex;
+      try {
+        nextVertex = edgeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+      } catch (final RecordNotFoundException e) {
+        // Ghost edge: dangling segment pointer to a missing edge/target record. Undo the visit mark and skip.
+        GhostEdgeReporter.reportSkipped(e);
+        visitedEdges.remove(edgeRid);
+        continue;
+      }
       final int nextHop = currentHop + 1;
       final boolean trackPath = pathVariable != null;
       if (trackPath) {
@@ -331,7 +341,13 @@ public class PatternComprehensionExpression implements Expression {
 
     while (edges.hasNext()) {
       final Edge edge = edges.next();
-      final Vertex targetVertex = edgeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+      final Vertex targetVertex;
+      try {
+        targetVertex = edgeDirection == Vertex.DIRECTION.OUT ? edge.getInVertex() : edge.getOutVertex();
+      } catch (final RecordNotFoundException e) {
+        GhostEdgeReporter.reportSkipped(e);
+        continue;
+      }
 
       if (!matchesEndPattern(targetVertex, endNodePattern, baseResult))
         continue;

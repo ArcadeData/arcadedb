@@ -20,9 +20,11 @@ package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GAVVertex;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.Vertex;
@@ -580,6 +582,10 @@ public class MatchRelationshipStep extends AbstractExecutionStep {
             buffer.add(result);
             if (context.isProfiling())
               standardPathCount++;
+          } catch (final RecordNotFoundException e) {
+            // Ghost edge: a dangling segment pointer to a missing edge/target record (e.g. left by an
+            // HA resync or a rolled-back transaction). Skip it and move on to the next edge.
+            GhostEdgeReporter.reportSkipped(e);
           } finally {
             if (context.isProfiling())
               cost += System.nanoTime() - begin;

@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -121,14 +123,18 @@ public class AlgoDijkstra extends AbstractAlgoProcedure {
       Edge bestEdge = null;
       double bestWeight = Double.POSITIVE_INFINITY;
       for (final Edge edge : edgeTypeFilter != null ? from.getEdges(dir, edgeTypeFilter) : from.getEdges(dir)) {
-        final RID otherRid = edge.getOut().equals(from.getIdentity()) ? edge.getIn() : edge.getOut();
-        if (!toRid.equals(otherRid))
-          continue;
-        final Object w = edge.get(weightProperty);
-        final double edgeWeight = w instanceof Number num ? num.doubleValue() : 0.0;
-        if (edgeWeight < bestWeight) {
-          bestWeight = edgeWeight;
-          bestEdge = edge;
+        try {
+          final RID otherRid = edge.getOut().equals(from.getIdentity()) ? edge.getIn() : edge.getOut();
+          if (!toRid.equals(otherRid))
+            continue;
+          final Object w = edge.get(weightProperty);
+          final double edgeWeight = w instanceof Number num ? num.doubleValue() : 0.0;
+          if (edgeWeight < bestWeight) {
+            bestWeight = edgeWeight;
+            bestEdge = edge;
+          }
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
 

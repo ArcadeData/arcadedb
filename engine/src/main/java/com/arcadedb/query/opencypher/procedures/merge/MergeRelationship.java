@@ -19,7 +19,9 @@
 package com.arcadedb.query.opencypher.procedures.merge;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.MutableEdge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.procedures.CypherProcedure;
@@ -141,32 +143,36 @@ public class MergeRelationship implements CypherProcedure {
     // Get outgoing edges of the specified type
 
     for (final Edge edge : startNode.getEdges(Vertex.DIRECTION.OUT, relType)) {
-      // Check if edge connects to the endNode
-      if (!edge.getIn().equals(endNode.getIdentity()))
-        continue;
+      try {
+        // Check if edge connects to the endNode
+        if (!edge.getIn().equals(endNode.getIdentity()))
+          continue;
 
-      // Check if all matchProps match
-      if (matchProps == null || matchProps.isEmpty())
-        return edge; // No props to match, found a match
+        // Check if all matchProps match
+        if (matchProps == null || matchProps.isEmpty())
+          return edge; // No props to match, found a match
 
-      boolean allMatch = true;
-      for (final Map.Entry<String, Object> entry : matchProps.entrySet()) {
-        final Object edgeValue = edge.get(entry.getKey());
-        final Object matchValue = entry.getValue();
+        boolean allMatch = true;
+        for (final Map.Entry<String, Object> entry : matchProps.entrySet()) {
+          final Object edgeValue = edge.get(entry.getKey());
+          final Object matchValue = entry.getValue();
 
-        if (matchValue == null) {
-          if (edgeValue != null) {
+          if (matchValue == null) {
+            if (edgeValue != null) {
+              allMatch = false;
+              break;
+            }
+          } else if (!matchValue.equals(edgeValue)) {
             allMatch = false;
             break;
           }
-        } else if (!matchValue.equals(edgeValue)) {
-          allMatch = false;
-          break;
         }
-      }
 
-      if (allMatch) {
-        return edge;
+        if (allMatch) {
+          return edge;
+        }
+      } catch (final RecordNotFoundException e) {
+        GhostEdgeReporter.reportSkipped(e);
       }
     }
 

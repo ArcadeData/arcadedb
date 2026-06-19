@@ -20,7 +20,9 @@ package com.arcadedb.query.opencypher.procedures.algo;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.GhostEdgeReporter;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
@@ -107,16 +109,25 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
       return Stream.empty();
     final int rootIdx = rootIdxObj;
 
-    // Collect all directed edges as primitive arrays (two-pass, OUT direction = directed edges)
+    // Collect all directed edges as primitive arrays (two-pass, OUT direction = directed edges). Ghost
+    // edges are skipped identically in both passes, so the pass-2 fill never exceeds the pass-1 count and
+    // the arrays are always sized correctly. This rests on two read-query invariants: (1) an edge record is
+    // only ever deleted, never resurrected, so a pass-1 ghost is still a ghost in pass 2; (2) the two
+    // getEdges() calls per vertex iterate the same edges in the same order, so counting and filling agree.
     // Pass 1: count
     int edgeCount = 0;
     for (int i = 0; i < n; i++) {
       final Iterable<Edge> edges = relTypes != null && relTypes.length > 0 ?
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
-      for (final Edge e : edges)
-        if (ridToIdx.containsKey(e.getIn()))
-          edgeCount++;
+      for (final Edge e : edges) {
+        try {
+          if (ridToIdx.containsKey(e.getIn()))
+            edgeCount++;
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
+          GhostEdgeReporter.reportSkipped(rnf);
+        }
+      }
     }
 
     // Pass 2: fill
@@ -129,18 +140,22 @@ public class AlgoMinSpanningArborescence extends AbstractAlgoProcedure {
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT, relTypes) :
           vertices.get(i).getEdges(Vertex.DIRECTION.OUT);
       for (final Edge e : edges) {
-        final Integer j = ridToIdx.get(e.getIn());
-        if (j == null)
-          continue;
-        eFrom[ec] = i;
-        eTo[ec] = j;
-        if (weightProperty != null) {
-          final Object w = e.get(weightProperty);
-          eW[ec] = w instanceof Number num ? num.doubleValue() : 1.0;
-        } else {
-          eW[ec] = 1.0;
+        try {
+          final Integer j = ridToIdx.get(e.getIn());
+          if (j == null)
+            continue;
+          eFrom[ec] = i;
+          eTo[ec] = j;
+          if (weightProperty != null) {
+            final Object w = e.get(weightProperty);
+            eW[ec] = w instanceof Number num ? num.doubleValue() : 1.0;
+          } else {
+            eW[ec] = 1.0;
+          }
+          ec++;
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
+          GhostEdgeReporter.reportSkipped(rnf);
         }
-        ec++;
       }
     }
 
