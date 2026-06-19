@@ -50,6 +50,7 @@ public class DatabaseChecker {
   private       boolean             compress     = false;
   private       Set<Object>         buckets      = Collections.emptySet();
   private       Set<String>         types        = Collections.emptySet();
+  private       int                 maxWarnings  = 100_000;
   private final Map<String, Object> result       = new HashMap<>();
 
   public DatabaseChecker(final Database database) {
@@ -68,6 +69,8 @@ public class DatabaseChecker {
     result.put("deletedRecordsAfterFix", new LinkedHashSet<>());
     result.put("corruptedRecords", new LinkedHashSet<>());
     result.put("corruptedIndexes", new LinkedHashSet<>());
+    result.put("totalWarnings", 0L);
+    result.put("totalCorruptedRecords", 0L);
 
     checkEdges();
 
@@ -213,7 +216,10 @@ public class DatabaseChecker {
           continue;
 
       if (type instanceof LocalEdgeType) {
-        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkEdges(type.getName(), fix, verboseLevel);
+        final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
+        final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
+        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkEdges(type.getName(), fix, verboseLevel,
+            Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
 
         updateStats(stats);
 
@@ -233,7 +239,10 @@ public class DatabaseChecker {
           continue;
 
       if (type instanceof LocalVertexType) {
-        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkVertices(type.getName(), fix, verboseLevel);
+        final int currentWarnings = ((LinkedHashSet<String>) result.get("warnings")).size();
+        final int currentCorrupted = ((LinkedHashSet<RID>) result.get("corruptedRecords")).size();
+        final Map<String, Object> stats = new GraphDatabaseChecker(database).checkVertices(type.getName(), fix, verboseLevel,
+            Math.max(0, maxWarnings - currentWarnings), Math.max(0, maxWarnings - currentCorrupted));
 
         updateStats(stats);
 
@@ -265,6 +274,11 @@ public class DatabaseChecker {
 
   public DatabaseChecker setCompress(final boolean compress) {
     this.compress = compress;
+    return this;
+  }
+
+  public DatabaseChecker setMaxWarnings(final int maxWarnings) {
+    this.maxWarnings = maxWarnings;
     return this;
   }
 
@@ -474,6 +488,10 @@ public class DatabaseChecker {
         0F);
   }
 
+  /**
+   * Accumulates every Long entry of the sub-check stats into the global result. This is the single place totals
+   * like totalWarnings/totalCorruptedRecords are summed, so callers must NOT add them again or they double-count.
+   */
   private void updateStats(final Map<String, Object> stats) {
     for (final Map.Entry<String, Object> entry : stats.entrySet()) {
       final Object value = entry.getValue();
