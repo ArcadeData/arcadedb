@@ -21,11 +21,14 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * Test JSON parser and it support for types.
@@ -220,6 +223,109 @@ class JSONTest extends TestHelper {
     assertThat(deserialized.getString("singleQuote")).isEqualTo("It's a test");
     assertThat(deserialized.getString("allTogether")).isEqualTo("& < > \" '");
     assertThat(deserialized.getString("multipleAmpersands")).isEqualTo("a && b &&& c");
+  }
+
+  @Test
+  void temporalTypesInArrays() {
+    final LocalDateTime ldt = LocalDateTime.of(2024, 6, 15, 10, 30, 0);
+    final LocalDate ld = LocalDate.of(2024, 6, 15);
+    final Date d = new Date(1_000_000L);
+
+    // LocalDateTime inside a List → put(String, Object) → JSONArray constructor
+    JSONObject json = new JSONObject().put("dates", List.of(ldt));
+    assertThat(json.getJSONArray("dates").length()).isEqualTo(1);
+    assertThat(json.getJSONArray("dates").get(0)).isInstanceOf(Number.class);
+
+    // LocalDate inside a List
+    json = new JSONObject().put("dates", List.of(ld));
+    assertThat(json.getJSONArray("dates").length()).isEqualTo(1);
+    assertThat(json.getJSONArray("dates").get(0)).isInstanceOf(Number.class);
+
+    // java.util.Date inside a List - value is deterministic (epoch millis)
+    json = new JSONObject().put("dates", List.of(d));
+    assertThat(json.getJSONArray("dates").length()).isEqualTo(1);
+    assertThat(((Number) json.getJSONArray("dates").get(0)).longValue()).isEqualTo(1_000_000L);
+
+    // JSONArray.put(Object) with LocalDateTime
+    final JSONArray arr = new JSONArray();
+    arr.put((Object) ldt);
+    assertThat(arr.length()).isEqualTo(1);
+    assertThat(arr.get(0)).isInstanceOf(Number.class);
+
+    // JSONArray(Collection) constructor with temporal elements
+    final JSONArray arrFromColl = new JSONArray(List.of(ldt, ld, d));
+    assertThat(arrFromColl.length()).isEqualTo(3);
+    for (int i = 0; i < 3; i++)
+      assertThat(arrFromColl.get(i)).isInstanceOf(Number.class);
+
+    // JSONArray(Object[]) constructor with temporal elements
+    final JSONArray arrFromArr = new JSONArray(new Object[] { ldt, ld, d });
+    assertThat(arrFromArr.length()).isEqualTo(3);
+    for (int i = 0; i < 3; i++)
+      assertThat(arrFromArr.get(i)).isInstanceOf(Number.class);
+
+    // Mixed temporal types round-trip through JSON string
+    json = new JSONObject().put("mixed", List.of(ldt, ld));
+    final JSONObject deserialized = new JSONObject(json.toString());
+    assertThat(deserialized.getJSONArray("mixed").length()).isEqualTo(2);
+    for (int i = 0; i < 2; i++)
+      assertThat(deserialized.getJSONArray("mixed").get(i)).isInstanceOf(Number.class);
+  }
+
+  @Test
+  void unsupportedTemporalInArrayFallsBackToString() {
+    // LocalTime is a TemporalAccessor that DateUtils.dateTimeToTimestamp does not support and
+    // returns null for; the array serializer must fall back to toString() rather than NPE.
+    final LocalTime time = LocalTime.of(13, 45, 30);
+    final JSONArray arr = new JSONArray(List.of(time));
+    assertThat(arr.length()).isEqualTo(1);
+    assertThat(arr.get(0)).isEqualTo(time.toString());
+  }
+
+  @Test
+  void durationInArrayPreservesPrecisionAndSign() {
+    // Leading-zero nanoseconds must not be lost (5ns must not collapse to 0.5s).
+    final JSONArray smallNanos = new JSONArray(List.of(Duration.ofSeconds(5, 5)));
+    assertThat(smallNanos.getDouble(0)).isCloseTo(5.000000005, within(1e-12));
+
+    // Negative durations stored as (negative seconds, positive nanos) must serialize correctly,
+    // not as the naive "-6.999999995" that "%d.%d" formatting would produce.
+    final Duration negative = Duration.ofSeconds(-5).minusNanos(5); // -5.000000005s
+    final JSONArray neg = new JSONArray(List.of(negative));
+    assertThat(neg.getDouble(0)).isCloseTo(-5.000000005, within(1e-12));
+    assertThat(neg.getDouble(0)).isLessThan(0.0);
+  }
+
+  @Test
+  void enumAndClassInArrays() {
+    // Enum serializes to its name(); the array path must mirror put(String, Object).
+    final JSONArray enums = new JSONArray(List.of(java.time.DayOfWeek.MONDAY, java.time.Month.JUNE));
+    assertThat(enums.getString(0)).isEqualTo("MONDAY");
+    assertThat(enums.getString(1)).isEqualTo("JUNE");
+
+    // Class serializes to its fully-qualified name (matching put(String, Object)), not toString().
+    final JSONArray classes = new JSONArray(List.of(String.class));
+    assertThat(classes.getString(0)).isEqualTo("java.lang.String");
+  }
+
+  @Test
+  void localDateConsistentBetweenPutAndArrayPaths() {
+    // put(String, Object) and the array path (objectToElement) must produce the same epoch-millis
+    // for a LocalDate, both using the DST-correct atStartOfDay(ZoneId) form.
+    final LocalDate ld = LocalDate.of(2024, 6, 15);
+    final long viaPut = new JSONObject().put("d", ld).getLong("d");
+    final long viaArray = ((Number) new JSONArray(List.of(ld)).get(0)).longValue();
+    assertThat(viaPut).isEqualTo(viaArray);
+  }
+
+  @Test
+  void durationConsistentBetweenPutAndArrayPaths() {
+    // put(String, Object) and the array path (objectToElement) must produce the same value.
+    final Duration duration = Duration.ofSeconds(5, 5); // 5.000000005s
+    final double viaPut = new JSONObject().put("d", duration).getDouble("d");
+    final double viaArray = new JSONArray(List.of(duration)).getDouble(0);
+    assertThat(viaPut).isEqualTo(viaArray);
+    assertThat(viaPut).isCloseTo(5.000000005, within(1e-12));
   }
 
   @Test
