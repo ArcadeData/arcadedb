@@ -19,6 +19,7 @@
 package com.arcadedb.server.http;
 
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.QuerySession;
 import com.arcadedb.server.security.ServerSecurityUser;
@@ -28,7 +29,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
@@ -116,7 +116,7 @@ public class HttpSession implements QuerySession {
         lock.unlock();
       }
     } else {
-      throw new TimeoutException("Timeout on locking http session");
+      throw new LockTimeoutException("Timeout on locking http session");
     }
 
     lastUpdate = System.currentTimeMillis();

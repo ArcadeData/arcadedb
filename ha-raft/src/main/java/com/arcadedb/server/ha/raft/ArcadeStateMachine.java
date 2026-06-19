@@ -25,6 +25,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.WALVersionGapException;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.LocalSchema;
@@ -65,6 +66,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -285,14 +287,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
       final boolean originatedLocally = Boolean.TRUE.equals(trx.getStateMachineContext());
 
-      switch (decoded.type()) {
-      case TX_ENTRY -> applyTxEntry(decoded, index, originatedLocally);
-      case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
-      case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
-      case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
-      case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
-      case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index);
-      }
+      applyWithRetry(index, () -> {
+        switch (decoded.type()) {
+        case TX_ENTRY -> applyTxEntry(decoded, index, originatedLocally);
+        case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
+        case INSTALL_DATABASE_ENTRY -> applyInstallDatabaseEntry(decoded);
+        case DROP_DATABASE_ENTRY -> applyDropDatabaseEntry(decoded);
+        case SECURITY_USERS_ENTRY -> applySecurityUsersEntry(decoded);
+        case BOOTSTRAP_FINGERPRINT_ENTRY -> applyBootstrapFingerprintEntry(decoded, index);
+        }
+      });
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
       updateLastAppliedTermIndex(termIndex.getTerm(), index);
@@ -348,6 +352,71 @@ public class ArcadeStateMachine extends BaseStateMachine {
       stopThread.start();
       return CompletableFuture.failedFuture(e instanceof Exception ex ? ex : new RuntimeException(e));
     }
+  }
+
+  /**
+   * Runs the apply dispatch with bounded in-place retry for transient/retryable conditions.
+   * <p>
+   * A {@link NeedRetryException} (e.g. an MVCC {@link com.arcadedb.exception.ConcurrentModificationException}
+   * from a page-version race) is NOT state divergence: the apply is deterministic and idempotent
+   * (page-version / file-existence guards), so a retry can win the race. We retry up to
+   * {@link GlobalConfiguration#TX_RETRIES} times; only if the condition persists do we escalate to a
+   * {@link ReplicationException}, which {@link #applyTransaction} turns into a snapshot resync.
+   * Crucially, a retryable error never reaches the fatal {@code catch (Throwable)} branch that stops
+   * the server - "retry" must never mean "crash the node".
+   * <p>
+   * Note on backoff: {@link GlobalConfiguration#TX_RETRY_DELAY} defaults to 100ms and was tuned for
+   * MVCC contention among many concurrent user-transaction threads. The Raft {@code StateMachineUpdater}
+   * is a single sequential thread, so a smaller (or zero) delay is perfectly safe on this path and only
+   * reduces the worst-case latency per entry; the value is read live so it can be tuned independently.
+   *
+   * @param index       the Raft log index being applied (diagnostics only)
+   * @param applyAction the apply dispatch to run
+   * @throws ReplicationException if the retryable condition persists after all attempts
+   */
+  // @VisibleForTesting
+  void applyWithRetry(final long index, final Runnable applyAction) {
+    final int maxRetries = Math.max(0, server != null
+        ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES)
+        : GlobalConfiguration.TX_RETRIES.getValueAsInteger());
+    final int retryDelay = server != null
+        ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRY_DELAY)
+        : GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
+
+    NeedRetryException lastRetry = null;
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        applyAction.run();
+        return;
+        // Catch the whole NeedRetryException hierarchy on purpose: on the follower apply path the only
+        // subclass actually reachable is the engine's MVCC ConcurrentModificationException (page-version
+        // race), which a retry can win. The network subclasses (ServerIsNotTheLeader, QuorumNotReached,
+        // ReplicationQueueFull) are leader/client-side and never thrown while applying WAL pages locally,
+        // so the broad type costs nothing here and stays forward-compatible with future retryable errors.
+      } catch (final NeedRetryException e) {
+        lastRetry = e;
+        LogManager.instance().log(this, Level.WARNING,
+            "Retryable error applying Raft log entry at index %d (attempt %d/%d): %s",
+            index, attempt + 1, maxRetries + 1, e.getMessage());
+        if (attempt < maxRetries && retryDelay > 0) {
+          try {
+            Thread.sleep(1 + ThreadLocalRandom.current().nextInt(retryDelay));
+          } catch (final InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            LogManager.instance().log(this, Level.WARNING,
+                "Raft apply retry interrupted at index %d after %d attempt(s); aborting retry loop (likely shutdown)",
+                index, attempt + 1);
+            break;
+          }
+        }
+      }
+    }
+
+    // The retryable condition persisted across all attempts. Escalate to a resync (recoverable) -
+    // never fall through to the fatal catch (Throwable) branch that stops the server.
+    throw new ReplicationException(
+        "Retryable error persisted at index " + index + " after " + (maxRetries + 1)
+            + " attempts; escalating to snapshot resync", lastRetry);
   }
 
   /**
