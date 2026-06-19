@@ -1005,7 +1005,7 @@ public class GraphEngine {
         try {
           if (ridToIdx.containsKey(neighborRid(e, vid, dir)))
             counts[i]++;
-        } catch (final RecordNotFoundException rnf) {
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
           // Ghost edge: dangling segment pointer to a missing edge/target record. Skip it (the fill
           // pass below skips it identically, so counts and adjacency stay consistent: an edge record is
           // only deleted, never resurrected, during a read query, so a pass-1 ghost is still a ghost in
@@ -1029,7 +1029,7 @@ public class GraphEngine {
           final Integer j = ridToIdx.get(nid);
           if (j != null)
             adj[i][pos[i]++] = j;
-        } catch (final RecordNotFoundException rnf) {
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
           // Ghost edge: skipped identically to the counting pass above, so pos[i] never exceeds counts[i].
           GhostEdgeReporter.reportSkipped(rnf);
         }

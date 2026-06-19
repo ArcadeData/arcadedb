@@ -185,7 +185,7 @@ public class AlgoAPSP extends AbstractAlgoProcedure {
             w = 1.0;
           if (w < dist[i][j])
             dist[i][j] = w;
-        } catch (final RecordNotFoundException rnf) {
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

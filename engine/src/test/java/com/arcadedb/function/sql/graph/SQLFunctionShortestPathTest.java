@@ -357,10 +357,12 @@ class SQLFunctionShortestPathTest {
       final List<RID> result = function.execute(null, null, null, new Object[] { v[0], v[1], options },
           new BasicCommandContext());
 
-      // The ghost is skipped; the surviving route is A -[edge]-> C -[edge]-> B (5 elements with edges).
-      assertThat(result).isNotEmpty();
-      assertThat(result.getFirst()).isEqualTo(v[0].getIdentity());
-      assertThat(result.getLast()).isEqualTo(v[1].getIdentity());
+      // The ghost A->B is skipped, so the only surviving route is A -[edge]-> C -[edge]-> B, which in
+      // edge mode is exactly the 5 elements [A, edge(A->C), C, edge(C->B), B].
+      assertThat(result).hasSize(5);
+      assertThat(result.get(0)).isEqualTo(v[0].getIdentity()); // A
+      assertThat(result.get(2)).isEqualTo(v[2].getIdentity()); // C (routed around the ghost)
+      assertThat(result.get(4)).isEqualTo(v[1].getIdentity()); // B
       assertThat(result).doesNotContain(ghost[0]);
     });
   }

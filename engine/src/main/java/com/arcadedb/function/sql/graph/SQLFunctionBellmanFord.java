@@ -167,8 +167,8 @@ public class SQLFunctionBellmanFord extends SQLFunctionMathAbstract {
           }
           edgeList.add(new int[] { i, j });
           edgeWeights.add(w);
-        } catch (final RecordNotFoundException rnf) {
-          GhostEdgeReporter.reportSkipped(rnf);
+        } catch (final RecordNotFoundException e) {
+          GhostEdgeReporter.reportSkipped(e);
         }
       }
     }

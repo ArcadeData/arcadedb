@@ -28,6 +28,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -176,6 +177,44 @@ class PatternPredicateGhostEdgeTest {
       try (final ResultSet rs = database.query("opencypher",
           "MATCH (a:Account {number: 'ACC-3'})-[r:INITIATED]->(t) WHERE r.transaction_id = 'TX-3' RETURN t")) {
         assertThat(rs.hasNext()).isFalse();
+      }
+    }).doesNotThrowAnyException();
+  }
+
+  /**
+   * Pattern comprehension - [(a)-[:INITIATED]->(t) | t] and its variable-length form - routes through
+   * PatternComprehensionExpression (a different path from the WHERE predicate above). A ghost edge in
+   * the comprehension must be skipped, not throw, and contribute no element to the produced list.
+   */
+  @Test
+  void patternComprehensionSkipsGhostEdge() {
+    database.transaction(() ->
+        database.command("opencypher",
+            "CREATE (a:Account {number: 'ACC-PC'})-[:INITIATED {transaction_id: 'TX-PC'}]->(t:Transaction {id: 'TX-PC'})"));
+
+    final RID edgeRID;
+    try (final ResultSet rs = database.query("opencypher",
+        "MATCH (a:Account {number: 'ACC-PC'})-[r:INITIATED]->(t:Transaction {id: 'TX-PC'}) RETURN r")) {
+      edgeRID = ((Edge) rs.next().getProperty("r")).getIdentity();
+    }
+    database.transaction(() ->
+        database.getSchema().getBucketById(edgeRID.getBucketId()).deleteRecord(edgeRID));
+
+    // Single-hop comprehension: the ghost is the only edge, so the list is empty (no throw).
+    assertThatCode(() -> {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (a:Account {number: 'ACC-PC'}) RETURN [(a)-[:INITIATED]->(t) | t] AS targets")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat((List<?>) rs.next().getProperty("targets")).isEmpty();
+      }
+    }).doesNotThrowAnyException();
+
+    // Variable-length comprehension exercises the traverser inside PatternComprehensionExpression.
+    assertThatCode(() -> {
+      try (final ResultSet rs = database.query("opencypher",
+          "MATCH (a:Account {number: 'ACC-PC'}) RETURN [(a)-[:INITIATED*1..3]->(t) | t] AS targets")) {
+        assertThat(rs.hasNext()).isTrue();
+        assertThat((List<?>) rs.next().getProperty("targets")).isEmpty();
       }
     }).doesNotThrowAnyException();
   }

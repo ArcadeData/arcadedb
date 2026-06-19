@@ -130,8 +130,8 @@ class AlgoGhostEdgeTest {
   }
 
   /**
-   * Variable-length MATCH exercises the BFS/DFS path traversers; it must skip the ghost rather than
-   * throw while expanding.
+   * Variable-length MATCH ({@code -[:LINK*1..5]->}) drives the BreadthFirstTraverser /
+   * DepthFirstTraverser path traversers; encountering the ghost edge must be skipped, not throw.
    */
   @Test
   void variableLengthTraversalSkipsGhostEdge() {

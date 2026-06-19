@@ -278,8 +278,8 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
         final Vertex neighbor = getNeighbor(node, edge, ctx.getDatabase());
         if (neighbor != null)
           result.put(neighbor, getDistance(edge));
-      } catch (final RecordNotFoundException rnf) {
-        GhostEdgeReporter.reportSkipped(rnf);
+      } catch (final RecordNotFoundException e) {
+        GhostEdgeReporter.reportSkipped(e);
       }
     }
     return result;
@@ -349,7 +349,7 @@ public class SQLFunctionAstar extends SQLFunctionHeuristicPathFinderAbstract {
           e = next;
           break;
         }
-      } catch (final RecordNotFoundException rnf) {
+      } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
         GhostEdgeReporter.reportSkipped(rnf);
       }
     }

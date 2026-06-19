@@ -133,7 +133,7 @@ public class AlgoKShortestPaths extends AbstractAlgoProcedure {
           }
           if (w < weightMatrix[i][j])
             weightMatrix[i][j] = w;
-        } catch (final RecordNotFoundException rnf) {
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

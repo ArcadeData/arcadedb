@@ -129,7 +129,7 @@ public class AlgoMaxFlow extends AbstractAlgoProcedure {
           capacity[i][j] += cap;
           // For undirected: also add reverse capacity
           capacity[j][i] += cap;
-        } catch (final RecordNotFoundException rnf) {
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }

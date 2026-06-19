@@ -116,7 +116,7 @@ public class AlgoMST extends AbstractAlgoProcedure {
         try {
           if (ridToIdx.containsKey(e.getIn()))
             edgeCount++;
-        } catch (final RecordNotFoundException rnf) {
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }
@@ -145,7 +145,7 @@ public class AlgoMST extends AbstractAlgoProcedure {
             ew[ec] = 1.0;
           }
           ec++;
-        } catch (final RecordNotFoundException rnf) {
+        } catch (final RecordNotFoundException rnf) {  // 'rnf' not 'e' here: 'e' is the Edge loop variable in this scope
           GhostEdgeReporter.reportSkipped(rnf);
         }
       }
