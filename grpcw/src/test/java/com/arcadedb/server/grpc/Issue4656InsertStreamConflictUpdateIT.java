@@ -562,4 +562,41 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
       cmd("DROP TYPE " + vType + " IF EXISTS UNSAFE");
     }
   }
+
+  @Test
+  void edgeConflictErrorReportsDuplicateKeyAsFailed() throws Exception {
+    // CONFLICT_ERROR (the default) on an edge: a duplicate key is reported as a failed row and the
+    // pre-existing edge is left intact (no second edge, no ghost).
+    final long suffix = System.currentTimeMillis();
+    final String vType = "Issue4656NodeErr_" + suffix;
+    final String eType = "Issue4656EdgeErr_" + suffix;
+    cmd("CREATE VERTEX TYPE " + vType);
+    cmd("CREATE PROPERTY " + vType + ".name STRING");
+    cmd("CREATE VERTEX " + vType + " SET name = 'A'");
+    cmd("CREATE VERTEX " + vType + " SET name = 'B'");
+    cmd("CREATE EDGE TYPE " + eType);
+    cmd("CREATE PROPERTY " + eType + ".k STRING");
+    cmd("CREATE PROPERTY " + eType + ".v STRING");
+    cmd("CREATE INDEX ON " + eType + "(k) UNIQUE");
+
+    final String ridA = firstRid("SELECT FROM " + vType + " WHERE name = 'A'");
+    final String ridB = firstRid("SELECT FROM " + vType + " WHERE name = 'B'");
+    cmd("CREATE EDGE " + eType + " FROM " + ridA + " TO " + ridB + " SET k = 'e1', v = 'orig'");
+    try {
+      final GrpcRecord row = GrpcRecord.newBuilder().setType(eType)
+          .putProperties("out", stringValue(ridA)).putProperties("in", stringValue(ridB))
+          .putProperties("k", stringValue("e1")).putProperties("v", stringValue("changed")).build();
+
+      final InsertSummary summary = runStream(eType, InsertOptions.ConflictMode.CONFLICT_ERROR, List.of("k"), List.of(), row);
+
+      assertThat(summary.getUpdated()).isEqualTo(0);
+      assertThat(summary.getFailed()).isGreaterThanOrEqualTo(1);
+      assertThat(summary.getErrorsList()).anyMatch(e -> "CONFLICT".equals(e.getCode()));
+      assertThat(firstString("SELECT v FROM " + eType + " WHERE k = 'e1'", "v")).isEqualTo("orig");
+      assertThat(firstLong("SELECT count(*) AS cnt FROM " + eType, "cnt")).isEqualTo(1);
+    } finally {
+      cmd("DROP TYPE " + eType + " IF EXISTS UNSAFE");
+      cmd("DROP TYPE " + vType + " IF EXISTS UNSAFE");
+    }
+  }
 }

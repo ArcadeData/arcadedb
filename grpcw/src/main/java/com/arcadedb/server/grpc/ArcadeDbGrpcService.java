@@ -2256,13 +2256,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   // Backtick-quote a client-supplied identifier (target class / key column) so it cannot inject SQL;
-  // values stay parameterized via '?'. Embedded backticks are escaped per the SQL grammar.
+  // values stay parameterized via '?'. Embedded backticks are escaped per the SQL grammar, which
+  // also requires at least one character between the backticks.
   private static String quoteName(final String name) {
+    if (name == null || name.isEmpty())
+      throw new IllegalArgumentException("SQL identifier must not be empty");
     return "`" + name.replace("`", "\\`") + "`";
   }
 
   // Match an existing row by key and merge onto it; false when none matched (caller then inserts).
-  // asDocument().modify() yields a MutableVertex/MutableEdge at runtime, so save() persists correctly.
+  // MutableVertex and MutableEdge both extend MutableDocument, so asDocument().modify() returns the
+  // record's real mutable subtype; save() therefore persists a vertex/edge through its own path.
   private boolean tryUpsertByRecord(final InsertContext ctx, final GrpcRecord r, final boolean isEdge) {
     final List<String> keys = ctx.keyCols;
     if (keys.isEmpty())
@@ -2408,8 +2412,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           case CONFLICT_IGNORE -> c.ignored++;
           case CONFLICT_ABORT, UNRECOGNIZED -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
           // A concurrent stream inserted this key after our check; the unique index proves it exists
-          // now, so retry as an update instead of losing the row. The cross-stream race itself is not
-          // single-threaded reproducible (see Issue4656InsertStreamConflictUpdateIT).
+          // now, so retry as an update instead of losing the row. Not exercised by
+          // Issue4656InsertStreamConflictUpdateIT: the race needs two concurrent streams hitting the
+          // same new key, which is not deterministically reproducible single-threaded.
           case CONFLICT_UPDATE -> {
             try {
               if (tryUpsertByRecord(ctx, r, isEdge))
@@ -2906,7 +2911,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final List<String> updateCols;
     final Set<String> keyColsSet;
 
-    // Issue #4656: latch so the "out/in in update_columns ignored for edges" warning fires once per stream.
+    // Mutable latch (single-stream, no concurrent access): set once after the "out/in in
+    // update_columns ignored for edges" warning fires so it is logged at most once per stream.
     boolean warnedEdgeEndpointUpdateCols;
 
     long startedAt;
