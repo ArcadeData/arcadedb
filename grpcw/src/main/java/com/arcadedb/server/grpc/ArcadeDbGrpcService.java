@@ -2239,7 +2239,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   // upsert, not a silent no-op). System fields (@-prefixed) are never written. For edges the out/in
   // endpoints are skipped too: they address the graph topology, and setting them through the
   // MutableDocument view would write plain properties while bypassing the vertex edge-list
-  // bookkeeping the graph engine maintains.
+  // bookkeeping the graph engine maintains. Columns absent from the incoming record are skipped
+  // (merge semantics): an explicit update column the row does not carry is left untouched, not nulled.
   private void applyConflictUpdates(final InsertContext ctx, final GrpcRecord r, final boolean isEdge,
       final MutableDocument existing) {
     final Iterable<String> cols = ctx.updateCols.isEmpty() ? r.getPropertiesMap().keySet() : ctx.updateCols;
@@ -2251,7 +2252,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         continue;
       if (isEdge && ("out".equals(col) || "in".equals(col)))
         continue;
-      existing.set(col, recordValue(r, col));
+      final Object value = recordValue(r, col);
+      if (value == null)
+        continue;
+      existing.set(col, value);
     }
   }
 

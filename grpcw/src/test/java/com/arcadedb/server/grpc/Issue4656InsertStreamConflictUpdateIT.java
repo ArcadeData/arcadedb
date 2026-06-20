@@ -50,6 +50,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *   <li>(3) edge targets used to ignore {@code conflict_mode}/{@code key_columns} entirely; they must
  *   now honour {@code CONFLICT_UPDATE} and {@code CONFLICT_IGNORE} like documents and vertices.</li>
  * </ul>
+ * <p>
+ * Coverage gap: fix (1) - retrying a {@code DuplicatedKeyException} as an update - resolves the race
+ * between two <i>concurrent</i> streams inserting the same new key. That race surfaces the conflict
+ * at commit time and is not deterministically reproducible single-threaded, so the retry branch in
+ * the {@code DuplicatedKeyException} handler is not directly exercised here; the tests cover the
+ * reachable same-stream (read-your-own-writes) and same-key edge paths instead.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
@@ -421,6 +427,48 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
       assertThat(firstLong("SELECT count(*) AS cnt FROM (SELECT expand(out('" + eType + "')) FROM " + ridA + ") WHERE name = 'C'", "cnt"))
           .isEqualTo(0);
       assertThat(firstLong("SELECT count(*) AS cnt FROM " + eType, "cnt")).isEqualTo(1);
+    } finally {
+      cmd("DROP TYPE " + eType + " IF EXISTS UNSAFE");
+      cmd("DROP TYPE " + vType + " IF EXISTS UNSAFE");
+    }
+  }
+
+  @Test
+  void edgeConflictUpdateSameKeyTwiceInOneStreamCreatesNoGhostEdge() throws Exception {
+    // The same new edge key appearing twice in one CONFLICT_UPDATE stream must yield exactly one
+    // edge wired into the vertex edge-lists - no orphan/ghost edge record and no dangling endpoint.
+    final long suffix = System.currentTimeMillis();
+    final String vType = "Issue4656NodeGhost_" + suffix;
+    final String eType = "Issue4656EdgeGhost_" + suffix;
+    cmd("CREATE VERTEX TYPE " + vType);
+    cmd("CREATE PROPERTY " + vType + ".name STRING");
+    cmd("CREATE VERTEX " + vType + " SET name = 'A'");
+    cmd("CREATE VERTEX " + vType + " SET name = 'B'");
+    cmd("CREATE EDGE TYPE " + eType);
+    cmd("CREATE PROPERTY " + eType + ".k STRING");
+    cmd("CREATE PROPERTY " + eType + ".v STRING");
+    cmd("CREATE INDEX ON " + eType + "(k) UNIQUE");
+
+    final String ridA = firstRid("SELECT FROM " + vType + " WHERE name = 'A'");
+    final String ridB = firstRid("SELECT FROM " + vType + " WHERE name = 'B'");
+    try {
+      final GrpcRecord first = GrpcRecord.newBuilder().setType(eType)
+          .putProperties("out", stringValue(ridA)).putProperties("in", stringValue(ridB))
+          .putProperties("k", stringValue("e1")).putProperties("v", stringValue("first")).build();
+      final GrpcRecord second = GrpcRecord.newBuilder().setType(eType)
+          .putProperties("out", stringValue(ridA)).putProperties("in", stringValue(ridB))
+          .putProperties("k", stringValue("e1")).putProperties("v", stringValue("second")).build();
+
+      final InsertSummary summary = runStream(eType, InsertOptions.ConflictMode.CONFLICT_UPDATE, List.of("k"), List.of(), first, second);
+
+      assertThat(summary.getFailed()).isEqualTo(0);
+      assertThat(summary.getInserted() + summary.getUpdated()).isEqualTo(2);
+      // Exactly one edge record (no orphan), merged to the last value.
+      assertThat(firstLong("SELECT count(*) AS cnt FROM " + eType, "cnt")).isEqualTo(1);
+      assertThat(firstString("SELECT v FROM " + eType + " WHERE k = 'e1'", "v")).isEqualTo("second");
+      // A is wired to exactly one neighbour (the edge-list has no dangling/duplicate entry).
+      assertThat(firstLong("SELECT count(*) AS cnt FROM (SELECT expand(out('" + eType + "')) FROM " + ridA + ")", "cnt"))
+          .isEqualTo(1);
     } finally {
       cmd("DROP TYPE " + eType + " IF EXISTS UNSAFE");
       cmd("DROP TYPE " + vType + " IF EXISTS UNSAFE");
