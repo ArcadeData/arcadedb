@@ -277,6 +277,50 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
   }
 
   @Test
+  void conflictUpdateWithBlankKeyColumnReportsInvalidKeyColumn() throws Exception {
+    final String typeName = "Issue4656BlankKey_" + System.currentTimeMillis();
+    cmd("CREATE DOCUMENT TYPE " + typeName);
+    cmd("CREATE PROPERTY " + typeName + ".v STRING");
+    try {
+      final GrpcRecord row = GrpcRecord.newBuilder().setType(typeName).putProperties("v", stringValue("x")).build();
+
+      // A blank key column must yield a clean INVALID_KEY_COLUMN error, not a generic DB_ERROR.
+      final InsertSummary summary = runStream(typeName, InsertOptions.ConflictMode.CONFLICT_UPDATE, List.of(""), List.of(), row);
+
+      assertThat(summary.getErrorsList()).anyMatch(e -> "INVALID_KEY_COLUMN".equals(e.getCode()));
+      assertThat(summary.getInserted()).isEqualTo(0);
+      assertThat(summary.getUpdated()).isEqualTo(0);
+    } finally {
+      cmd("DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+    }
+  }
+
+  @Test
+  void conflictUpdateWithQuotedKeyColumnName() throws Exception {
+    // A key column whose name needs SQL quoting (here a space) must round-trip through the
+    // backtick-quoted upsert query - proves quoteName() neutralizes special identifier characters.
+    final String typeName = "Issue4656QuotedKey_" + System.currentTimeMillis();
+    cmd("CREATE DOCUMENT TYPE " + typeName);
+    cmd("CREATE PROPERTY " + typeName + ".`my key` STRING");
+    cmd("CREATE PROPERTY " + typeName + ".v STRING");
+    cmd("CREATE INDEX ON " + typeName + "(`my key`) UNIQUE");
+    cmd("INSERT INTO " + typeName + " SET `my key` = 'a', v = 'orig'");
+    try {
+      final GrpcRecord row = GrpcRecord.newBuilder().setType(typeName)
+          .putProperties("my key", stringValue("a")).putProperties("v", stringValue("changed")).build();
+
+      final InsertSummary summary = runStream(typeName, InsertOptions.ConflictMode.CONFLICT_UPDATE, List.of("my key"), List.of(), row);
+
+      assertThat(summary.getUpdated()).isEqualTo(1);
+      assertThat(summary.getFailed()).isEqualTo(0);
+      assertThat(firstString("SELECT v FROM " + typeName + " WHERE `my key` = 'a'", "v")).isEqualTo("changed");
+      assertThat(firstLong("SELECT count(*) AS cnt FROM " + typeName, "cnt")).isEqualTo(1);
+    } finally {
+      cmd("DROP TYPE " + typeName + " IF EXISTS UNSAFE");
+    }
+  }
+
+  @Test
   void conflictUpdateWithExplicitUpdateColumnsMerges() throws Exception {
     final String typeName = "Issue4656WithCols_" + System.currentTimeMillis();
     cmd("CREATE DOCUMENT TYPE " + typeName);
@@ -588,6 +632,43 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
           .putProperties("k", stringValue("e1")).putProperties("v", stringValue("changed")).build();
 
       final InsertSummary summary = runStream(eType, InsertOptions.ConflictMode.CONFLICT_ERROR, List.of("k"), List.of(), row);
+
+      assertThat(summary.getUpdated()).isEqualTo(0);
+      assertThat(summary.getFailed()).isGreaterThanOrEqualTo(1);
+      assertThat(summary.getErrorsList()).anyMatch(e -> "CONFLICT".equals(e.getCode()));
+      assertThat(firstString("SELECT v FROM " + eType + " WHERE k = 'e1'", "v")).isEqualTo("orig");
+      assertThat(firstLong("SELECT count(*) AS cnt FROM " + eType, "cnt")).isEqualTo(1);
+    } finally {
+      cmd("DROP TYPE " + eType + " IF EXISTS UNSAFE");
+      cmd("DROP TYPE " + vType + " IF EXISTS UNSAFE");
+    }
+  }
+
+  @Test
+  void edgeConflictAbortReportsDuplicateKeyAsFailed() throws Exception {
+    // CONFLICT_ABORT on an edge behaves like CONFLICT_ERROR: the duplicate is a failed row and the
+    // pre-existing edge is left intact.
+    final long suffix = System.currentTimeMillis();
+    final String vType = "Issue4656NodeAbrt_" + suffix;
+    final String eType = "Issue4656EdgeAbrt_" + suffix;
+    cmd("CREATE VERTEX TYPE " + vType);
+    cmd("CREATE PROPERTY " + vType + ".name STRING");
+    cmd("CREATE VERTEX " + vType + " SET name = 'A'");
+    cmd("CREATE VERTEX " + vType + " SET name = 'B'");
+    cmd("CREATE EDGE TYPE " + eType);
+    cmd("CREATE PROPERTY " + eType + ".k STRING");
+    cmd("CREATE PROPERTY " + eType + ".v STRING");
+    cmd("CREATE INDEX ON " + eType + "(k) UNIQUE");
+
+    final String ridA = firstRid("SELECT FROM " + vType + " WHERE name = 'A'");
+    final String ridB = firstRid("SELECT FROM " + vType + " WHERE name = 'B'");
+    cmd("CREATE EDGE " + eType + " FROM " + ridA + " TO " + ridB + " SET k = 'e1', v = 'orig'");
+    try {
+      final GrpcRecord row = GrpcRecord.newBuilder().setType(eType)
+          .putProperties("out", stringValue(ridA)).putProperties("in", stringValue(ridB))
+          .putProperties("k", stringValue("e1")).putProperties("v", stringValue("changed")).build();
+
+      final InsertSummary summary = runStream(eType, InsertOptions.ConflictMode.CONFLICT_ABORT, List.of("k"), List.of(), row);
 
       assertThat(summary.getUpdated()).isEqualTo(0);
       assertThat(summary.getFailed()).isGreaterThanOrEqualTo(1);

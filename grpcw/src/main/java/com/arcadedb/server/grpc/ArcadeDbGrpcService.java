@@ -2239,8 +2239,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   // writing those via set() would bypass the graph engine's vertex edge-list bookkeeping.
   private void applyConflictUpdates(final InsertContext ctx, final GrpcRecord r, final boolean isEdge,
       final MutableDocument existing) {
-    final Iterable<String> cols = ctx.updateCols.isEmpty() ? r.getPropertiesMap().keySet() : ctx.updateCols;
     final boolean mergeAll = ctx.updateCols.isEmpty();
+    final Iterable<String> cols = mergeAll ? r.getPropertiesMap().keySet() : ctx.updateCols;
     for (final String col : cols) {
       if (col.startsWith("@"))
         continue;
@@ -2341,6 +2341,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           "InsertStream upsert on edge type '%s': 'out'/'in' in update_columns_on_conflict are ignored (edge endpoints cannot be re-pointed via upsert)",
           ctx.opts.getTargetClass());
     }
+
+    // Reject blank key columns with a clear client-visible error instead of letting the per-row
+    // identifier quoting throw a generic DB_ERROR for every record.
+    for (final String kc : ctx.keyCols)
+      if (kc == null || kc.isBlank()) {
+        c.err(-1, "INVALID_KEY_COLUMN", "key_columns must not contain empty names", "");
+        return c;
+      }
 
     while (it.hasNext()) {
 
