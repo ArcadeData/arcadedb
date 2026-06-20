@@ -2324,6 +2324,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     boolean isVertex = dt instanceof VertexType;
     boolean isEdge = dt instanceof EdgeType;
 
+    // Tell callers their out/in update columns are being ignored, rather than dropping them silently.
+    if (isEdge && !ctx.warnedEdgeEndpointUpdateCols && (ctx.updateCols.contains("out") || ctx.updateCols.contains("in"))) {
+      ctx.warnedEdgeEndpointUpdateCols = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "InsertStream upsert on edge type '%s': 'out'/'in' in update_columns_on_conflict are ignored (edge endpoints cannot be re-pointed via upsert)",
+          ctx.opts.getTargetClass());
+    }
+
     while (it.hasNext()) {
 
       GrpcRecord r = it.next();
@@ -2889,6 +2897,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final List<String> keyCols;
     final List<String> updateCols;
     final Set<String> keyColsSet;
+
+    // Issue #4656: latch so the "out/in in update_columns ignored for edges" warning fires once per stream.
+    boolean warnedEdgeEndpointUpdateCols;
 
     long startedAt;
 

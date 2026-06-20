@@ -440,6 +440,52 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
   }
 
   @Test
+  void edgeConflictUpdateIgnoresEndpointColumnsListedExplicitly() throws Exception {
+    // Even when a caller explicitly lists 'in' in update_columns_on_conflict, the endpoint must not
+    // be re-pointed or written as a plain property; only the other listed columns are merged.
+    final long suffix = System.currentTimeMillis();
+    final String vType = "Issue4656NodeExpl_" + suffix;
+    final String eType = "Issue4656EdgeExpl_" + suffix;
+    cmd("CREATE VERTEX TYPE " + vType);
+    cmd("CREATE PROPERTY " + vType + ".name STRING");
+    cmd("CREATE VERTEX " + vType + " SET name = 'A'");
+    cmd("CREATE VERTEX " + vType + " SET name = 'B'");
+    cmd("CREATE VERTEX " + vType + " SET name = 'C'");
+    cmd("CREATE EDGE TYPE " + eType);
+    cmd("CREATE PROPERTY " + eType + ".k STRING");
+    cmd("CREATE PROPERTY " + eType + ".v STRING");
+    cmd("CREATE INDEX ON " + eType + "(k) UNIQUE");
+
+    final String ridA = firstRid("SELECT FROM " + vType + " WHERE name = 'A'");
+    final String ridB = firstRid("SELECT FROM " + vType + " WHERE name = 'B'");
+    final String ridC = firstRid("SELECT FROM " + vType + " WHERE name = 'C'");
+    cmd("CREATE EDGE " + eType + " FROM " + ridA + " TO " + ridB + " SET k = 'e1', v = 'orig'");
+    try {
+      final GrpcRecord row = GrpcRecord.newBuilder().setType(eType)
+          .putProperties("out", stringValue(ridA)).putProperties("in", stringValue(ridC))
+          .putProperties("k", stringValue("e1")).putProperties("v", stringValue("changed")).build();
+
+      // 'in' is listed explicitly but must still be ignored.
+      final InsertSummary summary = runStream(eType, InsertOptions.ConflictMode.CONFLICT_UPDATE, List.of("k"), List.of("v", "in"), row);
+
+      assertThat(summary.getUpdated()).isEqualTo(1);
+      assertThat(summary.getFailed()).isEqualTo(0);
+
+      final GrpcRecord edge = firstRecord("SELECT FROM " + eType + " WHERE k = 'e1'");
+      assertThat(edge.getPropertiesMap().get("v").getStringValue()).isEqualTo("changed");
+      assertThat(edge.getPropertiesMap()).doesNotContainKey("in");
+      // Endpoint untouched: still A -> B, not A -> C.
+      assertThat(firstLong("SELECT count(*) AS cnt FROM (SELECT expand(out('" + eType + "')) FROM " + ridA + ") WHERE name = 'B'", "cnt"))
+          .isEqualTo(1);
+      assertThat(firstLong("SELECT count(*) AS cnt FROM (SELECT expand(out('" + eType + "')) FROM " + ridA + ") WHERE name = 'C'", "cnt"))
+          .isEqualTo(0);
+    } finally {
+      cmd("DROP TYPE " + eType + " IF EXISTS UNSAFE");
+      cmd("DROP TYPE " + vType + " IF EXISTS UNSAFE");
+    }
+  }
+
+  @Test
   void edgeConflictUpdateSameKeyTwiceInOneStreamCreatesNoGhostEdge() throws Exception {
     // The same new edge key appearing twice in one CONFLICT_UPDATE stream must yield exactly one
     // edge wired into the vertex edge-lists - no orphan/ghost edge record and no dangling endpoint.
