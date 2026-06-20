@@ -87,6 +87,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
@@ -2228,88 +2229,73 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     };
   }
 
-  private boolean tryUpsertVertex(final InsertContext ctx, final MutableVertex incoming) {
+  private Object recordValue(final GrpcRecord r, final String col) {
+    final GrpcValue v = r.getPropertiesMap().get(col);
+    return v == null ? null : fromGrpcValue(v);
+  }
 
-    var keys = ctx.keyCols;
+  // Merge incoming values onto the matched record (explicit update_columns, else all non-key props).
+  // Skips @-fields and absent/null columns (so a field cannot be nulled here), and edge out/in -
+  // writing those via set() would bypass the graph engine's vertex edge-list bookkeeping.
+  private void applyConflictUpdates(final InsertContext ctx, final GrpcRecord r, final boolean isEdge,
+      final MutableDocument existing) {
+    final boolean mergeAll = ctx.updateCols.isEmpty();
+    final Iterable<String> cols = mergeAll ? r.getPropertiesMap().keySet() : ctx.updateCols;
+    for (final String col : cols) {
+      if (col.startsWith("@"))
+        continue;
+      if (mergeAll && ctx.keyColsSet.contains(col))
+        continue;
+      if (isEdge && ("out".equals(col) || "in".equals(col)))
+        continue;
+      final Object value = recordValue(r, col);
+      if (value == null)
+        continue;
+      existing.set(col, value);
+    }
+  }
 
+  // Backtick-quote a client-supplied identifier (target class / key column) so it cannot inject SQL;
+  // values stay parameterized via '?'. Embedded backticks are escaped per the SQL grammar, which
+  // also requires at least one character between the backticks.
+  private static String quoteName(final String name) {
+    if (name == null || name.isEmpty())
+      throw new IllegalArgumentException("SQL identifier must not be empty");
+    return "`" + name.replace("`", "\\`") + "`";
+  }
+
+  // Match an existing row by key and merge onto it; false when none matched (caller then inserts).
+  // MutableVertex and MutableEdge both extend MutableDocument, so asDocument().modify() returns the
+  // record's real mutable subtype; save() therefore persists a vertex/edge through its own path.
+  private boolean tryUpsertByRecord(final InsertContext ctx, final GrpcRecord r, final boolean isEdge) {
+    final List<String> keys = ctx.keyCols;
     if (keys.isEmpty())
       return false;
 
-    // Read incoming values via the (read-only) document view
-    var inDoc = incoming.asDocument();
+    final String where = String.join(" AND ", keys.stream().map(k -> quoteName(k) + " = ?").toList());
+    final Object[] params = keys.stream().map(k -> recordValue(r, k)).toArray();
 
-    String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
-    Object[] params = keys.stream().map(inDoc::get).toArray();
-
-    // Prefer selecting the element so we can get a mutable vertex directly
-    final String sql = "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where;
-
-    try (var rs = ctx.db.query("sql", sql, params)) {
+    try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + quoteName(ctx.opts.getTargetClass()) + " WHERE " + where, params)) {
       if (!rs.hasNext())
         return false;
 
-      var res = rs.next();
+      final Result res = rs.next();
       if (!res.isElement())
         return false;
 
-      Vertex v = res.getElement().get().asVertex();
-
-      MutableVertex existingV = v.modify();
-
-      // Apply the updates
-
-      for (String col : ctx.updateCols) {
-        existingV.set(col, inDoc.get(col));
-      }
-
-      existingV.save();
-
-      return true;
-    }
-  }
-
-  private boolean tryUpsertDocument(InsertContext ctx, MutableDocument incoming) {
-
-    var keys = ctx.keyCols;
-
-    if (keys.isEmpty())
-      return false;
-
-    String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
-    Object[] params = keys.stream().map(incoming::get).toArray();
-
-    try (ResultSet rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
-
-      if (!rs.hasNext()) {
-        return false;
-      }
-
-      var res = rs.next();
-      if (!res.isElement())
-        return false;
-
-      Document d = res.getElement().get().asDocument();
-
-      var existing = d.modify();
-
-      // Apply the updates
-
-      for (String col : ctx.updateCols) {
-        existing.set(col, incoming.get(col));
-      }
-
+      final MutableDocument existing = res.getElement().get().asDocument().modify();
+      applyConflictUpdates(ctx, r, isEdge, existing);
       existing.save();
-
       return true;
     }
   }
 
-  private boolean keyExists(final InsertContext ctx, final MutableDocument incoming) {
+  private boolean keyExistsByRecord(final InsertContext ctx, final GrpcRecord r) {
     if (ctx.keyCols.isEmpty())
       return false;
-    final String where = String.join(" AND ", ctx.keyCols.stream().map(k -> k + " = ?").toList());
-    final Object[] params = ctx.keyCols.stream().map(incoming::get).toArray();
-    try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
+    final String where = String.join(" AND ", ctx.keyCols.stream().map(k -> quoteName(k) + " = ?").toList());
+    final Object[] params = ctx.keyCols.stream().map(k -> recordValue(r, k)).toArray();
+    try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + quoteName(ctx.opts.getTargetClass()) + " WHERE " + where, params)) {
       return rs.hasNext();
     }
   }
@@ -2345,8 +2331,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     Schema schema = ctx.db.getSchema();
     DocumentType dt = schema.getType(ctx.opts.getTargetClass());
-    boolean isVertex = dt instanceof VertexType;
-    boolean isEdge = dt instanceof EdgeType;
+    final boolean isVertex = dt instanceof VertexType;
+    final boolean isEdge = dt instanceof EdgeType;
+
+    // Tell callers their out/in update columns are being ignored, rather than dropping them silently.
+    if (isEdge && !ctx.warnedEdgeEndpointUpdateCols && (ctx.updateCols.contains("out") || ctx.updateCols.contains("in"))) {
+      ctx.warnedEdgeEndpointUpdateCols = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "InsertStream upsert on edge type '%s': 'out'/'in' in update_columns_on_conflict are ignored (edge endpoints cannot be re-pointed via upsert)",
+          ctx.opts.getTargetClass());
+    }
+
+    // Reject blank key columns with a clear client-visible error instead of letting the per-row
+    // identifier quoting throw a generic DB_ERROR for every record.
+    for (final String kc : ctx.keyCols)
+      if (kc == null || kc.isBlank()) {
+        c.err(-1, "INVALID_KEY_COLUMN", "key_columns must not contain empty names", "");
+        return c;
+      }
 
     while (it.hasNext()) {
 
@@ -2359,45 +2361,55 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (ctx.opts.getValidateOnly())
           continue;
 
+        final ConflictMode mode = ctx.opts.getConflictMode();
+
         if (isVertex) {
-          MutableVertex v = ctx.db.newVertex(ctx.opts.getTargetClass());
-          applyGrpcRecord(v, r);
-          if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_UPDATE && tryUpsertVertex(ctx, v)) {
+          if (mode == ConflictMode.CONFLICT_UPDATE && tryUpsertByRecord(ctx, r, false)) {
             c.updated++;
-          } else if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_IGNORE && keyExists(ctx, v)) {
+          } else if (mode == ConflictMode.CONFLICT_IGNORE && keyExistsByRecord(ctx, r)) {
             c.ignored++;
           } else {
+            final MutableVertex v = ctx.db.newVertex(ctx.opts.getTargetClass());
+            applyGrpcRecord(v, r);
             v.save();
             c.inserted++;
           }
         } else if (isEdge) {
-
-          String outRid = getStringProp(r, "out"); // lookup helper you already have
-          String inRid = getStringProp(r, "in");
-
-          if (outRid == null || inRid == null) {
-
-            c.failed++;
-
-            c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
-                .setMessage("Edge requires 'out' and 'in'").build());
-          } else {
-            var outV = ctx.db.lookupByRID(new RID(outRid), false).asVertex(false);
-
-            // Create edge from the OUT vertex. The `in` RID is stored in the edge record; use DatabaseRID so edge.getIn() resolves across threads.
-            MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), ctx.db.newRID(inRid));
-            applyGrpcRecord(e, r); // sets edge properties
-            e.save();
-            c.inserted++;
-          }
-        } else {
-          MutableDocument d = ctx.db.newDocument(ctx.opts.getTargetClass());
-          applyGrpcRecord(d, r);
-          if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_UPDATE && tryUpsertDocument(ctx, d)) {
+          // Edges must honor conflict_mode / key_columns like documents and vertices. newEdge()
+          // persists and links the edge immediately, so the upsert/ignore check has to run before the
+          // edge is created, otherwise a match would leave a dangling edge.
+          if (mode == ConflictMode.CONFLICT_UPDATE && tryUpsertByRecord(ctx, r, true)) {
             c.updated++;
-          } else if (ctx.opts.getConflictMode() == ConflictMode.CONFLICT_IGNORE && keyExists(ctx, d)) {
+          } else if (mode == ConflictMode.CONFLICT_IGNORE && keyExistsByRecord(ctx, r)) {
             c.ignored++;
           } else {
+            final String outRid = getStringProp(r, "out");
+            final String inRid = getStringProp(r, "in");
+
+            if (outRid == null || inRid == null) {
+
+              c.failed++;
+
+              c.errors.add(InsertError.newBuilder().setRowIndex(ctx.received - 1).setCode("MISSING_ENDPOINTS")
+                  .setMessage("Edge requires 'out' and 'in'").build());
+            } else {
+              final var outV = ctx.db.lookupByRID(new RID(outRid), false).asVertex(false);
+
+              // Create edge from the OUT vertex. The `in` RID is stored in the edge record; use DatabaseRID so edge.getIn() resolves across threads.
+              final MutableEdge e = outV.newEdge(ctx.opts.getTargetClass(), ctx.db.newRID(inRid));
+              applyGrpcRecord(e, r); // sets edge properties
+              e.save();
+              c.inserted++;
+            }
+          }
+        } else {
+          if (mode == ConflictMode.CONFLICT_UPDATE && tryUpsertByRecord(ctx, r, false)) {
+            c.updated++;
+          } else if (mode == ConflictMode.CONFLICT_IGNORE && keyExistsByRecord(ctx, r)) {
+            c.ignored++;
+          } else {
+            final MutableDocument d = ctx.db.newDocument(ctx.opts.getTargetClass());
+            applyGrpcRecord(d, r);
             d.save();
             c.inserted++;
           }
@@ -2407,7 +2419,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         switch (ctx.opts.getConflictMode()) {
           case CONFLICT_IGNORE -> c.ignored++;
           case CONFLICT_ABORT, UNRECOGNIZED -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
-          case CONFLICT_UPDATE -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+          // A concurrent stream inserted this key after our check; the unique index proves it exists
+          // now, so retry as an update instead of losing the row. Not exercised by
+          // Issue4656InsertStreamConflictUpdateIT: the race needs two concurrent streams hitting the
+          // same new key, which is not deterministically reproducible single-threaded.
+          case CONFLICT_UPDATE -> {
+            try {
+              if (tryUpsertByRecord(ctx, r, isEdge))
+                c.updated++;
+              else
+                // The match vanished between the conflict and the retry (transient MVCC window): report
+                // it as a retriable CONFLICT rather than guessing.
+                c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+            } catch (DuplicatedKeyException retryDup) {
+              // A third writer can race the retry too: still a retriable conflict.
+              c.err(ctx.received - 1, "CONFLICT", retryDup.getMessage(), "");
+            } catch (Exception retryEx) {
+              // Anything else (IO error, etc.) is a real failure - do not mask it as a CONFLICT.
+              c.err(ctx.received - 1, "DB_ERROR", retryEx.getMessage(), "");
+            }
+          }
           case CONFLICT_ERROR -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
         }
       } catch (Exception e) {
@@ -2886,6 +2917,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final List<String> keyCols;
     final List<String> updateCols;
+    final Set<String> keyColsSet;
+
+    // Mutable latch (single-stream, no concurrent access): set once after the "out/in in
+    // update_columns ignored for edges" warning fires so it is logged at most once per stream.
+    boolean warnedEdgeEndpointUpdateCols;
 
     long startedAt;
 
@@ -2908,6 +2944,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       this.db = getDatabase(opts.getDatabase(), opts.getCredentials());
 
       this.keyCols = opts.getKeyColumnsList();
+      this.keyColsSet = Set.copyOf(this.keyCols);
 
       this.updateCols = opts.getUpdateColumnsOnConflictList();
 
