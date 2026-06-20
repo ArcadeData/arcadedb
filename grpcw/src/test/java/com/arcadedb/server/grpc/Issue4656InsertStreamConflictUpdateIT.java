@@ -209,6 +209,12 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
   void conflictUpdateWithSameKeyTwiceInOneStreamDoesNotLoseTheRow() throws Exception {
     // The same (new) key appearing twice in a single CONFLICT_UPDATE stream must resolve to one
     // stored row (insert then update/merge), never a lost-row CONFLICT error.
+    //
+    // Coverage note: within one transaction the second row's upsert SELECT sees the first row's
+    // pending index entry (read-your-own-writes), so this resolves via the normal upsert path. The
+    // DuplicatedKeyException retry (fix 1) targets two *concurrent* streams racing the same new key;
+    // that cross-stream race surfaces the conflict at commit time and is not deterministically
+    // reproducible in a single-threaded test, so it is not directly exercised here.
     final String typeName = "Issue4656DupInStream_" + System.currentTimeMillis();
     cmd("CREATE DOCUMENT TYPE " + typeName);
     cmd("CREATE PROPERTY " + typeName + ".k STRING");
