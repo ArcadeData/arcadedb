@@ -35,10 +35,16 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * Regression test for #4278: TransactionContext.lockFilesInOrder must throw ConcurrentModificationException
- * when a locked file has been migrated by LSM compaction, matching checkExplicitLocks() behavior.
- * The thrown exception must identify the migration (not just say "file removed") so callers can retry
- * with correct file references.
+ * Regression test for #4278 / #4529: when a transaction holds a stale reference to an index file that an
+ * LSM compaction has migrated (registerFile + setMigratedFileId, old file dropped), the commit must not
+ * silently continue with the dead file id.
+ * <p>
+ * Since #4529 (PR #4530) {@code TransactionContext.lockFilesInOrder} transparently re-resolves the migrated
+ * file id and re-locks instead of failing, because at lock-acquisition time no modification has been applied
+ * yet and buffered index entries resolve by index name. This test injects a modified page keyed by the OLD
+ * file id directly into {@code modifiedPages} (something the normal commit path never produces). That stale
+ * page is still caught downstream by {@code PageManager.checkPageVersion}, which raises a retryable
+ * ConcurrentModificationException rather than silently writing to a vanished file.
  */
 class LockFilesInOrderFileMigrationTest extends TestHelper {
 
@@ -115,12 +121,13 @@ class LockFilesInOrderFileMigrationTest extends TestHelper {
         .as("Old mutable file must be gone after compaction")
         .isFalse();
 
-    // Commit the transaction: lockFilesInOrder will detect the migration.
-    // Before the fix it silently continued (or threw a generic "file removed" later from
-    // checkPageVersion). After the fix it throws immediately with a migration-specific message.
+    // Commit the transaction. Since #4529, lockFilesInOrder transparently re-resolves the migrated file id and
+    // re-locks, so it no longer throws here. The stale page reference to the dropped old file is instead caught
+    // by checkPageVersion, which raises a retryable ConcurrentModificationException instead of silently continuing.
     assertThatThrownBy(database::commit)
-        .as("commit must throw ConcurrentModificationException with a migration-specific message when the mutable file was migrated by compaction")
+        .as("commit must throw a retryable ConcurrentModificationException when a stale page references a file migrated by compaction")
         .isInstanceOf(ConcurrentModificationException.class)
-        .hasMessageContaining("migrated");
+        .hasMessageContaining("does not exist anymore")
+        .hasMessageContaining("retry");
   }
 }

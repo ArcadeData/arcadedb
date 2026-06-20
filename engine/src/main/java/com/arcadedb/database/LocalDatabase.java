@@ -352,6 +352,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     } finally {
       open = false;
+
+      // CLEAR ANY THREAD-LOCAL CONTEXT POINTING AT THIS (NOW DEAD) DATABASE, OTHERWISE A SUBSEQUENT OPERATION ON THE SAME
+      // THREAD (E.G. RESOLVING A BARE RID) WOULD STILL FIND THE KILLED DATABASE AS THE ACTIVE ONE. MIRRORS close().
+      try {
+        DatabaseContext.INSTANCE.removeAllContexts(databasePath);
+      } catch (final Throwable e) {
+        // IGNORE IT
+      }
+
       Profiler.INSTANCE.unregisterDatabase(LocalDatabase.this);
     }
   }

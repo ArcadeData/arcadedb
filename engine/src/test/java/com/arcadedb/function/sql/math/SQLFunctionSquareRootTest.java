@@ -131,7 +131,8 @@ class SQLFunctionSquareRootTest {
     function.execute(null, null, null, new Object[] { new BigDecimal("4.0") }, null);
     final Object result = function.getResult();
     assertThat(result instanceof BigDecimal).isTrue();
-    assertThat(new BigDecimal("2")).isEqualTo(result);
+    // Compare by value (not equals): BigDecimal.sqrt preferred scale changed across JDKs (JDK 21 -> "2", JDK 22+ -> "2.0")
+    assertThat((BigDecimal) result).isEqualByComparingTo(new BigDecimal("2"));
   }
 
   @Test
