@@ -2234,13 +2234,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     return v == null ? null : fromGrpcValue(v);
   }
 
-  // Merges the incoming values onto a matched record. With an explicit update_columns_on_conflict
-  // list only those columns are written; with an empty list every non-key property is merged (true
-  // upsert, not a silent no-op). System fields (@-prefixed) are never written. For edges the out/in
-  // endpoints are skipped too: they address the graph topology, and setting them through the
-  // MutableDocument view would write plain properties while bypassing the vertex edge-list
-  // bookkeeping the graph engine maintains. Columns absent from the incoming record are skipped
-  // (merge semantics): an explicit update column the row does not carry is left untouched, not nulled.
+  // Merge incoming values onto the matched record (explicit update_columns, else all non-key props).
+  // Skips @-fields and absent/null columns (so a field cannot be nulled here), and edge out/in -
+  // writing those via set() would bypass the graph engine's vertex edge-list bookkeeping.
   private void applyConflictUpdates(final InsertContext ctx, final GrpcRecord r, final boolean isEdge,
       final MutableDocument existing) {
     final Iterable<String> cols = ctx.updateCols.isEmpty() ? r.getPropertiesMap().keySet() : ctx.updateCols;
@@ -2259,8 +2255,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
-  // Returns true when an existing row was matched by key and merged; false when none matched (the
-  // caller then inserts).
+  // Match an existing row by key and merge onto it; false when none matched (caller then inserts).
+  // asDocument().modify() yields a MutableVertex/MutableEdge at runtime, so save() persists correctly.
   private boolean tryUpsertByRecord(final InsertContext ctx, final GrpcRecord r, final boolean isEdge) {
     final List<String> keys = ctx.keyCols;
     if (keys.isEmpty())
@@ -2397,9 +2393,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         switch (ctx.opts.getConflictMode()) {
           case CONFLICT_IGNORE -> c.ignored++;
           case CONFLICT_ABORT, UNRECOGNIZED -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
-          // A concurrent stream may have inserted the same key between our existence check and save().
-          // The unique index now guarantees the row exists, so retry the match path as an update
-          // rather than losing the row to a CONFLICT error.
+          // A concurrent stream inserted this key after our check; the unique index proves it exists
+          // now, so retry as an update instead of losing the row. The cross-stream race itself is not
+          // single-threaded reproducible (see Issue4656InsertStreamConflictUpdateIT).
           case CONFLICT_UPDATE -> {
             try {
               if (tryUpsertByRecord(ctx, r, isEdge))

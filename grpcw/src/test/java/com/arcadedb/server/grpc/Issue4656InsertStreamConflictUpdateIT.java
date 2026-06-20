@@ -33,6 +33,7 @@ import io.grpc.MethodDescriptor;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
@@ -59,6 +60,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
+@Tag("slow")
 public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
 
   private static final int GRPC_PORT = 50051;
@@ -132,7 +134,9 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
   }
 
   private String firstString(final String query, final String prop) {
-    return firstRecord(query).getPropertiesMap().get(prop).getStringValue();
+    final GrpcRecord rec = firstRecord(query);
+    assertThat(rec.getPropertiesMap()).as("missing property '%s' in: %s", prop, query).containsKey(prop);
+    return rec.getPropertiesMap().get(prop).getStringValue();
   }
 
   private String firstRid(final String query) {
@@ -140,7 +144,9 @@ public class Issue4656InsertStreamConflictUpdateIT extends BaseGraphServerTest {
   }
 
   private long firstLong(final String query, final String prop) {
-    return firstRecord(query).getPropertiesMap().get(prop).getInt64Value();
+    final GrpcRecord rec = firstRecord(query);
+    assertThat(rec.getPropertiesMap()).as("missing property '%s' in: %s", prop, query).containsKey(prop);
+    return rec.getPropertiesMap().get(prop).getInt64Value();
   }
 
   /** Runs a single-chunk {@code InsertStream} in PER_STREAM mode and returns the summary. */
