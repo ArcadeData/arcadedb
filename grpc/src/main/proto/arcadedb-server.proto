@@ -385,6 +385,10 @@ message InsertOptions {
 
   ConflictMode conflict_mode = 3;
 
+  // Columns to overwrite when CONFLICT_UPDATE matches an existing row. Empty = merge all non-key
+  // columns present on the incoming record. A column absent from the incoming record is skipped
+  // (left unchanged), so a property cannot be set to null through this path. For edge targets the
+  // out/in endpoints are always ignored here (endpoints cannot be re-pointed by an upsert).
   repeated string update_columns_on_conflict = 4;
 
   enum TransactionMode {

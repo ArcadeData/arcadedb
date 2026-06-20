@@ -2255,6 +2255,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
+  // Backtick-quote a client-supplied identifier (target class / key column) so it cannot inject SQL;
+  // values stay parameterized via '?'. Embedded backticks are escaped per the SQL grammar.
+  private static String quoteName(final String name) {
+    return "`" + name.replace("`", "\\`") + "`";
+  }
+
   // Match an existing row by key and merge onto it; false when none matched (caller then inserts).
   // asDocument().modify() yields a MutableVertex/MutableEdge at runtime, so save() persists correctly.
   private boolean tryUpsertByRecord(final InsertContext ctx, final GrpcRecord r, final boolean isEdge) {
@@ -2262,10 +2268,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (keys.isEmpty())
       return false;
 
-    final String where = String.join(" AND ", keys.stream().map(k -> k + " = ?").toList());
+    final String where = String.join(" AND ", keys.stream().map(k -> quoteName(k) + " = ?").toList());
     final Object[] params = keys.stream().map(k -> recordValue(r, k)).toArray();
 
-    try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
+    try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + quoteName(ctx.opts.getTargetClass()) + " WHERE " + where, params)) {
       if (!rs.hasNext())
         return false;
 
@@ -2283,9 +2289,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private boolean keyExistsByRecord(final InsertContext ctx, final GrpcRecord r) {
     if (ctx.keyCols.isEmpty())
       return false;
-    final String where = String.join(" AND ", ctx.keyCols.stream().map(k -> k + " = ?").toList());
+    final String where = String.join(" AND ", ctx.keyCols.stream().map(k -> quoteName(k) + " = ?").toList());
     final Object[] params = ctx.keyCols.stream().map(k -> recordValue(r, k)).toArray();
-    try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + ctx.opts.getTargetClass() + " WHERE " + where, params)) {
+    try (final ResultSet rs = ctx.db.query("sql", "SELECT FROM " + quoteName(ctx.opts.getTargetClass()) + " WHERE " + where, params)) {
       return rs.hasNext();
     }
   }
@@ -2321,8 +2327,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     Schema schema = ctx.db.getSchema();
     DocumentType dt = schema.getType(ctx.opts.getTargetClass());
-    boolean isVertex = dt instanceof VertexType;
-    boolean isEdge = dt instanceof EdgeType;
+    final boolean isVertex = dt instanceof VertexType;
+    final boolean isEdge = dt instanceof EdgeType;
 
     // Tell callers their out/in update columns are being ignored, rather than dropping them silently.
     if (isEdge && !ctx.warnedEdgeEndpointUpdateCols && (ctx.updateCols.contains("out") || ctx.updateCols.contains("in"))) {
@@ -2412,10 +2418,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 // The match vanished between the conflict and the retry (transient MVCC window): report
                 // it as a retriable CONFLICT rather than guessing.
                 c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
+            } catch (DuplicatedKeyException retryDup) {
+              // A third writer can race the retry too: still a retriable conflict.
+              c.err(ctx.received - 1, "CONFLICT", retryDup.getMessage(), "");
             } catch (Exception retryEx) {
-              // A third writer can race the retry too; keep it a predictable CONFLICT instead of
-              // letting it surface as an unexpected DB_ERROR.
-              c.err(ctx.received - 1, "CONFLICT", retryEx.getMessage(), "");
+              // Anything else (IO error, etc.) is a real failure - do not mask it as a CONFLICT.
+              c.err(ctx.received - 1, "DB_ERROR", retryEx.getMessage(), "");
             }
           }
           case CONFLICT_ERROR -> c.err(ctx.received - 1, "CONFLICT", dup.getMessage(), "");
