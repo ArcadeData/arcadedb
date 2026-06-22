@@ -115,9 +115,12 @@ class QueryEngineManagerPoolTest {
           .isEqualTo(callerThreadId);
 
       final QueryEngineManager.PoolStats after = QueryEngineManager.getInstance().getExecutorStats();
+      // The pool is a JVM-wide singleton, so other engine activity in the same fork (e.g. during a
+      // full build) can add its own fallbacks during this window. Our one extra submit is guaranteed
+      // to fall back (workers pinned, queue full), so assert "at least one" rather than "exactly one".
       assertThat(after.callerRunFallbacks() - before.callerRunFallbacks())
-          .as("callerRunFallbacks counter must tick by exactly one")
-          .isEqualTo(1L);
+          .as("callerRunFallbacks counter must tick for our saturating submit")
+          .isGreaterThanOrEqualTo(1L);
     } finally {
       release.countDown();
     }
@@ -206,9 +209,12 @@ class QueryEngineManagerPoolTest {
           .isEqualTo(1L);
 
       final QueryEngineManager.PoolStats after = QueryEngineManager.getInstance().getExecutorStats();
+      // The counter ticks for every fallback, not just the one that emitted the throttled log. We
+      // drive 5 guaranteed fallbacks; the pool is a JVM-wide singleton, so concurrent engine
+      // activity in the same fork (full build) can add more. Assert "at least our 5".
       assertThat(after.callerRunFallbacks() - before.callerRunFallbacks())
           .as("counter ticks for every fallback, not just the one that emitted the log")
-          .isEqualTo(5L);
+          .isGreaterThanOrEqualTo(5L);
     } finally {
       release.countDown();
       LogManager.instance().setLogger(originalLogger);
