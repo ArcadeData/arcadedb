@@ -262,17 +262,18 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * @param tokenBoosts scoring tokens (stored-key form) mapped to their effective boost
    * @param candidates  documents to score, or {@code null} to score every matching document
    */
-  private Map<RID, Float> computeBM25Scores(final Map<String, Float> tokenBoosts, final Set<RID> candidates) {
+  private Map<RID, Double> computeBM25Scores(final Map<String, Float> tokenBoosts, final Set<RID> candidates) {
     ensureCounters();
     final long totalDocs = resolveTotalDocs();
     final double avgdl = resolveAvgDocLength();
     final double k1 = ftMetadata.getBm25K1();
     final double b = ftMetadata.getBm25B();
 
-    final Map<RID, Float> scoreMap = candidates != null ? new HashMap<>(candidates.size()) : new HashMap<>();
+    // Accumulate in double to avoid per-term precision loss; the score is narrowed to float only when the cursor entry is built.
+    final Map<RID, Double> scoreMap = candidates != null ? new HashMap<>(candidates.size()) : new HashMap<>();
     if (candidates != null)
       for (final RID c : candidates)
-        scoreMap.put(c, 0.0f);
+        scoreMap.put(c, 0.0);
 
     for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
       final String[] storedKey = new String[] { e.getKey() };
@@ -293,7 +294,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           continue;
         final double idf = BM25Scorer.idf(totalDocs, df);
         for (final FullTextPostingRID s : hits)
-          scoreMap.merge(s.getIdentity(), (float) (BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost), Float::sum);
+          scoreMap.merge(s.getIdentity(), BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost, Double::sum);
       } else {
         // No candidate filter: count df first (streaming, no retention), then accumulate every matching document.
         long df = 0L;
@@ -309,8 +310,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         while (scoreCursor.hasNext()) {
           final Identifiable id = scoreCursor.next();
           if (id instanceof FullTextPostingRID s)
-            scoreMap.merge(s.getIdentity(), (float) (BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost),
-                Float::sum);
+            scoreMap.merge(s.getIdentity(), BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost, Double::sum);
         }
       }
     }
@@ -336,10 +336,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       }
     }
 
-    final Map<RID, Float> scoreMap = computeBM25Scores(tokenBoosts, null);
+    final Map<RID, Double> scoreMap = computeBM25Scores(tokenBoosts, null);
 
     final ArrayList<IndexCursorEntry> list = new ArrayList<>(scoreMap.size());
-    for (final Map.Entry<RID, Float> entry : scoreMap.entrySet())
+    for (final Map.Entry<RID, Double> entry : scoreMap.entrySet())
       list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().floatValue()));
 
     if (list.size() > 1)
@@ -371,10 +371,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   public IndexCursor scoreCandidatesBM25(final Set<RID> candidates, final Map<String, Float> tokenBoosts, final Object[] keys,
       final int limit) {
-    final Map<RID, Float> scoreMap = computeBM25Scores(tokenBoosts, candidates);
+    final Map<RID, Double> scoreMap = computeBM25Scores(tokenBoosts, candidates);
 
     final ArrayList<IndexCursorEntry> list = new ArrayList<>(scoreMap.size());
-    for (final Map.Entry<RID, Float> entry : scoreMap.entrySet())
+    for (final Map.Entry<RID, Double> entry : scoreMap.entrySet())
       list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().floatValue()));
 
     list.sort((o1, o2) -> {
@@ -413,7 +413,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     json.put("totalDocs", totalDocs);
     json.put("avgDocLength", avgdl);
     // BM25 is scored per bucket (per-shard): these statistics are this bucket's, so a multi-bucket type's other buckets may have
-    // different df/IDF. Made explicit so the explained IDF is not mistaken for a global value.
+    // different df/IDF. Report the bucket and make the per-bucket nature explicit so the explained IDF is not mistaken for global.
+    final Bucket bucket = associatedBucket();
+    if (bucket != null)
+      json.put("bucket", bucket.getName());
     json.put("note", "statistics are per bucket (BM25 is scored per bucket); totalDocs is this bucket's document count");
 
     // One posting scan per scoring token to derive df. EXPLAIN/PROFILE is an interactive diagnostic, not a hot path, so this is
@@ -480,9 +483,24 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * save or an explicit {@link #recomputeBM25Counters()}, so the read/query path never calls {@code saveConfiguration}.
    */
   private void ensureCounters() {
-    if (ftMetadata == null || ftMetadata.isCountersValid())
+    if (ftMetadata == null)
       return;
-    computeCorpusCounters(false);
+    if (!ftMetadata.isCountersValid()) {
+      computeCorpusCounters(false);
+      return;
+    }
+    // Persisted counters can lag the on-disk data (documents indexed after the last schema save). Once per session, validate them
+    // with a cheap live document count and rebuild only if they actually disagree - so a clean restart with fresh counters pays
+    // nothing, while a stale one self-heals on the first query.
+    if (!ftMetadata.isStaleChecked()) {
+      ftMetadata.markStaleChecked();
+      final String typeName = getTypeName();
+      if (typeName != null) {
+        final long liveCount = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);
+        if (liveCount != ftMetadata.getTotalDocs())
+          computeCorpusCounters(false);
+      }
+    }
   }
 
   /**

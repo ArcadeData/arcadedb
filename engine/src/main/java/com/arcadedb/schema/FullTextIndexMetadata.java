@@ -80,6 +80,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private final AtomicLong totalDocs     = new AtomicLong(0L);
   private final AtomicLong sumDocLength  = new AtomicLong(0L);
   private volatile boolean countersValid = false;
+  // Transient (never persisted): whether the persisted counters have been checked for staleness against the live data this
+  // session. Persisted counters can lag the on-disk data if documents were indexed after the last schema save, so the first
+  // BM25 query validates them once (cheap live count) and rebuilds only if they disagree.
+  private transient volatile boolean staleChecked = false;
 
   /**
    * Creates a new FullTextIndexMetadata instance.
@@ -415,6 +419,20 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
+   * Returns true once the persisted counters have been validated against the live data this session (see {@link #staleChecked}).
+   */
+  public boolean isStaleChecked() {
+    return staleChecked;
+  }
+
+  /**
+   * Marks the persisted counters as having been checked for staleness this session, so the (cheap) live-count check runs once.
+   */
+  public void markStaleChecked() {
+    this.staleChecked = true;
+  }
+
+  /**
    * Marks the persisted corpus counters as valid (or invalid).
    */
   public void setCountersValid(final boolean countersValid) {
@@ -431,6 +449,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     this.totalDocs.set(totalDocs);
     this.sumDocLength.set(sumDocLength);
     this.countersValid = true;
+    this.staleChecked = true; // freshly computed counters are by definition consistent with the live data
   }
 
   /**

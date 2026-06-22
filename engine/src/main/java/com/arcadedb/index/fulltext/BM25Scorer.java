@@ -85,5 +85,4 @@ public final class BM25Scorer {
     final double norm = 1.0 - b + b * (docLen / safeAvgdl);
     return idf * (tf * (k1 + 1.0)) / (tf + k1 * norm);
   }
-
 }

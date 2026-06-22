@@ -87,7 +87,9 @@ individual rows). There is no separate explain function.
   incrementally on put/remove, and are persisted. They are **not** transactionally reversed on rollback and a removed document's
   length is recomputed (so it can drift after an analyzer change); since they affect only the `avgdl` length normalizer this
   degrades ranking gradually, not catastrophically. There is **no background recompute** - `recomputeBM25Counters()` (or a
-  rebuild) repairs them exactly on demand, and a reopen with an invalid `countersValid` flag rebuilds them lazily on first query.
+  rebuild) repairs them exactly on demand. After a restart the persisted counters may lag the on-disk data (documents indexed
+  after the last schema save); the first BM25 query validates them once with a cheap live document count and rebuilds only if
+  they disagree, so a clean restart with fresh counters pays nothing while a stale one self-heals.
 - **Metadata persistence fix** — `LSMTreeFullTextIndex.toJSON()` previously dropped analyzer/operator config, so a restart
   silently reverted custom analyzers to `StandardAnalyzer`. The metadata round-trip is now implemented (and restored in
   `LocalSchema` reload), which also persists the BM25 settings and counters.
