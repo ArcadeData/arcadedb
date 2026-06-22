@@ -50,3 +50,21 @@ Four test cases:
 
 - All 4 new tests: PASS
 - 224 related SQL/query tests: PASS (GroupByMixedNumericTypesTest, QueryTest, DDLTest, ProjectionTest, etc.)
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4694
+
+## Review Cycles
+
+### Cycle 1 - HEAD `0589714`
+
+**Gemini (COMMENTED):** Suggested adding `expression != null` null check before calling `expression.getDefaultAlias()`. Assessment: the original code had the same NPE risk (`expression.toString()` also NPEs for null expression); the suggested fix returns `null` which just pushes the NPE into `getProjectionAliasAsString()` without resolving it. Pre-existing issue, out of scope, incomplete fix. **Skipped (nitpick/disagree).**
+
+**Claude (APPROVED):** "The fix is correct, well-motivated, and minimal." Noted a pre-existing edge case (backtick + method modifier) as a follow-up suggestion, not a blocker. "No blocking issues." **No changes needed.**
+
+No changes applied this cycle.
+
+## Final State
+
+`clean-approval` - both bots reviewed cycle 1; Claude approved, Gemini's only comment was a pre-existing nitpick. No further cycles needed.
