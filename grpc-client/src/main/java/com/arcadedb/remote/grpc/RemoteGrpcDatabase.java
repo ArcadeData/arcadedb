@@ -1898,11 +1898,9 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     // Convert properties
     grpcRecord.getPropertiesMap().forEach((k, v) -> map.put(k, grpcValueToObject(v)));
 
-    // Add metadata. Proto3 scalar fields default to "" (never null), so an absent rid/type arrives
-    // as an empty string. Treat empty as absent - mirroring the HTTP/JSON contract where the metadata
-    // key is simply missing - otherwise non-addressable rows (e.g. time-series points, which have no
-    // @rid) make RemoteImmutableDocument call newRID("")/getType(""), throwing on every such row even
-    // though the server already committed.
+    // Proto3 scalars default to "" (never null), so an absent rid/type arrives empty. Treat empty as
+    // absent, mirroring the HTTP/JSON contract (missing key), so non-addressable rows (time-series
+    // points have no @rid) do not make RemoteImmutableDocument call newRID("")/getType("").
     if (!grpcRecord.getRid().isEmpty())
       map.put("@rid", grpcRecord.getRid());
     if (!grpcRecord.getType().isEmpty())

@@ -3198,11 +3198,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    // HA leader-forwarding returns each row as a plain projection (the follower rebuilds it from the
-    // leader's JSON as a non-element ResultInternal that carries the type name as the @type property),
-    // so the isElement() branch above never populated the type field. Recover it from @type, otherwise
-    // the client materialises the row with an empty type and RemoteImmutableDocument throws
-    // "Type with name '' was not found" - even though the leader already committed the record.
+    // HA leader-forwarding rebuilds each row as a non-element projection that carries the type only as
+    // the @type property, so the isElement() branch above did not populate the type field. Recover it.
     if (builder.getType().isEmpty()) {
       final Object typeProperty = result.getProperty(Property.TYPE_PROPERTY);
       if (typeProperty instanceof String typeName && !typeName.isEmpty())

@@ -81,7 +81,7 @@ public class TimeSeriesGrpcInsertResultTypeIT extends BaseGraphServerTest {
     }
   }
 
-  private class AuthClientInterceptor implements ClientInterceptor {
+  private final class AuthClientInterceptor implements ClientInterceptor {
     @Override
     public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(
         final MethodDescriptor<ReqT, RespT> method, final CallOptions callOptions, final Channel next) {
