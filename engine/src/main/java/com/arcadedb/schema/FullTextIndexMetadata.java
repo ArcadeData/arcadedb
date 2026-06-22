@@ -23,6 +23,7 @@ import com.arcadedb.utility.CollectionUtils;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -80,10 +81,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private final AtomicLong totalDocs     = new AtomicLong(0L);
   private final AtomicLong sumDocLength  = new AtomicLong(0L);
   private volatile boolean countersValid = false;
-  // Transient (never persisted): whether the persisted counters have been checked for staleness against the live data this
-  // session. Persisted counters can lag the on-disk data if documents were indexed after the last schema save, so the first
-  // BM25 query validates them once (cheap live count) and rebuilds only if they disagree.
-  private transient volatile boolean staleChecked = false;
+  // Not persisted (no toJSON/fromJSON): whether the persisted counters have already been checked for staleness against the live
+  // data this session. Persisted counters can lag the on-disk data if documents were indexed after the last schema save, so the
+  // first BM25 query validates them once (cheap live count) and rebuilds only if they disagree. AtomicBoolean (with CAS) so that
+  // concurrent first-queries across the type's shared bucket indexes do not all run the validation/rescan.
+  private final AtomicBoolean staleChecked = new AtomicBoolean(false);
 
   /**
    * Creates a new FullTextIndexMetadata instance.
@@ -419,17 +421,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * Returns true once the persisted counters have been validated against the live data this session (see {@link #staleChecked}).
+   * Atomically claims the one-per-session staleness check: returns true to exactly one caller (which must then run the
+   * live-count validation), false to everyone else. Prevents concurrent first-queries from all rescanning the type.
    */
-  public boolean isStaleChecked() {
-    return staleChecked;
-  }
-
-  /**
-   * Marks the persisted counters as having been checked for staleness this session, so the (cheap) live-count check runs once.
-   */
-  public void markStaleChecked() {
-    this.staleChecked = true;
+  public boolean claimStaleCheck() {
+    return staleChecked.compareAndSet(false, true);
   }
 
   /**
@@ -449,7 +445,7 @@ public class FullTextIndexMetadata extends IndexMetadata {
     this.totalDocs.set(totalDocs);
     this.sumDocLength.set(sumDocLength);
     this.countersValid = true;
-    this.staleChecked = true; // freshly computed counters are by definition consistent with the live data
+    this.staleChecked.set(true); // freshly computed counters are by definition consistent with the live data
   }
 
   /**

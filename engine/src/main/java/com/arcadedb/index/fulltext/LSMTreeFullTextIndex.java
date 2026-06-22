@@ -115,6 +115,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
             base.associatedBucketId);
       }
 
+      // The query parser's default (unqualified) field is "content"; on a multi-property index a boost configured for a field
+      // literally named "content" cannot be distinguished from an unqualified term and is silently ignored. Warn at creation.
+      if (ftMetadata.propertyNames != null && ftMetadata.propertyNames.size() > 1
+          && ftMetadata.getFieldBoosts().containsKey("content"))
+        LogManager.instance().log(LSMTreeFullTextIndex.class, Level.WARNING,
+            "Full-text index '%s' configures a boost for the field 'content', which collides with the query parser's default "
+                + "field name on a multi-property index; that boost will not be applied", builder.getIndexName());
+
       return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy(), ftMetadata);
     }
@@ -486,14 +494,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (ftMetadata == null)
       return;
     if (!ftMetadata.isCountersValid()) {
+      // Cold counters (pre-feature/unsaved index): rebuild unconditionally so the caller scores with valid statistics.
       computeCorpusCounters(false);
       return;
     }
     // Persisted counters can lag the on-disk data (documents indexed after the last schema save). Once per session, validate them
     // with a cheap live document count and rebuild only if they actually disagree - so a clean restart with fresh counters pays
-    // nothing, while a stale one self-heals on the first query.
-    if (!ftMetadata.isStaleChecked()) {
-      ftMetadata.markStaleChecked();
+    // nothing, while a stale one self-heals on the first query. The CAS ensures only one thread runs this even though the
+    // metadata is shared across the type's bucket indexes.
+    if (ftMetadata.claimStaleCheck()) {
       final String typeName = getTypeName();
       if (typeName != null) {
         final long liveCount = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);

@@ -320,6 +320,25 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void explainOnEmptyCorpus() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+    });
+
+    // EXPLAIN on an index with no documents must not fail; the query term reports df 0.
+    database.transaction(() -> {
+      final ResultSet rs = database.query("sql",
+          "EXPLAIN SELECT name, $score FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'java') = true");
+      final String plan = rs.next().getProperty("executionPlanAsString");
+      assertThat(plan).contains("SCORING").contains("BM25").contains("java");
+      assertThat(plan).contains("\"df\":0"); // the query term has zero document frequency on an empty corpus
+    });
+  }
+
+  @Test
   void classicSimilarityKeepsCoordinationScoring() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");
