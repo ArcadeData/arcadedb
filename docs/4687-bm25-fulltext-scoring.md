@@ -84,7 +84,9 @@ individual rows). There is no separate explain function.
     compacted sub-index, and across compaction/split, so old RID-only files still parse and score as CLASSIC.
 - **Corpus statistics** — `N` for IDF is the per-bucket live record count (consistent with the per-bucket `df`). The shared
   type-wide counters in `FullTextIndexMetadata` (document count + sum of document lengths) feed only `avgdl`, are maintained
-  incrementally on put/remove, and are persisted. They are **not** transactionally reversed on rollback and a removed document's
+  incrementally on put/remove, and are persisted. (Note: this mixes scopes deliberately - `N`/`df` are per-bucket while `avgdl`
+  is type-wide, unlike Elasticsearch/Lucene where both are shard-local; `avgdl` is only a length normalizer so a type-wide
+  estimate is fine and avoids per-bucket length bookkeeping.) They are **not** transactionally reversed on rollback and a removed document's
   length is recomputed (so it can drift after an analyzer change); since they affect only the `avgdl` length normalizer this
   degrades ranking gradually, not catastrophically. There is **no background recompute** - `recomputeBM25Counters()` (or a
   rebuild) repairs them exactly on demand. After a restart the persisted counters may lag the on-disk data (documents indexed

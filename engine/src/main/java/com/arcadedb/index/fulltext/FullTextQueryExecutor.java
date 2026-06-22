@@ -397,7 +397,9 @@ public class FullTextQueryExecutor {
 
   private void collectPhraseMatches(final PhraseQuery query, final Map<RID, AtomicInteger> scoreMap) {
     // For phrase queries, all terms must match in the same document
-    // Note: We can't verify word order without position indexing, so we just require all terms
+    // Note: We can't verify word order without position indexing, so we just require all terms.
+    // Phrase terms are matched/scored against the unprefixed token, so the configured per-field boost is NOT applied to phrase
+    // terms (an enclosing caret boost still applies via currentBoost). They are recorded with boost 1.0 accordingly.
     final Term[] terms = query.getTerms();
     if (terms.length == 0)
       return;

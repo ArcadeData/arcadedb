@@ -88,6 +88,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * When true, each posting value is serialized as {@code compressedRID + tf(varint) + docLength(varint)} instead of just the
    * RID, and is deserialized into a {@link FullTextPostingRID}. Used exclusively by full-text indexes configured with BM25 similarity.
    * Defaults to false so every other LSM index keeps the byte-identical RID-only format.
+   * <p>
+   * NOTE: this flag is NOT stored in the page header; it is set at load time by the full-text index from the persisted schema
+   * (similarity = BM25). The schema and index files therefore must stay consistent: reading a BM25 index's pages with the flag
+   * off (or vice-versa) would misinterpret the value bytes. In normal operation schema and index files travel together.
    */
   protected boolean                storeTermFrequency = false;
 

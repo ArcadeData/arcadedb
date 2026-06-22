@@ -154,6 +154,31 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void removalUpdatesScoringStatistics() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      // Four documents all containing "java", each with one distinct extra token (so all have the same length).
+      for (int i = 1; i <= 4; i++)
+        database.command("sql", "INSERT INTO Doc SET name='d" + i + "', content='java word" + i + "'");
+    });
+
+    final float[] before = new float[1];
+    database.transaction(() -> before[0] = searchScores("Doc[content]", "java").get("d1"));
+
+    // Removing a document containing "java" lowers its document frequency and N, raising IDF for the survivors.
+    database.transaction(() -> database.command("sql", "DELETE FROM Doc WHERE name = 'd4'"));
+
+    database.transaction(() -> {
+      final Map<String, Float> after = searchScores("Doc[content]", "java");
+      assertThat(after).containsOnlyKeys("d1", "d2", "d3");
+      assertThat(after.get("d1")).isGreaterThan(before[0]); // statistics (df/N) reflect the removal
+    });
+  }
+
+  @Test
   void scoringSurvivesDocumentRemovalAndRecompute() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");
