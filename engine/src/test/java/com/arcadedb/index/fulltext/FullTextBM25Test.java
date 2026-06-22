@@ -23,6 +23,7 @@ import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -120,6 +121,7 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  @Tag("slow")
   void bm25RankingHoldsAcrossMultipleBuckets() {
     database.transaction(() -> {
       // Multiple buckets: BM25 is scored per bucket, so N (doc count) and df must both be per-bucket to keep IDF unbiased.
@@ -196,6 +198,11 @@ class FullTextBM25Test extends TestHelper {
     org.assertj.core.api.Assertions.assertThatThrownBy(() -> database.transaction(() ->
             database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"bm25_k1\": -1.0}")))
         .hasMessageContaining("k1 must be >= 0");
+
+    // An unknown similarity is rejected rather than silently treated as CLASSIC.
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> database.transaction(() ->
+            database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"similarity\": \"LUCENE\"}")))
+        .hasMessageContaining("Unknown full-text similarity");
   }
 
   @Test
@@ -293,10 +300,16 @@ class FullTextBM25Test extends TestHelper {
       // CLASSIC coordination: integer match counts widened to float.
       assertThat(scores.get("all3")).isEqualTo(3.0f);
       assertThat(scores.get("one")).isEqualTo(1.0f);
+
+      // $score is a Float now even for CLASSIC indexes (was Integer before BM25): pin the type so the breaking change is tested.
+      final ResultSet rs = database.query("sql",
+          "SELECT $score AS s FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'java') = true LIMIT 1");
+      assertThat(rs.next().<Object>getProperty("s")).isInstanceOf(Float.class);
     });
   }
 
   @Test
+  @Tag("slow")
   void bm25ConfigAndCountersSurviveRestart() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");

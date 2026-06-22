@@ -25,6 +25,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.serializer.json.JSONObject;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.classic.ParseException;
@@ -146,7 +147,7 @@ public class FullTextQueryExecutor {
    *
    * @param queryString the query string in Lucene syntax
    */
-  public com.arcadedb.serializer.json.JSONObject explainScoring(final String queryString) {
+  public JSONObject explainScoring(final String queryString) {
     try {
       final QueryParser parser = createQueryParser();
       final Query query = parser.parse(queryString);

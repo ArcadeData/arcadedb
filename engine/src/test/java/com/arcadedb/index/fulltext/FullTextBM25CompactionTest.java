@@ -108,4 +108,34 @@ class FullTextBM25CompactionTest extends TestHelper {
       }
     });
   }
+
+  @Test
+  void classicPostingsSurviveCompaction() {
+    // The compaction posting-drop bug was independent of BM25 - it affected CLASSIC too. This pins the fix for CLASSIC: a
+    // single token's posting list spanning multiple compacted pages must not lose documents.
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Doc");
+      database.getSchema().getType("Doc").createProperty("name", String.class);
+      database.getSchema().getType("Doc").createProperty("content", String.class);
+      database.getSchema().buildTypeIndex("Doc", new String[] { "content" })
+          .withType(Schema.INDEX_TYPE.FULL_TEXT).withFullTextType().withSimilarity("CLASSIC").withPageSize(4096).create();
+    });
+
+    for (int batch = 0; batch < 30; batch++) {
+      final int base = batch;
+      database.transaction(() -> {
+        for (int i = 0; i < 20; i++)
+          database.command("sql",
+              "INSERT INTO Doc SET name = 'd" + base + "_" + i + "', content = 'data record number " + base + " " + i + "'");
+      });
+    }
+
+    final Map<String, Float> before = new HashMap<>();
+    database.transaction(() -> before.putAll(searchScores("data")));
+    assertThat(before).hasSize(600); // every document contains the common token "data"
+
+    assertThat(forceCompaction()).as("the full-text index should have compacted at least one bucket").isTrue();
+
+    database.transaction(() -> assertThat(searchScores("data").keySet()).isEqualTo(before.keySet()));
+  }
 }

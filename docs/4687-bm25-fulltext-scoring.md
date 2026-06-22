@@ -78,9 +78,12 @@ individual rows). There is no separate explain function.
     index (graph edges, unique constraints, type indexes) keeps the byte-identical RID-only format.
   - `storeTermFrequency` is derived from the persisted `similarity` (BM25 ⇒ on). It is propagated to the mutable index, its
     compacted sub-index, and across compaction/split, so old RID-only files still parse and score as CLASSIC.
-- **Corpus statistics** — `N` (document count) and the sum of document lengths (for `avgdl`) are maintained incrementally on
-  put/remove and persisted in `FullTextIndexMetadata`. If they are missing/stale (e.g. a BM25 index reopened before the schema was
-  saved), the first BM25 query lazily recomputes them; `recomputeBM25Counters()` repairs them on demand.
+- **Corpus statistics** — `N` for IDF is the per-bucket live record count (consistent with the per-bucket `df`). The shared
+  type-wide counters in `FullTextIndexMetadata` (document count + sum of document lengths) feed only `avgdl`, are maintained
+  incrementally on put/remove, and are persisted. They are **not** transactionally reversed on rollback and a removed document's
+  length is recomputed (so it can drift after an analyzer change); since they affect only the `avgdl` length normalizer this
+  degrades ranking gradually, not catastrophically. There is **no background recompute** - `recomputeBM25Counters()` (or a
+  rebuild) repairs them exactly on demand, and a reopen with an invalid `countersValid` flag rebuilds them lazily on first query.
 - **Metadata persistence fix** — `LSMTreeFullTextIndex.toJSON()` previously dropped analyzer/operator config, so a restart
   silently reverted custom analyzers to `StandardAnalyzer`. The metadata round-trip is now implemented (and restored in
   `LocalSchema` reload), which also persists the BM25 settings and counters.

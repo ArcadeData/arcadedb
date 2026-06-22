@@ -112,9 +112,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (metadata.has("defaultOperator"))
       this.defaultOperator = metadata.getString("defaultOperator");
 
-    // An index persisted before BM25 support has no "similarity" key: keep it on the legacy CLASSIC scoring so an upgrade does
-    // not silently change ranking. A freshly created index (or one created with this feature) carries the key explicitly.
-    this.similarity = metadata.has("similarity") ? metadata.getString("similarity").toUpperCase() : SIMILARITY_CLASSIC;
+    // An index persisted before BM25 support has no "similarity" key: keep it on CLASSIC so an upgrade does not silently change
+    // ranking. Route an explicit value through the validating setter so an unknown similarity in METADATA {...} is rejected.
+    if (metadata.has("similarity"))
+      setSimilarity(metadata.getString("similarity"));
+    else
+      this.similarity = SIMILARITY_CLASSIC;
     // Route through the setters so invalid k1/b in METADATA {...} are rejected at index creation rather than silently scoring wrong.
     setBm25K1(metadata.getFloat("bm25_k1", bm25K1));
     setBm25B(metadata.getFloat("bm25_b", bm25B));
@@ -304,10 +307,20 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * Sets the similarity mode. Accepts "BM25" or "CLASSIC" (case-insensitive).
+   * Sets the similarity mode. Accepts "BM25" or "CLASSIC" (case-insensitive); null resets to the BM25 default.
+   *
+   * @throws IllegalArgumentException if the name is not a known similarity
    */
   public void setSimilarity(final String similarity) {
-    this.similarity = similarity != null ? similarity.toUpperCase() : SIMILARITY_BM25;
+    if (similarity == null) {
+      this.similarity = SIMILARITY_BM25;
+      return;
+    }
+    final String upper = similarity.toUpperCase();
+    if (!SIMILARITY_BM25.equals(upper) && !SIMILARITY_CLASSIC.equals(upper))
+      throw new IllegalArgumentException(
+          "Unknown full-text similarity '" + similarity + "'. Valid values: " + SIMILARITY_BM25 + ", " + SIMILARITY_CLASSIC);
+    this.similarity = upper;
   }
 
   /**

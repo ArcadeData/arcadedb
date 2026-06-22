@@ -246,11 +246,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
   /**
    * Shared BM25 scoring core used by both the direct ({@link #get}) and the Lucene-syntax ({@link FullTextQueryExecutor}) paths,
-   * so the formula, parameters and corpus statistics can never diverge between them. For each scoring token it derives the
-   * document frequency in a first streaming pass (counting only, never materializing the posting list) and accumulates the BM25
-   * contribution in a second pass. When {@code candidates} is non-null only those documents are scored (the map is pre-seeded
-   * with them); otherwise every matching document is scored. Memory is therefore bounded by the result/candidate set, not by the
-   * (possibly huge) posting list of a common term.
+   * so the formula, parameters and corpus statistics can never diverge between them.
+   * <p>
+   * When {@code candidates} is non-null only those documents are scored: a single streaming pass counts the document frequency
+   * and collects just the candidate postings (bounded by the candidate set), then the BM25 contribution is applied once the IDF
+   * is known. When {@code candidates} is null every matching document is scored, which needs two passes (count df, then
+   * accumulate) to avoid materializing the whole posting list. Either way memory is bounded by the result/candidate set, not by
+   * the (possibly huge) posting list of a common term.
+   * <p>
+   * TODO: the first pass exists only to derive the document frequency; if the LSM layer exposed a per-key entry count (the
+   * compacted index already keeps page-level counts in its root) it could be obtained without scanning the postings.
    *
    * @param tokenBoosts scoring tokens (stored-key form) mapped to their effective boost
    * @param candidates  documents to score, or {@code null} to score every matching document
@@ -271,27 +276,40 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       final String[] storedKey = new String[] { e.getKey() };
       final float boost = e.getValue();
 
-      // Pass 1: document frequency - stream-count the postings without retaining them.
-      long df = 0L;
-      final IndexCursor dfCursor = underlyingIndex.get(storedKey);
-      while (dfCursor.hasNext()) {
-        dfCursor.next();
-        ++df;
-      }
-      if (df == 0L)
-        continue;
-      final double idf = BM25Scorer.idf(totalDocs, df);
-
-      // Pass 2: accumulate contributions, scoring only candidates when a candidate set was given.
-      final IndexCursor scoreCursor = underlyingIndex.get(storedKey);
-      while (scoreCursor.hasNext()) {
-        final Identifiable id = scoreCursor.next();
-        if (!(id instanceof FullTextPostingRID s))
+      if (candidates != null) {
+        // Single pass: count df while collecting only the candidate postings (bounded by the candidate set).
+        long df = 0L;
+        final List<FullTextPostingRID> hits = new ArrayList<>();
+        final IndexCursor cursor = underlyingIndex.get(storedKey);
+        while (cursor.hasNext()) {
+          final Identifiable id = cursor.next();
+          ++df;
+          if (id instanceof FullTextPostingRID s && scoreMap.containsKey(s.getIdentity()))
+            hits.add(s);
+        }
+        if (df == 0L)
           continue;
-        final RID rid = s.getIdentity();
-        if (candidates != null && !scoreMap.containsKey(rid))
+        final double idf = BM25Scorer.idf(totalDocs, df);
+        for (final FullTextPostingRID s : hits)
+          scoreMap.merge(s.getIdentity(), (float) (BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost), Float::sum);
+      } else {
+        // No candidate filter: count df first (streaming, no retention), then accumulate every matching document.
+        long df = 0L;
+        final IndexCursor dfCursor = underlyingIndex.get(storedKey);
+        while (dfCursor.hasNext()) {
+          dfCursor.next();
+          ++df;
+        }
+        if (df == 0L)
           continue;
-        scoreMap.merge(rid, (float) (BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost), Float::sum);
+        final double idf = BM25Scorer.idf(totalDocs, df);
+        final IndexCursor scoreCursor = underlyingIndex.get(storedKey);
+        while (scoreCursor.hasNext()) {
+          final Identifiable id = scoreCursor.next();
+          if (id instanceof FullTextPostingRID s)
+            scoreMap.merge(s.getIdentity(), (float) (BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost),
+                Float::sum);
+        }
       }
     }
     return scoreMap;
@@ -392,6 +410,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     json.put("b", ftMetadata.getBm25B());
     json.put("totalDocs", totalDocs);
     json.put("avgDocLength", avgdl);
+    // BM25 is scored per bucket (per-shard): these statistics are this bucket's, so a multi-bucket type's other buckets may have
+    // different df/IDF. Made explicit so the explained IDF is not mistaken for a global value.
+    json.put("note", "statistics are per bucket (BM25 is scored per bucket); totalDocs is this bucket's document count");
 
     final JSONArray terms = new JSONArray();
     for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
@@ -667,7 +688,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
-   * Updates the persisted corpus counters when a document is indexed.
+   * Updates the persisted corpus counters when a document is indexed. {@code numDocs} is {@code rids.length}: the standard
+   * indexing path passes exactly one RID per document (one document being indexed), so each RID is counted as a distinct
+   * document of length {@code docLen}.
    */
   private void countDocuments(final int numDocs, final int docLen) {
     if (ftMetadata != null)
