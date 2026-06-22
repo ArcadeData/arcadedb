@@ -57,3 +57,32 @@ Additional test `executeQueryKeepsMultipleNullProjectedColumns` covers multi-col
 Added two regression tests:
 - `executeQueryKeepsNullValuedProjectedColumn` - single null-valued column via `SELECT sqrt(-4) AS r`
 - `executeQueryKeepsMultipleNullAndNonNullProjectedColumns` - mix of null and non-null columns
+
+## Pull Request
+
+https://github.com/ArcadeData/arcadedb/pull/4693
+
+## Review cycles
+
+### Cycle 1 - SHA 5b5899adf
+Claude review. Outcome: fix logic confirmed correct.
+- Applied: use `value.getClass().getName()` in the FINE log for format consistency.
+- Applied: defensive intermediate `QueryResult` variable + `isNotEmpty()` in the tests
+  so failures show an AssertJ message rather than `IndexOutOfBoundsException`.
+- Declined: "remove the tracking doc" - `docs/<issue>-*.md` is a committed project
+  convention (docs/4397, 4393, 4446, 4448).
+- Declined: PR-description test-name typo (no code impact).
+
+### Cycle 2 - SHA a50b7caf
+Pushed cycle-1 fixes. Claude did not re-review within the 15-minute window (timeout).
+Gemini posted 3 medium-priority inline nitpicks suggesting `isLoggable(Level.FINE)`
+guards on the FINE log statements. Declined with justification (replied on each
+thread): `LogManager` has no `isLoggable(Level)` method (would not compile), the
+grpcw module uses no such guards anywhere, and the eager-evaluation cost pre-existed
+this PR. A systemic FINE-log guarding pass is out of scope.
+
+## Final state
+
+`timeout` - the substantive review (Claude cycle 1) was fully addressed; Claude did not
+re-review cycle 2 within the timeout. No actionable feedback remains. PR is ready for
+developer review and merge.
