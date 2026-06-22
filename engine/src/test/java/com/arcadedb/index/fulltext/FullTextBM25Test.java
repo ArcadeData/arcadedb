@@ -30,6 +30,8 @@ import java.util.HashMap;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 /**
  * End-to-end tests for native BM25 full-text scoring (issue #4687): IDF (rare terms outrank common ones), document-length
@@ -252,16 +254,16 @@ class FullTextBM25Test extends TestHelper {
     });
 
     // k1 must be >= 0 and b must be in [0,1]: misconfiguration is surfaced at index creation, not silently mis-scored.
-    org.assertj.core.api.Assertions.assertThatThrownBy(() -> database.transaction(() ->
+    assertThatThrownBy(() -> database.transaction(() ->
             database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"bm25_b\": 2.0}")))
         .hasMessageContaining("b must be in [0, 1]");
 
-    org.assertj.core.api.Assertions.assertThatThrownBy(() -> database.transaction(() ->
+    assertThatThrownBy(() -> database.transaction(() ->
             database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"bm25_k1\": -1.0}")))
         .hasMessageContaining("k1 must be >= 0");
 
     // An unknown similarity is rejected rather than silently treated as CLASSIC.
-    org.assertj.core.api.Assertions.assertThatThrownBy(() -> database.transaction(() ->
+    assertThatThrownBy(() -> database.transaction(() ->
             database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"similarity\": \"LUCENE\"}")))
         .hasMessageContaining("Unknown full-text similarity");
   }
@@ -317,7 +319,7 @@ class FullTextBM25Test extends TestHelper {
 
       // Without the boost (symmetric query) the two are tied.
       final Map<String, Float> neutral = searchScores("Doc[content]", "java python");
-      assertThat(neutral.get("java")).isCloseTo(neutral.get("python"), org.assertj.core.api.Assertions.within(1e-4f));
+      assertThat(neutral.get("java")).isCloseTo(neutral.get("python"), within(1e-4f));
     });
   }
 
@@ -389,6 +391,53 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void singleDocumentScoresWithoutLengthBias() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      // A single-document corpus: avgdl equals that document's length, so the length-normalization denominator collapses to k1+1
+      // and the score must still be a finite positive number (no divide-by-zero on avgdl).
+      database.command("sql", "INSERT INTO Doc SET name = 'only', content = 'java database tuning'");
+    });
+
+    database.transaction(() -> {
+      final Map<String, Float> scores = searchScores("Doc[content]", "java");
+      assertThat(scores).containsOnlyKeys("only");
+      assertThat(scores.get("only")).isGreaterThan(0f);
+      assertThat(scores.get("only").isNaN()).isFalse();
+      assertThat(scores.get("only").isInfinite()).isFalse();
+    });
+  }
+
+  @Test
+  void contentFieldNameDoesNotCollideWithDefaultFieldSentinel() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE PROPERTY Doc.title STRING");
+      // The query parser uses "content" as the default-field sentinel for unqualified terms. A real index that also has a
+      // property literally named "content" must still index and score both fields gracefully (no crash, sensible ranking).
+      database.command("sql", "CREATE INDEX ON Doc (content, title) FULL_TEXT");
+      database.command("sql", "INSERT INTO Doc SET name = 'inContent', content = 'java tutorial', title = 'something else'");
+      database.command("sql", "INSERT INTO Doc SET name = 'inTitle',   content = 'something else', title = 'java tutorial'");
+    });
+
+    database.transaction(() -> {
+      // Unqualified term: both documents match (the field-agnostic token), scores are finite and positive.
+      final Map<String, Float> unqualified = searchScores("Doc[content,title]", "java");
+      assertThat(unqualified.keySet()).containsExactlyInAnyOrder("inContent", "inTitle");
+      unqualified.values().forEach(s -> assertThat(s).isGreaterThan(0f));
+
+      // Field-qualified term on the literally-named "content" property still resolves to that field only.
+      final Map<String, Float> qualified = searchScores("Doc[content,title]", "content:java");
+      assertThat(qualified.keySet()).contains("inContent");
+    });
+  }
+
+  @Test
   @Tag("slow")
   void bm25ConfigAndCountersSurviveRestart() {
     database.transaction(() -> {
@@ -410,7 +459,7 @@ class FullTextBM25Test extends TestHelper {
       final Map<String, Float> after = searchScores("Doc[content]", "quantum data");
       // The ranking (rare term wins) and the actual scores must be identical after restart.
       assertThat(after.get("rare")).isNotNull();
-      assertThat(after.get("rare")).isCloseTo(before.get("rare"), org.assertj.core.api.Assertions.within(1e-4f));
+      assertThat(after.get("rare")).isCloseTo(before.get("rare"), within(1e-4f));
       for (final Map.Entry<String, Float> e : after.entrySet())
         if (!e.getKey().equals("rare"))
           assertThat(after.get("rare")).isGreaterThan(e.getValue());

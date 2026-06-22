@@ -92,8 +92,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * NOTE: this flag is NOT stored in the page header; it is set at load time by the full-text index from the persisted schema
    * (similarity = BM25). The schema and index files therefore must stay consistent: reading a BM25 index's pages with the flag
    * off (or vice-versa) would misinterpret the value bytes. In normal operation schema and index files travel together.
+   * <p>
+   * volatile: set once after construction (single writer) but read on every read/write path, possibly from other threads; the
+   * visibility guarantee avoids a reader seeing a stale {@code false} and misparsing the value bytes.
    */
-  protected boolean                storeTermFrequency = false;
+  protected volatile boolean       storeTermFrequency = false;
 
   protected static class LookupResult {
     public final boolean found;

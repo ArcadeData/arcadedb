@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
@@ -283,6 +284,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       for (final RID c : candidates)
         scoreMap.put(c, 0.0);
 
+    // Reused across tokens to avoid per-token allocations (candidate path only).
+    final List<FullTextPostingRID> hits = new ArrayList<>();
+
     for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
       final String[] storedKey = new String[] { e.getKey() };
       final float boost = e.getValue();
@@ -290,10 +294,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       if (candidates != null) {
         // Single pass: count df while collecting only the candidate postings (bounded by the candidate set).
         long df = 0L;
-        final List<FullTextPostingRID> hits = new ArrayList<>();
+        hits.clear();
         final IndexCursor cursor = underlyingIndex.get(storedKey);
         while (cursor.hasNext()) {
           final Identifiable id = cursor.next();
+          // Skip deletion markers (negative bucket id): they are not live documents and must not inflate the document frequency.
+          if (id.getIdentity().getBucketId() < 0)
+            continue;
           ++df;
           if (id instanceof FullTextPostingRID s && scoreMap.containsKey(s.getIdentity()))
             hits.add(s);
@@ -308,8 +315,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         long df = 0L;
         final IndexCursor dfCursor = underlyingIndex.get(storedKey);
         while (dfCursor.hasNext()) {
-          dfCursor.next();
-          ++df;
+          if (dfCursor.next().getIdentity().getBucketId() >= 0) // skip deletion markers
+            ++df;
         }
         if (df == 0L)
           continue;
@@ -385,12 +392,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     for (final Map.Entry<RID, Double> entry : scoreMap.entrySet())
       list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().floatValue()));
 
-    list.sort((o1, o2) -> {
-      final int cmp = Float.compare(o2.floatScore, o1.floatScore);
-      if (cmp != 0)
-        return cmp;
-      return o1.record.getIdentity().compareTo(o2.record.getIdentity());
-    });
+    if (list.size() > 1)
+      list.sort((o1, o2) -> {
+        final int cmp = Float.compare(o2.floatScore, o1.floatScore);
+        if (cmp != 0)
+          return cmp;
+        return o1.record.getIdentity().compareTo(o2.record.getIdentity());
+      });
 
     if (limit > 0 && list.size() > limit)
       return new TempIndexCursor(list.subList(0, limit));
@@ -541,9 +549,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final List<String> props = getPropertyNames();
     long docs = 0L;
     long sumLen = 0L;
-    final Iterator<com.arcadedb.database.Record> it = db.iterateType(typeName, true);
+    final Iterator<Record> it = db.iterateType(typeName, true);
     while (it.hasNext()) {
-      final com.arcadedb.database.Record record = it.next();
+      final Record record = it.next();
       if (!(record instanceof Document doc))
         continue;
       int len = 0;
@@ -800,7 +808,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       }
     }
 
-    // Keep the BM25 corpus counters in sync when a document is removed.
+    // Keep the BM25 corpus counters in sync when a document is removed. docLen is recomputed from the keys supplied at remove
+    // time: if a field is null now but was set at index time (or the analyzer changed), this under-decrements sumDocLength and
+    // avgDocLength drifts. Since avgDocLength is only a length normalizer this is tolerable; recomputeBM25Counters() repairs it.
     if (underlyingIndex.isStoreTermFrequency() && ftMetadata != null)
       ftMetadata.removeDocument(docLen);
   }
