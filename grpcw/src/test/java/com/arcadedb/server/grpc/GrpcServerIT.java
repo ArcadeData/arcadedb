@@ -1146,7 +1146,9 @@ public class GrpcServerIT extends BaseGraphServerTest {
     ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
 
     assertThat(response.getResultsList()).isNotEmpty();
-    GrpcRecord record = response.getResultsList().get(0).getRecordsList().get(0);
+    QueryResult resultSet = response.getResultsList().get(0);
+    assertThat(resultSet.getRecordsList()).isNotEmpty();
+    GrpcRecord record = resultSet.getRecordsList().get(0);
 
     // The key "r" must be present even though sqrt(-4) is null.
     assertThat(record.getPropertiesMap()).containsKey("r");
@@ -1166,7 +1168,9 @@ public class GrpcServerIT extends BaseGraphServerTest {
     ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
 
     assertThat(response.getResultsList()).isNotEmpty();
-    GrpcRecord record = response.getResultsList().get(0).getRecordsList().get(0);
+    QueryResult resultSet2 = response.getResultsList().get(0);
+    assertThat(resultSet2.getRecordsList()).isNotEmpty();
+    GrpcRecord record = resultSet2.getRecordsList().get(0);
 
     // Both columns must be present regardless of their value.
     assertThat(record.getPropertiesMap()).containsKey("null_col");

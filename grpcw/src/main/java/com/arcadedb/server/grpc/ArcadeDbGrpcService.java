@@ -3213,7 +3213,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       LogManager.instance()
           .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
-              propertyName, value, value == null ? "null" : value.getClass());
+              propertyName, value, value == null ? "null" : value.getClass().getName());
 
       final GrpcValue gv = projectionConfig != null ?
           toGrpcValue(value, projectionConfig) :
