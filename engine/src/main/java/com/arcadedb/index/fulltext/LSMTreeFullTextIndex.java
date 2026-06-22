@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.Index;
@@ -408,28 +409,44 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
-   * Returns the number of documents in the collection (N) for IDF, preferring the persisted counter and falling back to a live
-   * count of the type when the counter is unavailable.
+   * BM25 is scored per bucket (per-shard, like Elasticsearch/Lucene): each bucket-level full-text index ranks its own documents
+   * using statistics derived from its own postings. The document frequency comes from this bucket's postings, so N and the
+   * average document length must also be this bucket's, otherwise the IDF would be biased. The per-bucket corpus counters are
+   * maintained incrementally on put/remove; the methods below keep the fallback and recompute paths consistently per-bucket.
+   * <p>
+   * Returns the number of documents in this bucket (N) for IDF: the persisted per-bucket counter, falling back to a live count of
+   * the associated bucket when the counter is unavailable.
    */
   private long resolveTotalDocs() {
     if (ftMetadata != null && ftMetadata.getTotalDocs() > 0)
       return ftMetadata.getTotalDocs();
-    final String typeName = getTypeName();
-    if (typeName != null) {
-      final long count = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);
-      if (count > 0)
-        return count;
-    }
-    return 1L;
+    final long count = associatedBucketCount();
+    return count > 0 ? count : 1L;
   }
 
   /**
-   * Returns the average document length across the collection, or 1.0 when no statistics are available.
+   * Returns the average document length in this bucket, or 1.0 when no statistics are available.
    */
   private double resolveAvgDocLength() {
     if (ftMetadata != null && ftMetadata.getTotalDocs() > 0)
       return ftMetadata.avgDocLength();
     return 1.0;
+  }
+
+  /**
+   * Returns the live record count of the bucket this index is associated with, or 0 when it cannot be resolved.
+   */
+  private long associatedBucketCount() {
+    final Bucket bucket = associatedBucket();
+    return bucket != null ? bucket.count() : 0L;
+  }
+
+  private Bucket associatedBucket() {
+    try {
+      return underlyingIndex.getMutableIndex().getDatabase().getSchema().getBucketById(getAssociatedBucketId());
+    } catch (final Exception e) {
+      return null;
+    }
   }
 
   /**
@@ -441,31 +458,26 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       return;
     if (ftMetadata.getTotalDocs() > 0)
       return;
-    final String typeName = getTypeName();
-    if (typeName == null)
-      return;
-    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
-    if (db.countType(typeName, false) <= 0)
-      return; // empty type: the (0,0) counters are correct
+    if (associatedBucketCount() <= 0)
+      return; // empty bucket: the (0,0) counters are correct
     recomputeBM25Counters();
   }
 
   /**
-   * Rescans the indexed type and rebuilds the BM25 corpus counters (document count and total document length), then persists
-   * them. Use it after a bulk import or to repair drifted counters.
+   * Rescans this bucket and rebuilds the per-bucket BM25 corpus counters (document count and total document length), then
+   * persists them. Use it after a bulk import or to repair drifted counters.
    */
   public void recomputeBM25Counters() {
     if (ftMetadata == null)
       return;
-    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
-    final String typeName = getTypeName();
-    if (typeName == null)
+    final Bucket bucket = associatedBucket();
+    if (bucket == null)
       return;
 
     final List<String> props = getPropertyNames();
     long docs = 0L;
     long sumLen = 0L;
-    final Iterator<com.arcadedb.database.Record> it = db.iterateType(typeName, true);
+    final Iterator<com.arcadedb.database.Record> it = bucket.iterator();
     while (it.hasNext()) {
       final com.arcadedb.database.Record record = it.next();
       if (!(record instanceof Document doc))
@@ -481,7 +493,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     }
 
     ftMetadata.setCounters(docs, sumLen);
-    db.getSchema().getEmbedded().saveConfiguration();
+    underlyingIndex.getMutableIndex().getDatabase().getSchema().getEmbedded().saveConfiguration();
   }
 
   /**

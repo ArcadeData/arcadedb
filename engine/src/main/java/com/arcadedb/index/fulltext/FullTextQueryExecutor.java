@@ -76,6 +76,9 @@ public class FullTextQueryExecutor {
   // created per search, so these instance fields are not shared across queries.
   private final Map<String, Float> scoringTokens     = new HashMap<>();
   private       boolean            collectingExclusion = false;
+  // When true, matching runs only to capture the scoring tokens (used by EXPLAIN/PROFILE): per-document score accumulation is
+  // skipped so no document set is materialized. Token discovery for wildcard/prefix/fuzzy still scans the index as needed.
+  private       boolean            tokensOnly          = false;
   // The compounded caret boost (e.g. `title:java^3`) of the BoostQuery currently being descended, multiplied into recorded
   // scoring tokens. Lucene's QueryParser already parses `^` into a BoostQuery; this is where that boost takes effect for BM25.
   private       float              currentBoost        = 1.0f;
@@ -136,8 +139,13 @@ public class FullTextQueryExecutor {
     try {
       final QueryParser parser = createQueryParser();
       final Query query = parser.parse(queryString);
-      final Map<RID, AtomicInteger> scoreMap = new HashMap<>();
-      collectMatches(query, scoreMap, new HashSet<>());
+      tokensOnly = true;
+      try {
+        // The score map stays empty in tokens-only mode; we only need the captured scoringTokens.
+        collectMatches(query, new HashMap<>(), new HashSet<>());
+      } finally {
+        tokensOnly = false;
+      }
       return index.explainScoring(scoringTokens);
     } catch (final ParseException e) {
       throw new IndexException("Invalid search query: " + queryString, e);
@@ -185,6 +193,14 @@ public class FullTextQueryExecutor {
 
     if (query instanceof BooleanQuery) {
       final BooleanQuery bq = (BooleanQuery) query;
+
+      if (tokensOnly) {
+        // Only the positive clauses contribute scoring tokens; recurse to capture them and skip all set intersection/merge work.
+        for (final BooleanClause clause : bq.clauses())
+          if (clause.occur() != BooleanClause.Occur.MUST_NOT)
+            collectMatches(clause.query(), scoreMap, excluded);
+        return;
+      }
 
       // First pass: collect MUST_NOT terms and track whether any exist
       boolean hasMustNotClauses = false;
@@ -344,6 +360,8 @@ public class FullTextQueryExecutor {
     }
 
     recordScoringToken(searchKey, boostFor(field));
+    if (tokensOnly)
+      return;
 
     final IndexCursor cursor = index.get(new Object[] { searchKey });
     while (cursor.hasNext()) {
@@ -358,6 +376,12 @@ public class FullTextQueryExecutor {
     final Term[] terms = query.getTerms();
     if (terms.length == 0)
       return;
+
+    if (tokensOnly) {
+      for (final Term term : terms)
+        recordScoringToken(term.text(), 1.0f);
+      return;
+    }
 
     Map<RID, AtomicInteger> intersection = null;
 
@@ -495,7 +519,8 @@ public class FullTextQueryExecutor {
       final String key = keys[0].toString();
       if (matcher.matches(key)) {
         recordScoringToken(key, boost);
-        scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
+        if (!tokensOnly)
+          scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
       } else if (rangeScan && startKey != null && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
         break;
       }

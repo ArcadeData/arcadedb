@@ -118,6 +118,31 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void bm25RankingHoldsAcrossMultipleBuckets() {
+    database.transaction(() -> {
+      // Multiple buckets: BM25 is scored per bucket, so N (doc count) and df must both be per-bucket to keep IDF unbiased.
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 4");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+
+      database.command("sql", "INSERT INTO Doc SET name = 'rare', content = 'quantum data analysis'");
+      for (int i = 0; i < 40; i++)
+        database.command("sql", "INSERT INTO Doc SET name = 'common" + i + "', content = 'data record number " + i + "'");
+    });
+
+    database.transaction(() -> {
+      final Map<String, Float> scores = searchScores("Doc[content]", "quantum data");
+      assertThat(scores.get("rare")).isNotNull();
+      // The document with the rare, discriminative term must rank above every common-only document, regardless of which bucket
+      // each landed in.
+      for (final Map.Entry<String, Float> e : scores.entrySet())
+        if (!e.getKey().equals("rare"))
+          assertThat(scores.get("rare")).isGreaterThan(e.getValue());
+    });
+  }
+
+  @Test
   void caretInBooleanQueries() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");
