@@ -19,6 +19,8 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.index.Index;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
@@ -140,6 +142,60 @@ class FullTextBM25Test extends TestHelper {
         if (!e.getKey().equals("rare"))
           assertThat(scores.get("rare")).isGreaterThan(e.getValue());
     });
+  }
+
+  private void recomputeCounters() {
+    final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+    for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
+      if (bucketIndex instanceof LSMTreeFullTextIndex ftIndex)
+        ftIndex.recomputeBM25Counters();
+  }
+
+  @Test
+  void scoringSurvivesDocumentRemovalAndRecompute() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      database.command("sql", "INSERT INTO Doc SET name='a', content='java tutorial'");
+      database.command("sql", "INSERT INTO Doc SET name='b', content='java guide'");
+      database.command("sql", "INSERT INTO Doc SET name='c', content='python guide'");
+    });
+
+    database.transaction(() -> database.command("sql", "DELETE FROM Doc WHERE name = 'a'"));
+
+    database.transaction(() -> {
+      final Map<String, Float> scores = searchScores("Doc[content]", "java");
+      assertThat(scores).containsOnlyKeys("b"); // only the surviving "java" document
+      assertThat(scores.get("b")).isGreaterThan(0f);
+    });
+
+    // recompute on a non-empty type rebuilds counters exactly; runs outside a transaction (it may persist the schema).
+    recomputeCounters();
+    database.transaction(() -> assertThat(searchScores("Doc[content]", "java")).containsOnlyKeys("b"));
+
+    // delete everything, recompute on the now-empty type must be safe and queries return nothing.
+    database.transaction(() -> database.command("sql", "DELETE FROM Doc"));
+    recomputeCounters();
+    database.transaction(() -> assertThat(searchScores("Doc[content]", "java")).isEmpty());
+  }
+
+  @Test
+  void invalidBM25ParametersAreRejected() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+    });
+
+    // k1 must be >= 0 and b must be in [0,1]: misconfiguration is surfaced at index creation, not silently mis-scored.
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> database.transaction(() ->
+            database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"bm25_b\": 2.0}")))
+        .hasMessageContaining("b must be in [0, 1]");
+
+    org.assertj.core.api.Assertions.assertThatThrownBy(() -> database.transaction(() ->
+            database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"bm25_k1\": -1.0}")))
+        .hasMessageContaining("k1 must be >= 0");
   }
 
   @Test

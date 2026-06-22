@@ -21,8 +21,8 @@ package com.arcadedb.schema;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.CollectionUtils;
 
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -59,21 +59,24 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private static final String ANALYZER_SUFFIX = "_analyzer";
   private static final String BOOST_SUFFIX    = "_boost";
 
-  private String              analyzerClass        = DEFAULT_ANALYZER;
-  private String              indexAnalyzerClass   = null;
-  private String              queryAnalyzerClass   = null;
-  private boolean             allowLeadingWildcard = false;
-  private String              defaultOperator      = "OR";
-  private Map<String, String> fieldAnalyzers       = new HashMap<>();
+  private          String              analyzerClass        = DEFAULT_ANALYZER;
+  private          String              indexAnalyzerClass   = null;
+  private          String              queryAnalyzerClass   = null;
+  private          boolean             allowLeadingWildcard = false;
+  private          String              defaultOperator      = "OR";
+  // Per-field maps are concurrent: they are populated at index creation but read on the query path (getFieldBoost,
+  // getAnalyzerClass) and iterated by writeToJSON on schema save, so a HashMap could throw ConcurrentModificationException.
+  private final    Map<String, String> fieldAnalyzers       = new ConcurrentHashMap<>();
 
   // BM25 SCORING CONFIGURATION
   private String             similarity  = SIMILARITY_BM25;
   private float              bm25K1      = 1.2f;
   private float              bm25B       = 0.75f;
-  private Map<String, Float> fieldBoosts = new HashMap<>();
+  private final Map<String, Float> fieldBoosts = new ConcurrentHashMap<>();
 
-  // PERSISTED CORPUS STATISTICS FOR avgdl (live document count and sum of document lengths). Concurrent transactions can index
-  // documents into the same bucket simultaneously, all updating this shared metadata, so the counters are atomic.
+  // PERSISTED CORPUS STATISTICS FOR avgdl (live document count and sum of document lengths).
+  // NOTE (concurrency): concurrent transactions can index documents into the same bucket simultaneously, all mutating this
+  // shared per-bucket metadata, so the counters are AtomicLong (and countersValid is volatile) - bare longs would lose updates.
   private final AtomicLong totalDocs     = new AtomicLong(0L);
   private final AtomicLong sumDocLength  = new AtomicLong(0L);
   private volatile boolean countersValid = false;
@@ -112,8 +115,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // An index persisted before BM25 support has no "similarity" key: keep it on the legacy CLASSIC scoring so an upgrade does
     // not silently change ranking. A freshly created index (or one created with this feature) carries the key explicitly.
     this.similarity = metadata.has("similarity") ? metadata.getString("similarity").toUpperCase() : SIMILARITY_CLASSIC;
-    this.bm25K1 = metadata.getFloat("bm25_k1", bm25K1);
-    this.bm25B = metadata.getFloat("bm25_b", bm25B);
+    // Route through the setters so invalid k1/b in METADATA {...} are rejected at index creation rather than silently scoring wrong.
+    setBm25K1(metadata.getFloat("bm25_k1", bm25K1));
+    setBm25B(metadata.getFloat("bm25_b", bm25B));
     this.totalDocs.set(metadata.getLong("ft_totalDocs", 0L));
     this.sumDocLength.set(metadata.getLong("ft_sumDocLength", 0L));
     this.countersValid = metadata.getBoolean("ft_countersValid", false);
@@ -321,9 +325,13 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * Sets the BM25 term-frequency saturation parameter k1.
+   * Sets the BM25 term-frequency saturation parameter k1 (must be &gt;= 0).
+   *
+   * @throws IllegalArgumentException if k1 is negative
    */
   public void setBm25K1(final float bm25K1) {
+    if (bm25K1 < 0)
+      throw new IllegalArgumentException("BM25 k1 must be >= 0, but was " + bm25K1);
     this.bm25K1 = bm25K1;
   }
 
@@ -335,9 +343,13 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * Sets the BM25 document-length normalization parameter b.
+   * Sets the BM25 document-length normalization parameter b (must be in [0, 1]).
+   *
+   * @throws IllegalArgumentException if b is outside [0, 1]
    */
   public void setBm25B(final float bm25B) {
+    if (bm25B < 0 || bm25B > 1)
+      throw new IllegalArgumentException("BM25 b must be in [0, 1], but was " + bm25B);
     this.bm25B = bm25B;
   }
 
@@ -410,7 +422,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
   /**
    * Records a newly indexed document in the corpus counters. Thread-safe: concurrent indexing transactions may call this on the
-   * shared per-bucket metadata.
+   * shared metadata.
+   * <p>
+   * These counters feed only the average document length (a BM25 length normalizer, robust to small inaccuracies). They are
+   * adjusted at index put/remove time, BEFORE the transaction commits, and are NOT reversed on rollback - so a rolled-back batch
+   * (or a {@link #removeDocument} whose recomputed length differs from the original, e.g. after an analyzer change) can let the
+   * counters drift. The full-text index's {@code recomputeBM25Counters()} rebuilds them exactly when needed.
    *
    * @param docLength number of analyzed tokens of the document
    */

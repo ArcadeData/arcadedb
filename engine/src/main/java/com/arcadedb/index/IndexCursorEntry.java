@@ -26,7 +26,13 @@ import java.util.Objects;
 public class IndexCursorEntry {
   public final Object[]     keys;
   public final Identifiable record;
+  /**
+   * Integer relevance score. For float-scored entries (e.g. full-text BM25) this is {@link #floatScore} rounded and therefore
+   * lossy: read {@link #floatScore} (or {@link IndexCursor#getFloatScore()}) when precision matters. It remains an exact value
+   * for indexes that score with integers (e.g. CLASSIC full-text coordination, regular LSM indexes).
+   */
   public final int          score;
+  /** Full-precision relevance score; equals {@link #score} for integer-scored entries. */
   public final float        floatScore;
 
   public IndexCursorEntry(final Object[] keys, final Identifiable record, final int score) {

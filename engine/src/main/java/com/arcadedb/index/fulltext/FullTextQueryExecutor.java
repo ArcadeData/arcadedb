@@ -67,6 +67,17 @@ import java.util.regex.PatternSyntaxException;
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class FullTextQueryExecutor {
+  /**
+   * The Lucene {@link QueryParser} default field, i.e. the field a query term targets when it is not field-qualified. Internally
+   * it means "unqualified": such a term is matched against the unprefixed posting (the only field of a single-property index, or
+   * the field-agnostic entry of a multi-property index) and receives no per-field boost.
+   * <p>
+   * KNOWN LIMITATION: on a MULTI-property index a property literally named {@code content} collides with this sentinel - a
+   * {@code content:term} clause is then treated as unqualified (no field boost). Single-property indexes are unaffected. Renaming
+   * the sentinel would break single-property indexes whose sole property is {@code content}, so it is kept and documented.
+   */
+  static final String DEFAULT_FIELD = "content";
+
   private final LSMTreeFullTextIndex   index;
   private final Analyzer               analyzer;
   private final FullTextIndexMetadata  metadata;
@@ -101,7 +112,7 @@ public class FullTextQueryExecutor {
    * @return a configured QueryParser
    */
   private QueryParser createQueryParser() {
-    final QueryParser parser = new QueryParser("content", analyzer);
+    final QueryParser parser = new QueryParser(DEFAULT_FIELD, analyzer);
     if (metadata != null) {
       parser.setAllowLeadingWildcard(metadata.isAllowLeadingWildcard());
       if ("AND".equalsIgnoreCase(metadata.getDefaultOperator())) {
@@ -325,7 +336,7 @@ public class FullTextQueryExecutor {
    * (unqualified) {@code content} field.
    */
   private float boostFor(final String field) {
-    if (field != null && !field.isEmpty() && !"content".equals(field) && metadata != null)
+    if (field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field) && metadata != null)
       return metadata.getFieldBoost(field);
     return 1.0f;
   }
@@ -353,7 +364,7 @@ public class FullTextQueryExecutor {
     // For field-specific queries (e.g., "title:java"), prepend field name
     // Multi-property indexes store tokens as "fieldName:token"
     final String searchKey;
-    if (field != null && !field.isEmpty() && !"content".equals(field)) {
+    if (field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field)) {
       searchKey = field + ":" + text;
     } else {
       searchKey = text;
@@ -426,7 +437,7 @@ public class FullTextQueryExecutor {
     // Compute the literal prefix (everything up to the first wildcard char)
     final String literalPrefix = extractLiteralPrefix(pattern);
     final String searchPrefix = buildSearchKey(field, literalPrefix);
-    final String fieldPrefix = field != null && !field.isEmpty() && !"content".equals(field) ? field + ":" : "";
+    final String fieldPrefix = field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field) ? field + ":" : "";
     final Pattern regex = wildcardToRegex(pattern);
 
     if (literalPrefix.isEmpty()) {
@@ -462,7 +473,7 @@ public class FullTextQueryExecutor {
     final int maxEdits = query.getMaxEdits();
     final int prefixLen = Math.min(query.getPrefixLength(), term.length());
     final String requiredPrefix = term.substring(0, prefixLen);
-    final String fieldPrefix = field != null && !field.isEmpty() && !"content".equals(field) ? field + ":" : "";
+    final String fieldPrefix = field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field) ? field + ":" : "";
     final String searchPrefix = fieldPrefix + requiredPrefix;
 
     iterateAndMatch(searchPrefix.isEmpty() ? null : searchPrefix, key -> {
@@ -488,7 +499,7 @@ public class FullTextQueryExecutor {
       return;
     }
 
-    final String fieldPrefix = field != null && !field.isEmpty() && !"content".equals(field) ? field + ":" : "";
+    final String fieldPrefix = field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field) ? field + ":" : "";
 
     iterateAndMatch(null, key -> {
       if (!key.startsWith(fieldPrefix))
@@ -533,7 +544,7 @@ public class FullTextQueryExecutor {
    * (used by the Lucene QueryParser when no field is specified) targets unqualified tokens.
    */
   private static String buildSearchKey(final String field, final String text) {
-    if (field != null && !field.isEmpty() && !"content".equals(field))
+    if (field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field))
       return field + ":" + text;
     return text;
   }

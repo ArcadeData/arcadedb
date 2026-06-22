@@ -217,6 +217,9 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     if (!(index instanceof final TypeIndex typeIndex))
       return null;
 
+    // BM25 is scored per bucket (per-shard), so document frequency / IDF differ across buckets. EXPLAIN/PROFILE reports a single
+    // representative bucket's statistics (the first full-text bucket index) rather than a global view - enough to understand the
+    // similarity, parameters and relative term weights, but not a type-wide IDF.
     for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
       if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex)
         return new FullTextQueryExecutor(ftIndex).explainScoring(queryString);
