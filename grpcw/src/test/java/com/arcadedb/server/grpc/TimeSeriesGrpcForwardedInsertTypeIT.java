@@ -22,16 +22,10 @@ import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.server.ha.raft.BaseRaftHATest;
-import io.grpc.CallOptions;
 import io.grpc.Channel;
-import io.grpc.ClientCall;
-import io.grpc.ClientInterceptor;
 import io.grpc.ClientInterceptors;
-import io.grpc.ForwardingClientCall;
 import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
-import io.grpc.Metadata;
-import io.grpc.MethodDescriptor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -57,30 +51,7 @@ class TimeSeriesGrpcForwardedInsertTypeIT extends BaseRaftHATest {
   private static final int    BASE_GRPC_PORT = 51091;
   private static final String TYPE_NAME      = "sensor";
 
-  private static final Metadata.Key<String> USER_HEADER     =
-      Metadata.Key.of("x-arcade-user", Metadata.ASCII_STRING_MARSHALLER);
-  private static final Metadata.Key<String> PASSWORD_HEADER =
-      Metadata.Key.of("x-arcade-password", Metadata.ASCII_STRING_MARSHALLER);
-  private static final Metadata.Key<String> DATABASE_HEADER =
-      Metadata.Key.of("x-arcade-database", Metadata.ASCII_STRING_MARSHALLER);
-
   private ManagedChannel channel;
-
-  private final class AuthClientInterceptor implements ClientInterceptor {
-    @Override
-    public <ReqT, RespT> ClientCall<ReqT, RespT> interceptCall(final MethodDescriptor<ReqT, RespT> method,
-        final CallOptions callOptions, final Channel next) {
-      return new ForwardingClientCall.SimpleForwardingClientCall<ReqT, RespT>(next.newCall(method, callOptions)) {
-        @Override
-        public void start(final Listener<RespT> responseListener, final Metadata headers) {
-          headers.put(USER_HEADER, "root");
-          headers.put(PASSWORD_HEADER, DEFAULT_PASSWORD_FOR_TESTS);
-          headers.put(DATABASE_HEADER, getDatabaseName());
-          super.start(responseListener, headers);
-        }
-      };
-    }
-  }
 
   @Override
   protected void onServerConfiguration(final ContextConfiguration config) {
@@ -135,7 +106,8 @@ class TimeSeriesGrpcForwardedInsertTypeIT extends BaseRaftHATest {
         .usePlaintext()
         .maxInboundMessageSize(64 * 1024 * 1024)
         .build();
-    final Channel authenticated = ClientInterceptors.intercept(channel, new AuthClientInterceptor());
+    final Channel authenticated = ClientInterceptors.intercept(channel,
+        new GrpcTestAuthInterceptor("root", DEFAULT_PASSWORD_FOR_TESTS, getDatabaseName()));
     final ArcadeDbServiceGrpc.ArcadeDbServiceBlockingStub stub = ArcadeDbServiceGrpc.newBlockingStub(authenticated);
 
     final DatabaseCredentials credentials = DatabaseCredentials.newBuilder()
