@@ -21,7 +21,6 @@ package com.arcadedb.server.http.handler;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.net.HttpURLConnection;
@@ -31,12 +30,7 @@ import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Regression test for GitHub issue #4689:
- * MATCH (u:User) RETURN u throws NoSuchElementException via HTTP,
- * while MATCH (u:User) RETURN u{.*} as user works.
- * Same issue affects SQL: SELECT FROM type fails, SELECT field FROM type works.
- */
+/** Regression test for issue #4689: MATCH (u:IssueUser) RETURN u must not throw NSE via HTTP. */
 class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
 
   @Test
@@ -44,7 +38,6 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
     executeCommand(0, "opencypher", "CREATE (u:IssueUser {name: 'Alice', age: 30})");
     executeCommand(0, "opencypher", "CREATE (u:IssueUser {name: 'Bob', age: 25})");
 
-    // This is the query that the reporter says fails (issue #4689)
     final JSONObject response = executeCommand(0, "opencypher", "MATCH (u:IssueUser) RETURN u");
 
     assertThat(response).isNotNull();
@@ -55,10 +48,8 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
 
   @Test
   void cypherMatchReturnVertexProjectionWorkaround() throws Exception {
-    // Each test creates its own isolated type to avoid ordering dependencies
     executeCommand(0, "opencypher", "CREATE (u:IssueUserProj {name: 'Charlie', age: 35})");
 
-    // Workaround the reporter says works
     final JSONObject response = executeCommand(0, "opencypher", "MATCH (u:IssueUserProj) RETURN u{.*} as user");
 
     assertThat(response).isNotNull();
@@ -69,12 +60,10 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
 
   @Test
   void sqlSelectFromTypeShouldNotThrow() throws Exception {
-    // Self-contained: creates its own type and data
     executeCommand(0, "sql", "CREATE VERTEX TYPE SqlSelectAll");
     executeCommand(0, "sql", "INSERT INTO SqlSelectAll SET name = 'Alice', age = 30");
     executeCommand(0, "sql", "INSERT INTO SqlSelectAll SET name = 'Bob', age = 25");
 
-    // SQL: returning whole record should work (same issue with SQL as with Cypher)
     final JSONObject response = executeCommand(0, "sql", "SELECT FROM SqlSelectAll");
 
     assertThat(response).isNotNull();
@@ -85,11 +74,9 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
 
   @Test
   void sqlSelectFieldsShouldWork() throws Exception {
-    // Self-contained: creates its own type and data
     executeCommand(0, "sql", "CREATE VERTEX TYPE SqlSelectFields");
     executeCommand(0, "sql", "INSERT INTO SqlSelectFields SET name = 'Dave', age = 40");
 
-    // Selecting individual fields should work (workaround for SQL)
     final JSONObject response = executeCommand(0, "sql", "SELECT name FROM SqlSelectFields");
 
     assertThat(response).isNotNull();
@@ -98,22 +85,24 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
     assertThat(result.getJSONArray("records").length()).as("Should return 1 record").isEqualTo(1);
   }
 
-  @Tag("slow")
   @Test
   void cypherMatchReturnManyVerticesShouldWork() throws Exception {
-    // Create more than 100 vertices to test multi-batch pagination
-    for (int i = 0; i < 110; i++)
-      executeCommand(0, "opencypher", "CREATE (u:ManyUsers {idx: " + i + ", name: 'User" + i + "'})");
+    // Create 110 vertices in a single command to test multi-batch pagination (>100 default batch)
+    executeCommand(0, "opencypher",
+        "UNWIND range(0, 109) AS i CREATE (:ManyUsers {idx: i, name: 'User' + toString(i)})");
 
     final JSONObject response = executeCommand(0, "opencypher", "MATCH (u:ManyUsers) RETURN u");
 
     assertThat(response).isNotNull();
     assertThat(response.has("result")).isTrue();
+    final JSONObject result = response.getJSONObject("result");
+    assertThat(result.getJSONArray("records").length())
+        .as("Should return all 110 vertices across pagination batches")
+        .isEqualTo(110);
   }
 
   @Test
   void cypherMatchReturnVertexWithEdgesShouldWork() throws Exception {
-    // Vertices connected by edges - edge counting runs in setMetadata()
     executeCommand(0, "opencypher", "CREATE (u:UserEdgeTest {name: 'Src', role: 'admin'})");
     executeCommand(0, "opencypher", "CREATE (u:UserEdgeTest {name: 'Dst', role: 'user'})");
     executeCommand(0, "sql",
@@ -124,12 +113,22 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
     assertThat(response).isNotNull();
     assertThat(response.has("result")).isTrue();
     final JSONObject result = response.getJSONObject("result");
-    assertThat(result.getJSONArray("records").length()).as("Should return 2 vertices with edges").isEqualTo(2);
+    final JSONArray records = result.getJSONArray("records");
+    assertThat(records.length()).as("Should return 2 vertices").isEqualTo(2);
+    // Verify edge counts are populated via setMetadata() - at least one vertex must have edges
+    boolean hasEdgeCounts = false;
+    for (int i = 0; i < records.length(); i++) {
+      final JSONObject rec = records.getJSONObject(i);
+      if (rec.getInt("@out", 0) > 0 || rec.getInt("@in", 0) > 0) {
+        hasEdgeCounts = true;
+        break;
+      }
+    }
+    assertThat(hasEdgeCounts).as("At least one vertex should have non-zero edge count in @out or @in").isTrue();
   }
 
   @Test
   void cypherMatchReturnVertexWithDefaultSerializer() throws Exception {
-    // Test using the default (non-studio) serializer via a direct HTTP call
     executeCommand(0, "opencypher", "CREATE (u:DefaultSerTest {name: 'Alice2', age: 30})");
     executeCommand(0, "opencypher", "CREATE (u:DefaultSerTest {name: 'Bob2', age: 25})");
 
@@ -139,7 +138,6 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
           "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
-      // Sending without serializer uses the default (non-studio) code path
       formatPayload(connection, "opencypher", "MATCH (u:DefaultSerTest) RETURN u", null, Collections.emptyMap());
       connection.connect();
 
