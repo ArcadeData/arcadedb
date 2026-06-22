@@ -14,7 +14,7 @@ Reported in `arcadedata/arcadedb:26.7.1-SNAPSHOT`.
 
 The error path is:
 1. NSE thrown inside `PostCommandHandler.execute()` (specifically during result serialization)
-2. Caught by `database.transaction()` lambda → wrapped as `TransactionException("Error on executing command", NSE)`
+2. Caught by `database.transaction()` lambda wrapped as `TransactionException("Error on executing command", NSE)`
 3. `AbstractServerHttpHandler.handleHttp()` catches TransactionException
 4. Logs: `"Error on transaction execution (PostCommandHandler): Error on executing command"`
 5. Sends HTTP 500 with `"exception": "java.util.NoSuchElementException"` in response body
@@ -26,22 +26,6 @@ The error path is:
 - `RETURN u{.*} as user` (works): creates `ResultInternal` with `content={"user": map}`, no element
   - Uses projection-based serialization path: iterates content properties
 
-### Exhaustive investigation
-
-Investigated the following code paths for NSE sources:
-
-1. **FinalProjectionStep.filterResult()** - no NSE possible; logic creates dual element+content result
-2. **FinalProjectionStep.fetchMore()** - safe; uses hasNext() before next()
-3. **NodeByLabelScan.execute()** - safe buffer/iterator pattern
-4. **MatchNodeStep.fetchMore()** - safe; uses hasNext() before next()
-5. **JsonSerializer.serializeResult()** - uses early-return path for _projectionName; no NSE
-6. **AbstractQueryHandler.serializeResultSet()** - safe; stream uses tryAdvance()
-7. **EdgeIterator/EdgeLinkedList** - safe; uses hasNext() before next()
-8. **MultiIterator** - safe; hasNextInternal() guards limit
-9. **GraphEngine.countEdges()** - no NSE
-10. **FetchFromTypeExecutionStep.syncPullSequential()** - known double-syncPull inefficiency but no NSE for normal scenarios
-11. **FetchFromTypeExecutionStep.syncPullParallel()** - safe; parallelScan=false when transaction active
-
 ### Structural inconsistency in FinalProjectionStep
 
 When `RETURN u` returns a single Document, `FinalProjectionStep.filterResult()` sets BOTH:
@@ -52,17 +36,13 @@ This dual state creates `getPropertyNames()` vs `getProperty()` inconsistency:
 - `getPropertyNames()` = element's own properties (name, age) UNION content keys (u)
 - `getProperty("name")` returns null (content has "u", not "name")
 
-The serialization works because `serializeResult` uses the `_projectionName` early-return path that calls `document.toMap()` directly, bypassing the inconsistency.
+The serialization works because `serializeResult` uses the `_projectionName` early-return path that calls `document.toMap()` directly, bypassing the inconsistency. This is a latent fragility worth tracking as a follow-up.
 
-### Reproduction
+### Exhaustive investigation
 
-Extensive testing with the following scenarios - ALL PASS:
-- Simple vertices (name + age properties)
-- 110 vertices (tests >100 batch pagination)
-- Vertices with connected edges
-- Default (non-studio) serializer
-- Studio serializer
-- SQL SELECT FROM type
+Investigated through FinalProjectionStep, NodeByLabelScan, MatchNodeStep, JsonSerializer, HTTP
+serialization layer, EdgeIterator, MultiIterator, GraphEngine.countEdges, and
+FetchFromTypeExecutionStep. All code paths appear correct and all regression tests pass.
 
 ### Conclusion
 
@@ -75,11 +55,11 @@ The NSE cannot be reproduced with the current codebase. The issue may be:
 
 Added regression test `Issue4689MatchReturnVertexIT` covering:
 - `MATCH (u:IssueUser) RETURN u` - exact failing query from issue
-- `MATCH (u:IssueUser) RETURN u{.*} as user` - working workaround
-- SQL `SELECT FROM V1` - equivalent SQL case
-- SQL `SELECT name FROM V1` - SQL field selection
-- 110-vertex test (pagination boundary)
-- Vertices with edges
+- `MATCH (u:IssueUserProj) RETURN u{.*} as user` - working workaround
+- SQL `SELECT FROM SqlSelectAll` - equivalent SQL case (self-contained with own type)
+- SQL `SELECT name FROM SqlSelectFields` - SQL field selection (self-contained)
+- 110-vertex UNWIND test (pagination boundary)
+- Vertices with edges (edge-count validation via setMetadata)
 - Default (non-studio) HTTP serializer path
 
 ## Test Results
@@ -89,3 +69,49 @@ All 7 regression tests pass.
 ## Location
 
 `server/src/test/java/com/arcadedb/server/http/handler/Issue4689MatchReturnVertexIT.java`
+
+---
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4690
+
+## Review Cycles
+
+### Cycle 1 - HEAD d3ed3e307
+
+**Changes applied from review:**
+- Gemini (HIGH x2): Made `sqlSelectFromTypeShouldNotThrow` and `sqlSelectFieldsShouldWork` self-contained with own vertex types (SqlSelectAll, SqlSelectFields)
+- Gemini (MEDIUM): Updated URL to use `getDatabaseName()` instead of hardcoded "graph"
+- Claude (CORRECTNESS): `cypherMatchReturnVertexProjectionWorkaround` now uses own isolated type (IssueUserProj)
+- Claude (CORRECTNESS): Added record count assertions where data is explicitly created
+- Claude (STYLE): Replaced FQN imports with proper import statements
+- Claude (PERFORMANCE): Added `@Tag("slow")` to 110-vertex test
+- PR title updated from `fix(#4689)` to `test(#4689)`
+
+**Deferred items:**
+- Claude: Remove tracking doc from repo (contradicts established convention; docs/4274-*, docs/4275-*, docs/4278-* are all committed tracking docs)
+- Claude: File follow-up issue for FinalProjectionStep dual element+content state (out of scope for this PR; documented in PR description and this tracking doc)
+
+### Cycle 2 - HEAD 7afd23064
+
+**Changes applied from review:**
+- Claude (CRITICAL): `cypherMatchReturnManyVerticesShouldWork` now uses UNWIND for single-command bulk create and asserts count=110
+- Claude (CORRECTNESS): `cypherMatchReturnVertexWithEdgesShouldWork` validates edge counts in @out/@in
+- Claude (MINOR): Trimmed class-level Javadoc to single line
+- Removed `@Tag("slow")` since UNWIND replaced the slow loop
+- Gemini carried forward same stale comments (already addressed, replied)
+
+**Deferred items:**
+- Claude: Remove tracking doc (same as cycle 1, same rationale)
+
+### Cycle 3 - HEAD 64e6805a2
+
+No new actionable items. Claude had no new review on this SHA. Gemini had only the same carried-forward stale comments about V1 (already addressed and replied). Working tree clean.
+
+## Final State
+
+`clean-approval` after 3 cycles.
+
+**Deferred items (for developer follow-up):**
+1. File follow-up issue for `FinalProjectionStep.filterResult()` dual element+content state - latent fragility documented above.
