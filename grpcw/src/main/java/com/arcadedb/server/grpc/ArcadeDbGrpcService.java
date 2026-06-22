@@ -3198,6 +3198,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
+    // HA-forwarded rows are non-element projections; recover the type from the @type property.
+    if (builder.getType().isEmpty()) {
+      final Object typeProperty = result.getProperty(Property.TYPE_PROPERTY);
+      if (typeProperty instanceof String typeName && !typeName.isEmpty())
+        builder.setType(typeName);
+    }
+
     // Iterate over ALL properties from the Result, including aliases
     for (String propertyName : result.getPropertyNames()) {
       Object value = result.getProperty(propertyName);

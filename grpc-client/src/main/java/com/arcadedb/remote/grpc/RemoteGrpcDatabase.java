@@ -1898,9 +1898,11 @@ public class RemoteGrpcDatabase extends RemoteDatabase {
     // Convert properties
     grpcRecord.getPropertiesMap().forEach((k, v) -> map.put(k, grpcValueToObject(v)));
 
-    // Add metadata
-    map.put("@rid", grpcRecord.getRid());
-    map.put("@type", grpcRecord.getType());
+    // Proto3 empty == absent: non-addressable rows (e.g. time-series points) have no @rid/@type.
+    if (!grpcRecord.getRid().isEmpty())
+      map.put("@rid", grpcRecord.getRid());
+    if (!grpcRecord.getType().isEmpty())
+      map.put("@type", grpcRecord.getType());
 
     GrpcValue catFromGrpcRecord = grpcRecord.getPropertiesMap().get("@cat");
 
