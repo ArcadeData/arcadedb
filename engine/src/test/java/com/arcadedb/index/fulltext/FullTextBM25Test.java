@@ -184,6 +184,42 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void rolledBackInsertIsNotIndexedAndRecomputeRepairsCounters() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      database.command("sql", "INSERT INTO Doc SET name='a', content='java tutorial'");
+    });
+
+    // A rolled-back insert: its postings are not committed, but the in-memory corpus counters were already bumped (they are not
+    // transactionally reversed) - so they drift until repaired.
+    try {
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO Doc SET name='ghost', content='java java java'");
+        throw new IllegalStateException("force rollback");
+      });
+    } catch (final IllegalStateException ignore) {
+      // expected
+    }
+
+    database.transaction(() -> {
+      final Map<String, Float> scores = searchScores("Doc[content]", "java");
+      assertThat(scores).containsOnlyKeys("a"); // the rolled-back "ghost" was never indexed
+      assertThat(scores.get("a")).isGreaterThan(0f);
+    });
+
+    // recomputeBM25Counters rebuilds the counters from committed data, so scoring keeps working after the drift.
+    recomputeCounters();
+    database.transaction(() -> {
+      final Map<String, Float> scores = searchScores("Doc[content]", "java");
+      assertThat(scores).containsOnlyKeys("a");
+      assertThat(scores.get("a")).isGreaterThan(0f);
+    });
+  }
+
+  @Test
   void invalidBM25ParametersAreRejected() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");

@@ -36,6 +36,7 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
 import com.arcadedb.index.lsm.FullTextPostingRID;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
@@ -58,6 +59,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 /**
  * Full Text index implementation based on LSM-Tree index.
@@ -414,6 +416,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // different df/IDF. Made explicit so the explained IDF is not mistaken for a global value.
     json.put("note", "statistics are per bucket (BM25 is scored per bucket); totalDocs is this bucket's document count");
 
+    // One posting scan per scoring token to derive df. EXPLAIN/PROFILE is an interactive diagnostic, not a hot path, so this is
+    // acceptable; for a very large index expect the explain to scan each term's postings once.
     final JSONArray terms = new JSONArray();
     for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
       final IndexCursor postings = underlyingIndex.get(new String[] { e.getKey() });
@@ -462,6 +466,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     try {
       return underlyingIndex.getMutableIndex().getDatabase().getSchema().getBucketById(getAssociatedBucketId());
     } catch (final Exception e) {
+      // Should not happen for a bucket-level index; surface it (IDF then falls back to N=1) instead of failing silently.
+      LogManager.instance().log(this, Level.WARNING, "Cannot resolve bucket %d for full-text index '%s'; BM25 will use N=1",
+          e, getAssociatedBucketId(), getName());
       return null;
     }
   }
@@ -499,6 +506,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final String typeName = getTypeName();
     if (typeName == null)
       return;
+
+    // Cold-start scan: only reached when the counters are not trustworthy (unsaved/pre-feature index). Logged because on a large
+    // collection the first BM25 query that triggers it can be slow.
+    LogManager.instance().log(this, Level.INFO, "Recomputing BM25 corpus statistics for type '%s' (full scan)", null, typeName);
 
     final List<String> props = getPropertyNames();
     long docs = 0L;
@@ -691,6 +702,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Updates the persisted corpus counters when a document is indexed. {@code numDocs} is {@code rids.length}: the standard
    * indexing path passes exactly one RID per document (one document being indexed), so each RID is counted as a distinct
    * document of length {@code docLen}.
+   * <p>
+   * This runs at index time, before the transaction commits, and is NOT reversed on rollback, so a rolled-back insert leaves the
+   * counters slightly inflated. The counters feed only {@code avgDocLength} (a robust normalizer); {@link #recomputeBM25Counters}
+   * repairs any drift exactly.
    */
   private void countDocuments(final int numDocs, final int docLen) {
     if (ftMetadata != null)

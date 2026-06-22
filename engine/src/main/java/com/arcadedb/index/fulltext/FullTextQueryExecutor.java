@@ -131,6 +131,7 @@ public class FullTextQueryExecutor {
    * @return cursor with matching documents, sorted by score descending
    */
   public IndexCursor search(final String queryString, final int limit) {
+    resetState();
     try {
       // Create parser per invocation for thread safety
       final QueryParser parser = createQueryParser();
@@ -142,12 +143,24 @@ public class FullTextQueryExecutor {
   }
 
   /**
+   * Resets the per-query matching state. An executor is meant to be used for a single search, but resetting at each public entry
+   * point guarantees no state leaks between calls even if one is reused.
+   */
+  private void resetState() {
+    scoringTokens.clear();
+    collectingExclusion = false;
+    tokensOnly = false;
+    currentBoost = 1.0f;
+  }
+
+  /**
    * Runs only the query's matching logic (no scoring) to collect the scoring tokens, then returns the index's query-level BM25
    * scoring explanation (similarity, k1/b, N, avgdl, and per-term df/idf/boost). Surfaced by {@code EXPLAIN}/{@code PROFILE}.
    *
    * @param queryString the query string in Lucene syntax
    */
   public JSONObject explainScoring(final String queryString) {
+    resetState();
     try {
       final QueryParser parser = createQueryParser();
       final Query query = parser.parse(queryString);

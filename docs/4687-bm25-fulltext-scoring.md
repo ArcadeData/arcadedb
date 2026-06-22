@@ -72,8 +72,12 @@ individual rows). There is no separate explain function.
   length (`docLength`) are stored inline in the postings. A posting value is serialized as
   `compressedRID + tf(varint) + docLength(varint)` when the index uses BM25.
   - This is carried through the entire existing RID-typed pipeline (transaction staging, commit replay, compaction, page cursors)
-    by `RIDWithStats extends DatabaseRID`: every `(RID)` cast, deletion-marker bucket-sign check and `RidHashSet` membership keeps
-    working because `equals`/`hashCode` are inherited from `RID` (bucket id + offset only).
+    by `FullTextPostingRID extends DatabaseRID`: every `(RID)` cast, deletion-marker bucket-sign check and `RidHashSet`
+    membership keeps working because `equals`/`hashCode` are inherited from `RID` (bucket id + offset only).
+- **Scoring passes** — `df` (for IDF) is derived by counting a token's postings. The `SEARCH_INDEX` path (a candidate set is
+  known) scores in a single pass, collecting only candidate postings. The direct index-lookup path (no candidate set) scans each
+  token's postings twice (count `df`, then accumulate) to bound memory rather than materialize the full list; for a very common
+  term this doubles that token's read I/O. Both keep memory bounded by the result/candidate set.
   - Only the value (de)serialization in `LSMTreeIndexAbstract` changes, gated by `storeTermFrequency`. Every non-full-text LSM
     index (graph edges, unique constraints, type indexes) keeps the byte-identical RID-only format.
   - `storeTermFrequency` is derived from the persisted `similarity` (BM25 ⇒ on). It is propagated to the mutable index, its

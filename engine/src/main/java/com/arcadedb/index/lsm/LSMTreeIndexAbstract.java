@@ -556,9 +556,13 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     if (!storeTermFrequency)
       return rid;
 
+    // The tf/docLength varints are present for every stored value, so they must always be read to keep the buffer aligned.
     final int tf = (int) buffer.getUnsignedNumber();
     final int docLength = (int) buffer.getUnsignedNumber();
-    // Deletion markers (negative bucket) keep their RID identity; their statistics are meaningless and ignored downstream.
+    // Deletion markers (negative bucket id) carry no real statistics; keep them as a plain RID so nothing downstream mistakes a
+    // marker for a scorable posting (the marker's tf/docLength are 0 and are discarded here).
+    if (rid.getBucketId() < 0)
+      return rid;
     return new FullTextPostingRID(database, rid.getBucketId(), rid.getPosition(), tf, docLength);
   }
 
