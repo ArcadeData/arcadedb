@@ -950,6 +950,13 @@ public class MathExpression extends SimpleNode {
     return this.childExpressions.getFirst().executeIndexedFunction(target, context, operator, right);
   }
 
+  public Object getIndexedFunctionScoringExplain(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator, final Object right) {
+    if (this.childExpressions.size() != 1)
+      return null;
+    return this.childExpressions.getFirst().getIndexedFunctionScoringExplain(target, context, operator, right);
+  }
+
   /**
    * tests if current expression is an indexed function AND that function can also be executed without using the index
    *

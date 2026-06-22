@@ -125,7 +125,9 @@ class FullTextMultiPropertyTest extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE Article");
       database.command("sql", "CREATE PROPERTY Article.title STRING");
       database.command("sql", "CREATE PROPERTY Article.body STRING");
-      database.command("sql", "CREATE INDEX ON Article (title, body) FULL_TEXT");
+      // This test asserts exact term-coordination scores, so pin CLASSIC similarity: new full-text indexes default to BM25
+      // (issue #4687).
+      database.command("sql", "CREATE INDEX ON Article (title, body) FULL_TEXT METADATA {\"similarity\": \"CLASSIC\"}");
 
       // Doc1: matches "java" and "programming" in both title AND body
       database.command("sql", "INSERT INTO Article SET title = 'Java Programming', body = 'Learn Java programming basics'");

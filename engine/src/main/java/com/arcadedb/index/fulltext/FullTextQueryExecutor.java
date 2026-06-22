@@ -31,6 +31,7 @@ import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.PrefixQuery;
@@ -69,6 +70,15 @@ public class FullTextQueryExecutor {
   private final LSMTreeFullTextIndex   index;
   private final Analyzer               analyzer;
   private final FullTextIndexMetadata  metadata;
+
+  // BM25 scoring (issue #4687): the positive scoring tokens collected during matching, mapped to their field boost. Populated
+  // only when the index uses BM25 similarity and only for positive clauses (never for MUST_NOT exclusion). A new executor is
+  // created per search, so these instance fields are not shared across queries.
+  private final Map<String, Float> scoringTokens     = new HashMap<>();
+  private       boolean            collectingExclusion = false;
+  // The compounded caret boost (e.g. `title:java^3`) of the BoostQuery currently being descended, multiplied into recorded
+  // scoring tokens. Lucene's QueryParser already parses `^` into a BoostQuery; this is where that boost takes effect for BM25.
+  private       float              currentBoost        = 1.0f;
 
   /**
    * Creates a new FullTextQueryExecutor for the given index.
@@ -116,6 +126,24 @@ public class FullTextQueryExecutor {
     }
   }
 
+  /**
+   * Runs only the query's matching logic (no scoring) to collect the scoring tokens, then returns the index's query-level BM25
+   * scoring explanation (similarity, k1/b, N, avgdl, and per-term df/idf/boost). Surfaced by {@code EXPLAIN}/{@code PROFILE}.
+   *
+   * @param queryString the query string in Lucene syntax
+   */
+  public com.arcadedb.serializer.json.JSONObject explainScoring(final String queryString) {
+    try {
+      final QueryParser parser = createQueryParser();
+      final Query query = parser.parse(queryString);
+      final Map<RID, AtomicInteger> scoreMap = new HashMap<>();
+      collectMatches(query, scoreMap, new HashSet<>());
+      return index.explainScoring(scoringTokens);
+    } catch (final ParseException e) {
+      throw new IndexException("Invalid search query: " + queryString, e);
+    }
+  }
+
   private IndexCursor executeQuery(final Query query, final int limit) {
     final Map<RID, AtomicInteger> scoreMap = new HashMap<>();
     final Set<RID> excluded = new HashSet<>();
@@ -126,6 +154,11 @@ public class FullTextQueryExecutor {
     for (final RID rid : excluded) {
       scoreMap.remove(rid);
     }
+
+    // BM25 path: collectMatches above determined WHICH documents match (boolean/phrase/wildcard semantics). Re-rank that
+    // candidate set with BM25 using the scoring tokens captured during matching.
+    if (index.isBM25())
+      return index.scoreCandidatesBM25(scoreMap.keySet(), scoringTokens, new Object[] {}, limit);
 
     final ArrayList<IndexCursorEntry> list = new ArrayList<>(scoreMap.size());
 
@@ -212,6 +245,15 @@ public class FullTextQueryExecutor {
         collectAllIndexedRids(scoreMap);
       }
 
+    } else if (query instanceof BoostQuery bq) {
+      // Caret boost, e.g. `title:java^3`. Compound nested boosts and descend into the wrapped query.
+      final float saved = currentBoost;
+      currentBoost *= bq.getBoost();
+      try {
+        collectMatches(bq.getQuery(), scoreMap, excluded);
+      } finally {
+        currentBoost = saved;
+      }
     } else if (query instanceof TermQuery) {
       collectTermMatches((TermQuery) query, scoreMap);
     } else if (query instanceof PhraseQuery) {
@@ -237,10 +279,39 @@ public class FullTextQueryExecutor {
     }
     // Delegate every other leaf query type to collectMatches so any positive collector
     // automatically has matching exclusion support; the empty excluded set isolates this scratch
-    // collection from the caller's accumulator.
-    final Map<RID, AtomicInteger> tempMap = new HashMap<>();
-    collectMatches(query, tempMap, new HashSet<>());
-    excluded.addAll(tempMap.keySet());
+    // collection from the caller's accumulator. Tokens matched here are negative (MUST_NOT) and must
+    // not contribute to BM25 scoring, so suppress token capture for the duration of the scan.
+    final boolean previous = collectingExclusion;
+    collectingExclusion = true;
+    try {
+      final Map<RID, AtomicInteger> tempMap = new HashMap<>();
+      collectMatches(query, tempMap, new HashSet<>());
+      excluded.addAll(tempMap.keySet());
+    } finally {
+      collectingExclusion = previous;
+    }
+  }
+
+  /**
+   * Records a positive scoring token (in its stored-key form) and its field boost for the later BM25 re-ranking pass. No-op when
+   * the index is not BM25 or while collecting MUST_NOT exclusion terms. When a token is seen more than once the highest boost
+   * wins.
+   */
+  private void recordScoringToken(final String storedKey, final float boost) {
+    if (collectingExclusion || !index.isBM25())
+      return;
+    // Combine the per-field boost with the caret boost in effect for this part of the query.
+    scoringTokens.merge(storedKey, boost * currentBoost, Math::max);
+  }
+
+  /**
+   * Returns the BM25 field boost for a query field: the configured per-field boost for an explicit field, or 1.0 for the default
+   * (unqualified) {@code content} field.
+   */
+  private float boostFor(final String field) {
+    if (field != null && !field.isEmpty() && !"content".equals(field) && metadata != null)
+      return metadata.getFieldBoost(field);
+    return 1.0f;
   }
 
   /**
@@ -272,6 +343,8 @@ public class FullTextQueryExecutor {
       searchKey = text;
     }
 
+    recordScoringToken(searchKey, boostFor(field));
+
     final IndexCursor cursor = index.get(new Object[] { searchKey });
     while (cursor.hasNext()) {
       final RID rid = cursor.next().getIdentity();
@@ -289,6 +362,7 @@ public class FullTextQueryExecutor {
     Map<RID, AtomicInteger> intersection = null;
 
     for (final Term term : terms) {
+      recordScoringToken(term.text(), 1.0f);
       final Map<RID, AtomicInteger> termMatches = new HashMap<>();
       final IndexCursor cursor = index.get(new Object[] { term.text() });
       while (cursor.hasNext()) {
@@ -316,7 +390,7 @@ public class FullTextQueryExecutor {
       return;
 
     final String searchPrefix = buildSearchKey(field, prefix);
-    iterateAndMatch(searchPrefix, key -> key.startsWith(searchPrefix), scoreMap);
+    iterateAndMatch(searchPrefix, key -> key.startsWith(searchPrefix), scoreMap, boostFor(field));
   }
 
   private void collectWildcardMatches(final WildcardQuery query, final Map<RID, AtomicInteger> scoreMap) {
@@ -341,7 +415,7 @@ public class FullTextQueryExecutor {
         if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
           return false;
         return regex.matcher(token).matches();
-      }, scoreMap);
+      }, scoreMap, boostFor(field));
     } else {
       // Range scan starting at the literal prefix and stop when keys no longer share it
       iterateAndMatch(searchPrefix, key -> {
@@ -351,7 +425,7 @@ public class FullTextQueryExecutor {
         if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
           return false;
         return regex.matcher(token).matches();
-      }, scoreMap);
+      }, scoreMap, boostFor(field));
     }
   }
 
@@ -374,7 +448,7 @@ public class FullTextQueryExecutor {
       if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
         return false;
       return TextLevenshteinDistance.levenshteinDistance(token, term) <= maxEdits;
-    }, scoreMap);
+    }, scoreMap, boostFor(field));
   }
 
   private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
@@ -399,7 +473,7 @@ public class FullTextQueryExecutor {
       if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
         return false;
       return regex.matcher(token).matches();
-    }, scoreMap);
+    }, scoreMap, boostFor(field));
   }
 
   /**
@@ -408,7 +482,8 @@ public class FullTextQueryExecutor {
    * and a non-prefix means we've left the relevant range). When {@code startKey} is null, performs a full
    * scan and applies the matcher to every key.
    */
-  private void iterateAndMatch(final String startKey, final KeyMatcher matcher, final Map<RID, AtomicInteger> scoreMap) {
+  private void iterateAndMatch(final String startKey, final KeyMatcher matcher, final Map<RID, AtomicInteger> scoreMap,
+      final float boost) {
     final boolean rangeScan = startKey != null;
     final IndexCursor cursor = index.iterateUnderlying(true,
         rangeScan ? new String[] { startKey } : null, true);
@@ -419,6 +494,7 @@ public class FullTextQueryExecutor {
         continue;
       final String key = keys[0].toString();
       if (matcher.matches(key)) {
+        recordScoringToken(key, boost);
         scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
       } else if (rangeScan && startKey != null && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
         break;

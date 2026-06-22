@@ -253,6 +253,13 @@ public class Expression extends SimpleNode {
     return null;
   }
 
+  public Object getIndexedFunctionScoringExplain(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator, final Object right) {
+    if (mathExpression != null)
+      return mathExpression.getIndexedFunctionScoringExplain(target, context, operator, right);
+    return null;
+  }
+
   /**
    * tests if current expression is an indexed function AND that function can also be executed without using the index
    *

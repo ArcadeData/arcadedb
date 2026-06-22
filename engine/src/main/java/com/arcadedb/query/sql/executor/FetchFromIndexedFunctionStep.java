@@ -101,6 +101,15 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
     if (context.isProfiling()) {
       result += " (" + getCostFormatted() + ")";
     }
+    // Surface BM25 scoring metadata (similarity, k1/b, N, avgdl, per-term df/idf) for full-text SEARCH_INDEX conditions so it can
+    // be inspected via EXPLAIN/PROFILE. Best-effort: never let an explain failure break the plan rendering.
+    try {
+      final Object scoring = functionCondition.getIndexedFunctionScoringExplain(queryTarget, context);
+      if (scoring != null)
+        result += "\n" + ExecutionStepInternal.getIndent(depth, indent) + "  SCORING " + scoring;
+    } catch (final Exception ignore) {
+      // ignore: scoring metadata is informational only
+    }
     return result;
   }
 

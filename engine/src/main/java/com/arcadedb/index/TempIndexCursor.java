@@ -50,6 +50,11 @@ public class TempIndexCursor implements IndexCursor {
   }
 
   @Override
+  public float getFloatScore() {
+    return current != null ? current.floatScore : 0f;
+  }
+
+  @Override
   public boolean hasNext() {
     return iterator.hasNext();
   }

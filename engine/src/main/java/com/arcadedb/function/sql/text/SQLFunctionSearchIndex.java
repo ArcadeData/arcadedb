@@ -85,9 +85,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     // Cache key for this specific search
     final String cacheKey = "search_index:" + indexName + ":" + queryString;
 
-    // Try to get cached results (Map of RID -> score)
+    // Try to get cached results (Map of RID -> score). Scores are floats so BM25 relevance is preserved; CLASSIC coordination
+    // scores widen to float losslessly.
     @SuppressWarnings("unchecked")
-    Map<RID, Integer> allResults = (Map<RID, Integer>) iContext.getVariable(cacheKey);
+    Map<RID, Float> allResults = (Map<RID, Float>) iContext.getVariable(cacheKey);
 
     if (allResults == null) {
       // First execution - perform the actual search
@@ -105,8 +106,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
       if (matches) {
         // Store the score for this record in the context variable $score
         // This allows $score projection to work in SELECT
-        final int recordScore = allResults.get(rid);
-        iContext.setVariable("$score", (float) recordScore);
+        iContext.setVariable("$score", allResults.get(rid));
       } else {
         // Clear the score for non-matching records
         iContext.setVariable("$score", 0f);
@@ -117,10 +117,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
 
     // Return cursor with all results (used when called without a current record)
     final List<IndexCursorEntry> entries = new ArrayList<>();
-    for (final Map.Entry<RID, Integer> entry : allResults.entrySet()) {
-      entries.add(new IndexCursorEntry(new Object[] { queryString }, entry.getKey(), entry.getValue()));
+    for (final Map.Entry<RID, Float> entry : allResults.entrySet()) {
+      entries.add(new IndexCursorEntry(new Object[] { queryString }, entry.getKey(), entry.getValue().floatValue()));
     }
-    entries.sort((a, b) -> Integer.compare(b.score, a.score));
+    entries.sort((a, b) -> Float.compare(b.floatScore, a.floatScore));
 
     return new TempIndexCursor(entries);
   }
@@ -177,7 +177,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     // Perform the search and cache results
     final String cacheKey = "search_index:" + indexName + ":" + queryString;
     @SuppressWarnings("unchecked")
-    Map<RID, Integer> allResults = (Map<RID, Integer>) context.getVariable(cacheKey);
+    Map<RID, Float> allResults = (Map<RID, Float>) context.getVariable(cacheKey);
 
     if (allResults == null) {
       allResults = performSearch(indexName, queryString, context.getDatabase());
@@ -185,13 +185,13 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     }
 
     // Sort RIDs by score descending for optimal ORDER BY $score performance
-    final List<Map.Entry<RID, Integer>> sorted = new ArrayList<>(allResults.entrySet());
-    sorted.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+    final List<Map.Entry<RID, Float>> sorted = new ArrayList<>(allResults.entrySet());
+    sorted.sort((a, b) -> Float.compare(b.getValue(), a.getValue()));
 
     // Fetch records by RID
     final DatabaseInternal db = (DatabaseInternal) context.getDatabase();
     final List<Record> records = new ArrayList<>(sorted.size());
-    for (final Map.Entry<RID, Integer> entry : sorted) {
+    for (final Map.Entry<RID, Float> entry : sorted) {
       try {
         final Record record = db.lookupByRID(entry.getKey(), true);
         if (record != null)
@@ -204,6 +204,26 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   }
 
   @Override
+  public Object getScoringExplain(final FromClause target, final BinaryCompareOperator operator, final Object rightValue,
+      final CommandContext context, final Expression[] oExpressions) {
+    if (oExpressions == null || oExpressions.length < 2)
+      return null;
+    final String indexName = resolveStringParam(oExpressions[0], context);
+    final String queryString = resolveStringParam(oExpressions[1], context);
+    if (indexName == null || queryString == null)
+      return null;
+
+    final Index index = context.getDatabase().getSchema().getIndexByName(indexName);
+    if (!(index instanceof final TypeIndex typeIndex))
+      return null;
+
+    for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
+      if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex)
+        return new FullTextQueryExecutor(ftIndex).explainScoring(queryString);
+    return null;
+  }
+
+  @Override
   public String getSyntax() {
     return "SEARCH_INDEX(<index-name>, <query>)";
   }
@@ -213,8 +233,8 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   /**
    * Performs the full-text search across all bucket indexes and returns a map of RID to score.
    */
-  private Map<RID, Integer> performSearch(final String indexName, final String queryString, final Database database) {
-    final Map<RID, Integer> allResults = new HashMap<>();
+  private Map<RID, Float> performSearch(final String indexName, final String queryString, final Database database) {
+    final Map<RID, Float> allResults = new HashMap<>();
 
     final Index index = database.getSchema().getIndexByName(indexName);
 
@@ -237,8 +257,8 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
 
         while (cursor.hasNext()) {
           final Identifiable match = cursor.next();
-          final int score = cursor.getScore();
-          allResults.merge(match.getIdentity(), score, Integer::sum);
+          final float score = cursor.getFloatScore();
+          allResults.merge(match.getIdentity(), score, Float::sum);
         }
       }
     }

@@ -412,7 +412,9 @@ class LSMTreeFullTextIndexTest extends TestHelper {
       database.command("sql", "CREATE DOCUMENT TYPE Article");
       database.command("sql", "CREATE PROPERTY Article.title STRING");
       database.command("sql", "CREATE PROPERTY Article.content STRING");
-      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT");
+      // This test validates the legacy term-coordination (match-count) scoring, so pin CLASSIC similarity explicitly: new
+      // full-text indexes now default to BM25 (issue #4687).
+      database.command("sql", "CREATE INDEX ON Article (content) FULL_TEXT METADATA {\"similarity\": \"CLASSIC\"}");
 
       // Insert documents with varying keyword matches
       // Score = number of search keywords that match in the document

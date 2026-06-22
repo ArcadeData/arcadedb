@@ -98,6 +98,12 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
     TrackableBinary pageBuffer = currentPageBuffer;
 
+    // True when this key starts on a page already holding the PREVIOUS key's values (a continuation page). If this key then
+    // overflows, its first values would remain on that shared page, whose root entry is keyed by the previous key. The root
+    // index is positional (one entry per leaf page) and cannot index a single page under two keys, so those values would be
+    // unreachable on read. To avoid it we force an overflowing key to start on a fresh page it fully owns.
+    final boolean startedOnContinuation = currentPage != null && getCount(currentPage) > 0;
+
     if (currentPage == null) {
       // CREATE A NEW PAGE
       currentPage = createNewPage(compactedPageNumberOfSeries.getAndIncrement());
@@ -115,6 +121,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     int freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE) + INT_SERIALIZED_SIZE);
 
     RID[] values = rids;
+    boolean firstIteration = true;
 
     // REPEAT TO WRITE ALL THE RIDS (SPLIT THEM IF THEY DON'T FIT IN THE CURRENT PAGE)
     // Termination invariant: each iteration either breaks (all values written) or
@@ -126,8 +133,12 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       int writtenValues = writeEntryMultipleValues(keyValueContent, convertedKeys, values, freeSpaceInPage,
           currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId());
 
-      if (writtenValues == 0) {
-        // NO SPACE LEFT, CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
+      // No room at all, OR this key would split across a shared continuation page (see startedOnContinuation): in both cases
+      // move to a fresh page before committing anything for this key. The continuation page (with only the previous keys'
+      // values) is flushed as-is; this key's values then live entirely on pages it owns, keeping the positional root index
+      // consistent.
+      if (writtenValues == 0 || (firstIteration && startedOnContinuation && writtenValues < values.length)) {
+        // CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
         database.getPageManager().updatePageVersion(currentPage, true);
         database.getPageManager().writePages(List.of(currentPage), true);
 
@@ -145,6 +156,8 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         writtenValues = writeEntryMultipleValues(keyValueContent, convertedKeys, values, freeSpaceInPage,
             currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId());
       }
+
+      firstIteration = false;
 
       keyValueFreePosition -= keyValueContent.size();
 

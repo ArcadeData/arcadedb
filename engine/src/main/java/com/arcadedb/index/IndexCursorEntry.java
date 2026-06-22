@@ -27,11 +27,20 @@ public class IndexCursorEntry {
   public final Object[]     keys;
   public final Identifiable record;
   public final int          score;
+  public final float        floatScore;
 
   public IndexCursorEntry(final Object[] keys, final Identifiable record, final int score) {
     this.keys = keys;
     this.record = record;
     this.score = score;
+    this.floatScore = score;
+  }
+
+  public IndexCursorEntry(final Object[] keys, final Identifiable record, final float floatScore) {
+    this.keys = keys;
+    this.record = record;
+    this.score = Math.round(floatScore);
+    this.floatScore = floatScore;
   }
 
   @Override

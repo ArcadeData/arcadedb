@@ -44,7 +44,19 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public static final String DEFAULT_ANALYZER = "org.apache.lucene.analysis.standard.StandardAnalyzer";
 
+  /**
+   * BM25 similarity: ranks with term-frequency, inverse document frequency and document-length normalization. Default for newly
+   * created full-text indexes.
+   */
+  public static final String SIMILARITY_BM25 = "BM25";
+
+  /**
+   * Legacy term-coordination (match-count) similarity. Default for indexes created before BM25 support, preserving their ranking.
+   */
+  public static final String SIMILARITY_CLASSIC = "CLASSIC";
+
   private static final String ANALYZER_SUFFIX = "_analyzer";
+  private static final String BOOST_SUFFIX    = "_boost";
 
   private String              analyzerClass        = DEFAULT_ANALYZER;
   private String              indexAnalyzerClass   = null;
@@ -52,6 +64,17 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private boolean             allowLeadingWildcard = false;
   private String              defaultOperator      = "OR";
   private Map<String, String> fieldAnalyzers       = new HashMap<>();
+
+  // BM25 SCORING CONFIGURATION
+  private String             similarity  = SIMILARITY_BM25;
+  private float              bm25K1      = 1.2f;
+  private float              bm25B       = 0.75f;
+  private Map<String, Float> fieldBoosts = new HashMap<>();
+
+  // PERSISTED CORPUS STATISTICS FOR avgdl (live document count and sum of document lengths)
+  private long    totalDocs     = 0L;
+  private long    sumDocLength  = 0L;
+  private boolean countersValid = false;
 
   /**
    * Creates a new FullTextIndexMetadata instance.
@@ -84,13 +107,65 @@ public class FullTextIndexMetadata extends IndexMetadata {
     if (metadata.has("defaultOperator"))
       this.defaultOperator = metadata.getString("defaultOperator");
 
-    // Parse per-field analyzers (pattern: *_analyzer)
+    // An index persisted before BM25 support has no "similarity" key: keep it on the legacy CLASSIC scoring so an upgrade does
+    // not silently change ranking. A freshly created index (or one created with this feature) carries the key explicitly.
+    this.similarity = metadata.has("similarity") ? metadata.getString("similarity").toUpperCase() : SIMILARITY_CLASSIC;
+    this.bm25K1 = metadata.getFloat("bm25_k1", bm25K1);
+    this.bm25B = metadata.getFloat("bm25_b", bm25B);
+    this.totalDocs = metadata.getLong("ft_totalDocs", 0L);
+    this.sumDocLength = metadata.getLong("ft_sumDocLength", 0L);
+    this.countersValid = metadata.getBoolean("ft_countersValid", false);
+
+    // Parse per-field analyzers (pattern: *_analyzer) and per-field boosts (pattern: *_boost)
     for (final String key : metadata.keySet()) {
       if (key.endsWith(ANALYZER_SUFFIX) && !"analyzer".equals(key) && !"index_analyzer".equals(key) && !"query_analyzer".equals(key)) {
         final String fieldName = key.substring(0, key.length() - ANALYZER_SUFFIX.length());
         this.fieldAnalyzers.put(fieldName, metadata.getString(key));
+      } else if (key.endsWith(BOOST_SUFFIX)) {
+        final String fieldName = key.substring(0, key.length() - BOOST_SUFFIX.length());
+        this.fieldBoosts.put(fieldName, metadata.getFloat(key, 1.0f));
       }
     }
+  }
+
+  /**
+   * Writes the full-text-specific configuration and persisted statistics into the given JSON object, which already carries the
+   * common index keys (type, bucket, properties...). Only non-default values are emitted to keep the schema compact, except the
+   * corpus counters which are always written when valid.
+   *
+   * @param metadata the JSON object to populate
+   *
+   * @return the same JSON object, for chaining
+   */
+  public JSONObject writeToJSON(final JSONObject metadata) {
+    if (!DEFAULT_ANALYZER.equals(analyzerClass))
+      metadata.put("analyzer", analyzerClass);
+    if (indexAnalyzerClass != null)
+      metadata.put("index_analyzer", indexAnalyzerClass);
+    if (queryAnalyzerClass != null)
+      metadata.put("query_analyzer", queryAnalyzerClass);
+    if (allowLeadingWildcard)
+      metadata.put("allowLeadingWildcard", true);
+    if (!"OR".equalsIgnoreCase(defaultOperator))
+      metadata.put("defaultOperator", defaultOperator);
+
+    for (final Map.Entry<String, String> entry : fieldAnalyzers.entrySet())
+      metadata.put(entry.getKey() + ANALYZER_SUFFIX, entry.getValue());
+
+    metadata.put("similarity", similarity);
+    if (isBM25()) {
+      metadata.put("bm25_k1", bm25K1);
+      metadata.put("bm25_b", bm25B);
+      for (final Map.Entry<String, Float> entry : fieldBoosts.entrySet())
+        metadata.put(entry.getKey() + BOOST_SUFFIX, entry.getValue());
+    }
+
+    if (countersValid) {
+      metadata.put("ft_totalDocs", totalDocs);
+      metadata.put("ft_sumDocLength", sumDocLength);
+      metadata.put("ft_countersValid", true);
+    }
+    return metadata;
   }
 
   /**
@@ -213,5 +288,151 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public void setFieldAnalyzer(final String fieldName, final String analyzerClass) {
     this.fieldAnalyzers.put(fieldName, analyzerClass);
+  }
+
+  /**
+   * Returns the configured similarity mode ("BM25" or "CLASSIC").
+   */
+  public String getSimilarity() {
+    return similarity;
+  }
+
+  /**
+   * Sets the similarity mode. Accepts "BM25" or "CLASSIC" (case-insensitive).
+   */
+  public void setSimilarity(final String similarity) {
+    this.similarity = similarity != null ? similarity.toUpperCase() : SIMILARITY_BM25;
+  }
+
+  /**
+   * Returns true if this index ranks with BM25 scoring.
+   */
+  public boolean isBM25() {
+    return SIMILARITY_BM25.equalsIgnoreCase(similarity);
+  }
+
+  /**
+   * Returns the BM25 term-frequency saturation parameter k1.
+   */
+  public float getBm25K1() {
+    return bm25K1;
+  }
+
+  /**
+   * Sets the BM25 term-frequency saturation parameter k1.
+   */
+  public void setBm25K1(final float bm25K1) {
+    this.bm25K1 = bm25K1;
+  }
+
+  /**
+   * Returns the BM25 document-length normalization parameter b.
+   */
+  public float getBm25B() {
+    return bm25B;
+  }
+
+  /**
+   * Sets the BM25 document-length normalization parameter b.
+   */
+  public void setBm25B(final float bm25B) {
+    this.bm25B = bm25B;
+  }
+
+  /**
+   * Returns the boost multiplier for a field, or 1.0 when no boost is configured.
+   *
+   * @param fieldName the field name
+   */
+  public float getFieldBoost(final String fieldName) {
+    return fieldBoosts.getOrDefault(fieldName, 1.0f);
+  }
+
+  /**
+   * Sets a boost multiplier for a specific field. Boosts greater than 1.0 increase the field's contribution to the BM25 score.
+   *
+   * @param fieldName the field name
+   * @param boost     the multiplier
+   */
+  public void setFieldBoost(final String fieldName, final float boost) {
+    this.fieldBoosts.put(fieldName, boost);
+  }
+
+  /**
+   * Returns an unmodifiable view of the per-field boost map.
+   */
+  public Map<String, Float> getFieldBoosts() {
+    return CollectionUtils.immutableMap(fieldBoosts);
+  }
+
+  /**
+   * Returns the persisted live document count used for IDF.
+   */
+  public long getTotalDocs() {
+    return totalDocs;
+  }
+
+  /**
+   * Returns the persisted sum of document lengths used to compute the average document length.
+   */
+  public long getSumDocLength() {
+    return sumDocLength;
+  }
+
+  /**
+   * Returns true when the persisted corpus counters are trustworthy. When false the average document length must be recomputed
+   * (e.g. for an index that predates BM25 support).
+   */
+  public boolean isCountersValid() {
+    return countersValid;
+  }
+
+  /**
+   * Marks the persisted corpus counters as valid (or invalid).
+   */
+  public void setCountersValid(final boolean countersValid) {
+    this.countersValid = countersValid;
+  }
+
+  /**
+   * Sets the persisted corpus counters in one shot, marking them valid.
+   *
+   * @param totalDocs    live document count
+   * @param sumDocLength sum of document lengths
+   */
+  public void setCounters(final long totalDocs, final long sumDocLength) {
+    this.totalDocs = totalDocs;
+    this.sumDocLength = sumDocLength;
+    this.countersValid = true;
+  }
+
+  /**
+   * Records a newly indexed document in the corpus counters.
+   *
+   * @param docLength number of analyzed tokens of the document
+   */
+  public void addDocument(final long docLength) {
+    ++totalDocs;
+    sumDocLength += docLength;
+  }
+
+  /**
+   * Removes a document from the corpus counters, clamping at zero to stay consistent under at-least-once removals.
+   *
+   * @param docLength number of analyzed tokens of the document
+   */
+  public void removeDocument(final long docLength) {
+    if (totalDocs > 0)
+      --totalDocs;
+    sumDocLength -= docLength;
+    if (sumDocLength < 0)
+      sumDocLength = 0;
+  }
+
+  /**
+   * Returns the average document length across the collection, or 1.0 when no statistics are available.
+   */
+  public double avgDocLength() {
+    return totalDocs > 0 ? (double) sumDocLength / totalDocs : 1.0;
   }
 }

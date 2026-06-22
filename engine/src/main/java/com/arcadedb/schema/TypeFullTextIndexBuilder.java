@@ -145,4 +145,42 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
   public void withMetadata(final JSONObject json) {
     ((FullTextIndexMetadata) metadata).fromJSON(json);
   }
+
+  /**
+   * Sets the similarity (ranking) model: {@code "BM25"} (default for new indexes) or {@code "CLASSIC"} (legacy term coordination).
+   *
+   * @param similarity the similarity name
+   * @return this builder for chaining
+   */
+  public TypeFullTextIndexBuilder withSimilarity(final String similarity) {
+    ((FullTextIndexMetadata) metadata).setSimilarity(similarity);
+    return this;
+  }
+
+  /**
+   * Enables BM25 similarity with the given parameters.
+   *
+   * @param k1 term-frequency saturation parameter (typical 1.2)
+   * @param b  document-length normalization parameter in [0,1] (typical 0.75)
+   * @return this builder for chaining
+   */
+  public TypeFullTextIndexBuilder withBM25(final float k1, final float b) {
+    final FullTextIndexMetadata m = (FullTextIndexMetadata) metadata;
+    m.setSimilarity(FullTextIndexMetadata.SIMILARITY_BM25);
+    m.setBm25K1(k1);
+    m.setBm25B(b);
+    return this;
+  }
+
+  /**
+   * Sets a per-field boost multiplier applied to BM25 contributions of field-qualified matches on that field.
+   *
+   * @param fieldName the field name
+   * @param boost     the multiplier (> 1.0 increases relevance)
+   * @return this builder for chaining
+   */
+  public TypeFullTextIndexBuilder withFieldBoost(final String fieldName, final float boost) {
+    ((FullTextIndexMetadata) metadata).setFieldBoost(fieldName, boost);
+    return this;
+  }
 }

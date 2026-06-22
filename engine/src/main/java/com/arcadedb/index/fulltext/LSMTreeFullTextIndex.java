@@ -34,11 +34,13 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.lsm.FullTextPostingRID;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
@@ -50,6 +52,7 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -98,10 +101,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
               "Full text index can only be defined on STRING properties, found: " + keyType);
       }
 
-      // Get metadata if available
-      FullTextIndexMetadata ftMetadata = null;
-      if (builder.getMetadata() instanceof FullTextIndexMetadata) {
-        ftMetadata = (FullTextIndexMetadata) builder.getMetadata();
+      // Get metadata if available. New full-text indexes default to BM25 similarity (issue #4687): when the user did not supply a
+      // FullTextIndexMetadata, synthesize one carrying the BM25 defaults so freshly created indexes rank with BM25 out of the box.
+      final FullTextIndexMetadata ftMetadata;
+      if (builder.getMetadata() instanceof FullTextIndexMetadata m)
+        ftMetadata = m;
+      else {
+        final IndexMetadata base = builder.getMetadata();
+        ftMetadata = new FullTextIndexMetadata(base.typeName, base.propertyNames.toArray(new String[0]),
+            base.associatedBucketId);
       }
 
       return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
@@ -124,6 +132,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.ftMetadata = metadata;
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
+    if (metadata != null && metadata.isBM25())
+      index.setStoreTermFrequency(true);
   }
 
   /**
@@ -136,6 +146,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
     underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, nullStrategy);
+    if (metadata != null && metadata.isBM25()) {
+      underlyingIndex.setStoreTermFrequency(true);
+      // A brand-new index starts empty: the corpus counters are trivially valid (0 docs, 0 tokens).
+      if (!metadata.isCountersValid())
+        metadata.setCounters(0L, 0L);
+    }
   }
 
   /**
@@ -175,6 +191,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
+    if (underlyingIndex.isStoreTermFrequency())
+      return getBM25(keys, limit);
+
     final HashMap<RID, AtomicInteger> scoreMap = new HashMap<>();
 
     // Parse query text to handle field-specific terms (field:term)
@@ -222,6 +241,247 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       });
 
     return new TempIndexCursor(list);
+  }
+
+  /**
+   * BM25 scoring path. For each analyzed query term it reads the postings (which carry the per-document term frequency and
+   * document length as {@link FullTextPostingRID}), computes the term IDF from the document frequency, and accumulates the BM25
+   * contribution per document, applying the per-field boost for field-qualified terms.
+   */
+  private IndexCursor getBM25(final Object[] keys, final int limit) {
+    final String queryText = keys.length > 0 && keys[0] != null ? keys[0].toString() : "";
+    final List<QueryTerm> queryTerms = parseQueryTerms(queryText);
+
+    ensureCounters();
+    final long totalDocs = resolveTotalDocs();
+    final double avgdl = resolveAvgDocLength();
+    final double k1 = ftMetadata.getBm25K1();
+    final double b = ftMetadata.getBm25B();
+
+    final Map<RID, Float> scoreMap = new HashMap<>();
+
+    for (final QueryTerm term : queryTerms) {
+      final List<String> keywords = analyzeText(queryAnalyzer, new Object[] { term.value });
+      final float boost = term.fieldName != null ? ftMetadata.getFieldBoost(term.fieldName) : 1.0f;
+
+      for (final String k : keywords) {
+        final String storedKey = term.fieldName != null ? term.fieldName + ":" + k : k;
+        final IndexCursor postings = underlyingIndex.get(new String[] { storedKey });
+
+        // Collect the postings first so the document frequency (and therefore the IDF) is known before scoring.
+        final List<FullTextPostingRID> termPostings = new ArrayList<>();
+        while (postings.hasNext()) {
+          final Identifiable id = postings.next();
+          if (id instanceof FullTextPostingRID s)
+            termPostings.add(s);
+        }
+
+        final long df = termPostings.size();
+        if (df == 0)
+          continue;
+
+        final double idf = BM25Scorer.idf(totalDocs, df);
+        for (final FullTextPostingRID s : termPostings) {
+          final double contribution = BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost;
+          scoreMap.merge(s.getIdentity(), (float) contribution, Float::sum);
+        }
+      }
+    }
+
+    final ArrayList<IndexCursorEntry> list = new ArrayList<>(scoreMap.size());
+    for (final Map.Entry<RID, Float> entry : scoreMap.entrySet())
+      list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().floatValue()));
+
+    if (list.size() > 1)
+      list.sort((o1, o2) -> Float.compare(o2.floatScore, o1.floatScore));
+
+    if (limit > -1 && list.size() > limit)
+      return new TempIndexCursor(list.subList(0, limit));
+
+    return new TempIndexCursor(list);
+  }
+
+  /**
+   * Returns true when this index ranks with BM25 (i.e. it stores per-posting term frequency).
+   */
+  public boolean isBM25() {
+    return underlyingIndex.isStoreTermFrequency();
+  }
+
+  /**
+   * Scores a set of candidate documents (already matched by the boolean/structural part of a query) with BM25, summing the
+   * contribution of every scoring token. Each token is looked up once to derive its document frequency (and therefore IDF); only
+   * candidates are scored. Used by {@link FullTextQueryExecutor} so the SQL {@code SEARCH_INDEX} path ranks with BM25 while
+   * preserving Lucene boolean/phrase/wildcard matching semantics.
+   *
+   * @param candidates  the documents that satisfy the query's matching logic
+   * @param tokenBoosts the scoring tokens (stored-key form) mapped to their field boost
+   * @param keys        the original query keys (carried into the result entries)
+   * @param limit       maximum number of results (-1 for unlimited)
+   */
+  public IndexCursor scoreCandidatesBM25(final Set<RID> candidates, final Map<String, Float> tokenBoosts, final Object[] keys,
+      final int limit) {
+    ensureCounters();
+    final long totalDocs = resolveTotalDocs();
+    final double avgdl = resolveAvgDocLength();
+    final double k1 = ftMetadata.getBm25K1();
+    final double b = ftMetadata.getBm25B();
+
+    final Map<RID, Float> scoreMap = new HashMap<>(candidates.size());
+    for (final RID c : candidates)
+      scoreMap.put(c, 0.0f);
+
+    for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
+      final IndexCursor postings = underlyingIndex.get(new String[] { e.getKey() });
+      final List<FullTextPostingRID> termPostings = new ArrayList<>();
+      while (postings.hasNext()) {
+        final Identifiable id = postings.next();
+        if (id instanceof FullTextPostingRID s)
+          termPostings.add(s);
+      }
+      final long df = termPostings.size();
+      if (df == 0)
+        continue;
+      final double idf = BM25Scorer.idf(totalDocs, df);
+      final float boost = e.getValue();
+      for (final FullTextPostingRID s : termPostings) {
+        final RID rid = s.getIdentity();
+        if (!scoreMap.containsKey(rid))
+          continue;
+        scoreMap.merge(rid, (float) (BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost), Float::sum);
+      }
+    }
+
+    final ArrayList<IndexCursorEntry> list = new ArrayList<>(scoreMap.size());
+    for (final Map.Entry<RID, Float> entry : scoreMap.entrySet())
+      list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().floatValue()));
+
+    list.sort((o1, o2) -> {
+      final int cmp = Float.compare(o2.floatScore, o1.floatScore);
+      if (cmp != 0)
+        return cmp;
+      return o1.record.getIdentity().compareTo(o2.record.getIdentity());
+    });
+
+    if (limit > 0 && list.size() > limit)
+      return new TempIndexCursor(list.subList(0, limit));
+    return new TempIndexCursor(list);
+  }
+
+  /**
+   * Builds the query-level BM25 scoring explanation surfaced by {@code EXPLAIN}/{@code PROFILE}: the similarity mode, the BM25
+   * parameters (k1, b), the corpus statistics (N, avgdl) and, for each scoring token, its document frequency, IDF and applied
+   * boost. This is the "why are the scores what they are" view; per-document contributions are intentionally not included since a
+   * plan describes the query, not individual rows.
+   *
+   * @param tokenBoosts the scoring tokens (stored-key form) mapped to their field boost
+   */
+  public JSONObject explainScoring(final Map<String, Float> tokenBoosts) {
+    final JSONObject json = new JSONObject();
+    if (!isBM25()) {
+      json.put("similarity", FullTextIndexMetadata.SIMILARITY_CLASSIC);
+      return json;
+    }
+
+    ensureCounters();
+    final long totalDocs = resolveTotalDocs();
+    final double avgdl = resolveAvgDocLength();
+    json.put("similarity", FullTextIndexMetadata.SIMILARITY_BM25);
+    json.put("k1", ftMetadata.getBm25K1());
+    json.put("b", ftMetadata.getBm25B());
+    json.put("totalDocs", totalDocs);
+    json.put("avgDocLength", avgdl);
+
+    final JSONArray terms = new JSONArray();
+    for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
+      final IndexCursor postings = underlyingIndex.get(new String[] { e.getKey() });
+      long df = 0;
+      while (postings.hasNext()) {
+        postings.next();
+        ++df;
+      }
+      terms.put(new JSONObject().put("term", e.getKey()).put("df", df).put("idf", BM25Scorer.idf(totalDocs, df))
+          .put("boost", e.getValue()));
+    }
+    json.put("terms", terms);
+    return json;
+  }
+
+  /**
+   * Returns the number of documents in the collection (N) for IDF, preferring the persisted counter and falling back to a live
+   * count of the type when the counter is unavailable.
+   */
+  private long resolveTotalDocs() {
+    if (ftMetadata != null && ftMetadata.getTotalDocs() > 0)
+      return ftMetadata.getTotalDocs();
+    final String typeName = getTypeName();
+    if (typeName != null) {
+      final long count = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);
+      if (count > 0)
+        return count;
+    }
+    return 1L;
+  }
+
+  /**
+   * Returns the average document length across the collection, or 1.0 when no statistics are available.
+   */
+  private double resolveAvgDocLength() {
+    if (ftMetadata != null && ftMetadata.getTotalDocs() > 0)
+      return ftMetadata.avgDocLength();
+    return 1.0;
+  }
+
+  /**
+   * Lazily recomputes the corpus counters when they are missing or stale (e.g. a BM25 index reopened before the schema carrying
+   * the counters was persisted). Does nothing when the counters are already valid and non-empty, so the common path is free.
+   */
+  private void ensureCounters() {
+    if (ftMetadata == null)
+      return;
+    if (ftMetadata.getTotalDocs() > 0)
+      return;
+    final String typeName = getTypeName();
+    if (typeName == null)
+      return;
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+    if (db.countType(typeName, false) <= 0)
+      return; // empty type: the (0,0) counters are correct
+    recomputeBM25Counters();
+  }
+
+  /**
+   * Rescans the indexed type and rebuilds the BM25 corpus counters (document count and total document length), then persists
+   * them. Use it after a bulk import or to repair drifted counters.
+   */
+  public void recomputeBM25Counters() {
+    if (ftMetadata == null)
+      return;
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+    final String typeName = getTypeName();
+    if (typeName == null)
+      return;
+
+    final List<String> props = getPropertyNames();
+    long docs = 0L;
+    long sumLen = 0L;
+    final Iterator<com.arcadedb.database.Record> it = db.iterateType(typeName, true);
+    while (it.hasNext()) {
+      final com.arcadedb.database.Record record = it.next();
+      if (!(record instanceof Document doc))
+        continue;
+      int len = 0;
+      for (final String p : props) {
+        final Object v = doc.get(p);
+        if (v != null)
+          len += analyzeText(indexAnalyzer, new Object[] { v }).size();
+      }
+      ++docs;
+      sumLen += len;
+    }
+
+    ftMetadata.setCounters(docs, sumLen);
+    db.getSchema().getEmbedded().saveConfiguration();
   }
 
   /**
@@ -297,6 +557,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public void put(final Object[] keys, final RID[] rids) {
+    if (underlyingIndex.isStoreTermFrequency()) {
+      putWithStats(keys, rids);
+      return;
+    }
+
+    // CLASSIC similarity: store one posting per token occurrence (RID-only), unchanged behavior.
     if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
@@ -318,6 +584,77 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         }
       }
     }
+  }
+
+  /**
+   * BM25 indexing path: aggregates the per-token term frequency and the document length, then stores one posting per distinct
+   * token carrying {@link FullTextPostingRID} so scoring can read tf and document length back without re-reading the document. Also
+   * maintains the persisted corpus counters (document count and total length) used to compute the average document length.
+   */
+  private void putWithStats(final Object[] keys, final RID[] rids) {
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+
+    if (getPropertyCount() == 1) {
+      final List<String> keywords = analyzeText(indexAnalyzer, keys);
+      final int docLen = keywords.size();
+      final Map<String, Integer> tfs = new HashMap<>();
+      for (final String k : keywords)
+        tfs.merge(k, 1, Integer::sum);
+      for (final Map.Entry<String, Integer> e : tfs.entrySet())
+        underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), docLen));
+      countDocuments(rids.length, docLen);
+    } else {
+      final List<String> propertyNames = getPropertyNames();
+
+      // PASS 1: analyze every field, accumulate document length and per-field + global term frequencies.
+      final Map<String, Integer> globalTf = new HashMap<>();
+      final List<String> fieldNames = new ArrayList<>();
+      final List<Map<String, Integer>> fieldTfs = new ArrayList<>();
+      int docLen = 0;
+      for (int i = 0; i < keys.length && i < propertyNames.size(); i++) {
+        if (keys[i] == null)
+          continue;
+        final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
+        docLen += keywords.size();
+        final Map<String, Integer> fieldTf = new HashMap<>();
+        for (final String k : keywords) {
+          fieldTf.merge(k, 1, Integer::sum);
+          globalTf.merge(k, 1, Integer::sum);
+        }
+        fieldNames.add(propertyNames.get(i));
+        fieldTfs.add(fieldTf);
+      }
+
+      // PASS 2: store field-prefixed postings (per-field tf) and unprefixed postings (global tf) now that docLen is known.
+      for (int f = 0; f < fieldNames.size(); f++) {
+        final String fieldName = fieldNames.get(f);
+        for (final Map.Entry<String, Integer> e : fieldTfs.get(f).entrySet())
+          underlyingIndex.put(new String[] { fieldName + ":" + e.getKey() }, withStats(db, rids, e.getValue(), docLen));
+      }
+      for (final Map.Entry<String, Integer> e : globalTf.entrySet())
+        underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), docLen));
+
+      countDocuments(rids.length, docLen);
+    }
+  }
+
+  /**
+   * Wraps the given RIDs into {@link FullTextPostingRID} carrying the term frequency and document length for a posting.
+   */
+  private static RID[] withStats(final DatabaseInternal db, final RID[] rids, final int tf, final int docLen) {
+    final RID[] out = new RID[rids.length];
+    for (int i = 0; i < rids.length; i++)
+      out[i] = new FullTextPostingRID(db, rids[i].getBucketId(), rids[i].getPosition(), tf, docLen);
+    return out;
+  }
+
+  /**
+   * Updates the persisted corpus counters when a document is indexed.
+   */
+  private void countDocuments(final int numDocs, final int docLen) {
+    if (ftMetadata != null)
+      for (int i = 0; i < numDocs; i++)
+        ftMetadata.addDocument(docLen);
   }
 
   /**
@@ -357,9 +694,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
+    int docLen = 0;
     if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
+      docLen = keywords.size();
       for (final String k : keywords)
         underlyingIndex.remove(new String[] { k }, rid);
     } else {
@@ -370,12 +709,17 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           continue;
         final String fieldName = propertyNames.get(i);
         final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
+        docLen += keywords.size();
         for (final String k : keywords) {
           underlyingIndex.remove(new String[] { fieldName + ":" + k }, rid);
           underlyingIndex.remove(new String[] { k }, rid);
         }
       }
     }
+
+    // Keep the BM25 corpus counters in sync when a document is removed.
+    if (underlyingIndex.isStoreTermFrequency() && ftMetadata != null)
+      ftMetadata.removeDocument(docLen);
   }
 
   /**
@@ -407,6 +751,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
+    // Persist analyzer configuration and BM25 settings + corpus counters so they survive a restart (issue #4687). Historically
+    // this method dropped the metadata, silently reverting custom analyzers to StandardAnalyzer on reload.
+    if (ftMetadata != null)
+      ftMetadata.writeToJSON(json);
     return json;
   }
 

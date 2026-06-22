@@ -1625,7 +1625,9 @@ public class LocalSchema implements Schema {
 
                 if (!index.getType().toString().equals(configuredIndexType)) {
                   if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
-                    index = new LSMTreeFullTextIndex((LSMTreeIndex) index);
+                    final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, properties, -1);
+                    ftMeta.fromJSON(indexJSON);
+                    index = new LSMTreeFullTextIndex((LSMTreeIndex) index, ftMeta);
                     indexMap.put(indexName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {
                     final int precision = indexJSON.getInt("precision", GeoIndexMetadata.DEFAULT_PRECISION);
