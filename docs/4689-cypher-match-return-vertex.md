@@ -66,9 +66,19 @@ Added regression test `Issue4689MatchReturnVertexIT` covering:
 
 All 7 regression tests pass.
 
+Added `Issue4689MatchReturnVertexRemoteIT` exercising the same scenarios through the
+`RemoteDatabase` client (HTTP "record" serializer parsed via json2Result/json2Record) - the path
+a real remote driver uses, which is the most faithful reproduction of the reporter's setup:
+- `MATCH (u:IssueUser) RETURN u` over RemoteDatabase (asserts isVertex + name)
+- `MATCH (u:IssueUserProj) RETURN u{.*} as user` over RemoteDatabase
+- SQL `SELECT FROM SqlRemoteAll` over RemoteDatabase
+- SQL `SELECT name FROM SqlRemoteFields` over RemoteDatabase
+- Vertices with edges over RemoteDatabase
+
 ## Location
 
 `server/src/test/java/com/arcadedb/server/http/handler/Issue4689MatchReturnVertexIT.java`
+`server/src/test/java/com/arcadedb/remote/Issue4689MatchReturnVertexRemoteIT.java`
 
 ---
 
