@@ -3205,24 +3205,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         builder.setType(typeName);
     }
 
-    // Iterate over ALL properties from the Result, including aliases
+    // Iterate over ALL properties from the Result, including aliases.
+    // Null-valued projections must be included (unset GrpcValue) so clients can always
+    // address every projected alias by key, matching the HTTP serializer's {"key": null} behavior.
     for (String propertyName : result.getPropertyNames()) {
-      Object value = result.getProperty(propertyName);
+      final Object value = result.getProperty(propertyName);
 
-      if (value != null) {
-        LogManager.instance()
-            .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
-                propertyName, value, value.getClass());
+      LogManager.instance()
+          .log(this, Level.FINE, "convertResultToGrpcRecord(): Converting %s\n  value = %s\n  class = %s",
+              propertyName, value, value == null ? "null" : value.getClass());
 
-        GrpcValue gv = projectionConfig != null ?
-            toGrpcValue(value, projectionConfig) :
-            toGrpcValue(value);
+      final GrpcValue gv = projectionConfig != null ?
+          toGrpcValue(value, projectionConfig) :
+          toGrpcValue(value);
 
-        LogManager.instance()
-            .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
+      LogManager.instance()
+          .log(this, Level.FINE, "ENC-RES %s: %s -> %s", propertyName, summarizeJava(value), summarizeGrpc(gv));
 
-        builder.putProperties(propertyName, gv);
-      }
+      builder.putProperties(propertyName, gv);
     }
 
     // Ensure @rid and @type are always in the properties map when there's an element
@@ -3312,24 +3312,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   private GrpcValue convertPropToGrpcValue(String propName, Result result, ProjectionConfig pc) {
 
-    Object propValue = result.getProperty(propName);
+    final Object propValue = result.getProperty(propName);
 
     LogManager.instance()
         .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
             propValue,
-            propValue.getClass());
+            propValue == null ? "null" : propValue.getClass());
 
     return toGrpcValue(propValue, pc);
   }
 
   private GrpcValue convertPropToGrpcValue(String propName, Result result) {
 
-    Object propValue = result.getProperty(propName);
+    final Object propValue = result.getProperty(propName);
 
     LogManager.instance()
         .log(this, Level.FINE, "convertPropToGrpcValue(): Converting %s\n  value = %s\n  class = %s", propName,
             propValue,
-            propValue.getClass());
+            propValue == null ? "null" : propValue.getClass());
 
     return toGrpcValue(propValue);
   }
