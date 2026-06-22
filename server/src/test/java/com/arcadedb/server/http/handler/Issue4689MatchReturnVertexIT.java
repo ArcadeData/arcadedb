@@ -18,9 +18,16 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
+
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.Base64;
+import java.util.Collections;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -34,7 +41,6 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
 
   @Test
   void cypherMatchReturnWholeVertexShouldNotThrow() throws Exception {
-    // Set up User type with vertices
     executeCommand(0, "opencypher", "CREATE (u:IssueUser {name: 'Alice', age: 30})");
     executeCommand(0, "opencypher", "CREATE (u:IssueUser {name: 'Bob', age: 25})");
 
@@ -43,37 +49,56 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
 
     assertThat(response).isNotNull();
     assertThat(response.has("result")).as("Response should have 'result' key - query must not throw").isTrue();
+    final JSONObject result = response.getJSONObject("result");
+    assertThat(result.getJSONArray("records").length()).as("Should return 2 User vertices").isEqualTo(2);
   }
 
   @Test
   void cypherMatchReturnVertexProjectionWorkaround() throws Exception {
-    executeCommand(0, "opencypher", "CREATE (u:IssueUser {name: 'Charlie', age: 35})");
+    // Each test creates its own isolated type to avoid ordering dependencies
+    executeCommand(0, "opencypher", "CREATE (u:IssueUserProj {name: 'Charlie', age: 35})");
 
     // Workaround the reporter says works
-    final JSONObject response = executeCommand(0, "opencypher", "MATCH (u:IssueUser) RETURN u{.*} as user");
+    final JSONObject response = executeCommand(0, "opencypher", "MATCH (u:IssueUserProj) RETURN u{.*} as user");
 
     assertThat(response).isNotNull();
     assertThat(response.has("result")).isTrue();
+    final JSONObject result = response.getJSONObject("result");
+    assertThat(result.getJSONArray("records").length()).as("Projection workaround should return 1 vertex").isEqualTo(1);
   }
 
   @Test
   void sqlSelectFromTypeShouldNotThrow() throws Exception {
+    // Self-contained: creates its own type and data
+    executeCommand(0, "sql", "CREATE VERTEX TYPE SqlSelectAll");
+    executeCommand(0, "sql", "INSERT INTO SqlSelectAll SET name = 'Alice', age = 30");
+    executeCommand(0, "sql", "INSERT INTO SqlSelectAll SET name = 'Bob', age = 25");
+
     // SQL: returning whole record should work (same issue with SQL as with Cypher)
-    final JSONObject response = executeCommand(0, "sql", "SELECT FROM V1");
+    final JSONObject response = executeCommand(0, "sql", "SELECT FROM SqlSelectAll");
 
     assertThat(response).isNotNull();
     assertThat(response.has("result")).as("SELECT FROM should not throw NoSuchElementException").isTrue();
+    final JSONObject result = response.getJSONObject("result");
+    assertThat(result.getJSONArray("records").length()).as("Should return 2 records").isEqualTo(2);
   }
 
   @Test
   void sqlSelectFieldsShouldWork() throws Exception {
+    // Self-contained: creates its own type and data
+    executeCommand(0, "sql", "CREATE VERTEX TYPE SqlSelectFields");
+    executeCommand(0, "sql", "INSERT INTO SqlSelectFields SET name = 'Dave', age = 40");
+
     // Selecting individual fields should work (workaround for SQL)
-    final JSONObject response = executeCommand(0, "sql", "SELECT name FROM V1");
+    final JSONObject response = executeCommand(0, "sql", "SELECT name FROM SqlSelectFields");
 
     assertThat(response).isNotNull();
     assertThat(response.has("result")).isTrue();
+    final JSONObject result = response.getJSONObject("result");
+    assertThat(result.getJSONArray("records").length()).as("Should return 1 record").isEqualTo(1);
   }
 
+  @Tag("slow")
   @Test
   void cypherMatchReturnManyVerticesShouldWork() throws Exception {
     // Create more than 100 vertices to test multi-batch pagination
@@ -98,6 +123,8 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
 
     assertThat(response).isNotNull();
     assertThat(response.has("result")).isTrue();
+    final JSONObject result = response.getJSONObject("result");
+    assertThat(result.getJSONArray("records").length()).as("Should return 2 vertices with edges").isEqualTo(2);
   }
 
   @Test
@@ -106,17 +133,24 @@ class Issue4689MatchReturnVertexIT extends BaseGraphServerTest {
     executeCommand(0, "opencypher", "CREATE (u:DefaultSerTest {name: 'Alice2', age: 30})");
     executeCommand(0, "opencypher", "CREATE (u:DefaultSerTest {name: 'Bob2', age: 25})");
 
-    final java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new java.net.URI(
-        "http://127.0.0.1:2480/api/v1/command/graph").toURL().openConnection();
+    final HttpURLConnection connection = (HttpURLConnection) new URL(
+        "http://127.0.0.1:2480/api/v1/command/" + getDatabaseName()).openConnection();
     try {
       connection.setRequestMethod("POST");
       connection.setRequestProperty("Authorization",
-          "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+          "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
       // Sending without serializer uses the default (non-studio) code path
-      formatPayload(connection, "opencypher", "MATCH (u:DefaultSerTest) RETURN u", null, java.util.Collections.emptyMap());
+      formatPayload(connection, "opencypher", "MATCH (u:DefaultSerTest) RETURN u", null, Collections.emptyMap());
       connection.connect();
 
-      assertThat(connection.getResponseCode()).as("MATCH RETURN u with default serializer should return HTTP 200, not 500").isEqualTo(200);
+      assertThat(connection.getResponseCode())
+          .as("MATCH RETURN u with default serializer should return HTTP 200, not 500").isEqualTo(200);
+
+      final String responseBody = readResponse(connection);
+      final JSONObject response = new JSONObject(responseBody);
+      assertThat(response.has("result")).isTrue();
+      final JSONArray result = response.getJSONArray("result");
+      assertThat(result.length()).as("Should return 2 vertices").isEqualTo(2);
     } finally {
       connection.disconnect();
     }
