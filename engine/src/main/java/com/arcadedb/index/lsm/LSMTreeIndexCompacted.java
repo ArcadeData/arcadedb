@@ -133,10 +133,12 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       int writtenValues = writeEntryMultipleValues(keyValueContent, convertedKeys, values, freeSpaceInPage,
           currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId());
 
-      // No room at all, OR this key would split across a shared continuation page (see startedOnContinuation): in both cases
-      // move to a fresh page before committing anything for this key. The continuation page (with only the previous keys'
-      // values) is flushed as-is; this key's values then live entirely on pages it owns, keeping the positional root index
-      // consistent.
+      // Move this key to a fresh page when either: (a) no value fits in the current page, or (b) it is the first iteration, the
+      // current page is a continuation page already holding the previous key's values, and this key would only partially fit
+      // (split). The positional root index cannot index one leaf page under two keys, so a key must not start on a page it then
+      // overflows from. Note no bytes are orphaned: this key's serialized entry currently lives only in the scratch buffer
+      // (keyValueContent) and is committed to the page by putByteArray() further below - it has NOT been written to the
+      // continuation page, which is therefore flushed cleanly with just the previous keys' entries.
       if (writtenValues == 0 || (firstIteration && startedOnContinuation && writtenValues < values.length)) {
         // CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
         database.getPageManager().updatePageVersion(currentPage, true);

@@ -91,10 +91,14 @@ individual rows). There is no separate explain function.
 - Getting BM25 on existing data requires **rebuilding** the full-text index (the build path re-analyzes documents and writes the
   `tf`/`docLength` postings + corpus counters). `tf` was never stored before and past compactions discarded posting multiplicity,
   so there is no in-place migration.
+- **`$score` is now a float** (`Float`), including for CLASSIC indexes where it was previously an `Integer` (the coordination
+  match count, now widened to e.g. `3.0`). Application code that read `$score` as an `Integer` must read it as a `Number`/`Float`.
+  This is the one user-visible behavior change for existing CLASSIC indexes.
 
-## Known limitation (pre-existing, orthogonal)
+## Compaction fix (pre-existing bug, also affected CLASSIC)
 
-Full-text index **compaction** can drop postings when a *single token's* posting list is large enough to span multiple compacted
-leaf pages (only reproducible with artificially small page sizes). This is independent of BM25 - it reproduces identically with
-CLASSIC scoring - and does not occur at realistic page sizes where a single token's postings fit on one page. Tracked separately;
-not addressed here.
+Full-text index **compaction** previously dropped postings when a *single token's* posting list spanned multiple compacted leaf
+pages: the compacted root is a positional sparse index that cannot index one leaf page under two keys, so a key's first values
+left on a shared continuation page became unreachable on read. This was independent of BM25 (reproduced identically with CLASSIC).
+Fixed here by forcing an overflowing key to start on a fresh page it fully owns; covered by `FullTextBM25CompactionTest` at tiny
+page sizes.

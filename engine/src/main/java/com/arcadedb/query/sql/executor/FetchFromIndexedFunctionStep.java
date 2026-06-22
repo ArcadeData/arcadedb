@@ -102,7 +102,10 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
       result += " (" + getCostFormatted() + ")";
     }
     // Surface BM25 scoring metadata (similarity, k1/b, N, avgdl, per-term df/idf) for full-text SEARCH_INDEX conditions so it can
-    // be inspected via EXPLAIN/PROFILE. Best-effort: never let an explain failure break the plan rendering.
+    // be inspected via EXPLAIN/PROFILE. This delegates down the indexed-function chain
+    // (BinaryCondition -> Expression -> ... -> FunctionCall -> IndexableSQLFunction.getScoringExplain), mirroring
+    // executeIndexedFunction; non-indexable or non-full-text functions return null. Best-effort: never let an explain failure
+    // break the plan rendering.
     try {
       final Object scoring = functionCondition.getIndexedFunctionScoringExplain(queryTarget, context);
       if (scoring != null)

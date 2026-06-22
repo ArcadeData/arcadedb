@@ -23,6 +23,7 @@ import com.arcadedb.utility.CollectionUtils;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Metadata class for full-text indexes, storing Lucene analyzer configuration.
@@ -71,10 +72,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private float              bm25B       = 0.75f;
   private Map<String, Float> fieldBoosts = new HashMap<>();
 
-  // PERSISTED CORPUS STATISTICS FOR avgdl (live document count and sum of document lengths)
-  private long    totalDocs     = 0L;
-  private long    sumDocLength  = 0L;
-  private boolean countersValid = false;
+  // PERSISTED CORPUS STATISTICS FOR avgdl (live document count and sum of document lengths). Concurrent transactions can index
+  // documents into the same bucket simultaneously, all updating this shared metadata, so the counters are atomic.
+  private final AtomicLong totalDocs     = new AtomicLong(0L);
+  private final AtomicLong sumDocLength  = new AtomicLong(0L);
+  private volatile boolean countersValid = false;
 
   /**
    * Creates a new FullTextIndexMetadata instance.
@@ -112,8 +114,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
     this.similarity = metadata.has("similarity") ? metadata.getString("similarity").toUpperCase() : SIMILARITY_CLASSIC;
     this.bm25K1 = metadata.getFloat("bm25_k1", bm25K1);
     this.bm25B = metadata.getFloat("bm25_b", bm25B);
-    this.totalDocs = metadata.getLong("ft_totalDocs", 0L);
-    this.sumDocLength = metadata.getLong("ft_sumDocLength", 0L);
+    this.totalDocs.set(metadata.getLong("ft_totalDocs", 0L));
+    this.sumDocLength.set(metadata.getLong("ft_sumDocLength", 0L));
     this.countersValid = metadata.getBoolean("ft_countersValid", false);
 
     // Parse per-field analyzers (pattern: *_analyzer) and per-field boosts (pattern: *_boost)
@@ -161,8 +163,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
     }
 
     if (countersValid) {
-      metadata.put("ft_totalDocs", totalDocs);
-      metadata.put("ft_sumDocLength", sumDocLength);
+      metadata.put("ft_totalDocs", totalDocs.get());
+      metadata.put("ft_sumDocLength", sumDocLength.get());
       metadata.put("ft_countersValid", true);
     }
     return metadata;
@@ -369,14 +371,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * Returns the persisted live document count used for IDF.
    */
   public long getTotalDocs() {
-    return totalDocs;
+    return totalDocs.get();
   }
 
   /**
    * Returns the persisted sum of document lengths used to compute the average document length.
    */
   public long getSumDocLength() {
-    return sumDocLength;
+    return sumDocLength.get();
   }
 
   /**
@@ -401,38 +403,38 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * @param sumDocLength sum of document lengths
    */
   public void setCounters(final long totalDocs, final long sumDocLength) {
-    this.totalDocs = totalDocs;
-    this.sumDocLength = sumDocLength;
+    this.totalDocs.set(totalDocs);
+    this.sumDocLength.set(sumDocLength);
     this.countersValid = true;
   }
 
   /**
-   * Records a newly indexed document in the corpus counters.
+   * Records a newly indexed document in the corpus counters. Thread-safe: concurrent indexing transactions may call this on the
+   * shared per-bucket metadata.
    *
    * @param docLength number of analyzed tokens of the document
    */
   public void addDocument(final long docLength) {
-    ++totalDocs;
-    sumDocLength += docLength;
+    totalDocs.incrementAndGet();
+    sumDocLength.addAndGet(docLength);
   }
 
   /**
-   * Removes a document from the corpus counters, clamping at zero to stay consistent under at-least-once removals.
+   * Removes a document from the corpus counters, clamping at zero to stay consistent under at-least-once removals. Thread-safe.
    *
    * @param docLength number of analyzed tokens of the document
    */
   public void removeDocument(final long docLength) {
-    if (totalDocs > 0)
-      --totalDocs;
-    sumDocLength -= docLength;
-    if (sumDocLength < 0)
-      sumDocLength = 0;
+    totalDocs.updateAndGet(v -> v > 0 ? v - 1 : v);
+    sumDocLength.updateAndGet(v -> Math.max(0L, v - docLength));
   }
 
   /**
-   * Returns the average document length across the collection, or 1.0 when no statistics are available.
+   * Returns the average document length across the collection, or 1.0 when no statistics are available. The two counters are read
+   * independently, so a concurrent update may make this momentarily approximate - acceptable for a ranking heuristic.
    */
   public double avgDocLength() {
-    return totalDocs > 0 ? (double) sumDocLength / totalDocs : 1.0;
+    final long n = totalDocs.get();
+    return n > 0 ? (double) sumDocLength.get() / n : 1.0;
   }
 }
