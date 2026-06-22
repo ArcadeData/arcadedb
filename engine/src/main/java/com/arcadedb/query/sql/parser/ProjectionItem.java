@@ -154,16 +154,11 @@ public class ProjectionItem extends SimpleNode {
   }
 
   public Identifier getProjectionAlias() {
-    if (alias != null) {
+    if (alias != null)
       return alias;
-    }
-    final Identifier result;
-    if (all) {
-      result = new Identifier("*");
-    } else {
-      result = new Identifier(expression.toString());
-    }
-    return result;
+    if (all)
+      return new Identifier("*");
+    return expression.getDefaultAlias();
   }
 
   public boolean isExpand() {
