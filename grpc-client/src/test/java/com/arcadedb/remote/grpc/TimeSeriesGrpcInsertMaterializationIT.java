@@ -49,7 +49,7 @@ class TimeSeriesGrpcInsertMaterializationIT extends BaseGraphServerTest {
   @Override
   public void setTestConfiguration() {
     super.setTestConfiguration();
-    GlobalConfiguration.SERVER_PLUGINS.setValue("GRPC:com.arcadedb.server.grpc.GrpcServerPlugin");
+    GlobalConfiguration.SERVER_PLUGINS.setValue("GrpcServer:com.arcadedb.server.grpc.GrpcServerPlugin");
   }
 
   @AfterEach

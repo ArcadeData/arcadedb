@@ -79,6 +79,7 @@ public class TimeSeriesGrpcInsertResultTypeIT extends BaseGraphServerTest {
       channel.shutdown();
       channel.awaitTermination(5, TimeUnit.SECONDS);
     }
+    GlobalConfiguration.SERVER_PLUGINS.setValue("");
   }
 
   private final class AuthClientInterceptor implements ClientInterceptor {
@@ -133,8 +134,6 @@ public class TimeSeriesGrpcInsertResultTypeIT extends BaseGraphServerTest {
     assertThat(resp.getRecordsList()).as("INSERT with returnRows must return the inserted row").isNotEmpty();
 
     final GrpcRecord record = resp.getRecords(0);
-
-    // DIAGNOSTIC dump (visible on failure) - shows exactly what the server emits.
     final String dump = "type='" + record.getType() + "' rid='" + record.getRid() + "' props=" + record.getPropertiesMap();
 
     assertThat(record.getType())

@@ -3198,8 +3198,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
     }
 
-    // HA leader-forwarding rebuilds each row as a non-element projection that carries the type only as
-    // the @type property, so the isElement() branch above did not populate the type field. Recover it.
+    // HA-forwarded rows are non-element projections; recover the type from the @type property.
     if (builder.getType().isEmpty()) {
       final Object typeProperty = result.getProperty(Property.TYPE_PROPERTY);
       if (typeProperty instanceof String typeName && !typeName.isEmpty())
