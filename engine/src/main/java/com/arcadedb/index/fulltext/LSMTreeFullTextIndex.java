@@ -357,6 +357,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   private IndexCursor getBM25(final Object[] keys, final int limit) {
     final String queryText = keys.length > 0 && keys[0] != null ? keys[0].toString() : "";
+    // The direct path does not parse Lucene syntax; a caret boost here is silently treated as part of the token and matches
+    // nothing. Log at FINE so this surfaces when debugging an unexpected empty result, without spamming normal queries.
+    if (queryText.indexOf('^') >= 0)
+      LogManager.instance().log(this, Level.FINE,
+          "Full-text get() query '%s' contains a caret; the direct lookup path does not support Lucene syntax (caret/boolean/"
+              + "phrase/wildcard) - use SEARCH_INDEX(...) for that.", null, queryText);
     final List<QueryTerm> queryTerms = parseQueryTerms(queryText);
 
     // Build the scoring tokens (stored-key form) with their field boost, then delegate to the shared scorer. No candidate set:

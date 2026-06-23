@@ -118,6 +118,22 @@ individual rows). There is no separate explain function.
   misread as RID bytes. Always back up and restore the schema together with the index files; after a manual recovery, a
   `REBUILD INDEX <name>` regenerates the postings from the documents if there is any doubt.
 
+- **Per-bucket scoring: `$score` is not globally calibrated across buckets.** BM25 is scored per bucket (like an Elasticsearch
+  shard): a term's IDF depends on the document frequency *within the bucket that holds the document*, so the same term can carry
+  a slightly different IDF in different buckets depending on how documents are distributed. `ORDER BY $score DESC` over a
+  multi-bucket type therefore ranks correctly within each bucket and merges them, but the absolute scores are not globally
+  calibrated - two documents with identical content in differently-populated buckets can score slightly differently. For a
+  single-bucket type (or one with even term distribution) this is a non-issue; it is inherent to per-shard scoring.
+- **First BM25 query on a cold index does a one-time full scan (and briefly serializes).** When an index's corpus counters are
+  not yet trustworthy (an index built before this feature, or reopened before its schema was saved), the first BM25 query
+  rebuilds them with a full type scan, holding a short lock on the shared metadata so the type's other bucket indexes do not all
+  scan at once. On a very large collection this first query can block briefly. Freshly created indexes start with valid counters
+  and pay nothing; to avoid the stall after an upgrade, pre-warm with `REBUILD INDEX <name> WITH statsOnly = true` before serving
+  traffic.
+- **`avgdl` drift is only document-count-validated.** The session-start self-heal compares the document count against the live
+  count; it does not independently re-derive `sumDocLength`. A workload that replaces document content (changing total token
+  length) without changing the document count could let `avgdl` drift within a session undetected. It only affects length
+  normalization (suboptimal, not wrong, scores); `REBUILD INDEX <name> WITH statsOnly = true` re-derives both counters exactly.
 - **Counter drift after rollbacks triggers a one-time rescan.** The corpus counters are bumped at index put/remove time, before
   commit, and are not reversed on rollback. The first BM25 query of a session validates the persisted counters against a cheap
   live document count and, if they disagree (e.g. after rolled-back inserts), does a single full type scan to repair them - once

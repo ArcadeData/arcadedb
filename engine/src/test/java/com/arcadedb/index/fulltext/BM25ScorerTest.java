@@ -18,6 +18,7 @@
  */
 package com.arcadedb.index.fulltext;
 
+import com.arcadedb.schema.FullTextIndexMetadata;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -97,6 +98,14 @@ class BM25ScorerTest {
     final double shortDoc = BM25Scorer.termScore(idf, 2, 50, 100, K1, 0.0);
     final double longDoc = BM25Scorer.termScore(idf, 2, 300, 100, K1, 0.0);
     assertThat(shortDoc).isCloseTo(longDoc, within(1e-9));
+  }
+
+  @Test
+  void defaultConstantsStayInSyncWithMetadata() {
+    // FullTextIndexMetadata deliberately duplicates these defaults (it cannot reference BM25Scorer without inverting the package
+    // dependency). This assertion makes the "keep in sync" requirement self-enforcing at test time.
+    assertThat(FullTextIndexMetadata.DEFAULT_BM25_K1).isEqualTo(BM25Scorer.DEFAULT_K1);
+    assertThat(FullTextIndexMetadata.DEFAULT_BM25_B).isEqualTo(BM25Scorer.DEFAULT_B);
   }
 
   @Test
