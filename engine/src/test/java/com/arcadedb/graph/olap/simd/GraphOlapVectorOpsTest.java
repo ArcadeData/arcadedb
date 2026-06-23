@@ -147,6 +147,50 @@ class GraphOlapVectorOpsTest {
     assertThat(ops.sumInt(data, 0, 16)).isEqualTo(16L * 400_000_000L);
   }
 
+  @Test
+  void sumIntWidenPartsNeverOvershoots() {
+    // Regression for #4721: convertShape(I2L, LONG_SPECIES, p) only accepts part indices in
+    // [0, intLanes / longLanes). A ceil-based part count overshoots when the int/long lane ratio
+    // is not an exact multiple, throwing AIOOBE/IllegalArgumentException on exotic species shapes.
+    // widenParts() must return the exact integral ratio, or 0 to force the scalar fallback.
+
+    // Power-of-two ratios that occur on real hardware (same vector bit width for both species).
+    assertThat(SimdGraphOlapVectorOps.widenParts(8, 4)).isEqualTo(2);  // 256-bit AVX2 / NEON
+    assertThat(SimdGraphOlapVectorOps.widenParts(16, 8)).isEqualTo(2); // 512-bit AVX-512
+    assertThat(SimdGraphOlapVectorOps.widenParts(4, 2)).isEqualTo(2);  // 128-bit
+    assertThat(SimdGraphOlapVectorOps.widenParts(16, 4)).isEqualTo(4); // int wider than long
+    assertThat(SimdGraphOlapVectorOps.widenParts(4, 4)).isEqualTo(1);  // equal lane counts
+
+    // Non-integral ratios (the bug scenario): must NOT overshoot, fall back to scalar.
+    assertThat(SimdGraphOlapVectorOps.widenParts(7, 4)).isZero();
+    assertThat(SimdGraphOlapVectorOps.widenParts(8, 3)).isZero();
+    assertThat(SimdGraphOlapVectorOps.widenParts(6, 4)).isZero();
+
+    // Long species wider than int species: also unsafe, fall back to scalar.
+    assertThat(SimdGraphOlapVectorOps.widenParts(4, 8)).isZero();
+    assertThat(SimdGraphOlapVectorOps.widenParts(2, 4)).isZero();
+  }
+
+  @Test
+  void sumIntMatchesScalarAcrossManyLengths() {
+    // Regression for #4721: exercise the SIMD widening path and the scalar remainder across a
+    // range of lengths (including lane-boundary and odd sizes) and verify parity with scalar,
+    // with large values that would overflow a plain int accumulation.
+    final ScalarGraphOlapVectorOps scalar = new ScalarGraphOlapVectorOps();
+    final SimdGraphOlapVectorOps simd = new SimdGraphOlapVectorOps();
+    final Random rnd = new Random(4721);
+
+    for (int n = 0; n <= 257; n++) {
+      final int[] data = new int[n];
+      for (int i = 0; i < n; i++)
+        data[i] = rnd.nextInt(2_000_000_000) - 1_000_000_000; // wide range, sums overflow int
+
+      assertThat(simd.sumInt(data, 0, n)).isEqualTo(scalar.sumInt(data, 0, n));
+      if (n > 1)
+        assertThat(simd.sumInt(data, 1, n - 1)).isEqualTo(scalar.sumInt(data, 1, n - 1));
+    }
+  }
+
   @ParameterizedTest
   @MethodSource("implementations")
   void minMaxInt(final GraphOlapVectorOps ops) {
