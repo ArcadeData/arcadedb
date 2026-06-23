@@ -476,7 +476,11 @@ public class TransactionManager {
         modifiedPage.version = txPage.currentPageVersion;
         modifiedPage.setContentSize(txPage.currentPageSize);
         modifiedPage.updateMetadata();
-        file.write(modifiedPage);
+
+        // Write under the per-page I/O lock so concurrent readers never observe partially-written bytes during
+        // replicated/recovery replay (forceApply). Evict from the read cache AFTER the write so subsequent reads
+        // reload the new content from disk (see PageManager.writePageWithLock).
+        database.getPageManager().writePageWithLock(file, modifiedPage);
 
         database.getPageManager().removePageFromCache(modifiedPage.pageId);
 
