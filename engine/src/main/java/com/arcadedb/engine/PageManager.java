@@ -328,6 +328,22 @@ public class PageManager extends LockContext {
         Thread.currentThread().threadId());
   }
 
+  /**
+   * Writes a page to disk holding the per-page I/O lock so concurrent readers never observe partially-written bytes. This is used by
+   * {@link TransactionManager#applyChanges} during replicated/recovery replay, which writes pages directly outside the normal flush
+   * path. Unlike {@link #flushPage}, it does not touch the read cache: the caller is responsible for evicting the page afterwards (via
+   * {@link #removePageFromCache(PageId)}) so subsequent reads reload the new content. Evicting after the write (rather than before)
+   * avoids a window where a concurrent reader could reload the stale on-disk version into the cache while the write is in flight.
+   */
+  public void writePageWithLock(final PaginatedComponentFile file, final MutablePage page) throws IOException {
+    // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES (same interlock used by flushPage and loadPage)
+    concurrentPageAccess(page.pageId, true, () -> {
+      final int written = file.write(page);
+      totalPagesWrittenSize.addAndGet(written);
+    });
+    totalPagesWritten.incrementAndGet();
+  }
+
   public PPageManagerStats getStats() {
     final PPageManagerStats stats = new PPageManagerStats();
     stats.maxRAM = maxRAM;
