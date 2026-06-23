@@ -192,9 +192,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
     metadata.put("similarity", similarity);
     if (isBM25()) {
       // Emit k1/b only when tuned away from the defaults (read back as the defaults when absent), keeping the schema JSON terse.
-      if (bm25K1 != DEFAULT_BM25_K1)
+      // Use an epsilon (not !=): 1.2f/0.75f are not exact in float32, so a value that round-tripped through JSON parsing could
+      // differ from the literal by an ULP and be persisted as "non-default" forever.
+      if (Math.abs(bm25K1 - DEFAULT_BM25_K1) > 1e-6f)
         metadata.put("bm25_k1", bm25K1);
-      if (bm25B != DEFAULT_BM25_B)
+      if (Math.abs(bm25B - DEFAULT_BM25_B) > 1e-6f)
         metadata.put("bm25_b", bm25B);
       for (final Map.Entry<String, Float> entry : fieldBoosts.entrySet())
         metadata.put(entry.getKey() + BOOST_SUFFIX, entry.getValue());
@@ -482,6 +484,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
   public void setCounters(final long totalDocs, final long sumDocLength) {
     this.totalDocs.set(totalDocs);
     this.sumDocLength.set(sumDocLength);
+    // The volatile write to countersValid below comes AFTER the two counter writes in program order: by the JMM, a reader that
+    // observes countersValid == true is guaranteed to also see these counter values (volatile-write / volatile-read edge).
     this.countersValid = true;
     this.staleChecked.set(true); // freshly computed counters are by definition consistent with the live data
   }

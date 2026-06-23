@@ -85,6 +85,9 @@ public final class BM25Scorer {
    */
   public static double termScore(final double idf, final int tf, final int docLen, final double avgdl, final double k1,
       final double b) {
+    // tf <= 0 contributes nothing. This also defends the (architecturally impossible) case of a non-posting RID reaching here:
+    // compacted root-page pointers deserialize as FullTextPostingRID(tf=0, docLength=0), and although they never reach scoring
+    // (only leaf postings are returned for a token lookup), their tf=0 would zero out any contribution anyway.
     if (tf <= 0)
       return 0.0;
     final double safeAvgdl = avgdl > 0 ? avgdl : 1.0;

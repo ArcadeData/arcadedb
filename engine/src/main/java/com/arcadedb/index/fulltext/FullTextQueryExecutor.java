@@ -24,6 +24,7 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TempIndexCursor;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.lucene.analysis.Analyzer;
@@ -49,6 +50,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -81,6 +83,14 @@ public class FullTextQueryExecutor {
    */
   static final String DEFAULT_FIELD = "__arcadedb_default_field__";
 
+  /**
+   * Safety cap on the number of distinct scoring tokens a single query may accumulate. Wildcard / prefix / fuzzy clauses expand
+   * to one scoring token per matched term, and each token costs one posting-list scan in the BM25 re-rank pass; an extreme
+   * expansion (e.g. {@code a*} on a huge vocabulary) could otherwise make a single query arbitrarily expensive. Beyond the cap,
+   * matching still proceeds (the result set stays correct) but additional terms no longer contribute to the BM25 score.
+   */
+  static final int MAX_EXPANDED_SCORING_TERMS = 4096;
+
   private final LSMTreeFullTextIndex   index;
   private final Analyzer               analyzer;
   private final FullTextIndexMetadata  metadata;
@@ -96,6 +106,8 @@ public class FullTextQueryExecutor {
   // The compounded caret boost (e.g. `title:java^3`) of the BoostQuery currently being descended, multiplied into recorded
   // scoring tokens. Lucene's QueryParser already parses `^` into a BoostQuery; this is where that boost takes effect for BM25.
   private       float              currentBoost        = 1.0f;
+  // Set once the scoring-token cap is hit so the warning is logged at most once per query.
+  private       boolean            expansionCapWarned  = false;
 
   /**
    * Creates a new FullTextQueryExecutor for the given index.
@@ -153,6 +165,7 @@ public class FullTextQueryExecutor {
     collectingExclusion = false;
     tokensOnly = false;
     currentBoost = 1.0f;
+    expansionCapWarned = false;
   }
 
   /**
@@ -343,6 +356,19 @@ public class FullTextQueryExecutor {
   private void recordScoringToken(final String storedKey, final float boost) {
     if (collectingExclusion || !index.isBM25())
       return;
+    // Cap the number of distinct scoring tokens: a pathological wildcard/fuzzy expansion would otherwise add one posting-list
+    // scan per matched term to the re-rank pass. Already-seen tokens can still update their boost (no growth); only genuinely new
+    // tokens are dropped once the cap is reached. Matching is unaffected, so the result set stays correct - the extra terms just
+    // stop contributing to the BM25 score.
+    if (!scoringTokens.containsKey(storedKey) && scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS) {
+      if (!expansionCapWarned) {
+        expansionCapWarned = true;
+        LogManager.instance().log(this, Level.WARNING,
+            "Full-text query expanded to more than %d scoring terms on index '%s'; additional terms are matched but not BM25-scored. "
+                + "Consider a more specific query (narrower wildcard/fuzzy).", MAX_EXPANDED_SCORING_TERMS, index.getName());
+      }
+      return;
+    }
     // Combine the per-field boost with the caret boost in effect for this part of the query.
     scoringTokens.merge(storedKey, boost * currentBoost, Math::max);
   }

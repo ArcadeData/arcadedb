@@ -500,7 +500,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
-   * Returns the (type-wide) average document length used as the BM25 length normalizer, or 1.0 when no statistics are available.
+   * Returns the (type-wide) average document length used as the BM25 length normalizer, or 1.0 when no statistics are available
+   * or the corpus is empty (no documents means no meaningful average; 1.0 makes the length-normalization term a no-op).
    */
   private double resolveAvgDocLength() {
     if (ftMetadata != null && ftMetadata.getTotalDocs() > 0)
@@ -739,16 +740,24 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
       final Map<String, Integer> tfs = new HashMap<>();
       int docLen = 0;
+      boolean hasNull = false;
       for (final String k : keywords) {
-        // Keep null tokens in the term-frequency map so they still flow to the underlying put and the configured NULL_STRATEGY is
-        // enforced, but exclude them from the document length (a null value has no length).
+        // A null token (null indexed value) carries no meaningful tf/docLength: keep it out of the stats so it never becomes a
+        // FullTextPostingRID with a bogus tf, but remember it so it can still be put as a plain posting below (letting the
+        // configured NULL_STRATEGY decide whether to skip, error, or index it).
+        if (k == null) {
+          hasNull = true;
+          continue;
+        }
         tfs.merge(k, 1, Integer::sum);
-        if (k != null)
-          ++docLen;
+        ++docLen;
       }
       final int len = docLen;
       for (final Map.Entry<String, Integer> e : tfs.entrySet())
         underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), len));
+      if (hasNull)
+        // Plain RID (no stats): if NULL_STRATEGY indexes it, the posting carries tf=0/docLength=0 rather than a stale tf.
+        underlyingIndex.put(new String[] { null }, rids);
       countDocuments(rids.length, docLen);
     } else {
       final List<String> propertyNames = getPropertyNames();

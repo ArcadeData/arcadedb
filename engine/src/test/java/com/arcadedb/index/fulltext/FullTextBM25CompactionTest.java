@@ -34,9 +34,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 /**
- * Compaction tests for BM25 full-text indexes. Uses a tiny page size so a single high-frequency token's posting list spans
- * multiple compacted pages - the exact case that used to silently drop postings on read (a sparse-root-index bug, see
- * {@code LSMTreeIndexCompactor}). Verifies that after compaction the full result set, ranking and scores are unchanged.
+ * Compaction tests for BM25 full-text indexes. Inserts enough documents sharing a single high-frequency token that its posting
+ * list spans multiple compacted pages at the (default 4096-byte) page size - the exact case that used to silently drop postings
+ * on read (a sparse-root-index bug, see {@code LSMTreeIndexCompactor}). The scenario is driven by document volume, not by a
+ * reduced page size. Verifies that after compaction the full result set, ranking and scores are unchanged.
  * <p>
  * Not tagged {@code slow}: although it inserts a few hundred documents, it completes in well under a second and pins a
  * correctness regression (postings silently dropped on compaction), so it must run in every CI build.
@@ -76,7 +77,7 @@ class FullTextBM25CompactionTest extends TestHelper {
       database.getSchema().createDocumentType("Doc");
       database.getSchema().getType("Doc").createProperty("name", String.class);
       database.getSchema().getType("Doc").createProperty("content", String.class);
-      // Tiny pages so the "data" posting list (hundreds of RIDs) spans multiple compacted pages.
+      // Enough documents that the "data" posting list (hundreds of RIDs) spans multiple compacted pages at the default page size.
       database.getSchema().buildTypeIndex("Doc", new String[] { "content" })
           .withType(Schema.INDEX_TYPE.FULL_TEXT).withFullTextType().withPageSize(4096).create();
     });

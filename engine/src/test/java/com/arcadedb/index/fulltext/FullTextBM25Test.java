@@ -104,6 +104,33 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void unqualifiedTermAggregatesTermFrequencyAcrossFields() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.title STRING");
+      database.command("sql", "CREATE PROPERTY Doc.body STRING");
+      database.command("sql", "CREATE INDEX ON Doc (title, body) FULL_TEXT");
+
+      // 'both' has "java" once in title AND once in body (global tf = 2); 'one' has it once, in title only (global tf = 1). Both
+      // documents have the same total length (2 tokens), so the only differentiator for an unqualified query is the aggregated tf.
+      database.command("sql", "INSERT INTO Doc SET name = 'both', title = 'java', body = 'java'");
+      database.command("sql", "INSERT INTO Doc SET name = 'one',  title = 'java', body = 'cooking'");
+    });
+
+    database.transaction(() -> {
+      // Unqualified query: the field-agnostic posting carries the summed tf, so 'both' (tf=2) outranks 'one' (tf=1).
+      final Map<String, Float> unqualified = searchScores("Doc[title,body]", "java");
+      assertThat(unqualified.keySet()).containsExactlyInAnyOrder("both", "one");
+      assertThat(unqualified.get("both")).isGreaterThan(unqualified.get("one"));
+
+      // A field-qualified query sees only that field's tf (1 for each in title), so they tie.
+      final Map<String, Float> titleScoped = searchScores("Doc[title,body]", "title:java");
+      assertThat(titleScoped.get("both")).isCloseTo(titleScoped.get("one"), within(1e-4f));
+    });
+  }
+
+  @Test
   void fieldBoostRaisesFieldQualifiedMatches() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");
