@@ -125,6 +125,33 @@ class GorillaXORCodecTest {
     assertThat(GorillaXORCodec.decode(GorillaXORCodec.encode(input))).containsExactly(input);
   }
 
+  /**
+   * Regression test for issue #4717. A long run of narrow XORs interrupted by occasional wide outliers
+   * used to keep paying for the widened block window forever (textbook Gorilla never re-tightens the
+   * window between '11' headers). The encoder now opens a fresh, tighter block whenever the reused
+   * window is more than 12 bits wider than the current value's own block, which both shrinks the output
+   * and must still round-trip exactly. The decoder is unchanged: the stream is self-describing.
+   */
+  @Test
+  void reTightensWindowAfterOutlier() {
+    final double[] input = new double[2000];
+    final Random rng = new Random(7);
+    input[0] = 100.0;
+    for (int i = 1; i < input.length; i++) {
+      if (i % 50 == 0)
+        input[i] = input[i - 1] * 1.37 + 0.913; // outlier -> wide XOR, widens the window
+      else
+        input[i] = input[i - 1] + (rng.nextInt(3) - 1) * 0.01; // tiny step -> narrow XOR
+    }
+
+    final byte[] encoded = GorillaXORCodec.encode(input);
+    assertThat(GorillaXORCodec.decode(encoded)).containsExactly(input);
+
+    // Must stay well below the raw 8-bytes-per-double size; the re-tighten optimisation keeps this
+    // pattern under half of raw (it was ~60% of raw before the fix).
+    assertThat(encoded.length).isLessThan(input.length * 8 / 2);
+  }
+
   @Test
   void decodeBufferVariant() {
     final double[] input = { 1.0, 2.0, 3.0, 4.0 };
