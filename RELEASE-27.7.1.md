@@ -65,4 +65,11 @@ Existing full-text index files open and continue to score with **CLASSIC** (no b
 type above). To switch existing data to BM25 you must **rebuild** the full-text index: term frequencies were never stored before
 and past compactions discarded posting multiplicity, so there is no in-place migration. New indexes use BM25 automatically.
 
+**Corpus counters and `REBUILD INDEX ... WITH statsOnly = true`.** BM25 keeps per-type corpus counters (document count + total
+length) that feed the average-document-length normalizer. They are maintained incrementally and are self-corrected once per
+session on the first query, but they are not transactionally reversed on rollback and the session check validates only the
+document count. After a large bulk import, a workload with many rolled-back transactions, or migrating a pre-BM25 index, run
+`REBUILD INDEX <name> WITH statsOnly = true` (or `REBUILD INDEX *`) to re-derive the counters exactly without a full reindex -
+also useful to pre-warm a cold upgraded index before serving traffic (the first BM25 query otherwise does a one-time full scan).
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.0...27.7.1

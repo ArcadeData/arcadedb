@@ -581,6 +581,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       return rid;
 
     // The tf/docLength varints are present for every stored value, so they must always be read to keep the buffer aligned.
+    // Narrowed to int: tf and docLength are token counts within one document, so they fit comfortably in a (signed) int - a
+    // document with > ~2.1 billion analyzed tokens is not representable and the FullTextPostingRID constructor would reject the
+    // wrapped-negative value. If postings ever need to carry a larger statistic, widen these to long here and at the write side.
     final int tf = (int) buffer.getUnsignedNumber();
     final int docLength = (int) buffer.getUnsignedNumber();
     // Deletion markers (negative bucket id) carry no real statistics; keep them as a plain RID so nothing downstream mistakes a

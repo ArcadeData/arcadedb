@@ -422,6 +422,20 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void reservedDefaultFieldPropertyNameIsRejected() {
+    // The query parser reserves an internal sentinel for the unqualified default field; a real property with that exact name
+    // would be ambiguous on a multi-property index, so index creation must reject it rather than mis-score silently.
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.`__arcadedb_default_field__` STRING");
+      database.command("sql", "CREATE PROPERTY Doc.title STRING");
+    });
+    assertThatThrownBy(() -> database.transaction(() -> database.command("sql",
+        "CREATE INDEX ON Doc (`__arcadedb_default_field__`, title) FULL_TEXT")))
+        .hasStackTraceContaining("reserved"); // the IllegalArgumentException is wrapped by the index builder
+  }
+
+  @Test
   void invalidBM25ParametersAreRejected() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");

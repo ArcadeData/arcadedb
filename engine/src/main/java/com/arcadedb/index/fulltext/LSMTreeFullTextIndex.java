@@ -110,6 +110,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
               "Full text index can only be defined on STRING properties, found: " + keyType);
       }
 
+      // Reject a property whose name collides with the query parser's reserved default-field sentinel: on a multi-property index
+      // such a field could not be distinguished from an unqualified term. Fail fast at creation rather than mis-scoring silently.
+      if (builder.getMetadata() != null && builder.getMetadata().propertyNames != null)
+        for (final String property : builder.getMetadata().propertyNames)
+          if (FullTextQueryExecutor.DEFAULT_FIELD.equals(property))
+            throw new IllegalArgumentException(
+                "Property name '" + property + "' is reserved for full-text indexes; please rename the property");
+
       // Get metadata if available. New full-text indexes default to BM25 similarity (issue #4687): when the user did not supply a
       // FullTextIndexMetadata, synthesize one carrying the BM25 defaults so freshly created indexes rank with BM25 out of the box.
       final FullTextIndexMetadata ftMetadata;
@@ -265,14 +273,17 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * When {@code candidates} is non-null only those documents are scored: a single streaming pass counts the document frequency
    * and collects just the candidate postings (bounded by the candidate set), then the BM25 contribution is applied once the IDF
    * is known. When {@code candidates} is null every matching document is scored, which needs two passes (count df, then
-   * accumulate) to avoid materializing the whole posting list. Either way memory is bounded by the result/candidate set, not by
-   * the (possibly huge) posting list of a common term.
+   * accumulate) to avoid materializing the whole posting list.
    * <p>
-   * TODO(perf): on the no-candidate path each token's posting list is scanned TWICE (count df, then accumulate), so a query
-   * with T terms over a large index does 2*T full posting scans - the main BM25 hot-path cost vs CLASSIC. The first pass exists
-   * only to derive the document frequency; if the LSM layer exposed a per-key entry count (the compacted index already keeps
-   * page-level counts in its root) df could be obtained without scanning, halving the I/O. The candidate path (the SQL
-   * {@code SEARCH_INDEX} entry point) already scans once; prefer it for large unconstrained queries until this is addressed.
+   * DESIGN (deliberate, not a TODO): the no-candidate path streams each token's posting list twice (count df, then accumulate)
+   * rather than materializing it once and deriving df from the list. This is a memory-vs-I/O trade-off resolved in favour of
+   * bounded peak memory, per the project's low-GC priority: a single-pass-materialize would hold one common term's entire posting
+   * list (df {@link FullTextPostingRID} objects) <i>simultaneously</i> with the growing score map - roughly doubling peak memory
+   * for a high-frequency term - whereas the streaming df pass keeps only the score map live. The cost is 2*T posting scans for a
+   * T-term query. This path is the direct {@code index.get(query)} API only; the primary SQL {@code SEARCH_INDEX} entry point is
+   * candidate-based and already single-pass, so prefer it for large unconstrained queries. The clean way to get single-pass
+   * <i>without</i> the memory hit is a per-key entry count at the LSM layer (the compacted index already keeps page-level counts
+   * in its root); that is a larger storage-layer change tracked separately.
    *
    * @param tokenBoosts scoring tokens (stored-key form) mapped to their effective boost
    * @param candidates  documents to score, or {@code null} to score every matching document
