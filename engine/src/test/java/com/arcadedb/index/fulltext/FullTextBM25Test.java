@@ -617,6 +617,8 @@ class FullTextBM25Test extends TestHelper {
       final String plan = rs.next().getProperty("executionPlanAsString");
       // The scoring breakdown is capped and flagged rather than scanning all 80 expanded terms' postings.
       assertThat(plan).contains("termsTruncated");
+      // The breakdown also reports how many terms were omitted (80 matched - 64 shown = 16) so the partial view is explicit.
+      assertThat(plan).contains("termsOmitted").contains("\"termsOmitted\":16");
     });
   }
 

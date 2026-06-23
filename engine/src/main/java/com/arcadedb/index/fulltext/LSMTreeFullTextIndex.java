@@ -521,10 +521,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     final JSONArray terms = new JSONArray();
     int explained = 0;
     for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
-      if (explained++ >= MAX_EXPLAIN_TERMS) {
+      if (explained >= MAX_EXPLAIN_TERMS) {
+        // Report both the flag and how many terms were omitted so a user debugging a complex query knows the breakdown is partial.
         json.put("termsTruncated", true);
+        json.put("termsOmitted", tokenBoosts.size() - MAX_EXPLAIN_TERMS);
+        json.put("termsShown", MAX_EXPLAIN_TERMS);
         break;
       }
+      explained++;
       final IndexCursor postings = underlyingIndex.get(new String[] { e.getKey() });
       long df = 0;
       while (postings.hasNext()) {

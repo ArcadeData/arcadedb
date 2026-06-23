@@ -250,9 +250,7 @@ public class FullTextQueryExecutor {
   private void collectMatches(final Query query, final Map<RID, AtomicInteger> scoreMap,
       final Set<RID> excluded) {
 
-    if (query instanceof BooleanQuery) {
-      final BooleanQuery bq = (BooleanQuery) query;
-
+    if (query instanceof final BooleanQuery bq) {
       if (tokensOnly) {
         // Only the positive clauses contribute scoring tokens; recurse to capture them and skip all set intersection/merge work.
         for (final BooleanClause clause : bq.clauses())
@@ -329,25 +327,25 @@ public class FullTextQueryExecutor {
       } finally {
         currentBoost = saved;
       }
-    } else if (query instanceof TermQuery) {
-      collectTermMatches((TermQuery) query, scoreMap);
-    } else if (query instanceof PhraseQuery) {
-      collectPhraseMatches((PhraseQuery) query, scoreMap);
-    } else if (query instanceof PrefixQuery) {
-      collectPrefixMatches((PrefixQuery) query, scoreMap);
-    } else if (query instanceof WildcardQuery) {
-      collectWildcardMatches((WildcardQuery) query, scoreMap);
-    } else if (query instanceof FuzzyQuery) {
-      collectFuzzyMatches((FuzzyQuery) query, scoreMap);
-    } else if (query instanceof RegexpQuery) {
-      collectRegexpMatches((RegexpQuery) query, scoreMap);
+    } else if (query instanceof final TermQuery tq) {
+      collectTermMatches(tq, scoreMap);
+    } else if (query instanceof final PhraseQuery pq) {
+      collectPhraseMatches(pq, scoreMap);
+    } else if (query instanceof final PrefixQuery pq) {
+      collectPrefixMatches(pq, scoreMap);
+    } else if (query instanceof final WildcardQuery wq) {
+      collectWildcardMatches(wq, scoreMap);
+    } else if (query instanceof final FuzzyQuery fq) {
+      collectFuzzyMatches(fq, scoreMap);
+    } else if (query instanceof final RegexpQuery rq) {
+      collectRegexpMatches(rq, scoreMap);
     }
     // Other Lucene query types (e.g., TermRangeQuery) are intentionally ignored.
   }
 
   private void collectTermsForExclusion(final Query query, final Set<RID> excluded) {
-    if (query instanceof BooleanQuery) {
-      for (final BooleanClause clause : ((BooleanQuery) query).clauses()) {
+    if (query instanceof final BooleanQuery bq) {
+      for (final BooleanClause clause : bq.clauses()) {
         // A nested MUST_NOT inside an exclusion context is a double negation (e.g. NOT (A AND NOT B) - B should NOT be excluded).
         // Skip such clauses so their terms are not wrongly added to the exclusion set. (Fully representing the positive
         // contribution of a double-negated term would require general boolean evaluation; this at least avoids excluding it.)
