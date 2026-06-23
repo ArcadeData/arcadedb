@@ -38,7 +38,7 @@ public class SplitFunction implements StatelessFunction {
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length != 2)
       throw new CommandExecutionException("split() requires exactly 2 arguments: split(string, delimiter)");
-    if (args[0] == null)
+    if (args[0] == null || args[1] == null)
       return null;
     final String str = args[0].toString();
     final String delimiter = args[1].toString();
