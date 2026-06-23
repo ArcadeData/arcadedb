@@ -139,19 +139,41 @@ public final class SimdGraphOlapVectorOps implements GraphOlapVectorOps {
   @Override
   public long sumInt(final int[] data, final int offset, final int length) {
     final int lanes = INT_SPECIES.length();
+    // Number of LongVector sub-parts an IntVector widens into via I2L convertShape.
+    // 0 means the int/long lane ratio is not an exact (>=1) multiple, so the widening
+    // SIMD path is skipped and the scalar fallback handles the whole range.
+    final int parts = widenParts(lanes, LONG_SPECIES.length());
     long s = 0;
     int i = 0;
-    final int longLanes = LONG_SPECIES.length();
-    final int parts = (lanes + longLanes - 1) / longLanes;
-    for (; i + lanes <= length; i += lanes) {
-      final IntVector v = IntVector.fromArray(INT_SPECIES, data, offset + i);
-      // Widen int lanes to long before reducing to avoid int overflow
-      for (int p = 0; p < parts; p++)
-        s += ((LongVector) v.convertShape(VectorOperators.I2L, LONG_SPECIES, p)).reduceLanes(VectorOperators.ADD);
+    if (parts > 0) {
+      for (; i + lanes <= length; i += lanes) {
+        final IntVector v = IntVector.fromArray(INT_SPECIES, data, offset + i);
+        // Widen int lanes to long before reducing to avoid int overflow
+        for (int p = 0; p < parts; p++)
+          s += ((LongVector) v.convertShape(VectorOperators.I2L, LONG_SPECIES, p)).reduceLanes(VectorOperators.ADD);
+      }
     }
     for (; i < length; i++)
       s += data[offset + i];
     return s;
+  }
+
+  /**
+   * Computes how many {@link LongVector} parts an {@link IntVector} of {@code intLanes} lanes widens into,
+   * given a {@code longLanes}-lane long species, for an I2L {@code convertShape}.
+   * <p>
+   * {@code convertShape(I2L, LONG_SPECIES, p)} only accepts part indices {@code p} in {@code [0, intLanes / longLanes)}.
+   * On current hardware both preferred species share the same vector bit width, so {@code intLanes == 2 * longLanes}
+   * and this returns {@code 2}. For exotic species ratios (e.g. future SVE/RVV) where the ratio is not an exact
+   * multiple {@code >= 1}, this returns {@code 0} so the caller falls back to scalar instead of issuing an
+   * out-of-range part index.
+   *
+   * @return the exact number of widening parts, or {@code 0} when the SIMD widening path is not applicable
+   */
+  static int widenParts(final int intLanes, final int longLanes) {
+    if (intLanes < longLanes || intLanes % longLanes != 0)
+      return 0;
+    return intLanes / longLanes;
   }
 
   @Override
