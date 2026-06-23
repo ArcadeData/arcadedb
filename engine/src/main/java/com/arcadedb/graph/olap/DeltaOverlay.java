@@ -369,8 +369,15 @@ class DeltaOverlay {
     return baseNodeCount - deletedBaseNodes.cardinality() + overflowCount - deletedOverflowNodes.cardinality();
   }
 
+  /**
+   * Returns the number of live overflow vertices, i.e. the allocated overflow slots minus the
+   * ones that have been deleted. The internal {@code overflowCount} field is a monotonic
+   * slot-allocation counter (it drives overflow id assignment and the {@link #isDeleted} bounds
+   * check), so deleted slots are never reclaimed; subtracting the deleted cardinality - exactly
+   * as {@link #getTotalNodeCount()} does - keeps this count consistent. See issue #4720.
+   */
   int getOverflowCount() {
-    return overflowCount;
+    return overflowCount - deletedOverflowNodes.cardinality();
   }
 
   int getDeltaEdgeCount() {
