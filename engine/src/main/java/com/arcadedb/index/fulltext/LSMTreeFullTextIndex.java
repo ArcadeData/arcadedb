@@ -245,12 +245,18 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     for (final Map.Entry<RID, AtomicInteger> entry : scoreMap.entrySet())
       list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().get()));
 
+    // Most-relevant first (descending coordination score), RID as a stable tiebreaker so the order is deterministic. Matches the
+    // BM25 path; the previous ascending sort returned the least-relevant documents first.
     if (list.size() > 1)
       list.sort((o1, o2) -> {
-        if (o1.score == o2.score)
-          return 0;
-        return o1.score < o2.score ? -1 : 1;
+        final int cmp = Integer.compare(o2.score, o1.score);
+        if (cmp != 0)
+          return cmp;
+        return o1.record.getIdentity().compareTo(o2.record.getIdentity());
       });
+
+    if (limit > -1 && list.size() > limit)
+      return new TempIndexCursor(list.subList(0, limit));
 
     return new TempIndexCursor(list);
   }
@@ -400,9 +406,18 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         return o1.record.getIdentity().compareTo(o2.record.getIdentity());
       });
 
-    if (limit > 0 && list.size() > limit)
+    if (limit > -1 && list.size() > limit)
       return new TempIndexCursor(list.subList(0, limit));
     return new TempIndexCursor(list);
+  }
+
+  /**
+   * Returns the raw postings for an already-resolved stored key (RID-only, no BM25 scoring and no re-analysis), used by
+   * {@link FullTextQueryExecutor} to collect candidate documents cheaply before scoring them once via
+   * {@link #scoreCandidatesBM25}. Going through {@link #get} here would run the full scoring pipeline only to discard the scores.
+   */
+  public IndexCursor getPostings(final String storedKey) {
+    return underlyingIndex.get(new String[] { storedKey });
   }
 
   /**
@@ -442,8 +457,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       final IndexCursor postings = underlyingIndex.get(new String[] { e.getKey() });
       long df = 0;
       while (postings.hasNext()) {
-        postings.next();
-        ++df;
+        // Skip deletion markers (negative bucket id) so the explained df/idf matches what computeBM25Scores actually uses.
+        if (postings.next().getIdentity().getBucketId() >= 0)
+          ++df;
       }
       terms.put(new JSONObject().put("term", e.getKey()).put("df", df).put("idf", BM25Scorer.idf(totalDocs, df))
           .put("boost", e.getValue()));
@@ -681,12 +697,18 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     if (getPropertyCount() == 1) {
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
-      final int docLen = keywords.size();
       final Map<String, Integer> tfs = new HashMap<>();
-      for (final String k : keywords)
+      int docLen = 0;
+      for (final String k : keywords) {
+        // Keep null tokens in the term-frequency map so they still flow to the underlying put and the configured NULL_STRATEGY is
+        // enforced, but exclude them from the document length (a null value has no length).
         tfs.merge(k, 1, Integer::sum);
+        if (k != null)
+          ++docLen;
+      }
+      final int len = docLen;
       for (final Map.Entry<String, Integer> e : tfs.entrySet())
-        underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), docLen));
+        underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), len));
       countDocuments(rids.length, docLen);
     } else {
       final List<String> propertyNames = getPropertyNames();
@@ -1094,6 +1116,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     for (final Object t : text) {
       if (t == null)
+        // Emit a null token so a null value still reaches the underlying index and its configured NULL_STRATEGY (SKIP/ERROR) is
+        // enforced. Callers that compute document length exclude these null tokens (see putWithStats).
         tokens.add(null);
       else {
         final TokenStream tokenizer = analyzer.tokenStream("contents", t.toString());

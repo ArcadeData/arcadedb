@@ -56,12 +56,14 @@ public class IndexCursorEntry {
     if (o == null || getClass() != o.getClass())
       return false;
     final IndexCursorEntry that = (IndexCursorEntry) o;
-    return score == that.score && Objects.equals(record, that.record) && Arrays.equals(keys, that.keys);
+    // Identity is (record, keys) only. The relevance score is a derived value, not part of identity: including it would let the
+    // same document appear twice in a result Set when scored differently (e.g. distinct BM25 floats for the same RID).
+    return Objects.equals(record, that.record) && Arrays.equals(keys, that.keys);
   }
 
   @Override
   public int hashCode() {
-    int result = Objects.hash(record, score);
+    int result = Objects.hashCode(record);
     result = 31 * result + Arrays.hashCode(keys);
     return result;
   }

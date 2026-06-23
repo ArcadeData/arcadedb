@@ -25,7 +25,6 @@ import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
-import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
@@ -38,8 +37,10 @@ import static org.assertj.core.api.Assertions.within;
  * Compaction tests for BM25 full-text indexes. Uses a tiny page size so a single high-frequency token's posting list spans
  * multiple compacted pages - the exact case that used to silently drop postings on read (a sparse-root-index bug, see
  * {@code LSMTreeIndexCompactor}). Verifies that after compaction the full result set, ranking and scores are unchanged.
+ * <p>
+ * Not tagged {@code slow}: although it inserts a few hundred documents, it completes in well under a second and pins a
+ * correctness regression (postings silently dropped on compaction), so it must run in every CI build.
  */
-@Tag("slow")
 class FullTextBM25CompactionTest extends TestHelper {
 
   private Map<String, Float> searchScores(final String query) {

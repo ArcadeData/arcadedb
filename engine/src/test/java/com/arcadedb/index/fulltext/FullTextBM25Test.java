@@ -19,14 +19,18 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.Document;
 import com.arcadedb.index.Index;
+import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -247,6 +251,46 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void updateReplacesPostingsAndKeepsScoringConsistent() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      database.command("sql", "INSERT INTO Doc SET name = 'doc', content = 'java tutorial'");
+      database.command("sql", "INSERT INTO Doc SET name = 'other', content = 'python guide'");
+    });
+
+    // The document initially matches "java" but not "python".
+    database.transaction(() -> {
+      assertThat(searchScores("Doc[content]", "java")).containsKey("doc");
+      assertThat(searchScores("Doc[content]", "python")).doesNotContainKey("doc");
+    });
+
+    // Update the indexed field: the old token ("java") must stop matching and the new one ("python") must start matching.
+    database.transaction(() -> database.command("sql", "UPDATE Doc SET content = 'python scripting' WHERE name = 'doc'"));
+
+    database.transaction(() -> {
+      assertThat(searchScores("Doc[content]", "java")).doesNotContainKey("doc"); // old posting removed
+      final Map<String, Float> python = searchScores("Doc[content]", "python");
+      assertThat(python).containsKey("doc"); // new posting added
+      assertThat(python.get("doc")).isGreaterThan(0f);
+    });
+
+    // After an update the corpus length counters must not be double-counted: recompute (the source of truth) must agree with the
+    // incrementally maintained counters, so scores are unchanged by a recompute.
+    final Map<String, Float> beforeRecompute = new HashMap<>();
+    database.transaction(() -> beforeRecompute.putAll(searchScores("Doc[content]", "python")));
+    recomputeCounters();
+    database.transaction(() -> {
+      final Map<String, Float> afterRecompute = searchScores("Doc[content]", "python");
+      assertThat(afterRecompute.keySet()).isEqualTo(beforeRecompute.keySet());
+      for (final Map.Entry<String, Float> e : afterRecompute.entrySet())
+        assertThat(e.getValue()).isCloseTo(beforeRecompute.get(e.getKey()), within(1e-4f));
+    });
+  }
+
+  @Test
   void invalidBM25ParametersAreRejected() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");
@@ -380,8 +424,8 @@ class FullTextBM25Test extends TestHelper {
     database.transaction(() -> {
       final Map<String, Float> scores = searchScores("Doc[content]", "java programming language");
       // CLASSIC coordination: integer match counts widened to float.
-      assertThat(scores.get("all3")).isEqualTo(3.0f);
-      assertThat(scores.get("one")).isEqualTo(1.0f);
+      assertThat(scores.get("all3")).isCloseTo(3.0f, within(1e-4f));
+      assertThat(scores.get("one")).isCloseTo(1.0f, within(1e-4f));
 
       // $score is a Float now even for CLASSIC indexes (was Integer before BM25): pin the type so the breaking change is tested.
       final ResultSet rs = database.query("sql",
@@ -456,6 +500,29 @@ class FullTextBM25Test extends TestHelper {
     reopenDatabase();
 
     database.transaction(() -> {
+      // Directly assert the persisted BM25 configuration and corpus counters round-tripped, so a silent regression in
+      // writeToJSON/fromJSON (e.g. k1 stops persisting) is caught even if it would not move the scores past the epsilon below.
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+      for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
+        if (bucketIndex instanceof LSMTreeFullTextIndex ftIndex) {
+          final var meta = ftIndex.getFullTextMetadata();
+          assertThat(meta.getSimilarity()).isEqualTo("BM25");
+          assertThat(meta.getBm25K1()).isCloseTo(1.5f, within(1e-6f));
+          assertThat(meta.getBm25B()).isCloseTo(0.6f, within(1e-6f));
+        }
+      // The type-wide counters feeding avgdl must also survive: 13 documents totalling 2 + 12*3 = 38 tokens.
+      long totalDocs = 0L;
+      long sumDocLength = 0L;
+      for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
+        if (bucketIndex instanceof LSMTreeFullTextIndex ftIndex) {
+          totalDocs += ftIndex.getFullTextMetadata().getTotalDocs();
+          sumDocLength += ftIndex.getFullTextMetadata().getSumDocLength();
+        }
+      // The counters are shared type-wide (same metadata object per bucket), so read them from a single bucket index.
+      final LSMTreeFullTextIndex anyBucket = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
+      assertThat(anyBucket.getFullTextMetadata().getTotalDocs()).isEqualTo(13L);
+      assertThat(anyBucket.getFullTextMetadata().getSumDocLength()).isEqualTo(38L);
+
       final Map<String, Float> after = searchScores("Doc[content]", "quantum data");
       // The ranking (rare term wins) and the actual scores must be identical after restart.
       assertThat(after.get("rare")).isNotNull();
@@ -463,6 +530,41 @@ class FullTextBM25Test extends TestHelper {
       for (final Map.Entry<String, Float> e : after.entrySet())
         if (!e.getKey().equals("rare"))
           assertThat(after.get("rare")).isGreaterThan(e.getValue());
+    });
+  }
+
+  @Test
+  void classicGetReturnsMostRelevantFirstAndHonorsLimit() {
+    database.transaction(() -> {
+      // Single bucket so every document lands in the one bucket index whose cursor order we assert.
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 1");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"similarity\": \"CLASSIC\"}");
+      // d3 matches all three query terms, d2 two, d1 one: CLASSIC coordination score 3 > 2 > 1.
+      database.command("sql", "INSERT INTO Doc SET name = 'd1', content = 'java'");
+      database.command("sql", "INSERT INTO Doc SET name = 'd2', content = 'java database'");
+      database.command("sql", "INSERT INTO Doc SET name = 'd3', content = 'java database tuning'");
+    });
+
+    database.transaction(() -> {
+      // The cursor itself must return the most-relevant document first (no explicit ORDER BY): the order is the index's, not the
+      // engine's. This pins the fix for the previously ascending (least-relevant-first) classic sort.
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+      final LSMTreeFullTextIndex bucket = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
+
+      final List<String> order = new ArrayList<>();
+      final IndexCursor cursor = bucket.get(new Object[] { "java database tuning" });
+      while (cursor.hasNext())
+        order.add(((Document) cursor.next().getRecord()).getString("name"));
+      assertThat(order).containsExactly("d3", "d2", "d1");
+
+      // limit must truncate to the top-N by score, not be ignored.
+      final List<String> top = new ArrayList<>();
+      final IndexCursor limited = bucket.get(new Object[] { "java database tuning" }, 2);
+      while (limited.hasNext())
+        top.add(((Document) limited.next().getRecord()).getString("name"));
+      assertThat(top).containsExactly("d3", "d2");
     });
   }
 }

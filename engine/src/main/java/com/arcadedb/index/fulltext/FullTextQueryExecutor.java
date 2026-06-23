@@ -388,7 +388,9 @@ public class FullTextQueryExecutor {
     if (tokensOnly)
       return;
 
-    final IndexCursor cursor = index.get(new Object[] { searchKey });
+    // Raw postings lookup: we only need the matching RIDs here. The BM25 score is computed once, later, by scoreCandidatesBM25;
+    // going through index.get() would run (and then discard) the full scoring pipeline for every term.
+    final IndexCursor cursor = index.getPostings(searchKey);
     while (cursor.hasNext()) {
       final RID rid = cursor.next().getIdentity();
       scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
@@ -415,7 +417,7 @@ public class FullTextQueryExecutor {
     for (final Term term : terms) {
       recordScoringToken(term.text(), 1.0f);
       final Map<RID, AtomicInteger> termMatches = new HashMap<>();
-      final IndexCursor cursor = index.get(new Object[] { term.text() });
+      final IndexCursor cursor = index.getPostings(term.text());
       while (cursor.hasNext()) {
         termMatches.put(cursor.next().getIdentity(), new AtomicInteger(1));
       }
@@ -548,7 +550,7 @@ public class FullTextQueryExecutor {
         recordScoringToken(key, boost);
         if (!tokensOnly)
           scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
-      } else if (rangeScan && startKey != null && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
+      } else if (rangeScan && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
         break;
       }
     }
