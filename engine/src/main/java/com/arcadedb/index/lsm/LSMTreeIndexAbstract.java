@@ -525,6 +525,11 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * Appends the BM25 per-posting statistics (term frequency and document length) right after the serialized RID. Values that are
    * not {@link FullTextPostingRID} (e.g. deletion markers and compacted root-page pointers) carry no statistics and are written as
    * zeroes so the on-disk layout stays uniform and symmetric with {@link #readEntryValues(Binary)}.
+   * <p>
+   * Alignment invariant: a given index instance writes and reads every page - leaf <i>and</i> compacted root - with the same
+   * {@link #storeTermFrequency} flag, so the two zero varints written here for a root-page pointer are always consumed back by
+   * {@link #readEntryValue(Binary)}. The pointer is reconstructed as a {@code FullTextPostingRID(tf=0, docLength=0)} (its bucket id
+   * is non-negative), but the compacted-root read path uses only its position (the target page number), so this is harmless.
    */
   private void writeTermFrequency(final Binary buffer, final Object value) {
     if (value instanceof FullTextPostingRID s) {

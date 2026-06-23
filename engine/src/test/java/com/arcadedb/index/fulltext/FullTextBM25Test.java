@@ -23,6 +23,7 @@ import com.arcadedb.database.Document;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.TypeIndex;
+import com.arcadedb.index.lsm.FullTextPostingRID;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Tag;
@@ -288,6 +289,19 @@ class FullTextBM25Test extends TestHelper {
       for (final Map.Entry<String, Float> e : afterRecompute.entrySet())
         assertThat(e.getValue()).isCloseTo(beforeRecompute.get(e.getKey()), within(1e-4f));
     });
+  }
+
+  @Test
+  void fullTextPostingRIDRejectsNegativeStatistics() {
+    // Corrupt statistics must fail fast at construction rather than silently yield a nonsensical BM25 contribution.
+    assertThatThrownBy(() -> new FullTextPostingRID(database, 1, 1L, -1, 5))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("non-negative");
+    assertThatThrownBy(() -> new FullTextPostingRID(database, 1, 1L, 2, -1))
+        .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("non-negative");
+    // A valid posting is accepted and exposes its statistics.
+    final FullTextPostingRID posting = new FullTextPostingRID(database, 1, 1L, 2, 5);
+    assertThat(posting.tf).isEqualTo(2);
+    assertThat(posting.docLength).isEqualTo(5);
   }
 
   @Test

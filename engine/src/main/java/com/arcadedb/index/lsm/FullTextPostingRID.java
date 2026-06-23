@@ -41,6 +41,10 @@ public class FullTextPostingRID extends DatabaseRID {
 
   public FullTextPostingRID(final BasicDatabase database, final int bucketId, final long offset, final int tf, final int docLength) {
     super(database, bucketId, offset);
+    // Guard against corrupt statistics: a negative tf or docLength would silently produce a nonsensical BM25 score (e.g. a
+    // negative or infinite term contribution), so fail fast at construction instead.
+    if (tf < 0 || docLength < 0)
+      throw new IllegalArgumentException("tf and docLength must be non-negative: tf=" + tf + ", docLength=" + docLength);
     this.tf = tf;
     this.docLength = docLength;
   }

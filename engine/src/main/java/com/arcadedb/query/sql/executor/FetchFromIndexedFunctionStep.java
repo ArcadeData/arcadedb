@@ -20,11 +20,13 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.parser.BinaryCondition;
 import com.arcadedb.query.sql.parser.FromClause;
 
 import java.util.Iterator;
 import java.util.NoSuchElementException;
+import java.util.logging.Level;
 
 /**
  * Created by luigidellaquila on 06/08/16.
@@ -110,8 +112,10 @@ public class FetchFromIndexedFunctionStep extends AbstractExecutionStep {
       final Object scoring = functionCondition.getIndexedFunctionScoringExplain(queryTarget, context);
       if (scoring != null)
         result += "\n" + ExecutionStepInternal.getIndent(depth, indent) + "  SCORING " + scoring;
-    } catch (final Exception ignore) {
-      // ignore: scoring metadata is informational only
+    } catch (final Exception ex) {
+      // Scoring metadata is informational only, so never let it break plan rendering; log at FINE so the failure is still
+      // discoverable when debugging instead of being silently swallowed.
+      LogManager.instance().log(this, Level.FINE, "Failed to collect full-text scoring metadata for EXPLAIN/PROFILE", ex);
     }
     return result;
   }

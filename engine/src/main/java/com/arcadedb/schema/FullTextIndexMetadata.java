@@ -475,8 +475,14 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * Returns the average document length across the collection, or 1.0 when no statistics are available. The two counters are read
-   * independently, so a concurrent update may make this momentarily approximate - acceptable for a ranking heuristic.
+   * Returns the average document length across the collection, or 1.0 when no statistics are available.
+   * <p>
+   * The two counters are read independently (no shared lock), so a concurrent {@link #addDocument}/{@link #removeDocument} can be
+   * observed half-applied. The widest skew is one in-flight document: {@code addDocument} bumps {@code totalDocs} before
+   * {@code sumDocLength}, so a reader can briefly see {@code n} one too high (or, symmetrically for removal, one too low),
+   * yielding an avgdl off by roughly {@code avgdl/n}. With more than a handful of documents this is negligible, and avgdl is only
+   * the BM25 length-normalization denominator (further dampened by {@code b}), so a momentary approximation cannot distort
+   * ranking materially. An exact value is available on demand via the full-text index's {@code recomputeBM25Counters()}.
    */
   public double avgDocLength() {
     final long n = totalDocs.get();
