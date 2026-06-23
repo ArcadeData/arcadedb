@@ -1134,4 +1134,51 @@ public class GrpcServerIT extends BaseGraphServerTest {
     assertThat(result.getEdgesCreated()).isEqualTo(1);
     assertThat(result.getIdMappingMap()).isEmpty();
   }
+
+  @Test
+  void executeQueryKeepsNullValuedProjectedColumn() {
+    ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery("SELECT sqrt(-4) AS r")
+        .build();
+
+    ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
+
+    assertThat(response.getResultsList()).isNotEmpty();
+    QueryResult resultSet = response.getResultsList().get(0);
+    assertThat(resultSet.getRecordsList()).isNotEmpty();
+    GrpcRecord record = resultSet.getRecordsList().get(0);
+
+    // The key "r" must be present even though sqrt(-4) is null.
+    assertThat(record.getPropertiesMap()).containsKey("r");
+    // The value must be the unset GrpcValue (no kind field set) - the null sentinel.
+    assertThat(record.getPropertiesMap().get("r").getKindCase())
+        .isEqualTo(GrpcValue.KindCase.KIND_NOT_SET);
+  }
+
+  @Test
+  void executeQueryKeepsMultipleNullAndNonNullProjectedColumns() {
+    ExecuteQueryRequest request = ExecuteQueryRequest.newBuilder()
+        .setDatabase(getDatabaseName())
+        .setCredentials(credentials())
+        .setQuery("SELECT sqrt(-4) AS null_col, sqrt(16) AS non_null_col")
+        .build();
+
+    ExecuteQueryResponse response = authenticatedStub.executeQuery(request);
+
+    assertThat(response.getResultsList()).isNotEmpty();
+    QueryResult resultSet2 = response.getResultsList().get(0);
+    assertThat(resultSet2.getRecordsList()).isNotEmpty();
+    GrpcRecord record = resultSet2.getRecordsList().get(0);
+
+    // Both columns must be present regardless of their value.
+    assertThat(record.getPropertiesMap()).containsKey("null_col");
+    assertThat(record.getPropertiesMap()).containsKey("non_null_col");
+    assertThat(record.getPropertiesMap().get("null_col").getKindCase())
+        .isEqualTo(GrpcValue.KindCase.KIND_NOT_SET);
+    // non_null_col (sqrt(16) = 4) must have a kind set - the exact numeric type varies.
+    assertThat(record.getPropertiesMap().get("non_null_col").getKindCase())
+        .isNotEqualTo(GrpcValue.KindCase.KIND_NOT_SET);
+  }
 }
