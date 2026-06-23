@@ -24,6 +24,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -74,7 +75,7 @@ class OrderByNonComparableTest extends TestHelper {
 
     assertThat(asc).containsExactlyInAnyOrder("x", "y", "z");
     final List<String> reversed = new ArrayList<>(asc);
-    java.util.Collections.reverse(reversed);
+    Collections.reverse(reversed);
     assertThat(desc).containsExactlyElementsOf(reversed);
   }
 

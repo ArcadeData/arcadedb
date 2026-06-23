@@ -183,13 +183,12 @@ public class ResultInternal implements Result {
   public void removeProperty(final String name) {
     if (content != null)
       content.remove(name);
-    if (element != null) {
-      // Record the removal as a tombstone so that getProperty does not fall through to the
-      // backing element and re-surface the original value.
-      if (tombstones == null)
-        tombstones = new HashSet<>();
-      tombstones.add(name);
-    }
+    // Always record the removal as a tombstone so getProperty does not re-surface the value: neither from
+    // the backing element nor from the virtual $score/$similarity fallback. Without this an explicitly
+    // removed $score on a content-only result would still report the internal scoring float.
+    if (tombstones == null)
+      tombstones = new HashSet<>();
+    tombstones.add(name);
   }
 
   public <T> T getProperty(final String name) {
@@ -197,9 +196,12 @@ public class ResultInternal implements Result {
     // Tracks whether the key is genuinely present (even when mapped to null), so the $score/$similarity
     // fallback below cannot override a value that was explicitly projected as null.
     boolean present = false;
-    if (tombstones != null && tombstones.contains(name))
+    if (tombstones != null && tombstones.contains(name)) {
+      // Explicitly removed via removeProperty(): treat as present-and-null so the $score/$similarity
+      // fallback does not resurrect the internal field for a property the caller deliberately dropped.
       result = null;
-    else if (content != null && !content.isEmpty()) {
+      present = true;
+    } else if (content != null && !content.isEmpty()) {
       // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
       result = (T) content.get(name);
       present = content.containsKey(name);

@@ -73,11 +73,15 @@ class TimeSeriesThreeNodeWalGapReproIT extends BaseRaftHATest {
     final ConcurrentLinkedQueue<String> failures = new ConcurrentLinkedQueue<>();
     final AtomicBoolean writersDone = new AtomicBoolean(false);
     final AtomicInteger postedBatches = new AtomicInteger();
-    final ExecutorService exec = Executors.newFixedThreadPool(writerThreads + 1);
+    // Compaction runs on its own executor so the writer pool can be awaited independently. If both shared
+    // one pool, awaitTermination() would wait for the compaction task, which loops until writersDone - a
+    // flag we could only set after the wait returned, deadlocking the wait for its full timeout.
+    final ExecutorService writerExec = Executors.newFixedThreadPool(writerThreads);
+    final ExecutorService compactionExec = Executors.newSingleThreadExecutor();
 
     // Continuous compaction on the leader to keep shipping SCHEMA_ENTRYs alongside the append load.
     final TimeSeriesEngine engine = ((LocalTimeSeriesType) leaderDb.getSchema().getType("sensor")).getEngine();
-    exec.submit(() -> {
+    compactionExec.submit(() -> {
       while (!writersDone.get()) {
         try {
           engine.compactAll();
@@ -93,7 +97,7 @@ class TimeSeriesThreeNodeWalGapReproIT extends BaseRaftHATest {
 
     for (int t = 0; t < writerThreads; t++) {
       final int ti = t;
-      exec.submit(() -> {
+      writerExec.submit(() -> {
         final long base = 1_000_000L + (long) ti * 1_000_000L;
         for (int b = 0; b < batchesPerThread; b++) {
           final StringBuilder body = new StringBuilder();
@@ -114,9 +118,13 @@ class TimeSeriesThreeNodeWalGapReproIT extends BaseRaftHATest {
       });
     }
 
-    exec.shutdown();
-    assertThat(exec.awaitTermination(3, TimeUnit.MINUTES)).as("tasks complete").isTrue();
+    // Wait for the writers to finish FIRST (compaction is still running alongside them), then stop and
+    // await compaction. This ordering keeps compaction racing the append load for the whole run.
+    writerExec.shutdown();
+    assertThat(writerExec.awaitTermination(3, TimeUnit.MINUTES)).as("writers complete").isTrue();
     writersDone.set(true);
+    compactionExec.shutdown();
+    assertThat(compactionExec.awaitTermination(1, TimeUnit.MINUTES)).as("compaction stopped").isTrue();
 
     assertThat(failures).as("no ingest/compaction failures").isEmpty();
 

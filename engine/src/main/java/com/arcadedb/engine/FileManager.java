@@ -206,6 +206,8 @@ public class FileManager {
       // Drop the file on disk FIRST, then update the maps. If drop() throws, every map is left untouched
       // so the file id stays fully resolvable and the caller can retry; clearing fileIdMap up front would
       // strand the entry in fileNameMap/files (a partial, unretryable state) on failure (issue #4711).
+      // This intentionally holds the monitor across the drop() I/O so the map mutations stay atomic with
+      // the delete; dropFile is a rare DDL operation, so briefly blocking concurrent registerFile is fine.
       file = fileIdMap.get(fileId);
       if (file != null) {
         file.drop();

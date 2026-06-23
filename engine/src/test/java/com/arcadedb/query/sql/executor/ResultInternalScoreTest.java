@@ -98,4 +98,17 @@ class ResultInternalScoreTest {
 
     assertThat((Float) result.getProperty("$score")).isEqualTo(0.10f);
   }
+
+  @Test
+  void removedScoreIsNotResurrectedByInternalScore() {
+    // Explicitly removing $score must keep it absent (null), not fall back to the internal scoring float.
+    final ResultInternal result = new ResultInternal();
+    result.setScore(0.95f);
+    result.setProperty("$score", 0.10f);
+    result.removeProperty("$score");
+
+    assertThat((Object) result.getProperty("$score")).isNull();
+    // The raw internal score is still available through the dedicated accessor.
+    assertThat(result.getScore()).isEqualTo(0.95f);
+  }
 }
