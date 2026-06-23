@@ -47,7 +47,8 @@ RID tiebreaker) and honors the `limit` - consistent with the BM25 path, which al
 affects CLASSIC indexes specifically (BM25 indexes are new in this release and were never ascending).
 
 - **Impact:** applications that consumed the raw index cursor order (without an explicit SQL `ORDER BY`) will see the order
-  reversed, and a `limit` now truncates to the top-N by relevance instead of being ignored. Queries with an explicit
+  reversed, and a `limit` now truncates to the top-N by relevance instead of being ignored. This includes callers of the
+  low-level `Index.get(...)` API directly on a CLASSIC full-text index, not just SQL. Queries with an explicit
   `ORDER BY $score DESC` are unaffected (they already sorted).
 - **Migration:** if you relied on the old ascending order, add an explicit `ORDER BY $score ASC`. The new default
   (most-relevant-first) is almost always what full-text callers want.

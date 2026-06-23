@@ -374,6 +374,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * Lucene parser would make {@code label CONTAINSTEXT 'a-b'} or {@code 'foo AND bar'} interpret {@code -}/{@code AND} as
    * operators (wrong); throwing on such characters would reject legitimate literal text. So {@code get()} stays token-based and
    * {@code SEARCH_INDEX} is the deliberate home for Lucene syntax.
+   * <p>
+   * PERFORMANCE: this path scores every matching document with no candidate set, so {@link #computeBM25Scores} streams each
+   * token's posting list twice (count df, then accumulate) - {@code 2*T} posting scans for a {@code T}-term query. The SQL
+   * {@code SEARCH_INDEX} path is single-pass; prefer it for large or many-term queries.
    */
   private IndexCursor getBM25(final Object[] keys, final int limit) {
     final String queryText = keys.length > 0 && keys[0] != null ? keys[0].toString() : "";
@@ -868,7 +872,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * <p>
    * This runs at index time, before the transaction commits, and is NOT reversed on rollback, so a rolled-back insert leaves the
    * counters slightly inflated. The counters feed only {@code avgDocLength} (a robust normalizer); {@link #recomputeBM25Counters}
-   * repairs any drift exactly.
+   * (also reachable via {@code REBUILD INDEX <name> WITH statsOnly = true}) repairs any drift exactly.
+   * <p>
+   * FOLLOW-UP (not done deliberately): the drift could be avoided by deferring this update to an after-commit callback
+   * ({@code TransactionContext.addAfterCommitCallback}) so a rolled-back transaction never bumps the counters. That is left for a
+   * separate change because the counters must stay consistent across an HA cluster: the current update runs inside the index
+   * write that every node replays, whereas an after-commit callback fires only on the committing node and would diverge replica
+   * counters. Reversing on rollback (rather than deferring) would need a rollback hook that does not exist today.
    */
   private void countDocuments(final int numDocs, final int docLen) {
     if (ftMetadata != null)
