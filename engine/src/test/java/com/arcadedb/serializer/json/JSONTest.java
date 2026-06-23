@@ -28,6 +28,7 @@ import java.time.LocalTime;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.within;
 
 /**
@@ -350,6 +351,19 @@ class JSONTest extends TestHelper {
 
     JSONObject deserialized = new JSONObject(schema);
     assertThat(deserialized.getExpression("login.default.url")).isEqualTo("https://url1.com");
+  }
+
+  /**
+   * Issue #4709: JSONArray(String) must preserve the original parse error as the cause and include the offending input in the message,
+   * matching the behavior of JSONObject(String).
+   */
+  @Test
+  void invalidJSONArrayKeepsParseCause() {
+    final String invalid = "[1, 2,";
+    assertThatThrownBy(() -> new JSONArray(invalid))
+        .isInstanceOf(JSONException.class)
+        .hasMessageContaining(invalid)
+        .hasCauseInstanceOf(Exception.class);
   }
 
 //

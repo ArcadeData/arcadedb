@@ -47,7 +47,7 @@ public class JSONArray implements Iterable<Object> {
     try {
       array = (JsonArray) JsonParser.parseString(input);
     } catch (Exception e) {
-      throw new JSONException("Invalid JSON array format");
+      throw new JSONException("Invalid JSON array format: " + input, e);
     }
   }
 
