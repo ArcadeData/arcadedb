@@ -25,6 +25,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -220,10 +221,25 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     // BM25 is scored per bucket (per-shard), so document frequency / IDF differ across buckets. EXPLAIN/PROFILE reports a single
     // representative bucket's statistics (the first full-text bucket index) rather than a global view - enough to understand the
     // similarity, parameters and relative term weights, but not a type-wide IDF.
-    for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
-      if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex)
-        return new FullTextQueryExecutor(ftIndex).explainScoring(queryString);
-    return null;
+    final Index[] buckets = typeIndex.getIndexesOnBuckets();
+    LSMTreeFullTextIndex firstFt = null;
+    int bm25BucketCount = 0;
+    for (final Index bucketIndex : buckets)
+      if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
+        if (firstFt == null)
+          firstFt = ftIndex;
+        ++bm25BucketCount;
+      }
+    if (firstFt == null)
+      return null;
+
+    final JSONObject explain = new FullTextQueryExecutor(firstFt).explainScoring(queryString);
+    // Make it explicit that, on a multi-bucket type, these are the FIRST bucket's statistics so a reader is not misled into
+    // treating the df/IDF as type-wide.
+    if (bm25BucketCount > 1)
+      explain.put("note", "statistics shown are for the FIRST of " + bm25BucketCount
+          + " buckets; BM25 is scored per bucket, so df/IDF differ across buckets");
+    return explain;
   }
 
   @Override

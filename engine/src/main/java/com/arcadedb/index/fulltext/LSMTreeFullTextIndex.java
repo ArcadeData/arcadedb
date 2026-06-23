@@ -112,7 +112,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         ftMetadata = m;
       else {
         final IndexMetadata base = builder.getMetadata();
-        ftMetadata = new FullTextIndexMetadata(base.typeName, base.propertyNames.toArray(new String[0]),
+        ftMetadata = FullTextIndexMetadata.defaultBM25(base.typeName, base.propertyNames.toArray(new String[0]),
             base.associatedBucketId);
       }
 
@@ -355,8 +355,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     for (final Map.Entry<RID, Double> entry : scoreMap.entrySet())
       list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().floatValue()));
 
+    // Most-relevant first, with RID as a stable tiebreaker so equal-scored documents have a deterministic order (consistent with
+    // scoreCandidatesBM25 and the CLASSIC path).
     if (list.size() > 1)
-      list.sort((o1, o2) -> Float.compare(o2.floatScore, o1.floatScore));
+      list.sort((o1, o2) -> {
+        final int cmp = Float.compare(o2.floatScore, o1.floatScore);
+        if (cmp != 0)
+          return cmp;
+        return o1.record.getIdentity().compareTo(o2.record.getIdentity());
+      });
 
     if (limit > -1 && list.size() > limit)
       return new TempIndexCursor(list.subList(0, limit));
@@ -510,8 +517,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (ftMetadata == null)
       return;
     if (!ftMetadata.isCountersValid()) {
-      // Cold counters (pre-feature/unsaved index): rebuild unconditionally so the caller scores with valid statistics.
-      computeCorpusCounters(false);
+      // Cold counters (pre-feature/unsaved index): rebuild so the caller scores with valid statistics. Serialize on the shared
+      // metadata with a double-check so concurrent first-queries (across the type's bucket indexes, which share this metadata) do
+      // not all run a full type scan: the first thread rebuilds and marks the counters valid; the rest observe that and skip.
+      synchronized (ftMetadata) {
+        if (!ftMetadata.isCountersValid())
+          computeCorpusCounters(false);
+      }
       return;
     }
     // Persisted counters can lag the on-disk data (documents indexed after the last schema save). Once per session, validate them

@@ -345,6 +345,15 @@ class FullTextBM25Test extends TestHelper {
     });
     assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `Plain[content]` WITH statsOnly = true"))
         .hasMessageContaining("no recomputable statistics");
+
+    // Wildcard form: recompute every index that keeps statistics. Only the BM25 index (Doc[content]) qualifies; the CLASSIC one
+    // (Plain[content]) is skipped, so exactly one index is reported.
+    try (final ResultSet rs = database.command("sql", "REBUILD INDEX * WITH statsOnly = true")) {
+      final Result r = rs.next();
+      assertThat(r.<String>getProperty("operation")).isEqualTo("rebuild index stats");
+      assertThat(((Number) r.getProperty("statsRecomputed")).intValue()).isEqualTo(1);
+      assertThat(r.<List<String>>getProperty("indexes")).containsExactly("Doc[content]");
+    }
   }
 
   @Test

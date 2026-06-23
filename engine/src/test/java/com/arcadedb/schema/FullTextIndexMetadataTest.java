@@ -41,6 +41,30 @@ class FullTextIndexMetadataTest {
   }
 
   @Test
+  void writeToJSONOmitsDefaultBM25ParametersButKeepsTunedOnes() {
+    // Default BM25 index: k1/b are not emitted (they read back as the defaults), keeping the schema JSON terse.
+    final FullTextIndexMetadata defaults = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
+    final JSONObject defaultJson = defaults.writeToJSON(new JSONObject());
+    assertThat(defaultJson.getString("similarity", null)).isEqualTo(FullTextIndexMetadata.SIMILARITY_BM25);
+    assertThat(defaultJson.has("bm25_k1")).isFalse();
+    assertThat(defaultJson.has("bm25_b")).isFalse();
+
+    // Tuned values are emitted so they survive a round-trip.
+    final FullTextIndexMetadata tuned = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
+    tuned.setBm25K1(1.7f);
+    tuned.setBm25B(0.3f);
+    final JSONObject tunedJson = tuned.writeToJSON(new JSONObject());
+    assertThat(tunedJson.getFloat("bm25_k1")).isEqualTo(1.7f);
+    assertThat(tunedJson.getFloat("bm25_b")).isEqualTo(0.3f);
+
+    // A reload of the terse JSON restores the defaults.
+    final FullTextIndexMetadata reloaded = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
+    reloaded.fromJSON(defaultJson);
+    assertThat(reloaded.getBm25K1()).isEqualTo(FullTextIndexMetadata.DEFAULT_BM25_K1);
+    assertThat(reloaded.getBm25B()).isEqualTo(FullTextIndexMetadata.DEFAULT_BM25_B);
+  }
+
+  @Test
   void fromJSONWithAnalyzer() {
     final FullTextIndexMetadata metadata = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
 

@@ -5735,10 +5735,12 @@ public class SQLASTBuilder extends SQLParserBaseVisitor<Object> {
     // Handle WITH settings
     if (ctx.WITH() != null) {
       // WITH identifier EQ expression (COMMA identifier EQ expression)*
-      // identifier(0) is index name (already processed above)
-      // identifier(1), identifier(2), ... are setting keys
-      // expression(0), expression(1), ... are setting values
-      final List<SQLParser.IdentifierContext> settingKeys = ctx.identifier().subList(1, ctx.identifier().size());
+      // expression(0), expression(1), ... are setting values.
+      // The setting keys are also identifiers: for the named form identifier(0) is the index name (already processed above) and
+      // the keys start at identifier(1); for the `*` (STAR) form there is no index-name identifier, so the keys start at
+      // identifier(0). Using the wrong offset silently drops the first setting (this was the bug behind REBUILD INDEX * WITH ...).
+      final int firstSettingKeyIndex = ctx.STAR() != null ? 0 : 1;
+      final List<SQLParser.IdentifierContext> settingKeys = ctx.identifier().subList(firstSettingKeyIndex, ctx.identifier().size());
       final List<SQLParser.ExpressionContext> settingValues = ctx.expression();
 
       for (int i = 0; i < settingKeys.size() && i < settingValues.size(); i++) {

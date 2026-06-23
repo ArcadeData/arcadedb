@@ -57,6 +57,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public static final String SIMILARITY_CLASSIC = "CLASSIC";
 
+  /** Default BM25 term-frequency saturation parameter. */
+  public static final float  DEFAULT_BM25_K1 = 1.2f;
+  /** Default BM25 document-length normalization parameter. */
+  public static final float  DEFAULT_BM25_B  = 0.75f;
+
   private static final String ANALYZER_SUFFIX = "_analyzer";
   private static final String BOOST_SUFFIX    = "_boost";
 
@@ -71,8 +76,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
   // BM25 SCORING CONFIGURATION
   private String             similarity  = SIMILARITY_BM25;
-  private float              bm25K1      = 1.2f;
-  private float              bm25B       = 0.75f;
+  private float              bm25K1      = DEFAULT_BM25_K1;
+  private float              bm25B       = DEFAULT_BM25_B;
   private final Map<String, Float> fieldBoosts = new ConcurrentHashMap<>();
 
   // PERSISTED CORPUS STATISTICS FOR avgdl (live document count and sum of document lengths).
@@ -99,6 +104,15 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public FullTextIndexMetadata(final String typeName, final String[] propertyNames, final int bucketId) {
     super(typeName, propertyNames, bucketId);
+  }
+
+  /**
+   * Creates a metadata instance carrying the BM25 defaults, for a new full-text index created without explicit metadata so it
+   * ranks with BM25 out of the box. The constructor already defaults to BM25; this named factory makes that intent explicit at
+   * the call site.
+   */
+  public static FullTextIndexMetadata defaultBM25(final String typeName, final String[] propertyNames, final int bucketId) {
+    return new FullTextIndexMetadata(typeName, propertyNames, bucketId);
   }
 
   @Override
@@ -172,8 +186,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
     metadata.put("similarity", similarity);
     if (isBM25()) {
-      metadata.put("bm25_k1", bm25K1);
-      metadata.put("bm25_b", bm25B);
+      // Emit k1/b only when tuned away from the defaults (read back as the defaults when absent), keeping the schema JSON terse.
+      if (bm25K1 != DEFAULT_BM25_K1)
+        metadata.put("bm25_k1", bm25K1);
+      if (bm25B != DEFAULT_BM25_B)
+        metadata.put("bm25_b", bm25B);
       for (final Map.Entry<String, Float> entry : fieldBoosts.entrySet())
         metadata.put(entry.getKey() + BOOST_SUFFIX, entry.getValue());
     }

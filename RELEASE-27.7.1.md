@@ -39,10 +39,12 @@ fractional score.
 - **Migration:** read `$score` as a `Number` (or `Float`), e.g. `((Number) result.getProperty("$score")).floatValue()`. SQL that
   only sorts/filters on `$score` (`ORDER BY $score DESC`, `WHERE $score > ...`) is unaffected.
 
-### 2. Full-text `get()` cursor order is now most-relevant-first
+### 2. Full-text `get()` cursor order is now most-relevant-first (affects CLASSIC indexes)
 
-The full-text index cursor previously returned matches sorted by ascending score (least-relevant first) and did not apply the
-result `limit`. It now returns most-relevant-first (descending score, with a stable RID tiebreaker) and honors the `limit`.
+The **CLASSIC** (term-coordination) full-text index cursor previously returned matches sorted by ascending score
+(least-relevant first) and did not apply the result `limit`. It now returns most-relevant-first (descending score, with a stable
+RID tiebreaker) and honors the `limit` - consistent with the BM25 path, which already sorted descending. This change therefore
+affects CLASSIC indexes specifically (BM25 indexes are new in this release and were never ascending).
 
 - **Impact:** applications that consumed the raw index cursor order (without an explicit SQL `ORDER BY`) will see the order
   reversed, and a `limit` now truncates to the top-N by relevance instead of being ignored. Queries with an explicit
