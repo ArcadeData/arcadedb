@@ -65,21 +65,28 @@ public final class GorillaXORCodec {
         final int leading = Long.numberOfLeadingZeros(xor);
         final int trailing = Long.numberOfTrailingZeros(xor);
 
-        if (leading >= prevLeading && trailing >= prevTrailing) {
+        // The '10' (reuse) path is lossless only when the meaningful bits of the current XOR fall
+        // entirely within the previous window, i.e. leading >= prevLeading && trailing >= prevTrailing.
+        // Relaxing this would truncate bits in the decoder (which does readBits(blockSize) << prevTrailing).
+        // When reuse is valid we still compare its cost against opening a fresh, tighter block: textbook
+        // Gorilla never re-tightens the window once an outlier widened it, so a long run of narrow values
+        // keeps paying for the wide window. A fresh '11' costs 12 extra header bits; choose it whenever the
+        // reused window is more than 12 bits wider than the current value's own block.
+        final int reuseBlockSize = 64 - prevLeading - prevTrailing;
+        final int cappedLeading = Math.min(leading, 63);
+        final int newBlockSize = 64 - cappedLeading - trailing;
+        if (leading >= prevLeading && trailing >= prevTrailing && reuseBlockSize <= newBlockSize + 12) {
           // Case '10': reuse previous block position
           writer.writeBit(0);
-          final int blockSize = 64 - prevLeading - prevTrailing;
-          writer.writeBits(xor >>> prevTrailing, blockSize);
+          writer.writeBits(xor >>> prevTrailing, reuseBlockSize);
         } else {
           // Case '11': new block position
           writer.writeBit(1);
           // Cap leading zeros at 63 (6 bits)
-          final int cappedLeading = Math.min(leading, 63);
           writer.writeBits(cappedLeading, 6);
-          final int blockSize = 64 - cappedLeading - trailing;
           // blockSize ranges 1..64; store (blockSize - 1) to fit in 6 bits
-          writer.writeBits(blockSize - 1, 6);
-          writer.writeBits(xor >>> trailing, blockSize);
+          writer.writeBits(newBlockSize - 1, 6);
+          writer.writeBits(xor >>> trailing, newBlockSize);
 
           prevLeading = cappedLeading;
           prevTrailing = trailing;
