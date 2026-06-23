@@ -151,6 +151,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
     // Route through the setters so invalid k1/b in METADATA {...} are rejected at index creation rather than silently scoring wrong.
     setBm25K1(metadata.getFloat("bm25_k1", bm25K1));
     setBm25B(metadata.getFloat("bm25_b", bm25B));
+    // Restore the counters by setting the fields directly, NOT via setCounters(): setCounters() consumes the once-per-session
+    // stale-check (staleChecked=true), which on a load path would suppress the first-query validation that self-heals counters
+    // that lag the on-disk data. Keep this direct so the stale check still runs after a restart.
     this.totalDocs.set(metadata.getLong("ft_totalDocs", 0L));
     this.sumDocLength.set(metadata.getLong("ft_sumDocLength", 0L));
     this.countersValid = metadata.getBoolean("ft_countersValid", false);

@@ -364,9 +364,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * <p>
    * Query syntax here is limited: {@link #parseQueryTerms} only understands whitespace-separated terms and {@code field:value}.
    * It does NOT support the Lucene query syntax - caret boosts ({@code term^3}), boolean operators, phrases, or wildcards - which
-   * the SQL {@code SEARCH_INDEX(...)} entry point handles via the full Lucene parser. A {@code term^3} reaching here is analyzed
-   * as the literal token {@code term^3} (typically stripped to nothing), not as a boosted {@code term}. Use {@code SEARCH_INDEX}
-   * for the full query syntax; this direct path is for simple term lookups.
+   * the SQL {@code SEARCH_INDEX(...)} entry point handles via the full Lucene parser. A {@code term^3} reaching here is passed to
+   * the analyzer as literal text: the StandardAnalyzer tokenizes around the caret into {@code [term, 3]}, so it matches on
+   * {@code term} but the {@code ^3} is silently ignored rather than applied as a boost. Use {@code SEARCH_INDEX} for the full
+   * query syntax; this direct path is for simple term lookups.
+   * <p>
+   * This simple-token semantics is INTENTIONAL, not a deficiency: the direct {@code get()} path also backs the SQL
+   * {@code CONTAINSTEXT} operator, whose argument is literal text to find - not a query language. Routing {@code get()} through the
+   * Lucene parser would make {@code label CONTAINSTEXT 'a-b'} or {@code 'foo AND bar'} interpret {@code -}/{@code AND} as
+   * operators (wrong); throwing on such characters would reject legitimate literal text. So {@code get()} stays token-based and
+   * {@code SEARCH_INDEX} is the deliberate home for Lucene syntax.
    */
   private IndexCursor getBM25(final Object[] keys, final int limit) {
     final String queryText = keys.length > 0 && keys[0] != null ? keys[0].toString() : "";

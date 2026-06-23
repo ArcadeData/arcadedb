@@ -422,6 +422,45 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void directGetWithLuceneSyntaxIsGracefulNotLuceneParsed() {
+    // The direct index.get() path is token-based (it also backs CONTAINSTEXT), so Lucene syntax is NOT parsed - it is handed to
+    // the analyzer as literal text. This documents that 'java^3' does not crash and is not treated as a boost: the StandardAnalyzer
+    // simply tokenizes around the caret into [java, 3], so the document matches via the 'java' token but the ^3 boost is silently
+    // ignored. Use SEARCH_INDEX for real caret/boolean/phrase/wildcard semantics.
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 1");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      database.command("sql", "INSERT INTO Doc SET name = 'a', content = 'java tutorial'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+      final LSMTreeFullTextIndex bucket = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
+
+      // Caret syntax on the direct path: no exception. It matches via the analyzer-tokenized 'java' (the ^3 is not a Lucene boost,
+      // just a token separator), confirming graceful, non-Lucene handling rather than a crash or a parsed boost query.
+      int caretMatches = 0;
+      final IndexCursor caret = bucket.get(new Object[] { "java^3" });
+      while (caret.hasNext()) {
+        caret.next();
+        caretMatches++;
+      }
+      assertThat(caretMatches).isEqualTo(1);
+
+      // A plain term on the same path matches the same document.
+      int plainMatches = 0;
+      final IndexCursor plain = bucket.get(new Object[] { "java" });
+      while (plain.hasNext()) {
+        plain.next();
+        plainMatches++;
+      }
+      assertThat(plainMatches).isEqualTo(1);
+    });
+  }
+
+  @Test
   void reservedDefaultFieldPropertyNameIsRejected() {
     // The query parser reserves an internal sentinel for the unqualified default field; a real property with that exact name
     // would be ambiguous on a multi-property index, so index creation must reject it rather than mis-score silently.
