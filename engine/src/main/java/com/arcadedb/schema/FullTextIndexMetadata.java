@@ -103,7 +103,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private final AtomicBoolean staleChecked = new AtomicBoolean(false);
 
   /**
-   * Creates a new FullTextIndexMetadata instance.
+   * Creates a new FullTextIndexMetadata instance. Defaults to BM25 similarity (see the {@code similarity} field); the
+   * {@link #defaultBM25} factory is just a self-documenting alias of this constructor for the "new index" call site.
    *
    * @param typeName      the name of the type this index belongs to
    * @param propertyNames the property names indexed

@@ -153,7 +153,9 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         count = 0;
         keyValueFreePosition = currentPage.getMaxContentSize();
 
-        // WRITE THE KEY/VALUE CONTENT ON THE NEW PAGE
+        // WRITE THE KEY/VALUE CONTENT ON THE NEW PAGE. writeEntryMultipleValues clears keyValueContent at the start of its own
+        // loop, so this retry re-serializes the key/values from scratch into a clean buffer - the partial content from the call
+        // above is discarded, not appended.
         freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + INT_SERIALIZED_SIZE);
         writtenValues = writeEntryMultipleValues(keyValueContent, convertedKeys, values, freeSpaceInPage,
             currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId());

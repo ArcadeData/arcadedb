@@ -23,6 +23,9 @@ indexes that require attention when upgrading - see **Breaking Changes** below.
   `StandardAnalyzer` on restart; it now round-trips correctly (and carries the BM25 settings and corpus counters).
 - A property literally named `content` on a multi-property full-text index no longer collides with the query parser's default
   field, so `content:term` clauses (and `content_boost`) now resolve and score correctly.
+- Fixed `REBUILD INDEX * WITH <setting> = <value>` silently dropping the **first** setting: the `*` (all-indexes) form has no
+  index-name identifier, but the parser still skipped `identifier(0)` as if it were one. Any wildcard rebuild with a `WITH`
+  clause (e.g. `REBUILD INDEX * WITH batchSize = 1000`) was therefore ignoring that setting; named-index rebuilds were unaffected.
 
 ## ⚠️ Breaking Changes (migration notes)
 

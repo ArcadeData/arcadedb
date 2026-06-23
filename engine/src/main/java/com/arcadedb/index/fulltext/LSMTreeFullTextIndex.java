@@ -400,6 +400,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       }
     }
 
+    // The no-candidate path streams each token's postings twice (df + accumulate). Log at FINE for a multi-term query so an
+    // operator debugging a slow direct get() can see it doing 2*T scans and switch to SEARCH_INDEX. FINE keeps normal runs quiet.
+    if (tokenBoosts.size() > 1)
+      LogManager.instance().log(this, Level.FINE,
+          "Full-text get() scoring %d terms on index '%s' with two posting scans each; use SEARCH_INDEX(...) for a single-pass scan.",
+          null, tokenBoosts.size(), getName());
+
     return buildScoredCursor(computeBM25Scores(tokenBoosts, null), keys, limit);
   }
 
