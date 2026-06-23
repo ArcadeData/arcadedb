@@ -149,9 +149,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
       setSimilarity(metadata.getString("similarity"));
     else
       this.similarity = SIMILARITY_CLASSIC;
-    // Route through the setters so invalid k1/b in METADATA {...} are rejected at index creation rather than silently scoring wrong.
-    setBm25K1(metadata.getFloat("bm25_k1", bm25K1));
-    setBm25B(metadata.getFloat("bm25_b", bm25B));
+    // Route through the setters so invalid k1/b in METADATA {...} are rejected at index creation rather than silently scoring
+    // wrong. Default to the DEFAULT_BM25_* constants (not the current field values) so a key absent from the JSON resets to the
+    // default rather than carrying a stale value forward if fromJSON is ever called on a recycled instance.
+    setBm25K1(metadata.getFloat("bm25_k1", DEFAULT_BM25_K1));
+    setBm25B(metadata.getFloat("bm25_b", DEFAULT_BM25_B));
     // Restore the counters by setting the fields directly, NOT via setCounters(): setCounters() consumes the once-per-session
     // stale-check (staleChecked=true), which on a load path would suppress the first-query validation that self-heals counters
     // that lag the on-disk data. Keep this direct so the stale check still runs after a restart.

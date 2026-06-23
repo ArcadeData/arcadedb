@@ -502,6 +502,26 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void nestedNegationDoesNotWronglyExcludeDoubleNegatedTerms() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      database.command("sql", "INSERT INTO Doc SET name = 'd1', content = 'java tutorial'");
+      database.command("sql", "INSERT INTO Doc SET name = 'd2', content = 'java database'");
+    });
+
+    database.transaction(() -> {
+      // java AND NOT (database AND NOT tutorial) == java AND (NOT database OR tutorial).
+      // d1 (java, tutorial): java && (NOT database OR tutorial) -> matches. d2 (java, database): java && (false OR false) -> no.
+      // The nested NOT tutorial is a double negation: 'tutorial' must NOT be excluded, so d1 must survive (the bug excluded it).
+      final Map<String, Float> scores = searchScores("Doc[content]", "java -(database -tutorial)");
+      assertThat(scores.keySet()).containsExactly("d1");
+    });
+  }
+
+  @Test
   void caretInBooleanQueries() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");

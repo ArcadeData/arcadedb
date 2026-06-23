@@ -112,6 +112,11 @@ individual rows). There is no separate explain function.
 
 ## Operational notes / known limitations
 
+- **Phrase queries are unordered (all-terms, not in-order).** A quoted phrase like `"java database"` requires that all of its
+  terms occur in the document but does NOT enforce their order or adjacency - this index stores no token positions. So
+  `"java database"` and `"database java"` return the same documents (an AND of the terms), and a phrase can match even when the
+  words are far apart. Use phrase syntax for "all of these words" semantics, not for true proximity matching.
+
 - **Disaster recovery: keep BM25 index files with their schema.** Whether a full-text index stores the inline `tf`/`docLength`
   bytes is derived from the persisted schema (`similarity = BM25`), not from a per-page flag. If index files are restored or
   hand-copied **without** the matching schema (or the two are otherwise out of sync), the `tf`/`docLength` varints would be

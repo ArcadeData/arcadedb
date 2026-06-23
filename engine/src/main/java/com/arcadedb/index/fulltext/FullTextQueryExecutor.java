@@ -95,6 +95,12 @@ public class FullTextQueryExecutor {
    */
   static final int MAX_EXPANDED_SCORING_TERMS = 4096;
 
+  /**
+   * Result-universe size above which a pure-negative query (only MUST_NOT clauses, which must materialize the whole index to form
+   * the complement) logs a throttled WARNING so operators notice the O(index) cost.
+   */
+  static final int PURE_NEGATIVE_WARN_THRESHOLD = 100_000;
+
   private final LSMTreeFullTextIndex   index;
   private final Analyzer               analyzer;
   private final FullTextIndexMetadata  metadata;
@@ -119,6 +125,8 @@ public class FullTextQueryExecutor {
   // wildcard on one index can suppress the warning for another for the window - an acceptable trade-off for a diagnostic log.
   private static final long       EXPANSION_WARN_THROTTLE_MS = 60_000L;
   private static final AtomicLong lastExpansionWarnMs        = new AtomicLong(0L);
+  // Same 60s throttle for the pure-negative full-index-scan WARNING (also JVM-wide / shared across indexes).
+  private static final AtomicLong lastPureNegativeWarnMs     = new AtomicLong(0L);
 
   /**
    * Creates a new FullTextQueryExecutor for the given index.
@@ -340,6 +348,11 @@ public class FullTextQueryExecutor {
   private void collectTermsForExclusion(final Query query, final Set<RID> excluded) {
     if (query instanceof BooleanQuery) {
       for (final BooleanClause clause : ((BooleanQuery) query).clauses()) {
+        // A nested MUST_NOT inside an exclusion context is a double negation (e.g. NOT (A AND NOT B) - B should NOT be excluded).
+        // Skip such clauses so their terms are not wrongly added to the exclusion set. (Fully representing the positive
+        // contribution of a double-negated term would require general boolean evaluation; this at least avoids excluding it.)
+        if (clause.occur() == BooleanClause.Occur.MUST_NOT)
+          continue;
         collectTermsForExclusion(clause.query(), excluded);
       }
       return;
@@ -394,6 +407,19 @@ public class FullTextQueryExecutor {
   }
 
   /**
+   * Logs the pure-negative full-index-scan WARNING, throttled like {@link #maybeWarnExpansionCap()}.
+   */
+  private void maybeWarnPureNegativeScan(final int universeSize) {
+    final long now = System.currentTimeMillis();
+    final long last = lastPureNegativeWarnMs.get();
+    if (now - last >= EXPANSION_WARN_THROTTLE_MS && lastPureNegativeWarnMs.compareAndSet(last, now))
+      LogManager.instance().log(this, Level.WARNING,
+          "Pure-negative full-text query on index '%s' materialized %d documents (the whole index) to compute the complement. "
+              + "Add a positive clause to bound the scan. (throttled, logged at most once per %d s)",
+          index.getName(), universeSize, EXPANSION_WARN_THROTTLE_MS / 1000);
+  }
+
+  /**
    * Returns true when a parsed query field denotes the "unqualified" target rather than a real, field-qualified clause. A term is
    * unqualified when the parser left it on the {@link #DEFAULT_FIELD} sentinel, or when it is qualified with the sole property of a
    * single-property index: such an index stores only unprefixed postings, so {@code field:term} and {@code term} are equivalent
@@ -429,6 +455,11 @@ public class FullTextQueryExecutor {
       final RID rid = cursor.next().getIdentity();
       scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(1));
     }
+    // A pure-negative query (only MUST_NOT clauses) has no candidate set, so the whole index must be materialized to subtract the
+    // excluded RIDs and form the complement. This is O(index) in time and memory; warn (throttled) when the materialized universe
+    // is large so an operator who wrote e.g. `-the` notices the cost and adds a positive clause to bound it.
+    if (scoreMap.size() >= PURE_NEGATIVE_WARN_THRESHOLD)
+      maybeWarnPureNegativeScan(scoreMap.size());
   }
 
   private void collectTermMatches(final TermQuery query, final Map<RID, AtomicInteger> scoreMap) {
