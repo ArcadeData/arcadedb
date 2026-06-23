@@ -506,6 +506,34 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void nullIndexedFieldUnderBM25IsSkippedAndDoesNotInflateLength() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT"); // BM25, default NULL_STRATEGY (skip)
+      // One document has a null indexed field: it must be skipped cleanly (no phantom posting, no length inflation) while the
+      // others score normally.
+      database.command("sql", "INSERT INTO Doc SET name = 'nullDoc', content = null");
+      database.command("sql", "INSERT INTO Doc SET name = 'a', content = 'java tutorial'");
+      database.command("sql", "INSERT INTO Doc SET name = 'b', content = 'java guide reference'");
+    });
+
+    database.transaction(() -> {
+      final Map<String, Float> scores = searchScores("Doc[content]", "java");
+      // The null-content document never matches; the two real documents score finite, positive BM25 values.
+      assertThat(scores.keySet()).containsExactlyInAnyOrder("a", "b");
+      scores.values().forEach(s -> {
+        assertThat(s).isGreaterThan(0f);
+        assertThat(s.isNaN()).isFalse();
+      });
+      // The shorter document ('a', 2 tokens) outranks the longer one ('b', 3 tokens) for the same term - confirming the null
+      // field did not distort the average document length used for normalization.
+      assertThat(scores.get("a")).isGreaterThan(scores.get("b"));
+    });
+  }
+
+  @Test
   void singleDocumentScoresWithoutLengthBias() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");

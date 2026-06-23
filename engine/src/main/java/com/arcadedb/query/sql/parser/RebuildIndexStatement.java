@@ -72,13 +72,15 @@ public class RebuildIndexStatement extends DDLStatement {
     boolean statsOnly = false;
     if (!settings.isEmpty()) {
       for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+        // Render the setting value via Expression.toString(): its `value` field can be null depending on how the literal was
+        // parsed (it was for the integer in `WITH batchSize = 1000`), so toString() is the reliable accessor for all literals.
+        final String settingValue = entry.getValue().toString();
         if ("batchSize".equalsIgnoreCase(entry.getKey().toString()))
-          batchSize = Integer.parseInt(entry.getValue().value.toString());
+          batchSize = Integer.parseInt(settingValue);
         else if ("maxAttempts".equalsIgnoreCase(entry.getKey().toString()))
-          maxAttempts = Integer.parseInt(entry.getValue().value.toString());
+          maxAttempts = Integer.parseInt(settingValue);
         else if ("statsOnly".equalsIgnoreCase(entry.getKey().toString()))
-          // A boolean literal renders via toString() (its `value` field is null, unlike numeric literals).
-          statsOnly = Boolean.parseBoolean(entry.getValue().toString());
+          statsOnly = Boolean.parseBoolean(settingValue);
         else
           throw new CommandSQLParsingException("Unrecognized setting '" + entry.getKey() + "' in rebuild index statement");
       }
@@ -184,7 +186,7 @@ public class RebuildIndexStatement extends DDLStatement {
     final List<String> recomputed = new ArrayList<>();
     if (all) {
       for (final Index idx : database.getSchema().getIndexes())
-        if (idx instanceof TypeIndex && ((IndexInternal) idx).recomputeStatistics())
+        if (idx instanceof TypeIndex ti && ti.recomputeStatistics())
           recomputed.add(idx.getName());
     } else {
       final Index idx = database.getSchema().getIndexByName(name.getValue());

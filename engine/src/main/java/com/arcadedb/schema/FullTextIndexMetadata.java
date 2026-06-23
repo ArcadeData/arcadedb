@@ -65,6 +65,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
   private static final String ANALYZER_SUFFIX = "_analyzer";
   private static final String BOOST_SUFFIX    = "_boost";
 
+  // These scalar fields (analyzers, operator, wildcard flag, similarity, k1/b) are set once at index creation / schema load,
+  // before any query-path read, so they need no volatile/synchronization (unlike the live corpus counters and the per-field
+  // maps below, which are mutated after construction). Do not "fix" them by adding volatile - the publication is via the
+  // happens-before of schema load completing before the index serves queries.
   private          String              analyzerClass        = DEFAULT_ANALYZER;
   private          String              indexAnalyzerClass   = null;
   private          String              queryAnalyzerClass   = null;
@@ -461,6 +465,13 @@ public class FullTextIndexMetadata extends IndexMetadata {
 
   /**
    * Sets the persisted corpus counters in one shot, marking them valid.
+   * <p>
+   * Also marks the once-per-session staleness check as consumed: the counters have just been recomputed from the live data, so
+   * they are exact and there is no point re-validating them later in this session. After this, subsequent maintenance
+   * ({@link #addDocument}/{@link #removeDocument}) keeps them current incrementally; the only un-tracked drift source is
+   * rollbacks, which the next session's stale check (or another explicit recompute) corrects. Practical implication: if you run a
+   * stats recompute and then bulk-import in the same JVM session, no automatic re-validation fires - but the import's incremental
+   * updates keep the counters accurate, so that is fine.
    *
    * @param totalDocs    live document count
    * @param sumDocLength sum of document lengths

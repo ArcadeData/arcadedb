@@ -25,7 +25,6 @@ import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
-import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -40,6 +39,7 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -223,21 +223,22 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     // similarity, parameters and relative term weights, but not a type-wide IDF.
     final Index[] buckets = typeIndex.getIndexesOnBuckets();
     LSMTreeFullTextIndex firstFt = null;
-    int bm25BucketCount = 0;
+    int ftBucketCount = 0; // all full-text bucket indexes of a type share one similarity, so they are all BM25 or all CLASSIC
     for (final Index bucketIndex : buckets)
       if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
         if (firstFt == null)
           firstFt = ftIndex;
-        ++bm25BucketCount;
+        ++ftBucketCount;
       }
-    if (firstFt == null)
+    // Only BM25 indexes carry a scoring explanation; CLASSIC has none.
+    if (firstFt == null || !firstFt.isBM25())
       return null;
 
     final JSONObject explain = new FullTextQueryExecutor(firstFt).explainScoring(queryString);
     // Make it explicit that, on a multi-bucket type, these are the FIRST bucket's statistics so a reader is not misled into
     // treating the df/IDF as type-wide.
-    if (bm25BucketCount > 1)
-      explain.put("note", "statistics shown are for the FIRST of " + bm25BucketCount
+    if (ftBucketCount > 1)
+      explain.put("note", "statistics shown are for the FIRST of " + ftBucketCount
           + " buckets; BM25 is scored per bucket, so df/IDF differ across buckets");
     return explain;
   }
@@ -277,6 +278,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
         while (cursor.hasNext()) {
           final Identifiable match = cursor.next();
           final float score = cursor.getFloatScore();
+          // Float::sum across buckets: a given RID lives in exactly one bucket, so a RID is produced by at most one bucket index
+          // and the merge is effectively an insert (no real summing). For CLASSIC the additive semantics would also be correct;
+          // for BM25 the per-bucket scoping relies on this one-bucket-per-RID invariant - if it ever broke, scores would be
+          // double-counted here rather than failing loudly.
           allResults.merge(match.getIdentity(), score, Float::sum);
         }
       }

@@ -32,10 +32,14 @@ import com.arcadedb.database.DatabaseRID;
  * {@link com.arcadedb.database.RID} and compare only bucket id and offset. Only the value (de)serialization in
  * {@link LSMTreeIndexAbstract} - active when the index has {@code storeTermFrequency} enabled - reads and writes the two extra
  * fields, and only the full-text index interprets them.
+ * <p>
+ * It lives in {@code com.arcadedb.index.lsm} (rather than {@code ...index.fulltext}) on purpose: the value (de)serialization that
+ * produces and consumes it is in {@link LSMTreeIndexAbstract}, so it must be visible at the LSM storage layer. {@code final} so a
+ * subclass cannot pass the pervasive {@code instanceof FullTextPostingRID} checks while carrying different statistics.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class FullTextPostingRID extends DatabaseRID {
+public final class FullTextPostingRID extends DatabaseRID {
   private final int tf;
   private final int docLength;
 

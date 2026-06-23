@@ -263,8 +263,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * accumulate) to avoid materializing the whole posting list. Either way memory is bounded by the result/candidate set, not by
    * the (possibly huge) posting list of a common term.
    * <p>
-   * TODO: the first pass exists only to derive the document frequency; if the LSM layer exposed a per-key entry count (the
-   * compacted index already keeps page-level counts in its root) it could be obtained without scanning the postings.
+   * TODO(perf): on the no-candidate path each token's posting list is scanned TWICE (count df, then accumulate), so a query
+   * with T terms over a large index does 2*T full posting scans - the main BM25 hot-path cost vs CLASSIC. The first pass exists
+   * only to derive the document frequency; if the LSM layer exposed a per-key entry count (the compacted index already keeps
+   * page-level counts in its root) df could be obtained without scanning, halving the I/O. The candidate path (the SQL
+   * {@code SEARCH_INDEX} entry point) already scans once; prefer it for large unconstrained queries until this is addressed.
    *
    * @param tokenBoosts scoring tokens (stored-key form) mapped to their effective boost
    * @param candidates  documents to score, or {@code null} to score every matching document
@@ -734,6 +737,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       final List<String> propertyNames = getPropertyNames();
 
       // PASS 1: analyze every field, accumulate document length and per-field + global term frequencies.
+      // Design choice: the unprefixed (field-agnostic) posting carries the GLOBAL tf - the term's total occurrences across all
+      // indexed fields of the document - while each field-prefixed posting carries that field's tf. So an unqualified query
+      // (`java`) treats a term appearing in both title and body as tf=2, whereas a field-qualified query (`title:java`) sees
+      // tf=1. This differs from Lucene's per-field independence and means cross-field repetition boosts unqualified relevance;
+      // it is intentional ("how often does the term occur anywhere in the document").
       final Map<String, Integer> globalTf = new HashMap<>();
       final List<String> fieldNames = new ArrayList<>();
       final List<Map<String, Integer>> fieldTfs = new ArrayList<>();

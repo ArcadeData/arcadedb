@@ -177,7 +177,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
 
     final LSMTreeIndexCompacted compacted = new LSMTreeIndexCompacted(mainIndex, database, newName, unique,
         database.getDatabasePath() + File.separator + newName, keyTypes, binaryKeyTypes, pageSize);
-    compacted.setStoreTermFrequency(storeTermFrequency);
+    compacted.setStoreTermFrequency(isStoreTermFrequency());
     return compacted;
   }
 

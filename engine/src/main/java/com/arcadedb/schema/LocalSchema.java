@@ -1625,6 +1625,8 @@ public class LocalSchema implements Schema {
 
                 if (!index.getType().toString().equals(configuredIndexType)) {
                   if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.FULL_TEXT.toString())) {
+                    // bucketId = -1 ("not set"): the bucket association is already established on the underlying index and read via
+                    // its getAssociatedBucketId(); this metadata only carries the full-text/BM25 configuration, not the binding.
                     final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, properties, -1);
                     ftMeta.fromJSON(indexJSON);
                     index = new LSMTreeFullTextIndex((LSMTreeIndex) index, ftMeta);

@@ -97,4 +97,29 @@ class BM25ScorerTest {
     assertThat(shortDoc).isCloseTo(longDoc, within(1e-9));
   }
 
+  @Test
+  void zeroAverageDocLengthIsGuardedAndStaysFinite() {
+    // avgdl == 0 (empty/uninitialized corpus) must not divide by zero: the scorer substitutes 1.0 and returns a finite score.
+    final double idf = BM25Scorer.idf(1000, 10);
+    final double score = BM25Scorer.termScore(idf, 2, 100, 0.0, K1, B);
+    assertThat(Double.isNaN(score)).isFalse();
+    assertThat(Double.isInfinite(score)).isFalse();
+    // It equals the same call with avgdl substituted by 1.0.
+    assertThat(score).isCloseTo(BM25Scorer.termScore(idf, 2, 100, 1.0, K1, B), within(1e-12));
+  }
+
+  @Test
+  void staleDocFrequencyAboveCorpusSizeYieldsSmallNegativeIdfThatOnlyDampens() {
+    // df > N can happen transiently with drifted counters / deletion markers. The log argument (N+1)/(df+0.5) stays > 0, so idf
+    // is defined; it goes slightly negative rather than NaN/Infinity.
+    final double idf = BM25Scorer.idf(10, 20);
+    assertThat(Double.isNaN(idf)).isFalse();
+    assertThat(Double.isInfinite(idf)).isFalse();
+    assertThat(idf).isLessThan(0.0);
+    // A rarer term (df <= N) still outranks the over-frequent one, so the negative idf dampens but does not invert ranking.
+    final double rareIdf = BM25Scorer.idf(10, 2);
+    assertThat(BM25Scorer.termScore(rareIdf, 2, 100, 100, K1, B))
+        .isGreaterThan(BM25Scorer.termScore(idf, 2, 100, 100, K1, B));
+  }
+
 }

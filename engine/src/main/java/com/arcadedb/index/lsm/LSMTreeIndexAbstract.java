@@ -89,14 +89,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * RID, and is deserialized into a {@link FullTextPostingRID}. Used exclusively by full-text indexes configured with BM25 similarity.
    * Defaults to false so every other LSM index keeps the byte-identical RID-only format.
    * <p>
-   * NOTE: this flag is NOT stored in the page header; it is set at load time by the full-text index from the persisted schema
-   * (similarity = BM25). The schema and index files therefore must stay consistent: reading a BM25 index's pages with the flag
-   * off (or vice-versa) would misinterpret the value bytes. In normal operation schema and index files travel together.
+   * NOTE: this flag is NOT stored in the page header; it is set from the persisted schema (similarity = BM25) during the
+   * single-threaded schema load, before the index serves any query or compaction is scheduled - so the write happens-before any
+   * concurrent reader. The schema and index files must therefore stay consistent: reading a BM25 index's pages with the flag off
+   * (or vice-versa) would misinterpret the value bytes. In normal operation schema and index files travel together.
    * <p>
-   * volatile: set once after construction (single writer) but read on every read/write path, possibly from other threads; the
-   * visibility guarantee avoids a reader seeing a stale {@code false} and misparsing the value bytes.
+   * volatile: set once (single writer) but read on every read/write path, possibly from other threads; the visibility guarantee
+   * avoids a reader seeing a stale {@code false} and misparsing the value bytes. Private: accessed by subclasses only through
+   * {@link #isStoreTermFrequency()} / {@link #setStoreTermFrequency(boolean)}.
    */
-  protected volatile boolean       storeTermFrequency = false;
+  private volatile boolean         storeTermFrequency = false;
 
   protected static class LookupResult {
     public final boolean found;
@@ -542,9 +544,9 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    * is non-negative), but the compacted-root read path uses only its position (the target page number), so this is harmless.
    */
   private void writeTermFrequency(final Binary buffer, final Object value) {
-    if (value instanceof FullTextPostingRID s) {
-      buffer.putUnsignedNumber(s.getTf());
-      buffer.putUnsignedNumber(s.getDocLength());
+    if (value instanceof FullTextPostingRID posting) {
+      buffer.putUnsignedNumber(posting.getTf());
+      buffer.putUnsignedNumber(posting.getDocLength());
     } else {
       buffer.putUnsignedNumber(0);
       buffer.putUnsignedNumber(0);
