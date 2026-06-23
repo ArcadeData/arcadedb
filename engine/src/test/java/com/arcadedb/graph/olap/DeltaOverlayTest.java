@@ -130,4 +130,43 @@ class DeltaOverlayTest {
     final DeltaOverlay afterReplay = afterDelete.merge(replay, mapping);
     assertThat(afterReplay.getDeltaEdgeCount()).isEqualTo(0);
   }
+
+  /**
+   * Issue #4720: {@code getOverflowCount()} must report the number of live overflow vertices,
+   * subtracting the ones that have been deleted, consistently with {@code getTotalNodeCount()}.
+   * Before the fix the counter kept counting deleted overflow slots, inflating the reported count.
+   */
+  @Test
+  void overflowCountExcludesDeletedOverflowVertices() {
+    final NodeIdMapping mapping = baseMappingWith(2);
+    final DeltaOverlay empty = new DeltaOverlay(mapping.size());
+
+    // Add three overflow vertices (RIDs not present in the base mapping).
+    final TxDelta addDelta = new TxDelta();
+    addDelta.addedVertices.add(new TxDelta.VertexDelta(rid(2), null));
+    addDelta.addedVertices.add(new TxDelta.VertexDelta(rid(3), null));
+    addDelta.addedVertices.add(new TxDelta.VertexDelta(rid(4), null));
+    final DeltaOverlay afterAdd = empty.merge(addDelta, mapping);
+
+    assertThat(afterAdd.getOverflowCount()).isEqualTo(3);
+    assertThat(afterAdd.getTotalNodeCount()).isEqualTo(5); // 2 base + 3 overflow
+
+    // Delete one of the overflow vertices.
+    final TxDelta delDelta = new TxDelta();
+    delDelta.deletedVertices.add(rid(3));
+    final DeltaOverlay afterDelete = afterAdd.merge(delDelta, mapping);
+
+    // Before the fix this stayed at 3 because the deleted slot kept being counted.
+    assertThat(afterDelete.getOverflowCount()).isEqualTo(2);
+    assertThat(afterDelete.getTotalNodeCount()).isEqualTo(4); // 2 base + 2 live overflow
+
+    // Deleting the remaining overflow vertices drives the live count to zero.
+    final TxDelta delRest = new TxDelta();
+    delRest.deletedVertices.add(rid(2));
+    delRest.deletedVertices.add(rid(4));
+    final DeltaOverlay afterDeleteAll = afterDelete.merge(delRest, mapping);
+
+    assertThat(afterDeleteAll.getOverflowCount()).isEqualTo(0);
+    assertThat(afterDeleteAll.getTotalNodeCount()).isEqualTo(2); // only base nodes remain
+  }
 }
