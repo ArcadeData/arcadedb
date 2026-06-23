@@ -88,11 +88,10 @@ public class PathSlice extends AbstractPathFunction {
     final int relCount = rels.size();
     final int to = args.length > 2 && args[2] != null ? ((Number) args[2]).intValue() : relCount;
 
-    if (from >= relCount || from >= to)
-      return null;
-
-    final int actualFrom = Math.max(0, from);
-    final int actualTo = Math.min(relCount, to);
+    // Clamp the bounds. An empty slice (from == to, or from == relCount, i.e. slicing at the path's
+    // end) yields a zero-relationship path containing just the boundary node, not null (issue #4707).
+    final int actualFrom = Math.max(0, Math.min(from, relCount));
+    final int actualTo = Math.max(actualFrom, Math.min(relCount, to));
 
     final List<Object> slicedNodes = new ArrayList<>();
     final List<Object> slicedRels = new ArrayList<>();
