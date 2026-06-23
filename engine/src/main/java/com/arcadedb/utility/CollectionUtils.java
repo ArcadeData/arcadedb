@@ -108,7 +108,9 @@ public class CollectionUtils {
   }
 
   public static <T> List<T> removeFromUnmodifiableList(List<T> list, T objToRemove) {
-    final ArrayList<T> result = new ArrayList<>(list.size() - 1);
+    // Math.max guards the capacity hint: removing from an empty list (or removing an absent element)
+    // must return an empty list, not throw IllegalArgumentException for a negative initial capacity.
+    final ArrayList<T> result = new ArrayList<>(Math.max(0, list.size() - 1));
     for (int i = 0; i < list.size(); i++) {
       final T o = list.get(i);
       if (Objects.equals(o, objToRemove))
@@ -126,13 +128,13 @@ public class CollectionUtils {
   }
 
   public static <T> List<T> removeAllFromUnmodifiableList(List<T> list, List<T> objsToRemove) {
-    final ArrayList<T> result = new ArrayList<>(list.size() - objsToRemove.size());
-    for (int i = 0; i < list.size(); i++) {
-      final T o = list.get(i);
-
+    // Math.max guards the capacity hint: objsToRemove may be larger than list when many of its elements
+    // are absent, which must skip them gracefully rather than throw on a negative initial capacity.
+    final ArrayList<T> result = new ArrayList<>(Math.max(0, list.size() - objsToRemove.size()));
+    for (final T o : list) {
       boolean found = false;
-      for (int k = 0; k < objsToRemove.size(); k++) {
-        if (Objects.equals(o, objsToRemove.get(k))) {
+      for (T t : objsToRemove) {
+        if (Objects.equals(o, t)) {
           found = true;
           break;
         }
