@@ -70,7 +70,11 @@ public class Identifier extends SimpleNode {
    * @return
    */
   public String getStringValue() {
-    return value;
+    if (value == null)
+      return null;
+    // reverse the escaping applied by setStringValue(): turn `\`` back into a plain back-tick, leaving
+    // any other backslash untouched so names that legitimately contain a backslash are preserved
+    return value.replace("\\`", "`");
   }
 
   /**

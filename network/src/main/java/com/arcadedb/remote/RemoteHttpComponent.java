@@ -134,10 +134,10 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   public void close() {
-    if (httpClient != null) {
-      httpClient.shutdownNow();
-      httpClient.close();
-    }
+    // httpClient is final and always assigned in the constructor, so no null check is needed. close()
+    // performs an orderly shutdown that lets in-flight requests drain (each is already bounded by the
+    // per-request watchdog timeout); shutdownNow() is intentionally not used so requests are not interrupted.
+    httpClient.close();
   }
 
   private HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {
@@ -563,9 +563,7 @@ public class RemoteHttpComponent extends RWLockContext {
     // ASK REPLICA FIRST. Snapshot the reference: requestClusterConfiguration() below may swap the
     // live list mid-loop, so iterate over the stable snapshot taken here (issue #4579).
     final List<Pair<String, Integer>> snapshot = replicaServerList;
-    for (int replicaIdx = 0; replicaIdx < snapshot.size(); ++replicaIdx) {
-      final Pair<String, Integer> connectToServer = snapshot.get(replicaIdx);
-
+    for (final Pair<String, Integer> connectToServer : snapshot) {
       currentServer = connectToServer.getFirst();
       currentPort = connectToServer.getSecond();
 
@@ -639,8 +637,10 @@ public class RemoteHttpComponent extends RWLockContext {
         detail = "Unknown";
 
       if (exception.equals(ServerIsNotTheLeaderException.class.getName())) {
-        final int sep = detail.lastIndexOf('.');
-        return new ServerIsNotTheLeaderException(sep > -1 ? detail.substring(0, sep) : detail, exceptionArgs);
+        // The leader-address hint travels in its own field (exceptionArgs); it is not parsed out of the
+        // human-readable detail. Keep the detail message intact so a period in it no longer truncates the
+        // text, and preserve the leader address so the client retains the hint to the current leader.
+        return new ServerIsNotTheLeaderException(detail, exceptionArgs);
       } else if (exception.equals(RecordNotFoundException.class.getName())) {
         // PARSE THE RID OUT OF THE DETAIL MESSAGE (e.g. "Record #12:7 not found"). BE ROBUST: THE MESSAGE MAY NOT CONTAIN A '#',
         // MAY NOT HAVE A TRAILING SPACE AFTER THE RID, OR MAY CARRY A MALFORMED TOKEN (see issue #4551). FALL BACK TO A null RID.
