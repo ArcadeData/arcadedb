@@ -617,11 +617,15 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         // NOT spuriously rescan multi-bucket types. (This counter feeds avgdl only; IDF's N is the per-bucket count from
         // resolveTotalDocs(), a deliberately different scope - see that method.)
         final long liveCount = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);
-        if (liveCount != ftMetadata.getTotalDocs()) {
+        final long persisted = ftMetadata.getTotalDocs();
+        if (liveCount != persisted) {
           // Surface the drift so operators can notice it (e.g. counters inflated by rolled-back inserts) without reading EXPLAIN.
-          LogManager.instance().log(this, Level.INFO,
-              "BM25 corpus counters for type '%s' diverged from live data (persisted=%d, live=%d); recomputing.", null, typeName,
-              ftMetadata.getTotalDocs(), liveCount);
+          // Escalate to WARNING when the divergence is large (> 10% of the live count): small drift self-heals quietly here, but a
+          // big gap usually signals a heavy-rollback workload worth a scheduled REBUILD INDEX ... WITH statsOnly = true.
+          final boolean large = liveCount > 0 && Math.abs(persisted - liveCount) * 10 > liveCount;
+          LogManager.instance().log(this, large ? Level.WARNING : Level.INFO,
+              "BM25 corpus counters for type '%s' diverged from live data (persisted=%d, live=%d); recomputing.%s", null, typeName,
+              persisted, liveCount, large ? " Consider REBUILD INDEX ... WITH statsOnly = true if this recurs." : "");
           computeCorpusCounters(false);
         }
       }
@@ -884,6 +888,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * This runs at index time, before the transaction commits, and is NOT reversed on rollback, so a rolled-back insert leaves the
    * counters slightly inflated. The counters feed only {@code avgDocLength} (a robust normalizer); {@link #recomputeBM25Counters}
    * (also reachable via {@code REBUILD INDEX <name> WITH statsOnly = true}) repairs any drift exactly.
+   * <p>
+   * Because the increment is pre-commit, a BM25 {@code get()} issued LATER in the SAME open transaction sees the bumped
+   * {@code totalDocs}/{@code sumDocLength}, so a just-inserted (not yet committed) document is reflected in {@code avgDocLength}
+   * for that transaction. This only shifts the length normalizer marginally and resolves at commit; it is not a correctness issue.
    * <p>
    * FOLLOW-UP (not done deliberately): the drift could be avoided by deferring this update to an after-commit callback
    * ({@code TransactionContext.addAfterCommitCallback}) so a rolled-back transaction never bumps the counters. That is left for a
