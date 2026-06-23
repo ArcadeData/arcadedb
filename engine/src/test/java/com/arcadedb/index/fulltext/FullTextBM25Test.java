@@ -376,6 +376,11 @@ class FullTextBM25Test extends TestHelper {
     assertThatThrownBy(() -> database.transaction(() ->
             database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"similarity\": \"LUCENE\"}")))
         .hasMessageContaining("Unknown full-text similarity");
+
+    // A negative per-field boost is rejected: it would produce negative term contributions and invert ranking.
+    assertThatThrownBy(() -> database.transaction(() ->
+            database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT METADATA {\"content_boost\": -5.0}")))
+        .hasMessageContaining("boost for 'content' must be >= 0");
   }
 
   @Test

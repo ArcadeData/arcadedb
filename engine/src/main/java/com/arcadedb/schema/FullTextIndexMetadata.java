@@ -155,7 +155,8 @@ public class FullTextIndexMetadata extends IndexMetadata {
         this.fieldAnalyzers.put(fieldName, metadata.getString(key));
       } else if (key.endsWith(BOOST_SUFFIX)) {
         final String fieldName = key.substring(0, key.length() - BOOST_SUFFIX.length());
-        this.fieldBoosts.put(fieldName, metadata.getFloat(key, 1.0f));
+        // Route through the setter so a boost supplied via METADATA {...} gets the same >= 0 validation as the builder path.
+        setFieldBoost(fieldName, metadata.getFloat(key, 1.0f));
       }
     }
   }
@@ -402,12 +403,15 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * Sets a boost multiplier for a specific field. Boosts greater than 1.0 increase the field's contribution to the BM25 score.
+   * Sets a boost multiplier for a specific field. Boosts greater than 1.0 increase the field's contribution to the BM25 score;
+   * 0.0 disables it. Negative boosts are rejected because they would produce negative term contributions and invert ranking.
    *
    * @param fieldName the field name
-   * @param boost     the multiplier
+   * @param boost     the multiplier (must be >= 0)
    */
   public void setFieldBoost(final String fieldName, final float boost) {
+    if (boost < 0)
+      throw new IllegalArgumentException("BM25 field boost for '" + fieldName + "' must be >= 0, but was " + boost);
     this.fieldBoosts.put(fieldName, boost);
   }
 
