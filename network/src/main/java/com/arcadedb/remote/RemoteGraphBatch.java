@@ -225,7 +225,10 @@ public class RemoteGraphBatch implements AutoCloseable {
    * (either a RID string or a temp ID for server-side resolution in the current batch).
    */
   private String resolveRef(final String ref) {
-    if (ref.charAt(0) == '#' || ref.charAt(0) != 'v')
+    if (ref == null || ref.isEmpty())
+      throw new IllegalArgumentException("Vertex reference cannot be null or empty");
+
+    if (ref.charAt(0) != 'v')
       return ref;
 
     final int idx = Integer.parseInt(ref.substring(1));
