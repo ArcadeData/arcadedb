@@ -33,6 +33,7 @@ class HealthMonitorTest {
     final    AtomicReference<LifeCycle.State> state                = new AtomicReference<>(LifeCycle.State.RUNNING);
     final    AtomicInteger                    recoveryCalls        = new AtomicInteger();
     final    AtomicInteger                    persistentLagRecover = new AtomicInteger();
+    final    AtomicInteger                    allowlistRefreshes   = new AtomicInteger();
     volatile boolean                          shutdownRequested    = false;
     volatile boolean                          lagging              = false;
 
@@ -60,6 +61,11 @@ class HealthMonitorTest {
     public void recoverFromPersistentLag() {
       persistentLagRecover.incrementAndGet();
     }
+
+    @Override
+    public void refreshPeerAllowlist() {
+      allowlistRefreshes.incrementAndGet();
+    }
   }
 
   @Test
@@ -68,6 +74,34 @@ class HealthMonitorTest {
     final HealthMonitor monitor = new HealthMonitor(fake, 0);
     monitor.tick();
     assertThat(fake.recoveryCalls.get()).isZero();
+  }
+
+  @Test
+  void tickRefreshesPeerAllowlistEveryTickRegardlessOfState() {
+    // Issue #4696: the allowlist must reconcile proactively on every tick, on every node, so a peer that
+    // restarted with a new pod IP is admitted without first being rejected. It must run even while the
+    // local Ratis server is healthy (RUNNING) - the previous behaviour refreshed only on a rejected
+    // inbound connection.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    final HealthMonitor monitor = new HealthMonitor(fake, 0);
+    monitor.tick();
+    monitor.tick();
+    assertThat(fake.allowlistRefreshes.get()).isEqualTo(2);
+
+    // ...and also when the local server is CLOSED (the recovery branch returns early, but the allowlist
+    // refresh happens before the lifecycle-state check).
+    fake.state.set(LifeCycle.State.CLOSED);
+    monitor.tick();
+    assertThat(fake.allowlistRefreshes.get()).isEqualTo(3);
+  }
+
+  @Test
+  void tickSkipsAllowlistRefreshWhenShutdownRequested() {
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.shutdownRequested = true;
+    final HealthMonitor monitor = new HealthMonitor(fake, 0);
+    monitor.tick();
+    assertThat(fake.allowlistRefreshes.get()).isZero();
   }
 
   @Test

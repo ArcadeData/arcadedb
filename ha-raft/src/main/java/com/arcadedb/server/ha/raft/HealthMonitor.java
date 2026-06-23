@@ -64,6 +64,14 @@ public final class HealthMonitor {
      */
     default void recoverFromPersistentLag() {
     }
+
+    /**
+     * Proactively reconciles the inbound Raft gRPC peer allowlist with current DNS so a peer that
+     * restarted with a new pod IP is admitted without first being rejected (issue #4696). No-op when
+     * the allowlist is disabled; the filter itself throttles the DNS re-resolution.
+     */
+    default void refreshPeerAllowlist() {
+    }
   }
 
   private final    HealthTarget             target;
@@ -121,6 +129,10 @@ public final class HealthMonitor {
   void tick() {
     if (target.isShutdownRequested())
       return;
+    // Reconcile the inbound peer allowlist with current DNS every tick, regardless of Ratis lifecycle
+    // state, so a returned peer's new pod IP is admitted proactively (issue #4696). The filter throttles
+    // the actual re-resolution to its configured refresh interval.
+    target.refreshPeerAllowlist();
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       HALog.log(this, HALog.BASIC, "Health monitor detected Ratis %s state, attempting recovery", state);

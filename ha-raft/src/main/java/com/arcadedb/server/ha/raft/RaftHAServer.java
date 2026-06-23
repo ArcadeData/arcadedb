@@ -110,6 +110,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
+  // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
+  // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
+  private volatile PeerAddressAllowlistFilter allowlistFilter;
   private final    Object                    leaderChangeNotifier  = new Object();
   private final    Object                    applyNotifier         = new Object();
   private          RaftClusterManager        clusterManager;
@@ -1222,7 +1225,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * The customizer adds a {@link PeerAddressAllowlistFilter} that rejects inbound Raft gRPC
    * connections from IPs not listed in {@code arcadedb.ha.serverList}.
    */
-  private static Parameters buildParameters(final ContextConfiguration configuration) {
+  private Parameters buildParameters(final ContextConfiguration configuration) {
+    this.allowlistFilter = null;
     final Parameters parameters = new Parameters();
     if (!configuration.getValueAsBoolean(GlobalConfiguration.HA_PEER_ALLOWLIST_ENABLED))
       return parameters;
@@ -1233,14 +1237,29 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long stickyTtlMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_ALLOWLIST_STICKY_TTL_MS);
     final List<String> peerHosts = PeerAddressAllowlistFilter.extractPeerHosts(serverList);
     if (peerHosts.isEmpty()) {
-      LogManager.instance().log(RaftHAServer.class, Level.WARNING,
+      LogManager.instance().log(this, Level.WARNING,
           "arcadedb.ha.peerAllowlist.enabled=true but arcadedb.ha.serverList is empty; allowlist not installed");
       return parameters;
     }
-    final PeerAddressAllowlistFilter allowlistFilter = new PeerAddressAllowlistFilter(peerHosts, refreshMs, startupGraceMs,
+    final PeerAddressAllowlistFilter filter = new PeerAddressAllowlistFilter(peerHosts, refreshMs, startupGraceMs,
         stickyTtlMs);
-    GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(allowlistFilter));
+    this.allowlistFilter = filter;
+    GrpcConfigKeys.Server.setServicesCustomizer(parameters, new RaftGrpcServicesCustomizer(filter));
     return parameters;
+  }
+
+  /**
+   * Proactively reconciles the inbound Raft gRPC peer allowlist with current DNS (issue #4696).
+   * Invoked from the health monitor tick on every node so a peer that restarted with a new pod IP is
+   * admitted without first having to be rejected on an inbound connection - which a leader with a
+   * wedged outbound appender channel may never receive. No-op when the allowlist is disabled. The
+   * filter throttles the actual DNS re-resolution to its configured refresh interval.
+   */
+  @Override
+  public void refreshPeerAllowlist() {
+    final PeerAddressAllowlistFilter filter = allowlistFilter;
+    if (filter != null)
+      filter.proactiveRefresh();
   }
 
   private static void deleteRecursive(final File file) {

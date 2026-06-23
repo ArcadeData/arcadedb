@@ -348,4 +348,97 @@ class PeerAddressAllowlistFilterTest {
     clock.set(31_000); // past the steady-state refresh interval
     assertThat(f.isAllowed("10.1.13.50")).isTrue();
   }
+
+  // ---------------------------------------------------------------------------
+  // Proactive (background) refresh - issue #4696
+  // The allowlist must reconcile a returned peer's new pod IP on its own cadence, NOT only after a
+  // rejected ("miss") inbound connection. On a leader whose outbound appender channel is also wedged,
+  // the returned peer's inbound connection may never arrive, so a reactive-only refresh strands it.
+  // ---------------------------------------------------------------------------
+
+  @Test
+  void proactiveRefreshAdmitsReturnedPeerNewIpWithoutAnyInboundMiss() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    dns.table.put("peerA", List.of("10.1.13.8"));
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA"), 30_000L, 0L, 300_000L, clock, dns);
+    assertThat(f.getAllowedIps()).contains("10.1.13.8");
+
+    // peerA pod is rescheduled and comes back with a new IP. No connection from it has been attempted
+    // yet (the leader's outbound appender is wedged), so the miss path never fires.
+    dns.table.put("peerA", List.of("10.1.13.50"));
+    clock.set(31_000); // past the steady-state refresh interval
+
+    f.proactiveRefresh();
+
+    // The background refresh reconciled the new IP and dropped the stale pre-restart one - all without
+    // a single rejected inbound connection.
+    assertThat(f.isAllowed("10.1.13.50")).isTrue();
+    assertThat(f.getAllowedIps()).doesNotContain("10.1.13.8");
+  }
+
+  @Test
+  void proactiveRefreshRespectsRefreshIntervalFloorToAvoidHammeringDns() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    dns.table.put("peerA", List.of("10.1.13.8"));
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA"), 30_000L, 0L, 300_000L, clock, dns);
+    assertThat(f.isEverCompletelyResolved()).isTrue();
+
+    dns.table.put("peerA", List.of("10.1.13.50"));
+
+    // A tick inside the refresh interval (health monitor fires far more often than the interval) must
+    // NOT re-resolve - the old IP is still the only one allowed.
+    clock.set(10_000);
+    f.proactiveRefresh();
+    assertThat(f.getAllowedIps()).contains("10.1.13.8");
+    assertThat(f.getAllowedIps()).doesNotContain("10.1.13.50");
+
+    // Once the interval elapses, the next proactive tick reconciles.
+    clock.set(31_000);
+    f.proactiveRefresh();
+    assertThat(f.getAllowedIps()).contains("10.1.13.50");
+  }
+
+  @Test
+  void proactiveRefreshDropsStaleStickyIpOnceNameResolvesToNewIp() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    dns.table.put("peerA", List.of("10.1.13.8"));
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA"), 30_000L, 0L, 300_000L, clock, dns);
+    assertThat(f.getAllowedIps()).contains("10.1.13.8");
+
+    // Mid-restart: peerA's name briefly fails to resolve. Sticky retention keeps the old IP so a purely
+    // transient DNS blip does not evict a live peer.
+    dns.table.remove("peerA");
+    clock.set(31_000);
+    f.proactiveRefresh();
+    assertThat(f.getAllowedIps()).contains("10.1.13.8"); // retained (sticky)
+
+    // DNS now publishes the new pod IP. The next proactive refresh must admit it AND drop the stale
+    // sticky IP immediately - the sticky entry must not keep masking the live address.
+    dns.table.put("peerA", List.of("10.1.13.50"));
+    clock.set(62_000);
+    f.proactiveRefresh();
+    assertThat(f.getAllowedIps()).contains("10.1.13.50");
+    assertThat(f.getAllowedIps()).doesNotContain("10.1.13.8");
+  }
+
+  @Test
+  void proactiveRefreshConvergesFastWhileAllowlistIncompleteAtStartup() {
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver(); // peerA not yet resolvable at construction
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA"), 30_000L, 0L, 300_000L, clock, dns);
+    assertThat(f.isEverCompletelyResolved()).isFalse();
+
+    // peerA's DNS record is published shortly after startup, well under the 30s steady-state interval.
+    dns.table.put("peerA", List.of("10.1.13.9"));
+    clock.set(1_100); // past the short incomplete-allowlist floor (1s), under the full interval
+
+    // Because the allowlist has never been complete, the proactive refresh uses the short startup floor
+    // and converges without waiting the full interval.
+    f.proactiveRefresh();
+    assertThat(f.isEverCompletelyResolved()).isTrue();
+    assertThat(f.getAllowedIps()).contains("10.1.13.9");
+  }
 }
