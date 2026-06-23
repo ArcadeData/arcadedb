@@ -33,8 +33,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * not meanwhile queued a NEWER page for the same {@link PageId}.
  * <p>
  * The removal used to be {@code pageIndex.remove(key, value)}, which resolves "is it still the same page?"
- * through {@link BasePage#equals} - and that keys on the mutable {@code version} field. If a stale page's
- * version ever matches the newer entry's version, the value-based removal wrongly evicts the newer entry,
+ * through {@link BasePage#equals}. Two pages for the same {@link PageId} compare equal there (equality keys on
+ * pageId only, see #4722), so a value-based removal wrongly evicts a newer entry while flushing a stale page,
  * and subsequent reads miss the page and fall back to the older on-disk version (spurious MVCC conflicts).
  * The fix removes by reference identity instead.
  *
@@ -61,10 +61,11 @@ class Issue4544FlushIndexIdentityTest extends TestHelper {
     // A later transaction has queued the newer page: it is the current value in the flush index.
     flush.pageIndex.put(pageId, newer);
 
-    // Simulate the fragile scenario the issue describes: the stale page's version is mutated so that, under
-    // BasePage.equals (pageId + version), it now compares equal to the newer indexed entry.
+    // Both pages share the same PageId, so they always compare equal under BasePage.equals (which keys on
+    // pageId only, see #4722). A value-based remove(key, value) would therefore happily evict the newer entry
+    // when flushing the stale one: removal must use reference identity instead.
     stale.incrementVersion(); // 5 -> 6
-    assertThat(stale.equals(newer)).as("equals keys on the mutable version field").isTrue();
+    assertThat(stale.equals(newer)).as("pages with the same pageId compare equal regardless of version").isTrue();
 
     // Flushing the stale page must leave the newer entry untouched.
     flush.removeFromFlushIndex(stale);
