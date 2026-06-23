@@ -49,6 +49,10 @@ public class PageManagerFlushThread extends Thread {
   private final static PagesToFlush                                             SHUTDOWN_THREAD     = new PagesToFlush(null);
   private final        AtomicReference<PagesToFlush>                            nextPagesToFlush    = new AtomicReference<>();
   private final        ConcurrentHashMap<Database, ConcurrentLinkedQueue<PagesToFlush>> deferredByDatabase = new ConcurrentHashMap<>();
+  // Per-database lock serializing the suspend-flag check + defer in flushPagesFromQueueToDisk against the
+  // flag-clear + deferred-detach in setSuspended(false). Without it a batch could be deferred AFTER the
+  // unsuspend already drained the deferred map, leaving it stuck in deferredByDatabase / pageIndex forever.
+  private final        ConcurrentHashMap<Database, Object>                      suspendLocks        = new ConcurrentHashMap<>();
 
   /**
    * O(1) index: pageId → most recent MutablePage in the flush queue or currently being flushed.
@@ -162,9 +166,19 @@ public class PageManagerFlushThread extends Thread {
           running = false;
         else if (!pagesToFlush.pages.isEmpty()) {
           if (database == null || pagesToFlush.database.equals(database)) {
-            if (database == null && isSuspended((Database) pagesToFlush.database)) {
-              deferredByDatabase.computeIfAbsent((Database) pagesToFlush.database, k -> new ConcurrentLinkedQueue<>()).offer(pagesToFlush);
-              return;
+            if (database == null) {
+              final Database db = (Database) pagesToFlush.database;
+              // Check the suspended flag and defer the batch atomically under the per-database lock, so this
+              // cannot interleave with the flag-clear + deferred-detach in setSuspended(false). Either we
+              // observe "suspended" and the unsuspend's detach picks this batch up, or we observe "not
+              // suspended" (flag already cleared) and fall through to flush it normally - never a defer that
+              // outlives the detach.
+              synchronized (suspendLock(db)) {
+                if (isSuspended(db)) {
+                  deferredByDatabase.computeIfAbsent(db, k -> new ConcurrentLinkedQueue<>()).offer(pagesToFlush);
+                  return;
+                }
+              }
             }
 
             if (!pagesToFlush.database.isOpen())
@@ -238,15 +252,23 @@ public class PageManagerFlushThread extends Thread {
       }
     }
 
-    // Phase 2: mark the database as no longer suspended
-    suspended.remove(database);
+    // Phase 2 + Phase 3a: under the per-database lock, clear the suspended flag AND atomically detach any
+    // batches deferred during Phase 1. Holding the lock makes this transition mutually exclusive with the
+    // suspended-check + defer in flushPagesFromQueueToDisk: once the flag is cleared no further batch can be
+    // added to deferredByDatabase for this database, and every batch deferred up to that point is detached
+    // exactly once. A single detach therefore suffices - nothing can repopulate the map behind us.
+    final ConcurrentLinkedQueue<PagesToFlush> newDeferred;
+    synchronized (suspendLock(database)) {
+      suspended.remove(database);
+      newDeferred = deferredByDatabase.remove(database);
+    }
 
-    // Phase 3: drain any batches that were deferred during Phase 1 back into the main queue.
-    // These batches were committed while Phase 1 was running; enqueue them so the background
-    // thread picks them up. Note: they are appended to the tail of the queue, so if any
-    // post-unsuspend commits have already been enqueued they will be flushed first. WAL-based
-    // recovery guarantees correctness even if the flush order differs from commit order.
-    final ConcurrentLinkedQueue<PagesToFlush> newDeferred = deferredByDatabase.remove(database);
+    // Phase 3b: re-enqueue the detached batches into the main queue so the background thread picks them up.
+    // They are appended to the tail of the queue, so if any post-unsuspend commits have already been
+    // enqueued they will be flushed first. WAL-based recovery guarantees correctness even if the flush order
+    // differs from commit order. This blocking re-enqueue is deliberately done OUTSIDE the lock: queue.offer
+    // can block when the queue is full, and the only consumer that drains the queue (the flush thread) needs
+    // the same per-database lock to make progress, so holding it across the offer would deadlock.
     if (newDeferred != null) {
       for (final PagesToFlush batch : newDeferred) {
         while (running) {
@@ -269,6 +291,11 @@ public class PageManagerFlushThread extends Thread {
   public boolean isSuspended(final Database database) {
     final Boolean s = suspended.get(database);
     return s != null ? s : false;
+  }
+
+  /** Returns the stable per-database monitor used to serialize the suspend check/defer against unsuspend. */
+  private Object suspendLock(final Database database) {
+    return suspendLocks.computeIfAbsent(database, k -> new Object());
   }
 
   public void closeAndJoin() throws InterruptedException {
