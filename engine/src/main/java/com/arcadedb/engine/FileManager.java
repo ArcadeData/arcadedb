@@ -23,7 +23,11 @@ import com.arcadedb.log.LogManager;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
@@ -31,17 +35,17 @@ import java.util.logging.Logger;
 
 public class FileManager {
   private final        ComponentFile.MODE                        mode;
-  private final        List<ComponentFile>                       files           = new ArrayList<>();
-  private final        ConcurrentHashMap<String, ComponentFile>  fileNameMap     = new ConcurrentHashMap<>();
-  private final        ConcurrentHashMap<Integer, ComponentFile> fileIdMap       = new ConcurrentHashMap<>();
-  private final        AtomicLong                                maxFilesOpened  = new AtomicLong();
+  private final        List<ComponentFile>                       files             = new ArrayList<>();
+  private final        ConcurrentHashMap<String, ComponentFile>  fileNameMap       = new ConcurrentHashMap<>();
+  private final        ConcurrentHashMap<Integer, ComponentFile> fileIdMap         = new ConcurrentHashMap<>();
+  private final        AtomicLong                                maxFilesOpened    = new AtomicLong();
   // Bumps on every file registration / drop. Lets callers (e.g. PaginatedSparseVectorEngine's
   // refreshSegmentsFromFileManager) skip the O(total files) walk on the hot query path when the
   // FileManager is unchanged since their last observation - they cache the value here, compare on
   // entry, and only re-walk when it has advanced.
   private final        AtomicLong                                modificationCount = new AtomicLong();
-  private              List<FileChange>                          recordedChanges = null;
-  private final static PaginatedComponentFile                    RESERVED_SLOT   = new PaginatedComponentFile();
+  private              List<FileChange>                          recordedChanges   = null;
+  private final static PaginatedComponentFile                    RESERVED_SLOT     = new PaginatedComponentFile();
 
   public static class FileChange {
     public final boolean create;
@@ -80,10 +84,10 @@ public class FileManager {
   }
 
   /**
-   * @param path             primary database directory; created if missing.
-   * @param extraScanPath    optional secondary directory to scan for additional component files (e.g. paired
-   *                         external-property buckets that have been tiered to a different disk via
-   *                         {@code arcadedb.externalPropertyBucketPath}). May be null/empty.
+   * @param path          primary database directory; created if missing.
+   * @param extraScanPath optional secondary directory to scan for additional component files (e.g. paired
+   *                      external-property buckets that have been tiered to a different disk via
+   *                      {@code arcadedb.externalPropertyBucketPath}). May be null/empty.
    */
   public FileManager(final String path, final ComponentFile.MODE mode, final Set<String> supportedFileExt,
       final String extraScanPath) {
@@ -201,6 +205,7 @@ public class FileManager {
     synchronized (this) {
       file = fileIdMap.remove(fileId);
       if (file != null) {
+        file.drop();
         fileNameMap.remove(file.getComponentName());
         files.set(fileId, null);
         modificationCount.incrementAndGet();
@@ -222,8 +227,6 @@ public class FileManager {
       }
     }
 
-    if (file != null)
-      file.drop();
   }
 
   public FileManagerStats getStats() {
