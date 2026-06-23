@@ -194,23 +194,29 @@ public class ResultInternal implements Result {
 
   public <T> T getProperty(final String name) {
     T result;
+    // Tracks whether the key is genuinely present (even when mapped to null), so the $score/$similarity
+    // fallback below cannot override a value that was explicitly projected as null.
+    boolean present = false;
     if (tombstones != null && tombstones.contains(name))
       result = null;
-    else if (content != null && !content.isEmpty())
+    else if (content != null && !content.isEmpty()) {
       // IF CONTENT IS PRESENT SKIP CHECKING FOR ELEMENT (PROJECTIONS USED)
       result = (T) content.get(name);
-    else if (element != null)
+      present = content.containsKey(name);
+    } else if (element != null) {
       result = (T) element.get(name);
-    else
+      present = element.has(name);
+    } else
       result = null;
 
-    // If $score not found in content/element, fall back to score field
-    if (result == null && "$score".equals(name))
-      return (T) Float.valueOf(score);
-
-    // If $similarity not found in content/element, fall back to similarity field
-    if (result == null && "$similarity".equals(name))
-      return (T) Float.valueOf(similarity);
+    // Fall back to the internal score/similarity field only when the key is genuinely absent. An
+    // explicitly projected null (e.g. $score = null) is preserved instead of being overridden.
+    if (!present && result == null) {
+      if ("$score".equals(name))
+        return (T) Float.valueOf(score);
+      if ("$similarity".equals(name))
+        return (T) Float.valueOf(similarity);
+    }
 
     if (!(result instanceof Record) &&
             result instanceof Identifiable identifiable &&
