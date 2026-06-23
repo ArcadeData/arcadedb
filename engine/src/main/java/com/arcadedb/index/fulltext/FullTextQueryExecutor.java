@@ -50,6 +50,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
@@ -108,8 +109,12 @@ public class FullTextQueryExecutor {
   // The compounded caret boost (e.g. `title:java^3`) of the BoostQuery currently being descended, multiplied into recorded
   // scoring tokens. Lucene's QueryParser already parses `^` into a BoostQuery; this is where that boost takes effect for BM25.
   private       float              currentBoost        = 1.0f;
-  // Set once the scoring-token cap is hit so the warning is logged at most once per query.
-  private       boolean            expansionCapWarned  = false;
+
+  // Throttle for the scoring-token-cap WARNING. A new executor is created per query, so a per-query flag would still log on every
+  // execution of a repeated huge wildcard; this static throttle bounds it to once per window across the JVM (matching the 60s
+  // saturation-warning pattern used by the engine's thread pools).
+  private static final long       EXPANSION_WARN_THROTTLE_MS = 60_000L;
+  private static final AtomicLong lastExpansionWarnMs        = new AtomicLong(0L);
 
   /**
    * Creates a new FullTextQueryExecutor for the given index.
@@ -168,7 +173,6 @@ public class FullTextQueryExecutor {
     collectingExclusion = false;
     tokensOnly = false;
     currentBoost = 1.0f;
-    expansionCapWarned = false;
   }
 
   /**
@@ -364,16 +368,25 @@ public class FullTextQueryExecutor {
     // tokens are dropped once the cap is reached. Matching is unaffected, so the result set stays correct - the extra terms just
     // stop contributing to the BM25 score.
     if (!scoringTokens.containsKey(storedKey) && scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS) {
-      if (!expansionCapWarned) {
-        expansionCapWarned = true;
-        LogManager.instance().log(this, Level.WARNING,
-            "Full-text query expanded to more than %d scoring terms on index '%s'; additional terms are matched but not BM25-scored. "
-                + "Consider a more specific query (narrower wildcard/fuzzy).", MAX_EXPANDED_SCORING_TERMS, index.getName());
-      }
+      maybeWarnExpansionCap();
       return;
     }
     // Combine the per-field boost with the caret boost in effect for this part of the query.
     scoringTokens.merge(storedKey, boost * currentBoost, Math::max);
+  }
+
+  /**
+   * Logs the scoring-token-cap WARNING at most once per {@link #EXPANSION_WARN_THROTTLE_MS} across the JVM (a new executor per
+   * query means a per-query flag would not suppress it for a repeated huge wildcard). The CAS ensures a single winner per window.
+   */
+  private void maybeWarnExpansionCap() {
+    final long now = System.currentTimeMillis();
+    final long last = lastExpansionWarnMs.get();
+    if (now - last >= EXPANSION_WARN_THROTTLE_MS && lastExpansionWarnMs.compareAndSet(last, now))
+      LogManager.instance().log(this, Level.WARNING,
+          "Full-text query expanded to more than %d scoring terms on index '%s'; additional terms are matched but not BM25-scored. "
+              + "Consider a more specific query (narrower wildcard/fuzzy). (throttled, logged at most once per %d s)",
+          MAX_EXPANDED_SCORING_TERMS, index.getName(), EXPANSION_WARN_THROTTLE_MS / 1000);
   }
 
   /**

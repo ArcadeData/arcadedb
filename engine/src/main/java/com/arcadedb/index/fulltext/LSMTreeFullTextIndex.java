@@ -306,8 +306,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     // Reused across tokens to avoid per-token allocations (candidate path only).
     final List<FullTextPostingRID> hits = new ArrayList<>();
-    // Single-element lookup key reused across tokens (each underlyingIndex.get() consumes it synchronously before the next
-    // iteration reassigns it) to avoid a short-lived array allocation per query term.
+    // Single-element lookup key reused across tokens to avoid a short-lived array allocation per query term. SAFE ONLY because
+    // underlyingIndex.get() consumes the array synchronously (fully iterating each cursor before the next iteration reassigns
+    // storedKey[0]). If a future async/lazy read path ever retained the array beyond the call, this reuse would corrupt scoring
+    // and must be revisited (allocate per token instead).
     final String[] storedKey = new String[1];
 
     for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {

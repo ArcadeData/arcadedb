@@ -507,8 +507,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * @param docLength number of analyzed tokens of the document
    */
   public void addDocument(final long docLength) {
-    totalDocs.incrementAndGet();
+    // Write sumDocLength BEFORE totalDocs (the "published" counter that avgDocLength reads first). By the JMM, a reader that
+    // observes the new totalDocs is then guaranteed to observe the new sumDocLength too, so a concurrent reader never sees a
+    // half-applied (totalDocs bumped, sumDocLength not) state that would momentarily DEFLATE avgdl and over-penalize. The only
+    // possible torn read is sumDocLength-new / totalDocs-old, which inflates avgdl slightly (under-penalizes) - the safe side.
     sumDocLength.addAndGet(docLength);
+    totalDocs.incrementAndGet();
   }
 
   /**
@@ -517,6 +521,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * @param docLength number of analyzed tokens of the document
    */
   public void removeDocument(final long docLength) {
+    // Decrement totalDocs before sumDocLength so a concurrent reader's worst torn read is totalDocs-decremented /
+    // sumDocLength-not-yet, which inflates avgdl slightly (under-penalizes) rather than deflating it - the safe side, matching
+    // addDocument's bias.
     totalDocs.updateAndGet(v -> v > 0 ? v - 1 : v);
     sumDocLength.updateAndGet(v -> Math.max(0L, v - docLength));
   }
@@ -531,12 +538,12 @@ public class FullTextIndexMetadata extends IndexMetadata {
    * avoids per-bucket length bookkeeping. For a multi-bucket type with very unequal bucket sizes, length normalization is
    * therefore slightly biased - a cosmetic inaccuracy, not a correctness bug.
    * <p>
-   * The two counters are read independently (no shared lock), so a concurrent {@link #addDocument}/{@link #removeDocument} can be
-   * observed half-applied. The widest skew is one in-flight document: {@code addDocument} bumps {@code totalDocs} before
-   * {@code sumDocLength}, so a reader can briefly see {@code n} one too high (or, symmetrically for removal, one too low),
-   * yielding an avgdl off by roughly {@code avgdl/n}. With more than a handful of documents this is negligible, and avgdl is only
-   * the BM25 length-normalization denominator (further dampened by {@code b}), so a momentary approximation cannot distort
-   * ranking materially. An exact value is available on demand via the full-text index's {@code recomputeBM25Counters()}.
+   * The two counters are read independently (no shared lock). This method reads {@code totalDocs} first, then {@code sumDocLength};
+   * combined with the write ordering in {@link #addDocument}/{@link #removeDocument} (which publish via {@code totalDocs}), the
+   * JMM guarantees a concurrent reader sees either a consistent pair or one biased so avgdl is slightly HIGH (under-penalizing) -
+   * never momentarily low/over-penalizing. The widest skew is one in-flight document (~{@code avgdl/n}), negligible beyond a
+   * handful of documents and dampened by {@code b}, so it cannot distort ranking materially. An exact value is available on demand
+   * via the full-text index's {@code recomputeBM25Counters()}.
    */
   public double avgDocLength() {
     final long n = totalDocs.get();
