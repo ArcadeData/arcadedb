@@ -57,6 +57,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
    */
   public static final String SIMILARITY_CLASSIC = "CLASSIC";
 
+  // These mirror BM25Scorer.DEFAULT_K1 / DEFAULT_B by value. They are intentionally not a reference to that class: BM25Scorer
+  // lives in com.arcadedb.index.fulltext and depends on schema, not the other way round, so referencing it here would invert the
+  // package dependency. Keep the two pairs in sync if either ever changes.
   /** Default BM25 term-frequency saturation parameter. */
   public static final float  DEFAULT_BM25_K1 = 1.2f;
   /** Default BM25 document-length normalization parameter. */

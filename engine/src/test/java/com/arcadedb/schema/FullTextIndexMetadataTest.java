@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for {@link FullTextIndexMetadata}.
@@ -62,6 +63,31 @@ class FullTextIndexMetadataTest {
     reloaded.fromJSON(defaultJson);
     assertThat(reloaded.getBm25K1()).isEqualTo(FullTextIndexMetadata.DEFAULT_BM25_K1);
     assertThat(reloaded.getBm25B()).isEqualTo(FullTextIndexMetadata.DEFAULT_BM25_B);
+  }
+
+  @Test
+  void fromJSONReplacesStalePerFieldConfig() {
+    final FullTextIndexMetadata metadata = new FullTextIndexMetadata("Article", new String[] { "title", "body" }, 0);
+    metadata.setFieldAnalyzer("title", "org.apache.lucene.analysis.en.EnglishAnalyzer");
+    metadata.setFieldBoost("title", 3.0f);
+
+    // A second fromJSON (e.g. a schema reload onto a reused instance) must REPLACE the per-field config, not merge stale entries.
+    final JSONObject json = new JSONObject();
+    json.put("similarity", "BM25");
+    json.put("body_boost", 2.0f);
+    metadata.fromJSON(json);
+
+    assertThat(metadata.getFieldBoost("title")).isEqualTo(1.0f); // stale title boost cleared
+    assertThat(metadata.getFieldBoost("body")).isEqualTo(2.0f);  // new boost applied
+    assertThat(metadata.getAnalyzerClass("title")).isEqualTo(metadata.getAnalyzerClass()); // stale title analyzer cleared -> default
+  }
+
+  @Test
+  void setSimilarityRejectsNull() {
+    final FullTextIndexMetadata metadata = new FullTextIndexMetadata("Article", new String[] { "title" }, 0);
+    assertThatThrownBy(() -> metadata.setSimilarity(null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("cannot be null");
   }
 
   @Test

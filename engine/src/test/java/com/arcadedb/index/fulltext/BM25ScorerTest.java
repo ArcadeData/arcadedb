@@ -32,9 +32,11 @@ class BM25ScorerTest {
 
   @Test
   void idfMatchesRobertsonSparckJonesFormula() {
-    // idf = ln((N - df + 0.5)/(df + 0.5) + 1)
+    // idf = ln((N - df + 0.5)/(df + 0.5) + 1). Use asymmetric df != N/2 cases so the numerator's N - df term is actually
+    // exercised (at df = N/2, N - df == df and a formula that dropped N would still pass).
     assertThat(BM25Scorer.idf(100, 1)).isCloseTo(Math.log((99 + 0.5) / (1 + 0.5) + 1.0), within(1e-9));
-    assertThat(BM25Scorer.idf(100, 50)).isCloseTo(Math.log((50 + 0.5) / (50 + 0.5) + 1.0), within(1e-9));
+    assertThat(BM25Scorer.idf(100, 10)).isCloseTo(Math.log((90 + 0.5) / (10 + 0.5) + 1.0), within(1e-9));
+    assertThat(BM25Scorer.idf(100, 80)).isCloseTo(Math.log((20 + 0.5) / (80 + 0.5) + 1.0), within(1e-9));
     // a term in every document still yields a non-negative idf thanks to the +1
     assertThat(BM25Scorer.idf(100, 100)).isGreaterThanOrEqualTo(0.0);
   }

@@ -560,6 +560,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (ftMetadata.claimStaleCheck()) {
       final String typeName = getTypeName();
       if (typeName != null) {
+        // Both sides are TYPE-WIDE: getTotalDocs() is the shared counter accumulated across every bucket index (they share this
+        // metadata instance), and countType() is the type's live record count - so this comparison is scope-consistent and does
+        // NOT spuriously rescan multi-bucket types. (This counter feeds avgdl only; IDF's N is the per-bucket count from
+        // resolveTotalDocs(), a deliberately different scope - see that method.)
         final long liveCount = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);
         if (liveCount != ftMetadata.getTotalDocs())
           computeCorpusCounters(false);
