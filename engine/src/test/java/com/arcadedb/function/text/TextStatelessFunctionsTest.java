@@ -319,12 +319,11 @@ class TextStatelessFunctionsTest {
   }
 
   @Test
-  void splitFunctionNullDelimiterThrowsNpe() {
+  void splitFunctionNullDelimiterReturnsNull() {
     final SplitFunction fn = new SplitFunction();
 
-    // SplitFunction has no null guard on args[1] — throws NPE unlike TextSplit which handles it gracefully
-    assertThatThrownBy(() -> fn.execute(new Object[]{"abc", null}, null))
-        .isInstanceOf(NullPointerException.class);
+    // Null delimiter null-propagates (matches Neo4j and peer functions), no NPE
+    assertThat(fn.execute(new Object[]{"abc", null}, null)).isNull();
   }
 
   @Test
