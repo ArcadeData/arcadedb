@@ -19,8 +19,8 @@
 package com.arcadedb.function.sql.math;
 
 import com.arcadedb.database.Identifiable;
-import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.function.sql.SQLAggregatedFunction;
+import com.arcadedb.query.sql.executor.CommandContext;
 
 /**
  * Count the record that contains a field. Use * to indicate the record instead of the field. Uses the context to save the counter
@@ -39,10 +39,15 @@ public class SQLFunctionCount extends SQLAggregatedFunction {
 
   public Object execute(final Object self, final Identifiable currentRecord, final Object currentResult, final Object[] params,
       final CommandContext context) {
-    if (params.length == 0 || params[0] != null)
+    final boolean counted = params.length == 0 || params[0] != null;
+    if (counted)
       total++;
 
-    return total;
+    // Return the per-row contribution (1 for a counted row, 0 otherwise). The cross-row running total
+    // is exposed only through getResult(); the aggregation pipeline ignores this return value, while a
+    // non-aggregating caller (e.g. count(x) in a LET) gets a consistent per-row value instead of the
+    // cumulative count.
+    return counted ? 1L : 0L;
   }
 
   public boolean aggregateResults() {

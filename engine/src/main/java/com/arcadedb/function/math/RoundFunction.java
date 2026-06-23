@@ -33,6 +33,8 @@ import java.util.Locale;
  * <ul>
  *   <li>round(value) - rounds to nearest integer (HALF_UP)</li>
  *   <li>round(value, precision) - rounds to the given number of decimal places (HALF_UP)</li>
+ *   <li>round(value, precision, mode) - rounds to the given number of decimal places using the
+ *       specified rounding mode (UP, DOWN, CEILING, FLOOR, HALF_UP, HALF_DOWN, HALF_EVEN)</li>
  * </ul>
  */
 public class RoundFunction implements StatelessFunction {
@@ -44,7 +46,7 @@ public class RoundFunction implements StatelessFunction {
   @Override
   public Object execute(final Object[] args, final CommandContext context) {
     if (args.length < 1 || args.length > 3)
-      throw new CommandExecutionException("round() requires one or two arguments");
+      throw new CommandExecutionException("round() requires 1, 2 or 3 arguments");
 
     if (args[0] == null)
       return null;

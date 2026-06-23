@@ -200,8 +200,11 @@ public class FileUtils {
   }
 
   public static void deleteFolderIfEmpty(final File dir) {
-    if (dir != null && dir.listFiles() != null && dir.listFiles().length == 0) {
-      deleteRecursively(dir);
+    if (dir != null) {
+      File[] files = dir.listFiles();
+      if (files != null && files.length == 0) {
+        deleteRecursively(dir);
+      }
     }
   }
 
