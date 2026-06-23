@@ -40,6 +40,7 @@ import com.arcadedb.function.sql.DefaultSQLFunctionFactory;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -851,6 +852,68 @@ class CypherBuiltInFunctionsTest extends TestHelper {
     final List<Object> elements = (List<Object>) fn.execute(new Object[] { path }, null);
 
     assertThat(elements).isNotNull().isNotEmpty();
+  }
+
+  /**
+   * Builds a well-formed path map with {@code relCount} relationships and {@code relCount + 1} nodes,
+   * matching the representation that real Cypher path matching produces.
+   */
+  private static Map<String, Object> buildPath(final int relCount) {
+    final List<Object> nodes = new ArrayList<>();
+    final List<Object> rels = new ArrayList<>();
+    for (int i = 0; i <= relCount; i++)
+      nodes.add("n" + i);
+    for (int i = 0; i < relCount; i++)
+      rels.add("r" + i);
+    final Map<String, Object> path = new LinkedHashMap<>();
+    path.put("_type", "path");
+    path.put("nodes", nodes);
+    path.put("relationships", rels);
+    path.put("length", relCount);
+    return path;
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void pathSlice() {
+    final StatelessFunction fn = CypherFunctionRegistry.get("path.slice");
+
+    // slice [1, 2): one relationship, two nodes
+    final Map<String, Object> sliced = (Map<String, Object>) fn.execute(new Object[] { buildPath(3), 1, 2 }, null);
+    assertThat(sliced).isNotNull();
+    assertThat(sliced.get("_type")).isEqualTo("path");
+    assertThat((List<Object>) sliced.get("relationships")).containsExactly("r1");
+    assertThat((List<Object>) sliced.get("nodes")).containsExactly("n1", "n2");
+    assertThat(sliced.get("length")).isEqualTo(1);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void pathSliceEmptyTailReturnsEmptyPath() {
+    // Issue #4707: slicing exactly at the path end (from == relCount) must return an empty
+    // (zero-relationship) path containing the boundary node, not null.
+    final StatelessFunction fn = CypherFunctionRegistry.get("path.slice");
+
+    final Map<String, Object> emptyTail = (Map<String, Object>) fn.execute(new Object[] { buildPath(3), 3 }, null);
+    assertThat(emptyTail).isNotNull();
+    assertThat(emptyTail.get("_type")).isEqualTo("path");
+    assertThat((List<Object>) emptyTail.get("relationships")).isEmpty();
+    assertThat((List<Object>) emptyTail.get("nodes")).containsExactly("n3");
+    assertThat(emptyTail.get("length")).isEqualTo(0);
+  }
+
+  @Test
+  @SuppressWarnings("unchecked")
+  void pathSliceEmptyRangeReturnsEmptyPath() {
+    // Issue #4707: from == to is an empty slice and must return a no-edge path, not null.
+    final StatelessFunction fn = CypherFunctionRegistry.get("path.slice");
+
+    final Map<String, Object> emptyRange = (Map<String, Object>) fn.execute(new Object[] { buildPath(3), 1, 1 }, null);
+    assertThat(emptyRange).isNotNull();
+    assertThat(emptyRange.get("_type")).isEqualTo("path");
+    assertThat((List<Object>) emptyRange.get("relationships")).isEmpty();
+    assertThat((List<Object>) emptyRange.get("nodes")).containsExactly("n1");
+    assertThat(emptyRange.get("length")).isEqualTo(0);
   }
 
   // ===================== CREATE FUNCTION TESTS =====================
