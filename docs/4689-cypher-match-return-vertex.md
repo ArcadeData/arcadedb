@@ -75,9 +75,31 @@ a real remote driver uses, which is the most faithful reproduction of the report
 - SQL `SELECT name FROM SqlRemoteFields` over RemoteDatabase
 - Vertices with edges over RemoteDatabase
 
+### Customer follow-up (2026-06-23)
+
+Reporter clarified: the error happens **only in Studio** (direct HTTP and Bolt work fine), and only
+in 2 specific collections. Studio uses the `serializer=studio` path, which is the only serializer
+that builds the full graph (vertices + edges + records) and runs the "FILTER OUT NOT CONNECTED EDGES"
+loop iterating `getEdges()` on every returned vertex (`AbstractQueryHandler.serializeResultSet` case
+"studio", lines 98-179). This is studio-only behavior that HTTP record/default and Bolt never hit.
+
+Added `Issue4689StudioSerializerIT` to stress the studio graph-building path with the structures
+most likely behind the customer's "2 collections":
+- edges between two returned vertices (filter loop surfaces the edge)
+- edges to vertices OUTSIDE the result set (filter loop must exclude them)
+- self-loop edges
+- a hub vertex with 25 edges (per-vertex getEdges iteration)
+- SQL whole-record SELECT over studio with connected vertices
+- bidirectional edges (exercises both OUT and IN edge loops)
+
+All 6 studio tests pass - the bug still cannot be reproduced over the exact serializer Studio uses.
+The customer's case is likely data-specific (e.g. ghost/dangling edges in those 2 collections, or
+a property type that trips serialization); more reproduction detail is still needed from the reporter.
+
 ## Location
 
 `server/src/test/java/com/arcadedb/server/http/handler/Issue4689MatchReturnVertexIT.java`
+`server/src/test/java/com/arcadedb/server/http/handler/Issue4689StudioSerializerIT.java`
 `server/src/test/java/com/arcadedb/remote/Issue4689MatchReturnVertexRemoteIT.java`
 
 ---
