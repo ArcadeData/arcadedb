@@ -543,7 +543,9 @@ public class TypeIndex implements RangeIndex, IndexInternal {
   @Override
   public boolean recomputeStatistics() {
     // BM25 corpus counters are shared type-wide (the same metadata object backs every bucket sub-index), so recomputing on a
-    // single bucket sub-index repairs them for the whole type; this avoids N redundant full-type scans.
+    // single bucket sub-index repairs them for the whole type; this avoids N redundant full-type scans. Returning on the first
+    // success is therefore correct: every bucket sub-index of a given type shares one similarity and one metadata object, so
+    // they cannot disagree on whether statistics exist.
     for (final IndexInternal idx : indexesOnBuckets)
       if (idx.recomputeStatistics())
         return true;

@@ -110,6 +110,25 @@ individual rows). There is no separate explain function.
   match count, now widened to e.g. `3.0`). Application code that read `$score` as an `Integer` must read it as a `Number`/`Float`.
   This is the one user-visible behavior change for existing CLASSIC indexes.
 
+## Operational notes / known limitations
+
+- **Counter drift after rollbacks triggers a one-time rescan.** The corpus counters are bumped at index put/remove time, before
+  commit, and are not reversed on rollback. The first BM25 query of a session validates the persisted counters against a cheap
+  live document count and, if they disagree (e.g. after rolled-back inserts), does a single full type scan to repair them - once
+  per session. For workloads with a high insert-rollback rate this means a periodic rescan on the first query after each restart.
+  Repair on demand with `REBUILD INDEX <name> WITH statsOnly = true` (cheap, no reindex).
+- **`avgdl` is type-wide while `N`/`df` are per-bucket.** BM25 is scored per bucket: `N` (document count) and `df` are measured in
+  the bucket being scored, but the average document length used for length normalization is a single type-wide value. For a
+  single-bucket type this is exact. For a multi-bucket type with very *unbalanced* document lengths across buckets, the
+  `b * dl / avgdl` normalization is slightly biased (a document in an atypically long bucket is normalized against a type-wide
+  average). `avgdl` is only a normalizer (further dampened by `b`), so this shifts scores modestly rather than reordering
+  aggressively; it is a deliberate trade-off that avoids per-bucket length bookkeeping.
+- **Unconstrained direct lookups do two passes per term.** Scoring through `SEARCH_INDEX` (a candidate set is known) scans each
+  term's postings once. The direct `index.get(query)` API with no candidate set scans each term's postings twice (count `df`,
+  then accumulate) to keep peak memory bounded to the result set rather than materializing a common term's full posting list.
+  For a query with many terms over a large index this doubles that read I/O on the direct path; prefer `SEARCH_INDEX` for large
+  unconstrained queries.
+
 ## Compaction fix (pre-existing bug, also affected CLASSIC)
 
 Full-text index **compaction** previously dropped postings when a *single token's* posting list spanned multiple compacted leaf

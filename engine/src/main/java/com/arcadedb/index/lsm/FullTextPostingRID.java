@@ -36,8 +36,8 @@ import com.arcadedb.database.DatabaseRID;
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
 public class FullTextPostingRID extends DatabaseRID {
-  public final int tf;
-  public final int docLength;
+  private final int tf;
+  private final int docLength;
 
   public FullTextPostingRID(final BasicDatabase database, final int bucketId, final long offset, final int tf, final int docLength) {
     super(database, bucketId, offset);
@@ -47,5 +47,15 @@ public class FullTextPostingRID extends DatabaseRID {
       throw new IllegalArgumentException("tf and docLength must be non-negative: tf=" + tf + ", docLength=" + docLength);
     this.tf = tf;
     this.docLength = docLength;
+  }
+
+  /** Term frequency: how many times the indexed term occurs in the document. */
+  public int getTf() {
+    return tf;
+  }
+
+  /** Document length: total number of analyzed tokens in the document. */
+  public int getDocLength() {
+    return docLength;
   }
 }

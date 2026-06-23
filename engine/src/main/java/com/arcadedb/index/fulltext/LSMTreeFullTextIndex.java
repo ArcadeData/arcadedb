@@ -307,7 +307,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           continue;
         final double idf = BM25Scorer.idf(totalDocs, df);
         for (final FullTextPostingRID s : hits)
-          scoreMap.merge(s.getIdentity(), BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost, Double::sum);
+          scoreMap.merge(s.getIdentity(), BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost, Double::sum);
       } else {
         // No candidate filter: count df first (streaming, no retention), then accumulate every matching document.
         long df = 0L;
@@ -323,7 +323,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         while (scoreCursor.hasNext()) {
           final Identifiable id = scoreCursor.next();
           if (id instanceof FullTextPostingRID s)
-            scoreMap.merge(s.getIdentity(), BM25Scorer.termScore(idf, s.tf, s.docLength, avgdl, k1, b) * boost, Double::sum);
+            scoreMap.merge(s.getIdentity(), BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost, Double::sum);
         }
       }
     }

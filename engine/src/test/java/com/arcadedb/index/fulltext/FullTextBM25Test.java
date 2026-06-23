@@ -300,8 +300,8 @@ class FullTextBM25Test extends TestHelper {
         .isInstanceOf(IllegalArgumentException.class).hasMessageContaining("non-negative");
     // A valid posting is accepted and exposes its statistics.
     final FullTextPostingRID posting = new FullTextPostingRID(database, 1, 1L, 2, 5);
-    assertThat(posting.tf).isEqualTo(2);
-    assertThat(posting.docLength).isEqualTo(5);
+    assertThat(posting.getTf()).isEqualTo(2);
+    assertThat(posting.getDocLength()).isEqualTo(5);
   }
 
   @Test

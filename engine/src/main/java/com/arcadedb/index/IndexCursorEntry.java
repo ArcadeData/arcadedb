@@ -23,6 +23,14 @@ import com.arcadedb.database.Identifiable;
 import java.util.Arrays;
 import java.util.Objects;
 
+/**
+ * One entry of an index lookup result: the matched record, the keys it was found under, and a relevance score.
+ * <p>
+ * NOTE: {@link #equals(Object)}/{@link #hashCode()} intentionally use only {@code (record, keys)} - the score is excluded. This
+ * changed in the BM25 work (issue #4687): a previous version included the score, which meant two entries for the same document
+ * with different (float) scores were not deduplicated in a {@code Set}. Code that relied on score being part of identity (none
+ * known in the codebase) would see a behavior change.
+ */
 public class IndexCursorEntry {
   public final Object[]     keys;
   public final Identifiable record;

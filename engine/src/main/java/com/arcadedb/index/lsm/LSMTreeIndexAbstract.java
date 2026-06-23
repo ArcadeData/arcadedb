@@ -543,8 +543,8 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
    */
   private void writeTermFrequency(final Binary buffer, final Object value) {
     if (value instanceof FullTextPostingRID s) {
-      buffer.putUnsignedNumber(s.tf);
-      buffer.putUnsignedNumber(s.docLength);
+      buffer.putUnsignedNumber(s.getTf());
+      buffer.putUnsignedNumber(s.getDocLength());
     } else {
       buffer.putUnsignedNumber(0);
       buffer.putUnsignedNumber(0);
