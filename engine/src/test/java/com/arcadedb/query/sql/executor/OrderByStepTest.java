@@ -18,10 +18,13 @@
  */
 package com.arcadedb.query.sql.executor;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class OrderByStepTest extends TestHelper {
 
@@ -238,6 +241,91 @@ class OrderByStepTest extends TestHelper {
 
     assertThat(count).isEqualTo(4);
     result.close();
+  }
+
+  /**
+   * Issue #4700: setting QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP to 0 must disable the in-heap cap
+   * (consistent with DistinctExecutionStep and AggregateProjectionCalculationStep that use {@code > 0}),
+   * not trigger it on the very first row.
+   */
+  @Test
+  void shouldNotCapWhenConfigIsZero() {
+    final long oldValue = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
+    try {
+      GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(0);
+
+      database.getSchema().createDocumentType("TestOrderCapZero");
+      database.transaction(() -> {
+        for (int i = 0; i < 10; i++)
+          database.newDocument("TestOrderCapZero").set("value", i).save();
+      });
+
+      final ResultSet result = database.query("sql", "SELECT FROM TestOrderCapZero ORDER BY value ASC");
+      int count = 0;
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(10);
+      result.close();
+    } finally {
+      GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(oldValue);
+    }
+  }
+
+  /**
+   * Issue #4700: a negative value must disable the cap (documented "no limit").
+   */
+  @Test
+  void shouldNotCapWhenConfigIsNegative() {
+    final long oldValue = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
+    try {
+      GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(-1);
+
+      database.getSchema().createDocumentType("TestOrderCapNeg");
+      database.transaction(() -> {
+        for (int i = 0; i < 10; i++)
+          database.newDocument("TestOrderCapNeg").set("value", i).save();
+      });
+
+      final ResultSet result = database.query("sql", "SELECT FROM TestOrderCapNeg ORDER BY value ASC");
+      int count = 0;
+      while (result.hasNext()) {
+        result.next();
+        count++;
+      }
+      assertThat(count).isEqualTo(10);
+      result.close();
+    } finally {
+      GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(oldValue);
+    }
+  }
+
+  /**
+   * Issue #4700: a positive value must still enforce the cap.
+   */
+  @Test
+  void shouldCapWhenConfigExceeded() {
+    final long oldValue = GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.getValueAsLong();
+    try {
+      GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(3);
+
+      database.getSchema().createDocumentType("TestOrderCapExceeded");
+      database.transaction(() -> {
+        for (int i = 0; i < 10; i++)
+          database.newDocument("TestOrderCapExceeded").set("value", i).save();
+      });
+
+      assertThatThrownBy(() -> {
+        final ResultSet result = database.query("sql", "SELECT FROM TestOrderCapExceeded ORDER BY value ASC");
+        while (result.hasNext())
+          result.next();
+        result.close();
+      }).isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("in-heap ORDER BY");
+    } finally {
+      GlobalConfiguration.QUERY_MAX_HEAP_ELEMENTS_ALLOWED_PER_OP.setValue(oldValue);
+    }
   }
 
   @Test
