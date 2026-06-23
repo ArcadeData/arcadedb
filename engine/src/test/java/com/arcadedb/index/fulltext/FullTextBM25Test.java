@@ -502,6 +502,26 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void pureNegativeQueryReturnsComplement() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      database.command("sql", "INSERT INTO Doc SET name = 'a', content = 'java tutorial'");
+      database.command("sql", "INSERT INTO Doc SET name = 'b', content = 'python guide'");
+      database.command("sql", "INSERT INTO Doc SET name = 'c', content = 'java reference'");
+    });
+
+    database.transaction(() -> {
+      // A pure-negative query materializes the whole index (collectAllIndexedRids) and subtracts the matches of the negated term.
+      // '-java' must return exactly the documents that do NOT contain 'java'.
+      final Map<String, Float> scores = searchScores("Doc[content]", "-java");
+      assertThat(scores.keySet()).containsExactly("b");
+    });
+  }
+
+  @Test
   void nestedNegationDoesNotWronglyExcludeDoubleNegatedTerms() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");

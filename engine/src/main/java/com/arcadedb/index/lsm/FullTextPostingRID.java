@@ -62,4 +62,10 @@ public final class FullTextPostingRID extends DatabaseRID {
   public int getDocLength() {
     return docLength;
   }
+
+  /** Includes tf/docLength on top of the RID so serialization/scoring issues are easier to spot in logs and debuggers. */
+  @Override
+  public String toString() {
+    return super.toString() + "{tf=" + tf + ",docLength=" + docLength + "}";
+  }
 }

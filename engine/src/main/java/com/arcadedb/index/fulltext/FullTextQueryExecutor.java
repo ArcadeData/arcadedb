@@ -378,16 +378,18 @@ public class FullTextQueryExecutor {
   private void recordScoringToken(final String storedKey, final float boost) {
     if (collectingExclusion || !index.isBM25())
       return;
-    // Cap the number of distinct scoring tokens: a pathological wildcard/fuzzy expansion would otherwise add one posting-list
-    // scan per matched term to the re-rank pass. Already-seen tokens can still update their boost (no growth); only genuinely new
-    // tokens are dropped once the cap is reached. Matching is unaffected, so the result set stays correct - the extra terms just
-    // stop contributing to the BM25 score.
-    if (!scoringTokens.containsKey(storedKey) && scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS) {
+    // Single get(): the cap drops only genuinely new tokens once the limit is reached (a pathological wildcard/fuzzy expansion
+    // would otherwise add one posting-list scan per matched term to the re-rank pass); an already-seen token may still raise its
+    // boost without growing the map. Matching is unaffected, so the result set stays correct - excess terms just stop scoring.
+    final Float current = scoringTokens.get(storedKey);
+    if (current == null && scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS) {
       maybeWarnExpansionCap();
       return;
     }
-    // Combine the per-field boost with the caret boost in effect for this part of the query.
-    scoringTokens.merge(storedKey, boost * currentBoost, Math::max);
+    // Combine the per-field boost with the caret boost in effect for this part of the query; keep the highest seen.
+    final float combined = boost * currentBoost;
+    if (current == null || combined > current)
+      scoringTokens.put(storedKey, combined);
   }
 
   /**
