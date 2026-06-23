@@ -156,8 +156,7 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
 
     // Miss: re-resolve to pick up restarted peers with new IPs. While the allowlist has never been
     // complete (startup), use a short floor so it converges fast; once complete, respect refreshIntervalMs.
-    final long floor = everCompletelyResolved ? refreshIntervalMs : Math.min(refreshIntervalMs, INCOMPLETE_RESOLVE_FLOOR_MS);
-    resolveIfStale(floor);
+    resolveIfStale(currentResolveFloor());
     if (allowedIps.get().contains(ip))
       return true;
 
@@ -190,6 +189,27 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   /** Triggers an immediate DNS re-resolution. Exposed for testing. */
   void refresh() {
     doResolve();
+  }
+
+  /**
+   * Proactively re-resolves the allowlist on a background cadence, independent of any inbound
+   * connection (issue #4696). The allowlist was previously refreshed only reactively, on a rejected
+   * ("miss") connection, so a peer that restarted with a new pod IP was admitted only after first
+   * being rejected - and on a leader whose outbound appender channel is also wedged, that inbound
+   * connection may never arrive, stranding the peer indefinitely. A periodic caller (the Raft health
+   * monitor tick, which runs on every node) invokes this so the allowlist reconciles a returned peer's
+   * new IP on its own, dropping the stale pre-restart IP as soon as the name resolves to the new one.
+   * <p>
+   * Respects the steady-state {@code refreshIntervalMs} floor (and the short startup floor while the
+   * allowlist is still converging) so frequent ticks do not hammer DNS.
+   */
+  void proactiveRefresh() {
+    resolveIfStale(currentResolveFloor());
+  }
+
+  /** Re-resolution floor: the full interval once complete, a short floor while still converging at startup. */
+  private long currentResolveFloor() {
+    return everCompletelyResolved ? refreshIntervalMs : Math.min(refreshIntervalMs, INCOMPLETE_RESOLVE_FLOOR_MS);
   }
 
   /** Re-resolves only if at least {@code floor} ms have elapsed since the last resolution. */
