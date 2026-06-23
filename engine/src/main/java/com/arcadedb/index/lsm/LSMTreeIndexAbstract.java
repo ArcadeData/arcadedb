@@ -517,6 +517,10 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       serializer.serializeValue(database, buffer, valueType, values[i]);
       if (storeTermFrequency)
         writeTermFrequency(buffer, values[i]);
+      // Overflow check AFTER the whole i-th entry (RID + optional tf/docLength varints) is in the buffer: the entry is written as
+      // a unit, never split. On overflow we return i (= i complete entries the caller may keep), but the buffer now physically
+      // holds i+1 entries' bytes. That trailing entry is harmless: callers re-serialize from scratch (writeEntryMultipleValues
+      // clears the buffer and rewrites the kept subset before committing to a page), so the over-written bytes are discarded.
       if (buffer.size() > availableSpaceInPage)
         return i;
     }

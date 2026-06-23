@@ -67,7 +67,10 @@ import java.util.regex.PatternSyntaxException;
  *   <li>Field-specific search: field:value</li>
  * </ul>
  * <p>
- * This class is thread-safe. QueryParser instances are created per search() invocation.
+ * NOT thread-safe: an instance carries per-query mutable state (the collected scoring tokens, the current caret boost, and the
+ * exclusion/tokens-only flags) for the duration of one search. Create a new instance per search and do not share it across
+ * threads. {@code resetState()} runs at each public entry point as a defensive guard against accidental sequential reuse on the
+ * same thread; it does NOT make the instance safe for concurrent reuse. (The Lucene QueryParser is likewise rebuilt per call.)
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
@@ -112,7 +115,8 @@ public class FullTextQueryExecutor {
 
   // Throttle for the scoring-token-cap WARNING. A new executor is created per query, so a per-query flag would still log on every
   // execution of a repeated huge wildcard; this static throttle bounds it to once per window across the JVM (matching the 60s
-  // saturation-warning pattern used by the engine's thread pools).
+  // saturation-warning pattern used by the engine's thread pools). It is JVM-wide / shared across all indexes: a pathological
+  // wildcard on one index can suppress the warning for another for the window - an acceptable trade-off for a diagnostic log.
   private static final long       EXPANSION_WARN_THROTTLE_MS = 60_000L;
   private static final AtomicLong lastExpansionWarnMs        = new AtomicLong(0L);
 

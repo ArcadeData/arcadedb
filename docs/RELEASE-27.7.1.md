@@ -60,8 +60,9 @@ affects CLASSIC indexes specifically (BM25 indexes are new in this release and w
 
 `IndexCursorEntry.equals()`/`hashCode()` now use only `(record, keys)`; the relevance `score` is no longer part of identity. This
 lets the same document be deduplicated in a result `Set` regardless of score (needed for BM25, where a document can be scored more
-than once). No in-tree caller relied on the old behaviour, but third-party extensions that placed `IndexCursorEntry` objects into
-a `Set` expecting score-differentiated entries would see different deduplication. Treat `(record, keys)` as the identity.
+than once). No in-tree caller relied on the old behaviour, but **any** caller - not only plugin/extension authors - that places
+`IndexCursorEntry` objects (e.g. from `Index.get(...)`) into a `Set`, or uses them as map keys, expecting score-differentiated
+entries will silently see different deduplication. Treat `(record, keys)` as the identity.
 
 ### Getting BM25 on existing data
 

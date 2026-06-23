@@ -134,6 +134,11 @@ individual rows). There is no separate explain function.
   count; it does not independently re-derive `sumDocLength`. A workload that replaces document content (changing total token
   length) without changing the document count could let `avgdl` drift within a session undetected. It only affects length
   normalization (suboptimal, not wrong, scores); `REBUILD INDEX <name> WITH statsOnly = true` re-derives both counters exactly.
+- **Deleting after an analyzer/field change can drift `avgdl`.** On delete, the removed document's length is recomputed from the
+  values supplied at delete time, not from what was stored at index time. If an indexed field is null at delete time but was set
+  at index time, or the analyzer changed between index and delete, the recomputed length differs and `sumDocLength` is
+  under-decremented, drifting `avgdl`. Follow any analyzer change or bulk field-nulling-before-delete with
+  `REBUILD INDEX <name> WITH statsOnly = true` to re-derive the counters exactly.
 - **Counter drift after rollbacks triggers a one-time rescan.** The corpus counters are bumped at index put/remove time, before
   commit, and are not reversed on rollback. The first BM25 query of a session validates the persisted counters against a cheap
   live document count and, if they disagree (e.g. after rolled-back inserts), does a single full type scan to repair them - once
