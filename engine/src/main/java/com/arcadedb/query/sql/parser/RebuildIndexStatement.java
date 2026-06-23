@@ -190,6 +190,8 @@ public class RebuildIndexStatement extends DDLStatement {
           recomputed.add(idx.getName());
     } else {
       final Index idx = database.getSchema().getIndexByName(name.getValue());
+      if (idx == null)
+        throw new CommandExecutionException("Index '" + name.getValue() + "' not found");
       if (((IndexInternal) idx).recomputeStatistics())
         recomputed.add(idx.getName());
       else

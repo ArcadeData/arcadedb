@@ -52,12 +52,14 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Level;
@@ -272,24 +274,30 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    * @param tokenBoosts scoring tokens (stored-key form) mapped to their effective boost
    * @param candidates  documents to score, or {@code null} to score every matching document
    */
-  private Map<RID, Double> computeBM25Scores(final Map<String, Float> tokenBoosts, final Set<RID> candidates) {
+  private Map<RID, double[]> computeBM25Scores(final Map<String, Float> tokenBoosts, final Set<RID> candidates) {
     ensureCounters();
     final long totalDocs = resolveTotalDocs();
     final double avgdl = resolveAvgDocLength();
     final double k1 = ftMetadata.getBm25K1();
     final double b = ftMetadata.getBm25B();
 
-    // Accumulate in double to avoid per-term precision loss; the score is narrowed to float only when the cursor entry is built.
-    final Map<RID, Double> scoreMap = candidates != null ? new HashMap<>(candidates.size()) : new HashMap<>();
+    // Accumulate in a per-RID double[1] cell rather than a boxed Double: a document matched by T query terms is updated T times,
+    // and Map.merge(..., Double::sum) would box on every one of those updates. The cell is allocated once per unique document
+    // (same as a Double key would be) and then accumulated as a primitive. The score is narrowed to float when the cursor entry
+    // is built. Reading is via getScore() below.
+    final Map<RID, double[]> scoreMap = candidates != null ? new HashMap<>(candidates.size()) : new HashMap<>();
     if (candidates != null)
       for (final RID c : candidates)
-        scoreMap.put(c, 0.0);
+        scoreMap.put(c, new double[1]);
 
     // Reused across tokens to avoid per-token allocations (candidate path only).
     final List<FullTextPostingRID> hits = new ArrayList<>();
+    // Single-element lookup key reused across tokens (each underlyingIndex.get() consumes it synchronously before the next
+    // iteration reassigns it) to avoid a short-lived array allocation per query term.
+    final String[] storedKey = new String[1];
 
     for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
-      final String[] storedKey = new String[] { e.getKey() };
+      storedKey[0] = e.getKey();
       final float boost = e.getValue();
 
       if (candidates != null) {
@@ -310,7 +318,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           continue;
         final double idf = BM25Scorer.idf(totalDocs, df);
         for (final FullTextPostingRID s : hits)
-          scoreMap.merge(s.getIdentity(), BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost, Double::sum);
+          scoreMap.get(s.getIdentity())[0] += BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost;
       } else {
         // No candidate filter: count df first (streaming, no retention), then accumulate every matching document.
         long df = 0L;
@@ -326,7 +334,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         while (scoreCursor.hasNext()) {
           final Identifiable id = scoreCursor.next();
           if (id instanceof FullTextPostingRID s)
-            scoreMap.merge(s.getIdentity(), BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost, Double::sum);
+            scoreMap.computeIfAbsent(s.getIdentity(), k -> new double[1])[0] +=
+                BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost;
         }
       }
     }
@@ -352,25 +361,46 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       }
     }
 
-    final Map<RID, Double> scoreMap = computeBM25Scores(tokenBoosts, null);
+    return buildScoredCursor(computeBM25Scores(tokenBoosts, null), keys, limit);
+  }
 
-    final ArrayList<IndexCursorEntry> list = new ArrayList<>(scoreMap.size());
-    for (final Map.Entry<RID, Double> entry : scoreMap.entrySet())
-      list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().floatValue()));
+  /**
+   * Ranks the scored documents most-relevant-first (descending score, RID as a stable tiebreaker so equal-scored documents have a
+   * deterministic order) and returns a cursor over the (optionally limited) result. When a {@code limit} smaller than the result
+   * set is requested it selects the top-K with a bounded min-heap (O(N log K)) instead of fully sorting the whole set
+   * (O(N log N)) - a meaningful win for the common {@code ORDER BY $score DESC LIMIT k} shape over a large candidate set.
+   */
+  private IndexCursor buildScoredCursor(final Map<RID, double[]> scoreMap, final Object[] keys, final int limit) {
+    final Comparator<IndexCursorEntry> bestFirst = (o1, o2) -> {
+      final int cmp = Float.compare(o2.floatScore, o1.floatScore);
+      if (cmp != 0)
+        return cmp;
+      return o1.record.getIdentity().compareTo(o2.record.getIdentity());
+    };
 
-    // Most-relevant first, with RID as a stable tiebreaker so equal-scored documents have a deterministic order (consistent with
-    // scoreCandidatesBM25 and the CLASSIC path).
+    final int size = scoreMap.size();
+    if (limit > -1 && limit < size) {
+      // Bounded min-heap whose head is the WORST kept entry (reversed comparator), so we can evict it when a better one arrives.
+      final PriorityQueue<IndexCursorEntry> heap = new PriorityQueue<>(limit, bestFirst.reversed());
+      for (final Map.Entry<RID, double[]> e : scoreMap.entrySet()) {
+        final IndexCursorEntry entry = new IndexCursorEntry(keys, e.getKey(), (float) e.getValue()[0]);
+        if (heap.size() < limit)
+          heap.add(entry);
+        else if (bestFirst.compare(entry, heap.peek()) < 0) {
+          heap.poll();
+          heap.add(entry);
+        }
+      }
+      final IndexCursorEntry[] top = heap.toArray(new IndexCursorEntry[0]);
+      Arrays.sort(top, bestFirst);
+      return new TempIndexCursor(Arrays.asList(top));
+    }
+
+    final ArrayList<IndexCursorEntry> list = new ArrayList<>(size);
+    for (final Map.Entry<RID, double[]> entry : scoreMap.entrySet())
+      list.add(new IndexCursorEntry(keys, entry.getKey(), (float) entry.getValue()[0]));
     if (list.size() > 1)
-      list.sort((o1, o2) -> {
-        final int cmp = Float.compare(o2.floatScore, o1.floatScore);
-        if (cmp != 0)
-          return cmp;
-        return o1.record.getIdentity().compareTo(o2.record.getIdentity());
-      });
-
-    if (limit > -1 && list.size() > limit)
-      return new TempIndexCursor(list.subList(0, limit));
-
+      list.sort(bestFirst);
     return new TempIndexCursor(list);
   }
 
@@ -394,31 +424,18 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   public IndexCursor scoreCandidatesBM25(final Set<RID> candidates, final Map<String, Float> tokenBoosts, final Object[] keys,
       final int limit) {
-    final Map<RID, Double> scoreMap = computeBM25Scores(tokenBoosts, candidates);
-
-    final ArrayList<IndexCursorEntry> list = new ArrayList<>(scoreMap.size());
-    for (final Map.Entry<RID, Double> entry : scoreMap.entrySet())
-      list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().floatValue()));
-
-    if (list.size() > 1)
-      list.sort((o1, o2) -> {
-        final int cmp = Float.compare(o2.floatScore, o1.floatScore);
-        if (cmp != 0)
-          return cmp;
-        return o1.record.getIdentity().compareTo(o2.record.getIdentity());
-      });
-
-    if (limit > -1 && list.size() > limit)
-      return new TempIndexCursor(list.subList(0, limit));
-    return new TempIndexCursor(list);
+    return buildScoredCursor(computeBM25Scores(tokenBoosts, candidates), keys, limit);
   }
 
   /**
    * Returns the raw postings for an already-resolved stored key (RID-only, no BM25 scoring and no re-analysis), used by
    * {@link FullTextQueryExecutor} to collect candidate documents cheaply before scoring them once via
    * {@link #scoreCandidatesBM25}. Going through {@link #get} here would run the full scoring pipeline only to discard the scores.
+   * <p>
+   * Package-private: it takes a pre-analyzed stored key and bypasses the analysis pipeline, so an unanalyzed input (e.g. mixed
+   * case) would silently match nothing. Only {@link FullTextQueryExecutor} (same package) should call it.
    */
-  public IndexCursor getPostings(final String storedKey) {
+  IndexCursor getPostings(final String storedKey) {
     return underlyingIndex.get(new String[] { storedKey });
   }
 

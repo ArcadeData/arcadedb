@@ -346,6 +346,10 @@ class FullTextBM25Test extends TestHelper {
     assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `Plain[content]` WITH statsOnly = true"))
         .hasMessageContaining("no recomputable statistics");
 
+    // An unknown index name reports "not found" rather than throwing a NullPointerException.
+    assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `Nope[content]` WITH statsOnly = true"))
+        .hasMessageContaining("not found");
+
     // Wildcard form: recompute every index that keeps statistics. Only the BM25 index (Doc[content]) qualifies; the CLASSIC one
     // (Plain[content]) is skipped, so exactly one index is reported.
     try (final ResultSet rs = database.command("sql", "REBUILD INDEX * WITH statsOnly = true")) {
@@ -354,6 +358,40 @@ class FullTextBM25Test extends TestHelper {
       assertThat(((Number) r.getProperty("statsRecomputed")).intValue()).isEqualTo(1);
       assertThat(r.<List<String>>getProperty("indexes")).containsExactly("Doc[content]");
     }
+  }
+
+  @Test
+  void bm25GetHonorsLimitReturningTopKInOrder() {
+    database.transaction(() -> {
+      // Single bucket so the bucket-index cursor sees every document and the top-K selection is deterministic.
+      database.command("sql", "CREATE DOCUMENT TYPE Doc BUCKETS 1");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      // 'rare' matches the discriminative term and is short -> highest BM25; the rest match only the common term.
+      database.command("sql", "INSERT INTO Doc SET name = 'rare', content = 'quantum data'");
+      for (int i = 0; i < 8; i++)
+        database.command("sql", "INSERT INTO Doc SET name = 'common" + i + "', content = 'data data record number " + i + "'");
+    });
+
+    database.transaction(() -> {
+      final TypeIndex typeIndex = (TypeIndex) database.getSchema().getIndexByName("Doc[content]");
+      final LSMTreeFullTextIndex bucket = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
+
+      // limit (2) smaller than the candidate set exercises the bounded-heap top-K path.
+      final List<String> top = new ArrayList<>();
+      float previous = Float.MAX_VALUE;
+      final IndexCursor cursor = bucket.get(new Object[] { "quantum data" }, 2);
+      while (cursor.hasNext()) {
+        final var entry = cursor.next();
+        top.add(((Document) entry.getRecord()).getString("name"));
+        final float score = cursor.getFloatScore();
+        assertThat(score).isLessThanOrEqualTo(previous); // results come back already sorted, most-relevant first
+        previous = score;
+      }
+      assertThat(top).hasSize(2);
+      assertThat(top.get(0)).isEqualTo("rare"); // the discriminative, short document is the top result
+    });
   }
 
   @Test

@@ -369,7 +369,10 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * Sets the BM25 term-frequency saturation parameter k1 (must be &gt;= 0).
+   * Sets the BM25 term-frequency saturation parameter k1 (must be &gt;= 0). Higher values let term frequency keep increasing the
+   * score (less saturation). Note the edge case {@code k1 = 0}: it is permitted but degenerates BM25 to a pure IDF (binary
+   * presence) model - term frequency stops mattering entirely - which is rarely the intent of "a low k1"; use a small positive
+   * value (e.g. 0.5) for strong-but-not-total saturation.
    *
    * @throws IllegalArgumentException if k1 is negative
    */
