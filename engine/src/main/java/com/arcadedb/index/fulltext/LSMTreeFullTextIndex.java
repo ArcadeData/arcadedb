@@ -116,14 +116,6 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
             base.associatedBucketId);
       }
 
-      // The query parser's default (unqualified) field is "content"; on a multi-property index a boost configured for a field
-      // literally named "content" cannot be distinguished from an unqualified term and is silently ignored. Warn at creation.
-      if (ftMetadata.propertyNames != null && ftMetadata.propertyNames.size() > 1
-          && ftMetadata.getFieldBoosts().containsKey("content"))
-        LogManager.instance().log(LSMTreeFullTextIndex.class, Level.WARNING,
-            "Full-text index '%s' configures a boost for the field 'content', which collides with the query parser's default "
-                + "field name on a multi-property index; that boost will not be applied", builder.getIndexName());
-
       return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy(), ftMetadata);
     }
@@ -545,6 +537,18 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
+   * Recomputes the BM25 corpus counters when this index ranks with BM25 (CLASSIC indexes keep no such statistics). Drives the
+   * SQL {@code REBUILD INDEX <name> {statsOnly: true}} drift-repair path.
+   */
+  @Override
+  public boolean recomputeStatistics() {
+    if (!isBM25())
+      return false;
+    recomputeBM25Counters();
+    return true;
+  }
+
+  /**
    * Scans the whole type and rebuilds the shared corpus counters used for the average document length. The counters are type-wide
    * because the {@link FullTextIndexMetadata} instance is shared by all of the type's bucket indexes; scanning a single bucket
    * would corrupt them. When {@code persist} is true the schema is saved so the counters survive a restart; the lazy read-path
@@ -581,6 +585,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     }
 
     ftMetadata.setCounters(docs, sumLen);
+    // Report the result so operators can correlate the cold-start latency above with the corpus size that drove it.
+    LogManager.instance().log(this, Level.INFO,
+        "Recomputed BM25 corpus statistics for type '%s': %d documents, %d total tokens (avgdl=%.2f)", null, typeName, docs,
+        sumLen, docs > 0 ? (double) sumLen / docs : 1.0);
     if (persist)
       underlyingIndex.getMutableIndex().getDatabase().getSchema().getEmbedded().saveConfiguration();
   }
@@ -1216,8 +1224,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       docFreqs.put(term, docCount);
     }
 
-    // Estimate total documents (use the max doc frequency as approximation)
-    final int totalDocs = docFreqs.values().stream().mapToInt(Integer::intValue).max().orElse(1);
+    // Total documents in this bucket, consistent with the per-bucket document frequencies above. The live bucket record count is
+    // exact and always >= any term's df, unlike the previous max-df proxy which understated IDF for terms shared by many
+    // documents (the most common term defined totalDocs, forcing its IDF toward zero and skewing term selection).
+    final int totalDocs = (int) Math.min(Integer.MAX_VALUE, resolveTotalDocs());
 
     // Step 4: Select top terms using MoreLikeThisQueryBuilder
     final MoreLikeThisQueryBuilder queryBuilder = new MoreLikeThisQueryBuilder(config);

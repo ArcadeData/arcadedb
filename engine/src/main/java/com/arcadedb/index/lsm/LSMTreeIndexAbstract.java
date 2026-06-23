@@ -330,6 +330,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
               + FileUtils.getSizeAsString(pageUsableSpace) + "). Define the index with larger pages");
   }
 
+  /**
+   * Serializes the key plus as many of {@code rids} as fit into the scratch {@code buffer} and returns how many values were
+   * written (0 if not even a single value fits). The caller decides what to do with a partial/zero result (e.g. flush the current
+   * page and retry on a fresh one).
+   * <p>
+   * INVARIANT (relied upon by {@link LSMTreeIndexCompacted#appendDuringCompaction}): this method writes ONLY to {@code buffer}
+   * (the scratch {@code keyValueContent}); it never touches any database page. So when it returns a partial or zero count, no
+   * bytes have been committed to a page and the caller can safely move this key to a new page without orphaning data on the old
+   * one. Keep this true if refactoring - the compaction continuation-page fix depends on it.
+   */
   protected int writeEntryMultipleValues(final Binary buffer, final Object[] keys, Object[] rids, final int availableSpaceInPage,
       final int pageUsableSpace, final PageId pageId) {
     Object[] values = rids;

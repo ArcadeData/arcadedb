@@ -44,6 +44,7 @@ import org.apache.lucene.search.WildcardQuery;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -73,11 +74,12 @@ public class FullTextQueryExecutor {
    * it means "unqualified": such a term is matched against the unprefixed posting (the only field of a single-property index, or
    * the field-agnostic entry of a multi-property index) and receives no per-field boost.
    * <p>
-   * KNOWN LIMITATION: on a MULTI-property index a property literally named {@code content} collides with this sentinel - a
-   * {@code content:term} clause is then treated as unqualified (no field boost). Single-property indexes are unaffected. Renaming
-   * the sentinel would break single-property indexes whose sole property is {@code content}, so it is kept and documented.
+   * It is a deliberately non-identifier sentinel (not a plausible property name) so it cannot collide with a real field. Whether a
+   * parsed query field is unqualified is decided by {@link #isUnqualified(String)}, which is index-aware and so also handles a
+   * single-property index whose sole property happens to equal a user's field qualifier - the former {@code "content"} sentinel
+   * silently mis-scored a {@code content:term} clause on a multi-property index that owned a real {@code content} field.
    */
-  static final String DEFAULT_FIELD = "content";
+  static final String DEFAULT_FIELD = "__arcadedb_default_field__";
 
   private final LSMTreeFullTextIndex   index;
   private final Analyzer               analyzer;
@@ -346,11 +348,24 @@ public class FullTextQueryExecutor {
   }
 
   /**
-   * Returns the BM25 field boost for a query field: the configured per-field boost for an explicit field, or 1.0 for the default
-   * (unqualified) {@code content} field.
+   * Returns true when a parsed query field denotes the "unqualified" target rather than a real, field-qualified clause. A term is
+   * unqualified when the parser left it on the {@link #DEFAULT_FIELD} sentinel, or when it is qualified with the sole property of a
+   * single-property index: such an index stores only unprefixed postings, so {@code field:term} and {@code term} are equivalent
+   * there. This is what lets a non-colliding sentinel be used without breaking single-property {@code content:term} queries.
+   */
+  private boolean isUnqualified(final String field) {
+    if (field == null || field.isEmpty() || DEFAULT_FIELD.equals(field))
+      return true;
+    final List<String> props = index.getPropertyNames();
+    return props.size() == 1 && props.get(0).equals(field);
+  }
+
+  /**
+   * Returns the BM25 field boost for a query field: the configured per-field boost for an explicit field, or 1.0 for an
+   * unqualified term.
    */
   private float boostFor(final String field) {
-    if (field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field) && metadata != null)
+    if (!isUnqualified(field) && metadata != null)
       return metadata.getFieldBoost(field);
     return 1.0f;
   }
@@ -377,12 +392,7 @@ public class FullTextQueryExecutor {
 
     // For field-specific queries (e.g., "title:java"), prepend field name
     // Multi-property indexes store tokens as "fieldName:token"
-    final String searchKey;
-    if (field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field)) {
-      searchKey = field + ":" + text;
-    } else {
-      searchKey = text;
-    }
+    final String searchKey = isUnqualified(field) ? text : field + ":" + text;
 
     recordScoringToken(searchKey, boostFor(field));
     if (tokensOnly)
@@ -455,7 +465,7 @@ public class FullTextQueryExecutor {
     // Compute the literal prefix (everything up to the first wildcard char)
     final String literalPrefix = extractLiteralPrefix(pattern);
     final String searchPrefix = buildSearchKey(field, literalPrefix);
-    final String fieldPrefix = field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field) ? field + ":" : "";
+    final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
     final Pattern regex = wildcardToRegex(pattern);
 
     if (literalPrefix.isEmpty()) {
@@ -491,7 +501,7 @@ public class FullTextQueryExecutor {
     final int maxEdits = query.getMaxEdits();
     final int prefixLen = Math.min(query.getPrefixLength(), term.length());
     final String requiredPrefix = term.substring(0, prefixLen);
-    final String fieldPrefix = field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field) ? field + ":" : "";
+    final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
     final String searchPrefix = fieldPrefix + requiredPrefix;
 
     iterateAndMatch(searchPrefix.isEmpty() ? null : searchPrefix, key -> {
@@ -517,7 +527,7 @@ public class FullTextQueryExecutor {
       return;
     }
 
-    final String fieldPrefix = field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field) ? field + ":" : "";
+    final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
 
     iterateAndMatch(null, key -> {
       if (!key.startsWith(fieldPrefix))
@@ -557,14 +567,11 @@ public class FullTextQueryExecutor {
   }
 
   /**
-   * Builds the index search key by prefixing the field name when needed.
-   * Multi-property indexes store entries as {@code fieldName:token}; the default {@code "content"} field
-   * (used by the Lucene QueryParser when no field is specified) targets unqualified tokens.
+   * Builds the index search key by prefixing the field name when needed. Multi-property indexes store entries as
+   * {@code fieldName:token}; unqualified terms (see {@link #isUnqualified(String)}) target the unprefixed tokens.
    */
-  private static String buildSearchKey(final String field, final String text) {
-    if (field != null && !field.isEmpty() && !DEFAULT_FIELD.equals(field))
-      return field + ":" + text;
-    return text;
+  private String buildSearchKey(final String field, final String text) {
+    return isUnqualified(field) ? text : field + ":" + text;
   }
 
   /**

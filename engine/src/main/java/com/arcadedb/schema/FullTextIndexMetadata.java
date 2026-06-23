@@ -85,6 +85,9 @@ public class FullTextIndexMetadata extends IndexMetadata {
   // data this session. Persisted counters can lag the on-disk data if documents were indexed after the last schema save, so the
   // first BM25 query validates them once (cheap live count) and rebuilds only if they disagree. AtomicBoolean (with CAS) so that
   // concurrent first-queries across the type's shared bucket indexes do not all run the validation/rescan.
+  // Intentionally never reset to false after being claimed: the check is a once-per-session guard, not a continuous monitor. The
+  // recovery path for counters that are badly stale within a running session (e.g. a heavy rollback burst) is an explicit
+  // recomputeBM25Counters() / index rebuild, which also re-marks them consistent.
   private final AtomicBoolean staleChecked = new AtomicBoolean(false);
 
   /**

@@ -1,5 +1,5 @@
 /*
- * Copyright 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -305,6 +305,49 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void rebuildIndexStatsOnlyRepairsCountersViaSQL() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      database.command("sql", "INSERT INTO Doc SET name='a', content='java tutorial'");
+    });
+
+    // Induce counter drift: a rolled-back insert bumps the in-memory corpus counters but commits no postings.
+    try {
+      database.transaction(() -> {
+        database.command("sql", "INSERT INTO Doc SET name='ghost', content='java java java'");
+        throw new IllegalStateException("force rollback");
+      });
+    } catch (final IllegalStateException ignore) {
+      // expected
+    }
+
+    // Repair the BM25 corpus counters from SQL - no Java, and no full (expensive) index rebuild.
+    try (final ResultSet rs = database.command("sql", "REBUILD INDEX `Doc[content]` WITH statsOnly = true")) {
+      final Result r = rs.next();
+      assertThat(r.<String>getProperty("operation")).isEqualTo("rebuild index stats");
+      assertThat(((Number) r.getProperty("statsRecomputed")).intValue()).isEqualTo(1);
+    }
+
+    database.transaction(() -> {
+      final Map<String, Float> scores = searchScores("Doc[content]", "java");
+      assertThat(scores).containsOnlyKeys("a");
+      assertThat(scores.get("a")).isGreaterThan(0f);
+    });
+
+    // A CLASSIC index keeps no recomputable statistics: statsOnly must report that clearly rather than silently succeeding.
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Plain");
+      database.command("sql", "CREATE PROPERTY Plain.content STRING");
+      database.command("sql", "CREATE INDEX ON Plain (content) FULL_TEXT METADATA {\"similarity\": \"CLASSIC\"}");
+    });
+    assertThatThrownBy(() -> database.command("sql", "REBUILD INDEX `Plain[content]` WITH statsOnly = true"))
+        .hasMessageContaining("no recomputable statistics");
+  }
+
+  @Test
   void invalidBM25ParametersAreRejected() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");
@@ -476,8 +519,8 @@ class FullTextBM25Test extends TestHelper {
       database.command("sql", "CREATE PROPERTY Doc.name STRING");
       database.command("sql", "CREATE PROPERTY Doc.content STRING");
       database.command("sql", "CREATE PROPERTY Doc.title STRING");
-      // The query parser uses "content" as the default-field sentinel for unqualified terms. A real index that also has a
-      // property literally named "content" must still index and score both fields gracefully (no crash, sensible ranking).
+      // A multi-property index that includes a property literally named "content" must resolve a content:term clause to that field
+      // - the default-field sentinel is no longer "content", so the former silent collision is fixed.
       database.command("sql", "CREATE INDEX ON Doc (content, title) FULL_TEXT");
       database.command("sql", "INSERT INTO Doc SET name = 'inContent', content = 'java tutorial', title = 'something else'");
       database.command("sql", "INSERT INTO Doc SET name = 'inTitle',   content = 'something else', title = 'java tutorial'");
@@ -489,9 +532,38 @@ class FullTextBM25Test extends TestHelper {
       assertThat(unqualified.keySet()).containsExactlyInAnyOrder("inContent", "inTitle");
       unqualified.values().forEach(s -> assertThat(s).isGreaterThan(0f));
 
-      // Field-qualified term on the literally-named "content" property still resolves to that field only.
-      final Map<String, Float> qualified = searchScores("Doc[content,title]", "content:java");
-      assertThat(qualified.keySet()).contains("inContent");
+      // content:java resolves to the content field ONLY: inContent matches, inTitle (java only in its title) does not.
+      final Map<String, Float> contentScoped = searchScores("Doc[content,title]", "content:java");
+      assertThat(contentScoped.keySet()).containsExactly("inContent");
+
+      // title:java symmetrically resolves to the title field ONLY.
+      final Map<String, Float> titleScoped = searchScores("Doc[content,title]", "title:java");
+      assertThat(titleScoped.keySet()).containsExactly("inTitle");
+    });
+  }
+
+  @Test
+  void contentFieldBoostIsAppliedOnMultiPropertyIndex() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE PROPERTY Doc.title STRING");
+      // A boost on a field literally named "content" must now take effect (previously silently dropped because "content" was the
+      // default-field sentinel).
+      database.command("sql",
+          "CREATE INDEX ON Doc (content, title) FULL_TEXT METADATA {\"similarity\": \"BM25\", \"content_boost\": 5.0}");
+      database.command("sql", "INSERT INTO Doc SET name = 'inContent', content = 'java', title = 'something else entirely'");
+      database.command("sql", "INSERT INTO Doc SET name = 'inTitle',   content = 'something else', title = 'java'");
+    });
+
+    database.transaction(() -> {
+      final Map<String, Float> contentScores = searchScores("Doc[content,title]", "content:java");
+      final Map<String, Float> titleScores = searchScores("Doc[content,title]", "title:java");
+      assertThat(contentScores.get("inContent")).isNotNull();
+      assertThat(titleScores.get("inTitle")).isNotNull();
+      // The content_boost=5.0 raises the content-field match above the equivalent unboosted title-field match.
+      assertThat(contentScores.get("inContent")).isGreaterThan(titleScores.get("inTitle"));
     });
   }
 
@@ -524,15 +596,8 @@ class FullTextBM25Test extends TestHelper {
           assertThat(meta.getBm25K1()).isCloseTo(1.5f, within(1e-6f));
           assertThat(meta.getBm25B()).isCloseTo(0.6f, within(1e-6f));
         }
-      // The type-wide counters feeding avgdl must also survive: 13 documents totalling 2 + 12*3 = 38 tokens.
-      long totalDocs = 0L;
-      long sumDocLength = 0L;
-      for (final Index bucketIndex : typeIndex.getIndexesOnBuckets())
-        if (bucketIndex instanceof LSMTreeFullTextIndex ftIndex) {
-          totalDocs += ftIndex.getFullTextMetadata().getTotalDocs();
-          sumDocLength += ftIndex.getFullTextMetadata().getSumDocLength();
-        }
-      // The counters are shared type-wide (same metadata object per bucket), so read them from a single bucket index.
+      // The type-wide counters feeding avgdl must also survive: 13 documents totalling 2 + 12*3 = 38 tokens. The counters are
+      // shared type-wide (the same metadata object is passed to every bucket index), so read them from a single bucket index.
       final LSMTreeFullTextIndex anyBucket = (LSMTreeFullTextIndex) typeIndex.getIndexesOnBuckets()[0];
       assertThat(anyBucket.getFullTextMetadata().getTotalDocs()).isEqualTo(13L);
       assertThat(anyBucket.getFullTextMetadata().getSumDocLength()).isEqualTo(38L);

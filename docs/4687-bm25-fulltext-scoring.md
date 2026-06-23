@@ -31,6 +31,10 @@ SELECT title, $score FROM Article
 -- Inspect the scoring with EXPLAIN / PROFILE: the full-text fetch step reports the BM25 similarity,
 -- k1/b, corpus stats (N, avgdl) and each query term's df + idf.
 EXPLAIN SELECT title, $score FROM Article WHERE SEARCH_INDEX('Article[content]', 'java database') = true;
+
+-- Repair drifted BM25 corpus counters (e.g. after many rolled-back transactions) WITHOUT a full reindex: rescans the live
+-- data and rebuilds the avgdl counters only. Use `*` to repair every full-text index.
+REBUILD INDEX `Article[content]` WITH statsOnly = true;
 ```
 
 ### Metadata keys

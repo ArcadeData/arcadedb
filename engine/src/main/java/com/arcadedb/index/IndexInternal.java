@@ -54,6 +54,18 @@ public interface IndexInternal extends Index {
   }
 
   /**
+   * Recomputes any persisted per-index statistics (e.g. BM25 corpus counters) by rescanning the live data, repairing drift that
+   * incremental maintenance cannot reverse (rolled-back transactions, analyzer changes). Most indexes keep no such statistics and
+   * this is a no-op. Exposed to SQL via {@code REBUILD INDEX <name> {statsOnly: true}} so operators can repair drift without a
+   * full (and far more expensive) index rebuild.
+   *
+   * @return true if statistics were recomputed (the index keeps such statistics), false otherwise
+   */
+  default boolean recomputeStatistics() {
+    return false;
+  }
+
+  /**
    * Performs a lightweight structural/metadata integrity check of the index, independent of record content, and
    * returns a list of human-readable problem descriptions. An empty list means the index metadata is healthy.
    * Used by CHECK DATABASE to surface on-disk corruption (e.g. a damaged hash index metadata page, issue #352)

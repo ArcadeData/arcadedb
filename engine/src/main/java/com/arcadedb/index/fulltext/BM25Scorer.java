@@ -53,11 +53,17 @@ public final class BM25Scorer {
 
   /**
    * Computes the inverse document frequency for a term.
+   * <p>
+   * The log argument is {@code (N - df + 0.5)/(df + 0.5) + 1 = (N + 1)/(df + 0.5)}, which is strictly positive for any
+   * {@code N >= 0, df >= 0}, so {@link Math#log} is always defined (never {@code NaN}/{@code -Infinity}). IDF is {@code >= 0}
+   * whenever {@code df <= N}, which always holds in normal operation (df is counted at the same scope as N). A transiently stale
+   * {@code df > N} (e.g. drifted counters or deletion markers not yet compacted) yields a small negative IDF, which merely demotes
+   * an over-common term - harmless, and self-corrected once counters are recomputed.
    *
    * @param totalDocs total number of documents in the collection (N)
    * @param docFreq   number of documents containing the term (df)
    *
-   * @return the IDF weight (always >= 0)
+   * @return the IDF weight ({@code >= 0} when {@code df <= N}; slightly negative only for a stale {@code df > N})
    */
   public static double idf(final long totalDocs, final long docFreq) {
     final double numerator = (double) (totalDocs - docFreq) + 0.5;
