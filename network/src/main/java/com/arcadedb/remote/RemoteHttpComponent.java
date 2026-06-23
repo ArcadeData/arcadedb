@@ -134,10 +134,7 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   public void close() {
-    if (httpClient != null) {
-      httpClient.shutdownNow();
       httpClient.close();
-    }
   }
 
   private HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {
