@@ -53,44 +53,66 @@ public final class SimdTimeSeriesVectorOps implements TimeSeriesVectorOps {
   public double min(final double[] data, final int offset, final int length) {
     final int lanes = DOUBLE_SPECIES.length();
     double m = Double.POSITIVE_INFINITY;
+    boolean found = false;
     int i = 0;
     for (; i + lanes <= length; i += lanes) {
       DoubleVector v = DoubleVector.fromArray(DOUBLE_SPECIES, data, offset + i);
       // NaN policy (issue #4596): hardware MINSD/MAXSD reduction is NaN order-dependent. Replace any
       // NaN lane with the reduction identity (+Inf for MIN) so NaN is consistently skipped.
       final VectorMask<Double> nan = v.test(VectorOperators.IS_NAN);
-      if (nan.anyTrue())
+      if (nan.anyTrue()) {
+        if (!nan.allTrue())
+          found = true;
         v = v.blend(Double.POSITIVE_INFINITY, nan);
+      } else
+        found = true;
       final double laneMin = v.reduceLanes(VectorOperators.MIN);
       if (laneMin < m)
         m = laneMin;
     }
-    for (; i < length; i++)
-      if (data[offset + i] < m)
-        m = data[offset + i];
-    return m;
+    for (; i < length; i++) {
+      final double v = data[offset + i];
+      if (Double.isNaN(v))
+        continue;
+      found = true;
+      if (v < m)
+        m = v;
+    }
+    // NaN policy (issue #4716): empty or all-NaN range returns NaN, not the +Inf sentinel.
+    return found ? m : Double.NaN;
   }
 
   @Override
   public double max(final double[] data, final int offset, final int length) {
     final int lanes = DOUBLE_SPECIES.length();
     double m = Double.NEGATIVE_INFINITY;
+    boolean found = false;
     int i = 0;
     for (; i + lanes <= length; i += lanes) {
       DoubleVector v = DoubleVector.fromArray(DOUBLE_SPECIES, data, offset + i);
       // NaN policy (issue #4596): hardware MINSD/MAXSD reduction is NaN order-dependent. Replace any
       // NaN lane with the reduction identity (-Inf for MAX) so NaN is consistently skipped.
       final VectorMask<Double> nan = v.test(VectorOperators.IS_NAN);
-      if (nan.anyTrue())
+      if (nan.anyTrue()) {
+        if (!nan.allTrue())
+          found = true;
         v = v.blend(Double.NEGATIVE_INFINITY, nan);
+      } else
+        found = true;
       final double laneMax = v.reduceLanes(VectorOperators.MAX);
       if (laneMax > m)
         m = laneMax;
     }
-    for (; i < length; i++)
-      if (data[offset + i] > m)
-        m = data[offset + i];
-    return m;
+    for (; i < length; i++) {
+      final double v = data[offset + i];
+      if (Double.isNaN(v))
+        continue;
+      found = true;
+      if (v > m)
+        m = v;
+    }
+    // NaN policy (issue #4716): empty or all-NaN range returns NaN, not the -Inf sentinel.
+    return found ? m : Double.NaN;
   }
 
   @Override

@@ -59,6 +59,51 @@ class TimeSeriesVectorOpsTest {
 
   @ParameterizedTest
   @MethodSource("implementations")
+  void minMaxAllNaN(final TimeSeriesVectorOps ops) {
+    // Issue #4716: an all-NaN array must not leak the +Inf/-Inf reduction sentinel as if it were data.
+    // The whole array (length 13) plus a vector-aligned sub-range are exercised so both the SIMD body
+    // and the scalar tail are covered.
+    final double[] data = new double[13];
+    java.util.Arrays.fill(data, Double.NaN);
+    assertThat(ops.min(data, 0, 13)).isNaN();
+    assertThat(ops.max(data, 0, 13)).isNaN();
+    assertThat(ops.min(data, 2, 8)).isNaN();
+    assertThat(ops.max(data, 2, 8)).isNaN();
+  }
+
+  @ParameterizedTest
+  @MethodSource("implementations")
+  void minMaxWithSomeNaN(final TimeSeriesVectorOps ops) {
+    // NaN lanes are skipped; the real min/max of the remaining values is returned.
+    final double[] data = { 5.0, Double.NaN, 3.0, -2.0, Double.NaN, 0.0, 7.0, Double.NaN, 1.0, 9.0, Double.NaN, 4.0, 2.0 };
+    assertThat(ops.min(data, 0, 13)).isEqualTo(-2.0);
+    assertThat(ops.max(data, 0, 13)).isEqualTo(9.0);
+  }
+
+  @ParameterizedTest
+  @MethodSource("implementations")
+  void minMaxEmptyReturnsNaN(final TimeSeriesVectorOps ops) {
+    // No elements means no value to report: return NaN rather than the sentinel.
+    final double[] data = { 1.0, 2.0, 3.0 };
+    assertThat(ops.min(data, 0, 0)).isNaN();
+    assertThat(ops.max(data, 0, 0)).isNaN();
+  }
+
+  @ParameterizedTest
+  @MethodSource("implementations")
+  void minMaxPreservesRealInfinity(final TimeSeriesVectorOps ops) {
+    // A genuine +Inf/-Inf in the data must be preserved, not confused with the empty/all-NaN sentinel.
+    final double[] data = { 1.0, Double.POSITIVE_INFINITY, 3.0, Double.NEGATIVE_INFINITY, 2.0, 0.0, 5.0, 4.0, 6.0 };
+    assertThat(ops.min(data, 0, 9)).isEqualTo(Double.NEGATIVE_INFINITY);
+    assertThat(ops.max(data, 0, 9)).isEqualTo(Double.POSITIVE_INFINITY);
+
+    final double[] allPosInf = { Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY, Double.POSITIVE_INFINITY };
+    assertThat(ops.min(allPosInf, 0, 3)).isEqualTo(Double.POSITIVE_INFINITY);
+    assertThat(ops.max(allPosInf, 0, 3)).isEqualTo(Double.POSITIVE_INFINITY);
+  }
+
+  @ParameterizedTest
+  @MethodSource("implementations")
   void sumLong(final TimeSeriesVectorOps ops) {
     final long[] data = { 10, 20, 30, 40, 50 };
     assertThat(ops.sumLong(data, 0, 5)).isEqualTo(150);

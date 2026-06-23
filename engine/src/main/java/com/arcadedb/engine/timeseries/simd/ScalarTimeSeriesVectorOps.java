@@ -35,20 +35,36 @@ public final class ScalarTimeSeriesVectorOps implements TimeSeriesVectorOps {
 
   @Override
   public double min(final double[] data, final int offset, final int length) {
+    // NaN policy (issue #4716): skip NaN values, and return NaN (not the +Inf sentinel) when the range
+    // is empty or contains only NaN, so an "all-NaN" result is not mistaken for real data.
     double m = Double.POSITIVE_INFINITY;
-    for (int i = offset; i < offset + length; i++)
-      if (data[i] < m)
-        m = data[i];
-    return m;
+    boolean found = false;
+    for (int i = offset; i < offset + length; i++) {
+      final double v = data[i];
+      if (Double.isNaN(v))
+        continue;
+      found = true;
+      if (v < m)
+        m = v;
+    }
+    return found ? m : Double.NaN;
   }
 
   @Override
   public double max(final double[] data, final int offset, final int length) {
+    // NaN policy (issue #4716): skip NaN values, and return NaN (not the -Inf sentinel) when the range
+    // is empty or contains only NaN, so an "all-NaN" result is not mistaken for real data.
     double m = Double.NEGATIVE_INFINITY;
-    for (int i = offset; i < offset + length; i++)
-      if (data[i] > m)
-        m = data[i];
-    return m;
+    boolean found = false;
+    for (int i = offset; i < offset + length; i++) {
+      final double v = data[i];
+      if (Double.isNaN(v))
+        continue;
+      found = true;
+      if (v > m)
+        m = v;
+    }
+    return found ? m : Double.NaN;
   }
 
   @Override
