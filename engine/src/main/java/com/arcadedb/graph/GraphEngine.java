@@ -450,7 +450,7 @@ public class GraphEngine {
     } catch (Exception e) {
       // LINKED LIST COULD BE BROKEN
       LogManager.instance()
-          .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s", vertex.getIdentity());
+          .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s", e, vertex.getIdentity());
     }
 
     EdgeLinkedList inEdges = null;
@@ -476,7 +476,7 @@ public class GraphEngine {
     } catch (Exception e) {
       // LINKED LIST COULD BE BROKEN
       LogManager.instance()
-          .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s", vertex.getIdentity());
+          .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s", e, vertex.getIdentity());
     }
 
     for (Identifiable edge : edgesToDelete)
@@ -494,7 +494,7 @@ public class GraphEngine {
           outEdges.deleteAll();
         } catch (Exception e) {
           LogManager.instance()
-              .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s",
+              .log(this, Level.WARNING, "Error on deleting outgoing edges connected to vertex %s", e,
                   vertex.getIdentity());
         }
     }
@@ -506,7 +506,7 @@ public class GraphEngine {
           inEdges.deleteAll();
         } catch (Exception e) {
           LogManager.instance()
-              .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s",
+              .log(this, Level.WARNING, "Error on deleting incoming edges connected to vertex %s", e,
                   vertex.getIdentity());
         }
     }

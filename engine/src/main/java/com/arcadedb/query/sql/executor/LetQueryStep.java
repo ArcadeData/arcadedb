@@ -75,7 +75,10 @@ public class LetQueryStep extends AbstractExecutionStep {
           resultInternal.setMetadata(varName.getStringValue(), value);
         context.setVariable(varName.getStringValue(), value);
 
-        cost = System.nanoTime() - beginTime;
+        // Accumulate (+=) the elapsed time across every processed record so the reported cost reflects the
+        // whole step, not just the last record; only sample nanoTime() when profiling to avoid the overhead.
+        if (context.isProfiling())
+          cost += System.nanoTime() - beginTime;
       }
 
       private List<Result> toList(final LocalResultSet oLocalResultSet) {
@@ -99,8 +102,9 @@ public class LetQueryStep extends AbstractExecutionStep {
     final String spaces = ExecutionStepInternal.getIndent(depth, indent);
 
     final StringBuilder result = new StringBuilder();
-    result.append(spaces).append("+ LET (for each record)\n").append(spaces).append("  ").append(varName).append(" = (").append(query).append(")");
-    if ( context.isProfiling() )
+    result.append(spaces).append("+ LET (for each record)\n").append(spaces).append("  ").append(varName).append(" = (")
+        .append(query).append(")");
+    if (context.isProfiling())
       result.append(" (").append(getCostFormatted()).append(")");
     return result.toString();
   }

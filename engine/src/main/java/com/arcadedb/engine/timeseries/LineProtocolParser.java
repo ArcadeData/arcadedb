@@ -51,7 +51,9 @@ public class LineProtocolParser {
     }
 
     public long toMillis(final long value) {
-      return (value / divisor) * multiplier;
+      // Narrow first (sub-millisecond units divide down), then multiply with an exact check so a very
+      // large seconds-precision timestamp throws instead of silently wrapping to a negative ms epoch.
+      return Math.multiplyExact(value / divisor, multiplier);
     }
 
     public static Precision fromString(final String s) {
@@ -215,9 +217,10 @@ public class LineProtocolParser {
       }
 
       return new Sample(measurement.toString(), tags, fields, timestampMs);
-    } catch (final IllegalArgumentException e) {
-      // Malformed numeric value or timestamp (including unsigned integer overflow) —
-      // skip this line rather than halting batch parse
+    } catch (final IllegalArgumentException | ArithmeticException e) {
+      // Malformed numeric value or timestamp (including unsigned integer overflow and seconds-precision
+      // timestamps that overflow when converted to milliseconds) — skip this line rather than halting
+      // batch parse
       return null;
     }
   }

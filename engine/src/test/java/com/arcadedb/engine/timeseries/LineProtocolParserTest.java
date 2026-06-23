@@ -25,6 +25,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Tests for InfluxDB Line Protocol parser.
@@ -124,6 +125,39 @@ class LineProtocolParserTest {
     // Seconds
     List<Sample> s = LineProtocolParser.parse("m v=1.0 1", Precision.SECONDS);
     assertThat(s.get(0).getTimestampMs()).isEqualTo(1000L); // 1 second
+  }
+
+  /**
+   * A seconds-precision timestamp larger than {@code Long.MAX_VALUE / 1000} would overflow when
+   * converted to milliseconds. It must throw instead of silently wrapping to a negative epoch.
+   */
+  @Test
+  void secondsToMillisOverflowThrows() {
+    final long overflowing = (Long.MAX_VALUE / 1000L) + 1L;
+    assertThatThrownBy(() -> Precision.SECONDS.toMillis(overflowing))
+        .isInstanceOf(ArithmeticException.class);
+
+    // The largest non-overflowing seconds value still converts cleanly.
+    final long maxSafe = Long.MAX_VALUE / 1000L;
+    assertThat(Precision.SECONDS.toMillis(maxSafe)).isEqualTo(maxSafe * 1000L);
+  }
+
+  /**
+   * Regression: a seconds-precision timestamp that overflows on ms conversion must skip its line (like
+   * other malformed values) instead of corrupting the batch with a wrapped negative epoch.
+   */
+  @Test
+  void secondsPrecisionOverflowSkipsLineNotCorrupts() {
+    final long overflowing = (Long.MAX_VALUE / 1000L) + 1L;
+    final String text = "good v=1.0 5\n" + "bad v=2.0 " + overflowing + "\n" + "good2 v=3.0 7\n";
+
+    final List<Sample> samples = LineProtocolParser.parse(text, Precision.SECONDS);
+
+    // Only the two valid lines survive; the overflowing one is dropped, none stored as a negative epoch.
+    assertThat(samples).hasSize(2);
+    assertThat(samples.get(0).getTimestampMs()).isEqualTo(5000L);
+    assertThat(samples.get(1).getTimestampMs()).isEqualTo(7000L);
+    assertThat(samples).allSatisfy(sample -> assertThat(sample.getTimestampMs()).isPositive());
   }
 
   @Test

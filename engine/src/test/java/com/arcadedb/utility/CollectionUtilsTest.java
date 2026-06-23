@@ -262,4 +262,35 @@ class CollectionUtilsTest {
     assertThat(result.get(0)).isEqualTo("a");
     assertThat(result.get(1)).isEqualTo("c");
   }
+
+  @Test
+  void removeAllWithMoreElementsToRemoveThanPresent() {
+    // objsToRemove is larger than the list and most elements are absent: must skip them gracefully
+    // instead of throwing IllegalArgumentException for a negative initial capacity.
+    final List<String> original = Arrays.asList("a", "b");
+    final List<String> toRemove = Arrays.asList("a", "x", "y", "z");
+    final List<String> result = CollectionUtils.removeAllFromUnmodifiableList(original, toRemove);
+
+    assertThat(result).containsExactly("b");
+  }
+
+  @Test
+  void removeAllFromEmptyList() {
+    final List<String> result = CollectionUtils.removeAllFromUnmodifiableList(List.of(), Arrays.asList("a", "b"));
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void removeFromEmptyList() {
+    // Removing from an empty list (capacity hint would be -1) must return an empty list, not throw.
+    final List<String> result = CollectionUtils.removeFromUnmodifiableList(List.of(), "a");
+    assertThat(result).isEmpty();
+  }
+
+  @Test
+  void removeAbsentElementKeepsListIntact() {
+    final List<String> original = Arrays.asList("a", "b");
+    final List<String> result = CollectionUtils.removeFromUnmodifiableList(original, "z");
+    assertThat(result).containsExactly("a", "b");
+  }
 }

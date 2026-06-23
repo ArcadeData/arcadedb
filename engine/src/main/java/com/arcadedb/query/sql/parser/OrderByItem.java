@@ -140,12 +140,18 @@ public class OrderByItem {
       }
     } else if (bVal == null) {
       result = 1;
-    } else if (aVal instanceof Comparable && bVal instanceof Comparable) {
+    } else {
+      // Both values are non-null. Attempt a typed comparison first: BinaryComparator also handles some
+      // non-Comparable types (e.g. Map). When the values cannot be compared directly (e.g. List,
+      // embedded document, custom or mixed types), fall back to a deterministic string comparison so
+      // ORDER BY yields a stable order instead of silently leaving the affected rows unordered.
       try {
         result = BinaryComparator.compareTo(aVal, bVal);
       } catch (final Exception e) {
-        LogManager.instance().log(this, Level.SEVERE, "Error during comparison", e);
-        result = 0;
+        LogManager.instance().log(this, Level.FINE,
+            "Values of type %s and %s are not directly comparable for ORDER BY, falling back to string comparison",
+            aVal.getClass().getName(), bVal.getClass().getName());
+        result = aVal.toString().compareTo(bVal.toString());
       }
     }
     // Determine sort direction: check parameterized direction first, then static type

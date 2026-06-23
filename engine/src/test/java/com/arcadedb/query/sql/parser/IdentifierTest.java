@@ -31,8 +31,42 @@ class IdentifierTest {
   void backTickQuoted() {
     final Identifier identifier = new Identifier("foo`bar");
 
-    //Assertions.assertThat("foo`bar").isEqualTo(identifier.getStringValue());
-    assertThat(identifier.getStringValue()).isEqualTo("foo\\`bar");
+    // getStringValue() returns the plain name (back-tick quoting removed), as used for schema/property lookups
+    assertThat(identifier.getStringValue()).isEqualTo("foo`bar");
+    // getValue() returns the internal value with back-ticks escaped with backslash
     assertThat(identifier.getValue()).isEqualTo("foo\\`bar");
+  }
+
+  @Test
+  void plainNameRoundTrips() {
+    final Identifier identifier = new Identifier("foobar");
+
+    assertThat(identifier.getStringValue()).isEqualTo("foobar");
+    assertThat(identifier.getValue()).isEqualTo("foobar");
+  }
+
+  @Test
+  void multipleBackTicksUnescaped() {
+    final Identifier identifier = new Identifier("a`b`c");
+
+    assertThat(identifier.getStringValue()).isEqualTo("a`b`c");
+    assertThat(identifier.getValue()).isEqualTo("a\\`b\\`c");
+  }
+
+  @Test
+  void backslashWithoutBackTickPreserved() {
+    // A literal backslash not followed by a back-tick must be left untouched by getStringValue()
+    final Identifier identifier = new Identifier("na\\me");
+
+    assertThat(identifier.getStringValue()).isEqualTo("na\\me");
+    assertThat(identifier.getValue()).isEqualTo("na\\me");
+  }
+
+  @Test
+  void nullValueIsNull() {
+    final Identifier identifier = new Identifier((String) null);
+
+    assertThat(identifier.getStringValue()).isNull();
+    assertThat(identifier.getValue()).isNull();
   }
 }
