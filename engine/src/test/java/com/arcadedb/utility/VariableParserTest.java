@@ -184,4 +184,54 @@ class VariableParserTest {
 
     assertThat(result).isEqualTo("defaultValue");
   }
+
+  /**
+   * A resolved value that itself contains the begin/end pattern must be inserted literally and NOT re-interpreted as a
+   * variable, otherwise user/LLM-supplied content can inject template directives.
+   */
+  @Test
+  void resolveVariablesDoesNotReParseResolvedContent() {
+    final Object result = VariableParser.resolveVariables(
+        "prefix {{name}} suffix",
+        "{{", "}}",
+        variable -> {
+          if ("name".equals(variable))
+            return "injected {{evil}} value";
+          throw new IllegalStateException("Resolved content must not be re-parsed, got variable: " + variable);
+        }
+    );
+
+    assertThat(result).isEqualTo("prefix injected {{evil}} value suffix");
+  }
+
+  /**
+   * Regression for the "Found begin of array notation '[' without the ending character ']'" failure: a resolved value
+   * containing a stray begin pattern with a '[' inside must not be handed back to the listener as a variable name.
+   */
+  @Test
+  void resolveVariablesWithBracketsInResolvedContentDoesNotInvokeListener() {
+    final Object result = VariableParser.resolveVariables(
+        "Patient Context:\n{{patientContext}}\n---\nChat:\n{{chatHistory}}",
+        "{{", "}}",
+        variable -> switch (variable) {
+          case "patientContext" -> "see {{notes[0] for the labs";
+          case "chatHistory" -> "user: please check [vitals]";
+          default -> throw new IllegalStateException("Unexpected variable from resolved content: " + variable);
+        }
+    );
+
+    assertThat(result).isEqualTo(
+        "Patient Context:\nsee {{notes[0] for the labs\n---\nChat:\nuser: please check [vitals]");
+  }
+
+  @Test
+  void resolveVariablesResolvesMultiplePlaceholdersAroundResolvedContent() {
+    final Object result = VariableParser.resolveVariables(
+        "{{a}}-{{b}}-{{c}}",
+        "{{", "}}",
+        variable -> "<" + variable + ">"
+    );
+
+    assertThat(result).isEqualTo("<a>-<b>-<c>");
+  }
 }

@@ -67,8 +67,12 @@ public class VariableParser {
       }
 
       if (!pre.isEmpty() || !post.isEmpty()) {
-        final String path = pre + (resolved != null ? resolved.toString() : "") + post;
-        return resolveVariables(path, beginPattern, endPattern, listener);
+        // RESOLVE THE TEXT AROUND THE VARIABLE INDEPENDENTLY: THE RESOLVED VALUE MUST BE INSERTED LITERALLY AND NOT
+        // RE-SCANNED FOR PLACEHOLDERS, OTHERWISE ANY BEGIN/END PATTERN PRESENT IN THE RESOLVED CONTENT (E.G. USER OR
+        // LLM SUPPLIED TEXT) WOULD BE WRONGLY INTERPRETED AS A VARIABLE (TEMPLATE INJECTION).
+        final Object resolvedPre = pre.isEmpty() ? "" : resolveVariables(pre, beginPattern, endPattern, listener);
+        final Object resolvedPost = post.isEmpty() ? "" : resolveVariables(post, beginPattern, endPattern, listener);
+        return resolvedPre.toString() + (resolved != null ? resolved.toString() : "") + resolvedPost.toString();
       }
 
       return resolved;
