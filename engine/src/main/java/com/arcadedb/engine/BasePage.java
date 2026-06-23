@@ -180,11 +180,12 @@ public abstract class BasePage {
   }
 
   /**
-   * Value equality on {@code (pageId, version)}. Note that {@code version} is mutable
-   * ({@link MutablePage#incrementVersion()}), so two pages can become equal/unequal over time. Callers that
-   * store pages as values in a hash structure and need stable identity must rely on reference identity, not on
-   * this method (see issue #4544 and {@code PageManagerFlushThread.removeFromFlushIndex}). {@link #hashCode()}
-   * intentionally keys on {@code pageId} only so it stays stable across version changes.
+   * Value equality on {@code pageId} (and the concrete page class), consistent with {@link #hashCode()}.
+   * {@code version} is intentionally NOT part of identity: it is mutable ({@link MutablePage#incrementVersion()}),
+   * and keying equality on a mutable field is fragile (see issue #4544, where a stale flush could evict a newer
+   * indexed page once their versions happened to match). Equality therefore stays stable across version changes.
+   * Callers that need to distinguish two instances for the same {@link PageId} (e.g. the flush index removal in
+   * {@code PageManagerFlushThread.removeFromFlushIndex}) must rely on reference identity, not on this method.
    */
   @Override
   public boolean equals(final Object o) {
@@ -195,10 +196,7 @@ public abstract class BasePage {
 
     final BasePage other = (BasePage) o;
 
-    if (!Objects.equals(pageId, other.pageId))
-      return false;
-
-    return version == other.version;
+    return Objects.equals(pageId, other.pageId);
   }
 
   @Override
