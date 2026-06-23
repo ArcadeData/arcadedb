@@ -68,6 +68,10 @@ import java.util.logging.Level;
  * - bidirectional (boolean, default true)
  * - commitEvery (int, default 50000)
  * - expectedEdgeCount (int, default 0)
+ * - commitRetries (int, default 10): retries of a vertex-creation commit that fails with a
+ *   transient retryable error (e.g. a Raft leader re-election), so a cluster hiccup does not
+ *   abort the whole streaming load (issue #4724)
+ * - commitRetryDelayMs (long, default 1000): initial back-off before the first retry
  */
 public class PostBatchHandler extends AbstractServerHttpHandler {
 
@@ -290,6 +294,14 @@ public class PostBatchHandler extends AbstractServerHttpHandler {
     final String expectedEdgeCount = getQueryParameter(exchange, "expectedEdgeCount");
     if (expectedEdgeCount != null)
       builder.withExpectedEdgeCount(Integer.parseInt(expectedEdgeCount));
+
+    final String commitRetries = getQueryParameter(exchange, "commitRetries");
+    if (commitRetries != null)
+      builder.withCommitRetries(Integer.parseInt(commitRetries));
+
+    final String commitRetryDelayMs = getQueryParameter(exchange, "commitRetryDelayMs");
+    if (commitRetryDelayMs != null)
+      builder.withCommitRetryDelay(Long.parseLong(commitRetryDelayMs));
   }
 
   /**

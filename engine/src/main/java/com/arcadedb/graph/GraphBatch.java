@@ -28,6 +28,7 @@ import com.arcadedb.database.async.DatabaseAsyncExecutor;
 import com.arcadedb.engine.Dictionary;
 import com.arcadedb.engine.LocalBucket;
 import com.arcadedb.engine.WALFile;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexInternal;
 import com.arcadedb.log.LogManager;
@@ -44,6 +45,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.IntConsumer;
 import java.util.logging.Level;
 
 /**
@@ -103,6 +106,19 @@ public class GraphBatch implements AutoCloseable {
   private final WALFile.FlushType walFlush;
   private final boolean preAllocateEdgeChunks;
   private final boolean parallelFlush;
+  private final int     commitRetries;
+  private final long    commitRetryDelayMs;
+
+  /** Upper bound for the exponential back-off between vertex-commit retries. */
+  private static final long MAX_COMMIT_RETRY_DELAY_MS = 10_000L;
+
+  /**
+   * Test-only fault-injection hook. Invoked just before each {@link #createVertices} commit with
+   * the 1-based attempt number; a test can throw a {@link NeedRetryException} to simulate a
+   * transient replication failure (e.g. a Raft leader re-election) and verify the bounded
+   * commit-retry recovers. Always {@code null} in production.
+   */
+  public static volatile IntConsumer TEST_BEFORE_VERTEX_COMMIT_HOOK = null;
 
   // --- Edge buffer: flat arrays for minimal GC pressure ---
   // Each edge occupies one slot across these parallel arrays.
@@ -194,13 +210,15 @@ public class GraphBatch implements AutoCloseable {
   private GraphBatch(final DatabaseInternal database, final int batchSize, final int edgeListInitialSize,
       final boolean lightEdges, final boolean bidirectional, final int commitEvery,
       final boolean useWAL, final WALFile.FlushType walFlush, final boolean preAllocateEdgeChunks,
-      final boolean parallelFlush) {
+      final boolean parallelFlush, final int commitRetries, final long commitRetryDelayMs) {
     this.database = database;
     this.batchSize = batchSize;
     this.edgeListInitialSize = edgeListInitialSize;
     this.lightEdges = lightEdges;
     this.bidirectional = bidirectional;
     this.commitEvery = commitEvery;
+    this.commitRetries = commitRetries;
+    this.commitRetryDelayMs = commitRetryDelayMs;
     // Replication layers (e.g. Raft) need WAL bytes captured during commit phase 1 to ship to
     // followers; if we skipped the WAL the leader would write pages locally but replicas would
     // silently miss the changes. Force WAL on for replicated databases (issue #4076).
@@ -312,19 +330,13 @@ public class GraphBatch implements AutoCloseable {
    * @return array of RIDs for the created vertices
    */
   public RID[] createVertices(final String typeName, final int count) {
-    final RID[] rids = new RID[count];
-    beginTx();
-
-    for (int i = 0; i < count; i++) {
-      final MutableVertex vertex = database.newVertex(typeName);
-      vertex.save();
-      rids[i] = vertex.getIdentity();
-      knownNewVertexKeys.add(packVertexKey(rids[i].getBucketId(), rids[i].getPosition()));
-    }
-
-    database.commit();
-    totalVerticesCreated += count;
-    return rids;
+    return createVerticesWithRetry(count, rids -> {
+      for (int i = 0; i < count; i++) {
+        final MutableVertex vertex = database.newVertex(typeName);
+        vertex.save();
+        rids[i] = vertex.getIdentity();
+      }
+    });
   }
 
   /**
@@ -337,24 +349,97 @@ public class GraphBatch implements AutoCloseable {
    */
   public RID[] createVertices(final String typeName, final Object[][] properties) {
     final int count = properties.length;
-    final RID[] rids = new RID[count];
-    beginTx();
-
-    for (int i = 0; i < count; i++) {
-      final MutableVertex vertex = database.newVertex(typeName);
-      final Object[] props = properties[i];
-      if (props != null && props.length > 0) {
-        for (int p = 0; p < props.length; p += 2)
-          vertex.set((String) props[p], props[p + 1]);
+    return createVerticesWithRetry(count, rids -> {
+      for (int i = 0; i < count; i++) {
+        final MutableVertex vertex = database.newVertex(typeName);
+        final Object[] props = properties[i];
+        if (props != null && props.length > 0) {
+          for (int p = 0; p < props.length; p += 2)
+            vertex.set((String) props[p], props[p + 1]);
+        }
+        vertex.save();
+        rids[i] = vertex.getIdentity();
       }
-      vertex.save();
-      rids[i] = vertex.getIdentity();
-      knownNewVertexKeys.add(packVertexKey(rids[i].getBucketId(), rids[i].getPosition()));
-    }
+    });
+  }
 
-    database.commit();
-    totalVerticesCreated += count;
-    return rids;
+  /**
+   * Creates a batch of vertices inside a single transaction, retrying the whole begin/save/commit
+   * unit on a transient {@link NeedRetryException} (e.g. a Raft {@code QuorumNotReachedException}
+   * raised when a leader re-election interrupts replication mid-load).
+   * <p>
+   * Without this, a single transient cluster hiccup during a multi-million-row bulk import aborts
+   * the entire streaming request with HTTP 503, forcing a full restart (issue #4724).
+   * <p>
+   * <b>At-least-once semantics on replicated databases:</b> when the commit fails after the Raft
+   * entry was already dispatched, that entry may still be committed late by the cluster. The retry
+   * re-creates the vertices with <i>fresh</i> RIDs, so in that narrow window the load may leave a
+   * few orphan duplicate vertices behind. This is safe for the graph as a whole: the caller maps
+   * temporary IDs to the RIDs returned here, and edges are connected only to those, so a late
+   * duplicate is never referenced. {@code knownNewVertexKeys} is populated only after the commit
+   * is durable so a rolled-back attempt never pollutes the edge-connect fast path.
+   *
+   * @param count  number of vertices to create
+   * @param filler populates the supplied RID array by creating and saving {@code count} vertices
+   *               inside the active transaction
+   * @return RIDs of the durably-committed vertices
+   */
+  private RID[] createVerticesWithRetry(final int count, final Consumer<RID[]> filler) {
+    int attempt = 0;
+    while (true) {
+      final RID[] rids = new RID[count];
+      try {
+        beginTx();
+        filler.accept(rids);
+
+        final IntConsumer hook = TEST_BEFORE_VERTEX_COMMIT_HOOK;
+        if (hook != null)
+          hook.accept(attempt + 1);
+
+        database.commit();
+
+        // Record known-new keys only after a durable commit so a rolled-back attempt never leaves
+        // phantom keys in the edge-connect fast path.
+        for (int i = 0; i < count; i++)
+          knownNewVertexKeys.add(packVertexKey(rids[i].getBucketId(), rids[i].getPosition()));
+
+        totalVerticesCreated += count;
+        return rids;
+      } catch (final NeedRetryException e) {
+        if (database.isTransactionActive())
+          database.rollback();
+
+        if (++attempt > commitRetries)
+          throw e;
+
+        LogManager.instance().log(this, Level.WARNING,
+            "GraphBatch.createVertices commit failed with a retryable error (attempt %d/%d): %s. Retrying after back-off...",
+            null, attempt, commitRetries, e.getMessage());
+
+        backoffBeforeRetry(attempt);
+      }
+    }
+  }
+
+  /**
+   * Sleeps before the next vertex-commit retry using exponential back-off capped at
+   * {@link #MAX_COMMIT_RETRY_DELAY_MS}, giving the cluster time to elect a new leader and the
+   * Raft client time to refresh before the next attempt.
+   */
+  private void backoffBeforeRetry(final int attempt) {
+    long delay = commitRetryDelayMs;
+    for (int i = 1; i < attempt && delay < MAX_COMMIT_RETRY_DELAY_MS; i++)
+      delay = Math.min(delay * 2, MAX_COMMIT_RETRY_DELAY_MS);
+
+    if (delay <= 0)
+      return;
+
+    try {
+      Thread.sleep(delay);
+    } catch (final InterruptedException ie) {
+      Thread.currentThread().interrupt();
+      throw new NeedRetryException("Interrupted while waiting to retry GraphBatch vertex commit");
+    }
   }
 
   /**
@@ -2071,6 +2156,8 @@ public class GraphBatch implements AutoCloseable {
     private WALFile.FlushType  walFlush             = WALFile.FlushType.NO;
     private boolean            preAllocateEdgeChunks = true;
     private boolean            parallelFlush         = true;
+    private int                commitRetries         = 10;
+    private long               commitRetryDelayMs    = 1000;
 
     Builder(final DatabaseInternal database) {
       this.database = database;
@@ -2180,6 +2267,29 @@ public class GraphBatch implements AutoCloseable {
       return this;
     }
 
+    /**
+     * Number of times a vertex-creation commit is retried when it fails with a transient
+     * {@link NeedRetryException} (e.g. a Raft {@code QuorumNotReachedException} during a leader
+     * re-election). Default: 10. Set to 0 to disable retries and fail fast on the first error.
+     */
+    public Builder withCommitRetries(final int commitRetries) {
+      if (commitRetries < 0)
+        throw new IllegalArgumentException("Commit retries must be >= 0");
+      this.commitRetries = commitRetries;
+      return this;
+    }
+
+    /**
+     * Initial back-off in milliseconds before the first vertex-commit retry. Subsequent retries use
+     * exponential back-off capped at 10000 ms. Default: 1000.
+     */
+    public Builder withCommitRetryDelay(final long commitRetryDelayMs) {
+      if (commitRetryDelayMs < 0)
+        throw new IllegalArgumentException("Commit retry delay must be >= 0");
+      this.commitRetryDelayMs = commitRetryDelayMs;
+      return this;
+    }
+
     public GraphBatch build() {
       int effectiveBatchSize = batchSize;
       if (!batchSizeExplicit && expectedEdgeCount > 0)
@@ -2190,7 +2300,8 @@ public class GraphBatch implements AutoCloseable {
       final int effectiveCommitEvery = !commitEveryExplicit && !useWAL ? 0 : commitEvery;
 
       return new GraphBatch(database, effectiveBatchSize, edgeListInitialSize, lightEdges,
-          bidirectional, effectiveCommitEvery, useWAL, walFlush, preAllocateEdgeChunks, parallelFlush);
+          bidirectional, effectiveCommitEvery, useWAL, walFlush, preAllocateEdgeChunks, parallelFlush,
+          commitRetries, commitRetryDelayMs);
     }
   }
 }

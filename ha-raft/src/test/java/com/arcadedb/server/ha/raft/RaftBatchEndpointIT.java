@@ -21,9 +21,14 @@ package com.arcadedb.server.ha.raft;
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
+import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
+
+import java.util.concurrent.atomic.AtomicInteger;
 
 import java.io.DataOutputStream;
 import java.net.HttpURLConnection;
@@ -62,6 +67,60 @@ class RaftBatchEndpointIT extends BaseRaftHATest {
   @Override
   protected int getServerCount() {
     return 3;
+  }
+
+  @AfterEach
+  void clearGraphBatchHook() {
+    GraphBatch.TEST_BEFORE_VERTEX_COMMIT_HOOK = null;
+  }
+
+  /**
+   * Reproduces issue #4724: a transient retryable failure during the streaming bulk load (the
+   * user saw a Raft {@code QuorumNotReachedException} when a leader re-election interrupted
+   * replication mid-import) used to abort the whole request with HTTP 503, forcing a full restart
+   * of a multi-gigabyte load. The endpoint now retries the failed vertex-creation commit, so a
+   * single cluster hiccup is absorbed and the load completes with HTTP 200 and all data present.
+   * <p>
+   * The transient failure is injected deterministically via
+   * {@link GraphBatch#TEST_BEFORE_VERTEX_COMMIT_HOOK} (the servers run in-process, so the static
+   * hook on the leader is reachable) instead of forcing a real, flaky leader re-election.
+   */
+  @Test
+  void postBatchSurvivesTransientCommitFailure() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("A Raft leader must be elected").isGreaterThanOrEqualTo(0);
+
+    createSchema(leaderIndex);
+
+    // Fail exactly the first vertex commit with a retryable error, then disarm so the retry lands.
+    final AtomicInteger injected = new AtomicInteger();
+    GraphBatch.TEST_BEFORE_VERTEX_COMMIT_HOOK = attempt -> {
+      if (injected.compareAndSet(0, 1))
+        throw new NeedRetryException("simulated transient leader re-election during bulk load (issue #4724)");
+    };
+
+    final int numVertices = 300;
+    final String body = buildBatchPayload(numVertices, 0);
+
+    final HttpResult result = postBatch(leaderIndex, body, "batchSize=50000&commitEvery=50000&commitRetryDelayMs=50");
+
+    assertThat(result.statusCode())
+        .as("POST /batch must absorb a transient retryable commit failure and return 200 (issue #4724)\nbody=%s",
+            result.body())
+        .isEqualTo(200);
+
+    assertThat(injected.get()).as("the transient failure must have been injected and retried").isEqualTo(1);
+
+    final JSONObject json = new JSONObject(result.body());
+    assertThat(json.getInt("verticesCreated")).isEqualTo(numVertices);
+
+    assertClusterConsistency();
+    for (int i = 0; i < getServerCount(); i++) {
+      final Database nodeDb = getServerDatabase(i, getDatabaseName());
+      assertThat(nodeDb.countType(VERTEX_TYPE, true))
+          .as("Server %d should have %d %s records after the retried load", i, numVertices, VERTEX_TYPE)
+          .isEqualTo(numVertices);
+    }
   }
 
   /**
