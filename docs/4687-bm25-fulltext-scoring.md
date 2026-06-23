@@ -112,6 +112,12 @@ individual rows). There is no separate explain function.
 
 ## Operational notes / known limitations
 
+- **Disaster recovery: keep BM25 index files with their schema.** Whether a full-text index stores the inline `tf`/`docLength`
+  bytes is derived from the persisted schema (`similarity = BM25`), not from a per-page flag. If index files are restored or
+  hand-copied **without** the matching schema (or the two are otherwise out of sync), the `tf`/`docLength` varints would be
+  misread as RID bytes. Always back up and restore the schema together with the index files; after a manual recovery, a
+  `REBUILD INDEX <name>` regenerates the postings from the documents if there is any doubt.
+
 - **Counter drift after rollbacks triggers a one-time rescan.** The corpus counters are bumped at index put/remove time, before
   commit, and are not reversed on rollback. The first BM25 query of a session validates the persisted counters against a cheap
   live document count and, if they disagree (e.g. after rolled-back inserts), does a single full type scan to repair them - once

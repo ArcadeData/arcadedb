@@ -84,6 +84,9 @@ import java.util.logging.Level;
  * the query result will be the TreeMap ordered by score, so if the query has a limit, only the first X items will be returned ordered by score desc
  */
 public class LSMTreeFullTextIndex implements Index, IndexInternal {
+  /** Max query terms detailed in an EXPLAIN/PROFILE scoring breakdown (each costs one posting scan); beyond it the output is truncated. */
+  private static final int MAX_EXPLAIN_TERMS = 64;
+
   private final LSMTreeIndex          underlyingIndex;
   private final Analyzer              indexAnalyzer;
   private final Analyzer              queryAnalyzer;
@@ -475,10 +478,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       json.put("bucket", bucket.getName());
     json.put("note", "statistics are per bucket (BM25 is scored per bucket); totalDocs is this bucket's document count");
 
-    // One posting scan per scoring token to derive df. EXPLAIN/PROFILE is an interactive diagnostic, not a hot path, so this is
-    // acceptable; for a very large index expect the explain to scan each term's postings once.
+    // One posting scan per scoring token to derive df. EXPLAIN/PROFILE is an interactive diagnostic, not a hot path, but cap the
+    // number of explained terms so a pathological wildcard/fuzzy expansion (which can explode into thousands of tokens) cannot
+    // turn an EXPLAIN into a very long scan; beyond the cap the explain reports "termsTruncated": true.
     final JSONArray terms = new JSONArray();
+    int explained = 0;
     for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
+      if (explained++ >= MAX_EXPLAIN_TERMS) {
+        json.put("termsTruncated", true);
+        break;
+      }
       final IndexCursor postings = underlyingIndex.get(new String[] { e.getKey() });
       long df = 0;
       while (postings.hasNext()) {
@@ -544,9 +553,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     if (ftMetadata == null)
       return;
     if (!ftMetadata.isCountersValid()) {
-      // Cold counters (pre-feature/unsaved index): rebuild so the caller scores with valid statistics. Serialize on the shared
-      // metadata with a double-check so concurrent first-queries (across the type's bucket indexes, which share this metadata) do
-      // not all run a full type scan: the first thread rebuilds and marks the counters valid; the rest observe that and skip.
+      // Cold counters (pre-feature/unsaved index): rebuild so the caller scores with valid statistics. This is the ONLY place
+      // that needs a lock - the counters themselves are AtomicLong (lock-free reads/updates everywhere else); the synchronized
+      // block exists solely so concurrent first-queries (across the type's bucket indexes, which share this metadata) do not all
+      // run the full type scan at once. Double-checked: the first thread rebuilds and marks the counters valid; the rest observe
+      // that inside the lock and skip.
       synchronized (ftMetadata) {
         if (!ftMetadata.isCountersValid())
           computeCorpusCounters(false);
@@ -565,8 +576,13 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         // NOT spuriously rescan multi-bucket types. (This counter feeds avgdl only; IDF's N is the per-bucket count from
         // resolveTotalDocs(), a deliberately different scope - see that method.)
         final long liveCount = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);
-        if (liveCount != ftMetadata.getTotalDocs())
+        if (liveCount != ftMetadata.getTotalDocs()) {
+          // Surface the drift so operators can notice it (e.g. counters inflated by rolled-back inserts) without reading EXPLAIN.
+          LogManager.instance().log(this, Level.INFO,
+              "BM25 corpus counters for type '%s' diverged from live data (persisted=%d, live=%d); recomputing.", null, typeName,
+              ftMetadata.getTotalDocs(), liveCount);
           computeCorpusCounters(false);
+        }
       }
     }
   }

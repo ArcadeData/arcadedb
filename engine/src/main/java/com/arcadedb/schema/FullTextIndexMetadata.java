@@ -524,6 +524,13 @@ public class FullTextIndexMetadata extends IndexMetadata {
   /**
    * Returns the average document length across the collection, or 1.0 when no statistics are available.
    * <p>
+   * SCOPE (intentional, do not "fix" without understanding): these counters are TYPE-WIDE (this metadata instance is shared by
+   * every bucket index of the type), so avgdl is type-wide - whereas BM25's {@code N} and {@code df} are measured PER BUCKET (see
+   * {@code LSMTreeFullTextIndex.resolveTotalDocs}). The mismatch is deliberate: per-bucket {@code df} requires a per-bucket
+   * {@code N} for an unbiased IDF, while avgdl is only a length normalizer for which a type-wide value is a fine estimate and
+   * avoids per-bucket length bookkeeping. For a multi-bucket type with very unequal bucket sizes, length normalization is
+   * therefore slightly biased - a cosmetic inaccuracy, not a correctness bug.
+   * <p>
    * The two counters are read independently (no shared lock), so a concurrent {@link #addDocument}/{@link #removeDocument} can be
    * observed half-applied. The widest skew is one in-flight document: {@code addDocument} bumps {@code totalDocs} before
    * {@code sumDocLength}, so a reader can briefly see {@code n} one too high (or, symmetrically for removal, one too low),

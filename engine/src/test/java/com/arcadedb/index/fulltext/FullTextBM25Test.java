@@ -527,6 +527,27 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
+  void explainTruncatesAtTermCapForHugeExpansions() {
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.name STRING");
+      database.command("sql", "CREATE PROPERTY Doc.content STRING");
+      database.command("sql", "CREATE INDEX ON Doc (content) FULL_TEXT");
+      // 80 distinct tokens sharing the prefix 'term', so a 'term*' wildcard expands past the 64-term EXPLAIN cap.
+      for (int i = 0; i < 80; i++)
+        database.command("sql", "INSERT INTO Doc SET name = 'd" + i + "', content = 'term" + i + "'");
+    });
+
+    database.transaction(() -> {
+      final ResultSet rs = database.query("sql",
+          "EXPLAIN SELECT name FROM Doc WHERE SEARCH_INDEX('Doc[content]', 'term*') = true");
+      final String plan = rs.next().getProperty("executionPlanAsString");
+      // The scoring breakdown is capped and flagged rather than scanning all 80 expanded terms' postings.
+      assertThat(plan).contains("termsTruncated");
+    });
+  }
+
+  @Test
   void explainOnEmptyCorpus() {
     database.transaction(() -> {
       database.command("sql", "CREATE DOCUMENT TYPE Doc");
