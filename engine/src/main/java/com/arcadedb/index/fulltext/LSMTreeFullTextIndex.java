@@ -343,8 +343,14 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
-   * BM25 scoring path for the direct index lookup. Builds the scoring tokens from the query and delegates to
+   * BM25 scoring path for the direct {@link #get} lookup. Builds the scoring tokens from the query and delegates to
    * {@link #computeBM25Scores}.
+   * <p>
+   * Query syntax here is limited: {@link #parseQueryTerms} only understands whitespace-separated terms and {@code field:value}.
+   * It does NOT support the Lucene query syntax - caret boosts ({@code term^3}), boolean operators, phrases, or wildcards - which
+   * the SQL {@code SEARCH_INDEX(...)} entry point handles via the full Lucene parser. A {@code term^3} reaching here is analyzed
+   * as the literal token {@code term^3} (typically stripped to nothing), not as a boosted {@code term}. Use {@code SEARCH_INDEX}
+   * for the full query syntax; this direct path is for simple term lookups.
    */
   private IndexCursor getBM25(final Object[] keys, final int limit) {
     final String queryText = keys.length > 0 && keys[0] != null ? keys[0].toString() : "";

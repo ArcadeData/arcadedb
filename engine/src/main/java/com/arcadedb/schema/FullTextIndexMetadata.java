@@ -152,7 +152,11 @@ public class FullTextIndexMetadata extends IndexMetadata {
     this.sumDocLength.set(metadata.getLong("ft_sumDocLength", 0L));
     this.countersValid = metadata.getBoolean("ft_countersValid", false);
 
-    // Parse per-field analyzers (pattern: *_analyzer) and per-field boosts (pattern: *_boost)
+    // Parse per-field analyzers (pattern: *_analyzer) and per-field boosts (pattern: *_boost). Clear first so a fromJSON() on an
+    // already-populated instance replaces the per-field config rather than merging stale entries into it (these maps are now
+    // final/ConcurrentHashMap, so they are no longer swapped out wholesale).
+    this.fieldAnalyzers.clear();
+    this.fieldBoosts.clear();
     for (final String key : metadata.keySet()) {
       if (key.endsWith(ANALYZER_SUFFIX) && !"analyzer".equals(key) && !"index_analyzer".equals(key) && !"query_analyzer".equals(key)) {
         final String fieldName = key.substring(0, key.length() - ANALYZER_SUFFIX.length());
@@ -340,15 +344,13 @@ public class FullTextIndexMetadata extends IndexMetadata {
   }
 
   /**
-   * Sets the similarity mode. Accepts "BM25" or "CLASSIC" (case-insensitive); null resets to the BM25 default.
+   * Sets the similarity mode. Accepts "BM25" or "CLASSIC" (case-insensitive).
    *
-   * @throws IllegalArgumentException if the name is not a known similarity
+   * @throws IllegalArgumentException if the name is null or not a known similarity
    */
   public void setSimilarity(final String similarity) {
-    if (similarity == null) {
-      this.similarity = SIMILARITY_BM25;
-      return;
-    }
+    if (similarity == null)
+      throw new IllegalArgumentException("Full-text similarity cannot be null. Valid values: " + SIMILARITY_BM25 + ", " + SIMILARITY_CLASSIC);
     final String upper = similarity.toUpperCase();
     if (!SIMILARITY_BM25.equals(upper) && !SIMILARITY_CLASSIC.equals(upper))
       throw new IllegalArgumentException(

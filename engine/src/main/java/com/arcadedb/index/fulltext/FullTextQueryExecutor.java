@@ -94,6 +94,8 @@ public class FullTextQueryExecutor {
   private final LSMTreeFullTextIndex   index;
   private final Analyzer               analyzer;
   private final FullTextIndexMetadata  metadata;
+  // Cached once: the indexed property names don't change during a query, but isUnqualified() is consulted per matched term.
+  private final List<String>           propertyNames;
 
   // BM25 scoring (issue #4687): the positive scoring tokens collected during matching, mapped to their field boost. Populated
   // only when the index uses BM25 similarity and only for positive clauses (never for MUST_NOT exclusion). A new executor is
@@ -118,6 +120,7 @@ public class FullTextQueryExecutor {
     this.index = index;
     this.analyzer = index.getAnalyzer();
     this.metadata = index.getFullTextMetadata();
+    this.propertyNames = index.getPropertyNames();
   }
 
   /**
@@ -382,8 +385,7 @@ public class FullTextQueryExecutor {
   private boolean isUnqualified(final String field) {
     if (field == null || field.isEmpty() || DEFAULT_FIELD.equals(field))
       return true;
-    final List<String> props = index.getPropertyNames();
-    return props.size() == 1 && props.get(0).equals(field);
+    return propertyNames.size() == 1 && propertyNames.get(0).equals(field);
   }
 
   /**
