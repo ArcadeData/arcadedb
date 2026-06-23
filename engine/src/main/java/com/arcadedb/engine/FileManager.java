@@ -203,9 +203,13 @@ public class FileManager {
   public void dropFile(final int fileId) throws IOException {
     final ComponentFile file;
     synchronized (this) {
-      file = fileIdMap.remove(fileId);
+      // Drop the file on disk FIRST, then update the maps. If drop() throws, every map is left untouched
+      // so the file id stays fully resolvable and the caller can retry; clearing fileIdMap up front would
+      // strand the entry in fileNameMap/files (a partial, unretryable state) on failure (issue #4711).
+      file = fileIdMap.get(fileId);
       if (file != null) {
         file.drop();
+        fileIdMap.remove(fileId);
         fileNameMap.remove(file.getComponentName());
         files.set(fileId, null);
         modificationCount.incrementAndGet();
@@ -226,7 +230,6 @@ public class FileManager {
         }
       }
     }
-
   }
 
   public FileManagerStats getStats() {

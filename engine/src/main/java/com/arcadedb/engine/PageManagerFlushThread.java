@@ -336,6 +336,12 @@ public class PageManagerFlushThread extends Thread {
 
     // Also clean index entries for pages currently being flushed
     pageIndex.entrySet().removeIf(e -> database.equals(e.getKey().getDatabase()));
+
+    // Forget the per-database suspend bookkeeping so the dropped Database instance (and the resources it
+    // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
+    suspendLocks.remove(database);
+    suspended.remove(database);
+    deferredByDatabase.remove(database);
   }
 
   /** Drops every pending {@link MutablePage} of a single dropped file from the queue, the deferred batches and the index. */

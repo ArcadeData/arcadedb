@@ -134,7 +134,10 @@ public class RemoteHttpComponent extends RWLockContext {
   }
 
   public void close() {
-      httpClient.close();
+    // httpClient is final and always assigned in the constructor, so no null check is needed. close()
+    // performs an orderly shutdown that lets in-flight requests drain (each is already bounded by the
+    // per-request watchdog timeout); shutdownNow() is intentionally not used so requests are not interrupted.
+    httpClient.close();
   }
 
   private HttpResponse<String> sendWithWatchdog(final HttpRequest request) throws IOException, InterruptedException {

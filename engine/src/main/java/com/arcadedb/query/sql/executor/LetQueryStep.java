@@ -75,6 +75,8 @@ public class LetQueryStep extends AbstractExecutionStep {
           resultInternal.setMetadata(varName.getStringValue(), value);
         context.setVariable(varName.getStringValue(), value);
 
+        // Accumulate (+=) the elapsed time across every processed record so the reported cost reflects the
+        // whole step, not just the last record; only sample nanoTime() when profiling to avoid the overhead.
         if (context.isProfiling())
           cost += System.nanoTime() - beginTime;
       }
