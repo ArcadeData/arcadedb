@@ -160,7 +160,7 @@ imported `OpenBeer` database to find your favorite beer.
 
 ![ArcadeDB Studio](https://arcadedb.com/assets/images/openbeer-demo-graph.png)
 
-ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/#docker) and [Kubernetes](https://docs.arcadedb.com/#kubernetes)
+ArcadeDB is cloud-ready with [Docker](https://docs.arcadedb.com/arcadedb/how-to/operations/install-docker) and [Kubernetes](https://docs.arcadedb.com/arcadedb/how-to/operations/kubernetes)
 support.
 
 You can also [download the latest release](https://github.com/ArcadeData/arcadedb/releases), unpack it on your local hard drive and
@@ -233,7 +233,15 @@ Build the entire project (skipping tests):
 mvn clean install -DskipTests
 ```
 
-Run the full test suite:
+Build the Docker image (skipping tests):
+
+```bash
+mvn clean install -DskipTests -Pdocker
+```
+
+#### Running Unit Tests:
+
+Run the full unit test suite:
 
 ```bash
 mvn test
@@ -255,6 +263,44 @@ To run only a specific tag (e.g. benchmark tests in isolation):
 ```bash
 mvn test -Dgroups="benchmark"
 ```
+
+#### Running Integration Tests:
+
+Run all the integration tests (requires Docker):
+
+```bash
+mvn verify -Pintegration
+```
+
+Run integration tests excluding the end-to-end, load, and HA tests:
+
+```bash
+mvn verify -Pintegration -pl !e2e,!load-tests,!e2e-ha
+```
+
+#### Running End-to-End Tests:
+
+All end-to-end tests (requires Docker):
+
+```bash
+mvn verify -Pintegration -pl e2e,load-tests,e2e-ha
+```
+
+#### Test Suites at a Glance
+
+The codebase is covered by several complementary test suites, each with a distinct scope:
+
+| Suite | How it runs | Scope |
+|-------|-------------|-------|
+| **Unit tests** | `mvn test` (`*Test`) | Fast, in-process tests of a single component in isolation: engine internals (storage, pages, WAL, indexes, serialization), query parsing and execution (SQL, Cypher, Gremlin, GraphQL), schema, graph traversals, and security. The bulk of coverage; no external services required. Tagged `slow`/`benchmark` tests can be excluded. |
+| **Integration tests** | `mvn verify -Pintegration` (`*IT`) | Tests spanning multiple components or a running server within the same JVM/module: HTTP/REST API, wire protocols (Postgres, MongoDB, Redis, Bolt, gRPC), cross-module behavior, and embedded multi-server clustering. Some require Docker. |
+| **End-to-end (`e2e`)** | `mvn verify -Pintegration -pl e2e` | Black-box tests against a real ArcadeDB server in a Docker container (Testcontainers), exercising it the way external clients do: JDBC/Postgres queries, the remote Java API, server-side JavaScript functions, and the Bolt and gRPC drivers. |
+| **Load tests (`load-tests`)** | `mvn verify -Pintegration -pl load-tests` | Throughput and stability under sustained concurrent workloads against single-server and three-node clusters in containers, including high-volume document and time-series ingestion. Verifies no data loss or corruption under contention. |
+| **HA end-to-end (`e2e-ha`)** | `mvn verify -Pintegration -pl e2e-ha` | Resilience and correctness of the high-availability (Raft) cluster under failure: leader failover, rolling restarts, split-brain, network partitions/delay/packet loss, replication convergence, and cluster-wide operations (backup/restore, import, drop database, user management). Uses Testcontainers and fault injection (Toxiproxy). |
+| **Python client (`e2e-python`)** | `cd e2e-python && pytest tests/` | Verifies the Postgres wire protocol against real Python clients (`psycopg2`, `asyncpg`) and the SQLAlchemy ORM, running against a server in a Docker container (Testcontainers). |
+| **JavaScript client (`e2e-js`)** | `cd e2e-js && npm install && npm test` | Verifies Node.js client compatibility over the Bolt (`neo4j-driver`) and Postgres (`pg`) protocols, running against a server in a Docker container (Jest + Testcontainers). |
+| **C# client (`e2e-csharp`)** | `cd e2e-csharp/ArcadeDB.E2ETests && dotnet test` | Verifies the Postgres wire protocol against a .NET client (`Npgsql`), running against a server in a Docker container (xUnit + Testcontainers). |
+
 
 ### Community
 
