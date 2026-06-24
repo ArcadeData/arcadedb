@@ -30,6 +30,9 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Field;
 import java.lang.reflect.InaccessibleObjectException;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.spi.AbstractInterruptibleChannel;
@@ -55,14 +58,17 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  *
  * IMPORTANT - why this test uses {@link InterruptVulnerablePaginatedComponentFile}:
  * In production {@code PaginatedComponentFile.open()} installs a proxy "interruptor" via
- * {@code doNotCloseOnInterrupt()} that normally STOPS NIO from closing the channel on interrupt.
- * Under the Maven build (which runs with {@code --add-opens java.base/java.nio.channels.spi})
- * that proxy is active, so a plain PaginatedComponentFile would never reach the catch/retry block
- * this fix touches - the test would pass even against the unpatched code. To reproduce the real
- * customer condition (a JVM where the channel DOES close on interrupt) the subclass strips the
- * proxy back to NIO's default interruptor after every open(), including the internal reopen. With
- * the default interruptor in place, the retry only succeeds if the fix clears the interrupted flag
- * first; against the unpatched code these tests fail with ClosedByInterruptException.
+ * {@code doNotCloseOnInterrupt()} that STOPS NIO from closing the channel on interrupt, so a plain
+ * PaginatedComponentFile would never reach the catch/retry block this fix touches - the test would
+ * pass even against the unpatched code. To reproduce the real customer condition (a channel that DOES
+ * close on interrupt) the subclass replaces that proxy - after every open(), including the internal
+ * reopen - with an interruptor that closes the channel when NIO signals an interrupt, which is exactly
+ * NIO's own default behaviour. (Simply nulling the interruptor field is not portable: JDK 21 lazily
+ * recreates a default interruptor, but more recent JDKs - e.g. JDK 26 - populate it eagerly in the
+ * constructor and begin() no longer recreates it, so a null field throws NullPointerException inside
+ * begin() instead of closing the channel.) With the closing interruptor in place the retry only
+ * succeeds if the fix clears the interrupted flag first; against the unpatched code these tests fail
+ * with a ClosedChannelException.
  */
 class PaginatedComponentFileInterruptedWriteTest {
 
@@ -76,9 +82,10 @@ class PaginatedComponentFileInterruptedWriteTest {
   private BasicDatabase          db;
 
   /**
-   * A PaginatedComponentFile that restores NIO's default close-on-interrupt behaviour by undoing the
-   * {@code doNotCloseOnInterrupt()} proxy after every open(). This reproduces the production
-   * environment in which the channel actually closes when the running thread is interrupted.
+   * A PaginatedComponentFile that restores NIO's close-on-interrupt behaviour by replacing the
+   * {@code doNotCloseOnInterrupt()} proxy after every open() with one that closes the channel on
+   * interrupt. This reproduces the production environment in which the channel actually closes when
+   * the running thread is interrupted.
    */
   static class InterruptVulnerablePaginatedComponentFile extends PaginatedComponentFile {
     InterruptVulnerablePaginatedComponentFile(final String filePath, final MODE mode) throws FileNotFoundException {
@@ -88,9 +95,29 @@ class PaginatedComponentFileInterruptedWriteTest {
     @Override
     protected void open(final String filePath, final MODE mode) throws FileNotFoundException {
       // Order matters: super.open() installs the doNotCloseOnInterrupt() proxy, so it must complete
-      // before we strip that proxy back to NIO's default (interrupt-closing) interruptor.
+      // before we replace that proxy with one that closes the channel on interrupt.
       super.open(filePath, mode);
-      restoreDefaultInterruptor(this);
+      installClosingInterruptor(this);
+    }
+  }
+
+  /**
+   * Closes the channel when NIO signals an interrupt, reproducing NIO's default close-on-interrupt
+   * behaviour that production's {@code doNotCloseOnInterrupt()} proxy suppresses. {@code interrupt}
+   * closes the channel; {@code postInterrupt} (JDK 24+) and any other method are no-ops. All
+   * Interruptible methods return void, so {@code null} is always an acceptable result.
+   */
+  private record ClosingInterruptorHandler(FileChannel channel) implements InvocationHandler {
+    @Override
+    public Object invoke(final Object proxy, final Method method, final Object[] args) {
+      if ("interrupt".equals(method.getName())) {
+        try {
+          channel.close();
+        } catch (final IOException ignore) {
+          // best-effort: the retry path observes the close via ClosedChannelException
+        }
+      }
+      return null;
     }
   }
 
@@ -107,36 +134,45 @@ class PaginatedComponentFileInterruptedWriteTest {
   }
 
   /**
-   * Sets the channel's {@code interruptor} field back to null so NIO lazily recreates its default
-   * interruptor, which closes the channel on interrupt. A missing field or blocked access means
-   * {@code doNotCloseOnInterrupt()} could not have installed its proxy either, so the channel is
-   * already vulnerable - {@link #isInterruptVulnerable} re-checks before each test and skips it
-   * rather than letting it pass without exercising the catch/retry path.
+   * Replaces the channel's {@code interruptor} field with a {@link ClosingInterruptorHandler} proxy so
+   * the channel closes on interrupt, replicating NIO's default behaviour portably across JDKs. A
+   * missing field or blocked access means {@code doNotCloseOnInterrupt()} could not have installed its
+   * proxy either, so the channel already uses NIO's default (interrupt-closing) interruptor -
+   * {@link #isInterruptVulnerable} re-checks before each test and skips it rather than letting it pass
+   * without exercising the catch/retry path.
    */
-  private static void restoreDefaultInterruptor(final PaginatedComponentFile target) {
+  private static void installClosingInterruptor(final PaginatedComponentFile target) {
     try {
       final FileChannel channel = channelOf(target);
-      if (channel != null)
-        interruptorField().set(channel, null);
+      if (channel == null)
+        return;
+      final Field field = interruptorField();
+      final Class<?> interruptibleType = field.getType();
+      field.set(channel, Proxy.newProxyInstance(interruptibleType.getClassLoader(), new Class[] { interruptibleType },
+          new ClosingInterruptorHandler(channel)));
     } catch (final NoSuchFieldException | IllegalAccessException | InaccessibleObjectException expected) {
-      // --add-opens java.base/java.nio.channels.spi absent or the JDK changed the field: the proxy
-      // was not installed either, so the channel already uses NIO's default interruptor.
+      // --add-opens java.base/java.nio.channels.spi absent or the JDK changed the field: leave NIO's
+      // default interruptor in place; isInterruptVulnerable() will skip the test rather than mis-run it.
     } catch (final Exception unexpected) {
       LogManager.instance().log(PaginatedComponentFileInterruptedWriteTest.class, Level.WARNING,
-          "restoreDefaultInterruptor: unexpected failure, interrupt regression tests may be skipped - %s", unexpected.getMessage());
+          "installClosingInterruptor: unexpected failure, interrupt regression tests may be skipped - %s", unexpected.getMessage());
     }
   }
 
   /**
-   * True only when the channel is confirmed to use NIO's default interruptor (the {@code interruptor}
-   * field is null), i.e. it really closes on interrupt and so exercises the catch/retry path under
-   * test. When this cannot be confirmed the test is skipped rather than passing without testing
-   * anything - the silent false-positive this guards against.
+   * True only when our {@link ClosingInterruptorHandler} proxy is confirmed installed on the channel,
+   * i.e. the channel really closes on interrupt and so exercises the catch/retry path under test. When
+   * this cannot be confirmed the test is skipped rather than passing without testing anything - the
+   * silent false-positive this guards against.
    */
   private static boolean isInterruptVulnerable(final PaginatedComponentFile pcf) {
     try {
       final FileChannel channel = channelOf(pcf);
-      return channel != null && interruptorField().get(channel) == null;
+      if (channel == null)
+        return false;
+      final Object interruptor = interruptorField().get(channel);
+      return interruptor != null && Proxy.isProxyClass(interruptor.getClass())
+          && Proxy.getInvocationHandler(interruptor) instanceof ClosingInterruptorHandler;
     } catch (final ReflectiveOperationException | RuntimeException e) {
       return false;
     }
@@ -159,8 +195,8 @@ class PaginatedComponentFileInterruptedWriteTest {
   }
 
   /**
-   * A thread whose interrupted flag is set before calling write() makes NIO's default interruptor
-   * close the channel and throw ClosedByInterruptException on entry - exactly the same path as a
+   * A thread whose interrupted flag is set before calling write() makes the installed interruptor
+   * close the channel and throw a ClosedChannelException on entry - exactly the same path as a
    * mid-write interrupt. The write() retry must clear the flag first so the reopened channel is not
    * immediately re-closed, and must restore the flag afterwards. Against the unpatched code the
    * retry re-closes the channel and write() throws.
@@ -172,7 +208,7 @@ class PaginatedComponentFileInterruptedWriteTest {
     Arrays.fill(data, (byte) 0x5A);
     final MutablePage page = new MutablePage(pageId, PAGE_SIZE, data, 1, PAGE_SIZE);
 
-    // Set the interrupted flag before the write to trigger ClosedByInterruptException in NIO.
+    // Set the interrupted flag before the write so the installed interruptor closes the channel.
     Thread.currentThread().interrupt();
 
     // write() must succeed (after internally clearing and restoring the interrupted flag).
@@ -228,7 +264,7 @@ class PaginatedComponentFileInterruptedWriteTest {
     final MutablePage page = new MutablePage(pageId, PAGE_SIZE, data, 1, PAGE_SIZE);
     pcf.write(page); // pre-fill a page (no interrupt yet)
 
-    // Set the interrupted flag before the force to trigger ClosedByInterruptException in NIO.
+    // Set the interrupted flag before the force so the installed interruptor closes the channel.
     Thread.currentThread().interrupt();
 
     // force() must succeed (after internally clearing and restoring the interrupted flag).
