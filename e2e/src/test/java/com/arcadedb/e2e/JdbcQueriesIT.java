@@ -39,7 +39,7 @@ import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class JdbcQueriesTest extends ArcadeContainerTemplate {
+class JdbcQueriesIT extends ArcadeContainerTemplate {
 
   private Connection conn;
 
