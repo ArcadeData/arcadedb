@@ -20,6 +20,8 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.database.Document;
+import com.arcadedb.database.MutableDocument;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.ResultInternal;
@@ -77,9 +79,22 @@ public class UpdateRemoveItem extends SimpleNode {
       final Object rightVal = right.execute(result, context);
       if (MultiValue.isMultiValue(leftVal)) {
         MultiValue.remove(leftVal, rightVal, false);
+        // The removal mutated the embedded collection/map in place: the owning document is not aware of it, so it
+        // must be marked dirty explicitly otherwise the change would not be persisted (issue #4730).
+        markOwnerDirty(result);
       }
     } else {
       left.applyRemove(result, context);
+      // Nested removals (e.g. REMOVE acl["k"]) mutate the embedded structure in place without dirtying the owner.
+      markOwnerDirty(result);
+    }
+  }
+
+  private static void markOwnerDirty(final ResultInternal result) {
+    if (result.isElement()) {
+      final Document doc = result.toElement();
+      if (doc instanceof MutableDocument mutable)
+        mutable.markDirty();
     }
   }
   @Override

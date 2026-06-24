@@ -34,6 +34,8 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
@@ -510,6 +512,23 @@ public class MultiValue {
       }
     }
 
+    return iObject;
+  }
+
+  /**
+   * Returns a shallow mutable copy of the given multi-value (Collection or Map), preserving the iteration order.
+   * Used by copy-on-write SQL methods (e.g. remove/removeAll) so they do not mutate the source value in place: an
+   * in-place mutation would make UPDATE ... SET compare the new and the current value as the same object, skip the
+   * write and leave the change unpersisted (issue #4730). Arrays and non multi-values are returned unchanged
+   * (remove() already produces a fresh array for arrays).
+   */
+  public static Object copy(final Object iObject) {
+    if (iObject instanceof Set<?> set)
+      return new LinkedHashSet<>(set);
+    if (iObject instanceof Collection<?> coll)
+      return new ArrayList<>(coll);
+    if (iObject instanceof Map<?, ?> map)
+      return new LinkedHashMap<>(map);
     return iObject;
   }
 
