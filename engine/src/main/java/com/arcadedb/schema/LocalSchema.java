@@ -1629,6 +1629,9 @@ public class LocalSchema implements Schema {
                     // its getAssociatedBucketId(); this metadata only carries the full-text/BM25 configuration, not the binding.
                     final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, properties, -1);
                     ftMeta.fromJSON(indexJSON);
+                    // Same reserved-name guard as the creation path, in case a hand-edited/restored schema reintroduced a property
+                    // colliding with the query parser's default-field sentinel.
+                    LSMTreeFullTextIndex.checkReservedPropertyNames(ftMeta.propertyNames);
                     index = new LSMTreeFullTextIndex((LSMTreeIndex) index, ftMeta);
                     indexMap.put(indexName, index);
                   } else if (configuredIndexType.equalsIgnoreCase(Schema.INDEX_TYPE.GEOSPATIAL.toString())) {

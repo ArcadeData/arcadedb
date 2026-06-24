@@ -112,11 +112,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
       // Reject a property whose name collides with the query parser's reserved default-field sentinel: on a multi-property index
       // such a field could not be distinguished from an unqualified term. Fail fast at creation rather than mis-scoring silently.
-      if (builder.getMetadata() != null && builder.getMetadata().propertyNames != null)
-        for (final String property : builder.getMetadata().propertyNames)
-          if (FullTextQueryExecutor.DEFAULT_FIELD.equals(property))
-            throw new IllegalArgumentException(
-                "Property name '" + property + "' is reserved for full-text indexes; please rename the property");
+      if (builder.getMetadata() != null)
+        checkReservedPropertyNames(builder.getMetadata().propertyNames);
 
       // Get metadata if available. New full-text indexes default to BM25 similarity (issue #4687): when the user did not supply a
       // FullTextIndexMetadata, synthesize one carrying the BM25 defaults so freshly created indexes rank with BM25 out of the box.
@@ -135,6 +132,19 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
+   * Rejects any property whose name equals the query parser's reserved default-field sentinel: on a multi-property index such a
+   * field could not be distinguished from an unqualified term and would mis-score silently. Enforced both at index creation and on
+   * schema reload (a hand-edited/restored schema could otherwise reintroduce the collision).
+   */
+  public static void checkReservedPropertyNames(final List<String> propertyNames) {
+    if (propertyNames != null)
+      for (final String property : propertyNames)
+        if (FullTextQueryExecutor.DEFAULT_FIELD.equals(property))
+          throw new IllegalArgumentException(
+              "Property name '" + property + "' is reserved for full-text indexes; please rename the property");
+  }
+
+  /**
    * Called at load time. The Full Text index is just a wrapper of an LSMTree Index.
    */
   public LSMTreeFullTextIndex(final LSMTreeIndex index) {
@@ -149,8 +159,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.ftMetadata = metadata;
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
-    if (metadata != null && metadata.isBM25())
+    if (metadata != null && metadata.isBM25()) {
       index.setStoreTermFrequency(true);
+      // Warn at open time (not only when the first query triggers it) so operators can pre-warm before serving traffic: a BM25
+      // index whose persisted counters are not trustworthy will do a full type scan (under a short lock) on its first query.
+      if (!metadata.isCountersValid())
+        LogManager.instance().log(this, Level.WARNING,
+            "BM25 full-text index '%s' opened with no valid corpus counters; the first query will run a full type scan. "
+                + "Pre-warm with REBUILD INDEX <name> WITH statsOnly = true before serving traffic to avoid a first-query stall.",
+            null, index.getName());
+    }
   }
 
   /**

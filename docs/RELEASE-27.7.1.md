@@ -4,7 +4,7 @@ This release adds native **BM25 relevance scoring** to `FULL_TEXT` indexes (issu
 [#4687](https://github.com/ArcadeData/arcadedb/issues/4687)). It also includes two user-visible behaviour changes for full-text
 indexes that require attention when upgrading - see **Breaking Changes** below.
 
-### ✨ New Features
+### New Features
 
 - Native **Okapi BM25** scoring for `FULL_TEXT` indexes: term frequency + inverse document frequency + document-length
   normalization, replacing the legacy term-coordination (match-count) model. BM25 is the default for newly created full-text
@@ -15,7 +15,7 @@ indexes that require attention when upgrading - see **Breaking Changes** below.
 - `EXPLAIN` / `PROFILE` now surface BM25 scoring metadata (similarity, `k1`/`b`, corpus stats, and per-term `df`/`idf`/`boost`)
   on the full-text fetch step.
 
-### 🐛 Bug Fixes
+### Bug Fixes
 
 - Fixed a pre-existing full-text **compaction** bug that silently dropped postings when a single token's posting list spanned
   multiple compacted leaf pages (affected CLASSIC scoring too) ([#4687](https://github.com/ArcadeData/arcadedb/issues/4687)).
@@ -27,7 +27,7 @@ indexes that require attention when upgrading - see **Breaking Changes** below.
   index-name identifier, but the parser still skipped `identifier(0)` as if it were one. Any wildcard rebuild with a `WITH`
   clause (e.g. `REBUILD INDEX * WITH batchSize = 1000`) was therefore ignoring that setting; named-index rebuilds were unaffected.
 
-## ⚠️ Breaking Changes (migration notes)
+## Breaking Changes (migration notes)
 
 These two changes affect existing `FULL_TEXT` indexes (including indexes that keep CLASSIC scoring). Review them before upgrading.
 

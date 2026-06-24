@@ -195,8 +195,9 @@ public class RebuildIndexStatement extends DDLStatement {
       if (((IndexInternal) idx).recomputeStatistics())
         recomputed.add(idx.getName());
       else
-        throw new CommandExecutionException(
-            "Index '" + idx.getName() + "' has no recomputable statistics (only BM25 full-text indexes do)");
+        throw new CommandExecutionException("Index '" + idx.getName()
+            + "' has no recomputable statistics: only BM25 full-text indexes keep corpus statistics. "
+            + "Switch the index to BM25 similarity, or omit 'statsOnly' to do a full rebuild.");
     }
     result.setProperty("indexes", recomputed);
     result.setProperty("statsRecomputed", recomputed.size());
