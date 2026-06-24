@@ -38,6 +38,7 @@ import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
@@ -251,7 +252,20 @@ public class RebuildIndexStatement extends DDLStatement {
         final int pageSize = ((IndexInternal) idx).getPageSize();
         final LSMTreeIndexAbstract.NULL_STRATEGY nullStrategy = idx.getNullStrategy();
         // Get index metadata (includes vector-specific settings like dimensions, similarity, etc.)
-        final IndexMetadata indexMetadata = ((IndexInternal) idx).getMetadata();
+        IndexMetadata indexMetadata = ((IndexInternal) idx).getMetadata();
+
+        // FULL_TEXT indexes carry their configuration (analyzers, similarity, BM25 parameters) in a FullTextIndexMetadata
+        // subtype, but getMetadata() returns the generic base IndexMetadata. Reconstruct the full-text metadata from the index's
+        // persisted JSON so the rebuilt index preserves its settings; the builder rejects a plain IndexMetadata for FULL_TEXT
+        // (issue #4732, which otherwise crashed AFTER the old index had already been dropped, leaving it gone). Reset the BM25
+        // corpus counters to zero so the re-index pass recomputes them from scratch instead of doubling the persisted totals.
+        if (type == Schema.INDEX_TYPE.FULL_TEXT) {
+          final FullTextIndexMetadata ftMeta = new FullTextIndexMetadata(typeName, propertyNames.toArray(new String[0]), -1);
+          ftMeta.fromJSON(((IndexInternal) idx).toJSON());
+          ftMeta.setCounters(0L, 0L);
+          indexMetadata = ftMeta;
+        }
+        final IndexMetadata rebuildMetadata = indexMetadata;
 
         ((DatabaseInternal) database).executeLockingFiles(((IndexInternal) idx).getFileIds(), () -> {
           database.getSchema().dropIndex(idx.getName());
@@ -260,7 +274,7 @@ public class RebuildIndexStatement extends DDLStatement {
             database.getSchema().buildTypeIndex(typeName, propertyNames.toArray(new String[propertyNames.size()])).withType(type)
                 .withUnique(unique).withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize)
                 .withMaxAttempts(maxAttempts).withNullStrategy(nullStrategy)
-                .withMetadata(indexMetadata)
+                .withMetadata(rebuildMetadata)
                 .create();
 
           } else {
@@ -269,7 +283,7 @@ public class RebuildIndexStatement extends DDLStatement {
                     propertyNames.toArray(new String[propertyNames.size()])).withType(type).withUnique(unique)
                 .withPageSize(pageSize).withCallback(callback).withBatchSize(batchSize).withMaxAttempts(maxAttempts)
                 .withNullStrategy(nullStrategy)
-                .withMetadata(indexMetadata)
+                .withMetadata(rebuildMetadata)
                 .create();
           }
           return null;
