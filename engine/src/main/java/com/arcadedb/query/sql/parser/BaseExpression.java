@@ -282,6 +282,16 @@ public class BaseExpression extends MathExpression {
     return identifier.executeIndexedFunction(target, context, operator, right);
   }
 
+  @Override
+  public Object getIndexedFunctionScoringExplain(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator, final Object right) {
+    if (expression != null)
+      return expression.getIndexedFunctionScoringExplain(target, context, operator, right);
+    if (this.identifier == null)
+      return null;
+    return identifier.getIndexedFunctionScoringExplain(target, context, operator, right);
+  }
+
   /**
    * tests if current expression is an indexed function AND that function can also be executed without using the index
    *

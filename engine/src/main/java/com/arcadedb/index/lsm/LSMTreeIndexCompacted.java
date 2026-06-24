@@ -98,6 +98,12 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
 
     TrackableBinary pageBuffer = currentPageBuffer;
 
+    // True when this key starts on a page already holding the PREVIOUS key's values (a continuation page). If this key then
+    // overflows, its first values would remain on that shared page, whose root entry is keyed by the previous key. The root
+    // index is positional (one entry per leaf page) and cannot index a single page under two keys, so those values would be
+    // unreachable on read. To avoid it we force an overflowing key to start on a fresh page it fully owns.
+    final boolean startedOnContinuation = currentPage != null && getCount(currentPage) > 0;
+
     if (currentPage == null) {
       // CREATE A NEW PAGE
       currentPage = createNewPage(compactedPageNumberOfSeries.getAndIncrement());
@@ -115,6 +121,7 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     int freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + (count * INT_SERIALIZED_SIZE) + INT_SERIALIZED_SIZE);
 
     RID[] values = rids;
+    boolean firstIteration = true;
 
     // REPEAT TO WRITE ALL THE RIDS (SPLIT THEM IF THEY DON'T FIT IN THE CURRENT PAGE)
     // Termination invariant: each iteration either breaks (all values written) or
@@ -126,8 +133,14 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
       int writtenValues = writeEntryMultipleValues(keyValueContent, convertedKeys, values, freeSpaceInPage,
           currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId());
 
-      if (writtenValues == 0) {
-        // NO SPACE LEFT, CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
+      // Move this key to a fresh page when either: (a) no value fits in the current page, or (b) it is the first iteration, the
+      // current page is a continuation page already holding the previous key's values, and this key would only partially fit
+      // (split). The positional root index cannot index one leaf page under two keys, so a key must not start on a page it then
+      // overflows from. Note no bytes are orphaned: this key's serialized entry currently lives only in the scratch buffer
+      // (keyValueContent) and is committed to the page by putByteArray() further below - it has NOT been written to the
+      // continuation page, which is therefore flushed cleanly with just the previous keys' entries.
+      if (writtenValues == 0 || (firstIteration && startedOnContinuation && writtenValues < values.length)) {
+        // CREATE A NEW PAGE AND FLUSH TO THE DATABASE THE CURRENT ONE (NO WAL)
         database.getPageManager().updatePageVersion(currentPage, true);
         database.getPageManager().writePages(List.of(currentPage), true);
 
@@ -140,11 +153,15 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
         count = 0;
         keyValueFreePosition = currentPage.getMaxContentSize();
 
-        // WRITE THE KEY/VALUE CONTENT ON THE NEW PAGE
+        // WRITE THE KEY/VALUE CONTENT ON THE NEW PAGE. writeEntryMultipleValues clears keyValueContent at the start of its own
+        // loop, so this retry re-serializes the key/values from scratch into a clean buffer - the partial content from the call
+        // above is discarded, not appended.
         freeSpaceInPage = keyValueFreePosition - (getHeaderSize(pageNum) + INT_SERIALIZED_SIZE);
         writtenValues = writeEntryMultipleValues(keyValueContent, convertedKeys, values, freeSpaceInPage,
             currentPage.getMaxContentSize() - getHeaderSize(pageNum), currentPage.getPageId());
       }
+
+      firstIteration = false;
 
       keyValueFreePosition -= keyValueContent.size();
 

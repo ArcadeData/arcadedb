@@ -44,6 +44,17 @@ public interface IndexCursor extends Cursor {
     return 0;
   }
 
+  /**
+   * Returns the floating-point score of the current entry. Full-text indexes using BM25 similarity produce non-integer relevance
+   * scores; this method exposes them without losing precision. The default delegates to {@link #getScore()} so indexes that only
+   * support integer scoring keep working unchanged.
+   *
+   * @return the floating-point score of the current entry, or the integer score (widened) if float scoring is not supported
+   */
+  default float getFloatScore() {
+    return getScore();
+  }
+
   default void close() {
     // NO ACTIONS
   }

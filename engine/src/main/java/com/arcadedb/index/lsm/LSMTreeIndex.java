@@ -495,6 +495,18 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
     return lock.executeInReadLock(() -> mutable.get(convertedKeys, limit));
   }
 
+  /**
+   * Enables or disables BM25 per-posting statistics storage (term frequency + document length). Propagates to the mutable index
+   * and, through it, to the compacted sub-index. Used by the full-text index when configured with BM25 similarity.
+   */
+  public void setStoreTermFrequency(final boolean storeTermFrequency) {
+    mutable.setStoreTermFrequency(storeTermFrequency);
+  }
+
+  public boolean isStoreTermFrequency() {
+    return mutable.isStoreTermFrequency();
+  }
+
   @Override
   public void put(final Object[] keys, final RID[] rids) {
     checkIsValid();
@@ -628,6 +640,7 @@ public class LSMTreeIndex implements RangeIndex, IndexInternal {
             database.getDatabasePath() + File.separator + newName, mutable.getKeyTypes(), mutable.getBinaryKeyTypes()
             , pageSize,
             LSMTreeIndexMutable.CURRENT_VERSION, compactedIndex);
+        newMutableIndex.setStoreTermFrequency(mutable.isStoreTermFrequency());
         database.getSchema().getEmbedded().registerFile(newMutableIndex);
 
         LogManager.instance().log(this, Level.FINE,

@@ -23,15 +23,38 @@ import com.arcadedb.database.Identifiable;
 import java.util.Arrays;
 import java.util.Objects;
 
+/**
+ * One entry of an index lookup result: the matched record, the keys it was found under, and a relevance score.
+ * <p>
+ * NOTE: {@link #equals(Object)}/{@link #hashCode()} intentionally use only {@code (record, keys)} - the score is excluded. This
+ * changed in the BM25 work (issue #4687): a previous version included the score, which meant two entries for the same document
+ * with different (float) scores were not deduplicated in a {@code Set}. Code that relied on score being part of identity (none
+ * known in the codebase) would see a behavior change.
+ */
 public class IndexCursorEntry {
   public final Object[]     keys;
   public final Identifiable record;
+  /**
+   * Integer relevance score. For float-scored entries (e.g. full-text BM25) this is {@link #floatScore} rounded and therefore
+   * lossy: read {@link #floatScore} (or {@link IndexCursor#getFloatScore()}) when precision matters. It remains an exact value
+   * for indexes that score with integers (e.g. CLASSIC full-text coordination, regular LSM indexes).
+   */
   public final int          score;
+  /** Full-precision relevance score; equals {@link #score} for integer-scored entries. */
+  public final float        floatScore;
 
   public IndexCursorEntry(final Object[] keys, final Identifiable record, final int score) {
     this.keys = keys;
     this.record = record;
     this.score = score;
+    this.floatScore = score;
+  }
+
+  public IndexCursorEntry(final Object[] keys, final Identifiable record, final float floatScore) {
+    this.keys = keys;
+    this.record = record;
+    this.score = Math.round(floatScore);
+    this.floatScore = floatScore;
   }
 
   @Override
@@ -41,12 +64,14 @@ public class IndexCursorEntry {
     if (o == null || getClass() != o.getClass())
       return false;
     final IndexCursorEntry that = (IndexCursorEntry) o;
-    return score == that.score && Objects.equals(record, that.record) && Arrays.equals(keys, that.keys);
+    // Identity is (record, keys) only. The relevance score is a derived value, not part of identity: including it would let the
+    // same document appear twice in a result Set when scored differently (e.g. distinct BM25 floats for the same RID).
+    return Objects.equals(record, that.record) && Arrays.equals(keys, that.keys);
   }
 
   @Override
   public int hashCode() {
-    int result = Objects.hash(record, score);
+    int result = Objects.hashCode(record);
     result = 31 * result + Arrays.hashCode(keys);
     return result;
   }

@@ -62,7 +62,9 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
   private         MultiIterator<Map.Entry<Object, Identifiable>> customIterator;
   private         Iterator<?>                                    nullKeyIterator;
   private         Pair<Object, Identifiable>                     nextEntry   = null;
-  private         int                                            nextEntryScore = 0;
+  // Float so full-text BM25 scores below 1.0 are not truncated to 0 (which the `> 0` guard would then suppress). For
+  // integer-scored indexes getFloatScore() returns the int value unchanged.
+  private         float                                          nextEntryScore = 0f;
 
   public FetchFromIndexStep(final RangeIndex index, final BooleanExpression condition,
       final BinaryCondition additionalRangeCondition,
@@ -119,7 +121,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
           final ResultInternal result = new ResultInternal();
           result.setProperty("key", key);
           result.setProperty("rid", value);
-          if (nextEntryScore > 0)
+          if (nextEntryScore > 0f)
             result.setProperty("$score", nextEntryScore);
           context.setVariable("current", result);
           return result;
@@ -171,7 +173,7 @@ public class FetchFromIndexStep extends AbstractExecutionStep {
       if (cursor.hasNext()) {
         final Object value = cursor.next();
         nextEntry = new Pair(cursor.getKeys(), value);
-        nextEntryScore = cursor.getScore();
+        nextEntryScore = cursor.getFloatScore();
         count++;
         return;
       }
