@@ -18,10 +18,12 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class WaitForApplyTest extends BaseRaftHATest {
 
@@ -60,5 +62,46 @@ class WaitForApplyTest extends BaseRaftHATest {
     raft.waitForAppliedIndex(0);
     final long elapsed = System.currentTimeMillis() - start;
     assertThat(elapsed).isLessThan(1000);
+  }
+
+  /**
+   * LINEARIZABLE contract: a read index that the local state machine can never reach within the
+   * quorum timeout MUST fail the read (throw) rather than silently degrade to EVENTUAL and serve
+   * stale data. Regression guard for the stale LINEARIZABLE follower-read bug.
+   */
+  @Test
+  void waitForAppliedIndexThrowsOnTimeoutWhenLinearizable() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+
+    final RaftHAServer raft = getRaftPlugin(leaderIndex).getRaftHAServer();
+    final long quorumTimeout = GlobalConfiguration.HA_QUORUM_TIMEOUT.getValueAsLong();
+
+    // A target far above any applied index is unreachable, so the strict path must throw.
+    final long unreachable = raft.getLastAppliedIndex() + 1_000_000L;
+
+    final long start = System.currentTimeMillis();
+    assertThatThrownBy(() -> raft.waitForAppliedIndex(unreachable, true))
+        .isInstanceOf(ReplicationException.class)
+        .hasMessageContaining("LINEARIZABLE");
+    final long elapsed = System.currentTimeMillis() - start;
+    // It must actually wait up to the quorum timeout before giving up (not fail-fast on a transient).
+    assertThat(elapsed).isGreaterThanOrEqualTo(quorumTimeout - 500);
+  }
+
+  /**
+   * READ_YOUR_WRITES / bookmark contract is preserved: the lenient one-arg overload degrades to
+   * best-effort on timeout (logs and returns) instead of throwing.
+   */
+  @Test
+  void waitForAppliedIndexDegradesOnTimeoutWhenLenient() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+
+    final RaftHAServer raft = getRaftPlugin(leaderIndex).getRaftHAServer();
+    final long unreachable = raft.getLastAppliedIndex() + 1_000_000L;
+
+    // Must not throw - returns after the quorum timeout.
+    raft.waitForAppliedIndex(unreachable);
   }
 }
