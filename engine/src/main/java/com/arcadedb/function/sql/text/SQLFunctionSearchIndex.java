@@ -83,20 +83,22 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     final String indexName = iParams[0].toString();
     final String queryString = iParams[1].toString();
 
-    // Cache key for this specific search
+    // Cache key for this specific search. The query string is opaque data, so the cache lives in the command context's opaque
+    // cache (getCachedValue/setCachedValue) rather than the variable namespace: getVariable would interpret a '.' in the key as
+    // a nested $var.field path and reject query strings with two or more dots (issue #4734).
     final String cacheKey = "search_index:" + indexName + ":" + queryString;
 
     // Try to get cached results (Map of RID -> score). Scores are floats so BM25 relevance is preserved; CLASSIC coordination
     // scores widen to float losslessly.
     @SuppressWarnings("unchecked")
-    Map<RID, Float> allResults = (Map<RID, Float>) iContext.getVariable(cacheKey);
+    Map<RID, Float> allResults = (Map<RID, Float>) iContext.getCachedValue(cacheKey);
 
     if (allResults == null) {
       // First execution - perform the actual search
       allResults = performSearch(indexName, queryString, iContext.getDatabase());
 
       // Cache the results
-      iContext.setVariable(cacheKey, allResults);
+      iContext.setCachedValue(cacheKey, allResults);
     }
 
     // Check if current record matches
@@ -176,14 +178,14 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     if (indexName == null || queryString == null)
       return List.of();
 
-    // Perform the search and cache results
+    // Perform the search and cache results (opaque cache key, see execute() for the rationale - issue #4734)
     final String cacheKey = "search_index:" + indexName + ":" + queryString;
     @SuppressWarnings("unchecked")
-    Map<RID, Float> allResults = (Map<RID, Float>) context.getVariable(cacheKey);
+    Map<RID, Float> allResults = (Map<RID, Float>) context.getCachedValue(cacheKey);
 
     if (allResults == null) {
       allResults = performSearch(indexName, queryString, context.getDatabase());
-      context.setVariable(cacheKey, allResults);
+      context.setCachedValue(cacheKey, allResults);
     }
 
     // Sort RIDs by score descending for optimal ORDER BY $score performance

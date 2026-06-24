@@ -157,6 +157,43 @@ class SQLFunctionSearchIndexTest extends TestHelper {
   }
 
   @Test
+  void queryWithMultipleDots() {
+    // Issue #4734: a SEARCH_INDEX query string containing two or more dots must not be interpreted as a nested
+    // variable/property path (the result cache key embeds the raw query string). Dotted tokens (node.js, version
+    // numbers) and fractional caret boosts (term^3.0) are common and valid full-text queries.
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Article SET title = 'Doc4', content = 'java database node.js version 3.5'");
+
+      // Two dots from dotted tokens
+      ResultSet result = database.query("sql",
+          "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', 'node.js 3.5') = true");
+      assertThat(result.stream().count()).isEqualTo(1);
+
+      // Two fractional caret boosts (two dots)
+      result = database.query("sql",
+          "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', 'java^3.0 database^2.0') = true");
+      assertThat(result.stream().count()).isGreaterThanOrEqualTo(1);
+
+      // Three dots in a version-like token
+      result = database.query("sql",
+          "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', 'node.js 3.5.1 java') = true");
+      assertThat(result.stream().count()).isGreaterThanOrEqualTo(1);
+    });
+  }
+
+  @Test
+  void queryWithSingleDot() {
+    // A single dot worked before the fix; verify it still does (latent mis-keying guard).
+    database.transaction(() -> {
+      database.command("sql", "INSERT INTO Article SET title = 'Doc5', content = 'asp.net framework'");
+
+      final ResultSet result = database.query("sql",
+          "SELECT title FROM Article WHERE SEARCH_INDEX('Article[content]', 'asp.net') = true");
+      assertThat(result.stream().count()).isEqualTo(1);
+    });
+  }
+
+  @Test
   void basicSearchNamespaced() {
     database.transaction(() -> {
       final ResultSet result = database.query("sql",
