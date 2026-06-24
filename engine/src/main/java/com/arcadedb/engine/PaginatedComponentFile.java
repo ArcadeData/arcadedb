@@ -102,8 +102,16 @@ public class PaginatedComponentFile extends ComponentFile {
         channel.force(metaData);
       } catch (final ClosedChannelException e) {
         LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on force. Reopen it and retry...", null, fileName);
-        reopenChannelUnderWriteLock();
-        channel.force(metaData);
+        // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
+        // is not immediately closed again, then restore it so callers are notified.
+        final boolean wasInterrupted = Thread.interrupted();
+        try {
+          reopenChannelUnderWriteLock();
+          channel.force(metaData);
+        } finally {
+          if (wasInterrupted)
+            Thread.currentThread().interrupt();
+        }
       }
     } finally {
       channelLock.readLock().unlock();
@@ -242,11 +250,19 @@ public class PaginatedComponentFile extends ComponentFile {
           pos += channel.write(buffer, pos);
       } catch (final ClosedChannelException e) {
         LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
-        reopenChannelUnderWriteLock();
-        buffer.clear();
-        long pos = page.getPhysicalSize() * (long) pageNumber;
-        while (buffer.hasRemaining())
-          pos += channel.write(buffer, pos);
+        // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
+        // is not immediately closed again, then restore it so callers are notified.
+        final boolean wasInterrupted = Thread.interrupted();
+        try {
+          reopenChannelUnderWriteLock();
+          buffer.clear();
+          long pos = page.getPhysicalSize() * (long) pageNumber;
+          while (buffer.hasRemaining())
+            pos += channel.write(buffer, pos);
+        } finally {
+          if (wasInterrupted)
+            Thread.currentThread().interrupt();
+        }
       }
     } finally {
       channelLock.readLock().unlock();
@@ -300,14 +316,22 @@ public class PaginatedComponentFile extends ComponentFile {
         }
       } catch (final ClosedChannelException e) {
         LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
-        reopenChannelUnderWriteLock();
-        buffer.clear();
-        long pos = page.getPhysicalSize() * (long) pageNumber;
-        while (buffer.hasRemaining()) {
-          final int r = channel.read(buffer, pos);
-          if (r < 0)
-            throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
-          pos += r;
+        // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
+        // is not immediately closed again, then restore it so callers are notified.
+        final boolean wasInterrupted = Thread.interrupted();
+        try {
+          reopenChannelUnderWriteLock();
+          buffer.clear();
+          long pos = page.getPhysicalSize() * (long) pageNumber;
+          while (buffer.hasRemaining()) {
+            final int r = channel.read(buffer, pos);
+            if (r < 0)
+              throw new IOException("Unexpected EOF reading page " + pageNumber + " from file '" + getFileName() + "'");
+            pos += r;
+          }
+        } finally {
+          if (wasInterrupted)
+            Thread.currentThread().interrupt();
         }
       }
     } finally {
