@@ -29,8 +29,10 @@ import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONObject;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.logging.Level;
@@ -68,6 +70,12 @@ public class RemoteImmutableDocument extends ImmutableDocument {
           javaImplementation = propType.getDefaultJavaType();
 
         value = Type.convert(null, value, javaImplementation, property);
+
+        // ISSUE #4735: for LIST/MAP properties with a declared primitive ofType (e.g. `MAP OF LONG`), the JSON parser
+        // hydrates nested numbers using the smallest fitting type (Integer), losing the declared schema type. Convert the
+        // nested entries to the declared ofType so the remote client matches what the schema promises.
+        if ((propType == Type.MAP || propType == Type.LIST) && property != null)
+          value = convertNestedOfType(value, property.getOfType());
 
         map.put(fieldName, value);
       }
@@ -152,6 +160,40 @@ public class RemoteImmutableDocument extends ImmutableDocument {
   @Override
   protected boolean checkForLazyLoading() {
     return false;
+  }
+
+  /**
+   * Converts the entries of a LIST/MAP value to the declared primitive {@code ofType}. If {@code ofType} is null or not a
+   * primitive type (e.g. it references a document type), the value is returned unchanged.
+   */
+  private Object convertNestedOfType(final Object value, final String ofTypeName) {
+    if (value == null || ofTypeName == null)
+      return value;
+
+    final Type ofType = Type.getTypeByName(ofTypeName);
+    if (ofType == null)
+      // NOT A PRIMITIVE TYPE (E.G. AN EMBEDDED DOCUMENT TYPE): NOTHING TO CONVERT
+      return value;
+
+    Class<?> javaType = ofType.getDefaultJavaType();
+    if (ofType == Type.DATE)
+      javaType = remoteDatabase.getSerializer().getDateImplementation();
+    else if (ofType == Type.DATETIME)
+      javaType = remoteDatabase.getSerializer().getDateTimeImplementation();
+
+    if (value instanceof Map<?, ?> mapValue) {
+      final Map<Object, Object> converted = new HashMap<>(mapValue.size());
+      for (final Map.Entry<?, ?> entry : mapValue.entrySet())
+        converted.put(entry.getKey(), Type.convert(null, entry.getValue(), javaType));
+      return converted;
+    } else if (value instanceof List<?> listValue) {
+      final List<Object> converted = new ArrayList<>(listValue.size());
+      for (final Object item : listValue)
+        converted.add(Type.convert(null, item, javaType));
+      return converted;
+    }
+
+    return value;
   }
 
   private Map<String, Type> parsePropertyTypes(final String propTypesAsString) {
