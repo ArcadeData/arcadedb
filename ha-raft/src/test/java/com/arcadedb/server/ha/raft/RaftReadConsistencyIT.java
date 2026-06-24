@@ -81,4 +81,45 @@ class RaftReadConsistencyIT extends BaseRaftHATest {
     final long countAfter = followerDb.countType("ReadConsistency", true);
     assertThat(countAfter).as("Follower should see all 200 records after second batch").isEqualTo(200);
   }
+
+  /**
+   * Regression guard for the stale LINEARIZABLE follower-read bug: {@code fetchReadIndex()} must
+   * return the leader's quorum-confirmed commit index, NOT {@link org.apache.ratis.protocol.RaftClientReply#getLogIndex()}
+   * which is always {@code 0} on a read-only reply in Apache Ratis 3.2.x. A read index of 0 made the
+   * subsequent apply-wait a no-op and let followers serve stale state.
+   */
+  @Test
+  void fetchReadIndexReturnsLeaderCommitIndexNotZero() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+
+    final RaftHAServer leaderRaft = getRaftPlugin(leaderIndex).getRaftHAServer();
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+
+    // Produce a healthy non-zero commit index with some committed writes.
+    leaderDb.transaction(() -> {
+      if (!leaderDb.getSchema().existsType("ReadIndexProbe"))
+        leaderDb.getSchema().createVertexType("ReadIndexProbe");
+      for (int i = 0; i < 10; i++)
+        leaderDb.newVertex("ReadIndexProbe").set("i", i).save();
+    });
+    assertClusterConsistency();
+
+    final long commitIndex = leaderRaft.getCommitIndex();
+    assertThat(commitIndex).as("commit index after writes must be positive").isPositive();
+
+    // The whole point of the fix: the read index tracks the leader commit index, never 0.
+    final long readIndex = leaderRaft.fetchReadIndex(true);
+    assertThat(readIndex)
+        .as("fetchReadIndex() must return the leader commit index, not getLogIndex()==0")
+        .isGreaterThanOrEqualTo(commitIndex);
+
+    // And the follower must also obtain the same (non-zero) safe read index from the leader.
+    final int followerIndex = leaderIndex == 0 ? 1 : 0;
+    final RaftHAServer followerRaft = getRaftPlugin(followerIndex).getRaftHAServer();
+    final long followerReadIndex = followerRaft.fetchReadIndex(false);
+    assertThat(followerReadIndex)
+        .as("follower fetchReadIndex() must return the leader's non-zero commit index")
+        .isGreaterThanOrEqualTo(commitIndex);
+  }
 }
