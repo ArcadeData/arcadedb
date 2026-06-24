@@ -1141,7 +1141,32 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     }
   }
 
+  /**
+   * Lenient overload (READ_YOUR_WRITES / bookmark wait): on timeout it logs and returns,
+   * allowing the read to proceed against possibly-stale local state. Never used by the
+   * LINEARIZABLE path - see {@link #waitForAppliedIndex(long, boolean)}.
+   */
   public void waitForAppliedIndex(final long targetIndex) {
+    waitForAppliedIndex(targetIndex, false);
+  }
+
+  /**
+   * Blocks until the local state machine has applied up to {@code targetIndex}, or the
+   * {@link #quorumTimeout} elapses.
+   *
+   * @param throwOnTimeout caller's consistency contract on timeout:
+   *                       <ul>
+   *                         <li>{@code true}  (LINEARIZABLE): a timeout means the local state
+   *                             machine could not be proven up-to-date, so we MUST fail the read
+   *                             (throw {@link ReplicationException} -> HTTP 503) rather than serve
+   *                             a value older than an already-committed write.</li>
+   *                         <li>{@code false} (READ_YOUR_WRITES / bookmark): a timeout degrades to
+   *                             best-effort - log and return, letting the read proceed.</li>
+   *                       </ul>
+   * @throws ReplicationException if {@code throwOnTimeout} is {@code true} and the deadline is
+   *                              reached before the local applied index catches up.
+   */
+  public void waitForAppliedIndex(final long targetIndex, final boolean throwOnTimeout) {
     if (targetIndex <= 0)
       return;
     try {
@@ -1150,6 +1175,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         while (getLastAppliedIndex() < targetIndex) {
           final long remaining = deadline - System.currentTimeMillis();
           if (remaining <= 0) {
+            if (throwOnTimeout) {
+              LogManager.instance().log(this, Level.WARNING,
+                  "LINEARIZABLE read failed: local apply timeout applied=%d < readIndex=%d after %dms (failing read)",
+                  getLastAppliedIndex(), targetIndex, quorumTimeout);
+              throw new ReplicationException(
+                  "LINEARIZABLE read timed out waiting for local apply: applied=" + getLastAppliedIndex()
+                      + " < readIndex=" + targetIndex);
+            }
             LogManager.instance().log(this, Level.WARNING,
                 "READ_YOUR_WRITES consistency timeout: applied=%d < target=%d (consistency degraded to EVENTUAL)",
                 getLastAppliedIndex(), targetIndex);
@@ -1158,9 +1191,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           applyNotifier.wait(remaining);
         }
       }
-      HALog.log(this, HALog.TRACE, "Bookmark wait complete: applied >= target=%d", targetIndex);
+      HALog.log(this, HALog.TRACE, "Apply wait complete: applied >= target=%d", targetIndex);
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
+      if (throwOnTimeout)
+        throw new ReplicationException("LINEARIZABLE read interrupted while waiting for local apply", e);
     }
   }
 
@@ -1233,8 +1268,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Sends a ReadIndex RPC to the Raft leader and returns the confirmed commit index.
-   * The leader replies only after confirming its lease with a majority, guaranteeing
-   * that the returned index is committed and linearizable.
+   * The leader replies only after confirming its lease (or a majority heartbeat round)
+   * AND after committing at least one entry in its own current term, guaranteeing that
+   * the returned index covers every write that committed before this call - including
+   * writes committed under a prior leader/term (Raft §6.4, the new-leader hazard handled
+   * by Ratis {@code LeaderStateImpl.getReadIndex} / startup no-op entry).
+   * <p>
+   * IMPORTANT (issue: stale LINEARIZABLE follower read): in Apache Ratis 3.2.x a read-only
+   * reply does NOT carry the read index in {@link RaftClientReply#getLogIndex()} - that
+   * field is only populated for write replies and defaults to {@code 0} for reads
+   * ({@code RaftServerImpl.processQueryFuture} builds the reply without {@code setLogIndex}).
+   * Relying on {@code getLogIndex()} therefore yielded {@code 0}, which made
+   * {@link #waitForAppliedIndex(long, boolean)} a no-op and let a follower serve arbitrarily
+   * stale local state. Instead we read the leader's quorum-confirmed commit index out of the
+   * reply's {@code CommitInfoProto} list (every reply carries the commit index of the server
+   * that produced it, which for a leader-routed read is the leader itself). The reply is only
+   * produced after the leader's internal ReadIndex protocol confirmed leadership, so this
+   * commit index is a safe linearizable read index.
    *
    * @param expectSelfIsLeader if true and the reply indicates this node is not leader,
    *                           a {@link ReplicationException} is thrown with leader info
@@ -1243,7 +1293,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     try {
       final RaftClientReply reply = raftClient.io().sendReadOnly(Message.EMPTY);
       if (reply.isSuccess())
-        return reply.getLogIndex();
+        return extractLeaderCommitIndex(reply);
 
       final NotLeaderException nle = reply.getNotLeaderException();
       if (nle != null) {
@@ -1264,28 +1314,58 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Ensures linearizable read consistency for the leader. Sends a ReadIndex RPC which (with the
-   * leader lease disabled, see {@code RaftPropertiesBuilder}) confirms leadership via a fresh
-   * majority heartbeat round, then waits for the local state machine to apply up to the confirmed
-   * commit index.
+   * Extracts the quorum-confirmed commit index of the server that produced {@code reply}
+   * (for a leader-routed read-only request, that is the leader) from the reply's
+   * {@code CommitInfoProto} list. See {@link #fetchReadIndex(boolean)} for why we cannot use
+   * {@link RaftClientReply#getLogIndex()} on a read reply (it is always {@code 0} in Ratis 3.2.x).
+   *
+   * @throws ReplicationException if the reply does not carry a commit index for its own server,
+   *                              which must NOT be silently treated as index 0 (that would
+   *                              re-introduce the stale-read bug).
+   */
+  private long extractLeaderCommitIndex(final RaftClientReply reply) {
+    final RaftPeerId replyServerId = reply.getServerId();
+    if (replyServerId != null && reply.getCommitInfos() != null) {
+      final var serverIdBytes = replyServerId.toByteString();
+      for (final RaftProtos.CommitInfoProto info : reply.getCommitInfos()) {
+        if (info.hasServer() && serverIdBytes.equals(info.getServer().getId()))
+          return info.getCommitIndex();
+      }
+    }
+    // The read succeeded but the leader's commit index is missing from the reply. We cannot
+    // prove linearizability, so fail loudly rather than serve a possibly-stale read.
+    throw new ReplicationException(
+        "ReadIndex reply did not include the leader commit index; cannot guarantee linearizable read");
+  }
+
+  /**
+   * Ensures linearizable read consistency for the leader. Sends a ReadIndex RPC to
+   * confirm the leader lease, then waits for the local state machine to apply up to
+   * the confirmed commit index.
    * <p>
-   * Throws {@link ReplicationException} if leadership is lost before or after the RPC.
+   * Throws {@link ReplicationException} if leadership is lost before or after the RPC, or if
+   * the local state machine cannot catch up to the read index before the quorum timeout.
    */
   public void ensureLinearizableRead() {
     final long readIndex = fetchReadIndex(true);
     if (!isLeader())
       throw new ReplicationException("Lost leadership after ReadIndex confirmation");
-    waitForAppliedIndex(readIndex);
+    // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read.
+    waitForAppliedIndex(readIndex, true);
   }
 
   /**
    * Ensures linearizable read consistency for a follower. Contacts the leader via
    * ReadIndex RPC to obtain the current commit index, then waits for the local state
    * machine to apply up to that index before allowing the read to proceed.
+   * <p>
+   * Throws {@link ReplicationException} if the read index cannot be obtained, or if the local
+   * state machine cannot catch up to it before the quorum timeout (never serves stale state).
    */
   public void ensureLinearizableFollowerRead() {
     final long readIndex = fetchReadIndex(false);
-    waitForAppliedIndex(readIndex);
+    // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read.
+    waitForAppliedIndex(readIndex, true);
   }
 
   public List<Map<String, Object>> getFollowerStates() {
