@@ -102,6 +102,8 @@ public class PaginatedComponentFile extends ComponentFile {
         channel.force(metaData);
       } catch (final ClosedChannelException e) {
         LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on force. Reopen it and retry...", null, fileName);
+        // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
+        // is not immediately closed again, then restore it so callers are notified.
         final boolean wasInterrupted = Thread.interrupted();
         try {
           reopenChannelUnderWriteLock();
@@ -248,10 +250,8 @@ public class PaginatedComponentFile extends ComponentFile {
           pos += channel.write(buffer, pos);
       } catch (final ClosedChannelException e) {
         LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on write. Reopen it and retry...", null, fileName);
-        // ClosedByInterruptException (a subclass) leaves the thread's interrupted flag SET.
-        // Retry would fail immediately with another ClosedByInterruptException and close the
-        // freshly-reopened channel, leaving it permanently closed. Clear the flag first, then
-        // restore it after the retry so callers are still notified of the interruption.
+        // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
+        // is not immediately closed again, then restore it so callers are notified.
         final boolean wasInterrupted = Thread.interrupted();
         try {
           reopenChannelUnderWriteLock();
@@ -316,6 +316,8 @@ public class PaginatedComponentFile extends ComponentFile {
         }
       } catch (final ClosedChannelException e) {
         LogManager.instance().log(this, Level.SEVERE, "File '%s' was closed on read. Reopen it and retry...", null, fileName);
+        // ClosedByInterruptException leaves the interrupted flag set; clear it so the reopened channel
+        // is not immediately closed again, then restore it so callers are notified.
         final boolean wasInterrupted = Thread.interrupted();
         try {
           reopenChannelUnderWriteLock();

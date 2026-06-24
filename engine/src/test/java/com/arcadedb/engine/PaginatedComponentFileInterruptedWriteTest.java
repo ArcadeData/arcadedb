@@ -19,6 +19,7 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.BasicDatabase;
+import com.arcadedb.log.LogManager;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -28,13 +29,16 @@ import org.mockito.Mockito;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.lang.reflect.Field;
+import java.lang.reflect.InaccessibleObjectException;
 import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.channels.spi.AbstractInterruptibleChannel;
 import java.nio.file.Path;
 import java.util.Arrays;
+import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Regression test for the ClosedByInterruptException crash during HA snapshot deferred-flush.
@@ -83,29 +87,58 @@ class PaginatedComponentFileInterruptedWriteTest {
 
     @Override
     protected void open(final String filePath, final MODE mode) throws FileNotFoundException {
+      // Order matters: super.open() installs the doNotCloseOnInterrupt() proxy, so it must complete
+      // before we strip that proxy back to NIO's default (interrupt-closing) interruptor.
       super.open(filePath, mode);
       restoreDefaultInterruptor(this);
     }
   }
 
+  private static FileChannel channelOf(final PaginatedComponentFile pcf) throws ReflectiveOperationException {
+    final Field channelField = PaginatedComponentFile.class.getDeclaredField("channel");
+    channelField.setAccessible(true);
+    return (FileChannel) channelField.get(pcf);
+  }
+
+  private static Field interruptorField() throws NoSuchFieldException {
+    final Field field = AbstractInterruptibleChannel.class.getDeclaredField("interruptor");
+    field.setAccessible(true);
+    return field;
+  }
+
   /**
    * Sets the channel's {@code interruptor} field back to null so NIO lazily recreates its default
-   * interruptor, which closes the channel on interrupt. Best-effort: if the reflection is blocked
-   * (no {@code --add-opens}), the proxy was never installed in the first place, so the channel is
-   * already vulnerable and nothing needs to be done.
+   * interruptor, which closes the channel on interrupt. A missing field or blocked access means
+   * {@code doNotCloseOnInterrupt()} could not have installed its proxy either, so the channel is
+   * already vulnerable - {@link #isInterruptVulnerable} re-checks before each test and skips it
+   * rather than letting it pass without exercising the catch/retry path.
    */
   private static void restoreDefaultInterruptor(final PaginatedComponentFile target) {
     try {
-      final Field channelField = PaginatedComponentFile.class.getDeclaredField("channel");
-      channelField.setAccessible(true);
-      final FileChannel channel = (FileChannel) channelField.get(target);
-      if (channel == null)
-        return;
-      final Field interruptorField = AbstractInterruptibleChannel.class.getDeclaredField("interruptor");
-      interruptorField.setAccessible(true);
-      interruptorField.set(channel, null);
-    } catch (final Exception ignore) {
-      // proxy was not installed (no --add-opens) - channel is already vulnerable to interrupts
+      final FileChannel channel = channelOf(target);
+      if (channel != null)
+        interruptorField().set(channel, null);
+    } catch (final NoSuchFieldException | IllegalAccessException | InaccessibleObjectException expected) {
+      // --add-opens java.base/java.nio.channels.spi absent or the JDK changed the field: the proxy
+      // was not installed either, so the channel already uses NIO's default interruptor.
+    } catch (final Exception unexpected) {
+      LogManager.instance().log(PaginatedComponentFileInterruptedWriteTest.class, Level.WARNING,
+          "restoreDefaultInterruptor: unexpected failure, interrupt regression tests may be skipped - %s", unexpected.getMessage());
+    }
+  }
+
+  /**
+   * True only when the channel is confirmed to use NIO's default interruptor (the {@code interruptor}
+   * field is null), i.e. it really closes on interrupt and so exercises the catch/retry path under
+   * test. When this cannot be confirmed the test is skipped rather than passing without testing
+   * anything - the silent false-positive this guards against.
+   */
+  private static boolean isInterruptVulnerable(final PaginatedComponentFile pcf) {
+    try {
+      final FileChannel channel = channelOf(pcf);
+      return channel != null && interruptorField().get(channel) == null;
+    } catch (final ReflectiveOperationException | RuntimeException e) {
+      return false;
     }
   }
 
@@ -114,6 +147,8 @@ class PaginatedComponentFileInterruptedWriteTest {
     db = Mockito.mock(BasicDatabase.class);
     final String filePath = tempDir.resolve("page." + FILE_ID + "." + PAGE_SIZE + ".v0.arc").toString();
     pcf = new InterruptVulnerablePaginatedComponentFile(filePath, ComponentFile.MODE.READ_WRITE);
+    assumeTrue(isInterruptVulnerable(pcf),
+        "Channel does not close on interrupt (needs --add-opens java.base/java.nio.channels.spi); skipping interrupt regression tests");
   }
 
   @AfterEach
@@ -174,6 +209,36 @@ class PaginatedComponentFileInterruptedWriteTest {
 
     assertThat(Thread.interrupted()).as("interrupted flag must be restored after read").isTrue();
 
+    final ByteBuffer buf = readPage.getByteBuffer();
+    buf.rewind();
+    final byte[] readData = new byte[PAGE_SIZE];
+    buf.get(readData);
+    assertThat(readData).isEqualTo(data);
+  }
+
+  /**
+   * Same scenario for force(): a page is flushed first, then the interrupted flag is set before the
+   * force. force() must reopen, retry, succeed, and restore the flag.
+   */
+  @Test
+  void forceSucceedsAndRestoresInterruptFlagWhenThreadIsInterrupted() throws Exception {
+    final PageId     pageId = new PageId(db, FILE_ID, 0);
+    final byte[]     data   = new byte[PAGE_SIZE];
+    Arrays.fill(data, (byte) 0x7E);
+    final MutablePage page = new MutablePage(pageId, PAGE_SIZE, data, 1, PAGE_SIZE);
+    pcf.write(page); // pre-fill a page (no interrupt yet)
+
+    // Set the interrupted flag before the force to trigger ClosedByInterruptException in NIO.
+    Thread.currentThread().interrupt();
+
+    // force() must succeed (after internally clearing and restoring the interrupted flag).
+    pcf.force(true);
+
+    assertThat(Thread.interrupted()).as("interrupted flag must be restored after force").isTrue();
+
+    // The channel must still be open and the data readable.
+    final CachedPage readPage = new CachedPage((PageManager) null, pageId, PAGE_SIZE);
+    pcf.read(readPage);
     final ByteBuffer buf = readPage.getByteBuffer();
     buf.rewind();
     final byte[] readData = new byte[PAGE_SIZE];
