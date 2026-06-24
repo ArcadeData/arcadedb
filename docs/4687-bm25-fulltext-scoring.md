@@ -112,6 +112,11 @@ individual rows). There is no separate explain function.
 
 ## Operational notes / known limitations
 
+- **`EXPLAIN`/`PROFILE` of a wildcard query walks the term index.** Explaining a query with a wildcard/prefix/fuzzy term (e.g.
+  `a*`) expands it to the matching token keys to report per-term df, which scans the index for those keys synchronously. The
+  scoring breakdown is capped (`MAX_EXPLAIN_TERMS`, with `termsOmitted` reported) but the *expansion scan itself* is not, so an
+  `EXPLAIN`/`PROFILE` of a very broad wildcard can be slow on a large index. Avoid putting such `PROFILE` calls in tight
+  monitoring loops.
 - **Phrase queries are unordered (all-terms, not in-order).** A quoted phrase like `"java database"` requires that all of its
   terms occur in the document but does NOT enforce their order or adjacency - this index stores no token positions. So
   `"java database"` and `"database java"` return the same documents (an AND of the terms), and a phrase can match even when the

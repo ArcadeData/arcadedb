@@ -105,9 +105,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
       final boolean matches = allResults.containsKey(rid);
 
       if (matches) {
-        // Store the score for this record in the context variable $score
-        // This allows $score projection to work in SELECT
-        iContext.setVariable("$score", allResults.get(rid));
+        // Store the score for this record in the context variable $score so $score projection works in SELECT. getOrDefault keeps
+        // $score non-null even if the entry vanished between containsKey and get (cannot happen on the single-threaded SQL path
+        // today, but makes the intent explicit).
+        iContext.setVariable("$score", allResults.getOrDefault(rid, 0f));
       } else {
         // Clear the score for non-matching records
         iContext.setVariable("$score", 0f);

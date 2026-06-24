@@ -34,10 +34,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.within;
 
 /**
- * Compaction tests for BM25 full-text indexes. Inserts enough documents sharing a single high-frequency token that its posting
- * list spans multiple compacted pages at the (default 4096-byte) page size - the exact case that used to silently drop postings
- * on read (a sparse-root-index bug, see {@code LSMTreeIndexCompactor}). The scenario is driven by document volume, not by a
- * reduced page size. Verifies that after compaction the full result set, ranking and scores are unchanged.
+ * Compaction tests for BM25 full-text indexes. Uses a small (1024-byte) page size with enough documents sharing one
+ * high-frequency token that its posting list provably spans multiple compacted pages - the exact case that used to silently drop
+ * postings on read (a sparse-root-index bug, see {@code LSMTreeIndexCompactor}). The small page guarantees the multi-page split
+ * is exercised rather than incidental. Verifies that after compaction the full result set, ranking and scores are unchanged.
  * <p>
  * Not tagged {@code slow}: although it inserts a few hundred documents, it completes in well under a second and pins a
  * correctness regression (postings silently dropped on compaction), so it must run in every CI build.
@@ -77,9 +77,11 @@ class FullTextBM25CompactionTest extends TestHelper {
       database.getSchema().createDocumentType("Doc");
       database.getSchema().getType("Doc").createProperty("name", String.class);
       database.getSchema().getType("Doc").createProperty("content", String.class);
-      // Enough documents that the "data" posting list (hundreds of RIDs) spans multiple compacted pages at the default page size.
+      // Small pages (1024 bytes) so the multi-page split is GUARANTEED, not incidental: the "data" posting list below has 600
+      // RIDs at ~6-8 bytes each (compressed RID + tf + docLength varints) ~= 3.6-4.8 KB, which provably overflows a 1024-byte
+      // page several times over - exactly the spanning-multiple-compacted-pages condition the fix targets.
       database.getSchema().buildTypeIndex("Doc", new String[] { "content" })
-          .withType(Schema.INDEX_TYPE.FULL_TEXT).withFullTextType().withPageSize(4096).create();
+          .withType(Schema.INDEX_TYPE.FULL_TEXT).withFullTextType().withPageSize(1024).create();
     });
 
     // 1 rare document with the discriminative term; many documents share the common token "data".
@@ -121,7 +123,7 @@ class FullTextBM25CompactionTest extends TestHelper {
       database.getSchema().getType("Doc").createProperty("name", String.class);
       database.getSchema().getType("Doc").createProperty("content", String.class);
       database.getSchema().buildTypeIndex("Doc", new String[] { "content" })
-          .withType(Schema.INDEX_TYPE.FULL_TEXT).withFullTextType().withSimilarity("CLASSIC").withPageSize(4096).create();
+          .withType(Schema.INDEX_TYPE.FULL_TEXT).withFullTextType().withSimilarity("CLASSIC").withPageSize(1024).create();
     });
 
     for (int batch = 0; batch < 30; batch++) {
