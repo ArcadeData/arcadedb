@@ -297,6 +297,9 @@ The codebase is covered by several complementary test suites, each with a distin
 | **End-to-end (`e2e`)** | `mvn verify -Pintegration -pl e2e` | Black-box tests against a real ArcadeDB server in a Docker container (Testcontainers), exercising it the way external clients do: JDBC/Postgres queries, the remote Java API, server-side JavaScript functions, and the Bolt and gRPC drivers. |
 | **Load tests (`load-tests`)** | `mvn verify -Pintegration -pl load-tests` | Throughput and stability under sustained concurrent workloads against single-server and three-node clusters in containers, including high-volume document and time-series ingestion. Verifies no data loss or corruption under contention. |
 | **HA end-to-end (`e2e-ha`)** | `mvn verify -Pintegration -pl e2e-ha` | Resilience and correctness of the high-availability (Raft) cluster under failure: leader failover, rolling restarts, split-brain, network partitions/delay/packet loss, replication convergence, and cluster-wide operations (backup/restore, import, drop database, user management). Uses Testcontainers and fault injection (Toxiproxy). |
+| **Python client (`e2e-python`)** | `cd e2e-python && pytest tests/` | Verifies the Postgres wire protocol against real Python clients (`psycopg2`, `asyncpg`) and the SQLAlchemy ORM, running against a server in a Docker container (Testcontainers). |
+| **JavaScript client (`e2e-js`)** | `cd e2e-js && npm install && npm test` | Verifies Node.js client compatibility over the Bolt (`neo4j-driver`) and Postgres (`pg`) protocols, running against a server in a Docker container (Jest + Testcontainers). |
+| **C# client (`e2e-csharp`)** | `cd e2e-csharp/ArcadeDB.E2ETests && dotnet test` | Verifies the Postgres wire protocol against a .NET client (`Npgsql`), running against a server in a Docker container (xUnit + Testcontainers). |
 
 
 ### Community
