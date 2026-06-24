@@ -22,6 +22,8 @@ import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
+import com.arcadedb.database.Record;
+import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
 import com.arcadedb.index.Index;
@@ -34,11 +36,14 @@ import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndex;
 import com.arcadedb.index.lsm.LSMTreeIndexAbstract;
+import com.arcadedb.index.lsm.FullTextPostingRID;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
 import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.analysis.TokenStream;
@@ -47,13 +52,17 @@ import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
 /**
  * Full Text index implementation based on LSM-Tree index.
@@ -75,6 +84,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * the query result will be the TreeMap ordered by score, so if the query has a limit, only the first X items will be returned ordered by score desc
  */
 public class LSMTreeFullTextIndex implements Index, IndexInternal {
+  /** Max query terms detailed in an EXPLAIN/PROFILE scoring breakdown (each costs one posting scan); beyond it the output is truncated. */
+  private static final int MAX_EXPLAIN_TERMS = 64;
+
   private final LSMTreeIndex          underlyingIndex;
   private final Analyzer              indexAnalyzer;
   private final Analyzer              queryAnalyzer;
@@ -98,15 +110,38 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
               "Full text index can only be defined on STRING properties, found: " + keyType);
       }
 
-      // Get metadata if available
-      FullTextIndexMetadata ftMetadata = null;
-      if (builder.getMetadata() instanceof FullTextIndexMetadata) {
-        ftMetadata = (FullTextIndexMetadata) builder.getMetadata();
+      // Reject a property whose name collides with the query parser's reserved default-field sentinel: on a multi-property index
+      // such a field could not be distinguished from an unqualified term. Fail fast at creation rather than mis-scoring silently.
+      if (builder.getMetadata() != null)
+        checkReservedPropertyNames(builder.getMetadata().propertyNames);
+
+      // Get metadata if available. New full-text indexes default to BM25 similarity (issue #4687): when the user did not supply a
+      // FullTextIndexMetadata, synthesize one carrying the BM25 defaults so freshly created indexes rank with BM25 out of the box.
+      final FullTextIndexMetadata ftMetadata;
+      if (builder.getMetadata() instanceof FullTextIndexMetadata m)
+        ftMetadata = m;
+      else {
+        final IndexMetadata base = builder.getMetadata();
+        ftMetadata = FullTextIndexMetadata.defaultBM25(base.typeName, base.propertyNames.toArray(new String[0]),
+            base.associatedBucketId);
       }
 
       return new LSMTreeFullTextIndex(builder.getDatabase(), builder.getIndexName(), builder.getFilePath(),
           ComponentFile.MODE.READ_WRITE, builder.getPageSize(), builder.getNullStrategy(), ftMetadata);
     }
+  }
+
+  /**
+   * Rejects any property whose name equals the query parser's reserved default-field sentinel: on a multi-property index such a
+   * field could not be distinguished from an unqualified term and would mis-score silently. Enforced both at index creation and on
+   * schema reload (a hand-edited/restored schema could otherwise reintroduce the collision).
+   */
+  public static void checkReservedPropertyNames(final List<String> propertyNames) {
+    if (propertyNames != null)
+      for (final String property : propertyNames)
+        if (FullTextQueryExecutor.DEFAULT_FIELD.equals(property))
+          throw new IllegalArgumentException(
+              "Property name '" + property + "' is reserved for full-text indexes; please rename the property");
   }
 
   /**
@@ -124,6 +159,16 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.ftMetadata = metadata;
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
+    if (metadata != null && metadata.isBM25()) {
+      index.setStoreTermFrequency(true);
+      // Warn at open time (not only when the first query triggers it) so operators can pre-warm before serving traffic: a BM25
+      // index whose persisted counters are not trustworthy will do a full type scan (under a short lock) on its first query.
+      if (!metadata.isCountersValid())
+        LogManager.instance().log(this, Level.WARNING,
+            "BM25 full-text index '%s' opened with no valid corpus counters; the first query will run a full type scan. "
+                + "Pre-warm with REBUILD INDEX <name> WITH statsOnly = true before serving traffic to avoid a first-query stall.",
+            null, index.getName());
+    }
   }
 
   /**
@@ -136,6 +181,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     this.indexAnalyzer = createAnalyzer(metadata, true);
     this.queryAnalyzer = createAnalyzer(metadata, false);
     underlyingIndex = new LSMTreeIndex(database, name, false, filePath, mode, new Type[] { Type.STRING }, pageSize, nullStrategy);
+    if (metadata != null && metadata.isBM25()) {
+      underlyingIndex.setStoreTermFrequency(true);
+      // A brand-new index starts empty: the corpus counters are trivially valid (0 docs, 0 tokens).
+      if (!metadata.isCountersValid())
+        metadata.setCounters(0L, 0L);
+    }
   }
 
   /**
@@ -175,6 +226,9 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public IndexCursor get(final Object[] keys, final int limit) {
+    if (underlyingIndex.isStoreTermFrequency())
+      return getBM25(keys, limit);
+
     final HashMap<RID, AtomicInteger> scoreMap = new HashMap<>();
 
     // Parse query text to handle field-specific terms (field:term)
@@ -214,14 +268,449 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     for (final Map.Entry<RID, AtomicInteger> entry : scoreMap.entrySet())
       list.add(new IndexCursorEntry(keys, entry.getKey(), entry.getValue().get()));
 
+    // Most-relevant first (descending coordination score), RID as a stable tiebreaker so the order is deterministic. Matches the
+    // BM25 path; the previous ascending sort returned the least-relevant documents first.
     if (list.size() > 1)
       list.sort((o1, o2) -> {
-        if (o1.score == o2.score)
-          return 0;
-        return o1.score < o2.score ? -1 : 1;
+        final int cmp = Integer.compare(o2.score, o1.score);
+        if (cmp != 0)
+          return cmp;
+        return o1.record.getIdentity().compareTo(o2.record.getIdentity());
       });
 
+    if (limit > -1 && list.size() > limit)
+      return new TempIndexCursor(list.subList(0, limit));
+
     return new TempIndexCursor(list);
+  }
+
+  /**
+   * Shared BM25 scoring core used by both the direct ({@link #get}) and the Lucene-syntax ({@link FullTextQueryExecutor}) paths,
+   * so the formula, parameters and corpus statistics can never diverge between them.
+   * <p>
+   * When {@code candidates} is non-null only those documents are scored: a single streaming pass counts the document frequency
+   * and collects just the candidate postings (bounded by the candidate set), then the BM25 contribution is applied once the IDF
+   * is known. When {@code candidates} is null every matching document is scored, which needs two passes (count df, then
+   * accumulate) to avoid materializing the whole posting list.
+   * <p>
+   * DESIGN (deliberate, not a TODO): the no-candidate path streams each token's posting list twice (count df, then accumulate)
+   * rather than materializing it once and deriving df from the list. This is a memory-vs-I/O trade-off resolved in favour of
+   * bounded peak memory, per the project's low-GC priority: a single-pass-materialize would hold one common term's entire posting
+   * list (df {@link FullTextPostingRID} objects) <i>simultaneously</i> with the growing score map - roughly doubling peak memory
+   * for a high-frequency term - whereas the streaming df pass keeps only the score map live. The cost is 2*T posting scans for a
+   * T-term query. This path is the direct {@code index.get(query)} API only; the primary SQL {@code SEARCH_INDEX} entry point is
+   * candidate-based and already single-pass, so prefer it for large unconstrained queries. The clean way to get single-pass
+   * <i>without</i> the memory hit is a per-key entry count at the LSM layer (the compacted index already keeps page-level counts
+   * in its root); that is a larger storage-layer change tracked separately.
+   *
+   * @param tokenBoosts scoring tokens (stored-key form) mapped to their effective boost
+   * @param candidates  documents to score, or {@code null} to score every matching document
+   */
+  private Map<RID, double[]> computeBM25Scores(final Map<String, Float> tokenBoosts, final Set<RID> candidates) {
+    ensureCounters();
+    final long totalDocs = resolveTotalDocs();
+    final double avgdl = resolveAvgDocLength();
+    final double k1 = ftMetadata.getBm25K1();
+    final double b = ftMetadata.getBm25B();
+
+    // Accumulate in a per-RID double[1] cell rather than a boxed Double: a document matched by T query terms is updated T times,
+    // and Map.merge(..., Double::sum) would box on every one of those updates. The cell is allocated once per unique document
+    // (same as a Double key would be) and then accumulated as a primitive. The score is narrowed to float when the cursor entry
+    // is built. Reading is via getScore() below.
+    final Map<RID, double[]> scoreMap = candidates != null ? new HashMap<>(candidates.size()) : new HashMap<>();
+    if (candidates != null)
+      for (final RID c : candidates)
+        scoreMap.put(c, new double[1]);
+
+    // Reused across tokens to avoid per-token allocations (candidate path only).
+    final List<FullTextPostingRID> hits = new ArrayList<>();
+
+    for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
+      // Fresh single-element lookup key per token: it is handed to underlyingIndex.get(), and allocating it here (rather than
+      // reusing one array) keeps this correct even if that lookup ever became lazy/async and retained the array - the few small
+      // arrays per query are negligible GC.
+      final String[] storedKey = new String[] { e.getKey() };
+      final float boost = e.getValue();
+
+      if (candidates != null) {
+        // Single pass: count df while collecting only the candidate postings (bounded by the candidate set).
+        long df = 0L;
+        hits.clear();
+        final IndexCursor cursor = underlyingIndex.get(storedKey);
+        while (cursor.hasNext()) {
+          final Identifiable id = cursor.next();
+          // Skip deletion markers (negative bucket id): they are not live documents and must not inflate the document frequency.
+          if (id.getIdentity().getBucketId() < 0)
+            continue;
+          ++df;
+          if (id instanceof FullTextPostingRID s && scoreMap.containsKey(s.getIdentity()))
+            hits.add(s);
+        }
+        if (df == 0L)
+          continue;
+        final double idf = BM25Scorer.idf(totalDocs, df);
+        for (final FullTextPostingRID s : hits)
+          scoreMap.get(s.getIdentity())[0] += BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost;
+      } else {
+        // No candidate filter: count df first (streaming, no retention), then accumulate every matching document.
+        long df = 0L;
+        final IndexCursor dfCursor = underlyingIndex.get(storedKey);
+        while (dfCursor.hasNext()) {
+          if (dfCursor.next().getIdentity().getBucketId() >= 0) // skip deletion markers
+            ++df;
+        }
+        if (df == 0L)
+          continue;
+        final double idf = BM25Scorer.idf(totalDocs, df);
+        final IndexCursor scoreCursor = underlyingIndex.get(storedKey);
+        while (scoreCursor.hasNext()) {
+          final Identifiable id = scoreCursor.next();
+          if (id instanceof FullTextPostingRID s)
+            scoreMap.computeIfAbsent(s.getIdentity(), k -> new double[1])[0] +=
+                BM25Scorer.termScore(idf, s.getTf(), s.getDocLength(), avgdl, k1, b) * boost;
+        }
+      }
+    }
+    return scoreMap;
+  }
+
+  /**
+   * BM25 scoring path for the direct {@link #get} lookup. Builds the scoring tokens from the query and delegates to
+   * {@link #computeBM25Scores}.
+   * <p>
+   * Query syntax here is limited: {@link #parseQueryTerms} only understands whitespace-separated terms and {@code field:value}.
+   * It does NOT support the Lucene query syntax - caret boosts ({@code term^3}), boolean operators, phrases, or wildcards - which
+   * the SQL {@code SEARCH_INDEX(...)} entry point handles via the full Lucene parser. A {@code term^3} reaching here is passed to
+   * the analyzer as literal text: the StandardAnalyzer tokenizes around the caret into {@code [term, 3]}, so it matches on
+   * {@code term} but the {@code ^3} is silently ignored rather than applied as a boost. Use {@code SEARCH_INDEX} for the full
+   * query syntax; this direct path is for simple term lookups.
+   * <p>
+   * This simple-token semantics is INTENTIONAL, not a deficiency: the direct {@code get()} path also backs the SQL
+   * {@code CONTAINSTEXT} operator, whose argument is literal text to find - not a query language. Routing {@code get()} through the
+   * Lucene parser would make {@code label CONTAINSTEXT 'a-b'} or {@code 'foo AND bar'} interpret {@code -}/{@code AND} as
+   * operators (wrong); throwing on such characters would reject legitimate literal text. So {@code get()} stays token-based and
+   * {@code SEARCH_INDEX} is the deliberate home for Lucene syntax.
+   * <p>
+   * PERFORMANCE: this path scores every matching document with no candidate set, so {@link #computeBM25Scores} streams each
+   * token's posting list twice (count df, then accumulate) - {@code 2*T} posting scans for a {@code T}-term query. The SQL
+   * {@code SEARCH_INDEX} path is single-pass; prefer it for large or many-term queries.
+   */
+  private IndexCursor getBM25(final Object[] keys, final int limit) {
+    final String queryText = keys.length > 0 && keys[0] != null ? keys[0].toString() : "";
+    // The direct path does not parse Lucene syntax; a caret boost here is silently treated as part of the token and matches
+    // nothing. Log at FINE so this surfaces when debugging an unexpected empty result, without spamming normal queries.
+    if (queryText.indexOf('^') >= 0)
+      LogManager.instance().log(this, Level.FINE,
+          "Full-text get() query '%s' contains a caret; the direct lookup path does not support Lucene syntax (caret/boolean/"
+              + "phrase/wildcard) - use SEARCH_INDEX(...) for that.", null, queryText);
+    final List<QueryTerm> queryTerms = parseQueryTerms(queryText);
+
+    // Build the scoring tokens (stored-key form) with their field boost, then delegate to the shared scorer. No candidate set:
+    // every matching document is scored.
+    final Map<String, Float> tokenBoosts = new HashMap<>();
+    for (final QueryTerm term : queryTerms) {
+      final float boost = term.fieldName != null ? ftMetadata.getFieldBoost(term.fieldName) : 1.0f;
+      for (final String k : analyzeText(queryAnalyzer, new Object[] { term.value })) {
+        final String storedKey = term.fieldName != null ? term.fieldName + ":" + k : k;
+        tokenBoosts.merge(storedKey, boost, Math::max);
+      }
+    }
+
+    // The no-candidate path streams each token's postings twice (df + accumulate). Log at FINE for a multi-term query so an
+    // operator debugging a slow direct get() can see it doing 2*T scans and switch to SEARCH_INDEX. FINE keeps normal runs quiet.
+    if (tokenBoosts.size() > 1)
+      LogManager.instance().log(this, Level.FINE,
+          "Full-text get() scoring %d terms on index '%s' with two posting scans each; use SEARCH_INDEX(...) for a single-pass scan.",
+          null, tokenBoosts.size(), getName());
+
+    return buildScoredCursor(computeBM25Scores(tokenBoosts, null), keys, limit);
+  }
+
+  /**
+   * Ranks the scored documents most-relevant-first (descending score, RID as a stable tiebreaker so equal-scored documents have a
+   * deterministic order) and returns a cursor over the (optionally limited) result. When a {@code limit} smaller than the result
+   * set is requested it selects the top-K with a bounded min-heap (O(N log K)) instead of fully sorting the whole set
+   * (O(N log N)) - a meaningful win for the common {@code ORDER BY $score DESC LIMIT k} shape over a large candidate set.
+   */
+  private IndexCursor buildScoredCursor(final Map<RID, double[]> scoreMap, final Object[] keys, final int limit) {
+    final Comparator<IndexCursorEntry> bestFirst = (o1, o2) -> {
+      final int cmp = Float.compare(o2.floatScore, o1.floatScore);
+      if (cmp != 0)
+        return cmp;
+      return o1.record.getIdentity().compareTo(o2.record.getIdentity());
+    };
+
+    final int size = scoreMap.size();
+    if (limit > -1 && limit < size) {
+      // Bounded min-heap whose head is the WORST kept entry (reversed comparator), so we can evict it when a better one arrives.
+      final PriorityQueue<IndexCursorEntry> heap = new PriorityQueue<>(limit, bestFirst.reversed());
+      for (final Map.Entry<RID, double[]> e : scoreMap.entrySet()) {
+        final IndexCursorEntry entry = new IndexCursorEntry(keys, e.getKey(), (float) e.getValue()[0]);
+        if (heap.size() < limit)
+          heap.add(entry);
+        else if (bestFirst.compare(entry, heap.peek()) < 0) {
+          heap.poll();
+          heap.add(entry);
+        }
+      }
+      final IndexCursorEntry[] top = heap.toArray(new IndexCursorEntry[0]);
+      Arrays.sort(top, bestFirst);
+      return new TempIndexCursor(Arrays.asList(top));
+    }
+
+    final ArrayList<IndexCursorEntry> list = new ArrayList<>(size);
+    for (final Map.Entry<RID, double[]> entry : scoreMap.entrySet())
+      list.add(new IndexCursorEntry(keys, entry.getKey(), (float) entry.getValue()[0]));
+    if (list.size() > 1)
+      list.sort(bestFirst);
+    return new TempIndexCursor(list);
+  }
+
+  /**
+   * Returns true when this index ranks with BM25 (i.e. it stores per-posting term frequency).
+   */
+  public boolean isBM25() {
+    return underlyingIndex.isStoreTermFrequency();
+  }
+
+  /**
+   * Scores a set of candidate documents (already matched by the boolean/structural part of a query) with BM25, summing the
+   * contribution of every scoring token. Each token is looked up once to derive its document frequency (and therefore IDF); only
+   * candidates are scored. Used by {@link FullTextQueryExecutor} so the SQL {@code SEARCH_INDEX} path ranks with BM25 while
+   * preserving Lucene boolean/phrase/wildcard matching semantics.
+   *
+   * @param candidates  the documents that satisfy the query's matching logic
+   * @param tokenBoosts the scoring tokens (stored-key form) mapped to their field boost
+   * @param keys        the original query keys (carried into the result entries)
+   * @param limit       maximum number of results (-1 for unlimited)
+   */
+  public IndexCursor scoreCandidatesBM25(final Set<RID> candidates, final Map<String, Float> tokenBoosts, final Object[] keys,
+      final int limit) {
+    return buildScoredCursor(computeBM25Scores(tokenBoosts, candidates), keys, limit);
+  }
+
+  /**
+   * Returns the raw postings for an already-resolved stored key (RID-only, no BM25 scoring and no re-analysis), used by
+   * {@link FullTextQueryExecutor} to collect candidate documents cheaply before scoring them once via
+   * {@link #scoreCandidatesBM25}. Going through {@link #get} here would run the full scoring pipeline only to discard the scores.
+   * <p>
+   * Package-private: it takes a pre-analyzed stored key and bypasses the analysis pipeline, so an unanalyzed input (e.g. mixed
+   * case) would silently match nothing. Only {@link FullTextQueryExecutor} (same package) should call it.
+   */
+  IndexCursor getPostings(final String storedKey) {
+    return underlyingIndex.get(new String[] { storedKey });
+  }
+
+  /**
+   * Builds the query-level BM25 scoring explanation surfaced by {@code EXPLAIN}/{@code PROFILE}: the similarity mode, the BM25
+   * parameters (k1, b), the corpus statistics (N, avgdl) and, for each scoring token, its document frequency, IDF and applied
+   * boost. This is the "why are the scores what they are" view; per-document contributions are intentionally not included since a
+   * plan describes the query, not individual rows.
+   *
+   * @param tokenBoosts the scoring tokens (stored-key form) mapped to their field boost
+   */
+  public JSONObject explainScoring(final Map<String, Float> tokenBoosts) {
+    final JSONObject json = new JSONObject();
+    if (!isBM25()) {
+      json.put("similarity", FullTextIndexMetadata.SIMILARITY_CLASSIC);
+      return json;
+    }
+
+    ensureCounters();
+    final long totalDocs = resolveTotalDocs();
+    final double avgdl = resolveAvgDocLength();
+    json.put("similarity", FullTextIndexMetadata.SIMILARITY_BM25);
+    json.put("k1", ftMetadata.getBm25K1());
+    json.put("b", ftMetadata.getBm25B());
+    json.put("totalDocs", totalDocs);
+    json.put("avgDocLength", avgdl);
+    // BM25 is scored per bucket (per-shard): these statistics are this bucket's, so a multi-bucket type's other buckets may have
+    // different df/IDF. Report the bucket and make the per-bucket nature explicit so the explained IDF is not mistaken for global.
+    final Bucket bucket = associatedBucket();
+    if (bucket != null)
+      json.put("bucket", bucket.getName());
+    json.put("note", "statistics are per bucket (BM25 is scored per bucket); totalDocs is this bucket's document count");
+
+    // One posting scan per scoring token to derive df. EXPLAIN/PROFILE is an interactive diagnostic, not a hot path, but cap the
+    // number of explained terms so a pathological wildcard/fuzzy expansion (which can explode into thousands of tokens) cannot
+    // turn an EXPLAIN into a very long scan; beyond the cap the explain reports "termsTruncated": true.
+    final JSONArray terms = new JSONArray();
+    int explained = 0;
+    for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
+      if (explained >= MAX_EXPLAIN_TERMS) {
+        // Report both the flag and how many terms were omitted so a user debugging a complex query knows the breakdown is partial.
+        json.put("termsTruncated", true);
+        json.put("termsOmitted", tokenBoosts.size() - MAX_EXPLAIN_TERMS);
+        json.put("termsShown", MAX_EXPLAIN_TERMS);
+        break;
+      }
+      explained++;
+      final IndexCursor postings = underlyingIndex.get(new String[] { e.getKey() });
+      long df = 0;
+      while (postings.hasNext()) {
+        // Skip deletion markers (negative bucket id) so the explained df/idf matches what computeBM25Scores actually uses.
+        if (postings.next().getIdentity().getBucketId() >= 0)
+          ++df;
+      }
+      terms.put(new JSONObject().put("term", e.getKey()).put("df", df).put("idf", BM25Scorer.idf(totalDocs, df))
+          .put("boost", e.getValue()));
+    }
+    json.put("terms", terms);
+    return json;
+  }
+
+  /**
+   * BM25 is scored per bucket (per-shard, like Elasticsearch/Lucene): each bucket-level full-text index ranks its own documents
+   * using the document frequency read from its own postings. To keep the IDF unbiased, N must be measured at the same scope as
+   * df, i.e. this bucket - so N is the bucket's live record count. (The corpus counters in {@link FullTextIndexMetadata} are
+   * SHARED type-wide across all of the type's bucket indexes - the same metadata object is passed to each - so they are used only
+   * for the average document length, a length normalizer for which a type-wide value is an appropriate estimate.)
+   */
+  private long resolveTotalDocs() {
+    final long count = associatedBucketCount();
+    return count > 0 ? count : 1L;
+  }
+
+  /**
+   * Returns the (type-wide) average document length used as the BM25 length normalizer, or 1.0 when no statistics are available
+   * or the corpus is empty (no documents means no meaningful average; 1.0 makes the length-normalization term a no-op).
+   */
+  private double resolveAvgDocLength() {
+    if (ftMetadata != null && ftMetadata.getTotalDocs() > 0)
+      return ftMetadata.avgDocLength();
+    return 1.0;
+  }
+
+  /**
+   * Returns the live record count of the bucket this index is associated with, or 0 when it cannot be resolved.
+   */
+  private long associatedBucketCount() {
+    final Bucket bucket = associatedBucket();
+    return bucket != null ? bucket.count() : 0L;
+  }
+
+  private Bucket associatedBucket() {
+    try {
+      return underlyingIndex.getMutableIndex().getDatabase().getSchema().getBucketById(getAssociatedBucketId());
+    } catch (final Exception e) {
+      // Should not happen for a bucket-level index; surface it (IDF then falls back to N=1) instead of failing silently.
+      LogManager.instance().log(this, Level.WARNING, "Cannot resolve bucket %d for full-text index '%s'; BM25 will use N=1",
+          e, getAssociatedBucketId(), getName());
+      return null;
+    }
+  }
+
+  /**
+   * Lazily rebuilds the (type-wide) corpus counters when they are not trustworthy (e.g. a BM25 index reopened before the schema
+   * carrying the counters was persisted, or an index that predates BM25 support). The {@code countersValid} flag is the
+   * authority: when set the counters are used as-is. Recompute is done in memory only; persistence is deferred to the next schema
+   * save or an explicit {@link #recomputeBM25Counters()}, so the read/query path never calls {@code saveConfiguration}.
+   */
+  private void ensureCounters() {
+    if (ftMetadata == null)
+      return;
+    if (!ftMetadata.isCountersValid()) {
+      // Cold counters (pre-feature/unsaved index): rebuild so the caller scores with valid statistics. This is the ONLY place
+      // that needs a lock - the counters themselves are AtomicLong (lock-free reads/updates everywhere else); the synchronized
+      // block exists solely so concurrent first-queries (across the type's bucket indexes, which share this metadata) do not all
+      // run the full type scan at once. Double-checked: the first thread rebuilds and marks the counters valid; the rest observe
+      // that inside the lock and skip.
+      synchronized (ftMetadata) {
+        if (!ftMetadata.isCountersValid())
+          computeCorpusCounters(false);
+      }
+      return;
+    }
+    // Persisted counters can lag the on-disk data (documents indexed after the last schema save). Once per session, validate them
+    // with a cheap live document count and rebuild only if they actually disagree - so a clean restart with fresh counters pays
+    // nothing, while a stale one self-heals on the first query. The CAS ensures only one thread runs this even though the
+    // metadata is shared across the type's bucket indexes.
+    if (ftMetadata.claimStaleCheck()) {
+      final String typeName = getTypeName();
+      if (typeName != null) {
+        // Both sides are TYPE-WIDE: getTotalDocs() is the shared counter accumulated across every bucket index (they share this
+        // metadata instance), and countType() is the type's live record count - so this comparison is scope-consistent and does
+        // NOT spuriously rescan multi-bucket types. (This counter feeds avgdl only; IDF's N is the per-bucket count from
+        // resolveTotalDocs(), a deliberately different scope - see that method.)
+        final long liveCount = underlyingIndex.getMutableIndex().getDatabase().countType(typeName, false);
+        final long persisted = ftMetadata.getTotalDocs();
+        if (liveCount != persisted) {
+          // Surface the drift so operators can notice it (e.g. counters inflated by rolled-back inserts) without reading EXPLAIN.
+          // Escalate to WARNING when the divergence is large (> 10% of the live count): small drift self-heals quietly here, but a
+          // big gap usually signals a heavy-rollback workload worth a scheduled REBUILD INDEX ... WITH statsOnly = true.
+          final boolean large = liveCount > 0 && Math.abs(persisted - liveCount) * 10 > liveCount;
+          LogManager.instance().log(this, large ? Level.WARNING : Level.INFO,
+              "BM25 corpus counters for type '%s' diverged from live data (persisted=%d, live=%d); recomputing.%s", null, typeName,
+              persisted, liveCount, large ? " Consider REBUILD INDEX ... WITH statsOnly = true if this recurs." : "");
+          computeCorpusCounters(false);
+        }
+      }
+    }
+  }
+
+  /**
+   * Rescans the type and rebuilds the type-wide BM25 corpus counters (document count and total document length), then persists
+   * them. Use it after a bulk import or to repair drifted counters.
+   */
+  public void recomputeBM25Counters() {
+    computeCorpusCounters(true);
+  }
+
+  /**
+   * Recomputes the BM25 corpus counters when this index ranks with BM25 (CLASSIC indexes keep no such statistics). Drives the
+   * SQL {@code REBUILD INDEX <name> {statsOnly: true}} drift-repair path.
+   */
+  @Override
+  public boolean recomputeStatistics() {
+    if (!isBM25())
+      return false;
+    recomputeBM25Counters();
+    return true;
+  }
+
+  /**
+   * Scans the whole type and rebuilds the shared corpus counters used for the average document length. The counters are type-wide
+   * because the {@link FullTextIndexMetadata} instance is shared by all of the type's bucket indexes; scanning a single bucket
+   * would corrupt them. When {@code persist} is true the schema is saved so the counters survive a restart; the lazy read-path
+   * caller passes false to avoid saving the schema during a query.
+   */
+  private void computeCorpusCounters(final boolean persist) {
+    if (ftMetadata == null)
+      return;
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+    final String typeName = getTypeName();
+    if (typeName == null)
+      return;
+
+    // Cold-start scan: only reached when the counters are not trustworthy (unsaved/pre-feature index). Logged because on a large
+    // collection the first BM25 query that triggers it can be slow.
+    LogManager.instance().log(this, Level.INFO, "Recomputing BM25 corpus statistics for type '%s' (full scan)", null, typeName);
+
+    final List<String> props = getPropertyNames();
+    long docs = 0L;
+    long sumLen = 0L;
+    final Iterator<Record> it = db.iterateType(typeName, true);
+    while (it.hasNext()) {
+      final Record record = it.next();
+      if (!(record instanceof Document doc))
+        continue;
+      int len = 0;
+      for (final String p : props) {
+        final Object v = doc.get(p);
+        if (v != null)
+          len += analyzeText(indexAnalyzer, new Object[] { v }).size();
+      }
+      ++docs;
+      sumLen += len;
+    }
+
+    ftMetadata.setCounters(docs, sumLen);
+    // Report the result so operators can correlate the cold-start latency above with the corpus size that drove it.
+    LogManager.instance().log(this, Level.INFO,
+        "Recomputed BM25 corpus statistics for type '%s': %d documents, %d total tokens (avgdl=%.2f)", null, typeName, docs,
+        sumLen, docs > 0 ? (double) sumLen / docs : 1.0);
+    if (persist)
+      underlyingIndex.getMutableIndex().getDatabase().getSchema().getEmbedded().saveConfiguration();
   }
 
   /**
@@ -297,6 +786,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public void put(final Object[] keys, final RID[] rids) {
+    if (underlyingIndex.isStoreTermFrequency()) {
+      putWithStats(keys, rids);
+      return;
+    }
+
+    // CLASSIC similarity: store one posting per token occurrence (RID-only), unchanged behavior.
     if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
@@ -318,6 +813,112 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
         }
       }
     }
+  }
+
+  /**
+   * BM25 indexing path: aggregates the per-token term frequency and the document length, then stores one posting per distinct
+   * token carrying {@link FullTextPostingRID} so scoring can read tf and document length back without re-reading the document. Also
+   * maintains the persisted corpus counters (document count and total length) used to compute the average document length.
+   */
+  private void putWithStats(final Object[] keys, final RID[] rids) {
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+
+    if (getPropertyCount() == 1) {
+      final List<String> keywords = analyzeText(indexAnalyzer, keys);
+      final Map<String, Integer> tfs = new HashMap<>();
+      int docLen = 0;
+      boolean hasNull = false;
+      for (final String k : keywords) {
+        // A null token (null indexed value) carries no meaningful tf/docLength: keep it out of the stats so it never becomes a
+        // FullTextPostingRID with a bogus tf, but remember it so it can still be put as a plain posting below (letting the
+        // configured NULL_STRATEGY decide whether to skip, error, or index it).
+        if (k == null) {
+          hasNull = true;
+          continue;
+        }
+        tfs.merge(k, 1, Integer::sum);
+        ++docLen;
+      }
+      final int len = docLen;
+      for (final Map.Entry<String, Integer> e : tfs.entrySet())
+        underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), len));
+      if (hasNull)
+        // Plain RID (no stats): if NULL_STRATEGY indexes it, the posting carries tf=0/docLength=0 rather than a stale tf.
+        underlyingIndex.put(new String[] { null }, rids);
+      countDocuments(rids.length, docLen);
+    } else {
+      final List<String> propertyNames = getPropertyNames();
+
+      // PASS 1: analyze every field, accumulate document length and per-field + global term frequencies.
+      // Design choice: the unprefixed (field-agnostic) posting carries the GLOBAL tf - the term's total occurrences across all
+      // indexed fields of the document - while each field-prefixed posting carries that field's tf. So an unqualified query
+      // (`java`) treats a term appearing in both title and body as tf=2, whereas a field-qualified query (`title:java`) sees
+      // tf=1. This differs from Lucene's per-field independence and means cross-field repetition boosts unqualified relevance;
+      // it is intentional ("how often does the term occur anywhere in the document").
+      final Map<String, Integer> globalTf = new HashMap<>();
+      final List<String> fieldNames = new ArrayList<>();
+      final List<Map<String, Integer>> fieldTfs = new ArrayList<>();
+      int docLen = 0;
+      for (int i = 0; i < keys.length && i < propertyNames.size(); i++) {
+        if (keys[i] == null)
+          continue;
+        final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
+        docLen += keywords.size();
+        final Map<String, Integer> fieldTf = new HashMap<>();
+        for (final String k : keywords) {
+          fieldTf.merge(k, 1, Integer::sum);
+          globalTf.merge(k, 1, Integer::sum);
+        }
+        fieldNames.add(propertyNames.get(i));
+        fieldTfs.add(fieldTf);
+      }
+
+      // PASS 2: store field-prefixed postings (per-field tf) and unprefixed postings (global tf) now that docLen is known.
+      for (int f = 0; f < fieldNames.size(); f++) {
+        final String fieldName = fieldNames.get(f);
+        for (final Map.Entry<String, Integer> e : fieldTfs.get(f).entrySet())
+          underlyingIndex.put(new String[] { fieldName + ":" + e.getKey() }, withStats(db, rids, e.getValue(), docLen));
+      }
+      for (final Map.Entry<String, Integer> e : globalTf.entrySet())
+        underlyingIndex.put(new String[] { e.getKey() }, withStats(db, rids, e.getValue(), docLen));
+
+      countDocuments(rids.length, docLen);
+    }
+  }
+
+  /**
+   * Wraps the given RIDs into {@link FullTextPostingRID} carrying the term frequency and document length for a posting.
+   */
+  private static RID[] withStats(final DatabaseInternal db, final RID[] rids, final int tf, final int docLen) {
+    final RID[] out = new RID[rids.length];
+    for (int i = 0; i < rids.length; i++)
+      out[i] = new FullTextPostingRID(db, rids[i].getBucketId(), rids[i].getPosition(), tf, docLen);
+    return out;
+  }
+
+  /**
+   * Updates the persisted corpus counters when a document is indexed. {@code numDocs} is {@code rids.length}: the standard
+   * indexing path passes exactly one RID per document (one document being indexed), so each RID is counted as a distinct
+   * document of length {@code docLen}.
+   * <p>
+   * This runs at index time, before the transaction commits, and is NOT reversed on rollback, so a rolled-back insert leaves the
+   * counters slightly inflated. The counters feed only {@code avgDocLength} (a robust normalizer); {@link #recomputeBM25Counters}
+   * (also reachable via {@code REBUILD INDEX <name> WITH statsOnly = true}) repairs any drift exactly.
+   * <p>
+   * Because the increment is pre-commit, a BM25 {@code get()} issued LATER in the SAME open transaction sees the bumped
+   * {@code totalDocs}/{@code sumDocLength}, so a just-inserted (not yet committed) document is reflected in {@code avgDocLength}
+   * for that transaction. This only shifts the length normalizer marginally and resolves at commit; it is not a correctness issue.
+   * <p>
+   * FOLLOW-UP (not done deliberately): the drift could be avoided by deferring this update to an after-commit callback
+   * ({@code TransactionContext.addAfterCommitCallback}) so a rolled-back transaction never bumps the counters. That is left for a
+   * separate change because the counters must stay consistent across an HA cluster: the current update runs inside the index
+   * write that every node replays, whereas an after-commit callback fires only on the committing node and would diverge replica
+   * counters. Reversing on rollback (rather than deferring) would need a rollback hook that does not exist today.
+   */
+  private void countDocuments(final int numDocs, final int docLen) {
+    if (ftMetadata != null)
+      for (int i = 0; i < numDocs; i++)
+        ftMetadata.addDocument(docLen);
   }
 
   /**
@@ -357,9 +958,11 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
    */
   @Override
   public void remove(final Object[] keys, final Identifiable rid) {
+    int docLen = 0;
     if (getPropertyCount() == 1) {
       // Single property - existing behavior
       final List<String> keywords = analyzeText(indexAnalyzer, keys);
+      docLen = keywords.size();
       for (final String k : keywords)
         underlyingIndex.remove(new String[] { k }, rid);
     } else {
@@ -370,12 +973,22 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
           continue;
         final String fieldName = propertyNames.get(i);
         final List<String> keywords = analyzeText(indexAnalyzer, new Object[] { keys[i] });
+        docLen += keywords.size();
         for (final String k : keywords) {
           underlyingIndex.remove(new String[] { fieldName + ":" + k }, rid);
           underlyingIndex.remove(new String[] { k }, rid);
         }
       }
     }
+
+    // Keep the BM25 corpus counters in sync when a document is removed. remove() carries a SINGLE rid (one document), so exactly
+    // one removeDocument() call balances the single addDocument() that put() made for that document - the indexing convention is
+    // one rid per document. (put() loops addDocument() over its rid array; were remove() ever called with N documents sharing a
+    // key it would need the same N decrements, but no caller does that.) docLen is recomputed from the keys supplied at remove
+    // time: if a field is null now but was set at index time (or the analyzer changed), this under-decrements sumDocLength and
+    // avgDocLength drifts. Since avgDocLength is only a length normalizer this is tolerable; recomputeBM25Counters() repairs it.
+    if (underlyingIndex.isStoreTermFrequency() && ftMetadata != null)
+      ftMetadata.removeDocument(docLen);
   }
 
   /**
@@ -407,6 +1020,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     json.put("properties", getPropertyNames());
     json.put("nullStrategy", getNullStrategy());
     json.put("unique", isUnique());
+    // Persist analyzer configuration and BM25 settings + corpus counters so they survive a restart (issue #4687). Historically
+    // this method dropped the metadata, silently reverting custom analyzers to StandardAnalyzer on reload.
+    if (ftMetadata != null)
+      ftMetadata.writeToJSON(json);
     return json;
   }
 
@@ -653,6 +1270,8 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     for (final Object t : text) {
       if (t == null)
+        // Emit a null token so a null value still reaches the underlying index and its configured NULL_STRATEGY (SKIP/ERROR) is
+        // enforced. Callers that compute document length exclude these null tokens (see putWithStats).
         tokens.add(null);
       else {
         final TokenStream tokenizer = analyzer.tokenStream("contents", t.toString());
@@ -751,8 +1370,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       docFreqs.put(term, docCount);
     }
 
-    // Estimate total documents (use the max doc frequency as approximation)
-    final int totalDocs = docFreqs.values().stream().mapToInt(Integer::intValue).max().orElse(1);
+    // Total documents in this bucket, consistent with the per-bucket document frequencies above. The live bucket record count is
+    // exact and always >= any term's df, unlike the previous max-df proxy which understated IDF for terms shared by many
+    // documents (the most common term defined totalDocs, forcing its IDF toward zero and skewing term selection).
+    final int totalDocs = (int) Math.min(Integer.MAX_VALUE, resolveTotalDocs());
 
     // Step 4: Select top terms using MoreLikeThisQueryBuilder
     final MoreLikeThisQueryBuilder queryBuilder = new MoreLikeThisQueryBuilder(config);

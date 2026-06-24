@@ -62,7 +62,7 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    * @return this builder for chaining
    */
   public TypeFullTextIndexBuilder withAnalyzer(final String analyzerClass) {
-    ((FullTextIndexMetadata) metadata).setAnalyzerClass(analyzerClass);
+    ftMetadata().setAnalyzerClass(analyzerClass);
     return this;
   }
 
@@ -73,7 +73,7 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    * @return this builder for chaining
    */
   public TypeFullTextIndexBuilder withIndexAnalyzer(final String analyzerClass) {
-    ((FullTextIndexMetadata) metadata).setIndexAnalyzerClass(analyzerClass);
+    ftMetadata().setIndexAnalyzerClass(analyzerClass);
     return this;
   }
 
@@ -84,7 +84,7 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    * @return this builder for chaining
    */
   public TypeFullTextIndexBuilder withQueryAnalyzer(final String analyzerClass) {
-    ((FullTextIndexMetadata) metadata).setQueryAnalyzerClass(analyzerClass);
+    ftMetadata().setQueryAnalyzerClass(analyzerClass);
     return this;
   }
 
@@ -95,7 +95,7 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    * @return this builder for chaining
    */
   public TypeFullTextIndexBuilder withAllowLeadingWildcard(final boolean allow) {
-    ((FullTextIndexMetadata) metadata).setAllowLeadingWildcard(allow);
+    ftMetadata().setAllowLeadingWildcard(allow);
     return this;
   }
 
@@ -106,7 +106,7 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    * @return this builder for chaining
    */
   public TypeFullTextIndexBuilder withDefaultOperator(final String operator) {
-    ((FullTextIndexMetadata) metadata).setDefaultOperator(operator);
+    ftMetadata().setDefaultOperator(operator);
     return this;
   }
 
@@ -118,12 +118,15 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    * @return this builder for chaining
    */
   public TypeFullTextIndexBuilder withFieldAnalyzer(final String fieldName, final String analyzerClass) {
-    ((FullTextIndexMetadata) metadata).setFieldAnalyzer(fieldName, analyzerClass);
+    ftMetadata().setFieldAnalyzer(fieldName, analyzerClass);
     return this;
   }
 
   @Override
   public TypeFullTextIndexBuilder withMetadata(final IndexMetadata metadata) {
+    if (metadata != null && !(metadata instanceof FullTextIndexMetadata))
+      throw new IllegalArgumentException(
+          "A FULL_TEXT index requires FullTextIndexMetadata but got " + metadata.getClass().getName());
     this.metadata = (FullTextIndexMetadata) metadata;
     return this;
   }
@@ -143,6 +146,57 @@ public class TypeFullTextIndexBuilder extends TypeIndexBuilder {
    * @param json the JSON object containing metadata configuration
    */
   public void withMetadata(final JSONObject json) {
-    ((FullTextIndexMetadata) metadata).fromJSON(json);
+    ftMetadata().fromJSON(json);
+  }
+
+  /**
+   * Returns the builder's metadata as {@link FullTextIndexMetadata}. The full-text builder constructors always create one, but
+   * guard the cast so that, if the metadata were ever replaced with a non-full-text instance, callers get an actionable error
+   * instead of a bare {@link ClassCastException} at configuration time.
+   */
+  private FullTextIndexMetadata ftMetadata() {
+    if (metadata instanceof FullTextIndexMetadata m)
+      return m;
+    throw new IllegalStateException(
+        "Full-text index metadata expected but was " + (metadata == null ? "null" : metadata.getClass().getName())
+            + "; configure BM25/analyzer options on a FULL_TEXT index builder");
+  }
+
+  /**
+   * Sets the similarity (ranking) model: {@code "BM25"} (default for new indexes) or {@code "CLASSIC"} (legacy term coordination).
+   *
+   * @param similarity the similarity name
+   * @return this builder for chaining
+   */
+  public TypeFullTextIndexBuilder withSimilarity(final String similarity) {
+    ftMetadata().setSimilarity(similarity);
+    return this;
+  }
+
+  /**
+   * Enables BM25 similarity with the given parameters.
+   *
+   * @param k1 term-frequency saturation parameter (typical 1.2)
+   * @param b  document-length normalization parameter in [0,1] (typical 0.75)
+   * @return this builder for chaining
+   */
+  public TypeFullTextIndexBuilder withBM25(final float k1, final float b) {
+    final FullTextIndexMetadata m = ftMetadata();
+    m.setSimilarity(FullTextIndexMetadata.SIMILARITY_BM25);
+    m.setBm25K1(k1);
+    m.setBm25B(b);
+    return this;
+  }
+
+  /**
+   * Sets a per-field boost multiplier applied to BM25 contributions of field-qualified matches on that field.
+   *
+   * @param fieldName the field name
+   * @param boost     the multiplier (> 1.0 increases relevance)
+   * @return this builder for chaining
+   */
+  public TypeFullTextIndexBuilder withFieldBoost(final String fieldName, final float boost) {
+    ftMetadata().setFieldBoost(fieldName, boost);
+    return this;
   }
 }

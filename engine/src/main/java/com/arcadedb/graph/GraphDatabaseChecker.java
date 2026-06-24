@@ -62,6 +62,8 @@ public class GraphDatabaseChecker {
     final List<String> warnings = new ArrayList<>();
     final Set<RID> reconnectOutEdges = new HashSet<>();
     final Set<RID> reconnectInEdges = new HashSet<>();
+    final Map<RID, Long> missingReferences = new HashMap<>();
+    final Map<RID, String> missingReferenceErrors = new HashMap<>();
 
     final Map<String, Object> stats = new HashMap<>();
 
@@ -89,21 +91,21 @@ public class GraphDatabaseChecker {
           final RID vertexIdentity = vertex.getIdentity();
 
           vertex = checkOutgoingEdges(fix, vertex, warnings, totalWarnings, maxWarnings, vertexIdentity, invalidLinks,
-              corruptedRecords, totalCorrupted, maxCorrupted, reconnectOutEdges);
+              corruptedRecords, totalCorrupted, maxCorrupted, reconnectOutEdges, missingReferences, missingReferenceErrors);
 
           checkIncomingEdges(fix, vertex, warnings, totalWarnings, maxWarnings, vertexIdentity, invalidLinks,
-              corruptedRecords, totalCorrupted, maxCorrupted, reconnectInEdges);
+              corruptedRecords, totalCorrupted, maxCorrupted, reconnectInEdges, missingReferences, missingReferenceErrors);
 
         } catch (final Throwable e) {
           addWarning(warnings, totalWarnings, maxWarnings,
-              "vertex " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")");
+              "vertex " + record.getIdentity() + " cannot be loaded (error: " + describe(e) + ")");
           addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, record.getIdentity());
         }
 
         return true;
       }, (rid, exception) -> {
         addWarning(warnings, totalWarnings, maxWarnings,
-            "vertex " + rid + " cannot be loaded (error: " + exception.getMessage() + ")");
+            "vertex " + rid + " cannot be loaded (error: " + describe(exception) + ")");
         addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
         return true;
       });
@@ -141,6 +143,8 @@ public class GraphDatabaseChecker {
       stats.put("warnings", warnings);
       stats.put("totalWarnings", totalWarnings.get());
       stats.put("totalCorruptedRecords", totalCorrupted.get());
+      stats.put("missingReferences", missingReferences);
+      stats.put("missingReferenceErrors", missingReferenceErrors);
     }
 
     return stats;
@@ -194,7 +198,7 @@ public class GraphDatabaseChecker {
 
   private void checkIncomingEdges(boolean fix, Vertex vertex, List<String> warnings, AtomicLong totalWarnings, int maxWarnings,
       RID vertexIdentity, AtomicLong invalidLinks, LinkedHashSet<RID> corruptedRecords, AtomicLong totalCorrupted,
-      int maxCorrupted, Set<RID> reconnectInEdges) {
+      int maxCorrupted, Set<RID> reconnectInEdges, Map<RID, Long> missingReferences, Map<RID, String> missingReferenceErrors) {
     if (((VertexInternal) vertex).getInEdgesHeadChunk() != null) {
       EdgeLinkedList inEdges = null;
       try {
@@ -252,6 +256,7 @@ public class GraphDatabaseChecker {
                   } catch (final RecordNotFoundException e) {
                     addWarning(warnings, totalWarnings, maxWarnings,
                         "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+                    trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getOut(), describe(e));
                     addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                     removeEntry = true;
                     addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getOut());
@@ -260,7 +265,8 @@ public class GraphDatabaseChecker {
                     // UNKNOWN ERROR ON LOADING
                     addWarning(warnings, totalWarnings, maxWarnings,
                         "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
-                            + e.getMessage() + ")");
+                            + describe(e) + ")");
+                    trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getOut(), describe(e));
                     addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                     removeEntry = true;
                     addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getOut());
@@ -349,7 +355,7 @@ public class GraphDatabaseChecker {
               } catch (final Exception e) {
                 // UNKNOWN ERROR ON LOADING
                 addWarning(warnings, totalWarnings, maxWarnings,
-                    "edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")");
+                    "edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
                 addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                 removeEntry = true;
               }
@@ -360,7 +366,7 @@ public class GraphDatabaseChecker {
           } catch (Exception e) {
             // UNKNOWN ERROR ON LOADING EDGES
             addWarning(warnings, totalWarnings, maxWarnings,
-                "error on loading incoming edges from vertex " + vertexIdentity + " (error: " + e.getMessage() + ")");
+                "error on loading incoming edges from vertex " + vertexIdentity + " (error: " + describe(e) + ")");
 
             if (fix) {
               vertex = vertex.modify();
@@ -379,7 +385,7 @@ public class GraphDatabaseChecker {
   private Vertex checkOutgoingEdges(final boolean fix, Vertex vertex, final List<String> warnings,
       final AtomicLong totalWarnings, final int maxWarnings, final RID vertexIdentity, final AtomicLong invalidLinks,
       final LinkedHashSet<RID> corruptedRecords, final AtomicLong totalCorrupted, final int maxCorrupted,
-      final Set<RID> reconnectOutEdges) {
+      final Set<RID> reconnectOutEdges, final Map<RID, Long> missingReferences, final Map<RID, String> missingReferenceErrors) {
     // CHECK THE EDGE IS CONNECTED FROM THE OTHER SIDE
     if (((VertexInternal) vertex).getOutEdgesHeadChunk() != null) {
       EdgeLinkedList outEdges = null;
@@ -439,6 +445,7 @@ public class GraphDatabaseChecker {
                   } catch (final RecordNotFoundException e) {
                     addWarning(warnings, totalWarnings, maxWarnings,
                         "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
+                    trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getIn(), describe(e));
                     addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                     removeEntry = true;
                     addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
@@ -447,7 +454,8 @@ public class GraphDatabaseChecker {
                     // UNKNOWN ERROR ON LOADING
                     addWarning(warnings, totalWarnings, maxWarnings,
                         "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
-                            + e.getMessage() + ")");
+                            + describe(e) + ")");
+                    trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getIn(), describe(e));
                     addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                     removeEntry = true;
                     addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
@@ -536,7 +544,7 @@ public class GraphDatabaseChecker {
               } catch (final Exception e) {
                 // UNKNOWN ERROR ON LOADING
                 addWarning(warnings, totalWarnings, maxWarnings,
-                    "edge " + edgeRID + " error on loading (error: " + e.getMessage() + ")");
+                    "edge " + edgeRID + " error on loading (error: " + describe(e) + ")");
                 addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
                 removeEntry = true;
               }
@@ -548,7 +556,7 @@ public class GraphDatabaseChecker {
           } catch (Exception e) {
             // UNKNOWN ERROR ON LOADING EDGES
             addWarning(warnings, totalWarnings, maxWarnings,
-                "error on loading outgoing edges from vertex " + vertexIdentity + " (error: " + e.getMessage() + ")");
+                "error on loading outgoing edges from vertex " + vertexIdentity + " (error: " + describe(e) + ")");
 
             if (fix) {
               vertex = vertex.modify();
@@ -580,6 +588,8 @@ public class GraphDatabaseChecker {
     // totalCorrupted (which counts only genuinely new entries, see addCorrupted) stays aligned with its size.
     final LinkedHashSet<RID> corruptedRecords = new LinkedHashSet<>();
     final List<String> warnings = new ArrayList<>();
+    final Map<RID, Long> missingReferences = new HashMap<>();
+    final Map<RID, String> missingReferenceErrors = new HashMap<>();
 
     final Map<String, Object> stats = new HashMap<>();
 
@@ -633,6 +643,7 @@ public class GraphDatabaseChecker {
             } catch (final RecordNotFoundException e) {
               addWarning(warnings, totalWarnings, maxWarnings,
                   "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " that is not found (deleted?)");
+              trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getIn(), describe(e));
               addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
               addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
               invalidLinks.incrementAndGet();
@@ -640,7 +651,8 @@ public class GraphDatabaseChecker {
               // UNKNOWN ERROR ON LOADING
               addWarning(warnings, totalWarnings, maxWarnings,
                   "edge " + edgeRID + " points to the incoming vertex " + edge.getIn() + " which cannot be loaded (error: "
-                      + e.getMessage() + ")");
+                      + describe(e) + ")");
+              trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getIn(), describe(e));
               addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
               addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getIn());
             }
@@ -656,13 +668,15 @@ public class GraphDatabaseChecker {
             } catch (final RecordNotFoundException e) {
               addWarning(warnings, totalWarnings, maxWarnings,
                   "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " that is not found (deleted?)");
+              trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getOut(), describe(e));
               addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
               invalidLinks.incrementAndGet();
             } catch (final Exception e) {
               // UNKNOWN ERROR ON LOADING
               addWarning(warnings, totalWarnings, maxWarnings,
                   "edge " + edgeRID + " points to the outgoing vertex " + edge.getOut() + " which cannot be loaded (error: "
-                      + e.getMessage() + ")");
+                      + describe(e) + ")");
+              trackMissingReference(missingReferences, missingReferenceErrors, maxWarnings, edge.getOut(), describe(e));
               addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
               addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edge.getOut());
             }
@@ -670,14 +684,14 @@ public class GraphDatabaseChecker {
 
         } catch (final Throwable e) {
           addWarning(warnings, totalWarnings, maxWarnings,
-              "edge " + record.getIdentity() + " cannot be loaded (error: " + e.getMessage() + ")");
+              "edge " + record.getIdentity() + " cannot be loaded (error: " + describe(e) + ")");
           addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, edgeRID);
         }
 
         return true;
       }, (rid, exception) -> {
         addWarning(warnings, totalWarnings, maxWarnings,
-            "edge " + rid + " cannot be loaded (error: " + exception.getMessage() + ")");
+            "edge " + rid + " cannot be loaded (error: " + describe(exception) + ")");
         addCorrupted(corruptedRecords, totalCorrupted, maxCorrupted, rid);
         return true;
       });
@@ -713,9 +727,39 @@ public class GraphDatabaseChecker {
       stats.put("warnings", warnings);
       stats.put("totalWarnings", totalWarnings.get());
       stats.put("totalCorruptedRecords", totalCorrupted.get());
+      stats.put("missingReferences", missingReferences);
+      stats.put("missingReferenceErrors", missingReferenceErrors);
     }
 
     return stats;
+  }
+
+  /**
+   * Returns the exception message, or the exception's simple class name when the message is {@code null} (e.g. a
+   * {@link NullPointerException}). Without this, CHECK DATABASE prints an undiagnosable "error: null" for any failure
+   * whose exception carries no message, which makes triaging a corrupted/diverged replica impossible.
+   */
+  static String describe(final Throwable e) {
+    final String msg = e.getMessage();
+    return msg != null ? msg : e.getClass().getSimpleName();
+  }
+
+  /**
+   * Records that {@code target} (a vertex an edge points to) could not be loaded, accumulating a per-target reference
+   * count instead of emitting one line per dangling edge. A single missing supernode can be referenced by millions of
+   * edges; this collapses that fan-out into "vertex X could not be loaded, referenced by N edge(s)". The distinct-target
+   * set is bounded by {@code maxTracked} to keep memory in check (counts for already-tracked targets keep incrementing).
+   */
+  private static void trackMissingReference(final Map<RID, Long> missingReferences, final Map<RID, String> missingReferenceErrors,
+      final int maxTracked, final RID target, final String error) {
+    if (target == null)
+      return;
+    if (missingReferences.containsKey(target))
+      missingReferences.merge(target, 1L, Long::sum);
+    else if (missingReferences.size() < maxTracked) {
+      missingReferences.put(target, 1L);
+      missingReferenceErrors.put(target, error);
+    }
   }
 
   private static void addWarning(final List<String> warnings, final AtomicLong totalWarnings, final int maxWarnings,

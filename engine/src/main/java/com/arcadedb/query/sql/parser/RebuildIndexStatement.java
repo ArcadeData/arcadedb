@@ -67,16 +67,27 @@ public class RebuildIndexStatement extends DDLStatement {
 
     int batchSize = IndexBuilder.BUILD_BATCH_SIZE;
     int maxAttempts = MAX_ATTEMPTS;
+    // statsOnly: recompute persisted index statistics (BM25 corpus counters) by rescanning the live data, without the far more
+    // expensive full index rebuild. Lets operators repair counter drift (e.g. from rolled-back transactions) from SQL.
+    boolean statsOnly = false;
     if (!settings.isEmpty()) {
       for (Map.Entry<Expression, Expression> entry : settings.entrySet()) {
+        // Render the setting value via Expression.toString(): its `value` field can be null depending on how the literal was
+        // parsed (it was for the integer in `WITH batchSize = 1000`), so toString() is the reliable accessor for all literals.
+        final String settingValue = entry.getValue().toString();
         if ("batchSize".equalsIgnoreCase(entry.getKey().toString()))
-          batchSize = Integer.parseInt(entry.getValue().value.toString());
+          batchSize = Integer.parseInt(settingValue);
         else if ("maxAttempts".equalsIgnoreCase(entry.getKey().toString()))
-          maxAttempts = Integer.parseInt(entry.getValue().value.toString());
+          maxAttempts = Integer.parseInt(settingValue);
+        else if ("statsOnly".equalsIgnoreCase(entry.getKey().toString()))
+          statsOnly = Boolean.parseBoolean(settingValue);
         else
           throw new CommandSQLParsingException("Unrecognized setting '" + entry.getKey() + "' in rebuild index statement");
       }
     }
+
+    if (statsOnly)
+      return recomputeStatistics(context.getDatabase(), result);
 
     final AtomicLong total = new AtomicLong();
     final AtomicLong misplaced = new AtomicLong();
@@ -160,6 +171,39 @@ public class RebuildIndexStatement extends DDLStatement {
     }
 
     // SUCCESS
+    final InternalResultSet rs = new InternalResultSet();
+    rs.add(result);
+    return rs;
+  }
+
+  /**
+   * Handles {@code REBUILD INDEX <name|*> {statsOnly: true}}: recomputes persisted index statistics (BM25 corpus counters) by
+   * rescanning the live data, without the full index rebuild. For {@code *} only the logical (type) indexes are visited so the
+   * type is scanned once per index rather than once per bucket sub-index.
+   */
+  private ResultSet recomputeStatistics(final Database database, final ResultInternal result) {
+    result.setProperty("operation", "rebuild index stats");
+    final List<String> recomputed = new ArrayList<>();
+    if (all) {
+      for (final Index idx : database.getSchema().getIndexes())
+        if (idx instanceof TypeIndex ti && ti.recomputeStatistics())
+          recomputed.add(idx.getName());
+    } else {
+      final Index idx = database.getSchema().getIndexByName(name.getValue());
+      if (idx == null)
+        throw new CommandExecutionException("Index '" + name.getValue() + "' not found");
+      if (!(idx instanceof final IndexInternal internal))
+        throw new CommandExecutionException("Index '" + idx.getName() + "' does not support statistics recomputation");
+      if (internal.recomputeStatistics())
+        recomputed.add(idx.getName());
+      else
+        throw new CommandExecutionException("Index '" + idx.getName()
+            + "' has no recomputable statistics: only BM25 full-text indexes keep corpus statistics. "
+            + "Switch the index to BM25 similarity, or omit 'statsOnly' to do a full rebuild.");
+    }
+    result.setProperty("indexes", recomputed);
+    result.setProperty("statsRecomputed", recomputed.size());
+
     final InternalResultSet rs = new InternalResultSet();
     rs.add(result);
     return rs;

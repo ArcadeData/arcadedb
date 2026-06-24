@@ -84,6 +84,22 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   protected       NULL_STRATEGY    nullStrategy       = NULL_STRATEGY.SKIP;
   protected final AtomicLong       statsAdjacentSteps = new AtomicLong();
 
+  /**
+   * When true, each posting value is serialized as {@code compressedRID + tf(varint) + docLength(varint)} instead of just the
+   * RID, and is deserialized into a {@link FullTextPostingRID}. Used exclusively by full-text indexes configured with BM25 similarity.
+   * Defaults to false so every other LSM index keeps the byte-identical RID-only format.
+   * <p>
+   * NOTE: this flag is NOT stored in the page header; it is set from the persisted schema (similarity = BM25) during the
+   * single-threaded schema load, before the index serves any query or compaction is scheduled - so the write happens-before any
+   * concurrent reader. The schema and index files must therefore stay consistent: reading a BM25 index's pages with the flag off
+   * (or vice-versa) would misinterpret the value bytes. In normal operation schema and index files travel together.
+   * <p>
+   * volatile: set once (single writer) but read on every read/write path, possibly from other threads; the visibility guarantee
+   * avoids a reader seeing a stale {@code false} and misparsing the value bytes. Private: accessed by subclasses only through
+   * {@link #isStoreTermFrequency()} / {@link #setStoreTermFrequency(boolean)}.
+   */
+  private volatile boolean         storeTermFrequency = false;
+
   protected static class LookupResult {
     public final boolean found;
     public final boolean outside;
@@ -316,6 +332,16 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
               + FileUtils.getSizeAsString(pageUsableSpace) + "). Define the index with larger pages");
   }
 
+  /**
+   * Serializes the key plus as many of {@code rids} as fit into the scratch {@code buffer} and returns how many values were
+   * written (0 if not even a single value fits). The caller decides what to do with a partial/zero result (e.g. flush the current
+   * page and retry on a fresh one).
+   * <p>
+   * INVARIANT (relied upon by {@link LSMTreeIndexCompacted#appendDuringCompaction}): this method writes ONLY to {@code buffer}
+   * (the scratch {@code keyValueContent}); it never touches any database page. So when it returns a partial or zero count, no
+   * bytes have been committed to a page and the caller can safely move this key to a new page without orphaning data on the old
+   * one. Keep this true if refactoring - the compaction continuation-page fix depends on it.
+   */
   protected int writeEntryMultipleValues(final Binary buffer, final Object[] keys, Object[] rids, final int availableSpaceInPage,
       final int pageUsableSpace, final PageId pageId) {
     Object[] values = rids;
@@ -489,6 +515,12 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     // WRITE VALUES
     for (int i = 0; i < values.length; ++i) {
       serializer.serializeValue(database, buffer, valueType, values[i]);
+      if (storeTermFrequency)
+        writeTermFrequency(buffer, values[i]);
+      // Overflow check AFTER the whole i-th entry (RID + optional tf/docLength varints) is in the buffer: the entry is written as
+      // a unit, never split. On overflow we return i (= i complete entries the caller may keep), but the buffer now physically
+      // holds i+1 entries' bytes. That trailing entry is harmless: callers re-serialize from scratch (writeEntryMultipleValues
+      // clears the buffer and rewrites the kept subset before committing to a page), so the over-written bytes are discarded.
       if (buffer.size() > availableSpaceInPage)
         return i;
     }
@@ -501,6 +533,28 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
     // WRITE VALUES
     serializer.serializeValue(database, buffer, valueType, value);
+    if (storeTermFrequency)
+      writeTermFrequency(buffer, value);
+  }
+
+  /**
+   * Appends the BM25 per-posting statistics (term frequency and document length) right after the serialized RID. Values that are
+   * not {@link FullTextPostingRID} (e.g. deletion markers and compacted root-page pointers) carry no statistics and are written as
+   * zeroes so the on-disk layout stays uniform and symmetric with {@link #readEntryValues(Binary)}.
+   * <p>
+   * Alignment invariant: a given index instance writes and reads every page - leaf <i>and</i> compacted root - with the same
+   * {@link #storeTermFrequency} flag, so the two zero varints written here for a root-page pointer are always consumed back by
+   * {@link #readEntryValue(Binary)}. The pointer is reconstructed as a {@code FullTextPostingRID(tf=0, docLength=0)} (its bucket id
+   * is non-negative), but the compacted-root read path uses only its position (the target page number), so this is harmless.
+   */
+  private void writeTermFrequency(final Binary buffer, final Object value) {
+    if (value instanceof FullTextPostingRID posting) {
+      buffer.putUnsignedNumber(posting.getTf());
+      buffer.putUnsignedNumber(posting.getDocLength());
+    } else {
+      buffer.putUnsignedNumber(0);
+      buffer.putUnsignedNumber(0);
+    }
   }
 
   protected RID[] readEntryValues(final Binary buffer) {
@@ -509,7 +563,7 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
     final RID[] rids = new RID[items];
 
     for (int i = 0; i < rids.length; ++i)
-      rids[i] = (RID) serializer.deserializeValue(database, buffer, valueType, null);
+      rids[i] = readEntryValue(buffer);
 
     return rids;
   }
@@ -517,10 +571,30 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
   private void readEntryValues(final Binary buffer, final List<RID> list) {
     final int items = (int) serializer.deserializeValue(database, buffer, BinaryTypes.TYPE_INT, null);
 
-    final Object[] rids = new Object[items];
+    for (int i = 0; i < items; ++i)
+      list.add(readEntryValue(buffer));
+  }
 
-    for (int i = 0; i < rids.length; ++i)
-      list.add((RID) serializer.deserializeValue(database, buffer, valueType, null));
+  /**
+   * Reads a single posting value, reconstructing a {@link FullTextPostingRID} when {@link #storeTermFrequency} is enabled so full-text
+   * scoring can read the term frequency and document length back from the cursor without an extra lookup.
+   */
+  private RID readEntryValue(final Binary buffer) {
+    final RID rid = (RID) serializer.deserializeValue(database, buffer, valueType, null);
+    if (!storeTermFrequency)
+      return rid;
+
+    // The tf/docLength varints are present for every stored value, so they must always be read to keep the buffer aligned.
+    // Narrowed to int: tf and docLength are token counts within one document, so they fit comfortably in a (signed) int - a
+    // document with > ~2.1 billion analyzed tokens is not representable and the FullTextPostingRID constructor would reject the
+    // wrapped-negative value. If postings ever need to carry a larger statistic, widen these to long here and at the write side.
+    final int tf = (int) buffer.getUnsignedNumber();
+    final int docLength = (int) buffer.getUnsignedNumber();
+    // Deletion markers (negative bucket id) carry no real statistics; keep them as a plain RID so nothing downstream mistakes a
+    // marker for a scorable posting (the marker's tf/docLength are 0 and are discarded here).
+    if (rid.getBucketId() < 0)
+      return rid;
+    return new FullTextPostingRID(database, rid.getBucketId(), rid.getPosition(), tf, docLength);
   }
 
   protected List<RID> readAllValuesFromResult(final Binary currentPageBuffer, final LookupResult result) {
@@ -538,6 +612,14 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   protected void setCount(final MutablePage currentPage, final int newCount) {
     currentPage.writeInt(INT_SERIALIZED_SIZE, newCount);
+  }
+
+  public void setStoreTermFrequency(final boolean storeTermFrequency) {
+    this.storeTermFrequency = storeTermFrequency;
+  }
+
+  public boolean isStoreTermFrequency() {
+    return storeTermFrequency;
   }
 
   protected boolean isMutable(final BasePage currentPage) {

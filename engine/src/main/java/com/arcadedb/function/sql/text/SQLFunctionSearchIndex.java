@@ -39,6 +39,7 @@ import com.arcadedb.query.sql.parser.Expression;
 import com.arcadedb.query.sql.parser.FromClause;
 import com.arcadedb.function.sql.SQLFunctionAbstract;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -85,9 +86,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     // Cache key for this specific search
     final String cacheKey = "search_index:" + indexName + ":" + queryString;
 
-    // Try to get cached results (Map of RID -> score)
+    // Try to get cached results (Map of RID -> score). Scores are floats so BM25 relevance is preserved; CLASSIC coordination
+    // scores widen to float losslessly.
     @SuppressWarnings("unchecked")
-    Map<RID, Integer> allResults = (Map<RID, Integer>) iContext.getVariable(cacheKey);
+    Map<RID, Float> allResults = (Map<RID, Float>) iContext.getVariable(cacheKey);
 
     if (allResults == null) {
       // First execution - perform the actual search
@@ -103,10 +105,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
       final boolean matches = allResults.containsKey(rid);
 
       if (matches) {
-        // Store the score for this record in the context variable $score
-        // This allows $score projection to work in SELECT
-        final int recordScore = allResults.get(rid);
-        iContext.setVariable("$score", (float) recordScore);
+        // Store the score for this record in the context variable $score so $score projection works in SELECT. getOrDefault keeps
+        // $score non-null even if the entry vanished between containsKey and get (cannot happen on the single-threaded SQL path
+        // today, but makes the intent explicit).
+        iContext.setVariable("$score", allResults.getOrDefault(rid, 0f));
       } else {
         // Clear the score for non-matching records
         iContext.setVariable("$score", 0f);
@@ -117,10 +119,10 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
 
     // Return cursor with all results (used when called without a current record)
     final List<IndexCursorEntry> entries = new ArrayList<>();
-    for (final Map.Entry<RID, Integer> entry : allResults.entrySet()) {
-      entries.add(new IndexCursorEntry(new Object[] { queryString }, entry.getKey(), entry.getValue()));
+    for (final Map.Entry<RID, Float> entry : allResults.entrySet()) {
+      entries.add(new IndexCursorEntry(new Object[] { queryString }, entry.getKey(), entry.getValue().floatValue()));
     }
-    entries.sort((a, b) -> Integer.compare(b.score, a.score));
+    entries.sort((a, b) -> Float.compare(b.floatScore, a.floatScore));
 
     return new TempIndexCursor(entries);
   }
@@ -177,7 +179,7 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     // Perform the search and cache results
     final String cacheKey = "search_index:" + indexName + ":" + queryString;
     @SuppressWarnings("unchecked")
-    Map<RID, Integer> allResults = (Map<RID, Integer>) context.getVariable(cacheKey);
+    Map<RID, Float> allResults = (Map<RID, Float>) context.getVariable(cacheKey);
 
     if (allResults == null) {
       allResults = performSearch(indexName, queryString, context.getDatabase());
@@ -185,13 +187,13 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
     }
 
     // Sort RIDs by score descending for optimal ORDER BY $score performance
-    final List<Map.Entry<RID, Integer>> sorted = new ArrayList<>(allResults.entrySet());
-    sorted.sort((a, b) -> Integer.compare(b.getValue(), a.getValue()));
+    final List<Map.Entry<RID, Float>> sorted = new ArrayList<>(allResults.entrySet());
+    sorted.sort((a, b) -> Float.compare(b.getValue(), a.getValue()));
 
     // Fetch records by RID
     final DatabaseInternal db = (DatabaseInternal) context.getDatabase();
     final List<Record> records = new ArrayList<>(sorted.size());
-    for (final Map.Entry<RID, Integer> entry : sorted) {
+    for (final Map.Entry<RID, Float> entry : sorted) {
       try {
         final Record record = db.lookupByRID(entry.getKey(), true);
         if (record != null)
@@ -204,6 +206,45 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   }
 
   @Override
+  public Object getScoringExplain(final FromClause target, final BinaryCompareOperator operator, final Object rightValue,
+      final CommandContext context, final Expression[] oExpressions) {
+    if (oExpressions == null || oExpressions.length < 2)
+      return null;
+    final String indexName = resolveStringParam(oExpressions[0], context);
+    final String queryString = resolveStringParam(oExpressions[1], context);
+    if (indexName == null || queryString == null)
+      return null;
+
+    final Index index = context.getDatabase().getSchema().getIndexByName(indexName);
+    if (!(index instanceof final TypeIndex typeIndex))
+      return null;
+
+    // BM25 is scored per bucket (per-shard), so document frequency / IDF differ across buckets. EXPLAIN/PROFILE reports a single
+    // representative bucket's statistics (the first full-text bucket index) rather than a global view - enough to understand the
+    // similarity, parameters and relative term weights, but not a type-wide IDF.
+    final Index[] buckets = typeIndex.getIndexesOnBuckets();
+    LSMTreeFullTextIndex firstFt = null;
+    int ftBucketCount = 0; // all full-text bucket indexes of a type share one similarity, so they are all BM25 or all CLASSIC
+    for (final Index bucketIndex : buckets)
+      if (bucketIndex instanceof final LSMTreeFullTextIndex ftIndex) {
+        if (firstFt == null)
+          firstFt = ftIndex;
+        ++ftBucketCount;
+      }
+    // Only BM25 indexes carry a scoring explanation; CLASSIC has none.
+    if (firstFt == null || !firstFt.isBM25())
+      return null;
+
+    final JSONObject explain = new FullTextQueryExecutor(firstFt).explainScoring(queryString);
+    // Make it explicit that, on a multi-bucket type, these are the FIRST bucket's statistics so a reader is not misled into
+    // treating the df/IDF as type-wide.
+    if (ftBucketCount > 1)
+      explain.put("note", "statistics shown are for the FIRST of " + ftBucketCount
+          + " buckets; BM25 is scored per bucket, so df/IDF differ across buckets");
+    return explain;
+  }
+
+  @Override
   public String getSyntax() {
     return "SEARCH_INDEX(<index-name>, <query>)";
   }
@@ -213,8 +254,8 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
   /**
    * Performs the full-text search across all bucket indexes and returns a map of RID to score.
    */
-  private Map<RID, Integer> performSearch(final String indexName, final String queryString, final Database database) {
-    final Map<RID, Integer> allResults = new HashMap<>();
+  private Map<RID, Float> performSearch(final String indexName, final String queryString, final Database database) {
+    final Map<RID, Float> allResults = new HashMap<>();
 
     final Index index = database.getSchema().getIndexByName(indexName);
 
@@ -237,8 +278,12 @@ public class SQLFunctionSearchIndex extends SQLFunctionAbstract implements Index
 
         while (cursor.hasNext()) {
           final Identifiable match = cursor.next();
-          final int score = cursor.getScore();
-          allResults.merge(match.getIdentity(), score, Integer::sum);
+          final float score = cursor.getFloatScore();
+          // Float::sum across buckets: a given RID lives in exactly one bucket, so a RID is produced by at most one bucket index
+          // and the merge is effectively an insert (no real summing). For CLASSIC the additive semantics would also be correct;
+          // for BM25 the per-bucket scoping relies on this one-bucket-per-RID invariant - if it ever broke, scores would be
+          // double-counted here rather than failing loudly.
+          allResults.merge(match.getIdentity(), score, Float::sum);
         }
       }
     }

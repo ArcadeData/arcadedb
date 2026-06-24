@@ -22,6 +22,7 @@ import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Unit tests for {@link FullTextIndexMetadata}.
@@ -38,6 +39,55 @@ class FullTextIndexMetadataTest {
     assertThat(metadata.isAllowLeadingWildcard()).isFalse();
     assertThat(metadata.getDefaultOperator()).isEqualTo("OR");
     assertThat(metadata.getFieldAnalyzers()).isEmpty();
+  }
+
+  @Test
+  void writeToJSONOmitsDefaultBM25ParametersButKeepsTunedOnes() {
+    // Default BM25 index: k1/b are not emitted (they read back as the defaults), keeping the schema JSON terse.
+    final FullTextIndexMetadata defaults = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
+    final JSONObject defaultJson = defaults.writeToJSON(new JSONObject());
+    assertThat(defaultJson.getString("similarity", null)).isEqualTo(FullTextIndexMetadata.SIMILARITY_BM25);
+    assertThat(defaultJson.has("bm25_k1")).isFalse();
+    assertThat(defaultJson.has("bm25_b")).isFalse();
+
+    // Tuned values are emitted so they survive a round-trip.
+    final FullTextIndexMetadata tuned = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
+    tuned.setBm25K1(1.7f);
+    tuned.setBm25B(0.3f);
+    final JSONObject tunedJson = tuned.writeToJSON(new JSONObject());
+    assertThat(tunedJson.getFloat("bm25_k1")).isEqualTo(1.7f);
+    assertThat(tunedJson.getFloat("bm25_b")).isEqualTo(0.3f);
+
+    // A reload of the terse JSON restores the defaults.
+    final FullTextIndexMetadata reloaded = new FullTextIndexMetadata("TestType", new String[] { "content" }, 0);
+    reloaded.fromJSON(defaultJson);
+    assertThat(reloaded.getBm25K1()).isEqualTo(FullTextIndexMetadata.DEFAULT_BM25_K1);
+    assertThat(reloaded.getBm25B()).isEqualTo(FullTextIndexMetadata.DEFAULT_BM25_B);
+  }
+
+  @Test
+  void fromJSONReplacesStalePerFieldConfig() {
+    final FullTextIndexMetadata metadata = new FullTextIndexMetadata("Article", new String[] { "title", "body" }, 0);
+    metadata.setFieldAnalyzer("title", "org.apache.lucene.analysis.en.EnglishAnalyzer");
+    metadata.setFieldBoost("title", 3.0f);
+
+    // A second fromJSON (e.g. a schema reload onto a reused instance) must REPLACE the per-field config, not merge stale entries.
+    final JSONObject json = new JSONObject();
+    json.put("similarity", "BM25");
+    json.put("body_boost", 2.0f);
+    metadata.fromJSON(json);
+
+    assertThat(metadata.getFieldBoost("title")).isEqualTo(1.0f); // stale title boost cleared
+    assertThat(metadata.getFieldBoost("body")).isEqualTo(2.0f);  // new boost applied
+    assertThat(metadata.getAnalyzerClass("title")).isEqualTo(metadata.getAnalyzerClass()); // stale title analyzer cleared -> default
+  }
+
+  @Test
+  void setSimilarityRejectsNull() {
+    final FullTextIndexMetadata metadata = new FullTextIndexMetadata("Article", new String[] { "title" }, 0);
+    assertThatThrownBy(() -> metadata.setSimilarity(null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("cannot be null");
   }
 
   @Test

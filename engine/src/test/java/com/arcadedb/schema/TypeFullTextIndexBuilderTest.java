@@ -19,11 +19,17 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.query.sql.executor.Result;
+import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.serializer.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashMap;
+import java.util.Map;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.within;
 
 class TypeFullTextIndexBuilderTest extends TestHelper {
 
@@ -232,6 +238,72 @@ class TypeFullTextIndexBuilderTest extends TestHelper {
           .withDefaultOperator("AND");
 
       assertThat(result).isSameAs(ftBuilder);
+    });
+  }
+
+  @Test
+  void withBM25AndFieldBoostSetMetadata() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Article");
+      database.getSchema().getType("Article").createProperty("title", String.class);
+      database.getSchema().getType("Article").createProperty("body", String.class);
+    });
+
+    database.transaction(() -> {
+      final TypeFullTextIndexBuilder ftBuilder = (TypeFullTextIndexBuilder) database.getSchema()
+          .buildTypeIndex("Article", new String[] { "title", "body" })
+          .withType(Schema.INDEX_TYPE.FULL_TEXT);
+
+      final TypeFullTextIndexBuilder result = ftBuilder.withBM25(1.4f, 0.55f).withFieldBoost("title", 3.0f);
+      assertThat(result).isSameAs(ftBuilder); // fluent chaining
+
+      final FullTextIndexMetadata meta = (FullTextIndexMetadata) ftBuilder.metadata;
+      assertThat(meta.getSimilarity()).isEqualTo(FullTextIndexMetadata.SIMILARITY_BM25);
+      assertThat(meta.getBm25K1()).isCloseTo(1.4f, within(1e-6f));
+      assertThat(meta.getBm25B()).isCloseTo(0.55f, within(1e-6f));
+      assertThat(meta.getFieldBoost("title")).isCloseTo(3.0f, within(1e-6f));
+      assertThat(meta.getFieldBoost("body")).isCloseTo(1.0f, within(1e-6f)); // unset field defaults to 1.0
+    });
+  }
+
+  @Test
+  void builderCreatedBM25IndexRanksAndBoosts() {
+    database.transaction(() -> {
+      database.getSchema().createDocumentType("Article");
+      database.getSchema().getType("Article").createProperty("name", String.class);
+      database.getSchema().getType("Article").createProperty("title", String.class);
+      database.getSchema().getType("Article").createProperty("body", String.class);
+
+      // Create the index entirely through the Java builder API (no raw JSON metadata).
+      database.getSchema().buildTypeIndex("Article", new String[] { "title", "body" })
+          .withType(Schema.INDEX_TYPE.FULL_TEXT).withFullTextType()
+          .withBM25(1.2f, 0.75f).withFieldBoost("title", 5.0f).create();
+
+      database.command("sql", "INSERT INTO Article SET name = 'inTitle', title = 'java', body = 'something else entirely'");
+      database.command("sql", "INSERT INTO Article SET name = 'inBody', title = 'something else', body = 'java'");
+    });
+
+    database.transaction(() -> {
+      final Map<String, Float> titleScores = new HashMap<>();
+      final ResultSet ts = database.query("sql",
+          "SELECT name, $score FROM Article WHERE SEARCH_INDEX('Article[title,body]', 'title:java') = true");
+      while (ts.hasNext()) {
+        final Result r = ts.next();
+        titleScores.put(r.getProperty("name"), ((Number) r.getProperty("$score")).floatValue());
+      }
+
+      final Map<String, Float> bodyScores = new HashMap<>();
+      final ResultSet bs = database.query("sql",
+          "SELECT name, $score FROM Article WHERE SEARCH_INDEX('Article[title,body]', 'body:java') = true");
+      while (bs.hasNext()) {
+        final Result r = bs.next();
+        bodyScores.put(r.getProperty("name"), ((Number) r.getProperty("$score")).floatValue());
+      }
+
+      // The builder-configured title_boost=5.0 makes a title match outrank the same term in the unboosted body.
+      assertThat(titleScores.get("inTitle")).isNotNull();
+      assertThat(bodyScores.get("inBody")).isNotNull();
+      assertThat(titleScores.get("inTitle")).isGreaterThan(bodyScores.get("inBody"));
     });
   }
 

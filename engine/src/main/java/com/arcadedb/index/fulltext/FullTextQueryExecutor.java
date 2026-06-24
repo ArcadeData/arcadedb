@@ -24,13 +24,16 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.IndexException;
 import com.arcadedb.index.TempIndexCursor;
+import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.FullTextIndexMetadata;
+import com.arcadedb.serializer.json.JSONObject;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.index.Term;
 import org.apache.lucene.queryparser.classic.ParseException;
 import org.apache.lucene.queryparser.classic.QueryParser;
 import org.apache.lucene.search.BooleanClause;
 import org.apache.lucene.search.BooleanQuery;
+import org.apache.lucene.search.BoostQuery;
 import org.apache.lucene.search.FuzzyQuery;
 import org.apache.lucene.search.PhraseQuery;
 import org.apache.lucene.search.PrefixQuery;
@@ -42,10 +45,13 @@ import org.apache.lucene.search.WildcardQuery;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.logging.Level;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
@@ -61,14 +67,66 @@ import java.util.regex.PatternSyntaxException;
  *   <li>Field-specific search: field:value</li>
  * </ul>
  * <p>
- * This class is thread-safe. QueryParser instances are created per search() invocation.
+ * NOT thread-safe: an instance carries per-query mutable state (the collected scoring tokens, the current caret boost, and the
+ * exclusion/tokens-only flags) for the duration of one search. Create a new instance per search and do not share it across
+ * threads. {@code resetState()} runs at each public entry point as a defensive guard against accidental sequential reuse on the
+ * same thread; it does NOT make the instance safe for concurrent reuse. (The Lucene QueryParser is likewise rebuilt per call.)
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */
 public class FullTextQueryExecutor {
+  /**
+   * The Lucene {@link QueryParser} default field, i.e. the field a query term targets when it is not field-qualified. Internally
+   * it means "unqualified": such a term is matched against the unprefixed posting (the only field of a single-property index, or
+   * the field-agnostic entry of a multi-property index) and receives no per-field boost.
+   * <p>
+   * It is a deliberately non-identifier sentinel (not a plausible property name) so it cannot collide with a real field. Whether a
+   * parsed query field is unqualified is decided by {@link #isUnqualified(String)}, which is index-aware and so also handles a
+   * single-property index whose sole property happens to equal a user's field qualifier - the former {@code "content"} sentinel
+   * silently mis-scored a {@code content:term} clause on a multi-property index that owned a real {@code content} field.
+   */
+  static final String DEFAULT_FIELD = "__arcadedb_default_field__";
+
+  /**
+   * Safety cap on the number of distinct scoring tokens a single query may accumulate. Wildcard / prefix / fuzzy clauses expand
+   * to one scoring token per matched term, and each token costs one posting-list scan in the BM25 re-rank pass; an extreme
+   * expansion (e.g. {@code a*} on a huge vocabulary) could otherwise make a single query arbitrarily expensive. Beyond the cap,
+   * matching still proceeds (the result set stays correct) but additional terms no longer contribute to the BM25 score.
+   */
+  static final int MAX_EXPANDED_SCORING_TERMS = 4096;
+
+  /**
+   * Result-universe size above which a pure-negative query (only MUST_NOT clauses, which must materialize the whole index to form
+   * the complement) logs a throttled WARNING so operators notice the O(index) cost.
+   */
+  static final int PURE_NEGATIVE_WARN_THRESHOLD = 100_000;
+
   private final LSMTreeFullTextIndex   index;
   private final Analyzer               analyzer;
   private final FullTextIndexMetadata  metadata;
+  // Cached once: the indexed property names don't change during a query, but isUnqualified() is consulted per matched term.
+  private final List<String>           propertyNames;
+
+  // BM25 scoring (issue #4687): the positive scoring tokens collected during matching, mapped to their field boost. Populated
+  // only when the index uses BM25 similarity and only for positive clauses (never for MUST_NOT exclusion). A new executor is
+  // created per search, so these instance fields are not shared across queries.
+  private final Map<String, Float> scoringTokens     = new HashMap<>();
+  private       boolean            collectingExclusion = false;
+  // When true, matching runs only to capture the scoring tokens (used by EXPLAIN/PROFILE): per-document score accumulation is
+  // skipped so no document set is materialized. Token discovery for wildcard/prefix/fuzzy still scans the index as needed.
+  private       boolean            tokensOnly          = false;
+  // The compounded caret boost (e.g. `title:java^3`) of the BoostQuery currently being descended, multiplied into recorded
+  // scoring tokens. Lucene's QueryParser already parses `^` into a BoostQuery; this is where that boost takes effect for BM25.
+  private       float              currentBoost        = 1.0f;
+
+  // Throttle for the scoring-token-cap WARNING. A new executor is created per query, so a per-query flag would still log on every
+  // execution of a repeated huge wildcard; this static throttle bounds it to once per window across the JVM (matching the 60s
+  // saturation-warning pattern used by the engine's thread pools). It is JVM-wide / shared across all indexes: a pathological
+  // wildcard on one index can suppress the warning for another for the window - an acceptable trade-off for a diagnostic log.
+  private static final long       EXPANSION_WARN_THROTTLE_MS = 60_000L;
+  private static final AtomicLong lastExpansionWarnMs        = new AtomicLong(0L);
+  // Same 60s throttle for the pure-negative full-index-scan WARNING (also JVM-wide / shared across indexes).
+  private static final AtomicLong lastPureNegativeWarnMs     = new AtomicLong(0L);
 
   /**
    * Creates a new FullTextQueryExecutor for the given index.
@@ -79,6 +137,7 @@ public class FullTextQueryExecutor {
     this.index = index;
     this.analyzer = index.getAnalyzer();
     this.metadata = index.getFullTextMetadata();
+    this.propertyNames = index.getPropertyNames();
   }
 
   /**
@@ -88,7 +147,7 @@ public class FullTextQueryExecutor {
    * @return a configured QueryParser
    */
   private QueryParser createQueryParser() {
-    final QueryParser parser = new QueryParser("content", analyzer);
+    final QueryParser parser = new QueryParser(DEFAULT_FIELD, analyzer);
     if (metadata != null) {
       parser.setAllowLeadingWildcard(metadata.isAllowLeadingWildcard());
       if ("AND".equalsIgnoreCase(metadata.getDefaultOperator())) {
@@ -106,11 +165,47 @@ public class FullTextQueryExecutor {
    * @return cursor with matching documents, sorted by score descending
    */
   public IndexCursor search(final String queryString, final int limit) {
+    resetState();
     try {
       // Create parser per invocation for thread safety
       final QueryParser parser = createQueryParser();
       final Query query = parser.parse(queryString);
       return executeQuery(query, limit);
+    } catch (final ParseException e) {
+      throw new IndexException("Invalid search query: " + queryString, e);
+    }
+  }
+
+  /**
+   * Resets the per-query matching state. An executor is meant to be used for a single search, but resetting at each public entry
+   * point guarantees no state leaks between calls even if one is reused.
+   */
+  private void resetState() {
+    scoringTokens.clear();
+    collectingExclusion = false;
+    tokensOnly = false;
+    currentBoost = 1.0f;
+  }
+
+  /**
+   * Runs only the query's matching logic (no scoring) to collect the scoring tokens, then returns the index's query-level BM25
+   * scoring explanation (similarity, k1/b, N, avgdl, and per-term df/idf/boost). Surfaced by {@code EXPLAIN}/{@code PROFILE}.
+   *
+   * @param queryString the query string in Lucene syntax
+   */
+  public JSONObject explainScoring(final String queryString) {
+    resetState();
+    try {
+      final QueryParser parser = createQueryParser();
+      final Query query = parser.parse(queryString);
+      tokensOnly = true;
+      try {
+        // The score map stays empty in tokens-only mode; we only need the captured scoringTokens.
+        collectMatches(query, new HashMap<>(), new HashSet<>());
+      } finally {
+        tokensOnly = false;
+      }
+      return index.explainScoring(scoringTokens);
     } catch (final ParseException e) {
       throw new IndexException("Invalid search query: " + queryString, e);
     }
@@ -126,6 +221,15 @@ public class FullTextQueryExecutor {
     for (final RID rid : excluded) {
       scoreMap.remove(rid);
     }
+
+    // BM25 path: collectMatches above determined WHICH documents match (boolean/phrase/wildcard semantics). Re-rank that
+    // candidate set with BM25 using the scoring tokens captured during matching.
+    // The result entries carry EMPTY keys (here and in the CLASSIC branch below): a SEARCH_INDEX query is a multi-token Lucene
+    // query, not a single index key, so there is no meaningful single key tuple to attach (unlike the direct index.get() path,
+    // whose single query keys flow through). The SQL SEARCH_INDEX function reads only RID + $score from these entries, never
+    // getKeys(); a direct executor.search() caller should likewise not rely on getKeys() for this path.
+    if (index.isBM25())
+      return index.scoreCandidatesBM25(scoreMap.keySet(), scoringTokens, new Object[] {}, limit);
 
     final ArrayList<IndexCursorEntry> list = new ArrayList<>(scoreMap.size());
 
@@ -150,8 +254,14 @@ public class FullTextQueryExecutor {
   private void collectMatches(final Query query, final Map<RID, AtomicInteger> scoreMap,
       final Set<RID> excluded) {
 
-    if (query instanceof BooleanQuery) {
-      final BooleanQuery bq = (BooleanQuery) query;
+    if (query instanceof final BooleanQuery bq) {
+      if (tokensOnly) {
+        // Only the positive clauses contribute scoring tokens; recurse to capture them and skip all set intersection/merge work.
+        for (final BooleanClause clause : bq.clauses())
+          if (clause.occur() != BooleanClause.Occur.MUST_NOT)
+            collectMatches(clause.query(), scoreMap, excluded);
+        return;
+      }
 
       // First pass: collect MUST_NOT terms and track whether any exist
       boolean hasMustNotClauses = false;
@@ -212,35 +322,127 @@ public class FullTextQueryExecutor {
         collectAllIndexedRids(scoreMap);
       }
 
-    } else if (query instanceof TermQuery) {
-      collectTermMatches((TermQuery) query, scoreMap);
-    } else if (query instanceof PhraseQuery) {
-      collectPhraseMatches((PhraseQuery) query, scoreMap);
-    } else if (query instanceof PrefixQuery) {
-      collectPrefixMatches((PrefixQuery) query, scoreMap);
-    } else if (query instanceof WildcardQuery) {
-      collectWildcardMatches((WildcardQuery) query, scoreMap);
-    } else if (query instanceof FuzzyQuery) {
-      collectFuzzyMatches((FuzzyQuery) query, scoreMap);
-    } else if (query instanceof RegexpQuery) {
-      collectRegexpMatches((RegexpQuery) query, scoreMap);
+    } else if (query instanceof BoostQuery bq) {
+      // Caret boost, e.g. `title:java^3`. Compound nested boosts and descend into the wrapped query.
+      final float saved = currentBoost;
+      currentBoost *= bq.getBoost();
+      try {
+        collectMatches(bq.getQuery(), scoreMap, excluded);
+      } finally {
+        currentBoost = saved;
+      }
+    } else if (query instanceof final TermQuery tq) {
+      collectTermMatches(tq, scoreMap);
+    } else if (query instanceof final PhraseQuery pq) {
+      collectPhraseMatches(pq, scoreMap);
+    } else if (query instanceof final PrefixQuery pq) {
+      collectPrefixMatches(pq, scoreMap);
+    } else if (query instanceof final WildcardQuery wq) {
+      collectWildcardMatches(wq, scoreMap);
+    } else if (query instanceof final FuzzyQuery fq) {
+      collectFuzzyMatches(fq, scoreMap);
+    } else if (query instanceof final RegexpQuery rq) {
+      collectRegexpMatches(rq, scoreMap);
     }
     // Other Lucene query types (e.g., TermRangeQuery) are intentionally ignored.
   }
 
   private void collectTermsForExclusion(final Query query, final Set<RID> excluded) {
-    if (query instanceof BooleanQuery) {
-      for (final BooleanClause clause : ((BooleanQuery) query).clauses()) {
+    if (query instanceof final BooleanQuery bq) {
+      for (final BooleanClause clause : bq.clauses()) {
+        // A nested MUST_NOT inside an exclusion context is a double negation (e.g. NOT (A AND NOT B) - B should NOT be excluded).
+        // Skip such clauses so their terms are not wrongly added to the exclusion set. (Fully representing the positive
+        // contribution of a double-negated term would require general boolean evaluation; this at least avoids excluding it.)
+        if (clause.occur() == BooleanClause.Occur.MUST_NOT)
+          continue;
         collectTermsForExclusion(clause.query(), excluded);
       }
       return;
     }
     // Delegate every other leaf query type to collectMatches so any positive collector
     // automatically has matching exclusion support; the empty excluded set isolates this scratch
-    // collection from the caller's accumulator.
-    final Map<RID, AtomicInteger> tempMap = new HashMap<>();
-    collectMatches(query, tempMap, new HashSet<>());
-    excluded.addAll(tempMap.keySet());
+    // collection from the caller's accumulator. Tokens matched here are negative (MUST_NOT) and must
+    // not contribute to BM25 scoring, so suppress token capture for the duration of the scan.
+    final boolean previous = collectingExclusion;
+    collectingExclusion = true;
+    try {
+      final Map<RID, AtomicInteger> tempMap = new HashMap<>();
+      collectMatches(query, tempMap, new HashSet<>());
+      excluded.addAll(tempMap.keySet());
+    } finally {
+      collectingExclusion = previous;
+    }
+  }
+
+  /**
+   * Records a positive scoring token (in its stored-key form) and its field boost for the later BM25 re-ranking pass. No-op when
+   * the index is not BM25 or while collecting MUST_NOT exclusion terms. When a token is seen more than once the highest boost
+   * wins.
+   */
+  private void recordScoringToken(final String storedKey, final float boost) {
+    if (collectingExclusion || !index.isBM25())
+      return;
+    // Single get(): the cap drops only genuinely new tokens once the limit is reached (a pathological wildcard/fuzzy expansion
+    // would otherwise add one posting-list scan per matched term to the re-rank pass); an already-seen token may still raise its
+    // boost without growing the map. Matching is unaffected, so the result set stays correct - excess terms just stop scoring.
+    final Float current = scoringTokens.get(storedKey);
+    if (current == null && scoringTokens.size() >= MAX_EXPANDED_SCORING_TERMS) {
+      maybeWarnExpansionCap();
+      return;
+    }
+    // Combine the per-field boost with the caret boost in effect for this part of the query; keep the highest seen.
+    final float combined = boost * currentBoost;
+    if (current == null || combined > current)
+      scoringTokens.put(storedKey, combined);
+  }
+
+  /**
+   * Logs the scoring-token-cap WARNING at most once per {@link #EXPANSION_WARN_THROTTLE_MS} across the JVM (a new executor per
+   * query means a per-query flag would not suppress it for a repeated huge wildcard). The CAS ensures a single winner per window.
+   */
+  private void maybeWarnExpansionCap() {
+    final long now = System.currentTimeMillis();
+    final long last = lastExpansionWarnMs.get();
+    if (now - last >= EXPANSION_WARN_THROTTLE_MS && lastExpansionWarnMs.compareAndSet(last, now))
+      LogManager.instance().log(this, Level.WARNING,
+          "Full-text query expanded to more than %d scoring terms on index '%s'; additional terms are matched but not BM25-scored. "
+              + "Consider a more specific query (narrower wildcard/fuzzy). (throttled, logged at most once per %d s)",
+          MAX_EXPANDED_SCORING_TERMS, index.getName(), EXPANSION_WARN_THROTTLE_MS / 1000);
+  }
+
+  /**
+   * Logs the pure-negative full-index-scan WARNING, throttled like {@link #maybeWarnExpansionCap()}.
+   */
+  private void maybeWarnPureNegativeScan(final int universeSize) {
+    final long now = System.currentTimeMillis();
+    final long last = lastPureNegativeWarnMs.get();
+    if (now - last >= EXPANSION_WARN_THROTTLE_MS && lastPureNegativeWarnMs.compareAndSet(last, now))
+      LogManager.instance().log(this, Level.WARNING,
+          "Pure-negative full-text query on index '%s' materialized %d documents (the whole index) to compute the complement. "
+              + "Add a positive clause to bound the scan. (throttled, logged at most once per %d s)",
+          index.getName(), universeSize, EXPANSION_WARN_THROTTLE_MS / 1000);
+  }
+
+  /**
+   * Returns true when a parsed query field denotes the "unqualified" target rather than a real, field-qualified clause. A term is
+   * unqualified when the parser left it on the {@link #DEFAULT_FIELD} sentinel, or when it is qualified with the sole property of a
+   * single-property index: such an index stores only unprefixed postings, so {@code field:term} and {@code term} are equivalent
+   * there. This is what lets a non-colliding sentinel be used without breaking single-property {@code content:term} queries.
+   */
+  private boolean isUnqualified(final String field) {
+    if (field == null || field.isEmpty() || DEFAULT_FIELD.equals(field))
+      return true;
+    return propertyNames.size() == 1 && propertyNames.get(0).equals(field);
+  }
+
+  /**
+   * Returns the BM25 field boost for a query field: the configured per-field boost for an explicit field, or 1.0 for an
+   * unqualified term.
+   */
+  private float boostFor(final String field) {
+    if (!isUnqualified(field) && metadata != null)
+      return metadata.getFieldBoost(field);
+    return 1.0f;
   }
 
   /**
@@ -257,6 +459,11 @@ public class FullTextQueryExecutor {
       final RID rid = cursor.next().getIdentity();
       scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(1));
     }
+    // A pure-negative query (only MUST_NOT clauses) has no candidate set, so the whole index must be materialized to subtract the
+    // excluded RIDs and form the complement. This is O(index) in time and memory; warn (throttled) when the materialized universe
+    // is large so an operator who wrote e.g. `-the` notices the cost and adds a positive clause to bound it.
+    if (scoreMap.size() >= PURE_NEGATIVE_WARN_THRESHOLD)
+      maybeWarnPureNegativeScan(scoreMap.size());
   }
 
   private void collectTermMatches(final TermQuery query, final Map<RID, AtomicInteger> scoreMap) {
@@ -265,14 +472,15 @@ public class FullTextQueryExecutor {
 
     // For field-specific queries (e.g., "title:java"), prepend field name
     // Multi-property indexes store tokens as "fieldName:token"
-    final String searchKey;
-    if (field != null && !field.isEmpty() && !"content".equals(field)) {
-      searchKey = field + ":" + text;
-    } else {
-      searchKey = text;
-    }
+    final String searchKey = isUnqualified(field) ? text : field + ":" + text;
 
-    final IndexCursor cursor = index.get(new Object[] { searchKey });
+    recordScoringToken(searchKey, boostFor(field));
+    if (tokensOnly)
+      return;
+
+    // Raw postings lookup: we only need the matching RIDs here. The BM25 score is computed once, later, by scoreCandidatesBM25;
+    // going through index.get() would run (and then discard) the full scoring pipeline for every term.
+    final IndexCursor cursor = index.getPostings(searchKey);
     while (cursor.hasNext()) {
       final RID rid = cursor.next().getIdentity();
       scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
@@ -281,16 +489,25 @@ public class FullTextQueryExecutor {
 
   private void collectPhraseMatches(final PhraseQuery query, final Map<RID, AtomicInteger> scoreMap) {
     // For phrase queries, all terms must match in the same document
-    // Note: We can't verify word order without position indexing, so we just require all terms
+    // Note: We can't verify word order without position indexing, so we just require all terms.
+    // Phrase terms are matched/scored against the unprefixed token, so the configured per-field boost is NOT applied to phrase
+    // terms (an enclosing caret boost still applies via currentBoost). They are recorded with boost 1.0 accordingly.
     final Term[] terms = query.getTerms();
     if (terms.length == 0)
       return;
 
+    if (tokensOnly) {
+      for (final Term term : terms)
+        recordScoringToken(term.text(), 1.0f);
+      return;
+    }
+
     Map<RID, AtomicInteger> intersection = null;
 
     for (final Term term : terms) {
+      recordScoringToken(term.text(), 1.0f);
       final Map<RID, AtomicInteger> termMatches = new HashMap<>();
-      final IndexCursor cursor = index.get(new Object[] { term.text() });
+      final IndexCursor cursor = index.getPostings(term.text());
       while (cursor.hasNext()) {
         termMatches.put(cursor.next().getIdentity(), new AtomicInteger(1));
       }
@@ -316,7 +533,7 @@ public class FullTextQueryExecutor {
       return;
 
     final String searchPrefix = buildSearchKey(field, prefix);
-    iterateAndMatch(searchPrefix, key -> key.startsWith(searchPrefix), scoreMap);
+    iterateAndMatch(searchPrefix, key -> key.startsWith(searchPrefix), scoreMap, boostFor(field));
   }
 
   private void collectWildcardMatches(final WildcardQuery query, final Map<RID, AtomicInteger> scoreMap) {
@@ -328,7 +545,7 @@ public class FullTextQueryExecutor {
     // Compute the literal prefix (everything up to the first wildcard char)
     final String literalPrefix = extractLiteralPrefix(pattern);
     final String searchPrefix = buildSearchKey(field, literalPrefix);
-    final String fieldPrefix = field != null && !field.isEmpty() && !"content".equals(field) ? field + ":" : "";
+    final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
     final Pattern regex = wildcardToRegex(pattern);
 
     if (literalPrefix.isEmpty()) {
@@ -341,7 +558,7 @@ public class FullTextQueryExecutor {
         if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
           return false;
         return regex.matcher(token).matches();
-      }, scoreMap);
+      }, scoreMap, boostFor(field));
     } else {
       // Range scan starting at the literal prefix and stop when keys no longer share it
       iterateAndMatch(searchPrefix, key -> {
@@ -351,7 +568,7 @@ public class FullTextQueryExecutor {
         if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
           return false;
         return regex.matcher(token).matches();
-      }, scoreMap);
+      }, scoreMap, boostFor(field));
     }
   }
 
@@ -364,7 +581,7 @@ public class FullTextQueryExecutor {
     final int maxEdits = query.getMaxEdits();
     final int prefixLen = Math.min(query.getPrefixLength(), term.length());
     final String requiredPrefix = term.substring(0, prefixLen);
-    final String fieldPrefix = field != null && !field.isEmpty() && !"content".equals(field) ? field + ":" : "";
+    final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
     final String searchPrefix = fieldPrefix + requiredPrefix;
 
     iterateAndMatch(searchPrefix.isEmpty() ? null : searchPrefix, key -> {
@@ -374,7 +591,7 @@ public class FullTextQueryExecutor {
       if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
         return false;
       return TextLevenshteinDistance.levenshteinDistance(token, term) <= maxEdits;
-    }, scoreMap);
+    }, scoreMap, boostFor(field));
   }
 
   private void collectRegexpMatches(final RegexpQuery query, final Map<RID, AtomicInteger> scoreMap) {
@@ -390,7 +607,7 @@ public class FullTextQueryExecutor {
       return;
     }
 
-    final String fieldPrefix = field != null && !field.isEmpty() && !"content".equals(field) ? field + ":" : "";
+    final String fieldPrefix = !isUnqualified(field) ? field + ":" : "";
 
     iterateAndMatch(null, key -> {
       if (!key.startsWith(fieldPrefix))
@@ -399,7 +616,7 @@ public class FullTextQueryExecutor {
       if (fieldPrefix.isEmpty() && token.indexOf(':') >= 0)
         return false;
       return regex.matcher(token).matches();
-    }, scoreMap);
+    }, scoreMap, boostFor(field));
   }
 
   /**
@@ -408,7 +625,8 @@ public class FullTextQueryExecutor {
    * and a non-prefix means we've left the relevant range). When {@code startKey} is null, performs a full
    * scan and applies the matcher to every key.
    */
-  private void iterateAndMatch(final String startKey, final KeyMatcher matcher, final Map<RID, AtomicInteger> scoreMap) {
+  private void iterateAndMatch(final String startKey, final KeyMatcher matcher, final Map<RID, AtomicInteger> scoreMap,
+      final float boost) {
     final boolean rangeScan = startKey != null;
     final IndexCursor cursor = index.iterateUnderlying(true,
         rangeScan ? new String[] { startKey } : null, true);
@@ -419,22 +637,21 @@ public class FullTextQueryExecutor {
         continue;
       final String key = keys[0].toString();
       if (matcher.matches(key)) {
-        scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
-      } else if (rangeScan && startKey != null && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
+        recordScoringToken(key, boost);
+        if (!tokensOnly)
+          scoreMap.computeIfAbsent(rid, k -> new AtomicInteger(0)).incrementAndGet();
+      } else if (rangeScan && key.compareTo(startKey) > 0 && !key.startsWith(startKey)) {
         break;
       }
     }
   }
 
   /**
-   * Builds the index search key by prefixing the field name when needed.
-   * Multi-property indexes store entries as {@code fieldName:token}; the default {@code "content"} field
-   * (used by the Lucene QueryParser when no field is specified) targets unqualified tokens.
+   * Builds the index search key by prefixing the field name when needed. Multi-property indexes store entries as
+   * {@code fieldName:token}; unqualified terms (see {@link #isUnqualified(String)}) target the unprefixed tokens.
    */
-  private static String buildSearchKey(final String field, final String text) {
-    if (field != null && !field.isEmpty() && !"content".equals(field))
-      return field + ":" + text;
-    return text;
+  private String buildSearchKey(final String field, final String text) {
+    return isUnqualified(field) ? text : field + ":" + text;
   }
 
   /**

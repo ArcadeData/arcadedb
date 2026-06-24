@@ -166,6 +166,17 @@ public class FunctionCall extends SimpleNode {
   }
 
   /**
+   * Returns the optional scoring metadata for an indexed-function call, surfaced by {@code EXPLAIN}/{@code PROFILE}.
+   */
+  public Object getIndexedFunctionScoringExplain(final FromClause target, final CommandContext context,
+      final BinaryCompareOperator operator, final Object rightValue) {
+    final SQLFunction function = getFunction(context);
+    if (function instanceof IndexableSQLFunction lFunction)
+      return lFunction.getScoringExplain(target, operator, rightValue, context, this.getParams().toArray(new Expression[] {}));
+    return null;
+  }
+
+  /**
    * @param target     query target
    * @param context    execution context
    * @param operator   operator at the right of the function

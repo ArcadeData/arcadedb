@@ -35,4 +35,13 @@ public interface IndexableSQLFunction {
   long estimate(FromClause target, BinaryCompareOperator operator, Object rightValue, CommandContext context, Expression[] oExpressions);
 
   Iterable<Record> searchFromTarget(FromClause target, BinaryCompareOperator operator, Object rightValue, CommandContext context, Expression[] oExpressions);
+
+  /**
+   * Optional scoring metadata surfaced by {@code EXPLAIN}/{@code PROFILE} for this indexed function (e.g. the BM25 similarity,
+   * parameters and per-term IDF for {@code SEARCH_INDEX}). Returns {@code null} when the function has nothing to explain.
+   */
+  default Object getScoringExplain(final FromClause target, final BinaryCompareOperator operator, final Object rightValue,
+      final CommandContext context, final Expression[] oExpressions) {
+    return null;
+  }
 }

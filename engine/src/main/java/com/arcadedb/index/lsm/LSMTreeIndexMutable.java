@@ -164,12 +164,21 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     internalRemove(keys, rid);
   }
 
+  @Override
+  public void setStoreTermFrequency(final boolean storeTermFrequency) {
+    super.setStoreTermFrequency(storeTermFrequency);
+    if (subIndex != null)
+      subIndex.setStoreTermFrequency(storeTermFrequency);
+  }
+
   public LSMTreeIndexCompacted createNewForCompaction() throws IOException {
     final int last_ = componentName.lastIndexOf('_');
     final String newName = componentName.substring(0, last_) + "_" + System.nanoTime();
 
-    return new LSMTreeIndexCompacted(mainIndex, database, newName, unique, database.getDatabasePath() + File.separator + newName,
-        keyTypes, binaryKeyTypes, pageSize);
+    final LSMTreeIndexCompacted compacted = new LSMTreeIndexCompacted(mainIndex, database, newName, unique,
+        database.getDatabasePath() + File.separator + newName, keyTypes, binaryKeyTypes, pageSize);
+    compacted.setStoreTermFrequency(isStoreTermFrequency());
+    return compacted;
   }
 
   public IndexCursor iterator(final boolean ascendingOrder, final Object[] fromKeys, final boolean inclusive) throws IOException {

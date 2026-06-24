@@ -67,6 +67,14 @@ public class BinaryCondition extends BooleanExpression {
   }
 
   /**
+   * Returns the optional scoring metadata for an indexed-function condition (e.g. BM25 details for {@code SEARCH_INDEX}),
+   * surfaced by {@code EXPLAIN}/{@code PROFILE}. Returns {@code null} when there is nothing to explain.
+   */
+  public Object getIndexedFunctionScoringExplain(final FromClause target, final CommandContext context) {
+    return left.getIndexedFunctionScoringExplain(target, context, operator, right.execute((Result) null, context));
+  }
+
+  /**
    * tests if current expression involves an indexed function AND that function can also be executed without using the index
    *
    * @param target  the query target
