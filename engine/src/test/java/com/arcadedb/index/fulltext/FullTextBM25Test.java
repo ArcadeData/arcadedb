@@ -868,4 +868,43 @@ class FullTextBM25Test extends TestHelper {
       assertThat(top).containsExactly("d3", "d2");
     });
   }
+
+  @Test
+  void bm25SearchIndexReturnsCanonicalRid() {
+    // Issue #4731: a BM25 SEARCH_INDEX match must expose the canonical record identity (#bucket:offset) in @rid, never the
+    // internal FullTextPostingRID debug form (#bucket:offset{tf=..,docLength=..}). The posting subtype carries per-posting BM25
+    // statistics and must stay confined to the index internals; relevance is already exposed separately via $score.
+    database.transaction(() -> {
+      database.command("sql", "CREATE DOCUMENT TYPE Doc");
+      database.command("sql", "CREATE PROPERTY Doc.title STRING");
+      database.command("sql", "CREATE INDEX ON Doc (title) FULL_TEXT"); // default similarity => BM25
+      database.command("sql", "INSERT INTO Doc SET title = 'java database'");
+    });
+
+    database.transaction(() -> {
+      // The control RID (selected without SEARCH_INDEX) is the canonical identity the BM25 path must match.
+      final String canonical;
+      try (final ResultSet control = database.query("sql", "SELECT @rid AS rid FROM Doc")) {
+        canonical = control.next().getProperty("rid").toString();
+        assertThat(canonical).matches("#\\d+:\\d+");
+      }
+
+      // SELECT * : the implicit @rid must be canonical, not the {tf=..,docLength=..} debug string.
+      try (final ResultSet rs = database.query("sql",
+          "SELECT *, $score AS _score FROM Doc WHERE SEARCH_INDEX('Doc[title]', 'java') = true")) {
+        final Result r = rs.next();
+        assertThat(r.<Object>getProperty("@rid").toString()).isEqualTo(canonical).doesNotContain("tf=", "docLength=", "{");
+        // The record identity itself (not just its rendered form) must be a plain RID, not the posting subtype.
+        assertThat(r.getElement().get().getIdentity()).isNotInstanceOf(FullTextPostingRID.class);
+        // The scoring detail stays available through the dedicated channel.
+        assertThat(((Number) r.getProperty("_score")).floatValue()).isGreaterThan(0f);
+      }
+
+      // Explicit @rid projection must be canonical too.
+      try (final ResultSet rs = database.query("sql",
+          "SELECT @rid AS rid FROM Doc WHERE SEARCH_INDEX('Doc[title]', 'java') = true")) {
+        assertThat(rs.next().getProperty("rid").toString()).isEqualTo(canonical);
+      }
+    });
+  }
 }

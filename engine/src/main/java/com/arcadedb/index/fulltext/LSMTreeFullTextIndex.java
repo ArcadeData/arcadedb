@@ -19,6 +19,7 @@
 package com.arcadedb.index.fulltext;
 
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.DatabaseRID;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -427,6 +428,17 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
   }
 
   /**
+   * Strips the internal {@link FullTextPostingRID} subtype off a posting RID so the public cursor - and therefore the {@code @rid}
+   * that reaches query results - exposes the canonical record identity ({@code #bucket:offset}). The tf/docLength carried by the
+   * subtype are an internal BM25 scoring detail, already consumed to compute the score by the time a result cursor is built, and
+   * its {@code toString()} would otherwise leak {@code {tf=..,docLength=..}} into the externally visible RID (issue #4731). A RID
+   * that is not a posting subtype is returned unchanged. Matches the class's "only the full-text index interprets them" intent.
+   */
+  private static RID canonicalRID(final RID rid) {
+    return rid instanceof final FullTextPostingRID posting ? new DatabaseRID(posting.getBoundDatabase(), posting) : rid;
+  }
+
+  /**
    * Ranks the scored documents most-relevant-first (descending score, RID as a stable tiebreaker so equal-scored documents have a
    * deterministic order) and returns a cursor over the (optionally limited) result. When a {@code limit} smaller than the result
    * set is requested it selects the top-K with a bounded min-heap (O(N log K)) instead of fully sorting the whole set
@@ -445,7 +457,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       // Bounded min-heap whose head is the WORST kept entry (reversed comparator), so we can evict it when a better one arrives.
       final PriorityQueue<IndexCursorEntry> heap = new PriorityQueue<>(limit, bestFirst.reversed());
       for (final Map.Entry<RID, double[]> e : scoreMap.entrySet()) {
-        final IndexCursorEntry entry = new IndexCursorEntry(keys, e.getKey(), (float) e.getValue()[0]);
+        final IndexCursorEntry entry = new IndexCursorEntry(keys, canonicalRID(e.getKey()), (float) e.getValue()[0]);
         if (heap.size() < limit)
           heap.add(entry);
         else if (bestFirst.compare(entry, heap.peek()) < 0) {
@@ -460,7 +472,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     final ArrayList<IndexCursorEntry> list = new ArrayList<>(size);
     for (final Map.Entry<RID, double[]> entry : scoreMap.entrySet())
-      list.add(new IndexCursorEntry(keys, entry.getKey(), (float) entry.getValue()[0]));
+      list.add(new IndexCursorEntry(keys, canonicalRID(entry.getKey()), (float) entry.getValue()[0]));
     if (list.size() > 1)
       list.sort(bestFirst);
     return new TempIndexCursor(list);
@@ -1401,7 +1413,7 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     // Step 7: Build result list sorted by score descending
     final List<IndexCursorEntry> results = new ArrayList<>(scoreMap.size());
     for (final Map.Entry<RID, Integer> entry : scoreMap.entrySet())
-      results.add(new IndexCursorEntry(null, entry.getKey(), entry.getValue()));
+      results.add(new IndexCursorEntry(null, canonicalRID(entry.getKey()), entry.getValue()));
 
     if (results.size() > 1)
       results.sort(Comparator.comparingInt((IndexCursorEntry e) -> e.score).reversed());
