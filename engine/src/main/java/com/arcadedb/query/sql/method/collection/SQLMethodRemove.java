@@ -46,6 +46,10 @@ public class SQLMethodRemove extends AbstractSQLMethod {
         }
         return argument;
       });
+      // Work on a copy so the source value (e.g. a record property) is not mutated in place. Without it,
+      // `UPDATE ... SET x = x.remove(...)` would return the same already-mutated instance as the current value,
+      // making UPDATE skip the write and leave the change unpersisted (issue #4730).
+      value = MultiValue.copy(value);
       for (final Object o : arguments) {
         value = MultiValue.remove(value, o, false);
       }

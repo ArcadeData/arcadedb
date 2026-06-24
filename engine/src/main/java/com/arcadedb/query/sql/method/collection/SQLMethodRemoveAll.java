@@ -46,6 +46,8 @@ public class SQLMethodRemoveAll extends AbstractSQLMethod {
         }
         return iArgument;
       });
+      // Work on a copy so the source value (e.g. a record property) is not mutated in place (issue #4730).
+      value = MultiValue.copy(value);
       for (final Object o : arguments)
         value = MultiValue.remove(value, o, true);
     }
