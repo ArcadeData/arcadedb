@@ -38,7 +38,7 @@ import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class RemoteDatabaseJavaApiTest extends ArcadeContainerTemplate {
+class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
   private RemoteDatabase database;
 
   @BeforeEach

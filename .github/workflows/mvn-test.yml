@@ -328,7 +328,7 @@ jobs:
         run: docker load < /tmp/arcadedb-image.tar
 
       - name: E2E Tests
-        run: ./mvnw verify -pl e2e
+        run: ./mvnw verify -Pintegration -pl e2e
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}

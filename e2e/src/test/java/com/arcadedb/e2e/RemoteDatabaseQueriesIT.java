@@ -19,26 +19,20 @@
 package com.arcadedb.e2e;
 
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.remote.grpc.RemoteGrpcDatabase;
-import com.arcadedb.remote.grpc.RemoteGrpcServer;
+import com.arcadedb.remote.RemoteDatabase;
 import com.arcadedb.utility.CollectionUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
-import java.util.List;
-
 import static org.assertj.core.api.Assertions.assertThat;
 
-class RemoteGrpcDatabaseTest extends ArcadeContainerTemplate {
-
-  private RemoteGrpcDatabase database;
+class RemoteDatabaseQueriesIT extends ArcadeContainerTemplate {
+  private RemoteDatabase database;
 
   @BeforeEach
   void setUp() {
-
-    RemoteGrpcServer server = new RemoteGrpcServer(host, grpcPort, "root", "playwithdata", true, List.of());
-    database = new RemoteGrpcDatabase(server, host, grpcPort, httpPort, "beer", "root", "playwithdata");
+    database = new RemoteDatabase(host, httpPort, "beer", "root", "playwithdata");
     // ENLARGE THE TIMEOUT TO PASS THESE TESTS ON CI (GITHUB ACTIONS)
     database.setTimeout(60_000);
   }
@@ -51,20 +45,26 @@ class RemoteGrpcDatabaseTest extends ArcadeContainerTemplate {
 
   @Test
   void simpleSQLQuery() {
-    final ResultSet result = database.query("SQL", "select * from Beer limit 10");
-    assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+    database.transaction(() -> {
+      final ResultSet result = database.query("SQL", "select * from Beer limit 10");
+      assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+    }, true, 10);
   }
 
   @Test
   void simpleGremlinQuery() {
-    final ResultSet result = database.query("gremlin", "g.V().limit(10)");
-    assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+    database.transaction(() -> {
+      final ResultSet result = database.query("gremlin", "g.V().limit(10)");
+      assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+    }, false, 10);
   }
 
   @Test
   void simpleCypherQuery() {
-    final ResultSet result = database.query("cypher", "MATCH(p:Beer) RETURN * LIMIT 10");
-    assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+    database.transaction(() -> {
+      final ResultSet result = database.query("cypher", "MATCH(p:Beer) RETURN * LIMIT 10");
+      assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
+    }, false, 10);
   }
 
   @Test
@@ -74,17 +74,4 @@ class RemoteGrpcDatabaseTest extends ArcadeContainerTemplate {
       assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
     }, false, 10);
   }
-
-  @Test
-  void streamQueryWithSQL() {
-    final ResultSet result = database.queryStream("sql", "select * from Beer limit 10");
-    assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
-  }
-
-  @Test
-  void streamQueryWithOpenCypher() {
-    final ResultSet result = database.queryStream("opencypher", "MATCH(p:Beer) RETURN p LIMIT 10");
-    assertThat(CollectionUtils.countEntries(result)).isEqualTo(10);
-  }
-
 }

@@ -34,7 +34,7 @@ import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class RemoteBoltDatabaseTest extends ArcadeContainerTemplate {
+class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
 
   private Driver driver;
 
