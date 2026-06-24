@@ -28,6 +28,7 @@ import org.junit.jupiter.api.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -177,6 +178,100 @@ class ClusterMonitorTest {
     monitor.updateLeaderCommitIndex(2100);
     monitor.updateReplicaMatchIndex("replica1", 100);
     assertThat(captured.lines).hasSize(afterFirst);
+  }
+
+  /**
+   * Issue #4728: a replica stuck STALLED long enough must make the leader force a resync. The first
+   * stalled tick only starts the streak; the callback fires once after the configured duration and
+   * not before.
+   */
+  @Test
+  void stalledReplicaTriggersLeaderDrivenResyncAfterDuration() {
+    final List<String> resynced = new ArrayList<>();
+    final AtomicLong now = new AtomicLong(0);
+    final ClusterMonitor monitor = new ClusterMonitor(50L, 30_000L, resynced::add);
+    monitor.setClock(now::get);
+
+    // Seed: replica at 100, leader at 100 (healthy).
+    monitor.updateLeaderCommitIndex(100);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+
+    // First STALLED tick (t=0): leader jumps to 1100, replica stuck at 100. Streak starts, no fire.
+    monitor.updateLeaderCommitIndex(1100);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+    assertThat(resynced).isEmpty();
+
+    // Still stalled at t=10s: duration (30s) not elapsed, no fire.
+    now.set(10_000);
+    monitor.updateLeaderCommitIndex(1110);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+    assertThat(resynced).isEmpty();
+
+    // Still stalled at t=31s: duration elapsed, fire exactly once.
+    now.set(31_000);
+    monitor.updateLeaderCommitIndex(1120);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+    assertThat(resynced).containsExactly("replica1");
+
+    // Still stalled at t=40s: already fired for this streak, no second fire.
+    now.set(40_000);
+    monitor.updateLeaderCommitIndex(1130);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+    assertThat(resynced).containsExactly("replica1");
+  }
+
+  /** A replica that recovers resets the streak, so a later stall re-arms the leader-driven resync. */
+  @Test
+  void recoveryResetsStalledStreakSoItCanReArm() {
+    final List<String> resynced = new ArrayList<>();
+    final AtomicLong now = new AtomicLong(0);
+    final ClusterMonitor monitor = new ClusterMonitor(50L, 30_000L, resynced::add);
+    monitor.setClock(now::get);
+
+    monitor.updateLeaderCommitIndex(100);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+
+    // Stall, fire once at t=31s.
+    monitor.updateLeaderCommitIndex(1100);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+    now.set(31_000);
+    monitor.updateLeaderCommitIndex(1110);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+    assertThat(resynced).hasSize(1);
+
+    // Replica catches up fully (healthy) -> streak resets.
+    now.set(40_000);
+    monitor.updateLeaderCommitIndex(1110);
+    monitor.updateReplicaMatchIndex("replica1", 1110);
+
+    // New stall streak begins.
+    now.set(50_000);
+    monitor.updateLeaderCommitIndex(2110);
+    monitor.updateReplicaMatchIndex("replica1", 1110);
+    assertThat(resynced).hasSize(1); // first observation of the new streak, no fire yet
+
+    now.set(90_000); // >30s after the new streak began
+    monitor.updateLeaderCommitIndex(2120);
+    monitor.updateReplicaMatchIndex("replica1", 1110);
+    assertThat(resynced).hasSize(2);
+  }
+
+  /** With the duration set to 0 (disabled), the leader never forces a resync however long the stall. */
+  @Test
+  void leaderDrivenResyncDisabledWhenDurationZero() {
+    final List<String> resynced = new ArrayList<>();
+    final AtomicLong now = new AtomicLong(0);
+    final ClusterMonitor monitor = new ClusterMonitor(50L, 0L, resynced::add);
+    monitor.setClock(now::get);
+
+    monitor.updateLeaderCommitIndex(100);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+    for (int i = 1; i <= 10; i++) {
+      now.set(i * 60_000L);
+      monitor.updateLeaderCommitIndex(100 + i * 1000L);
+      monitor.updateReplicaMatchIndex("replica1", 100);
+    }
+    assertThat(resynced).isEmpty();
   }
 
   /** ArcadeDB Logger that captures everything in memory for test assertions. */
