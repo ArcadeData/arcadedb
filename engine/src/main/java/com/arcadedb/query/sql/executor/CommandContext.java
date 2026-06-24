@@ -41,6 +41,18 @@ public interface CommandContext {
 
   CommandContext setVariable(String name, Object iValue);
 
+  /**
+   * Returns a value from an internal cache whose key is opaque: unlike {@link #getVariable(String)}, the name is never
+   * interpreted as a {@code $var.field} nested path, so it can safely embed user data (e.g. a full-text query string with
+   * dots). Used to memoize per-query computations within a command execution. Returns {@code null} if absent.
+   */
+  Object getCachedValue(String key);
+
+  /**
+   * Stores a value in the opaque internal cache. See {@link #getCachedValue(String)}.
+   */
+  CommandContext setCachedValue(String key, Object value);
+
   CommandContext incrementVariable(String getNeighbors);
 
   Map<String, Object> getVariables();

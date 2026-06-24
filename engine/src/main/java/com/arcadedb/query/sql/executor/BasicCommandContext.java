@@ -41,6 +41,7 @@ public class BasicCommandContext implements CommandContext {
   protected       CommandContext       parent;
   protected       CommandContext       child;
   protected       Map<String, Object>  variables;
+  protected       Map<String, Object>  cachedValues;
   protected       Map<String, Object>  inputParameters;
   protected       ContextConfiguration configuration           = new ContextConfiguration();
   protected final Set<String>          declaredScriptVariables = new HashSet<>();
@@ -182,6 +183,46 @@ public class BasicCommandContext implements CommandContext {
         result = result1.getProperty(fieldName);
     }
     return result != null ? result : defaultValue;
+  }
+
+  @Override
+  public Object getCachedValue(final String key) {
+    if (key == null)
+      return null;
+
+    if (cachedValues != null && cachedValues.containsKey(key))
+      return cachedValues.get(key);
+
+    if (child != null)
+      return child.getCachedValue(key);
+
+    return getCachedValueFromParentHierarchy(key);
+  }
+
+  @Override
+  public CommandContext setCachedValue(final String key, final Object value) {
+    if (key == null)
+      return this;
+
+    if (value == null) {
+      if (cachedValues != null)
+        cachedValues.remove(key);
+    } else {
+      if (cachedValues == null)
+        cachedValues = new HashMap<>();
+      cachedValues.put(key, value);
+    }
+    return this;
+  }
+
+  protected Object getCachedValueFromParentHierarchy(final String key) {
+    if (cachedValues != null && cachedValues.containsKey(key))
+      return cachedValues.get(key);
+
+    if (parent instanceof BasicCommandContext context)
+      return context.getCachedValueFromParentHierarchy(key);
+
+    return null;
   }
 
   protected Object getVariableFromParentHierarchy(final String name) {
