@@ -224,6 +224,10 @@ public class FullTextQueryExecutor {
 
     // BM25 path: collectMatches above determined WHICH documents match (boolean/phrase/wildcard semantics). Re-rank that
     // candidate set with BM25 using the scoring tokens captured during matching.
+    // The result entries carry EMPTY keys (here and in the CLASSIC branch below): a SEARCH_INDEX query is a multi-token Lucene
+    // query, not a single index key, so there is no meaningful single key tuple to attach (unlike the direct index.get() path,
+    // whose single query keys flow through). The SQL SEARCH_INDEX function reads only RID + $score from these entries, never
+    // getKeys(); a direct executor.search() caller should likewise not rely on getKeys() for this path.
     if (index.isBM25())
       return index.scoreCandidatesBM25(scoreMap.keySet(), scoringTokens, new Object[] {}, limit);
 

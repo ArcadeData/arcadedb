@@ -155,7 +155,6 @@ class FullTextBM25Test extends TestHelper {
   }
 
   @Test
-  @Tag("slow")
   void bm25RankingHoldsAcrossMultipleBuckets() {
     database.transaction(() -> {
       // Multiple buckets: BM25 is scored per bucket, so N (doc count) and df must both be per-bucket to keep IDF unbiased.

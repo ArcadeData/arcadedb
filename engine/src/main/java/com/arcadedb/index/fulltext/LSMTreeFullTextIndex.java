@@ -324,14 +324,12 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
 
     // Reused across tokens to avoid per-token allocations (candidate path only).
     final List<FullTextPostingRID> hits = new ArrayList<>();
-    // Single-element lookup key reused across tokens to avoid a short-lived array allocation per query term. SAFE ONLY because
-    // underlyingIndex.get() consumes the array synchronously (fully iterating each cursor before the next iteration reassigns
-    // storedKey[0]). If a future async/lazy read path ever retained the array beyond the call, this reuse would corrupt scoring
-    // and must be revisited (allocate per token instead).
-    final String[] storedKey = new String[1];
 
     for (final Map.Entry<String, Float> e : tokenBoosts.entrySet()) {
-      storedKey[0] = e.getKey();
+      // Fresh single-element lookup key per token: it is handed to underlyingIndex.get(), and allocating it here (rather than
+      // reusing one array) keeps this correct even if that lookup ever became lazy/async and retained the array - the few small
+      // arrays per query are negligible GC.
+      final String[] storedKey = new String[] { e.getKey() };
       final float boost = e.getValue();
 
       if (candidates != null) {
@@ -983,7 +981,10 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
       }
     }
 
-    // Keep the BM25 corpus counters in sync when a document is removed. docLen is recomputed from the keys supplied at remove
+    // Keep the BM25 corpus counters in sync when a document is removed. remove() carries a SINGLE rid (one document), so exactly
+    // one removeDocument() call balances the single addDocument() that put() made for that document - the indexing convention is
+    // one rid per document. (put() loops addDocument() over its rid array; were remove() ever called with N documents sharing a
+    // key it would need the same N decrements, but no caller does that.) docLen is recomputed from the keys supplied at remove
     // time: if a field is null now but was set at index time (or the analyzer changed), this under-decrements sumDocLength and
     // avgDocLength drifts. Since avgDocLength is only a length normalizer this is tolerable; recomputeBM25Counters() repairs it.
     if (underlyingIndex.isStoreTermFrequency() && ftMetadata != null)
