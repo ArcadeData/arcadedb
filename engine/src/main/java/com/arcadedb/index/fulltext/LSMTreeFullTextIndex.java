@@ -27,6 +27,7 @@ import com.arcadedb.database.Record;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.engine.PaginatedComponent;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.IndexCursorEntry;
@@ -63,6 +64,7 @@ import java.util.Map;
 import java.util.PriorityQueue;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 /**
@@ -1189,9 +1191,53 @@ public class LSMTreeFullTextIndex implements Index, IndexInternal {
     return typeIndex;
   }
 
+  /**
+   * Builds the full-text index over the records already present in the type (issue #4733). Unlike a plain LSM-Tree index, the
+   * full-text index must route every record through THIS wrapper's {@link #put} so the property values are analyzed/tokenized
+   * (and, for BM25, carry tf/docLength). Delegating to {@code underlyingIndex.build()} would instead feed the raw, per-property
+   * value array straight to the single-key underlying LSM-Tree: a multi-property index then crashes with
+   * "Index N out of bounds for length 1" (the underlying index has one key type but receives N property values), and a
+   * single-property index would store untokenized raw values. So the scan is performed here, indexing through {@code this}.
+   */
   @Override
   public long build(final int buildIndexBatchSize, final BuildIndexCallback callback) {
-    return underlyingIndex.build(buildIndexBatchSize, callback);
+    final DatabaseInternal db = underlyingIndex.getMutableIndex().getDatabase();
+    final String typeName = getTypeName();
+    if (typeName == null)
+      throw new IndexException("Cannot build index '" + getName() + "' because metadata information are missing");
+
+    if (!setStatus(new INDEX_STATUS[] { INDEX_STATUS.AVAILABLE }, INDEX_STATUS.UNAVAILABLE))
+      throw new NeedRetryException("Error on building index '" + getName() + "' because not available");
+
+    final AtomicLong total = new AtomicLong();
+    try {
+      final String bucketName = db.getSchema().getBucketById(getAssociatedBucketId()).getName();
+      LogManager.instance().log(this, Level.INFO, "Building full-text index '%s' on %s...", getName(),
+          typeName + getPropertyNames());
+
+      db.scanBucket(bucketName, record -> {
+        db.getIndexer().addToIndex(LSMTreeFullTextIndex.this, record.getIdentity(), (Document) record);
+        total.incrementAndGet();
+
+        if (total.get() % buildIndexBatchSize == 0) {
+          db.getWrappedDatabaseInstance().commit();
+          db.getWrappedDatabaseInstance().begin();
+        }
+
+        if (callback != null)
+          callback.onDocumentIndexed((Document) record, total.get());
+
+        return true;
+      }, (rid, exception) -> {
+        if (exception instanceof RuntimeException re)
+          throw re;
+        throw new IndexException("Error on building index '" + getName() + "' at record " + rid, exception);
+      });
+    } finally {
+      setStatus(new INDEX_STATUS[] { INDEX_STATUS.UNAVAILABLE }, INDEX_STATUS.AVAILABLE);
+    }
+
+    return total.get();
   }
 
   @Override
