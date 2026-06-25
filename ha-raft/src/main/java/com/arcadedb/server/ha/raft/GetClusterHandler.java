@@ -148,6 +148,12 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
    * every peer. Returns {@code {nodes:[peerId...], unreachable:[peerId...], databases:[{name, present:[...],
    * missing:[...]}]}}. A peer that cannot be reached is reported in {@code unreachable} and omitted from the
    * present/missing accounting so a transient blip is not mistaken for a dropped database.
+   * <p>
+   * The fan-out is sequential on the Undertow worker thread, so worst-case latency is
+   * {@code peers x HA_BOOTSTRAP_TIMEOUT_MS}. This is acceptable because it is opt-in ({@code ?presence=true}) and
+   * leader-only, not part of the cheap auto-poll; a parallel fan-out would bound it for very large clusters.
+   * Note the queried peer's bootstrap-state handler may open a closed database to fingerprint it, so this path -
+   * unlike the no-open cheap poll - can trigger a database load on the remote peer.
    */
   private JSONObject buildPresenceMatrix(final RaftHAServer raftHAServer, final RaftPeerId localPeerId) {
     final ArcadeDBServer server = httpServer.getServer();
@@ -176,8 +182,10 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
           unreachable.add(peerIdStr);
           continue;
         }
+        final String httpsAddr = raftHAServer.getPeerHttpsAddress(peerId);
         try {
-          final List<LeaderDatabaseQuery.DatabaseInfo> infos = LeaderDatabaseQuery.fetch(httpAddr, clusterToken, timeoutMs);
+          final List<LeaderDatabaseQuery.DatabaseInfo> infos =
+              LeaderDatabaseQuery.fetch(httpAddr, httpsAddr, clusterToken, timeoutMs, server);
           for (final LeaderDatabaseQuery.DatabaseInfo info : infos)
             dbNames.add(info.name());
         } catch (final InterruptedException e) {

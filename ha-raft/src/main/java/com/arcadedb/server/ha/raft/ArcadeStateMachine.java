@@ -632,7 +632,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final List<LeaderDatabaseQuery.DatabaseInfo> leaderDbs;
     try {
       final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
-      leaderDbs = LeaderDatabaseQuery.fetch(leaderHttpAddr, clusterToken, timeoutMs);
+      leaderDbs = LeaderDatabaseQuery.fetch(leaderHttpAddr, leaderHttpsAddr, clusterToken, timeoutMs, server);
     } catch (final InterruptedException e) {
       // Preserve the interrupt so the pool/executor can observe it and shut down cleanly.
       Thread.currentThread().interrupt();
@@ -659,10 +659,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // no longer exists locally.
     acquireStatuses.keySet().removeIf(name -> !server.existsDatabase(name) && !leaderDbNames.contains(name));
 
-    // Install every database the leader holds: refresh the ones we already have, acquire the rest.
+    // Install every database the leader holds: refresh the ones we already have, acquire the rest. The
+    // acquireStatuses map records only genuine acquisitions (isNew); a routine snapshot refresh of an
+    // already-present database is not reported as ACQUIRED so operators can tell a true pull from a refresh.
     for (final String dbName : leaderDbNames) {
       final boolean isNew = !server.existsDatabase(dbName);
-      acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRING, System.currentTimeMillis(), null));
+      if (isNew)
+        acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRING, System.currentTimeMillis(), null));
       LogManager.instance().log(this, Level.INFO, "%s database '%s' from leader %s...",
           isNew ? "Acquiring" : "Refreshing", dbName, leaderHttpAddr);
       try {
@@ -674,9 +677,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
           // closed (DatabaseIsClosedException).
           SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
               leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
-        acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRED, System.currentTimeMillis(), null));
+        if (isNew)
+          acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRED, System.currentTimeMillis(), null));
       } catch (final IOException e) {
-        acquireStatuses.put(dbName, new AcquireStatus(AcquireState.FAILED, System.currentTimeMillis(), e.getMessage()));
+        if (isNew)
+          acquireStatuses.put(dbName, new AcquireStatus(AcquireState.FAILED, System.currentTimeMillis(), e.getMessage()));
         throw e;
       }
     }

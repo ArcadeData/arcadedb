@@ -873,8 +873,8 @@ public enum GlobalConfiguration {
       and auto-pulls (full snapshot install) any database it has never seen on disk - so an empty/new node \
       (e.g. a StatefulSet scaled up) becomes a full replica with zero manual steps. When false, the node only \
       refreshes databases already present locally (the legacy behavior) and never acquires unseen ones. This is a \
-      per-node local policy, re-read on every boot and not stored in Raft; acquisition is additive and never drops \
-      a database the leader is missing, so a mixed cluster is safe.""",
+      per-node local policy, read live on each reconcile (not stored in Raft); acquisition is additive and never \
+      drops a database the leader is missing, so a mixed cluster is safe.""",
       Boolean.class, true),
 
   HA_SNAPSHOT_MAX_CONCURRENT("arcadedb.ha.snapshotMaxConcurrent", SCOPE.SERVER,

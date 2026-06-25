@@ -294,11 +294,20 @@ public final class SnapshotInstaller {
     final Path staging = databasesDir.resolve(ACQUIRE_STAGING_PREFIX + databaseName);
 
     // Raced: the database already exists locally (created/registered concurrently). Refresh in place instead
-    // of acquiring, so two creators never race on dbPath.
+    // of acquiring, so two creators never race on dbPath. install() manages its own in-flight guard.
     if (server.existsDatabase(databaseName)) {
       install(databaseName, dbPath.toString(), leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken, server);
       return;
     }
+
+    // Same overlap guard install() uses: the lifecycle assumes acquisitions for a given database never overlap
+    // (Ratis serializes InstallSnapshot per follower). Keyed by the resolved final path so distinct logical
+    // servers in one JVM (tests) do not collide. A violation is logged loudly rather than silently double-staging.
+    final String inFlightKey = dbPath.toString();
+    if (!INSTALLS_IN_FLIGHT.add(inFlightKey))
+      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+          "Concurrent acquisition detected for '%s'; acquisitions for the same database are assumed never to overlap "
+              + "- this may indicate a coordination bug in the HA layer", null, databaseName);
 
     try {
       // Clean any leftover staging from a previous failed attempt, then create a fresh reserved staging dir.
@@ -320,6 +329,8 @@ public final class SnapshotInstaller {
       // Re-check right before publishing: the database may have been created concurrently while we downloaded.
       if (server.existsDatabase(databaseName)) {
         deleteDirectoryIfExists(staging);
+        // Release our guard before delegating so install()'s own guard does not see a spurious overlap.
+        INSTALLS_IN_FLIGHT.remove(inFlightKey);
         install(databaseName, dbPath.toString(), leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken, server);
         return;
       }
@@ -363,6 +374,8 @@ public final class SnapshotInstaller {
 
       HALog.log(SnapshotInstaller.class, HALog.BASIC, "New database '%s' acquired from leader", databaseName);
     } finally {
+      // Idempotent: a no-op if we already released the key before delegating to install() above.
+      INSTALLS_IN_FLIGHT.remove(inFlightKey);
       // Defensive: on success the staging dir was renamed away; on failure it was deleted. This is a no-op
       // in both cases but guarantees no reserved staging dir is ever leaked.
       deleteDirectoryIfExists(staging);
