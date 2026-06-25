@@ -59,9 +59,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -120,6 +122,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
+  // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
+  // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
+  // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
+  private final    ThreadPoolExecutor        stalledResyncExecutor = createStalledResyncExecutor();
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
@@ -290,16 +296,24 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return;
     }
 
+    final String clusterToken = getClusterToken();
+    if (clusterToken == null || clusterToken.isEmpty()) {
+      // The follower's resync endpoint only accepts inter-node calls authenticated with the cluster
+      // token; without one the request is doomed to be rejected, so do not even attempt it.
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot force resync of stalled replica '%s': cluster token is not configured", peerId);
+      return;
+    }
+
     final String address = followerAddr;
     final boolean useHttps = https;
-    final String clusterToken = getClusterToken();
 
-    final Thread t = new Thread(() -> {
+    stalledResyncExecutor.execute(() -> {
       // TODO (#4728): this resyncs EVERY non-reserved database on the follower. When a cluster hosts
       // many databases and only one is stuck, this forces unnecessary full snapshots of the others.
       // A per-database stall signal would let us scope the resync; acceptable as a first pass.
       for (final String dbName : arcadeServer.getDatabaseNames()) {
-        // Re-check leadership on each iteration: the outer guard ran before this thread started, and
+        // Re-check leadership on each iteration: the outer guard ran before this task was queued, and
         // leadership may have moved since. A resync request from a non-leader is harmless (the
         // follower rejects it) but would log spurious warnings, so stop early instead.
         if (!isLeader())
@@ -316,9 +330,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
               dbName, peerId, address, e.getMessage());
         }
       }
-    }, "arcadedb-raft-stalled-resync-" + peerId);
-    t.setDaemon(true);
-    t.start();
+    });
+  }
+
+  private static ThreadPoolExecutor createStalledResyncExecutor() {
+    final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(16), r -> {
+      final Thread t = new Thread(r, "arcadedb-raft-stalled-resync");
+      t.setDaemon(true);
+      return t;
+    }, new ThreadPoolExecutor.CallerRunsPolicy());
+    return executor;
   }
 
   /**
@@ -336,6 +358,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         httpsConn.setSSLSocketFactory(SnapshotInstaller.buildSSLContext(arcadeServer).getSocketFactory());
       conn.setRequestMethod("POST");
       conn.setConnectTimeout(10_000);
+      // The resync endpoint is synchronous: it downloads the full snapshot from the leader and only
+      // then returns, so the read timeout must accommodate a snapshot transfer, not just a trigger.
       conn.setReadTimeout(120_000);
       conn.setDoOutput(true);
       conn.setRequestProperty("Content-Type", "application/json");
@@ -639,6 +663,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       healthMonitor = null;
     }
     stopLagMonitor();
+    stalledResyncExecutor.shutdownNow();
     if (transactionBroker != null) {
       transactionBroker.stop();
       transactionBroker = null;

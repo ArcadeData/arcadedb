@@ -91,6 +91,9 @@ public class ClusterMonitor {
    */
   public ClusterMonitor(final long lagWarningThreshold, final long stalledResyncDurationMs,
       final Consumer<String> stalledReplicaHandler) {
+    if (stalledResyncDurationMs > 0 && stalledReplicaHandler == null)
+      throw new IllegalArgumentException(
+          "stalledReplicaHandler must be non-null when stalledResyncDurationMs > 0 (leader-driven recovery enabled)");
     this.lagWarningThreshold = lagWarningThreshold;
     this.stalledResyncDurationMs = stalledResyncDurationMs;
     this.stalledReplicaHandler = stalledReplicaHandler;
@@ -269,6 +272,10 @@ public class ClusterMonitor {
     long          lastLag;
     long          lastWarnAtMs;
     ReplicaStatus status = ReplicaStatus.UNKNOWN;
+    // Stall-streak state for leader-driven recovery. Unlike the snapshot fields above (which the
+    // status table / lag map read cross-thread, tolerating staleness), these three are BOTH written
+    // and read only from the single lag-monitor thread, so they need no synchronization. Any future
+    // change that reads or mutates them from another thread MUST add it.
     // Wall-clock time (ms) when the current uninterrupted stall streak began; -1 = not stalled.
     long          stalledSinceMs    = -1;
     // matchIndex observed when the streak began; the streak ends as soon as matchIndex moves past it.
