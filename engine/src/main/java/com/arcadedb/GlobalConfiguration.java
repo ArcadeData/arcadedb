@@ -929,8 +929,9 @@ public enum GlobalConfiguration {
 
   HA_SNAPSHOT_WRITE_TIMEOUT("arcadedb.ha.snapshotWriteTimeout", SCOPE.SERVER,
       """
-      Timeout in milliseconds for writing a snapshot to a follower. \
-      If the transfer stalls beyond this duration, the connection is force-closed to free the semaphore slot.""",
+      Idle timeout in milliseconds for writing a snapshot to a follower. The connection is force-closed \
+      to free the semaphore slot only when NO bytes have been written for this duration (a stall), not on \
+      total transfer time, so a large but actively-progressing snapshot is never killed mid-stream.""",
       Long.class, 300_000L),
 
   HA_TS_MAX_SEALED_INLINE_SIZE("arcadedb.ha.tsMaxSealedInlineSize", SCOPE.SERVER,
