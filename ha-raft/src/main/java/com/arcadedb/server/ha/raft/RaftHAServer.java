@@ -566,22 +566,39 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public boolean isFollowerStuckDiverged() {
     if (raftServer == null || shutdownRequested || isLeader())
       return false;
-    if (getLeaderId() == null)
-      return false; // no leader recognized yet: leaderless, not stuck-diverged
     final ArcadeStateMachine sm = stateMachine;
-    if (sm == null || sm.isCatchingUp() || sm.isSnapshotDownloadPending())
+    if (sm == null)
       return false;
     final TermIndex applied = sm.getLastAppliedTermIndex();
     if (applied == null)
       return false;
-    final long currentTerm = getCurrentTerm();
-    final long appliedIndex = applied.getIndex();
-    final long commit = getCommitIndex();
-    if (currentTerm < 0 || appliedIndex < 0 || commit < 0)
+    // The values below are read as separate Ratis getDivision(...) calls, so they can observe slightly
+    // different moments during an election. We deliberately do not take an atomic snapshot: the
+    // HealthMonitor requires the stuck condition to persist for HA_STALE_FOLLOWER_RECOVERY_DURATION_MS
+    // before acting, which absorbs any one-tick inconsistency here.
+    return isStuckDivergedState(getLeaderId() != null, sm.isCatchingUp(), sm.isSnapshotDownloadPending(),
+        getCurrentTerm(), applied.getTerm(), applied.getIndex(), getCommitIndex());
+  }
+
+  /**
+   * Pure decision function behind {@link #isFollowerStuckDiverged()}, split out so the predicate can be
+   * unit-tested in isolation from the Ratis state plumbing (the destructive recovery makes the predicate
+   * the highest-risk piece). Returns {@code true} only for the divergence signature: a follower that
+   * recognizes a leader, is neither catching up nor installing a snapshot, has applied everything it
+   * could locally commit ({@code commitIndex == appliedIndex}) yet at a stale term
+   * ({@code currentTerm > appliedTerm}). Any negative term/index input (state not readable) yields
+   * {@code false}, including a negative {@code appliedTerm}.
+   */
+  static boolean isStuckDivergedState(final boolean leaderPresent, final boolean catchingUp,
+      final boolean snapshotPending, final long currentTerm, final long appliedTerm, final long appliedIndex,
+      final long commitIndex) {
+    if (!leaderPresent || catchingUp || snapshotPending)
+      return false;
+    if (currentTerm < 0 || appliedTerm < 0 || appliedIndex < 0 || commitIndex < 0)
       return false;
     // We have applied everything we could locally commit, but at a stale term: we are rejecting the
     // leader's current-term entries and cannot move forward.
-    return currentTerm > applied.getTerm() && commit == appliedIndex;
+    return currentTerm > appliedTerm && commitIndex == appliedIndex;
   }
 
   @Override
@@ -682,8 +699,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         // bootstrapping member; otherwise recover the existing log in place (CLOSED/EXCEPTION path).
         final RaftStorage.StartupOption startupOption;
         if (formatStorage) {
-          if (storageDir.exists())
+          if (storageDir.exists()) {
             deleteRecursive(storageDir);
+            // deleteRecursive swallows per-file failures (e.g. a locked file or a permission issue on
+            // Windows). If the directory survives, FORMAT on a non-empty dir can fail or misbehave, so
+            // surface it for diagnostics rather than failing opaquely later.
+            if (storageDir.exists())
+              LogManager.instance().log(this, Level.WARNING,
+                  "Could not fully delete Raft storage directory %s before reformat; Ratis FORMAT startup may fail",
+                  storageDir.getAbsolutePath());
+          }
           startupOption = RaftStorage.StartupOption.FORMAT;
         } else
           startupOption = RaftStorage.StartupOption.RECOVER;

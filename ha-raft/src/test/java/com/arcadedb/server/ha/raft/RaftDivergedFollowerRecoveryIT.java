@@ -46,6 +46,12 @@ import static org.assertj.core.api.Assertions.assertThat;
  *       remains consistent with no data loss;</li>
  *   <li>writes that happen after the recovery still replicate to the recovered follower.</li>
  * </ol>
+ * <p>
+ * Scope note: this exercises the recovery against a <em>healthy</em> follower (its local database
+ * already matches the leader), so it proves the reformat + rejoin + snapshot-install path preserves
+ * data and converges. It does not inject an already-diverged local database write before recovery;
+ * correcting a diverged on-disk database relies on the same {@code SnapshotInstaller} replace-on-disk
+ * path that {@code installFromLeaderForBootstrap} / {@code resyncDatabaseFromLeader} already cover.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
