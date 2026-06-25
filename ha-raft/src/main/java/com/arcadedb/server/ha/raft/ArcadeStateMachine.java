@@ -167,6 +167,37 @@ public class ArcadeStateMachine extends BaseStateMachine {
   public record AcquireStatus(AcquireState state, long timestamp, String error) {
   }
 
+  /**
+   * The classification of a reconcile pass (issue #4727): which leader databases this node must acquire (never
+   * seen), which it already has and merely refreshes, and which it holds that the leader does not (kept, flagged
+   * {@link AcquireState#LEADER_MISSING}). Pure and package-private so the set logic is unit-testable.
+   */
+  public record ReconcilePlan(List<String> toAcquire, List<String> toRefresh, List<String> leaderMissing) {
+  }
+
+  /**
+   * Computes the {@link ReconcilePlan} from the leader's database set and this node's local (non-reserved) set.
+   * Lists are sorted for deterministic output. Pure - no side effects.
+   */
+  static ReconcilePlan classifyReconcile(final Set<String> leaderDbs, final Set<String> localDbs) {
+    final List<String> toAcquire = new ArrayList<>();
+    final List<String> toRefresh = new ArrayList<>();
+    final List<String> leaderMissing = new ArrayList<>();
+    for (final String db : leaderDbs) {
+      if (localDbs.contains(db))
+        toRefresh.add(db);
+      else
+        toAcquire.add(db);
+    }
+    for (final String db : localDbs)
+      if (!leaderDbs.contains(db))
+        leaderMissing.add(db);
+    Collections.sort(toAcquire);
+    Collections.sort(toRefresh);
+    Collections.sort(leaderMissing);
+    return new ReconcilePlan(toAcquire, toRefresh, leaderMissing);
+  }
+
   private final AtomicBoolean needsSnapshotDownload      = new AtomicBoolean(false);
   private final AtomicBoolean snapshotDownloadInProgress = new AtomicBoolean(false);
   private final AtomicBoolean catchingUp                 = new AtomicBoolean(false);
@@ -519,6 +550,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
       raftHAServer.startLagMonitor();
       raftHAServer.printClusterConfiguration();
 
+      // A LEADER_MISSING flag means "the leader lacks a database this node holds" - meaningless once this node
+      // IS the leader. Clear those stale entries so the leader-missing alert does not linger on the new leader
+      // (issue #4727); they would otherwise survive because the leader never runs the follower reconcile path.
+      acquireStatuses.values().removeIf(s -> s.state() == AcquireState.LEADER_MISSING);
+
       // Issue #4147: drive offline cluster bootstrap if conditions match (commit index still 0,
       // arcadedb.ha.bootstrapFromLocalDatabase=true). Runs on a background thread to keep the
       // notifyLeaderChanged callback non-blocking; a slow peer or a bootstrap-state RPC timeout
@@ -653,51 +689,52 @@ public class ArcadeStateMachine extends BaseStateMachine {
     for (final LeaderDatabaseQuery.DatabaseInfo info : leaderDbs)
       leaderDbNames.add(info.name());
 
-    // Prune stale acquisition statuses for databases that are no longer on this node (e.g. a previously
-    // LEADER_MISSING database that was later dropped via DROP_DATABASE_ENTRY, or one redistributed after a
-    // leadership transfer). Otherwise the leader-missing cluster alert would stay raised for a database that
-    // no longer exists locally.
-    acquireStatuses.keySet().removeIf(name -> !server.existsDatabase(name) && !leaderDbNames.contains(name));
+    final Set<String> localDbNames = new HashSet<>();
+    for (final String name : server.getDatabaseNames())
+      if (!name.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
+        localDbNames.add(name);
 
-    // Install every database the leader holds: refresh the ones we already have, acquire the rest. The
-    // acquireStatuses map records only genuine acquisitions (isNew); a routine snapshot refresh of an
-    // already-present database is not reported as ACQUIRED so operators can tell a true pull from a refresh.
-    for (final String dbName : leaderDbNames) {
-      final boolean isNew = !server.existsDatabase(dbName);
-      if (isNew)
-        acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRING, System.currentTimeMillis(), null));
-      LogManager.instance().log(this, Level.INFO, "%s database '%s' from leader %s...",
-          isNew ? "Acquiring" : "Refreshing", dbName, leaderHttpAddr);
+    // Prune acquisition statuses for databases that are neither local nor on the leader (e.g. a previously
+    // LEADER_MISSING database later dropped via DROP_DATABASE_ENTRY). Otherwise the leader-missing alert would
+    // stay raised for a database that no longer exists anywhere this node knows about.
+    acquireStatuses.keySet().removeIf(name -> !localDbNames.contains(name) && !leaderDbNames.contains(name));
+
+    final ReconcilePlan plan = classifyReconcile(leaderDbNames, localDbNames);
+
+    // Acquire databases this node has never seen. acquireStatuses records only genuine acquisitions so operators
+    // can tell a true pull from a routine refresh.
+    for (final String dbName : plan.toAcquire()) {
+      acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRING, System.currentTimeMillis(), null));
+      LogManager.instance().log(this, Level.INFO, "Acquiring database '%s' from leader %s...", dbName, leaderHttpAddr);
       try {
-        if (isNew)
-          SnapshotInstaller.acquireNewDatabase(dbName, () -> leaderHttpAddr, () -> leaderHttpsAddr, clusterToken, server);
-        else
-          // install() downloads the snapshot with the database still open and only closes + swaps it once a
-          // complete copy is on disk, rolling back on failure, so a failed download never leaves the database
-          // closed (DatabaseIsClosedException).
-          SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-              leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
-        if (isNew)
-          acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRED, System.currentTimeMillis(), null));
+        SnapshotInstaller.acquireNewDatabase(dbName, () -> leaderHttpAddr, () -> leaderHttpsAddr, clusterToken, server);
+        acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRED, System.currentTimeMillis(), null));
       } catch (final IOException e) {
-        if (isNew)
-          acquireStatuses.put(dbName, new AcquireStatus(AcquireState.FAILED, System.currentTimeMillis(), e.getMessage()));
+        acquireStatuses.put(dbName, new AcquireStatus(AcquireState.FAILED, System.currentTimeMillis(), e.getMessage()));
         throw e;
       }
     }
 
+    // Refresh databases we already have. The leader holds them, so clear any stale LEADER_MISSING/FAILED status
+    // left from a prior pass (the resync / leadership-transfer recovery flow this PR documents): the alert must
+    // clear once the leader regains the database.
+    for (final String dbName : plan.toRefresh()) {
+      LogManager.instance().log(this, Level.INFO, "Refreshing database '%s' from leader %s...", dbName, leaderHttpAddr);
+      // install() downloads the snapshot with the database still open and only closes + swaps it once a complete
+      // copy is on disk, rolling back on failure, so a failed download never leaves the database closed.
+      SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+          leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+      acquireStatuses.remove(dbName);
+    }
+
     // Additive-only guard: a database we hold that the leader does not must NOT be dropped here. Flag it so the
     // cluster status / Studio surfaces it; a genuine DROP still arrives via DROP_DATABASE_ENTRY replay.
-    for (final String localDb : server.getDatabaseNames()) {
-      if (localDb.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
-        continue;
-      if (!leaderDbNames.contains(localDb)) {
-        acquireStatuses.put(localDb, new AcquireStatus(AcquireState.LEADER_MISSING, System.currentTimeMillis(), null));
-        LogManager.instance().log(this, Level.WARNING,
-            "Database '%s' is present locally but the leader does not hold it; keeping the local copy (not dropping). "
-                + "If this node is an authoritative source, transfer leadership to a node that holds '%s' and resync.",
-            localDb, localDb);
-      }
+    for (final String dbName : plan.leaderMissing()) {
+      acquireStatuses.put(dbName, new AcquireStatus(AcquireState.LEADER_MISSING, System.currentTimeMillis(), null));
+      LogManager.instance().log(this, Level.WARNING,
+          "Database '%s' is present locally but the leader does not hold it; keeping the local copy (not dropping). "
+              + "If this node is an authoritative source, transfer leadership to a node that holds '%s' and resync.",
+          dbName, dbName);
     }
   }
 

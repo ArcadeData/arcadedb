@@ -401,7 +401,8 @@ public final class SnapshotInstaller {
    * (not the raw open exception) so callers can treat a corrupt snapshot uniformly with a download failure.
    */
   private static void validateSnapshotOpens(final Path stagingPath) throws IOException {
-    try (final Database db = new DatabaseFactory(stagingPath.toString()).open(ComponentFile.MODE.READ_ONLY)) {
+    try (final DatabaseFactory factory = new DatabaseFactory(stagingPath.toString());
+        final Database db = factory.open(ComponentFile.MODE.READ_ONLY)) {
       // Opening + closing is the validation: it confirms the configuration, schema and component files load.
       if (db == null)
         throw new IOException("snapshot did not open");
