@@ -984,6 +984,16 @@ public enum GlobalConfiguration {
       disable (node restart becomes the only mitigation).""",
       Boolean.class, true),
 
+  HA_DIVERGED_FOLLOWER_MAX_REFORMATS("arcadedb.ha.divergedFollowerMaxReformats", SCOPE.SERVER,
+      """
+      Maximum number of automatic Raft-storage reformats (HA_DIVERGED_FOLLOWER_RECOVERY) allowed within one divergence \
+      episode before the follower gives up and logs a SEVERE message for operator intervention, instead of reformatting \
+      and full-snapshot-installing every HA_STALE_FOLLOWER_RECOVERY_DURATION_MS forever. A clean reformat resets the \
+      shared Ratis restart-retry budget, so without this cap a node whose divergence keeps reproducing would loop \
+      silently. The budget re-arms once the follower has looked healthy for 5x the recovery duration (the episode is \
+      considered resolved). Set to 0 for unbounded reformats (no breaker).""",
+      Integer.class, 5),
+
   HA_STALLED_REPLICA_RESYNC_DURATION_MS("arcadedb.ha.stalledReplicaResyncDurationMs", SCOPE.SERVER,
       """
       How long in milliseconds a replica must stay continuously STALLED (its matchIndex not advancing while the leader \

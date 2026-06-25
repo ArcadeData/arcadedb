@@ -268,9 +268,21 @@ class HealthMonitorTest {
 
   private static HealthMonitor stuckMonitor(final FakeHealthTarget fake, final AtomicLong clock, final long durationMs,
       final boolean enabled) {
-    final HealthMonitor monitor = new HealthMonitor(fake, 1000, 0L, durationMs, enabled);
+    return stuckMonitor(fake, clock, durationMs, enabled, 0);
+  }
+
+  private static HealthMonitor stuckMonitor(final FakeHealthTarget fake, final AtomicLong clock, final long durationMs,
+      final boolean enabled, final int maxReformats) {
+    final HealthMonitor monitor = new HealthMonitor(fake, 1000, 0L, durationMs, enabled, maxReformats);
     monitor.setClock(clock::get);
     return monitor;
+  }
+
+  /** Drives one full reformat cycle: one tick to arm the streak, then advance past the duration and tick to act. */
+  private static void runStuckCycle(final HealthMonitor monitor, final AtomicLong clock, final long durationMs) {
+    monitor.tick();
+    clock.addAndGet(durationMs + 1000);
+    monitor.tick();
   }
 
   @Test
@@ -379,5 +391,63 @@ class HealthMonitorTest {
     clock.set(10_000);
     monitor.tick();
     assertThat(fake.divergenceRecover.get()).isZero();
+  }
+
+  @Test
+  void divergenceReformatBudgetCapsRepeatedReformats() {
+    // A node whose divergence keeps reproducing must not reformat forever: the budget caps it.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true; // stays stuck across every cycle (pathological re-divergence)
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, true, 2);
+
+    for (int i = 0; i < 6; i++)
+      runStuckCycle(monitor, clock, 5000);
+
+    assertThat(fake.divergenceRecover.get())
+        .as("reformats must be capped at the configured maximum")
+        .isEqualTo(2);
+  }
+
+  @Test
+  void divergenceUnboundedWhenMaxReformatsZero() {
+    // max=0 disables the breaker: every persisted episode reformats.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, true, 0);
+
+    for (int i = 0; i < 4; i++)
+      runStuckCycle(monitor, clock, 5000);
+
+    assertThat(fake.divergenceRecover.get()).isEqualTo(4);
+  }
+
+  @Test
+  void divergenceBudgetReArmsAfterHealthyPeriod() {
+    // Once the follower looks healthy for 5x the duration, the prior episode is forgotten and the
+    // budget re-arms for a genuinely new divergence later.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final long duration = 5000;
+    final HealthMonitor monitor = stuckMonitor(fake, clock, duration, true, 2);
+
+    runStuckCycle(monitor, clock, duration);
+    runStuckCycle(monitor, clock, duration);
+    assertThat(fake.divergenceRecover.get()).as("budget consumed").isEqualTo(2);
+
+    // Follower becomes healthy; stay healthy past the reset window (5x duration = 25000ms).
+    fake.stuckDiverged = false;
+    monitor.tick();                                   // start healthy streak
+    clock.addAndGet(duration * 5 + 1000);
+    monitor.tick();                                   // healthy long enough -> budget re-arms
+
+    // A new divergence reformats again.
+    fake.stuckDiverged = true;
+    runStuckCycle(monitor, clock, duration);
+    assertThat(fake.divergenceRecover.get())
+        .as("budget re-armed after a sustained healthy period")
+        .isEqualTo(3);
   }
 }

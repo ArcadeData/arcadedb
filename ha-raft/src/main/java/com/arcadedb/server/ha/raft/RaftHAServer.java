@@ -481,8 +481,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         GlobalConfiguration.HA_STALE_FOLLOWER_RECOVERY_DURATION_MS);
     final boolean divergedFollowerRecovery = configuration.getValueAsBoolean(
         GlobalConfiguration.HA_DIVERGED_FOLLOWER_RECOVERY);
+    final int divergedFollowerMaxReformats = configuration.getValueAsInteger(
+        GlobalConfiguration.HA_DIVERGED_FOLLOWER_MAX_REFORMATS);
     this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs,
-        divergedFollowerRecovery);
+        divergedFollowerRecovery, divergedFollowerMaxReformats);
     this.healthMonitor.start();
   }
 
