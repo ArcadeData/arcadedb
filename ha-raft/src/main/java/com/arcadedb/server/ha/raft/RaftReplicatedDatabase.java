@@ -482,9 +482,18 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       // machine apply and produces inconsistent IDs across the cluster.
       if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
         return forwardCommandToLeaderViaRaft(language, query, null, args);
+      // Read-only command executed locally on this follower: honor the read-consistency header
+      // exactly like query() does. /api/v1/command can carry read-only statements (a SELECT), and
+      // a LINEARIZABLE/READ_YOUR_WRITES caller must not get a silently weaker guarantee than via
+      // /api/v1/query (the original Jepsen stale-read was a SELECT routed through command()).
+      applyReadConsistencyForReadOnlyCommand(analyzed);
       return proxied.command(language, query, configuration, args);
     }
 
+    // On the leader, a read-only command must also satisfy LINEARIZABLE (ReadIndex barrier). Only
+    // analyze when a non-EVENTUAL read-consistency header is actually present, so the common write
+    // path pays no extra parsing.
+    applyReadConsistencyForReadOnlyCommandIfRequested(language, query);
     return proxied.command(language, query, configuration, args);
   }
 
@@ -511,8 +520,12 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final QueryEngine.AnalyzedQuery analyzed = queryEngine.analyze(query);
       if (queryEngine.isExecutedByTheLeader() || analyzed.isDDL() || !analyzed.isIdempotent())
         return forwardCommandToLeaderViaRaft(language, query, args, null);
+      // Read-only command executed locally on this follower: honor the read-consistency header.
+      applyReadConsistencyForReadOnlyCommand(analyzed);
+      return proxied.command(language, query, configuration, args);
     }
 
+    applyReadConsistencyForReadOnlyCommandIfRequested(language, query);
     return proxied.command(language, query, configuration, args);
   }
 
@@ -985,6 +998,33 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   public ResultSet query(final String language, final String query, final Map<String, Object> args) {
     waitForReadConsistency();
     return proxied.query(language, query, args);
+  }
+
+  /**
+   * Applies the read-consistency barrier for a command, but ONLY when the statement is read-only
+   * (idempotent and not DDL). A read-only command (e.g. a SELECT sent to {@code /api/v1/command})
+   * must honor {@code X-ArcadeDB-Read-Consistency} exactly like {@link #query} does; a mutating
+   * command or DDL must NOT get a read barrier (it would be meaningless and could mask routing).
+   */
+  private void applyReadConsistencyForReadOnlyCommand(final QueryEngine.AnalyzedQuery analyzed) {
+    if (analyzed != null && analyzed.isIdempotent() && !analyzed.isDDL())
+      waitForReadConsistency();
+  }
+
+  /**
+   * Like {@link #applyReadConsistencyForReadOnlyCommand}, but defers the (relatively expensive)
+   * query analysis until we know a non-EVENTUAL read-consistency context is actually set. Used on
+   * the leader's command() path so the common write path (no consistency header) pays no extra
+   * parsing.
+   */
+  private void applyReadConsistencyForReadOnlyCommandIfRequested(final String language, final String query) {
+    if (raftHAServer == null)
+      return;
+    final ReadConsistencyContext ctx = READ_CONSISTENCY_CONTEXT.get();
+    if (ctx == null || ctx.consistency() == null || ctx.consistency() == Database.READ_CONSISTENCY.EVENTUAL)
+      return;
+    final QueryEngine queryEngine = proxied.getQueryEngineManager().getEngine(language, this);
+    applyReadConsistencyForReadOnlyCommand(queryEngine.analyze(query));
   }
 
   private void waitForReadConsistency() {
