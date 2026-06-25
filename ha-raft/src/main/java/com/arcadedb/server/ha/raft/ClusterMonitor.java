@@ -23,6 +23,8 @@ import com.arcadedb.log.LogManager;
 import java.util.Collections;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.logging.Level;
 
 /**
@@ -67,11 +69,39 @@ public class ClusterMonitor {
   }
 
   private final    long                            lagWarningThreshold;
+  private final    long                            stalledResyncDurationMs;
+  private final    Consumer<String>                stalledReplicaHandler;
   private volatile long                            leaderCommitIndex;
   private final    ConcurrentHashMap<String, ReplicaState> replicaStates = new ConcurrentHashMap<>();
+  // Injectable clock for deterministic tests; defaults to the wall clock. Volatile because the test
+  // thread writes it while the lag-monitor thread reads it (consistent with the other volatile fields).
+  private volatile LongSupplier                    clock         = System::currentTimeMillis;
 
   public ClusterMonitor(final long lagWarningThreshold) {
+    this(lagWarningThreshold, 0L, null);
+  }
+
+  /**
+   * @param lagWarningThreshold     lag (in Raft log entries) above which a replica is reported as lagging.
+   * @param stalledResyncDurationMs how long a replica must stay {@link ReplicaStatus#STALLED} continuously
+   *                                before {@code stalledReplicaHandler} is invoked to force a recovery.
+   *                                {@code <= 0} disables leader-driven recovery (detection/logging still run).
+   * @param stalledReplicaHandler   callback invoked (once per stall streak) with the stalled replica's id when
+   *                                the stall has persisted for {@code stalledResyncDurationMs}. May be {@code null}.
+   */
+  public ClusterMonitor(final long lagWarningThreshold, final long stalledResyncDurationMs,
+      final Consumer<String> stalledReplicaHandler) {
+    if (stalledResyncDurationMs > 0 && stalledReplicaHandler == null)
+      throw new IllegalArgumentException(
+          "stalledReplicaHandler must be non-null when stalledResyncDurationMs > 0 (leader-driven recovery enabled)");
     this.lagWarningThreshold = lagWarningThreshold;
+    this.stalledResyncDurationMs = stalledResyncDurationMs;
+    this.stalledReplicaHandler = stalledReplicaHandler;
+  }
+
+  /** Package-private test hook to drive the stall-duration logic deterministically. */
+  void setClock(final LongSupplier clock) {
+    this.clock = clock;
   }
 
   public void updateLeaderCommitIndex(final long commitIndex) {
@@ -79,7 +109,7 @@ public class ClusterMonitor {
   }
 
   public void updateReplicaMatchIndex(final String replicaId, final long matchIndex) {
-    final long now = System.currentTimeMillis();
+    final long now = clock.getAsLong();
     final long leaderIdx = leaderCommitIndex;
     final long lag = leaderIdx - matchIndex;
 
@@ -106,6 +136,10 @@ public class ClusterMonitor {
     state.lastLeaderCommitIndex = leaderIdx;
     state.lastLag = lag;
     state.status = status;
+
+    // Leader-driven recovery (#4728): if the replica stays stuck long enough, the leader actively
+    // forces it to resync instead of merely logging forever. Tracked regardless of the log throttle.
+    trackStallForRecovery(replicaId, state, matchIndex, replicaDelta, lag, now);
 
     // HEALTHY: nothing to say.
     if (status == ReplicaStatus.HEALTHY)
@@ -134,6 +168,61 @@ public class ClusterMonitor {
           replicaId, lag, previousLag, replicaDelta, leaderDelta);
       default -> {
         /* HEALTHY/UNKNOWN handled above */
+      }
+    }
+  }
+
+  /**
+   * Drives the leader-driven recovery for a replica whose {@code matchIndex} is stuck (issue #4728).
+   * A replica whose {@code matchIndex} never advances (e.g. stuck at -1) while it is far behind will
+   * otherwise stay stuck forever, since the follower's own commit index does not advance and its
+   * follower-side stale-recovery never fires. Here the leader, which is the node that actually
+   * observes the stall, triggers the recovery once the stall has persisted for
+   * {@link #stalledResyncDurationMs}.
+   * <p>
+   * The streak is intentionally decoupled from the per-tick {@link ReplicaStatus#STALLED}
+   * classification, which requires the leader to have advanced <i>this</i> tick ({@code leaderDelta > 0}).
+   * On a low-traffic cluster many ticks have no new commits, so keying the streak on that would reset
+   * it on every quiet tick and a genuinely stuck replica would never reach the trigger duration. Instead
+   * the streak persists as long as the replica stays over the lag threshold and its {@code matchIndex}
+   * has not advanced at all since the streak began; it resets the moment the replica catches up (lag
+   * drops to the threshold) or its {@code matchIndex} moves. The handler fires at most once per streak
+   * and re-arms only after a reset.
+   */
+  private void trackStallForRecovery(final String replicaId, final ReplicaState state, final long matchIndex,
+      final long replicaDelta, final long lag, final long now) {
+    if (stalledResyncDurationMs <= 0 || stalledReplicaHandler == null)
+      return; // detection/logging still run, but leader-driven recovery is disabled
+
+    final boolean behind = lag > lagWarningThreshold;
+
+    if (state.stalledSinceMs == -1) {
+      // Not in a streak: start one when the replica is over the lag threshold and its matchIndex did
+      // not advance this tick. The duration guard below absorbs transient blips.
+      if (behind && replicaDelta <= 0) {
+        state.stalledSinceMs = now;
+        state.stalledAtMatchIndex = matchIndex;
+      }
+      return;
+    }
+
+    // In a streak: the replica recovered if it is no longer behind or its matchIndex moved at all.
+    if (!behind || matchIndex > state.stalledAtMatchIndex) {
+      state.stalledSinceMs = -1;
+      state.resyncTriggered = false;
+      return;
+    }
+
+    if (!state.resyncTriggered && now - state.stalledSinceMs >= stalledResyncDurationMs) {
+      state.resyncTriggered = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "Replica '%s' stuck (matchIndex=%d, lag=%d) for %dms: leader is forcing a resync to recover it.",
+          replicaId, matchIndex, lag, now - state.stalledSinceMs);
+      try {
+        stalledReplicaHandler.accept(replicaId);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Leader-driven resync trigger for replica '%s' failed: %s", replicaId, e.getMessage());
       }
     }
   }
@@ -183,6 +272,16 @@ public class ClusterMonitor {
     long          lastLag;
     long          lastWarnAtMs;
     ReplicaStatus status = ReplicaStatus.UNKNOWN;
+    // Stall-streak state for leader-driven recovery. Unlike the snapshot fields above (which the
+    // status table / lag map read cross-thread, tolerating staleness), these three are BOTH written
+    // and read only from the single lag-monitor thread, so they need no synchronization. Any future
+    // change that reads or mutates them from another thread MUST add it.
+    // Wall-clock time (ms) when the current uninterrupted stall streak began; -1 = not stalled.
+    long          stalledSinceMs    = -1;
+    // matchIndex observed when the streak began; the streak ends as soon as matchIndex moves past it.
+    long          stalledAtMatchIndex = -1;
+    // True once the leader-driven resync has been fired for the current streak (re-armed on recovery).
+    boolean       resyncTriggered   = false;
 
     ReplicaState(final long initialMatchIndex, final long initialLeaderCommitIndex) {
       this.lastMatchIndex = initialMatchIndex;

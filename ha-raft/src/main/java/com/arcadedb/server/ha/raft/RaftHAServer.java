@@ -43,8 +43,13 @@ import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.TimeDuration;
 
+import javax.net.ssl.HttpsURLConnection;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -54,9 +59,11 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
@@ -85,6 +92,11 @@ import java.util.logging.Logger;
  */
 public class RaftHAServer implements HealthMonitor.HealthTarget {
 
+  // The forwarded user the leader presents (with the cluster token) for inter-node calls such as the
+  // stalled-replica resync. ArcadeDB's bootstrap 'root' user is the cluster-wide superuser; named here
+  // so the coupling is visible rather than scattered as a string literal.
+  private static final String FORWARDED_ROOT_USER = "root";
+
   private final    ArcadeDBServer          arcadeServer;
   private final    ContextConfiguration    configuration;
   private volatile ArcadeStateMachine      stateMachine;
@@ -110,6 +122,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile RaftTransactionBroker     transactionBroker;
   private          RaftClusterStatusExporter statusExporter;
   private          ScheduledExecutorService  lagMonitorExecutor;
+  // Runs leader-driven stalled-replica resyncs off the lag-monitor thread (issue #4728). One worker is
+  // enough since at most one resync fires per replica per stall streak; a small bounded queue with a
+  // caller-runs policy degrades to running on the lag-monitor thread under the (unlikely) burst.
+  private final    ThreadPoolExecutor        stalledResyncExecutor = createStalledResyncExecutor();
   // Inbound Raft gRPC peer allowlist, recreated on each Ratis (re)start. Periodically refreshed by the
   // health monitor tick so a returned peer's new pod IP is admitted proactively (issue #4696).
   private volatile PeerAddressAllowlistFilter allowlistFilter;
@@ -196,7 +212,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.stateMachine = new ArcadeStateMachine();
     this.stateMachine.setServer(arcadeServer);
 
-    this.clusterMonitor = new ClusterMonitor(lagWarningThreshold);
+    final long stalledResyncDurationMs = configuration.getValueAsLong(
+        GlobalConfiguration.HA_STALLED_REPLICA_RESYNC_DURATION_MS);
+    this.clusterMonitor = new ClusterMonitor(lagWarningThreshold, stalledResyncDurationMs, this::forceResyncStalledReplica);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
@@ -236,6 +254,146 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   public String getPeerHttpsAddress(final RaftPeerId peerId) {
     return resolveHttpsAddress(peerId);
+  }
+
+  /**
+   * Leader-driven recovery for a persistently STALLED replica (issue #4728). Invoked by
+   * {@link ClusterMonitor} on the leader's lag-monitor thread once a replica's {@code matchIndex} has
+   * not advanced for {@link GlobalConfiguration#HA_STALLED_REPLICA_RESYNC_DURATION_MS} while the
+   * leader kept committing. The leader instructs the stuck follower to drop its local copy and
+   * re-acquire a fresh full snapshot, the same operation an operator runs manually via
+   * {@code POST /api/v1/cluster/resync/{database}} - reused here so the cluster self-heals instead of
+   * logging the stall forever.
+   * <p>
+   * The HTTP work is done on a short-lived daemon thread so the lag-monitor thread is never blocked
+   * on network I/O. Authenticated with the inter-node cluster token (the same trust mechanism used
+   * for snapshot transfer), never with operator credentials.
+   */
+  void forceResyncStalledReplica(final String peerId) {
+    if (peerId == null || !isLeader())
+      return;
+
+    final RaftPeerId targetId = RaftPeerId.valueOf(peerId);
+    if (targetId.equals(localPeerId))
+      return; // never resync the leader itself
+
+    // On an SSL-enabled cluster the follower listens on HTTPS (a different port from plain HTTP), so
+    // prefer its HTTPS endpoint; mirror SnapshotInstaller's behaviour and fall back to plain HTTP
+    // only when no HTTPS endpoint is known.
+    final boolean useSSL = configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    boolean https = false;
+    String followerAddr = null;
+    if (useSSL) {
+      followerAddr = getPeerHttpsAddress(targetId);
+      if (followerAddr != null)
+        https = true;
+    }
+    if (followerAddr == null)
+      followerAddr = getPeerHttpAddress(targetId);
+    if (followerAddr == null) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot force resync of stalled replica '%s': its address is unknown", peerId);
+      return;
+    }
+
+    final String clusterToken = getClusterToken();
+    if (clusterToken == null || clusterToken.isEmpty()) {
+      // The follower's resync endpoint only accepts inter-node calls authenticated with the cluster
+      // token; without one the request is doomed to be rejected, so do not even attempt it.
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot force resync of stalled replica '%s': cluster token is not configured", peerId);
+      return;
+    }
+
+    final String address = followerAddr;
+    final boolean useHttps = https;
+
+    stalledResyncExecutor.execute(() -> {
+      // TODO (#4728): this resyncs EVERY non-reserved database on the follower. When a cluster hosts
+      // many databases and only one is stuck, this forces unnecessary full snapshots of the others.
+      // A per-database stall signal would let us scope the resync; acceptable as a first pass.
+      for (final String dbName : arcadeServer.getDatabaseNames()) {
+        // Re-check leadership on each iteration: the outer guard ran before this task was queued, and
+        // leadership may have moved since. A resync request from a non-leader is harmless (the
+        // follower rejects it) but would log spurious warnings, so stop early instead.
+        if (!isLeader())
+          return;
+        if (ArcadeDBServer.isReservedDatabaseName(dbName))
+          continue;
+        try {
+          requestRemoteResync(address, dbName, clusterToken, useHttps);
+          LogManager.instance().log(this, Level.INFO,
+              "Requested resync of database '%s' on stalled replica '%s' (%s)", dbName, peerId, address);
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Failed to request resync of database '%s' on stalled replica '%s' (%s): %s",
+              dbName, peerId, address, e.getMessage());
+        }
+      }
+    });
+  }
+
+  private static ThreadPoolExecutor createStalledResyncExecutor() {
+    final ThreadPoolExecutor executor = new ThreadPoolExecutor(0, 1, 30L, TimeUnit.SECONDS,
+        new ArrayBlockingQueue<>(16), r -> {
+      final Thread t = new Thread(r, "arcadedb-raft-stalled-resync");
+      t.setDaemon(true);
+      return t;
+    }, new ThreadPoolExecutor.CallerRunsPolicy());
+    return executor;
+  }
+
+  /**
+   * Sends {@code POST /api/v1/cluster/resync/{database}} to a follower, authenticated with the
+   * cluster token. When {@code https} is true the connection uses the cluster SSL context (the same
+   * one used for snapshot transfer). Visible for testing. Throws on a non-2xx response.
+   */
+  void requestRemoteResync(final String followerAddr, final String databaseName, final String clusterToken,
+      final boolean https) throws IOException {
+    final String url = (https ? "https://" : "http://") + followerAddr + "/api/v1/cluster/resync/"
+        + URLEncoder.encode(databaseName, StandardCharsets.UTF_8);
+    final HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
+    try {
+      if (conn instanceof final HttpsURLConnection httpsConn)
+        httpsConn.setSSLSocketFactory(SnapshotInstaller.buildSSLContext(arcadeServer).getSocketFactory());
+      conn.setRequestMethod("POST");
+      conn.setConnectTimeout(10_000);
+      // The resync endpoint is synchronous: it downloads the full snapshot from the leader and only
+      // then returns, so the read timeout must accommodate a snapshot transfer, not just a trigger.
+      conn.setReadTimeout(120_000);
+      conn.setDoOutput(true);
+      conn.setRequestProperty("Content-Type", "application/json");
+      // Inter-node forwarded auth: the cluster token plus the forwarded root user, validated by
+      // AbstractServerHttpHandler before the handler runs (same mechanism used for follower->leader
+      // request forwarding). No operator credentials are sent over the wire.
+      if (clusterToken != null && !clusterToken.isEmpty()) {
+        conn.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
+        conn.setRequestProperty("X-ArcadeDB-Forwarded-User", FORWARDED_ROOT_USER);
+      }
+      try (final OutputStream os = conn.getOutputStream()) {
+        os.write("{}".getBytes(StandardCharsets.UTF_8));
+      }
+      final int code = conn.getResponseCode();
+      if (code < 200 || code >= 300) {
+        drainErrorStream(conn);
+        throw new IOException("resync endpoint returned HTTP " + code);
+      }
+    } finally {
+      conn.disconnect();
+    }
+  }
+
+  /**
+   * Drains and discards the error response body so the underlying keep-alive socket can be reused by
+   * the JVM connection pool instead of being abandoned (and leaked).
+   */
+  private static void drainErrorStream(final HttpURLConnection conn) {
+    try (final var err = conn.getErrorStream()) {
+      if (err != null)
+        err.readAllBytes();
+    } catch (final IOException ignored) {
+      // best-effort cleanup
+    }
   }
 
   /**
@@ -505,6 +663,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       healthMonitor = null;
     }
     stopLagMonitor();
+    stalledResyncExecutor.shutdownNow();
     if (transactionBroker != null) {
       transactionBroker.stop();
       transactionBroker = null;
@@ -1105,9 +1264,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Ensures linearizable read consistency for the leader. Sends a ReadIndex RPC to
-   * confirm the leader lease, then waits for the local state machine to apply up to
-   * the confirmed commit index.
+   * Ensures linearizable read consistency for the leader. Sends a ReadIndex RPC which (with the
+   * leader lease disabled, see {@code RaftPropertiesBuilder}) confirms leadership via a fresh
+   * majority heartbeat round, then waits for the local state machine to apply up to the confirmed
+   * commit index.
    * <p>
    * Throws {@link ReplicationException} if leadership is lost before or after the RPC.
    */
