@@ -671,7 +671,10 @@ function importSampleDatabase(name, path, format, fromModal) {
   importWithSSE(command, onComplete, onError);
 }
 
-function importWithSSE(command, onComplete, onError) {
+function importWithSSE(command, onComplete, onError, extraBody) {
+  var body = { command: command };
+  if (extraBody)
+    for (var k in extraBody) body[k] = extraBody[k];
   fetch("api/v1/server", {
     method: "POST",
     headers: {
@@ -679,7 +682,7 @@ function importWithSSE(command, onComplete, onError) {
       "Authorization": globalCredentials,
       "Accept": "text/event-stream"
     },
-    body: JSON.stringify({ command: command })
+    body: JSON.stringify(body)
   }).then(function(response) {
     if (response.status === 401) {
       handleSessionExpired();
@@ -3909,10 +3912,16 @@ function displayDbBackupList(data) {
   for (let i in data.backups) {
     let backup = data.backups[i];
 
+    let safeFileName = (backup.fileName || "").replace(/"/g, "&quot;");
+    let actions =
+      "<button class='btn btn-sm btn-outline-primary me-1' title='Restore this backup' onclick='restoreBackupAction(\"" + safeFileName + "\")'><i class='fa fa-rotate-left'></i> Restore</button>" +
+      "<button class='btn btn-sm btn-outline-danger' title='Delete this backup' onclick='deleteBackupAction(\"" + safeFileName + "\")'><i class='fa fa-trash'></i> Delete</button>";
+
     let record = [];
     record.push(escapeHtml(backup.fileName));
     record.push(backup.timestamp ? formatBackupTimestamp(backup.timestamp) : "-");
     record.push(globalFormatSpace(backup.size));
+    record.push(actions);
     tableRecords.push(record);
   }
 
@@ -3922,9 +3931,10 @@ function displayDbBackupList(data) {
     order: [[1, "desc"]],
     pageLength: 25,
     columns: [
-      { title: "File Name", width: "50%" },
-      { title: "Timestamp", width: "30%" },
-      { title: "Size", width: "20%" },
+      { title: "File Name", width: "45%" },
+      { title: "Timestamp", width: "25%" },
+      { title: "Size", width: "12%" },
+      { title: "Actions", width: "18%", orderable: false, className: "text-nowrap" },
     ],
     data: tableRecords,
   });
@@ -3975,6 +3985,95 @@ function triggerDatabaseBackup() {
           loadDatabaseBackups();
         })
         .fail(function (jqXHR, textStatus, errorThrown) {
+          globalNotifyError(jqXHR.responseText);
+        });
+    }
+  );
+}
+
+// Restore a single backup file. Prompts for the target database name (defaulting to the source
+// database). If the chosen name matches an existing database, an explicit overwrite confirmation is
+// required; otherwise the backup is restored into a brand new database.
+function restoreBackupAction(fileName) {
+  let database = getCurrentDatabase();
+  if (database == null || database == "") {
+    globalNotify("Error", "No database selected", "danger");
+    return;
+  }
+
+  globalPrompt(
+    "Restore Backup",
+    "<p>Restore backup <strong>" + escapeHtml(fileName) + "</strong> into the database:</p>" +
+      "<input type='text' class='form-control' id='restoreTargetDb' value='" + escapeHtml(database) + "' />" +
+      "<small class='text-muted'>If the database already exists you will be asked to confirm overwriting it.</small>",
+    "Restore",
+    function (values) {
+      let target = (values.restoreTargetDb || "").trim();
+      if (target == "") {
+        globalNotify("Error", "Target database name is required", "danger");
+        return;
+      }
+
+      let exists = typeof globalDatabaseList !== "undefined" && globalDatabaseList.indexOf(target) !== -1;
+      if (exists) {
+        globalConfirm(
+          "Overwrite Database",
+          "Database '" + escapeHtml(target) + "' already exists.<br>Restoring will <strong>permanently replace</strong> it with the backup content. Any data created after the backup will be lost.<br><br>Are you sure?",
+          "warning",
+          function () {
+            doRestoreBackup(database, fileName, target, true);
+          }
+        );
+      } else {
+        doRestoreBackup(database, fileName, target, false);
+      }
+    }
+  );
+}
+
+function doRestoreBackup(sourceDatabase, fileName, target, overwrite) {
+  let command = "restore backup " + sourceDatabase + " " + fileName + " as " + target;
+
+  globalNotify("Restore", "Restoring backup into '" + escapeHtml(target) + "'...", "info");
+
+  let onComplete = function () {
+    globalNotify("Restore", "Backup restored successfully into '" + escapeHtml(target) + "'", "success");
+    updateDatabases(null, target);
+  };
+  let onError = function (msg) {
+    globalNotifyError(msg || "Restore failed");
+  };
+
+  importWithSSE(command, onComplete, onError, { overwrite: overwrite });
+}
+
+// Permanently delete a single backup file.
+function deleteBackupAction(fileName) {
+  let database = getCurrentDatabase();
+  if (database == null || database == "") {
+    globalNotify("Error", "No database selected", "danger");
+    return;
+  }
+
+  globalConfirm(
+    "Delete Backup",
+    "Are you sure you want to permanently delete backup '" + escapeHtml(fileName) + "'?",
+    "warning",
+    function () {
+      jQuery
+        .ajax({
+          type: "POST",
+          url: "api/v1/server",
+          data: JSON.stringify({ command: "delete backup " + database + " " + fileName }),
+          beforeSend: function (xhr) {
+            xhr.setRequestHeader("Authorization", globalCredentials);
+          },
+        })
+        .done(function () {
+          globalNotify("Delete Backup", "Backup '" + escapeHtml(fileName) + "' deleted", "success");
+          loadDatabaseBackups();
+        })
+        .fail(function (jqXHR) {
           globalNotifyError(jqXHR.responseText);
         });
     }
