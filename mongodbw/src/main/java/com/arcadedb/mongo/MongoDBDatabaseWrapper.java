@@ -25,7 +25,6 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
-import com.arcadedb.schema.DocumentType;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import de.bwaldvogel.mongo.MongoBackend;
@@ -63,10 +62,19 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     this.database = database;
     this.plugin = plugin;
     this.backend = backend;
+  }
 
-    for (final DocumentType dt : database.getSchema().getTypes()) {
-      collections.put(dt.getName(), new MongoDBCollectionWrapper(database, dt.getName()));
-    }
+  /**
+   * Resolves a collection wrapper lazily against the live schema. This database wrapper is shared and cached across all
+   * client connections, so the collection set must be looked up on demand: types created after the wrapper was built
+   * (e.g. via Studio, SQL or another connection) must be visible too.
+   *
+   * @return the collection wrapper, or {@code null} if no type with that name exists.
+   */
+  private MongoCollection<Long> getCollection(final String collectionName) {
+    if (!database.getSchema().existsType(collectionName))
+      return null;
+    return collections.computeIfAbsent(collectionName, name -> new MongoDBCollectionWrapper(database, name));
   }
 
   @Override
@@ -76,9 +84,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   @Override
   public void handleClose(final Channel channel) {
-    // THIS IS CALLED FROM THE CLIENT TO FREE CONNECTION RESOURCES. DO NOT CLOSE THE DATABASE BECAUSE OTHER CONNECTIONS MAY NEED IT
-    collections.clear();
-    lastResults.clear();
+    // THIS IS CALLED FROM THE CLIENT TO FREE CONNECTION RESOURCES. DO NOT CLOSE THE DATABASE BECAUSE OTHER CONNECTIONS MAY
+    // NEED IT. ONLY THE CLOSING CHANNEL'S STATE MUST BE REMOVED: THE COLLECTION CACHE AND OTHER CONNECTIONS' RESULTS ARE
+    // SHARED ACROSS ALL CLIENTS (THIS WRAPPER IS CACHED PER-DATABASE IN THE BACKEND).
+    lastResults.remove(channel);
   }
 
   @Override
@@ -168,7 +177,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     try {
       this.clearLastStatus(query.getChannel());
       final String collectionName = query.getCollectionName();
-      final MongoCollection<Long> collection = collections.get(collectionName);
+      final MongoCollection<Long> collection = getCollection(collectionName);
       if (collection == null) {
         return new QueryResult();
       } else {
@@ -186,7 +195,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
     final String collectionName = document.get("aggregate").toString();
     database.countType(collectionName, false);
 
-    final MongoCollection<Long> collection = collections.get(collectionName);
+    final MongoCollection<Long> collection = getCollection(collectionName);
 
     final Object pipelineObject = Aggregation.parse(document.get("pipeline"));
     final List<Document> pipeline = Aggregation.parse(pipelineObject);
@@ -279,7 +288,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
     final Document response = responseOk();
 
-    final MongoCollection<Long> collection = collections.get(collectionName);
+    final MongoCollection<Long> collection = getCollection(collectionName);
 
     if (collection == null) {
       response.put("missing", Boolean.TRUE);
@@ -296,7 +305,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
 
   private Document find(final Document document) throws MongoServerException {
     final Document filter = (Document) document.get("filter");
-    final int limit = this.getOptionalNumber(document, "limit", -1);
+    // A missing/0 limit means "no limit" (a -1 sentinel here would be interpreted as a legacy single-batch limit of 1)
+    final int limit = this.getOptionalNumber(document, "limit", 0);
     final int skip = this.getOptionalNumber(document, "skip", 0);
     final String collectionName = (String) document.get("find");
 
