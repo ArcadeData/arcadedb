@@ -56,6 +56,7 @@ import java.nio.ByteBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -142,6 +143,28 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
   /** Per-database bootstrap baseline as it appears in the committed Raft log entry. */
   public record BootstrapBaseline(String fingerprint, long lastTxId) {
+  }
+
+  /**
+   * Per-database auto-acquisition status (issue #4727), surfaced in the cluster status endpoint and the
+   * Studio HA panel. Updated by {@link #notifyInstallSnapshotFromLeader} as a joining node reconciles its
+   * local database set against the leader's.
+   */
+  private final ConcurrentHashMap<String, AcquireStatus> acquireStatuses = new ConcurrentHashMap<>();
+
+  public enum AcquireState {
+    /** A full-snapshot pull of this database is in progress. */
+    ACQUIRING,
+    /** This database was successfully pulled from the leader. */
+    ACQUIRED,
+    /** This node holds this database but the leader does not - kept (not dropped); needs operator attention. */
+    LEADER_MISSING,
+    /** The last acquisition attempt failed; it will be retried on the next reconcile. */
+    FAILED
+  }
+
+  /** Snapshot of a database's acquisition state for status export. */
+  public record AcquireStatus(AcquireState state, long timestamp, String error) {
   }
 
   private final AtomicBoolean needsSnapshotDownload      = new AtomicBoolean(false);
@@ -565,17 +588,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
         final String clusterToken = raftHAServer.getClusterToken();
 
-        for (final String dbName : server.getDatabaseNames()) {
-          LogManager.instance().log(this, Level.INFO,
-              "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
-
-          // install() downloads the snapshot with the database still open and only closes + swaps it
-          // once a complete copy is on disk, rolling back on failure, so a failed download never
-          // leaves this database closed (DatabaseIsClosedException).
-          if (server.existsDatabase(dbName))
-            SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-                leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
-        }
+        reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);
 
         LogManager.instance().log(this, Level.INFO, "Full resync from leader completed");
         return firstTermIndexInLog;
@@ -585,6 +598,120 @@ public class ArcadeStateMachine extends BaseStateMachine {
         throw new RuntimeException("Error during Raft snapshot installation", e);
       }
     });
+  }
+
+  /**
+   * Reconciles this node's local database set against the leader's and installs every database the leader holds -
+   * refreshing the ones already present and acquiring the ones this node has never seen (issue #4727).
+   * <p>
+   * Gated on {@link GlobalConfiguration#HA_AUTO_ACQUIRE_DATABASES}: when disabled, falls back to the legacy
+   * behavior of refreshing only databases already present on disk. When the leader's database list cannot be
+   * fetched (leader momentarily unreachable), it also falls back to the legacy refresh so the install never
+   * regresses; the missing databases are retried on the next install-snapshot / leader change.
+   * <p>
+   * <b>Additive only:</b> a database present locally but absent on the leader is never dropped (that keeps a real
+   * {@code DROP_DATABASE_ENTRY} distinguishable from "the leader never had it"); it is flagged
+   * {@link AcquireState#LEADER_MISSING} for operator attention.
+   *
+   * @throws IOException if a database install fails (so the caller leaves the Ratis snapshot install incomplete
+   *                     and Ratis re-triggers it; installs are idempotent).
+   */
+  private void reconcileDatabasesFromLeader(final String leaderHttpAddr, final String leaderHttpsAddr,
+      final String clusterToken) throws IOException {
+
+    final boolean autoAcquire = server.getConfiguration().getValueAsBoolean(
+        GlobalConfiguration.HA_AUTO_ACQUIRE_DATABASES);
+
+    if (!autoAcquire) {
+      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      return;
+    }
+
+    // Enumerate the leader's databases via the existing bootstrap-state RPC. On failure, degrade to the legacy
+    // refresh-existing-only path rather than failing the whole install.
+    final List<LeaderDatabaseQuery.DatabaseInfo> leaderDbs;
+    try {
+      final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
+      leaderDbs = LeaderDatabaseQuery.fetch(leaderHttpAddr, clusterToken, timeoutMs);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not list the leader's databases for auto-acquire (%s); refreshing only the databases already "
+              + "present locally. Missing databases will be retried on the next reconcile.", e.getMessage());
+      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      return;
+    }
+
+    final Set<String> leaderDbNames = new HashSet<>();
+    for (final LeaderDatabaseQuery.DatabaseInfo info : leaderDbs)
+      leaderDbNames.add(info.name());
+
+    // Install every database the leader holds: refresh the ones we already have, acquire the rest.
+    for (final String dbName : leaderDbNames) {
+      final boolean isNew = !server.existsDatabase(dbName);
+      acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRING, System.currentTimeMillis(), null));
+      LogManager.instance().log(this, Level.INFO, "%s database '%s' from leader %s...",
+          isNew ? "Acquiring" : "Refreshing", dbName, leaderHttpAddr);
+      try {
+        if (isNew)
+          SnapshotInstaller.acquireNewDatabase(dbName, () -> leaderHttpAddr, () -> leaderHttpsAddr, clusterToken, server);
+        else
+          // install() downloads the snapshot with the database still open and only closes + swaps it once a
+          // complete copy is on disk, rolling back on failure, so a failed download never leaves the database
+          // closed (DatabaseIsClosedException).
+          SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+              leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+        acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRED, System.currentTimeMillis(), null));
+      } catch (final IOException e) {
+        acquireStatuses.put(dbName, new AcquireStatus(AcquireState.FAILED, System.currentTimeMillis(), e.getMessage()));
+        throw e;
+      }
+    }
+
+    // Additive-only guard: a database we hold that the leader does not must NOT be dropped here. Flag it so the
+    // cluster status / Studio surfaces it; a genuine DROP still arrives via DROP_DATABASE_ENTRY replay.
+    for (final String localDb : server.getDatabaseNames()) {
+      if (localDb.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
+        continue;
+      if (!leaderDbNames.contains(localDb)) {
+        acquireStatuses.put(localDb, new AcquireStatus(AcquireState.LEADER_MISSING, System.currentTimeMillis(), null));
+        LogManager.instance().log(this, Level.WARNING,
+            "Database '%s' is present locally but the leader does not hold it; keeping the local copy (not dropping). "
+                + "If this node is an authoritative source, transfer leadership to a node that holds '%s' and resync.",
+            localDb, localDb);
+      }
+    }
+  }
+
+  /**
+   * Legacy behavior: refresh only the databases already present on this node from the leader. Used when
+   * {@link GlobalConfiguration#HA_AUTO_ACQUIRE_DATABASES} is disabled or the leader's database list is
+   * unavailable.
+   */
+  private void refreshExistingDatabases(final String leaderHttpAddr, final String leaderHttpsAddr,
+      final String clusterToken) throws IOException {
+    for (final String dbName : server.getDatabaseNames()) {
+      if (server.existsDatabase(dbName)) {
+        LogManager.instance().log(this, Level.INFO,
+            "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);
+        SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+            leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+      }
+    }
+  }
+
+  /** Snapshot of the per-database auto-acquisition status, for the cluster status endpoint (issue #4727). */
+  public AcquireStatus getAcquireStatus(final String dbName) {
+    return acquireStatuses.get(dbName);
+  }
+
+  /** Database names currently in the given auto-acquisition state (issue #4727), e.g. for cluster alerts. */
+  public List<String> getDatabasesWithAcquireState(final AcquireState state) {
+    final List<String> out = new ArrayList<>();
+    for (final Map.Entry<String, AcquireStatus> e : acquireStatuses.entrySet())
+      if (e.getValue().state() == state)
+        out.add(e.getKey());
+    Collections.sort(out);
+    return out;
   }
 
   public long getElectionCount() {

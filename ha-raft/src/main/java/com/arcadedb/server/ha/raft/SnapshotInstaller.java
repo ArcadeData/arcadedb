@@ -36,6 +36,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -74,6 +75,12 @@ public final class SnapshotInstaller {
   static final String SNAPSHOT_BACKUP_DIR    = ".snapshot-backup";
   static final String SNAPSHOT_PENDING_FILE  = ".snapshot-pending";
   static final String SNAPSHOT_COMPLETE_FILE = ".snapshot-complete";
+
+  // Reserved staging directory prefix for acquiring a database the node has NEVER seen (issue #4727).
+  // A new-database acquire downloads into databases/.acquire-<name>/ and publishes with a single atomic
+  // rename to databases/<name>/. The '.' prefix makes it a reserved name (ArcadeDBServer.isReservedDatabaseName),
+  // so the startup scan (ArcadeDBServer.loadDatabases) never tries to open a half-written acquisition.
+  static final String ACQUIRE_STAGING_PREFIX = ".acquire-";
 
   /**
    * Maximum tolerated uncompressed:compressed size ratio per ZIP entry.
@@ -257,6 +264,113 @@ public final class SnapshotInstaller {
   }
 
   /**
+   * Acquires a database the local node has <b>never seen</b> on disk, crash-safely (issue #4727).
+   * <p>
+   * Unlike {@link #install} - which refreshes an <i>existing</i> database in place and can roll back to a
+   * retained {@code .snapshot-backup} - a brand-new acquire has no previous copy. The hazard is the startup
+   * scan: {@code ArcadeDBServer.loadDatabases} opens every non-reserved {@code databases/<name>/} directory
+   * before HA crash recovery runs, so a half-written download left under the final name would be opened as a
+   * corrupt database. To avoid that, the download is staged under a <b>reserved</b> directory
+   * ({@code databases/.acquire-<name>/}, skipped by the boot scan) and published with a single
+   * {@link StandardCopyOption#ATOMIC_MOVE atomic rename}. A crash before the rename leaves only the reserved
+   * staging dir (cleaned on the next startup by {@link #recoverPendingSnapshotSwaps}); a crash after it leaves
+   * a complete, openable database. No partial non-reserved directory can ever exist.
+   * <p>
+   * If the database materialises locally while we download (e.g. an {@code INSTALL_DATABASE_ENTRY} is replayed
+   * concurrently), this falls back to the in-place {@link #install} refresh so the now-registered database still
+   * receives the leader's snapshot.
+   */
+  public static void acquireNewDatabase(final String databaseName,
+      final Supplier<String> leaderHttpAddrSupplier, final Supplier<String> leaderHttpsAddrSupplier,
+      final String clusterToken, final ArcadeDBServer server) throws IOException {
+
+    final Path databasesDir = Path.of(
+        server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY))
+        .normalize().toAbsolutePath();
+    final Path dbPath = databasesDir.resolve(databaseName);
+    final Path staging = databasesDir.resolve(ACQUIRE_STAGING_PREFIX + databaseName);
+
+    // Raced: the database already exists locally (created/registered concurrently). Refresh in place instead
+    // of acquiring, so two creators never race on dbPath.
+    if (server.existsDatabase(databaseName)) {
+      install(databaseName, dbPath.toString(), leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken, server);
+      return;
+    }
+
+    try {
+      // Clean any leftover staging from a previous failed attempt, then create a fresh reserved staging dir.
+      deleteDirectoryIfExists(staging);
+      Files.createDirectories(staging);
+
+      // PHASE 1 - DOWNLOAD into the reserved staging dir. A crash here cannot leave a half-written
+      // databases/<name>/ that the boot scan opens.
+      final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
+      final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
+      try {
+        downloadWithRetry(databaseName, staging, leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken,
+            maxRetries, retryBaseMs, server);
+      } catch (final IOException e) {
+        deleteDirectoryIfExists(staging);
+        throw e;
+      }
+
+      // Re-check right before publishing: the database may have been created concurrently while we downloaded.
+      if (server.existsDatabase(databaseName)) {
+        deleteDirectoryIfExists(staging);
+        install(databaseName, dbPath.toString(), leaderHttpAddrSupplier, leaderHttpsAddrSupplier, clusterToken, server);
+        return;
+      }
+
+      // A stale, unregistered databases/<name>/ (e.g. from a pre-upgrade crash) would block the rename. The
+      // leader's copy is authoritative for an unseen database, so clear it before publishing.
+      if (Files.exists(dbPath))
+        deleteDirectoryIfExists(dbPath);
+
+      // PHASE 2 - PUBLISH with a single atomic rename.
+      publishStaging(staging, dbPath);
+
+      try {
+        // Register + validate the freshly acquired snapshot by opening it.
+        server.getDatabase(databaseName);
+      } catch (final RuntimeException openEx) {
+        // No previous copy to roll back to: drop the directory and leave the database ABSENT (the safe state).
+        // The next reconcile re-acquires it.
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Acquired snapshot for new database '%s' failed to open; removing it and leaving the database absent "
+                + "(it will be re-acquired on the next reconcile)", openEx, databaseName);
+        try {
+          if (server.existsDatabase(databaseName))
+            ((DatabaseInternal) server.getDatabase(databaseName)).getEmbedded().close();
+        } catch (final Exception ignore) {
+          // best-effort close before removal
+        }
+        server.removeDatabase(databaseName);
+        deleteDirectoryIfExists(dbPath);
+        throw new IOException("Acquired snapshot for new database '" + databaseName + "' failed to open", openEx);
+      }
+
+      HALog.log(SnapshotInstaller.class, HALog.BASIC, "New database '%s' acquired from leader", databaseName);
+    } finally {
+      // Defensive: on success the staging dir was renamed away; on failure it was deleted. This is a no-op
+      // in both cases but guarantees no reserved staging dir is ever leaked.
+      deleteDirectoryIfExists(staging);
+    }
+  }
+
+  /**
+   * Publishes a fully-downloaded acquisition staging directory to its final database directory with a single
+   * atomic rename. Same-filesystem directory rename, so the swap is all-or-nothing. Falls back to a plain move
+   * only on the rare filesystem that does not support {@link StandardCopyOption#ATOMIC_MOVE}.
+   */
+  private static void publishStaging(final Path staging, final Path dbPath) throws IOException {
+    try {
+      Files.move(staging, dbPath, StandardCopyOption.ATOMIC_MOVE);
+    } catch (final AtomicMoveNotSupportedException e) {
+      Files.move(staging, dbPath);
+    }
+  }
+
+  /**
    * Resolves the on-disk path of a database, so callers no longer need to keep it open just to read its
    * path before an install. Two cases:
    * <ul>
@@ -377,8 +491,25 @@ public final class SnapshotInstaller {
 
     try (final DirectoryStream<Path> stream = Files.newDirectoryStream(databasesDir, Files::isDirectory)) {
       for (final Path dbDir : stream) {
-        // Skip internal snapshot directories themselves
         final String dirName = dbDir.getFileName().toString();
+
+        // Clean up an interrupted new-database acquisition staging dir (databases/.acquire-<name>, issue #4727).
+        // A completed acquire atomically renames the staging dir to its final database name, so any surviving
+        // .acquire-* dir is an interrupted download and is safe to delete; the node re-acquires it on the next
+        // reconcile. These are reserved ('.'-prefixed) so the boot scan never opened them.
+        if (dirName.startsWith(ACQUIRE_STAGING_PREFIX)) {
+          try {
+            LogManager.instance().log(SnapshotInstaller.class, Level.INFO,
+                "Cleaning up interrupted new-database acquisition staging dir: %s", null, dbDir);
+            deleteDirectoryIfExists(dbDir);
+          } catch (final IOException e) {
+            LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
+                "Could not delete acquisition staging dir %s: %s", e, dbDir, e.getMessage());
+          }
+          continue;
+        }
+
+        // Skip internal snapshot directories themselves
         if (dirName.startsWith("."))
           continue;
 

@@ -70,9 +70,46 @@ public class ClusterAlerts {
    * Databases that are not in memory are skipped: a status poll must never trigger a database open.
    */
   public static JSONArray scan(final ArcadeDBServer server) {
+    return scan(server, null);
+  }
+
+  /**
+   * Scan overload that also includes HA auto-acquisition alerts when a {@link ArcadeStateMachine} is available
+   * (issue #4727). Pass {@code null} for the non-HA / pre-start path.
+   */
+  public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts);
+    if (stateMachine != null)
+      checkLeaderMissingDatabases(stateMachine, alerts);
     return alerts;
+  }
+
+  /**
+   * Flags databases this node holds that the leader does not (issue #4727). This is the aggravating factor from
+   * #4522: a node that lacks a database can be elected leader, leaving the only authoritative copies on followers
+   * where auto-acquire cannot reach them. The database is deliberately NOT dropped; the operator must transfer
+   * leadership to a node that holds it (or resync) to redistribute it.
+   */
+  static void checkLeaderMissingDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts) {
+    final List<String> missing = stateMachine.getDatabasesWithAcquireState(ArcadeStateMachine.AcquireState.LEADER_MISSING);
+    if (missing.isEmpty())
+      return;
+
+    final JSONArray names = new JSONArray();
+    for (final String name : missing)
+      names.put(name);
+
+    alerts.put(new JSONObject()
+        .put("id", "leader-missing-databases")
+        .put("severity", SEVERITY_WARNING)
+        .put("title", "This node holds database(s) the leader does not")
+        .put("message", "This node holds " + missing.size() + " database(s) that the current leader does not have. "
+            + "They were kept (never dropped), but the cluster cannot auto-replicate them to other nodes while the "
+            + "leader lacks them, so new/empty nodes will not receive them.")
+        .put("recommendation", "Transfer leadership to a node that holds these databases (POST /api/v1/cluster/leader), "
+            + "then resync the nodes that are missing them (POST /api/v1/cluster/resync/{database}).")
+        .put("details", new JSONObject().put("databases", names)));
   }
 
   static void checkSingleBucketTypes(final ArcadeDBServer server, final JSONArray alerts) {

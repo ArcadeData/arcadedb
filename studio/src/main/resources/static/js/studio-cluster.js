@@ -1,4 +1,7 @@
 var clusterRefreshTimer = null;
+// Last cluster status payload, kept so on-demand actions (e.g. the leadership peer picker) can read the
+// current peer list without re-fetching.
+var clusterLastData = null;
 
 function updateCluster(callback) {
   jQuery.ajax({
@@ -17,6 +20,8 @@ function updateCluster(callback) {
 }
 
 function renderClusterData(data) {
+  clusterLastData = data;
+
   // Header
   $("#clusterNameLabel").text(data.clusterName || "");
 
@@ -62,6 +67,10 @@ function renderClusterData(data) {
   // Emergency recovery controls (resync a diverged database from the leader). Only shown on a
   // follower; the leader holds the authoritative copy and has nothing to resync.
   renderResyncRecovery(data);
+
+  // Leadership controls (transfer / step down) and per-database consistency verification (issue #4727).
+  renderLeadershipControls(data);
+  renderVerifyConsistency(data);
 
   // Update metrics summary
   updateMetricsSummary(data);
@@ -228,6 +237,205 @@ function resyncDatabase(databaseName) {
       })
       .fail(function(jqXHR) { globalNotifyError(jqXHR.responseText); });
     });
+}
+
+// ==================== LEADERSHIP CONTROLS (issue #4727) ====================
+
+// Shows the transfer-leadership / step-down actions on the leader; followers see a hint instead.
+function renderLeadershipControls(data) {
+  var card = $("#clusterLeadershipCard");
+  if (card.length === 0)
+    return; // Older cluster.html; degrade silently.
+  var isLeader = data.isLeader === true;
+  $("#clusterLeadershipActions").toggle(isLeader);
+  $("#clusterLeadershipHint").toggle(!isLeader);
+}
+
+// Opens a peer picker and transfers leadership to the chosen peer (POST /api/v1/cluster/leader).
+function transferLeadershipPrompt() {
+  var data = clusterLastData || {};
+  var peers = data.peers || [];
+  var localPeerId = data.localPeerId;
+  var options = "";
+  for (var i = 0; i < peers.length; i++) {
+    var id = peers[i].id;
+    if (id === localPeerId)
+      continue; // cannot transfer to self (the current leader)
+    options += '<option value="' + escapeHtml(id) + '">' + escapeHtml(id) + '</option>';
+  }
+  if (options === "") {
+    globalNotify("Transfer leadership", "No other peer is available to receive leadership", "warning");
+    return;
+  }
+  var html =
+    '<div class="mb-2">'
+    + '<label for="transferPeerId" class="form-label" style="font-size:0.85rem;">Target peer</label>'
+    + '<select class="form-select" id="transferPeerId">' + options + '</select>'
+    + '</div>';
+  globalPrompt("Transfer Leadership", html, "Transfer", function(values) {
+    var peerId = values["transferPeerId"];
+    if (!peerId) return;
+    globalNotify("Transfer leadership", "Transferring leadership to '" + peerId + "'...", "info");
+    jQuery.ajax({
+      type: "POST",
+      url: "api/v1/cluster/leader",
+      data: JSON.stringify({ peerId: peerId }),
+      contentType: "application/json",
+      beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+    })
+    .done(function() {
+      globalNotify("Success", "Leadership transferred to '" + peerId + "'", "success");
+      setTimeout(function() { updateCluster(); }, 2000);
+    })
+    .fail(function(jqXHR) { globalNotifyError(jqXHR.responseText); });
+  });
+}
+
+// Steps the local leader down (POST /api/v1/cluster/stepdown); the cluster elects a new leader.
+function stepDownLeader() {
+  globalConfirm("Step Down",
+    "Relinquish leadership on this node? The cluster will elect a new leader.",
+    "warning",
+    function() {
+      jQuery.ajax({
+        type: "POST",
+        url: "api/v1/cluster/stepdown",
+        beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+      })
+      .done(function() {
+        globalNotify("Success", "Leadership step-down initiated", "success");
+        setTimeout(function() { updateCluster(); }, 2000);
+      })
+      .fail(function(jqXHR) { globalNotifyError(jqXHR.responseText); });
+    });
+}
+
+// ==================== CONSISTENCY VERIFICATION (issue #4727) ====================
+
+// On the leader, lists every database with a "Verify" button that fans out a per-file checksum comparison.
+function renderVerifyConsistency(data) {
+  var card = $("#clusterVerifyCard");
+  var container = $("#clusterVerifyList");
+  if (card.length === 0)
+    return;
+  container.empty();
+
+  var isLeader = data.isLeader === true;
+  var dbs = data.databases || [];
+  if (!isLeader || dbs.length === 0) {
+    card.hide();
+    return;
+  }
+  card.show();
+
+  for (var i = 0; i < dbs.length; i++) {
+    var name = dbs[i].name;
+    var nameAttr = JSON.stringify(name).replace(/"/g, "&quot;");
+    container.append(
+      '<div class="d-flex align-items-center justify-content-between py-1 px-2 mb-1" '
+      + 'style="font-size:0.82rem; background:var(--bg-main); border-radius:6px; border:1px solid var(--border-light);">'
+      + '<div><i class="fa fa-database" style="color:var(--color-brand); margin-right:6px;"></i>'
+      + escapeHtml(name) + '</div>'
+      + '<div><button class="btn btn-sm btn-outline-secondary" style="font-size:0.7rem; padding:1px 8px;" '
+      + 'onclick="verifyDatabase(' + nameAttr + ')" title="Compare this database\'s checksums across all nodes">'
+      + '<i class="fa fa-check-double"></i> Verify</button></div>'
+      + '</div>'
+    );
+  }
+}
+
+// Runs POST /api/v1/cluster/verify/{db} and shows the per-peer result.
+function verifyDatabase(databaseName) {
+  globalNotify("Verify", "Verifying '" + databaseName + "' across the cluster...", "info");
+  jQuery.ajax({
+    type: "POST",
+    url: "api/v1/cluster/verify/" + encodeURIComponent(databaseName),
+    beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+  })
+  .done(function(data) {
+    var result = (data && data.result) ? data.result : data;
+    var status = result.overallStatus || "UNKNOWN";
+    var ok = status === "ALL_CONSISTENT";
+    var html = '<div style="font-size:0.85rem;">'
+      + '<div class="mb-2"><b>Status:</b> <span class="badge ' + (ok ? "bg-success" : "bg-danger") + '">'
+      + escapeHtml(status) + '</span></div>';
+    var peers = result.peers || [];
+    if (peers.length > 0) {
+      html += '<table class="table table-sm" style="font-size:0.8rem;"><thead><tr><th>Peer</th><th>Status</th></tr></thead><tbody>';
+      for (var i = 0; i < peers.length; i++) {
+        var p = peers[i];
+        var pStatus = p.status || "-";
+        var badge = pStatus === "CONSISTENT" ? "bg-success" : (pStatus === "ERROR" ? "bg-secondary" : "bg-danger");
+        html += '<tr><td>' + escapeHtml(p.peerId || p.httpAddress || "-") + '</td>'
+          + '<td><span class="badge ' + badge + '">' + escapeHtml(pStatus) + '</span></td></tr>';
+      }
+      html += '</tbody></table>';
+    }
+    html += '</div>';
+    globalAlert("Consistency: " + escapeHtml(databaseName), html, ok ? "success" : "warning");
+  })
+  .fail(function(jqXHR) { globalNotifyError(jqXHR.responseText); });
+}
+
+// ==================== PRESENCE MATRIX (issue #4727) ====================
+
+// Loads the per-database x per-node presence matrix from the leader (on demand, not on the auto-poll).
+function loadPresenceMatrix() {
+  jQuery.ajax({
+    type: "GET",
+    url: "api/v1/cluster?presence=true",
+    beforeSend: function(xhr) { xhr.setRequestHeader("Authorization", globalCredentials); }
+  })
+  .done(function(data) { renderPresenceMatrix(data); })
+  .fail(function(jqXHR) { globalNotifyError(jqXHR.responseText); });
+}
+
+function renderPresenceMatrix(data) {
+  var container = $("#clusterPresenceMatrix");
+  if (container.length === 0)
+    return;
+  container.empty();
+
+  var presence = data.databasePresence;
+  if (!presence) {
+    container.append('<div style="font-size:0.8rem;color:var(--text-secondary);">'
+      + 'The presence matrix is computed on the leader. Open this page on the leader node and click '
+      + '"Load presence matrix".</div>');
+    return;
+  }
+
+  var nodes = presence.nodes || [];
+  var dbs = presence.databases || [];
+  var unreachable = presence.unreachable || [];
+
+  var html = '<div class="table-responsive"><table class="table table-sm table-bordered" style="font-size:0.8rem;">';
+  html += '<thead><tr><th>Database</th>';
+  for (var n = 0; n < nodes.length; n++) {
+    var isUnreachable = unreachable.indexOf(nodes[n]) >= 0;
+    html += '<th title="' + escapeHtml(nodes[n]) + '">' + escapeHtml(nodes[n])
+      + (isUnreachable ? ' <span class="badge bg-secondary">unreachable</span>' : '') + '</th>';
+  }
+  html += '</tr></thead><tbody>';
+
+  for (var d = 0; d < dbs.length; d++) {
+    var db = dbs[d];
+    var present = db.present || [];
+    html += '<tr><td><i class="fa fa-database" style="color:var(--color-brand); margin-right:6px;"></i>'
+      + escapeHtml(db.name) + '</td>';
+    for (var c = 0; c < nodes.length; c++) {
+      var has = present.indexOf(nodes[c]) >= 0;
+      var unreach = unreachable.indexOf(nodes[c]) >= 0;
+      if (unreach)
+        html += '<td class="text-center" style="color:var(--text-secondary);">?</td>';
+      else if (has)
+        html += '<td class="text-center" style="color:#16a34a;"><i class="fa fa-check"></i></td>';
+      else
+        html += '<td class="text-center" style="color:#dc2626;"><i class="fa fa-times"></i></td>';
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table></div>';
+  container.append(html);
 }
 
 function abbreviateFingerprint(fp) {

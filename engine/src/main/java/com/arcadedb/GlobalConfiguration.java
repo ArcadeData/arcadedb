@@ -867,6 +867,16 @@ public enum GlobalConfiguration {
       knows which peer was unreachable.""",
       Long.class, 120_000L),
 
+  HA_AUTO_ACQUIRE_DATABASES("arcadedb.ha.autoAcquireDatabases", SCOPE.SERVER,
+      """
+      When true (the default), a node that joins the cluster reconciles its local database set against the leader's \
+      and auto-pulls (full snapshot install) any database it has never seen on disk - so an empty/new node \
+      (e.g. a StatefulSet scaled up) becomes a full replica with zero manual steps. When false, the node only \
+      refreshes databases already present locally (the legacy behavior) and never acquires unseen ones. This is a \
+      per-node local policy, re-read on every boot and not stored in Raft; acquisition is additive and never drops \
+      a database the leader is missing, so a mixed cluster is safe.""",
+      Boolean.class, true),
+
   HA_SNAPSHOT_MAX_CONCURRENT("arcadedb.ha.snapshotMaxConcurrent", SCOPE.SERVER,
       "Maximum number of concurrent snapshot downloads served by the leader. Requests over this limit receive HTTP 503.",
       Integer.class, 2),
