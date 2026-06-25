@@ -152,9 +152,12 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
    * missing:[...]}]}}. A peer that cannot be reached is reported in {@code unreachable} and omitted from the
    * present/missing accounting so a transient blip is not mistaken for a dropped database.
    * <p>
-   * The fan-out is sequential on the Undertow worker thread, so worst-case latency is
-   * {@code peers x HA_BOOTSTRAP_TIMEOUT_MS}. This is acceptable because it is opt-in ({@code ?presence=true}) and
-   * leader-only, not part of the cheap auto-poll; a parallel fan-out would bound it for very large clusters.
+   * The fan-out is sequential on the Undertow worker thread, with a short per-peer timeout
+   * ({@link #PRESENCE_QUERY_TIMEOUT_MS}), so worst-case latency is {@code peers x 5s}. This is acceptable because
+   * it is opt-in ({@code ?presence=true}) and leader-only, not part of the cheap auto-poll; a parallel fan-out
+   * would bound it for very large clusters. If parallelized later, honor the CLAUDE.md concurrency rule - do not
+   * use {@code ForkJoinPool.commonPool()} for server-internal work; use a dedicated bounded pool wired into
+   * {@code PoolMetrics}.
    * Note the queried peer's bootstrap-state handler may open a closed database to fingerprint it, so this path -
    * unlike the no-open cheap poll - can trigger a database load on the remote peer.
    */

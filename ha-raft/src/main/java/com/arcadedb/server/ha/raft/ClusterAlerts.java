@@ -80,8 +80,10 @@ public class ClusterAlerts {
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts);
-    if (stateMachine != null)
+    if (stateMachine != null) {
       checkLeaderMissingDatabases(stateMachine, alerts);
+      checkFailedAcquireDatabases(stateMachine, alerts);
+    }
     return alerts;
   }
 
@@ -93,6 +95,37 @@ public class ClusterAlerts {
    */
   static void checkLeaderMissingDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts) {
     addLeaderMissingAlert(stateMachine.getDatabasesWithAcquireState(ArcadeStateMachine.AcquireState.LEADER_MISSING), alerts);
+  }
+
+  /**
+   * Flags databases left in the FAILED acquisition state (issue #4727). After the acquire give-up threshold a
+   * database stops forcing the snapshot install to re-run, so it is only retried on the next natural
+   * InstallSnapshot - which Ratis avoids in favor of log replay. Such a database can therefore stay absent
+   * indefinitely even after the leader's copy is fixed, so surface it for an explicit operator resync.
+   */
+  static void checkFailedAcquireDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts) {
+    addFailedAcquireAlert(stateMachine.getDatabasesWithAcquireState(ArcadeStateMachine.AcquireState.FAILED), alerts);
+  }
+
+  /** Pure alert builder (package-private for unit testing): appends the failed-acquire alert iff {@code failed} is non-empty. */
+  static void addFailedAcquireAlert(final List<String> failed, final JSONArray alerts) {
+    if (failed == null || failed.isEmpty())
+      return;
+
+    final JSONArray names = new JSONArray();
+    for (final String name : failed)
+      names.put(name);
+
+    alerts.put(new JSONObject()
+        .put("id", "failed-acquire-databases")
+        .put("severity", SEVERITY_WARNING)
+        .put("title", "Database(s) failed to acquire from the leader")
+        .put("message", failed.size() + " database(s) could not be acquired/refreshed from the leader after repeated "
+            + "attempts and are not present on this node. They will only be retried on the next snapshot install, so "
+            + "they may stay absent even after the leader's copy is healthy.")
+        .put("recommendation", "Once the leader's copy is healthy, force a fresh download on this node "
+            + "(POST /api/v1/cluster/resync/{database}). Check the logs for the underlying acquisition error.")
+        .put("details", new JSONObject().put("databases", names)));
   }
 
   /** Pure alert builder (package-private for unit testing): appends the leader-missing alert iff {@code missing} is non-empty. */

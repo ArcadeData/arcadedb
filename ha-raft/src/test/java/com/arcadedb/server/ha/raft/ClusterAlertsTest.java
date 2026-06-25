@@ -122,4 +122,26 @@ class ClusterAlertsTest {
     ClusterAlerts.addLeaderMissingAlert(null, nullCase);
     assertThat(nullCase.length()).isEqualTo(0);
   }
+
+  // ---- failed-acquire-databases alert (issue #4727) ----
+
+  @Test
+  void failedAcquireAlertIsRaisedWithTheDatabaseNames() {
+    final JSONArray alerts = new JSONArray();
+    ClusterAlerts.addFailedAcquireAlert(List.of("OpenBeer"), alerts);
+
+    assertThat(alerts.length()).isEqualTo(1);
+    final JSONObject alert = alerts.getJSONObject(0);
+    assertThat(alert.getString("id")).isEqualTo("failed-acquire-databases");
+    assertThat(alert.getString("severity")).isEqualTo(ClusterAlerts.SEVERITY_WARNING);
+    assertThat(alert.getJSONObject("details").getJSONArray("databases").toList()).containsExactly("OpenBeer");
+  }
+
+  @Test
+  void failedAcquireAlertIsAbsentWhenNothingFailed() {
+    final JSONArray empty = new JSONArray();
+    ClusterAlerts.addFailedAcquireAlert(List.of(), empty);
+    ClusterAlerts.addFailedAcquireAlert(null, empty);
+    assertThat(empty.length()).isEqualTo(0);
+  }
 }

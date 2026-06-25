@@ -874,7 +874,10 @@ public enum GlobalConfiguration {
       (e.g. a StatefulSet scaled up) becomes a full replica with zero manual steps. When false, the node only \
       refreshes databases already present locally (the legacy behavior) and never acquires unseen ones. This is a \
       per-node local policy, read live on each reconcile (not stored in Raft); acquisition is additive and never \
-      drops a database the leader is missing, so a mixed cluster is safe.""",
+      drops a database the leader is missing, so a mixed cluster is safe. Note: a database whose snapshot \
+      persistently fails to install is retried up to a small bounded number of times, and because a failed install \
+      makes Ratis re-trigger the whole InstallSnapshot, each retry re-downloads the other databases on this node \
+      too; the retry count is capped so this cannot loop indefinitely.""",
       Boolean.class, true),
 
   HA_SNAPSHOT_MAX_CONCURRENT("arcadedb.ha.snapshotMaxConcurrent", SCOPE.SERVER,

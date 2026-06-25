@@ -360,6 +360,9 @@ public final class SnapshotInstaller {
 
       // A stale, unregistered databases/<name>/ (e.g. from a pre-upgrade crash) would block the rename. The
       // leader's copy is authoritative for an unseen database, so clear it before publishing.
+      // Safety rests on Ratis applying the log single-threaded relative to this snapshot-install path: a
+      // concurrent INSTALL_DATABASE_ENTRY replay that creates databases/<name>/ cannot interleave between the
+      // re-check above and this delete+rename, so we never blow away a database being created by another path.
       if (Files.exists(dbPath))
         deleteDirectoryIfExists(dbPath);
 
@@ -408,8 +411,10 @@ public final class SnapshotInstaller {
    */
   private static void validateSnapshotOpens(final Path stagingPath, final ArcadeDBServer server) throws IOException {
     // Safe to open under the reserved staging name and then publish: ArcadeDB derives the database name from the
-    // directory at open time (the staging name is not persisted into the files), and a READ_ONLY open performs no
-    // writes, so it leaves behind no lock/WAL artifact that the atomic rename would carry into the final directory.
+    // directory basename at open time (LocalDatabase computes it from the path; it is not persisted into
+    // configuration.json / schema.json), so opening as ".acquire-<name>" and later as "<name>" yields the same DB.
+    // A READ_ONLY open performs no writes, so it leaves behind no lock/WAL artifact that the atomic rename would
+    // carry into the final directory.
     // The end-to-end acquire IT (SnapshotAcquireNewDatabaseIT) confirms the published database opens cleanly.
     // Use the server's security + auto-transaction so this validation open matches the settings of the eventual
     // live open in ArcadeDBServer.getDatabase, rather than opening under defaults that could diverge.

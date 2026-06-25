@@ -611,7 +611,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // A LEADER_MISSING flag means "the leader lacks a database this node holds" - meaningless once this node
       // IS the leader. Clear those stale entries so the leader-missing alert does not linger on the new leader
       // (issue #4727); they would otherwise survive because the leader never runs the follower reconcile path.
+      // Also drop the parallel acquire failure counters, which are likewise a follower-side reconcile concern.
       acquireStatuses.values().removeIf(s -> s.state() == AcquireState.LEADER_MISSING);
+      acquireFailureCounts.clear();
 
       // Issue #4147: drive offline cluster bootstrap if conditions match (commit index still 0,
       // arcadedb.ha.bootstrapFromLocalDatabase=true). Runs on a background thread to keep the
