@@ -146,4 +146,30 @@ class ArcadeStateMachineApplyRetryTest {
     })).isSameAs(boom);
     assertThat(calls.get()).isEqualTo(1);
   }
+
+  @Test
+  void unexpectedErrorOnDivergedStateIsWrappedAsReplicationException() {
+    // Regression guard for issue #4740: when a WAL version gap has already diverged the state,
+    // subsequent apply operations may throw unexpected errors (NPE, ClassCastException, etc.) from
+    // operating on the inconsistent in-memory state. Instead of reaching the fatal server-halt path,
+    // they must be wrapped as ReplicationException (recoverable resync) while the snapshot download
+    // catches up.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged();
+    final NullPointerException npe = new NullPointerException("inconsistent-state NPE after WAL gap");
+    assertThatThrownBy(() -> sm.applyWithRetry(10L, () -> { throw npe; }))
+        .isInstanceOf(ReplicationException.class)
+        .hasMessageContaining("snapshot resync")
+        .hasCause(npe);
+  }
+
+  @Test
+  void unexpectedErrorOnCleanStateIsRethrown() {
+    // Regression guard: an unexpected error on a node whose state is NOT diverged must still reach
+    // applyTransaction's fatal catch (Throwable) handler (server-halt path) so real bugs are caught.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    // stateDivergedSinceWalGap is false by default - do NOT call markStateDiverged().
+    final NullPointerException npe = new NullPointerException("programming bug on healthy node");
+    assertThatThrownBy(() -> sm.applyWithRetry(11L, () -> { throw npe; })).isSameAs(npe);
+  }
 }

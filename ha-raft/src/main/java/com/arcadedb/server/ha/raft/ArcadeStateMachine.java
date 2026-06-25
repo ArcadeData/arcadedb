@@ -108,6 +108,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   public static volatile AtomicInteger TEST_WAL_GAP_COUNTER = null;
 
+  // @VisibleForTesting
+  void markStateDiverged() {
+    stateDivergedSinceWalGap.set(true);
+  }
+
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
   private final    AtomicLong                electionCount    = new AtomicLong(0);
@@ -155,6 +160,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // database state and the recovery path is the asynchronous server shutdown plus a snapshot
   // resync on the next start.
   private final AtomicBoolean haltedAfterCriticalError = new AtomicBoolean(false);
+
+  // Set to true when a WALVersionGapException is detected on this follower (state has diverged
+  // from the committed Raft log). While set, unexpected Throwables in applyWithRetry are wrapped
+  // as ReplicationException (recoverable resync) instead of propagating to the fatal server-halt
+  // path (issue #4740): operating on inconsistent page state after a WAL gap often throws NPE,
+  // ClassCastException, or similar errors that would otherwise trigger the server-halt path even
+  // though the node is merely waiting for a snapshot resync to restore consistent state. Cleared
+  // when a snapshot resync completes and the database is restored to a consistent state.
+  private final AtomicBoolean stateDivergedSinceWalGap = new AtomicBoolean(false);
 
 
   public void setServer(final ArcadeDBServer server) {
@@ -409,6 +423,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
             break;
           }
         }
+      } catch (final Throwable t) {
+        // When state has already diverged (WAL gap detected earlier), an unexpected error most likely
+        // stems from the engine operating on the inconsistent in-memory state left by the gap - e.g.
+        // NPE on a page that wasn't refreshed, ClassCastException on a stale object. Treat it as a
+        // recoverable resync condition (issue #4740) instead of propagating to applyTransaction's
+        // fatal catch (Throwable) path that would halt the server. The ongoing snapshot download
+        // will restore consistent state once a stable leader is available.
+        if (stateDivergedSinceWalGap.get()) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Unexpected error at index %d while state is diverged (WAL gap detected earlier); treating as resync condition: %s",
+              index, t.getMessage());
+          throw new ReplicationException(
+              "Apply error on diverged state at index " + index + "; snapshot resync in progress", t);
+        }
+        throw t;
       }
     }
 
@@ -578,6 +607,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         }
 
         LogManager.instance().log(this, Level.INFO, "Full resync from leader completed");
+        stateDivergedSinceWalGap.set(false);
         return firstTermIndexInLog;
 
       } catch (final Exception e) {
@@ -663,6 +693,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.SEVERE,
           "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
           decoded.databaseName(), walTx.txId, e.getMessage());
+      // Mark state as diverged so subsequent unexpected errors don't trigger fatal halt (issue #4740).
+      // Trigger an immediate snapshot download instead of waiting for the HealthMonitor's periodic check.
+      if (stateDivergedSinceWalGap.compareAndSet(false, true)) {
+        try {
+          lifecycleExecutor.submit(this::triggerSnapshotDownload);
+        } catch (final RejectedExecutionException ree) {
+          LogManager.instance().log(this, Level.WARNING,
+              "Cannot schedule immediate snapshot download after WAL gap (db=%s): executor is shut down", null, decoded.databaseName());
+        }
+      }
       throw new ReplicationException(
           "WAL version gap detected - snapshot resync required (db=" + decoded.databaseName() + ")", e);
     }
@@ -1266,6 +1306,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
       }
       LogManager.instance().log(this, Level.INFO, "Snapshot download triggered by watchdog completed");
+      stateDivergedSinceWalGap.set(false);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Snapshot download triggered by watchdog failed", e);
     } finally {
