@@ -54,6 +54,10 @@ public class PostResyncDatabaseHandler extends AbstractServerHttpHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
+    // Accepts an operator (root via Basic auth) or an inter-node call from the leader, which presents
+    // the cluster token plus X-ArcadeDB-Forwarded-User: root (resolved to the root user by
+    // AbstractServerHttpHandler before execute() runs). The leader uses this to force a persistently
+    // STALLED replica to resync (issue #4728).
     checkRootUser(user);
 
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();

@@ -937,15 +937,26 @@ public enum GlobalConfiguration {
       Number of Raft log entries a follower may lag behind the commit index, while NOT actively catching up, before the \
       health monitor re-arms a snapshot download from the leader. Guards against a follower that diverged (apply failure) \
       and whose snapshot download also failed on a quiet cluster, where no new entry arrives to re-trigger recovery. \
-      0 (the default) disables stale-follower recovery; the node restart path remains the primary mitigation. \
-      Enable with a value well below HA_SNAPSHOT_THRESHOLD once you have observed normal catch-up lag for your workload, \
-      to avoid multiple followers downloading snapshots from the leader at once.""",
-      Long.class, 0L),
+      UPGRADE NOTE: this defaults to 10000 (was 0/disabled before 26.7.1), well below the default HA_SNAPSHOT_THRESHOLD \
+      (100000), so a genuinely stuck follower self-heals without operator action. The value must stay below \
+      HA_SNAPSHOT_THRESHOLD so recovery is attempted before the leader compacts the entries the follower still needs. \
+      Set to 0 to restore the previous behaviour (follower-side stale recovery disabled; node restart is the only \
+      mitigation) if a deployment prefers to avoid automatic snapshot downloads.""",
+      Long.class, 10_000L),
 
   HA_STALE_FOLLOWER_RECOVERY_DURATION_MS("arcadedb.ha.staleFollowerRecoveryDurationMs", SCOPE.SERVER,
       """
       How long in milliseconds the lag described by HA_STALE_FOLLOWER_LAG_THRESHOLD must persist continuously \
       (across consecutive health-monitor ticks) before recovery is triggered. Avoids acting on transient catch-up lag.""",
+      Long.class, 60_000L),
+
+  HA_STALLED_REPLICA_RESYNC_DURATION_MS("arcadedb.ha.stalledReplicaResyncDurationMs", SCOPE.SERVER,
+      """
+      How long in milliseconds a replica must stay continuously STALLED (its matchIndex not advancing while the leader \
+      keeps committing - e.g. stuck at -1 after a rolling upgrade) before the LEADER actively forces it to resync from \
+      the leader. This is the leader-driven counterpart to HA_STALE_FOLLOWER_LAG_THRESHOLD: it covers the case where the \
+      follower cannot self-detect the stall because its own commit index never advances. Defaults to 60000; set to 0 to \
+      disable leader-driven stalled-replica recovery (the STALLED condition is still detected and logged).""",
       Long.class, 60_000L),
 
   HA_SNAPSHOT_MAX_ENTRY_SIZE("arcadedb.ha.snapshotMaxEntrySize", SCOPE.SERVER,
