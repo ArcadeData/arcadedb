@@ -33,6 +33,7 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
   private       int              lastElementPosition = currentPosition.get();
   private       RID              nextEdgeRID;
   private       RID              nextVertexRID;
+  private       boolean          pending             = false;
 
   public EdgeIterator(final EdgeSegment current, final RID vertex, final Vertex.DIRECTION direction) {
     super(null, current);
@@ -42,12 +43,37 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
 
   @Override
   public boolean hasNext() {
+    if (pending)
+      return true;
+
     if (currentContainer == null)
       return false;
 
     while (true) {
-      if (currentPosition.get() < currentContainer.getUsed())
+      if (currentPosition.get() < currentContainer.getUsed()) {
+        lastElementPosition = currentPosition.get();
+
+        nextEdgeRID = currentContainer.getRID(currentPosition);
+        nextVertexRID = currentContainer.getRID(currentPosition);
+
+        // VALIDATE A NON-LIGHTWEIGHT EDGE HERE SO A DANGLING POINTER (edge record removed but the link still in
+        // the segment) IS SKIPPED WHILE PEEKING, KEEPING hasNext()/next() CONSISTENT WITH THE Iterator CONTRACT.
+        // OTHERWISE next() WOULD SKIP THE RECORD AND THROW NoSuchElementException WHEN THE SEGMENT ENDS - WHICH
+        // ONLY SURFACES WHEN THE CONTENT IS ACTUALLY LOADED, e.g. UNDER REPEATABLE_READ ISOLATION.
+        if (nextEdgeRID.getPosition() > -1) {
+          try {
+            currentContainer.getDatabase().lookupByRID(nextEdgeRID, false);
+          } catch (final RecordNotFoundException e) {
+            // SKIP DANGLING EDGE
+            nextEdgeRID = null;
+            nextVertexRID = null;
+            continue;
+          }
+        }
+
+        pending = true;
         return true;
+      }
 
       currentContainer = currentContainer.getPrevious();
       if (currentContainer == null)
@@ -61,34 +87,34 @@ public class EdgeIterator extends ResettableIteratorBase<Edge> {
 
   @Override
   public Edge next() {
-    while (true) {
-      if (!hasNext())
-        throw new NoSuchElementException();
+    if (!hasNext())
+      throw new NoSuchElementException();
 
-      lastElementPosition = currentPosition.get();
+    pending = false;
 
-      nextEdgeRID = currentContainer.getRID(currentPosition);
-      nextVertexRID = currentContainer.getRID(currentPosition);
+    if (nextEdgeRID.getPosition() < 0) {
+      // CREATE LIGHTWEIGHT EDGE
+      final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
 
-      if (nextEdgeRID.getPosition() < 0) {
-        // CREATE LIGHTWEIGHT EDGE
-        final DocumentType edgeType = currentContainer.getDatabase().getSchema().getTypeByBucketId(nextEdgeRID.getBucketId());
-
-        if (direction == Vertex.DIRECTION.OUT)
-          return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, vertex, nextVertexRID);
-        else
-          return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex);
-      }
-
-      ++browsed;
-
-      try {
-        // LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL. NOTE: THE RECORD NOT FOUND WILL NEVER BE TRIGGERED HERE ANYMORE
-        return (Edge) currentContainer.getDatabase().lookupByRID(nextEdgeRID, false);
-      } catch (final RecordNotFoundException e) {
-        // SKIP
-      }
+      if (direction == Vertex.DIRECTION.OUT)
+        return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, vertex, nextVertexRID);
+      else
+        return new ImmutableLightEdge(currentContainer.getDatabase(), edgeType, nextEdgeRID, nextVertexRID, vertex);
     }
+
+    ++browsed;
+
+    // ALREADY VALIDATED IN hasNext(); LAZY LOAD THE CONTENT TO IMPROVE PERFORMANCE WITH TRAVERSAL.
+    return (Edge) currentContainer.getDatabase().lookupByRID(nextEdgeRID, false);
+  }
+
+  @Override
+  public void reset() {
+    super.reset();
+    pending = false;
+    nextEdgeRID = null;
+    nextVertexRID = null;
+    lastElementPosition = currentPosition.get();
   }
 
   @Override
