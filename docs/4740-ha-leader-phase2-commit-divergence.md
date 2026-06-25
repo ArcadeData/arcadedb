@@ -79,3 +79,16 @@ Gemini did not re-review (its cycle-1 items were already resolved). Claude re-re
 Claude re-reviewed and posted no further items (clean). Gemini did not re-review. CI green (build-and-package, claude-review, CodeQL all pass; the Meterian failure is a pre-existing dependency vuln unrelated to this change).
 
 Remaining signal: Codacy reported a persistent high-severity ErrorProne finding (the broad `catch (Throwable)` in `applyWithRetry`). Resolved by narrowing to `catch (RuntimeException)`: a `Runnable` can only throw `RuntimeException` or `Error`, so JVM `Error`s now propagate to the fatal halt path by simply not being caught - identical semantics, no broad catch, and the explicit `instanceof Error` rethrow is no longer needed. All tests still pass (the OOM-rethrow guard now verifies the Error propagates uncaught).
+
+## Final state
+
+`clean-approval` (HEAD `9a9b74239`).
+
+- Claude re-reviewed each push; the final two cycles returned no further items.
+- Gemini's only review was cycle 0; all of its items were addressed in cycle 1 and it did not re-review.
+- Codacy: `success` (the high-severity ErrorProne finding and the earlier CodeStyle minors are all cleared).
+- CI: `build-and-package`, `claude-review`, `CodeQL`, all language analyzers and e2e suites green. The `Meterian client scan` failure is a pre-existing dependency vulnerability on the default branch, unrelated to this change.
+
+PR: https://github.com/ArcadeData/arcadedb/pull/4742
+
+Merge remains the developer's decision; this workflow does not merge.
