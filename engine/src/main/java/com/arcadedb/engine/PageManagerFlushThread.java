@@ -174,7 +174,9 @@ public class PageManagerFlushThread extends Thread {
     // shipping a multi-GB snapshot this exhausted the heap. Once the deferred backlog crosses the cap, stop
     // draining the bounded queue: it fills up and scheduleFlushOfPages() throttles the committing threads, so
     // the dirty pages stay in the (separately bounded) page cache instead of growing the deferred map forever.
-    if (maxDeferredRAM > 0 && deferredRAMBytes.get() >= maxDeferredRAM) {
+    // Gate on `running`: during shutdown the queue must still be drained to reach the SHUTDOWN_THREAD marker,
+    // otherwise a database left suspended with a full backlog would spin the run loop forever and block join().
+    if (running && maxDeferredRAM > 0 && deferredRAMBytes.get() >= maxDeferredRAM) {
       Thread.sleep(timeout);
       return;
     }
@@ -358,8 +360,13 @@ public class PageManagerFlushThread extends Thread {
   private static long batchRAM(final PagesToFlush batch) {
     long bytes = 0;
     if (batch.pages != null)
-      for (final MutablePage page : batch.pages)
-        bytes += page.getPhysicalSize();
+      // Synchronize on the same monitor used by removePagesOfFileFromBatch / removeAllPagesOfDatabase, which
+      // can concurrently mutate this list (it.remove() / clear()), to avoid a ConcurrentModificationException
+      // and miscounting while a dropped file or database is being purged.
+      synchronized (batch.pages) {
+        for (final MutablePage page : batch.pages)
+          bytes += page.getPhysicalSize();
+      }
     return bytes;
   }
 
