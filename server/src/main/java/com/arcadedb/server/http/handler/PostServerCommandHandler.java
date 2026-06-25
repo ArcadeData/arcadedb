@@ -84,6 +84,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
   private static final String SET_BACKUP_CONFIG    = "set backup config";
   private static final String LIST_BACKUPS         = "list backups";
   private static final String TRIGGER_BACKUP       = "trigger backup";
+  private static final String RESTORE_BACKUP       = "restore backup";
+  private static final String DELETE_BACKUP        = "delete backup";
   private static final String RESTORE_DATABASE     = "restore database";
   private static final String IMPORT_DATABASE      = "import database";
   private static final String PROFILER             = "profiler";
@@ -117,7 +119,8 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
     // Write commands that must run on the leader: forward if this node is a replica
     if (command_lc.startsWith(CREATE_DATABASE) || command_lc.startsWith(DROP_DATABASE) ||
         command_lc.startsWith(CREATE_USER) || command_lc.startsWith(DROP_USER) ||
-        command_lc.startsWith(RESTORE_DATABASE) || command_lc.startsWith(IMPORT_DATABASE)) {
+        command_lc.startsWith(RESTORE_BACKUP) || command_lc.startsWith(RESTORE_DATABASE) ||
+        command_lc.startsWith(IMPORT_DATABASE)) {
       final ExecutionResponse forwarded = forwardToLeaderIfReplica(exchange, payload, user);
       if (forwarded != null)
         return forwarded;
@@ -158,6 +161,10 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
       return listBackups(extractTarget(command, LIST_BACKUPS));
     else if (command_lc.startsWith(TRIGGER_BACKUP))
       return triggerBackup(extractTarget(command, TRIGGER_BACKUP));
+    else if (command_lc.startsWith(RESTORE_BACKUP))
+      return restoreBackup(extractTarget(command, RESTORE_BACKUP), payload, exchange);
+    else if (command_lc.startsWith(DELETE_BACKUP))
+      return deleteBackup(extractTarget(command, DELETE_BACKUP));
     else if (command_lc.startsWith(RESTORE_DATABASE))
       return restoreDatabase(extractTarget(command, RESTORE_DATABASE), exchange);
     else if (command_lc.startsWith(IMPORT_DATABASE))
@@ -254,6 +261,131 @@ public class PostServerCommandHandler extends AbstractServerHttpHandler {
 
     if (new File(dbPath).exists())
       throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
+
+    return performRestore(databaseName, dbPath, url, exchange);
+  }
+
+  /**
+   * Restores a previously created backup file into a database. The backup file is resolved
+   * server-side from the configured auto-backup directory, so the client never supplies a
+   * filesystem path. Format: {@code restore backup <database> <fileName> as <targetDatabase>}.
+   * The optional payload flag {@code "overwrite": true} drops the target database first if it
+   * already exists; without it the command fails when the target database exists.
+   */
+  private ExecutionResponse restoreBackup(final String args, final JSONObject payload, final HttpServerExchange exchange) {
+    final int asIdx = args.toLowerCase(Locale.ENGLISH).lastIndexOf(" as ");
+    if (asIdx <= 0)
+      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+
+    final String head = args.substring(0, asIdx).trim();
+    final String targetDatabase = args.substring(asIdx + 4).trim();
+    final int space = head.indexOf(' ');
+    if (space <= 0 || targetDatabase.isEmpty())
+      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+
+    final String databaseName = head.substring(0, space).trim();
+    final String fileName = head.substring(space + 1).trim();
+    if (databaseName.isEmpty() || fileName.isEmpty())
+      throw new IllegalArgumentException("Usage: restore backup <database> <fileName> as <targetDatabase>");
+
+    final boolean overwrite = payload.getBoolean("overwrite", false);
+
+    checkServerIsLeaderIfInHA();
+
+    final ArcadeDBServer server = httpServer.getServer();
+    Metrics.counter("http.restore-backup").increment();
+
+    final Path backupFile = resolveBackupFile(server, databaseName, fileName);
+
+    final String dbPath = server.getConfiguration().getValueAsString(GlobalConfiguration.SERVER_DATABASE_DIRECTORY)
+        + File.separator + targetDatabase;
+
+    final boolean exists = server.existsDatabase(targetDatabase) || new File(dbPath).exists();
+    if (exists) {
+      if (!overwrite)
+        throw new IllegalArgumentException(
+            "Database '" + targetDatabase + "' already exists. Enable overwrite to replace it with the backup");
+      // Drop the existing target so the restore writes into a clean directory (HA-aware).
+      dropDatabase(targetDatabase);
+    }
+
+    final String url = "file://" + backupFile.toAbsolutePath();
+    return performRestore(targetDatabase, dbPath, url, exchange);
+  }
+
+  /**
+   * Deletes a single backup file from the configured auto-backup directory. The file name is
+   * validated and resolved server-side to prevent path traversal. Format:
+   * {@code delete backup <database> <fileName>}.
+   */
+  private ExecutionResponse deleteBackup(final String args) {
+    final int space = args.indexOf(' ');
+    if (space <= 0)
+      throw new IllegalArgumentException("Usage: delete backup <database> <fileName>");
+
+    final String databaseName = args.substring(0, space).trim();
+    final String fileName = args.substring(space + 1).trim();
+    if (databaseName.isEmpty() || fileName.isEmpty())
+      throw new IllegalArgumentException("Usage: delete backup <database> <fileName>");
+
+    Metrics.counter("http.delete-backup").increment();
+
+    final ArcadeDBServer server = httpServer.getServer();
+    final Path backupFile = resolveBackupFile(server, databaseName, fileName);
+
+    try {
+      Files.delete(backupFile);
+    } catch (final IOException e) {
+      throw new CommandExecutionException("Error deleting backup file '" + fileName + "'", e);
+    }
+
+    return new ExecutionResponse(200, new JSONObject().put("result", "ok").toString());
+  }
+
+  /**
+   * Resolves a backup file name to an absolute path inside the configured auto-backup directory for
+   * the given database, rejecting any name that contains path separators or traversal sequences.
+   */
+  private Path resolveBackupFile(final ArcadeDBServer server, final String databaseName, final String fileName) {
+    if (databaseName.isEmpty())
+      throw new IllegalArgumentException("Database name empty");
+
+    // Reject anything that is not a plain backup file name.
+    if (fileName.contains("/") || fileName.contains("\\") || fileName.contains("..") || fileName.isBlank()
+        || !fileName.endsWith(".zip") || !fileName.contains("-backup-"))
+      throw new IllegalArgumentException("Invalid backup file name: " + fileName);
+
+    final AutoBackupSchedulerPlugin plugin = getBackupPlugin(server);
+    if (plugin == null || !plugin.isEnabled() || plugin.getBackupConfig() == null)
+      throw new IllegalArgumentException("Auto-backup is not configured");
+
+    String backupDirectory = plugin.getBackupConfig().getBackupDirectory();
+    final Path backupPath = Paths.get(backupDirectory);
+    if (!backupPath.isAbsolute())
+      backupDirectory = Paths.get(server.getRootPath(), backupDirectory).toString();
+
+    final Path dbBackupDir = Paths.get(backupDirectory, databaseName).normalize();
+    final Path resolved = dbBackupDir.resolve(fileName).normalize();
+
+    // Defence in depth: the resolved file must still live inside the database backup directory.
+    if (!resolved.startsWith(dbBackupDir))
+      throw new IllegalArgumentException("Invalid backup file path");
+
+    if (!Files.exists(resolved) || !Files.isRegularFile(resolved))
+      throw new IllegalArgumentException("Backup file not found: " + fileName);
+
+    return resolved;
+  }
+
+  /**
+   * Shared restore execution used by {@code restore database} and {@code restore backup}. Performs
+   * the actual restore from {@code url} into {@code dbPath}, streaming progress via SSE when
+   * requested and replicating the restored database in HA mode. The caller is responsible for any
+   * pre-restore existence/overwrite checks.
+   */
+  private ExecutionResponse performRestore(final String databaseName, final String dbPath, final String url,
+      final HttpServerExchange exchange) {
+    final ArcadeDBServer server = httpServer.getServer();
 
     if (isSSERequested(exchange)) {
       startSSE(exchange);
