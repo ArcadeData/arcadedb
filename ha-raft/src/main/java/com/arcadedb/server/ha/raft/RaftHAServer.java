@@ -49,6 +49,7 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -88,6 +89,11 @@ import java.util.logging.Logger;
  * NetworkPolicy rules in production.
  */
 public class RaftHAServer implements HealthMonitor.HealthTarget {
+
+  // The forwarded user the leader presents (with the cluster token) for inter-node calls such as the
+  // stalled-replica resync. ArcadeDB's bootstrap 'root' user is the cluster-wide superuser; named here
+  // so the coupling is visible rather than scattered as a string literal.
+  private static final String FORWARDED_ROOT_USER = "root";
 
   private final    ArcadeDBServer          arcadeServer;
   private final    ContextConfiguration    configuration;
@@ -289,7 +295,15 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final String clusterToken = getClusterToken();
 
     final Thread t = new Thread(() -> {
+      // TODO (#4728): this resyncs EVERY non-reserved database on the follower. When a cluster hosts
+      // many databases and only one is stuck, this forces unnecessary full snapshots of the others.
+      // A per-database stall signal would let us scope the resync; acceptable as a first pass.
       for (final String dbName : arcadeServer.getDatabaseNames()) {
+        // Re-check leadership on each iteration: the outer guard ran before this thread started, and
+        // leadership may have moved since. A resync request from a non-leader is harmless (the
+        // follower rejects it) but would log spurious warnings, so stop early instead.
+        if (!isLeader())
+          return;
         if (ArcadeDBServer.isReservedDatabaseName(dbName))
           continue;
         try {
@@ -314,7 +328,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   void requestRemoteResync(final String followerAddr, final String databaseName, final String clusterToken,
       final boolean https) throws IOException {
-    final String url = (https ? "https://" : "http://") + followerAddr + "/api/v1/cluster/resync/" + databaseName;
+    final String url = (https ? "https://" : "http://") + followerAddr + "/api/v1/cluster/resync/"
+        + URLEncoder.encode(databaseName, StandardCharsets.UTF_8);
     final HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
     try {
       if (conn instanceof final HttpsURLConnection httpsConn)
@@ -324,21 +339,36 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       conn.setReadTimeout(120_000);
       conn.setDoOutput(true);
       conn.setRequestProperty("Content-Type", "application/json");
-      // Inter-node forwarded auth: the cluster token plus a forwarded 'root' user, validated by
+      // Inter-node forwarded auth: the cluster token plus the forwarded root user, validated by
       // AbstractServerHttpHandler before the handler runs (same mechanism used for follower->leader
       // request forwarding). No operator credentials are sent over the wire.
       if (clusterToken != null && !clusterToken.isEmpty()) {
         conn.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
-        conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
+        conn.setRequestProperty("X-ArcadeDB-Forwarded-User", FORWARDED_ROOT_USER);
       }
       try (final OutputStream os = conn.getOutputStream()) {
         os.write("{}".getBytes(StandardCharsets.UTF_8));
       }
       final int code = conn.getResponseCode();
-      if (code < 200 || code >= 300)
+      if (code < 200 || code >= 300) {
+        drainErrorStream(conn);
         throw new IOException("resync endpoint returned HTTP " + code);
+      }
     } finally {
       conn.disconnect();
+    }
+  }
+
+  /**
+   * Drains and discards the error response body so the underlying keep-alive socket can be reused by
+   * the JVM connection pool instead of being abandoned (and leaked).
+   */
+  private static void drainErrorStream(final HttpURLConnection conn) {
+    try (final var err = conn.getErrorStream()) {
+      if (err != null)
+        err.readAllBytes();
+    } catch (final IOException ignored) {
+      // best-effort cleanup
     }
   }
 
@@ -1209,9 +1239,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
-   * Ensures linearizable read consistency for the leader. Sends a ReadIndex RPC to
-   * confirm the leader lease, then waits for the local state machine to apply up to
-   * the confirmed commit index.
+   * Ensures linearizable read consistency for the leader. Sends a ReadIndex RPC which (with the
+   * leader lease disabled, see {@code RaftPropertiesBuilder}) confirms leadership via a fresh
+   * majority heartbeat round, then waits for the local state machine to apply up to the confirmed
+   * commit index.
    * <p>
    * Throws {@link ReplicationException} if leadership is lost before or after the RPC.
    */

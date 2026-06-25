@@ -937,8 +937,11 @@ public enum GlobalConfiguration {
       Number of Raft log entries a follower may lag behind the commit index, while NOT actively catching up, before the \
       health monitor re-arms a snapshot download from the leader. Guards against a follower that diverged (apply failure) \
       and whose snapshot download also failed on a quiet cluster, where no new entry arrives to re-trigger recovery. \
-      Defaults to 10000 (well below the default HA_SNAPSHOT_THRESHOLD) so a genuinely stuck follower self-heals; \
-      set to 0 to disable follower-side stale recovery and rely only on the node restart path.""",
+      UPGRADE NOTE: this defaults to 10000 (was 0/disabled before 26.7.1), well below the default HA_SNAPSHOT_THRESHOLD \
+      (100000), so a genuinely stuck follower self-heals without operator action. The value must stay below \
+      HA_SNAPSHOT_THRESHOLD so recovery is attempted before the leader compacts the entries the follower still needs. \
+      Set to 0 to restore the previous behaviour (follower-side stale recovery disabled; node restart is the only \
+      mitigation) if a deployment prefers to avoid automatic snapshot downloads.""",
       Long.class, 10_000L),
 
   HA_STALE_FOLLOWER_RECOVERY_DURATION_MS("arcadedb.ha.staleFollowerRecoveryDurationMs", SCOPE.SERVER,

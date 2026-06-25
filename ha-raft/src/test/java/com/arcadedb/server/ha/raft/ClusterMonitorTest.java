@@ -256,6 +256,41 @@ class ClusterMonitorTest {
     assertThat(resynced).hasSize(2);
   }
 
+  /**
+   * On a low-traffic cluster many lag-monitor ticks have no new leader commits. The stall streak must
+   * NOT reset on those quiet ticks, otherwise a genuinely stuck replica would never reach the trigger
+   * duration (#4728 - the reported cluster only advanced a few entries per 30s).
+   */
+  @Test
+  void stallStreakSurvivesQuietLeaderTicks() {
+    final List<String> resynced = new ArrayList<>();
+    final AtomicLong now = new AtomicLong(0);
+    final ClusterMonitor monitor = new ClusterMonitor(50L, 30_000L, resynced::add);
+    monitor.setClock(now::get);
+
+    monitor.updateLeaderCommitIndex(100);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+
+    // Stall begins: leader jumps ahead, replica stuck at 100.
+    monitor.updateLeaderCommitIndex(1100);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+
+    // Several quiet ticks where the leader does NOT advance (leaderDelta == 0) and the replica is
+    // still stuck. The streak must keep counting from when it began.
+    for (int t = 5; t <= 25; t += 5) {
+      now.set(t * 1000L);
+      monitor.updateLeaderCommitIndex(1100); // no new commits this tick
+      monitor.updateReplicaMatchIndex("replica1", 100);
+    }
+    assertThat(resynced).as("must not fire before the duration elapses").isEmpty();
+
+    // Past the duration, still stuck on a quiet tick: must fire.
+    now.set(31_000);
+    monitor.updateLeaderCommitIndex(1100);
+    monitor.updateReplicaMatchIndex("replica1", 100);
+    assertThat(resynced).containsExactly("replica1");
+  }
+
   /** With the duration set to 0 (disabled), the leader never forces a resync however long the stall. */
   @Test
   void leaderDrivenResyncDisabledWhenDurationZero() {

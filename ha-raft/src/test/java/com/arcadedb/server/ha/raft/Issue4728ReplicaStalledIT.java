@@ -85,6 +85,11 @@ class Issue4728ReplicaStalledIT extends BaseRaftHATest {
     assertThat(getServerDatabase(replicaIndex, getDatabaseName()).countType(TYPE, true))
         .as("replica must hold the data before resync").isEqualTo((long) COUNT);
 
+    // NOTE: this exercises only the transport half of the fix - the leader->follower resync call. The
+    // decision half (ClusterMonitor detecting a sustained stall and invoking forceResyncStalledReplica)
+    // is covered deterministically in ClusterMonitorTest, so the two halves are tested in isolation
+    // rather than driving the full ClusterMonitor -> forceResyncStalledReplica -> requestRemoteResync
+    // wiring end-to-end (which would require reproducing the hard-to-trigger stall on a live cluster).
     final RaftHAServer leaderRaft = getRaftPlugin(leaderIndex).getRaftHAServer();
     final String followerHttpAddr = leaderRaft.getPeerHttpAddress(RaftPeerId.valueOf(replicaPeerId));
     assertThat(followerHttpAddr).as("leader must resolve the follower's HTTP address").isNotNull();
