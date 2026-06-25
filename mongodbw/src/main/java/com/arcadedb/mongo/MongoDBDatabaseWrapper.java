@@ -68,6 +68,10 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
    * Resolves a collection wrapper lazily against the live schema. This database wrapper is shared and cached across all
    * client connections, so the collection set must be looked up on demand: types created after the wrapper was built
    * (e.g. via Studio, SQL or another connection) must be visible too.
+   * <p>
+   * The cache is keyed by type name and entries are never evicted, but it stays bounded by the number of distinct type
+   * names (one entry per name, reused on drop/recreate). A stale entry after a drop/recreate is harmless because
+   * {@link MongoDBCollectionWrapper} keeps only the type name and re-resolves it against the database on every operation.
    *
    * @return the collection wrapper, or {@code null} if no type with that name exists.
    */
