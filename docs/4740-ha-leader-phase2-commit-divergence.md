@@ -17,23 +17,24 @@ Under concurrent write load on a 3-node Raft HA cluster, two bugs compound to ta
 ## Changes
 
 ### `ArcadeStateMachine.java`
-- Add `stateDivergedSinceWalGap` AtomicBoolean field
-- In `applyTxEntry` WAL gap handler: set flag + schedule immediate `triggerSnapshotDownload`
-- In `applyWithRetry`: catch `Throwable` when diverged → wrap as `ReplicationException`
-- Reset flag in `triggerSnapshotDownload` and `notifyInstallSnapshotFromLeader` success paths
+- Replace the diverged flag with a per-database `divergedDatabases` set (scoped so a gap in one DB never masks a bug while applying another, healthy DB - review item)
+- In `applyTxEntry` WAL gap handler: add DB to the set + schedule immediate `triggerSnapshotDownload`
+- In `applyWithRetry` (now takes a `databaseName` arg; old 2-arg form kept as a delegating overload): rethrow JVM `Error` and `ReplicationException` unchanged; wrap other Throwables as `ReplicationException` only when the DB is diverged; bounded-escalation counter so a node that can never resync eventually re-halts loudly
+- `clearDivergedState()` resets the set + counter from `triggerSnapshotDownload` and `notifyInstallSnapshotFromLeader` success paths
 
 ### `RaftReplicatedDatabase.java`
-- In `commit()` phase-2 failure catch: call `applyChanges` to reconcile pages before step-down
-- Same in `applyLocallyAfterMajorityCommit` failure path
-- Add `TEST_PHASE2_FAILURE_HOOK` for IT test
+- `reconcileLeaderPagesAfterPhase2Failure()` replays the committed WAL on the leader before step-down (idempotent via page-version guards)
+- Called from both `commit()` and `applyLocallyAfterMajorityCommit` phase-2 failure paths
+- Added `TEST_PHASE2_COMMIT_FAULT` hook for the regression IT
 
 ### Tests
-- `ArcadeStateMachineApplyRetryTest`: two new unit tests for diverged-state wrapping
+- `ArcadeStateMachineApplyRetryTest`: 4 new unit tests (diverged-DB wrap, healthy-DB rethrow, JVM Error rethrow, ReplicationException no-double-wrap)
+- `Issue4740Phase2ReconcileIT`: 3-node IT injecting a phase-2 fault, asserting no WAL gap and cluster convergence (Fix 1 coverage)
 
 ## Test Results
 
-- `ArcadeStateMachineApplyRetryTest`: 8/8 PASS (6 existing + 2 new regression guards)
-- All ha-raft unit tests (48 total): 48/48 PASS
+- `ArcadeStateMachineApplyRetryTest`: 10/10 PASS (6 existing + 4 new regression guards)
+- All ha-raft unit tests: PASS
 - Full project build (`mvn clean install -DskipTests`): SUCCESS
 
 ## Files Changed
@@ -41,4 +42,22 @@ Under concurrent write load on a 3-node Raft HA cluster, two bugs compound to ta
 - `ha-raft/src/main/java/com/arcadedb/server/ha/raft/ArcadeStateMachine.java`
 - `ha-raft/src/main/java/com/arcadedb/server/ha/raft/RaftReplicatedDatabase.java`
 - `ha-raft/src/test/java/com/arcadedb/server/ha/raft/ArcadeStateMachineApplyRetryTest.java`
+- `ha-raft/src/test/java/com/arcadedb/server/ha/raft/Issue4740Phase2ReconcileIT.java`
 - `docs/4740-ha-leader-phase2-commit-divergence.md` (this file)
+
+## Review cycles
+
+### Cycle 1 - HEAD 51c69fff
+
+**Gemini** (3 items, all applied):
+1. Rethrow JVM `Error` instead of wrapping as recoverable
+2. Pass `ree` not `null` to the logger
+3. Add regression test for Error rethrow
+
+**Claude** (6 items):
+1. `stateDivergedSinceWalGap` server-global → scoped per-database (applied)
+2. Flag sticky if resync never succeeds → bounded escalation counter that re-halts a stuck node (applied)
+3. Javadoc note that reconcile runs under the read lock (applied)
+4. Fix 1 had no automated test → added `Issue4740Phase2ReconcileIT` (applied)
+5. Doc/code mismatch on the test hook name → reconciled; hook is `TEST_PHASE2_COMMIT_FAULT` (applied)
+6. Minor test comment about default-retries fallback (applied)

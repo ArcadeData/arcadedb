@@ -155,6 +155,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   static volatile Consumer<String> TEST_POST_REPLICATION_HOOK = null;
 
+  /**
+   * Test-only fault-injection hook. Fires inside phase-2 on the leader, just before
+   * {@code commit2ndPhase} runs, after Raft has already committed the entry. Throw from the
+   * consumer to simulate a leader-side phase-2 commit failure while the followers are already
+   * ahead (issue #4740). Always null in production.
+   */
+  static volatile Consumer<String> TEST_PHASE2_COMMIT_FAULT = null;
+
   public record ReadConsistencyContext(Database.READ_CONSISTENCY consistency, long readAfterIndex) {
   }
 
@@ -358,6 +366,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
+        // Test-only fault injection: simulate a phase-2 commit failure while followers are ahead.
+        final Consumer<String> phase2Fault = TEST_PHASE2_COMMIT_FAULT;
+        if (phase2Fault != null)
+          phase2Fault.accept(getName());
+
         payload.tx().commit2ndPhase(payload.phase1());
 
         if (getSchema().getEmbedded().isDirty())
@@ -426,6 +439,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * ones are written. After this call the leader's page versions match what the followers
    * applied, so when this node steps down and replays the log as a follower it will not
    * encounter a {@link com.arcadedb.exception.WALVersionGapException} for this entry.
+   * <p>
+   * Called by the phase-2 failure handlers while they still hold the read lock that the failed
+   * {@code commit2ndPhase} ran under. {@code applyChanges} mutates pages under the per-page I/O
+   * lock, so running it under the same read lock keeps the page-write coordination identical to
+   * the normal phase-2 path and avoids racing a concurrent phase-1 snapshot.
    */
   private void reconcileLeaderPagesAfterPhase2Failure(final ReplicationPayload payload) {
     try {

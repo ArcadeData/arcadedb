@@ -148,28 +148,54 @@ class ArcadeStateMachineApplyRetryTest {
   }
 
   @Test
-  void unexpectedErrorOnDivergedStateIsWrappedAsReplicationException() {
-    // Regression guard for issue #4740: when a WAL version gap has already diverged the state,
+  void unexpectedErrorOnDivergedDatabaseIsWrappedAsReplicationException() {
+    // Regression guard for issue #4740: when a WAL version gap has already diverged a database,
     // subsequent apply operations may throw unexpected errors (NPE, ClassCastException, etc.) from
     // operating on the inconsistent in-memory state. Instead of reaching the fatal server-halt path,
     // they must be wrapped as ReplicationException (recoverable resync) while the snapshot download
     // catches up.
     final ArcadeStateMachine sm = new ArcadeStateMachine();
-    sm.markStateDiverged();
+    sm.markStateDiverged("diverged-db");
     final NullPointerException npe = new NullPointerException("inconsistent-state NPE after WAL gap");
-    assertThatThrownBy(() -> sm.applyWithRetry(10L, () -> { throw npe; }))
+    assertThatThrownBy(() -> sm.applyWithRetry(10L, "diverged-db", () -> { throw npe; }))
         .isInstanceOf(ReplicationException.class)
         .hasMessageContaining("snapshot resync")
         .hasCause(npe);
   }
 
   @Test
-  void unexpectedErrorOnCleanStateIsRethrown() {
-    // Regression guard: an unexpected error on a node whose state is NOT diverged must still reach
-    // applyTransaction's fatal catch (Throwable) handler (server-halt path) so real bugs are caught.
+  void unexpectedErrorOnHealthyDatabaseIsRethrown() {
+    // Regression guard: an unexpected error while applying an entry for a database that is NOT
+    // diverged must still reach applyTransaction's fatal catch (Throwable) handler (server-halt
+    // path) so real bugs are caught. Critically, a gap in one database must not mask a bug in
+    // another: mark only "diverged-db" as diverged, then fail on "healthy-db".
     final ArcadeStateMachine sm = new ArcadeStateMachine();
-    // stateDivergedSinceWalGap is false by default - do NOT call markStateDiverged().
-    final NullPointerException npe = new NullPointerException("programming bug on healthy node");
-    assertThatThrownBy(() -> sm.applyWithRetry(11L, () -> { throw npe; })).isSameAs(npe);
+    sm.markStateDiverged("diverged-db");
+    final NullPointerException npe = new NullPointerException("programming bug on healthy database");
+    // server == null here, so applyWithRetry reads the default GlobalConfiguration.TX_RETRIES; the NPE
+    // is non-retryable so it exits on the first attempt regardless, and must propagate unchanged.
+    assertThatThrownBy(() -> sm.applyWithRetry(11L, "healthy-db", () -> { throw npe; })).isSameAs(npe);
+  }
+
+  @Test
+  void errorOnDivergedDatabaseIsRethrownNotWrapped() {
+    // Regression guard: a JVM Error (OutOfMemoryError, StackOverflowError, ...) indicates an
+    // unstable JVM and must NEVER be swallowed as a recoverable resync condition - even when the
+    // database is diverged it must propagate unchanged to the fatal halt path.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged("diverged-db");
+    final OutOfMemoryError oom = new OutOfMemoryError("OOM on diverged database");
+    assertThatThrownBy(() -> sm.applyWithRetry(12L, "diverged-db", () -> { throw oom; })).isSameAs(oom);
+  }
+
+  @Test
+  void replicationExceptionOnDivergedDatabaseIsNotDoubleWrapped() {
+    // Regression guard: the WAL-gap escalation in applyTxEntry throws a ReplicationException while
+    // the database is already in the diverged set. applyWithRetry must propagate it unchanged rather
+    // than re-wrapping it (which would lose the original message and consume the escalation budget).
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged("diverged-db");
+    final ReplicationException re = new ReplicationException("WAL version gap detected - snapshot resync required");
+    assertThatThrownBy(() -> sm.applyWithRetry(13L, "diverged-db", () -> { throw re; })).isSameAs(re);
   }
 }

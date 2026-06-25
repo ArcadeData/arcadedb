@@ -109,8 +109,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
   public static volatile AtomicInteger TEST_WAL_GAP_COUNTER = null;
 
   // @VisibleForTesting
-  void markStateDiverged() {
-    stateDivergedSinceWalGap.set(true);
+  void markStateDiverged(final String dbName) {
+    divergedDatabases.add(dbName);
+  }
+
+  /**
+   * Clears the diverged-database set and the bounded-escalation counter after a snapshot resync has
+   * restored consistent state across all databases. A resync always reinstalls every database from
+   * the leader, so clearing the whole set (rather than a single database) matches what the resync
+   * actually did.
+   */
+  private void clearDivergedState() {
+    divergedDatabases.clear();
+    divergedSwallowedErrors.set(0);
   }
 
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
@@ -161,14 +172,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // resync on the next start.
   private final AtomicBoolean haltedAfterCriticalError = new AtomicBoolean(false);
 
-  // Set to true when a WALVersionGapException is detected on this follower (state has diverged
-  // from the committed Raft log). While set, unexpected Throwables in applyWithRetry are wrapped
-  // as ReplicationException (recoverable resync) instead of propagating to the fatal server-halt
-  // path (issue #4740): operating on inconsistent page state after a WAL gap often throws NPE,
-  // ClassCastException, or similar errors that would otherwise trigger the server-halt path even
-  // though the node is merely waiting for a snapshot resync to restore consistent state. Cleared
-  // when a snapshot resync completes and the database is restored to a consistent state.
-  private final AtomicBoolean stateDivergedSinceWalGap = new AtomicBoolean(false);
+  // Database names whose state has diverged from the committed Raft log (a WALVersionGapException
+  // was detected while applying an entry for them). While a database is in this set, unexpected
+  // Throwables in applyWithRetry for THAT database are wrapped as ReplicationException (recoverable
+  // resync) instead of propagating to the fatal server-halt path (issue #4740): operating on
+  // inconsistent page state after a WAL gap often throws NPE, ClassCastException, or similar errors
+  // that would otherwise halt the server even though the node is merely waiting for a snapshot
+  // resync. Scoped per-database so a gap in one database never masks a genuine bug raised while
+  // applying an entry for an unrelated, healthy database. Cleared when a snapshot resync completes
+  // (it resyncs all databases) and restores consistent state.
+  private final Set<String> divergedDatabases = ConcurrentHashMap.newKeySet();
+
+  // Bounded escalation (issue #4740): a node that can never resync (no stable leader reachable)
+  // must not stay in "swallow unexpected errors" mode forever, silently degrading. Each error
+  // swallowed on a diverged database increments this; once it exceeds the threshold the next
+  // unexpected error is allowed to propagate to the fatal halt path so a truly stuck node surfaces
+  // loudly rather than quietly. Reset to 0 whenever a snapshot resync clears the diverged set.
+  private final        AtomicInteger divergedSwallowedErrors      = new AtomicInteger(0);
+  private static final int           MAX_DIVERGED_SWALLOWED_ERRORS = 100;
 
 
   public void setServer(final ArcadeDBServer server) {
@@ -301,7 +322,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
       final boolean originatedLocally = Boolean.TRUE.equals(trx.getStateMachineContext());
 
-      applyWithRetry(index, () -> {
+      applyWithRetry(index, decoded.databaseName(), () -> {
         switch (decoded.type()) {
         case TX_ENTRY -> applyTxEntry(decoded, index, originatedLocally);
         case SCHEMA_ENTRY -> applySchemaEntry(decoded, index, originatedLocally);
@@ -384,12 +405,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * is a single sequential thread, so a smaller (or zero) delay is perfectly safe on this path and only
    * reduces the worst-case latency per entry; the value is read live so it can be tuned independently.
    *
-   * @param index       the Raft log index being applied (diagnostics only)
-   * @param applyAction the apply dispatch to run
+   * @param index        the Raft log index being applied (diagnostics only)
+   * @param databaseName the database the entry targets, used to scope the diverged-state guard
+   *                     (may be {@code null} for entry types without a single target database)
+   * @param applyAction  the apply dispatch to run
    * @throws ReplicationException if the retryable condition persists after all attempts
+   */
+  /**
+   * Convenience overload that runs the dispatch without scoping the diverged-state guard to a
+   * specific database (equivalent to {@code applyWithRetry(index, null, applyAction)}). Used where
+   * the entry has no single target database.
    */
   // @VisibleForTesting
   void applyWithRetry(final long index, final Runnable applyAction) {
+    applyWithRetry(index, null, applyAction);
+  }
+
+  // @VisibleForTesting
+  void applyWithRetry(final long index, final String databaseName, final Runnable applyAction) {
     final int maxRetries = Math.max(0, server != null
         ? server.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_RETRIES)
         : GlobalConfiguration.TX_RETRIES.getValueAsInteger());
@@ -423,17 +456,36 @@ public class ArcadeStateMachine extends BaseStateMachine {
             break;
           }
         }
+      } catch (final ReplicationException re) {
+        // Already a resync signal (e.g. the WAL-gap escalation from applyTxEntry); propagate it
+        // unchanged so it reaches applyTransaction's catch (ReplicationException) handler without
+        // being re-wrapped or counted against the bounded-escalation budget below.
+        throw re;
       } catch (final Throwable t) {
-        // When state has already diverged (WAL gap detected earlier), an unexpected error most likely
-        // stems from the engine operating on the inconsistent in-memory state left by the gap - e.g.
-        // NPE on a page that wasn't refreshed, ClassCastException on a stale object. Treat it as a
-        // recoverable resync condition (issue #4740) instead of propagating to applyTransaction's
-        // fatal catch (Throwable) path that would halt the server. The ongoing snapshot download
-        // will restore consistent state once a stable leader is available.
-        if (stateDivergedSinceWalGap.get()) {
+        // JVM Errors (OutOfMemoryError, StackOverflowError, ...) mean the JVM itself is unstable;
+        // they must never be swallowed as a recoverable resync condition - let them reach the fatal
+        // halt path unchanged so the node stops loudly rather than masking a corrupt runtime.
+        if (t instanceof Error)
+          throw t;
+        // When this database has already diverged (WAL gap detected earlier), an unexpected error
+        // most likely stems from the engine operating on the inconsistent in-memory state left by
+        // the gap - e.g. NPE on a page that wasn't refreshed, ClassCastException on a stale object.
+        // Treat it as a recoverable resync condition (issue #4740) instead of propagating to
+        // applyTransaction's fatal catch (Throwable) path that would halt the server. The ongoing
+        // snapshot download will restore consistent state once a stable leader is available.
+        if (databaseName != null && divergedDatabases.contains(databaseName)) {
+          // Bounded escalation: a node that can never resync (no stable leader) must not swallow
+          // errors forever and degrade silently. Once the swallow count exceeds the threshold, let
+          // the error propagate to the fatal halt path so a truly stuck node surfaces loudly.
+          if (divergedSwallowedErrors.incrementAndGet() > MAX_DIVERGED_SWALLOWED_ERRORS) {
+            LogManager.instance().log(this, Level.SEVERE,
+                "Diverged database '%s' swallowed over %d unexpected errors without resyncing (index %d); escalating to fatal halt: %s",
+                databaseName, MAX_DIVERGED_SWALLOWED_ERRORS, index, t.getMessage());
+            throw t;
+          }
           LogManager.instance().log(this, Level.SEVERE,
-              "Unexpected error at index %d while state is diverged (WAL gap detected earlier); treating as resync condition: %s",
-              index, t.getMessage());
+              "Unexpected error at index %d while database '%s' is diverged (WAL gap detected earlier); treating as resync condition: %s",
+              index, databaseName, t.getMessage());
           throw new ReplicationException(
               "Apply error on diverged state at index " + index + "; snapshot resync in progress", t);
         }
@@ -607,7 +659,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         }
 
         LogManager.instance().log(this, Level.INFO, "Full resync from leader completed");
-        stateDivergedSinceWalGap.set(false);
+        clearDivergedState();
         return firstTermIndexInLog;
 
       } catch (final Exception e) {
@@ -693,14 +745,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
       LogManager.instance().log(this, Level.SEVERE,
           "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
           decoded.databaseName(), walTx.txId, e.getMessage());
-      // Mark state as diverged so subsequent unexpected errors don't trigger fatal halt (issue #4740).
-      // Trigger an immediate snapshot download instead of waiting for the HealthMonitor's periodic check.
-      if (stateDivergedSinceWalGap.compareAndSet(false, true)) {
+      // Mark this database as diverged so subsequent unexpected errors don't trigger fatal halt
+      // (issue #4740). Trigger an immediate snapshot download instead of waiting for the
+      // HealthMonitor's periodic check. compareAndSet on the add (newly diverged) keeps the
+      // immediate-download trigger to once per database until a resync clears it.
+      if (divergedDatabases.add(decoded.databaseName())) {
         try {
           lifecycleExecutor.submit(this::triggerSnapshotDownload);
         } catch (final RejectedExecutionException ree) {
           LogManager.instance().log(this, Level.WARNING,
-              "Cannot schedule immediate snapshot download after WAL gap (db=%s): executor is shut down", null, decoded.databaseName());
+              "Cannot schedule immediate snapshot download after WAL gap (db=%s): executor is shut down",
+              ree, decoded.databaseName());
         }
       }
       throw new ReplicationException(
@@ -1306,7 +1361,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
               leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
       }
       LogManager.instance().log(this, Level.INFO, "Snapshot download triggered by watchdog completed");
-      stateDivergedSinceWalGap.set(false);
+      clearDivergedState();
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Snapshot download triggered by watchdog failed", e);
     } finally {
