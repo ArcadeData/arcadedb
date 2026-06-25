@@ -608,11 +608,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
       raftHAServer.startLagMonitor();
       raftHAServer.printClusterConfiguration();
 
-      // A LEADER_MISSING flag means "the leader lacks a database this node holds" - meaningless once this node
-      // IS the leader. Clear those stale entries so the leader-missing alert does not linger on the new leader
-      // (issue #4727); they would otherwise survive because the leader never runs the follower reconcile path.
-      // Also drop the parallel acquire failure counters, which are likewise a follower-side reconcile concern.
-      acquireStatuses.values().removeIf(s -> s.state() == AcquireState.LEADER_MISSING);
+      // LEADER_MISSING ("the leader lacks a database this node holds") and FAILED ("could not acquire from the
+      // leader") are both follower-side reconcile states, meaningless once this node IS the leader. Clear them and
+      // the parallel failure counters so their cluster alerts do not linger on the new leader (issue #4727); they
+      // would otherwise survive because the leader never runs the follower reconcile path. ACQUIRED is harmless
+      // history and is kept.
+      acquireStatuses.values().removeIf(s -> s.state() == AcquireState.LEADER_MISSING || s.state() == AcquireState.FAILED);
       acquireFailureCounts.clear();
 
       // Issue #4147: drive offline cluster bootstrap if conditions match (commit index still 0,

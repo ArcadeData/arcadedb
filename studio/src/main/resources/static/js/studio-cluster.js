@@ -273,7 +273,9 @@ function transferLeadershipPrompt() {
     + '<select class="form-select" id="transferPeerId">' + options + '</select>'
     + '</div>';
   globalPrompt("Transfer Leadership", html, "Transfer", function(values) {
-    var peerId = values["transferPeerId"];
+    // globalPrompt only captures input/textarea values, not <select>, so read the select directly (the
+    // convention used elsewhere in Studio, e.g. studio-database.js).
+    var peerId = $("#transferPeerId").val();
     if (!peerId) return;
     globalNotify("Transfer leadership", "Transferring leadership to '" + peerId + "'...", "info");
     jQuery.ajax({
