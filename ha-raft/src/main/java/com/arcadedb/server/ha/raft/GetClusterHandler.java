@@ -50,6 +50,9 @@ import java.util.logging.Level;
  */
 public class GetClusterHandler extends AbstractServerHttpHandler {
 
+  /** Per-peer timeout for the opt-in presence fan-out; kept short so a hung peer cannot block the worker thread. */
+  private static final long PRESENCE_QUERY_TIMEOUT_MS = 5_000L;
+
   private final RaftHAPlugin plugin;
 
   public GetClusterHandler(final HttpServer httpServer, final RaftHAPlugin plugin) {
@@ -158,7 +161,11 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
   private JSONObject buildPresenceMatrix(final RaftHAServer raftHAServer, final RaftPeerId localPeerId) {
     final ArcadeDBServer server = httpServer.getServer();
     final String clusterToken = raftHAServer.getClusterToken();
-    final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
+    // Use a short per-peer timeout (not HA_BOOTSTRAP_TIMEOUT_MS, which defaults to 120s): this fan-out runs on an
+    // Undertow worker thread, and a peer that accepts the connection but then hangs would otherwise tie up the
+    // worker for the full bootstrap budget per peer. A few seconds is plenty for a peer to list its databases; a
+    // slower peer is simply reported unreachable in the matrix.
+    final long timeoutMs = PRESENCE_QUERY_TIMEOUT_MS;
 
     // Preserve a stable node order; collect each reachable peer's database set.
     final Set<String> nodes = new LinkedHashSet<>();

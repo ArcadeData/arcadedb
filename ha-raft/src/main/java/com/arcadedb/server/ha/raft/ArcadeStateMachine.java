@@ -783,6 +783,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
               leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
         });
 
+    // Apply the status-map / failure-counter bookkeeping and decide whether to fail the overall install so Ratis
+    // re-triggers it. Extracted to a package-private method so these transitions are unit-testable without a live
+    // cluster (the InstallSnapshot path is not deterministically reachable in-process - see SnapshotAcquireNewDatabaseIT).
+    if (applyReconcileOutcome(plan, outcome))
+      throw new IOException("Reconcile from leader had transient database failure(s); will retry: "
+          + outcome.acquireFailures() + outcome.refreshFailures());
+  }
+
+  /**
+   * Applies the outcome of a reconcile pass to {@link #acquireStatuses} and {@link #acquireFailureCounts}, and
+   * returns whether the overall install should be failed so Ratis re-triggers it. Package-private and free of
+   * leader/network I/O so the FAILED/ACQUIRED/LEADER_MISSING transitions and the give-up decision are directly
+   * unit-testable.
+   *
+   * @return {@code true} if at least one failed database is still within its retry budget
+   *         ({@link #ACQUIRE_GIVE_UP_AFTER}); {@code false} when there were no failures, or every failure has
+   *         exhausted its budget (so a persistently bad database no longer forces the whole install to re-run).
+   */
+  boolean applyReconcileOutcome(final ReconcilePlan plan, final ReconcileOutcome outcome) {
     // acquireStatuses records only genuine acquisitions, so operators can tell a true pull from a routine refresh.
     // A success also resets the consecutive-failure counter for that database.
     for (final String dbName : outcome.acquired()) {
@@ -810,19 +829,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
           dbName, dbName);
     }
 
-    // Decide whether to fail the overall install (so Ratis re-triggers it). A failure is "still worth retrying"
-    // only until it has failed ACQUIRE_GIVE_UP_AFTER times in a row: past that, a persistently bad database stops
-    // forcing the retry, so it no longer re-downloads every healthy database on this follower in a tight loop. It
-    // is left FAILED (surfaced to operators) and retried on the next natural InstallSnapshot.
+    // A failure is "still worth retrying" only until it has failed ACQUIRE_GIVE_UP_AFTER times in a row. Past that
+    // a persistently bad database stops forcing the retry, so it no longer makes Ratis re-trigger InstallSnapshot
+    // in a tight loop (which would re-download every healthy database on this follower each pass). It is left
+    // FAILED and is still attempted on the next *natural* InstallSnapshot - which already re-downloads every
+    // database anyway - so it can still recover if the leader's copy is later fixed; it just no longer hot-loops.
     boolean retryWorthwhile = false;
     for (final String dbName : outcome.acquireFailures().keySet())
       retryWorthwhile |= bumpFailureAndShouldRetry(dbName);
     for (final String dbName : outcome.refreshFailures().keySet())
       retryWorthwhile |= bumpFailureAndShouldRetry(dbName);
-
-    if (retryWorthwhile)
-      throw new IOException("Reconcile from leader had transient database failure(s); will retry: "
-          + outcome.acquireFailures() + outcome.refreshFailures());
+    return retryWorthwhile;
   }
 
   /**
@@ -850,6 +867,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private void refreshExistingDatabases(final String leaderHttpAddr, final String leaderHttpsAddr,
       final String clusterToken) throws IOException {
     for (final String dbName : server.getDatabaseNames()) {
+      // Skip reserved internal databases (e.g. the Raft control directory '.raft'): the leader does not serve them
+      // as snapshots, so an install attempt would only fail. Mirrors the filter on the auto-acquire path.
+      if (dbName.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
+        continue;
       if (server.existsDatabase(dbName)) {
         LogManager.instance().log(this, Level.INFO,
             "Installing snapshot for database '%s' from leader %s...", dbName, leaderHttpAddr);

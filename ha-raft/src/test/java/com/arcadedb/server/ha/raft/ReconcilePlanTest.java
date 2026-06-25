@@ -115,4 +115,63 @@ class ReconcilePlanTest {
     assertThat(outcome.acquireFailures()).isEmpty();
     assertThat(outcome.refreshFailures()).isEmpty();
   }
+
+  // ---- bookkeeping: applyReconcileOutcome status transitions + give-up decision ----
+
+  private static ArcadeStateMachine.ReconcileOutcome outcome(final List<String> acquired, final List<String> acquireFailures,
+      final List<String> refreshed, final List<String> refreshFailures) {
+    final java.util.Map<String, String> af = new java.util.LinkedHashMap<>();
+    for (final String d : acquireFailures)
+      af.put(d, "boom");
+    final java.util.Map<String, String> rf = new java.util.LinkedHashMap<>();
+    for (final String d : refreshFailures)
+      rf.put(d, "boom");
+    return new ArcadeStateMachine.ReconcileOutcome(acquired, af, refreshed, rf);
+  }
+
+  @Test
+  void outcomeSetsAcquiredFailedAndLeaderMissingStatuses() {
+    final var sm = new ArcadeStateMachine();
+    final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("newok", "newbad"), List.of(), List.of("orphan"));
+
+    final boolean retry = sm.applyReconcileOutcome(plan, outcome(List.of("newok"), List.of("newbad"), List.of(), List.of()));
+
+    assertThat(sm.getAcquireStatus("newok").state()).isEqualTo(ArcadeStateMachine.AcquireState.ACQUIRED);
+    assertThat(sm.getAcquireStatus("newbad").state()).isEqualTo(ArcadeStateMachine.AcquireState.FAILED);
+    assertThat(sm.getAcquireStatus("orphan").state()).isEqualTo(ArcadeStateMachine.AcquireState.LEADER_MISSING);
+    assertThat(retry).as("a fresh failure is still within the retry budget").isTrue();
+  }
+
+  @Test
+  void refreshClearsAStaleLeaderMissingStatus() {
+    final var sm = new ArcadeStateMachine();
+    // First pass: "db" is local-only, flagged LEADER_MISSING.
+    sm.applyReconcileOutcome(new ArcadeStateMachine.ReconcilePlan(List.of(), List.of(), List.of("db")),
+        outcome(List.of(), List.of(), List.of(), List.of()));
+    assertThat(sm.getAcquireStatus("db").state()).isEqualTo(ArcadeStateMachine.AcquireState.LEADER_MISSING);
+
+    // Second pass: the leader now holds it, so it is refreshed -> the stale status must clear.
+    sm.applyReconcileOutcome(new ArcadeStateMachine.ReconcilePlan(List.of(), List.of("db"), List.of()),
+        outcome(List.of(), List.of(), List.of("db"), List.of()));
+    assertThat(sm.getAcquireStatus("db")).isNull();
+  }
+
+  @Test
+  void persistentFailureStopsForcingRetryAfterGiveUpThreshold() {
+    final var sm = new ArcadeStateMachine();
+    final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("bad"), List.of(), List.of());
+    final var failing = outcome(List.of(), List.of("bad"), List.of(), List.of());
+
+    // Within the budget the failure keeps forcing a retry; once the threshold is hit it stops.
+    assertThat(sm.applyReconcileOutcome(plan, failing)).isTrue();  // 1
+    assertThat(sm.applyReconcileOutcome(plan, failing)).isTrue();  // 2
+    assertThat(sm.applyReconcileOutcome(plan, failing)).isFalse(); // 3 -> give up
+    assertThat(sm.getAcquireStatus("bad").state()).isEqualTo(ArcadeStateMachine.AcquireState.FAILED);
+
+    // A later success resets the counter (and would let it retry again if it failed afresh).
+    sm.applyReconcileOutcome(new ArcadeStateMachine.ReconcilePlan(List.of("bad"), List.of(), List.of()),
+        outcome(List.of("bad"), List.of(), List.of(), List.of()));
+    assertThat(sm.getAcquireStatus("bad").state()).isEqualTo(ArcadeStateMachine.AcquireState.ACQUIRED);
+    assertThat(sm.applyReconcileOutcome(plan, failing)).as("counter reset after success").isTrue();
+  }
 }
