@@ -155,6 +155,14 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    */
   static volatile Consumer<String> TEST_POST_REPLICATION_HOOK = null;
 
+  /**
+   * Test-only fault-injection hook. Fires inside phase-2 on the leader, just before
+   * {@code commit2ndPhase} runs, after Raft has already committed the entry. Throw from the
+   * consumer to simulate a leader-side phase-2 commit failure while the followers are already
+   * ahead (issue #4740). Always null in production.
+   */
+  static volatile Consumer<String> TEST_PHASE2_COMMIT_FAULT = null;
+
   public record ReadConsistencyContext(Database.READ_CONSISTENCY consistency, long readAfterIndex) {
   }
 
@@ -358,6 +366,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     proxied.executeInReadLock(() -> {
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
+        // Test-only fault injection: simulate a phase-2 commit failure while followers are ahead.
+        final Consumer<String> phase2Fault = TEST_PHASE2_COMMIT_FAULT;
+        if (phase2Fault != null)
+          phase2Fault.accept(getName());
+
         payload.tx().commit2ndPhase(payload.phase1());
 
         if (getSchema().getEmbedded().isDirty())
@@ -378,6 +391,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
               Followers have applied this transaction but the leader has not. \
               Stepping down to prevent stale reads. Error: %s""",
               getName(), payload.tx(), e.getMessage());
+        reconcileLeaderPagesAfterPhase2Failure(payload);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
         throw e;
       } finally {
@@ -405,6 +419,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
             Phase 2 commit failed during ALL-quorum recovery (db=%s, txId=%s). \
             Leader database may be inconsistent. Stepping down so a node with correct state takes over. Error: %s""",
             getName(), payload.tx(), e.getMessage());
+        reconcileLeaderPagesAfterPhase2Failure(payload);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
       } finally {
         current.popIfNotLastTransaction();
@@ -415,6 +430,39 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   private static final int  STEP_DOWN_MAX_RETRIES    = 3;
   private static final long STEP_DOWN_RETRY_DELAY_MS = 500;
+
+  /**
+   * Attempts to bring the leader's pages into sync with the committed Raft entry after
+   * {@code commit2ndPhase} has failed. The WAL bytes in {@code payload} are the same bytes
+   * that Raft replicated to the followers; calling {@link com.arcadedb.engine.TransactionManager#applyChanges}
+   * with them uses page-version guards so already-applied pages are skipped and un-applied
+   * ones are written. After this call the leader's page versions match what the followers
+   * applied, so when this node steps down and replays the log as a follower it will not
+   * encounter a {@link com.arcadedb.exception.WALVersionGapException} for this entry.
+   * <p>
+   * Called by the phase-2 failure handlers while they still hold the read lock that the failed
+   * {@code commit2ndPhase} ran under. {@code applyChanges} mutates pages under the per-page I/O
+   * lock, so running it under the same read lock keeps the page-write coordination identical to
+   * the normal phase-2 path and avoids racing a concurrent phase-1 snapshot.
+   * <p>
+   * Uses {@code ignoreErrors=true}: this is a best-effort reconciliation, so if some page is more
+   * than one version behind (the leader was already lagging before this tx) {@code applyChanges}
+   * skips that page rather than aborting the whole replay on the first gap. Every page it CAN apply
+   * is applied; any page it cannot is left for the normal follower-side WAL-gap path to resync once
+   * this node steps down (issue #4740 Fix 2 makes that recoverable instead of fatal).
+   */
+  private void reconcileLeaderPagesAfterPhase2Failure(final ReplicationPayload payload) {
+    try {
+      final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(payload.walData());
+      proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), true);
+      LogManager.instance().log(this, Level.INFO,
+          "Phase 2 failure: leader pages reconciled via WAL replay (db=%s, tx=%s)", getName(), payload.tx());
+    } catch (final Exception reconcileEx) {
+      LogManager.instance().log(this, Level.SEVERE,
+          "Phase 2 failure: leader page reconciliation also failed (db=%s, tx=%s): %s",
+          getName(), payload.tx(), reconcileEx.getMessage());
+    }
+  }
 
   private void recoverLeadershipAfterPhase2Failure(final String txDescription) {
     if (raftHAServer == null || !raftHAServer.isLeader())
