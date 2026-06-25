@@ -66,6 +66,24 @@ public final class HealthMonitor {
     }
 
     /**
+     * Returns {@code true} when this node is a running follower that is stuck against the leader: it
+     * recognizes a leader at a newer term but cannot apply the leader's current-term entries because
+     * its Raft log diverged (issue #4741). Unlike {@link #isFollowerLaggingBeyond(long)} this is not a
+     * lag count - the divergence can be a single entry on an idle cluster - so it has no threshold.
+     * Implementations must return {@code false} for the leader and whenever the state cannot be read.
+     */
+    default boolean isFollowerStuckDiverged() {
+      return false;
+    }
+
+    /**
+     * Recovers a follower that is stuck-diverged by reformatting its Raft storage and rejoining the
+     * group as a fresh peer, which lets the leader reconcile it via the snapshot-install path.
+     */
+    default void recoverFromDivergence() {
+    }
+
+    /**
      * Proactively reconciles the inbound Raft gRPC peer allowlist with current DNS so a peer that
      * restarted with a new pod IP is admitted without first being rejected (issue #4696). No-op when
      * the allowlist is disabled; the filter itself throttles the DNS re-resolution.
@@ -74,26 +92,52 @@ public final class HealthMonitor {
     }
   }
 
+  // How long (as a multiple of the recovery duration) the follower must look healthy before a prior
+  // reformat episode is considered resolved and the bounded reformat budget re-arms.
+  private static final long REFORMAT_EPISODE_RESET_MULTIPLIER = 5L;
+
   private final    HealthTarget             target;
   private final    long                     intervalMs;
   private final    long                     staleFollowerLagThreshold;
   private final    long                     staleFollowerRecoveryDurationMs;
+  private final    boolean                  divergedFollowerRecoveryEnabled;
+  private final    int                      divergedFollowerMaxReformats;
   private volatile ScheduledExecutorService executor;
   // Wall-clock time (ms) when the current uninterrupted lag streak was first observed; -1 = not lagging.
-  private          long                     lagObservedSinceMs = -1;
+  private          long                     lagObservedSinceMs          = -1;
+  // Wall-clock time (ms) when the current uninterrupted stuck-divergence streak was first observed; -1 = not stuck.
+  private          long                     stuckObservedSinceMs        = -1;
+  // Bounded reformat budget (#4741 review): reformats fired in the current divergence episode, the
+  // time the follower started looking healthy again, and whether the budget is exhausted (logged once).
+  private          int                      divergenceReformatCount     = 0;
+  private          long                     divergenceHealthySinceMs    = -1;
+  private          boolean                  divergenceRecoveryExhausted = false;
   // Injectable for deterministic tests; defaults to the system clock.
-  private          LongSupplier             clock              = System::currentTimeMillis;
+  private          LongSupplier             clock                       = System::currentTimeMillis;
 
   public HealthMonitor(final HealthTarget target, final long intervalMs) {
-    this(target, intervalMs, 0L, 0L);
+    this(target, intervalMs, 0L, 0L, false, 0);
   }
 
   public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
       final long staleFollowerRecoveryDurationMs) {
+    this(target, intervalMs, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs, false, 0);
+  }
+
+  public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
+      final long staleFollowerRecoveryDurationMs, final boolean divergedFollowerRecoveryEnabled) {
+    this(target, intervalMs, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs, divergedFollowerRecoveryEnabled, 0);
+  }
+
+  public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
+      final long staleFollowerRecoveryDurationMs, final boolean divergedFollowerRecoveryEnabled,
+      final int divergedFollowerMaxReformats) {
     this.target = target;
     this.intervalMs = intervalMs;
     this.staleFollowerLagThreshold = staleFollowerLagThreshold;
     this.staleFollowerRecoveryDurationMs = staleFollowerRecoveryDurationMs;
+    this.divergedFollowerRecoveryEnabled = divergedFollowerRecoveryEnabled;
+    this.divergedFollowerMaxReformats = divergedFollowerMaxReformats;
   }
 
   /** Package-private test hook to drive the persistence logic deterministically. */
@@ -138,11 +182,19 @@ public final class HealthMonitor {
       HALog.log(this, HALog.BASIC, "Health monitor detected Ratis %s state, attempting recovery", state);
       target.restartRatisIfNeeded();
       // A Ratis restart will reinitialize the state machine and re-detect any snapshot gap, so
-      // drop any pending stale-follower streak to avoid a redundant download right after recovery.
+      // drop any pending stale-follower / stuck-divergence streak (and the reformat budget) to avoid
+      // a redundant recovery right after the restart.
       lagObservedSinceMs = -1;
+      stuckObservedSinceMs = -1;
+      divergenceReformatCount = 0;
+      divergenceHealthySinceMs = -1;
+      divergenceRecoveryExhausted = false;
       return;
     }
+    // checkStaleFollower (lag: commit - applied > threshold) and checkStuckFollower (divergence:
+    // commit == applied) are mutually exclusive by construction, so at most one arms per tick.
     checkStaleFollower();
+    checkStuckFollower();
   }
 
   /**
@@ -173,6 +225,69 @@ public final class HealthMonitor {
       target.recoverFromPersistentLag();
       lagObservedSinceMs = -1; // reset; the next streak re-arms only if the lag persists again
     }
+  }
+
+  /**
+   * Reformats and rejoins a follower that has been stuck-diverged from the leader for at least
+   * {@link #staleFollowerRecoveryDurationMs} (issue #4741). Mirrors {@link #checkStaleFollower()}:
+   * the first observation only starts the streak, any tick where the stuck condition clears resets
+   * it, and the recovery fires at most once per streak. Reuses the stale-follower recovery duration
+   * so both self-healing paths share the same "must persist this long" knob.
+   */
+  private void checkStuckFollower() {
+    if (!divergedFollowerRecoveryEnabled)
+      return; // disabled
+
+    final long now = clock.getAsLong();
+
+    if (!target.isFollowerStuckDiverged()) {
+      stuckObservedSinceMs = -1;
+      // Forget a prior reformat episode once the follower has looked healthy long enough that the
+      // divergence is considered resolved, re-arming the bounded reformat budget for any genuinely
+      // new divergence later.
+      if (divergenceReformatCount > 0) {
+        if (divergenceHealthySinceMs == -1)
+          divergenceHealthySinceMs = now;
+        else if (now - divergenceHealthySinceMs >= staleFollowerRecoveryDurationMs * REFORMAT_EPISODE_RESET_MULTIPLIER) {
+          divergenceReformatCount = 0;
+          divergenceHealthySinceMs = -1;
+          divergenceRecoveryExhausted = false;
+        }
+      }
+      return;
+    }
+
+    divergenceHealthySinceMs = -1; // still stuck: the episode is ongoing
+
+    if (stuckObservedSinceMs == -1) {
+      stuckObservedSinceMs = now; // first observation; require persistence before acting
+      return;
+    }
+
+    if (now - stuckObservedSinceMs < staleFollowerRecoveryDurationMs)
+      return; // not persisted long enough yet
+
+    // Bounded reformat budget (#4741 review): a reformat that restarts cleanly resets the shared Ratis
+    // restart-retry counter, so a node whose divergence keeps reproducing would otherwise reformat +
+    // full-snapshot-install every persistence window forever. Cap reformats per episode; once exhausted,
+    // stop and surface it (SEVERE, once) for operator action instead of looping silently.
+    if (divergedFollowerMaxReformats > 0 && divergenceReformatCount >= divergedFollowerMaxReformats) {
+      if (!divergenceRecoveryExhausted) {
+        divergenceRecoveryExhausted = true;
+        LogManager.instance().log(this, Level.SEVERE,
+            "Follower still stuck-diverged after %d automatic Raft-storage reformats; giving up auto-recovery - operator intervention required",
+            divergedFollowerMaxReformats);
+      }
+      stuckObservedSinceMs = -1; // re-arm the persistence streak but do not reformat again
+      return;
+    }
+
+    divergenceReformatCount++;
+    LogManager.instance().log(this, Level.WARNING,
+        "Follower stuck-diverged from leader for %dms, reformatting Raft storage and rejoining (attempt %d)",
+        now - stuckObservedSinceMs, divergenceReformatCount);
+    target.recoverFromDivergence();
+    stuckObservedSinceMs = -1; // reset; the next streak re-arms only if the divergence persists again
   }
 
   private void tickSafely() {
