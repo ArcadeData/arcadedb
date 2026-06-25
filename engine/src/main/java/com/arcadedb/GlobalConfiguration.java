@@ -973,9 +973,9 @@ public enum GlobalConfiguration {
 
   HA_DIVERGED_FOLLOWER_RECOVERY("arcadedb.ha.divergedFollowerRecovery", SCOPE.SERVER,
       """
-      When enabled, a follower that detects it is stuck at a stale term against the leader (it recognizes a leader at a \
-      newer term and has applied everything it could locally commit, yet its last-applied entry is from an older term) \
-      automatically reformats its Raft storage and rejoins as a fresh peer, letting the leader reconcile it via the \
+      When true (default), a follower that detects it is stuck at a stale term against the leader (it recognizes a leader \
+      at a newer term and has applied everything it could locally commit, yet its last-applied entry is from an older \
+      term) automatically reformats its Raft storage and rejoins as a fresh peer, letting the leader reconcile it via the \
       snapshot-install path. This covers issue #4741: a tiny (1-2 entry) Raft-log divergence on an otherwise idle \
       cluster, where the leader's log is never compacted, so neither the follower-side stale recovery \
       (HA_STALE_FOLLOWER_LAG_THRESHOLD) nor the leader-driven stalled-replica resync \
@@ -987,9 +987,12 @@ public enum GlobalConfiguration {
       from the leader). The signature is "stuck at a stale term", which a genuine log divergence satisfies but so can a \
       sustained (> HA_STALE_FOLLOWER_RECOVERY_DURATION_MS) one-sided network outage where heartbeats arrive but the \
       leader's current-term entries do not; in that case the reformat is wasteful (no data loss - the leader holds \
-      everything) but does not fix the connectivity. Disabled means a manual node restart remains the only mitigation \
-      for #4741.""",
-      Boolean.class, false),
+      everything) but does not fix the connectivity. \
+      No cross-follower coordination: if a systemic condition makes several followers satisfy the signature at once they \
+      may reformat within the same window, briefly costing quorum while they re-sync. This is bounded (each reformat is \
+      non-data-losing and HA_DIVERGED_FOLLOWER_MAX_REFORMATS caps retries) and a leader-coordinated one-at-a-time variant \
+      is deferred to a follow-up; set this to false to fall back to a manual node restart as the only #4741 mitigation.""",
+      Boolean.class, true),
 
   HA_DIVERGED_FOLLOWER_MAX_REFORMATS("arcadedb.ha.divergedFollowerMaxReformats", SCOPE.SERVER,
       """
