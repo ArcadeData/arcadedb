@@ -146,4 +146,97 @@ class ArcadeStateMachineApplyRetryTest {
     })).isSameAs(boom);
     assertThat(calls.get()).isEqualTo(1);
   }
+
+  @Test
+  void unexpectedErrorOnDivergedDatabaseIsWrappedAsReplicationException() {
+    // Regression guard for issue #4740: when a WAL version gap has already diverged a database,
+    // subsequent apply operations may throw unexpected errors (NPE, ClassCastException, etc.) from
+    // operating on the inconsistent in-memory state. Instead of reaching the fatal server-halt path,
+    // they must be wrapped as ReplicationException (recoverable resync) while the snapshot download
+    // catches up.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged("diverged-db");
+    final NullPointerException npe = new NullPointerException("inconsistent-state NPE after WAL gap");
+    assertThatThrownBy(() -> sm.applyWithRetry(10L, "diverged-db", () -> { throw npe; }))
+        .isInstanceOf(ReplicationException.class)
+        .hasMessageContaining("snapshot resync")
+        .hasCause(npe);
+  }
+
+  @Test
+  void unexpectedErrorOnHealthyDatabaseIsRethrown() {
+    // Regression guard: an unexpected error while applying an entry for a database that is NOT
+    // diverged must still reach applyTransaction's fatal catch (Throwable) handler (server-halt
+    // path) so real bugs are caught. Critically, a gap in one database must not mask a bug in
+    // another: mark only "diverged-db" as diverged, then fail on "healthy-db".
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged("diverged-db");
+    final NullPointerException npe = new NullPointerException("programming bug on healthy database");
+    // server == null here, so applyWithRetry reads the default GlobalConfiguration.TX_RETRIES; the NPE
+    // is non-retryable so it exits on the first attempt regardless, and must propagate unchanged.
+    assertThatThrownBy(() -> sm.applyWithRetry(11L, "healthy-db", () -> { throw npe; })).isSameAs(npe);
+  }
+
+  @Test
+  void errorOnDivergedDatabaseIsRethrownNotWrapped() {
+    // Regression guard: a JVM Error (OutOfMemoryError, StackOverflowError, ...) indicates an
+    // unstable JVM and must NEVER be swallowed as a recoverable resync condition - even when the
+    // database is diverged it must propagate unchanged to the fatal halt path.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged("diverged-db");
+    final OutOfMemoryError oom = new OutOfMemoryError("OOM on diverged database");
+    assertThatThrownBy(() -> sm.applyWithRetry(12L, "diverged-db", () -> { throw oom; })).isSameAs(oom);
+  }
+
+  @Test
+  void replicationExceptionOnDivergedDatabaseIsNotDoubleWrapped() {
+    // Regression guard: the WAL-gap escalation in applyTxEntry throws a ReplicationException while
+    // the database is already in the diverged set. applyWithRetry must propagate it unchanged rather
+    // than re-wrapping it (which would lose the original message and consume the escalation budget).
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged("diverged-db");
+    final ReplicationException re = new ReplicationException("WAL version gap detected - snapshot resync required");
+    assertThatThrownBy(() -> sm.applyWithRetry(13L, "diverged-db", () -> { throw re; })).isSameAs(re);
+  }
+
+  @Test
+  void boundedEscalationRePropagatesAfterThresholdExceeded() {
+    // Regression guard for issue #4740 bounded escalation: a database that can never resync must not
+    // swallow unexpected errors forever. The first MAX_DIVERGED_SWALLOWED_ERRORS (100) errors wrap as
+    // recoverable ReplicationExceptions; the next one is re-propagated to the fatal halt path so a
+    // stuck node surfaces loudly. The threshold check is incrementAndGet() > 100, so calls 1..100 wrap
+    // and call 101 re-propagates.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged("stuck-db");
+    final NullPointerException npe = new NullPointerException("inconsistent state after WAL gap");
+    for (int i = 1; i <= 100; i++)
+      assertThatThrownBy(() -> sm.applyWithRetry(100L, "stuck-db", () -> { throw npe; }))
+          .as("swallow #%d must wrap as recoverable", i)
+          .isInstanceOf(ReplicationException.class);
+    assertThat(sm.divergedSwallowedErrorCount()).isEqualTo(100);
+    // The 101st swallowed error exceeds the budget and must propagate unchanged.
+    assertThatThrownBy(() -> sm.applyWithRetry(101L, "stuck-db", () -> { throw npe; })).isSameAs(npe);
+  }
+
+  @Test
+  void clearDivergedStateResetsSetAndCounter() {
+    // Regression guard: a completed snapshot resync calls clearDivergedState(), which must clear both
+    // the diverged-database set and the bounded-escalation counter so the node returns to normal
+    // fail-fast behaviour.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged("db");
+    final NullPointerException npe = new NullPointerException("inconsistent state after WAL gap");
+    for (int i = 0; i < 3; i++)
+      assertThatThrownBy(() -> sm.applyWithRetry(200L, "db", () -> { throw npe; }))
+          .isInstanceOf(ReplicationException.class);
+    assertThat(sm.isDatabaseDiverged("db")).isTrue();
+    assertThat(sm.divergedSwallowedErrorCount()).isEqualTo(3);
+
+    sm.clearDivergedState();
+
+    assertThat(sm.isDatabaseDiverged("db")).isFalse();
+    assertThat(sm.divergedSwallowedErrorCount()).isZero();
+    // After the reset the database is healthy again, so an unexpected error must propagate unchanged.
+    assertThatThrownBy(() -> sm.applyWithRetry(201L, "db", () -> { throw npe; })).isSameAs(npe);
+  }
 }
