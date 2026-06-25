@@ -448,12 +448,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // unchanged so it reaches applyTransaction's catch (ReplicationException) handler without
         // being re-wrapped or counted against the bounded-escalation budget below.
         throw re;
-      } catch (final Throwable t) {
-        // JVM Errors (OutOfMemoryError, StackOverflowError, ...) mean the JVM itself is unstable;
-        // they must never be swallowed as a recoverable resync condition - let them reach the fatal
-        // halt path unchanged so the node stops loudly rather than masking a corrupt runtime.
-        if (t instanceof Error)
-          throw t;
+      } catch (final RuntimeException t) {
+        // Catch RuntimeException (not Throwable) on purpose: applyAction is a Runnable, so the only
+        // things it can throw are RuntimeException or Error. JVM Errors (OutOfMemoryError,
+        // StackOverflowError, ...) mean the JVM itself is unstable and must never be swallowed as a
+        // recoverable resync condition - leaving them uncaught lets them propagate unchanged to
+        // applyTransaction's fatal halt path so the node stops loudly rather than masking a corrupt
+        // runtime.
         // When this database has already diverged (WAL gap detected earlier), an unexpected error
         // most likely stems from the engine operating on the inconsistent in-memory state left by
         // the gap - e.g. NPE on a page that wasn't refreshed, ClassCastException on a stale object.

@@ -73,3 +73,9 @@ Gemini did not re-review (its cycle-1 items were already resolved). Claude re-re
 6. Untested Fix-2 internals → added `boundedEscalationRePropagatesAfterThresholdExceeded` and `clearDivergedStateResetsSetAndCounter` (with `isDatabaseDiverged`/`divergedSwallowedErrorCount` test accessors)
 
 `ArcadeStateMachineApplyRetryTest` now 12/12; ha-raft unit suite 102/102; `Issue4740Phase2ReconcileIT` green; full build SUCCESS.
+
+### Cycle 3 - HEAD b0cd5b21a
+
+Claude re-reviewed and posted no further items (clean). Gemini did not re-review. CI green (build-and-package, claude-review, CodeQL all pass; the Meterian failure is a pre-existing dependency vuln unrelated to this change).
+
+Remaining signal: Codacy reported a persistent high-severity ErrorProne finding (the broad `catch (Throwable)` in `applyWithRetry`). Resolved by narrowing to `catch (RuntimeException)`: a `Runnable` can only throw `RuntimeException` or `Error`, so JVM `Error`s now propagate to the fatal halt path by simply not being caught - identical semantics, no broad catch, and the explicit `instanceof Error` rethrow is no longer needed. All tests still pass (the OOM-rethrow guard now verifies the Error propagates uncaught).
