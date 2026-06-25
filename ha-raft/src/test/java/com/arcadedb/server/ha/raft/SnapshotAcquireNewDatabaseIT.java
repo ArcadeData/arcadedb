@@ -111,6 +111,14 @@ class SnapshotAcquireNewDatabaseIT extends BaseRaftHATest {
         .as("reserved acquisition staging dir must be gone").doesNotExist();
     assertThat(acquiredPath.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE)).doesNotExist();
     assertThat(acquiredPath.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR)).doesNotExist();
+
+    // The acquired copy must keep receiving replication: a subsequent write on the leader must reach the
+    // newly-registered follower copy (the part that matters operationally, beyond the one-time pull).
+    leaderDb.transaction(() -> leaderDb.newVertex("Item").set("name", "after-acquire").save());
+    final long afterWrite = leaderDb.countType("Item", true);
+    waitForReplicationIsCompleted(followerIndex);
+    assertThat(getServerDatabase(followerIndex, getDatabaseName()).countType("Item", true))
+        .as("a write after acquisition must replicate to the acquired follower copy").isEqualTo(afterWrite);
   }
 
   /**

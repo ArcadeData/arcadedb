@@ -153,6 +153,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   private final ConcurrentHashMap<String, AcquireStatus> acquireStatuses = new ConcurrentHashMap<>();
 
+  // Consecutive acquire/refresh failures per database (issue #4727). After ACQUIRE_GIVE_UP_AFTER consecutive
+  // failures, that database stops failing the overall install so Ratis no longer re-triggers InstallSnapshot in a
+  // tight loop - which would otherwise re-download every healthy database on this follower each pass just because
+  // one database's snapshot opens on the leader but persistently fails validation here. The database is left
+  // FAILED (surfaced in cluster status) and retried on the next natural InstallSnapshot; the counter resets on
+  // any success.
+  private final ConcurrentHashMap<String, Integer> acquireFailureCounts = new ConcurrentHashMap<>();
+  private static final int                          ACQUIRE_GIVE_UP_AFTER = 3;
+
   public enum AcquireState {
     /** A full-snapshot pull of this database is in progress. */
     ACQUIRING,
@@ -753,6 +762,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // LEADER_MISSING database later dropped via DROP_DATABASE_ENTRY). Otherwise the leader-missing alert would
     // stay raised for a database that no longer exists anywhere this node knows about.
     acquireStatuses.keySet().removeIf(name -> !localDbNames.contains(name) && !leaderDbNames.contains(name));
+    acquireFailureCounts.keySet().removeIf(name -> !localDbNames.contains(name) && !leaderDbNames.contains(name));
 
     final ReconcilePlan plan = classifyReconcile(leaderDbNames, localDbNames);
 
@@ -774,12 +784,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
         });
 
     // acquireStatuses records only genuine acquisitions, so operators can tell a true pull from a routine refresh.
-    for (final String dbName : outcome.acquired())
+    // A success also resets the consecutive-failure counter for that database.
+    for (final String dbName : outcome.acquired()) {
       acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRED, System.currentTimeMillis(), null));
+      acquireFailureCounts.remove(dbName);
+    }
     // A refreshed database is one the leader holds, so clear any stale LEADER_MISSING/FAILED status left from a
     // prior pass (the resync / leadership-transfer recovery flow this PR documents).
-    for (final String dbName : outcome.refreshed())
+    for (final String dbName : outcome.refreshed()) {
       acquireStatuses.remove(dbName);
+      acquireFailureCounts.remove(dbName);
+    }
     for (final Map.Entry<String, String> e : outcome.acquireFailures().entrySet())
       acquireStatuses.put(e.getKey(), new AcquireStatus(AcquireState.FAILED, System.currentTimeMillis(), e.getValue()));
     for (final Map.Entry<String, String> e : outcome.refreshFailures().entrySet())
@@ -795,12 +810,36 @@ public class ArcadeStateMachine extends BaseStateMachine {
           dbName, dbName);
     }
 
-    // Fail the overall install if any database failed, so Ratis re-triggers it; the healthy databases were still
-    // refreshed/acquired above and are not blocked by the failing one.
-    final int failed = outcome.acquireFailures().size() + outcome.refreshFailures().size();
-    if (failed > 0)
-      throw new IOException("Reconcile from leader completed with " + failed + " failed database(s): "
+    // Decide whether to fail the overall install (so Ratis re-triggers it). A failure is "still worth retrying"
+    // only until it has failed ACQUIRE_GIVE_UP_AFTER times in a row: past that, a persistently bad database stops
+    // forcing the retry, so it no longer re-downloads every healthy database on this follower in a tight loop. It
+    // is left FAILED (surfaced to operators) and retried on the next natural InstallSnapshot.
+    boolean retryWorthwhile = false;
+    for (final String dbName : outcome.acquireFailures().keySet())
+      retryWorthwhile |= bumpFailureAndShouldRetry(dbName);
+    for (final String dbName : outcome.refreshFailures().keySet())
+      retryWorthwhile |= bumpFailureAndShouldRetry(dbName);
+
+    if (retryWorthwhile)
+      throw new IOException("Reconcile from leader had transient database failure(s); will retry: "
           + outcome.acquireFailures() + outcome.refreshFailures());
+  }
+
+  /**
+   * Increments the consecutive-failure counter for a database and returns whether it is still within the retry
+   * budget ({@link #ACQUIRE_GIVE_UP_AFTER}). Once exceeded, logs once and returns false so the caller stops
+   * forcing Ratis to re-trigger the whole install for this one database.
+   */
+  private boolean bumpFailureAndShouldRetry(final String dbName) {
+    final int count = acquireFailureCounts.merge(dbName, 1, Integer::sum);
+    if (count < ACQUIRE_GIVE_UP_AFTER)
+      return true;
+    if (count == ACQUIRE_GIVE_UP_AFTER)
+      LogManager.instance().log(this, Level.SEVERE,
+          "Database '%s' failed to acquire/refresh %d times in a row; leaving it FAILED and no longer re-triggering "
+              + "the snapshot install for it (it will be retried on the next install). Check the leader's copy.",
+          dbName, count);
+    return false;
   }
 
   /**

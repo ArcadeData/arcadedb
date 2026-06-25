@@ -305,14 +305,15 @@ public final class SnapshotInstaller {
       return;
     }
 
-    // Same overlap guard install() uses: the lifecycle assumes acquisitions for a given database never overlap
-    // (Ratis serializes InstallSnapshot per follower). Keyed by the resolved final path so distinct logical
-    // servers in one JVM (tests) do not collide. A violation is logged loudly rather than silently double-staging.
+    // Same overlap guard install() uses, but fail-fast: the lifecycle assumes acquisitions for a given database
+    // never overlap (Ratis serializes InstallSnapshot per follower). Keyed by the resolved final path so distinct
+    // logical servers in one JVM (tests) do not collide. If the invariant is ever violated, abort rather than let
+    // two acquisitions share one staging dir and race on the atomic rename; the caller treats this like any other
+    // failed install and Ratis re-triggers once the other acquisition has finished and released the key.
     final String inFlightKey = dbPath.toString();
     if (!INSTALLS_IN_FLIGHT.add(inFlightKey))
-      LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
-          "Concurrent acquisition detected for '%s'; acquisitions for the same database are assumed never to overlap "
-              + "- this may indicate a coordination bug in the HA layer", null, databaseName);
+      throw new IOException("Concurrent acquisition already in progress for '" + databaseName
+          + "'; acquisitions for the same database must not overlap (possible HA coordination bug)");
 
     try {
       // Clean any leftover staging from a previous failed attempt, then create a fresh reserved staging dir.
@@ -348,7 +349,7 @@ public final class SnapshotInstaller {
       // reconcile. This is stronger than validating after the rename, which on Windows could leave an
       // undeletable corrupt directory under the final name if the failed open leaked a file handle.
       try {
-        validateSnapshotOpens(staging);
+        validateSnapshotOpens(staging, server);
       } catch (final IOException validationEx) {
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
             "Acquired snapshot for new database '%s' failed validation; discarding it and leaving the database "
@@ -405,12 +406,16 @@ public final class SnapshotInstaller {
    * read-only and closing it again. Read-only avoids any writes to the staging files. Throws {@link IOException}
    * (not the raw open exception) so callers can treat a corrupt snapshot uniformly with a download failure.
    */
-  private static void validateSnapshotOpens(final Path stagingPath) throws IOException {
+  private static void validateSnapshotOpens(final Path stagingPath, final ArcadeDBServer server) throws IOException {
     // Safe to open under the reserved staging name and then publish: ArcadeDB derives the database name from the
     // directory at open time (the staging name is not persisted into the files), and a READ_ONLY open performs no
     // writes, so it leaves behind no lock/WAL artifact that the atomic rename would carry into the final directory.
     // The end-to-end acquire IT (SnapshotAcquireNewDatabaseIT) confirms the published database opens cleanly.
-    try (final DatabaseFactory factory = new DatabaseFactory(stagingPath.toString());
+    // Use the server's security + auto-transaction so this validation open matches the settings of the eventual
+    // live open in ArcadeDBServer.getDatabase, rather than opening under defaults that could diverge.
+    try (final DatabaseFactory factory = new DatabaseFactory(stagingPath.toString())
+        .setAutoTransaction(true)
+        .setSecurity(server.getSecurity());
         final Database db = factory.open(ComponentFile.MODE.READ_ONLY)) {
       // Opening + closing is the validation: it confirms the configuration, schema and component files load.
       if (db == null)
