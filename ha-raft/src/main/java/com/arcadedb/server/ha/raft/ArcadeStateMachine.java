@@ -108,22 +108,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
    */
   public static volatile AtomicInteger TEST_WAL_GAP_COUNTER = null;
 
-  // @VisibleForTesting
-  void markStateDiverged(final String dbName) {
-    divergedDatabases.add(dbName);
-  }
-
-  /**
-   * Clears the diverged-database set and the bounded-escalation counter after a snapshot resync has
-   * restored consistent state across all databases. A resync always reinstalls every database from
-   * the leader, so clearing the whole set (rather than a single database) matches what the resync
-   * actually did.
-   */
-  private void clearDivergedState() {
-    divergedDatabases.clear();
-    divergedSwallowedErrors.set(0);
-  }
-
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
   private final    AtomicLong                electionCount    = new AtomicLong(0);
@@ -188,6 +172,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // swallowed on a diverged database increments this; once it exceeds the threshold the next
   // unexpected error is allowed to propagate to the fatal halt path so a truly stuck node surfaces
   // loudly rather than quietly. Reset to 0 whenever a snapshot resync clears the diverged set.
+  // Deliberately JVM-wide (not per-database): the threshold is a coarse "this node is stuck, halt
+  // loudly" backstop, so a shared budget across all diverged databases is the intended behaviour -
+  // one very noisy diverged database crossing the threshold should still halt the node.
   private final        AtomicInteger divergedSwallowedErrors      = new AtomicInteger(0);
   private static final int           MAX_DIVERGED_SWALLOWED_ERRORS = 100;
 
@@ -390,6 +377,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Convenience overload that runs the dispatch without scoping the diverged-state guard to a
+   * specific database (equivalent to {@code applyWithRetry(index, null, applyAction)}). Used where
+   * the entry has no single target database.
+   */
+  // @VisibleForTesting
+  void applyWithRetry(final long index, final Runnable applyAction) {
+    applyWithRetry(index, null, applyAction);
+  }
+
+  /**
    * Runs the apply dispatch with bounded in-place retry for transient/retryable conditions.
    * <p>
    * A {@link NeedRetryException} (e.g. an MVCC {@link com.arcadedb.exception.ConcurrentModificationException}
@@ -411,16 +408,6 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * @param applyAction  the apply dispatch to run
    * @throws ReplicationException if the retryable condition persists after all attempts
    */
-  /**
-   * Convenience overload that runs the dispatch without scoping the diverged-state guard to a
-   * specific database (equivalent to {@code applyWithRetry(index, null, applyAction)}). Used where
-   * the entry has no single target database.
-   */
-  // @VisibleForTesting
-  void applyWithRetry(final long index, final Runnable applyAction) {
-    applyWithRetry(index, null, applyAction);
-  }
-
   // @VisibleForTesting
   void applyWithRetry(final long index, final String databaseName, final Runnable applyAction) {
     final int maxRetries = Math.max(0, server != null
@@ -747,8 +734,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
           decoded.databaseName(), walTx.txId, e.getMessage());
       // Mark this database as diverged so subsequent unexpected errors don't trigger fatal halt
       // (issue #4740). Trigger an immediate snapshot download instead of waiting for the
-      // HealthMonitor's periodic check. compareAndSet on the add (newly diverged) keeps the
-      // immediate-download trigger to once per database until a resync clears it.
+      // HealthMonitor's periodic check. Set.add() returns true only when the database was not
+      // already in the set, so the immediate-download trigger fires at most once per database
+      // until a resync clears it.
       if (divergedDatabases.add(decoded.databaseName())) {
         try {
           lifecycleExecutor.submit(this::triggerSnapshotDownload);
@@ -1367,6 +1355,38 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } finally {
       snapshotDownloadInProgress.set(false);
     }
+  }
+
+  /**
+   * Marks {@code dbName} as diverged from the committed Raft log (issue #4740). While a database is
+   * diverged, unexpected Throwables raised while applying its entries are treated as recoverable
+   * resync conditions in {@link #applyWithRetry} rather than fatal halts.
+   */
+  // @VisibleForTesting
+  void markStateDiverged(final String dbName) {
+    divergedDatabases.add(dbName);
+  }
+
+  /**
+   * Clears the diverged-database set and the bounded-escalation counter after a snapshot resync has
+   * restored consistent state across all databases. A resync always reinstalls every database from
+   * the leader, so clearing the whole set (rather than a single database) matches what the resync
+   * actually did.
+   */
+  // @VisibleForTesting
+  void clearDivergedState() {
+    divergedDatabases.clear();
+    divergedSwallowedErrors.set(0);
+  }
+
+  // @VisibleForTesting
+  boolean isDatabaseDiverged(final String dbName) {
+    return divergedDatabases.contains(dbName);
+  }
+
+  // @VisibleForTesting
+  int divergedSwallowedErrorCount() {
+    return divergedSwallowedErrors.get();
   }
 
   /**

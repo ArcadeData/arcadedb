@@ -61,3 +61,15 @@ Under concurrent write load on a 3-node Raft HA cluster, two bugs compound to ta
 4. Fix 1 had no automated test → added `Issue4740Phase2ReconcileIT` (applied)
 5. Doc/code mismatch on the test hook name → reconciled; hook is `TEST_PHASE2_COMMIT_FAULT` (applied)
 6. Minor test comment about default-retries fallback (applied)
+
+### Cycle 2 - HEAD 654f43d5c
+
+Gemini did not re-review (its cycle-1 items were already resolved). Claude re-reviewed, confirmed cycle-1 items addressed, and raised 6 follow-ups (all applied):
+1. Detailed javadoc was attached to the 2-arg overload (referenced a non-existent `databaseName` param) → moved onto the 3-arg method; short doc on the overload
+2. `markStateDiverged`/`clearDivergedState` were interleaved in the field block → moved to the private-method group near `triggerSnapshotDownload`
+3. Comment said "compareAndSet" for a `Set.add()` → reworded
+4. Escalation counter is JVM-wide while the diverged set is per-DB → added a comment noting the global scope is deliberate
+5. Best-effort reconcile used `ignoreErrors=false` → switched to `true` so it applies every page it can; gapped pages resync via Fix 2
+6. Untested Fix-2 internals → added `boundedEscalationRePropagatesAfterThresholdExceeded` and `clearDivergedStateResetsSetAndCounter` (with `isDatabaseDiverged`/`divergedSwallowedErrorCount` test accessors)
+
+`ArcadeStateMachineApplyRetryTest` now 12/12; ha-raft unit suite 102/102; `Issue4740Phase2ReconcileIT` green; full build SUCCESS.

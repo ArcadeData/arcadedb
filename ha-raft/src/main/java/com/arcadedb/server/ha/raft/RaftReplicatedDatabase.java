@@ -444,11 +444,17 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * {@code commit2ndPhase} ran under. {@code applyChanges} mutates pages under the per-page I/O
    * lock, so running it under the same read lock keeps the page-write coordination identical to
    * the normal phase-2 path and avoids racing a concurrent phase-1 snapshot.
+   * <p>
+   * Uses {@code ignoreErrors=true}: this is a best-effort reconciliation, so if some page is more
+   * than one version behind (the leader was already lagging before this tx) {@code applyChanges}
+   * skips that page rather than aborting the whole replay on the first gap. Every page it CAN apply
+   * is applied; any page it cannot is left for the normal follower-side WAL-gap path to resync once
+   * this node steps down (issue #4740 Fix 2 makes that recoverable instead of fatal).
    */
   private void reconcileLeaderPagesAfterPhase2Failure(final ReplicationPayload payload) {
     try {
       final WALFile.WALTransaction walTx = ArcadeStateMachine.deserializeWalTransaction(payload.walData());
-      proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), false);
+      proxied.getTransactionManager().applyChanges(walTx, payload.bucketDeltas(), true);
       LogManager.instance().log(this, Level.INFO,
           "Phase 2 failure: leader pages reconciled via WAL replay (db=%s, tx=%s)", getName(), payload.tx());
     } catch (final Exception reconcileEx) {

@@ -198,4 +198,45 @@ class ArcadeStateMachineApplyRetryTest {
     final ReplicationException re = new ReplicationException("WAL version gap detected - snapshot resync required");
     assertThatThrownBy(() -> sm.applyWithRetry(13L, "diverged-db", () -> { throw re; })).isSameAs(re);
   }
+
+  @Test
+  void boundedEscalationRePropagatesAfterThresholdExceeded() {
+    // Regression guard for issue #4740 bounded escalation: a database that can never resync must not
+    // swallow unexpected errors forever. The first MAX_DIVERGED_SWALLOWED_ERRORS (100) errors wrap as
+    // recoverable ReplicationExceptions; the next one is re-propagated to the fatal halt path so a
+    // stuck node surfaces loudly. The threshold check is incrementAndGet() > 100, so calls 1..100 wrap
+    // and call 101 re-propagates.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged("stuck-db");
+    final NullPointerException npe = new NullPointerException("inconsistent state after WAL gap");
+    for (int i = 1; i <= 100; i++)
+      assertThatThrownBy(() -> sm.applyWithRetry(100L, "stuck-db", () -> { throw npe; }))
+          .as("swallow #%d must wrap as recoverable", i)
+          .isInstanceOf(ReplicationException.class);
+    assertThat(sm.divergedSwallowedErrorCount()).isEqualTo(100);
+    // The 101st swallowed error exceeds the budget and must propagate unchanged.
+    assertThatThrownBy(() -> sm.applyWithRetry(101L, "stuck-db", () -> { throw npe; })).isSameAs(npe);
+  }
+
+  @Test
+  void clearDivergedStateResetsSetAndCounter() {
+    // Regression guard: a completed snapshot resync calls clearDivergedState(), which must clear both
+    // the diverged-database set and the bounded-escalation counter so the node returns to normal
+    // fail-fast behaviour.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.markStateDiverged("db");
+    final NullPointerException npe = new NullPointerException("inconsistent state after WAL gap");
+    for (int i = 0; i < 3; i++)
+      assertThatThrownBy(() -> sm.applyWithRetry(200L, "db", () -> { throw npe; }))
+          .isInstanceOf(ReplicationException.class);
+    assertThat(sm.isDatabaseDiverged("db")).isTrue();
+    assertThat(sm.divergedSwallowedErrorCount()).isEqualTo(3);
+
+    sm.clearDivergedState();
+
+    assertThat(sm.isDatabaseDiverged("db")).isFalse();
+    assertThat(sm.divergedSwallowedErrorCount()).isZero();
+    // After the reset the database is healthy again, so an unexpected error must propagate unchanged.
+    assertThatThrownBy(() -> sm.applyWithRetry(201L, "db", () -> { throw npe; })).isSameAs(npe);
+  }
 }
