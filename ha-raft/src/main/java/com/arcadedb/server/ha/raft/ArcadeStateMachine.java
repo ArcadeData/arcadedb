@@ -59,6 +59,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -196,6 +197,51 @@ public class ArcadeStateMachine extends BaseStateMachine {
     Collections.sort(toRefresh);
     Collections.sort(leaderMissing);
     return new ReconcilePlan(toAcquire, toRefresh, leaderMissing);
+  }
+
+  /** A per-database install operation that may fail with {@link IOException}. */
+  @FunctionalInterface
+  interface DbInstallOp {
+    void run(String databaseName) throws IOException;
+  }
+
+  /** Result of running a {@link ReconcilePlan}: which databases were acquired/refreshed and which failed. */
+  public record ReconcileOutcome(List<String> acquired, Map<String, String> acquireFailures,
+      List<String> refreshed, Map<String, String> refreshFailures) {
+  }
+
+  /**
+   * Runs a {@link ReconcilePlan}: acquires the never-seen databases and refreshes the existing ones, isolating
+   * per-database failures so one bad database never starves the others. A failing acquire (e.g. a persistently
+   * corrupt snapshot that fails validation every pass) must not abort the whole reconcile - otherwise the healthy,
+   * already-replicated databases on this follower would never get refreshed. Each failure is collected and the
+   * caller fails the overall install at the end so Ratis re-triggers (installs are idempotent). Package-private
+   * and operation-injected so the no-starvation behavior is unit-testable without a Raft cluster.
+   */
+  static ReconcileOutcome executeReconcilePlan(final ReconcilePlan plan, final DbInstallOp acquireOp,
+      final DbInstallOp refreshOp) {
+    final List<String> acquired = new ArrayList<>();
+    final Map<String, String> acquireFailures = new LinkedHashMap<>();
+    final List<String> refreshed = new ArrayList<>();
+    final Map<String, String> refreshFailures = new LinkedHashMap<>();
+
+    for (final String db : plan.toAcquire()) {
+      try {
+        acquireOp.run(db);
+        acquired.add(db);
+      } catch (final IOException e) {
+        acquireFailures.put(db, e.getMessage());
+      }
+    }
+    for (final String db : plan.toRefresh()) {
+      try {
+        refreshOp.run(db);
+        refreshed.add(db);
+      } catch (final IOException e) {
+        refreshFailures.put(db, e.getMessage());
+      }
+    }
+    return new ReconcileOutcome(acquired, acquireFailures, refreshed, refreshFailures);
   }
 
   private final AtomicBoolean needsSnapshotDownload      = new AtomicBoolean(false);
@@ -685,9 +731,18 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return;
     }
 
+    // Build the leader's database set. Skip entries the leader reported it could not open (lastTxId < 0): such a
+    // database is not a usable snapshot source, so trying to acquire it would only fail validation every pass.
     final Set<String> leaderDbNames = new HashSet<>();
-    for (final LeaderDatabaseQuery.DatabaseInfo info : leaderDbs)
+    for (final LeaderDatabaseQuery.DatabaseInfo info : leaderDbs) {
+      if (info.lastTxId() < 0) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Leader reported database '%s' as unreadable (no usable snapshot source); skipping it this reconcile.",
+            info.name());
+        continue;
+      }
       leaderDbNames.add(info.name());
+    }
 
     final Set<String> localDbNames = new HashSet<>();
     for (final String name : server.getDatabaseNames())
@@ -701,31 +756,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
     final ReconcilePlan plan = classifyReconcile(leaderDbNames, localDbNames);
 
-    // Acquire databases this node has never seen. acquireStatuses records only genuine acquisitions so operators
-    // can tell a true pull from a routine refresh.
-    for (final String dbName : plan.toAcquire()) {
-      acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRING, System.currentTimeMillis(), null));
-      LogManager.instance().log(this, Level.INFO, "Acquiring database '%s' from leader %s...", dbName, leaderHttpAddr);
-      try {
-        SnapshotInstaller.acquireNewDatabase(dbName, () -> leaderHttpAddr, () -> leaderHttpsAddr, clusterToken, server);
-        acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRED, System.currentTimeMillis(), null));
-      } catch (final IOException e) {
-        acquireStatuses.put(dbName, new AcquireStatus(AcquireState.FAILED, System.currentTimeMillis(), e.getMessage()));
-        throw e;
-      }
-    }
+    // Execute the plan with per-database failure isolation so one bad acquire never starves the refresh of the
+    // healthy, already-replicated databases (and vice-versa). Statuses are applied from the outcome below, and
+    // any failure fails the overall install at the end so Ratis re-triggers (installs are idempotent).
+    final ReconcileOutcome outcome = executeReconcilePlan(plan,
+        dbName -> {
+          acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRING, System.currentTimeMillis(), null));
+          LogManager.instance().log(this, Level.INFO, "Acquiring database '%s' from leader %s...", dbName, leaderHttpAddr);
+          SnapshotInstaller.acquireNewDatabase(dbName, () -> leaderHttpAddr, () -> leaderHttpsAddr, clusterToken, server);
+        },
+        dbName -> {
+          LogManager.instance().log(this, Level.INFO, "Refreshing database '%s' from leader %s...", dbName, leaderHttpAddr);
+          // install() downloads with the database still open and only closes + swaps once a complete copy is on
+          // disk, rolling back on failure, so a failed download never leaves the database closed.
+          SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+              leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+        });
 
-    // Refresh databases we already have. The leader holds them, so clear any stale LEADER_MISSING/FAILED status
-    // left from a prior pass (the resync / leadership-transfer recovery flow this PR documents): the alert must
-    // clear once the leader regains the database.
-    for (final String dbName : plan.toRefresh()) {
-      LogManager.instance().log(this, Level.INFO, "Refreshing database '%s' from leader %s...", dbName, leaderHttpAddr);
-      // install() downloads the snapshot with the database still open and only closes + swaps it once a complete
-      // copy is on disk, rolling back on failure, so a failed download never leaves the database closed.
-      SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
-          leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+    // acquireStatuses records only genuine acquisitions, so operators can tell a true pull from a routine refresh.
+    for (final String dbName : outcome.acquired())
+      acquireStatuses.put(dbName, new AcquireStatus(AcquireState.ACQUIRED, System.currentTimeMillis(), null));
+    // A refreshed database is one the leader holds, so clear any stale LEADER_MISSING/FAILED status left from a
+    // prior pass (the resync / leadership-transfer recovery flow this PR documents).
+    for (final String dbName : outcome.refreshed())
       acquireStatuses.remove(dbName);
-    }
+    for (final Map.Entry<String, String> e : outcome.acquireFailures().entrySet())
+      acquireStatuses.put(e.getKey(), new AcquireStatus(AcquireState.FAILED, System.currentTimeMillis(), e.getValue()));
+    for (final Map.Entry<String, String> e : outcome.refreshFailures().entrySet())
+      acquireStatuses.put(e.getKey(), new AcquireStatus(AcquireState.FAILED, System.currentTimeMillis(), e.getValue()));
 
     // Additive-only guard: a database we hold that the leader does not must NOT be dropped here. Flag it so the
     // cluster status / Studio surfaces it; a genuine DROP still arrives via DROP_DATABASE_ENTRY replay.
@@ -736,6 +794,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
               + "If this node is an authoritative source, transfer leadership to a node that holds '%s' and resync.",
           dbName, dbName);
     }
+
+    // Fail the overall install if any database failed, so Ratis re-triggers it; the healthy databases were still
+    // refreshed/acquired above and are not blocked by the failing one.
+    final int failed = outcome.acquireFailures().size() + outcome.refreshFailures().size();
+    if (failed > 0)
+      throw new IOException("Reconcile from leader completed with " + failed + " failed database(s): "
+          + outcome.acquireFailures() + outcome.refreshFailures());
   }
 
   /**

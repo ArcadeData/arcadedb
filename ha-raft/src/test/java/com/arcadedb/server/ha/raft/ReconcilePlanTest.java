@@ -20,6 +20,9 @@ package com.arcadedb.server.ha.raft;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -73,5 +76,43 @@ class ReconcilePlanTest {
     assertThat(plan.toAcquire()).containsExactly("mike", "zeta");
     assertThat(plan.toRefresh()).containsExactly("alpha");
     assertThat(plan.toAcquire()).isSorted();
+  }
+
+  // ---- execution: a failing acquire must not starve refresh of healthy databases ----
+
+  @Test
+  void oneFailingAcquireDoesNotStarveRefreshOfHealthyDatabases() {
+    // leader: acquire "bad" (fails validation) + "goodnew" ; refresh "healthy"
+    final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("bad", "goodnew"), List.of("healthy"), List.of());
+    final List<String> acquireCalls = new ArrayList<>();
+    final List<String> refreshCalls = new ArrayList<>();
+
+    final var outcome = ArcadeStateMachine.executeReconcilePlan(plan,
+        db -> {
+          acquireCalls.add(db);
+          if (db.equals("bad"))
+            throw new IOException("corrupt snapshot");
+        },
+        refreshCalls::add);
+
+    // The bad acquire failed, but the healthy database was still refreshed and the good new one acquired.
+    assertThat(refreshCalls).containsExactly("healthy");
+    assertThat(acquireCalls).containsExactlyInAnyOrder("bad", "goodnew");
+    assertThat(outcome.refreshed()).containsExactly("healthy");
+    assertThat(outcome.acquired()).containsExactly("goodnew");
+    assertThat(outcome.acquireFailures()).containsKey("bad");
+    assertThat(outcome.refreshFailures()).isEmpty();
+  }
+
+  @Test
+  void allSucceedWhenNoOperationFails() {
+    final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("n1"), List.of("e1", "e2"), List.of("orphan"));
+    final var outcome = ArcadeStateMachine.executeReconcilePlan(plan, db -> {
+    }, db -> {
+    });
+    assertThat(outcome.acquired()).containsExactly("n1");
+    assertThat(outcome.refreshed()).containsExactly("e1", "e2");
+    assertThat(outcome.acquireFailures()).isEmpty();
+    assertThat(outcome.refreshFailures()).isEmpty();
   }
 }

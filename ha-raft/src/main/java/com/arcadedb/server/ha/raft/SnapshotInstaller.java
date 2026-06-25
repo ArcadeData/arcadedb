@@ -282,6 +282,11 @@ public final class SnapshotInstaller {
    * If the database materialises locally while we download (e.g. an {@code INSTALL_DATABASE_ENTRY} is replayed
    * concurrently), this falls back to the in-place {@link #install} refresh so the now-registered database still
    * receives the leader's snapshot.
+   * <p>
+   * The leader addresses are taken as {@link Supplier}s for symmetry with {@link #install}, whose retry loop
+   * re-resolves them per attempt. The reconcile caller passes constant suppliers on purpose: an InstallSnapshot is
+   * tied to one specific leader, and if leadership changes mid-download Ratis re-triggers the whole install from
+   * the new leader, so re-resolving within a single call would not help.
    */
   public static void acquireNewDatabase(final String databaseName,
       final Supplier<String> leaderHttpAddrSupplier, final Supplier<String> leaderHttpsAddrSupplier,
@@ -401,6 +406,10 @@ public final class SnapshotInstaller {
    * (not the raw open exception) so callers can treat a corrupt snapshot uniformly with a download failure.
    */
   private static void validateSnapshotOpens(final Path stagingPath) throws IOException {
+    // Safe to open under the reserved staging name and then publish: ArcadeDB derives the database name from the
+    // directory at open time (the staging name is not persisted into the files), and a READ_ONLY open performs no
+    // writes, so it leaves behind no lock/WAL artifact that the atomic rename would carry into the final directory.
+    // The end-to-end acquire IT (SnapshotAcquireNewDatabaseIT) confirms the published database opens cleanly.
     try (final DatabaseFactory factory = new DatabaseFactory(stagingPath.toString());
         final Database db = factory.open(ComponentFile.MODE.READ_ONLY)) {
       // Opening + closing is the validation: it confirms the configuration, schema and component files load.
