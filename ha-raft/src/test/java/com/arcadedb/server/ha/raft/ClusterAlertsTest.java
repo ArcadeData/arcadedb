@@ -20,6 +20,8 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.serializer.json.JSONArray;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -93,5 +95,31 @@ class ClusterAlertsTest {
     final List<String> flagged = ClusterAlerts.findSingleBucketTypes(db);
 
     assertThat(flagged).isSorted();
+  }
+
+  // ---- leader-missing-databases alert (issue #4727) ----
+
+  @Test
+  void leaderMissingAlertIsRaisedWithTheDatabaseNames() {
+    final JSONArray alerts = new JSONArray();
+    ClusterAlerts.addLeaderMissingAlert(List.of("OpenBeer", "Catalog"), alerts);
+
+    assertThat(alerts.length()).isEqualTo(1);
+    final JSONObject alert = alerts.getJSONObject(0);
+    assertThat(alert.getString("id")).isEqualTo("leader-missing-databases");
+    assertThat(alert.getString("severity")).isEqualTo(ClusterAlerts.SEVERITY_WARNING);
+    final JSONArray names = alert.getJSONObject("details").getJSONArray("databases");
+    assertThat(names.toList()).containsExactlyInAnyOrder("OpenBeer", "Catalog");
+  }
+
+  @Test
+  void leaderMissingAlertIsAbsentWhenNothingIsMissing() {
+    final JSONArray empty = new JSONArray();
+    ClusterAlerts.addLeaderMissingAlert(List.of(), empty);
+    assertThat(empty.length()).isEqualTo(0);
+
+    final JSONArray nullCase = new JSONArray();
+    ClusterAlerts.addLeaderMissingAlert(null, nullCase);
+    assertThat(nullCase.length()).isEqualTo(0);
   }
 }

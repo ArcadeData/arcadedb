@@ -19,7 +19,10 @@
 package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.database.Database;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.engine.ComponentFile;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.utility.FileUtils;
@@ -321,32 +324,41 @@ public final class SnapshotInstaller {
         return;
       }
 
+      // PHASE 2 - VALIDATE the downloaded snapshot while it is STILL under the reserved staging name, BEFORE
+      // publishing it. A corrupt/incompatible snapshot must never reach databases/<name>/, where the startup
+      // scan would try to open it and crash the server: there is no previous copy to roll back to for a
+      // never-seen database. Validating in staging means a bad download is simply discarded (the reserved dir
+      // is ignored by the boot scan), leaving the database absent - the safe state - to be re-acquired next
+      // reconcile. This is stronger than validating after the rename, which on Windows could leave an
+      // undeletable corrupt directory under the final name if the failed open leaked a file handle.
+      try {
+        validateSnapshotOpens(staging);
+      } catch (final IOException validationEx) {
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Acquired snapshot for new database '%s' failed validation; discarding it and leaving the database "
+                + "absent (it will be re-acquired on the next reconcile): %s", null, databaseName, validationEx.getMessage());
+        deleteDirectoryIfExists(staging);
+        throw validationEx;
+      }
+
       // A stale, unregistered databases/<name>/ (e.g. from a pre-upgrade crash) would block the rename. The
       // leader's copy is authoritative for an unseen database, so clear it before publishing.
       if (Files.exists(dbPath))
         deleteDirectoryIfExists(dbPath);
 
-      // PHASE 2 - PUBLISH with a single atomic rename.
+      // PHASE 3 - PUBLISH the validated snapshot with a single atomic rename, then register it. The open here
+      // re-opens files we just validated, so it is not expected to fail; if it somehow does, drop the directory
+      // (best effort) and leave the database absent rather than registered-but-broken.
       publishStaging(staging, dbPath);
-
       try {
-        // Register + validate the freshly acquired snapshot by opening it.
         server.getDatabase(databaseName);
       } catch (final RuntimeException openEx) {
-        // No previous copy to roll back to: drop the directory and leave the database ABSENT (the safe state).
-        // The next reconcile re-acquires it.
         LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-            "Acquired snapshot for new database '%s' failed to open; removing it and leaving the database absent "
-                + "(it will be re-acquired on the next reconcile)", openEx, databaseName);
-        try {
-          if (server.existsDatabase(databaseName))
-            ((DatabaseInternal) server.getDatabase(databaseName)).getEmbedded().close();
-        } catch (final Exception ignore) {
-          // best-effort close before removal
-        }
+            "Acquired snapshot for new database '%s' was validated but failed to open after publish; removing it "
+                + "and leaving the database absent", openEx, databaseName);
         server.removeDatabase(databaseName);
         deleteDirectoryIfExists(dbPath);
-        throw new IOException("Acquired snapshot for new database '" + databaseName + "' failed to open", openEx);
+        throw new IOException("Acquired snapshot for new database '" + databaseName + "' failed to open after publish", openEx);
       }
 
       HALog.log(SnapshotInstaller.class, HALog.BASIC, "New database '%s' acquired from leader", databaseName);
@@ -367,6 +379,21 @@ public final class SnapshotInstaller {
       Files.move(staging, dbPath, StandardCopyOption.ATOMIC_MOVE);
     } catch (final AtomicMoveNotSupportedException e) {
       Files.move(staging, dbPath);
+    }
+  }
+
+  /**
+   * Smoke-tests that a freshly-downloaded snapshot directory is a loadable ArcadeDB database, by opening it
+   * read-only and closing it again. Read-only avoids any writes to the staging files. Throws {@link IOException}
+   * (not the raw open exception) so callers can treat a corrupt snapshot uniformly with a download failure.
+   */
+  private static void validateSnapshotOpens(final Path stagingPath) throws IOException {
+    try (final Database db = new DatabaseFactory(stagingPath.toString()).open(ComponentFile.MODE.READ_ONLY)) {
+      // Opening + closing is the validation: it confirms the configuration, schema and component files load.
+      if (db == null)
+        throw new IOException("snapshot did not open");
+    } catch (final RuntimeException e) {
+      throw new IOException("downloaded snapshot failed to open: " + e.getMessage(), e);
     }
   }
 

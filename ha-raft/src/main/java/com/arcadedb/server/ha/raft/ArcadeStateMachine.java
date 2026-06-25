@@ -633,6 +633,14 @@ public class ArcadeStateMachine extends BaseStateMachine {
     try {
       final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
       leaderDbs = LeaderDatabaseQuery.fetch(leaderHttpAddr, clusterToken, timeoutMs);
+    } catch (final InterruptedException e) {
+      // Preserve the interrupt so the pool/executor can observe it and shut down cleanly.
+      Thread.currentThread().interrupt();
+      LogManager.instance().log(this, Level.WARNING,
+          "Interrupted while listing the leader's databases for auto-acquire; refreshing only the databases "
+              + "already present locally.");
+      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      return;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not list the leader's databases for auto-acquire (%s); refreshing only the databases already "
@@ -644,6 +652,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final Set<String> leaderDbNames = new HashSet<>();
     for (final LeaderDatabaseQuery.DatabaseInfo info : leaderDbs)
       leaderDbNames.add(info.name());
+
+    // Prune stale acquisition statuses for databases that are no longer on this node (e.g. a previously
+    // LEADER_MISSING database that was later dropped via DROP_DATABASE_ENTRY, or one redistributed after a
+    // leadership transfer). Otherwise the leader-missing cluster alert would stay raised for a database that
+    // no longer exists locally.
+    acquireStatuses.keySet().removeIf(name -> !server.existsDatabase(name) && !leaderDbNames.contains(name));
 
     // Install every database the leader holds: refresh the ones we already have, acquire the rest.
     for (final String dbName : leaderDbNames) {

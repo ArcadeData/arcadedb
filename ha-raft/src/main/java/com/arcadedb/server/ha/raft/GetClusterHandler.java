@@ -180,6 +180,12 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
           final List<LeaderDatabaseQuery.DatabaseInfo> infos = LeaderDatabaseQuery.fetch(httpAddr, clusterToken, timeoutMs);
           for (final LeaderDatabaseQuery.DatabaseInfo info : infos)
             dbNames.add(info.name());
+        } catch (final InterruptedException e) {
+          // Preserve the interrupt so the worker thread can be shut down cleanly.
+          Thread.currentThread().interrupt();
+          LogManager.instance().log(this, Level.WARNING, "Presence matrix query interrupted for peer '%s'", peerIdStr);
+          unreachable.add(peerIdStr);
+          continue;
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING,
               "Presence matrix: could not query peer '%s' (%s)", peerIdStr, e.getMessage());

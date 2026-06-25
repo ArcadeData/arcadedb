@@ -92,8 +92,12 @@ public class ClusterAlerts {
    * leadership to a node that holds it (or resync) to redistribute it.
    */
   static void checkLeaderMissingDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts) {
-    final List<String> missing = stateMachine.getDatabasesWithAcquireState(ArcadeStateMachine.AcquireState.LEADER_MISSING);
-    if (missing.isEmpty())
+    addLeaderMissingAlert(stateMachine.getDatabasesWithAcquireState(ArcadeStateMachine.AcquireState.LEADER_MISSING), alerts);
+  }
+
+  /** Pure alert builder (package-private for unit testing): appends the leader-missing alert iff {@code missing} is non-empty. */
+  static void addLeaderMissingAlert(final List<String> missing, final JSONArray alerts) {
+    if (missing == null || missing.isEmpty())
       return;
 
     final JSONArray names = new JSONArray();

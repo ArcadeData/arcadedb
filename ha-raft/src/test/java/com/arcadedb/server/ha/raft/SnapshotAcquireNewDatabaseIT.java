@@ -112,4 +112,43 @@ class SnapshotAcquireNewDatabaseIT extends BaseRaftHATest {
     assertThat(acquiredPath.resolve(SnapshotInstaller.SNAPSHOT_PENDING_FILE)).doesNotExist();
     assertThat(acquiredPath.resolve(SnapshotInstaller.SNAPSHOT_NEW_DIR)).doesNotExist();
   }
+
+  /**
+   * Covers the concurrent-create fallback branch: when the database already exists locally (e.g. it materialised
+   * via an INSTALL_DATABASE_ENTRY replay while a reconcile was deciding to acquire it), acquireNewDatabase must
+   * fall back to the in-place {@code install} refresh rather than acquiring, and the database must remain present
+   * with its data.
+   */
+  @Test
+  void acquireOnAnExistingDatabaseRefreshesInsteadOfAcquiring() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+    final int followerIndex = (leaderIndex + 1) % getServerCount();
+
+    final Database leaderDb = getServerDatabase(leaderIndex, getDatabaseName());
+    leaderDb.transaction(() -> {
+      if (!leaderDb.getSchema().existsType("Item"))
+        leaderDb.getSchema().createVertexType("Item");
+      for (int i = 0; i < 15; i++)
+        leaderDb.newVertex("Item").set("name", "v-" + i).save();
+    });
+    waitForReplicationIsCompleted(followerIndex);
+
+    // The follower already has the database; acquireNewDatabase must detect this and refresh in place.
+    assertThat(getServer(followerIndex).existsDatabase(getDatabaseName())).isTrue();
+
+    final String leaderHttp = "localhost:" + getServer(leaderIndex).getHttpServer().getPort();
+    final String token = getRaftPlugin(followerIndex).getRaftHAServer().getClusterToken();
+    SnapshotInstaller.acquireNewDatabase(getDatabaseName(), () -> leaderHttp, () -> null, token,
+        getServer(followerIndex));
+
+    assertThat(getServer(followerIndex).existsDatabase(getDatabaseName()))
+        .as("database must still be present after the refresh fallback").isTrue();
+    assertThat(getServerDatabase(followerIndex, getDatabaseName()).countType("Item", true))
+        .as("refreshed database should still contain all records").isEqualTo(leaderDb.countType("Item", true));
+
+    final Path dbDir = Path.of(getServerDatabase(followerIndex, getDatabaseName()).getDatabasePath());
+    assertThat(dbDir.getParent().resolve(SnapshotInstaller.ACQUIRE_STAGING_PREFIX + getDatabaseName()))
+        .as("no acquisition staging dir should be created on the refresh path").doesNotExist();
+  }
 }

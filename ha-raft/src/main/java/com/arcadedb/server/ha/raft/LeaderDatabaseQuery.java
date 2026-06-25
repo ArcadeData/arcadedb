@@ -77,7 +77,7 @@ public final class LeaderDatabaseQuery {
         .POST(HttpRequest.BodyPublishers.ofString("{}"));
     if (clusterToken != null && !clusterToken.isBlank())
       builder.header("X-ArcadeDB-Cluster-Token", clusterToken);
-    builder.header("X-ArcadeDB-Forwarded-User", "root");
+    builder.header("X-ArcadeDB-Forwarded-User", RaftHAServer.FORWARDED_ROOT_USER);
 
     final HttpResponse<String> resp = HTTP.send(builder.build(), HttpResponse.BodyHandlers.ofString());
     if (resp.statusCode() != 200)
