@@ -971,6 +971,39 @@ public enum GlobalConfiguration {
       (across consecutive health-monitor ticks) before recovery is triggered. Avoids acting on transient catch-up lag.""",
       Long.class, 60_000L),
 
+  HA_DIVERGED_FOLLOWER_RECOVERY("arcadedb.ha.divergedFollowerRecovery", SCOPE.SERVER,
+      """
+      When true (default), a follower that detects it is stuck at a stale term against the leader (it recognizes a leader \
+      at a newer term and has applied everything it could locally commit, yet its last-applied entry is from an older \
+      term) automatically reformats its Raft storage and rejoins as a fresh peer, letting the leader reconcile it via the \
+      snapshot-install path. This covers issue #4741: a tiny (1-2 entry) Raft-log divergence on an otherwise idle \
+      cluster, where the leader's log is never compacted, so neither the follower-side stale recovery \
+      (HA_STALE_FOLLOWER_LAG_THRESHOLD) nor the leader-driven stalled-replica resync \
+      (HA_STALLED_REPLICA_RESYNC_DURATION_MS) ever fire - both need a large lag - and the leader's appender otherwise \
+      loops on INCONSISTENCY forever until an operator restarts a node. The stuck condition must persist for \
+      HA_STALE_FOLLOWER_RECOVERY_DURATION_MS before recovery triggers, and HA_DIVERGED_FOLLOWER_MAX_REFORMATS bounds how \
+      often it retries. \
+      DESTRUCTIVE: this deletes the local Raft storage automatically (the database files are preserved and re-synced \
+      from the leader). The signature is "stuck at a stale term", which a genuine log divergence satisfies but so can a \
+      sustained (> HA_STALE_FOLLOWER_RECOVERY_DURATION_MS) one-sided network outage where heartbeats arrive but the \
+      leader's current-term entries do not; in that case the reformat is wasteful (no data loss - the leader holds \
+      everything) but does not fix the connectivity. \
+      No cross-follower coordination: if a systemic condition makes several followers satisfy the signature at once they \
+      may reformat within the same window, briefly costing quorum while they re-sync. This is bounded (each reformat is \
+      non-data-losing and HA_DIVERGED_FOLLOWER_MAX_REFORMATS caps retries) and a leader-coordinated one-at-a-time variant \
+      is deferred to a follow-up; set this to false to fall back to a manual node restart as the only #4741 mitigation.""",
+      Boolean.class, true),
+
+  HA_DIVERGED_FOLLOWER_MAX_REFORMATS("arcadedb.ha.divergedFollowerMaxReformats", SCOPE.SERVER,
+      """
+      Maximum number of automatic Raft-storage reformats (HA_DIVERGED_FOLLOWER_RECOVERY) allowed within one divergence \
+      episode before the follower gives up and logs a SEVERE message for operator intervention, instead of reformatting \
+      and full-snapshot-installing every HA_STALE_FOLLOWER_RECOVERY_DURATION_MS forever. A clean reformat resets the \
+      shared Ratis restart-retry budget, so without this cap a node whose divergence keeps reproducing would loop \
+      silently. The budget re-arms once the follower has looked healthy for 5x the recovery duration (the episode is \
+      considered resolved). Set to 0 for unbounded reformats (no breaker).""",
+      Integer.class, 5),
+
   HA_STALLED_REPLICA_RESYNC_DURATION_MS("arcadedb.ha.stalledReplicaResyncDurationMs", SCOPE.SERVER,
       """
       How long in milliseconds a replica must stay continuously STALLED (its matchIndex not advancing while the leader \

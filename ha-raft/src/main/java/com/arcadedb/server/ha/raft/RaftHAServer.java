@@ -39,6 +39,7 @@ import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.apache.ratis.retry.RetryPolicies;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
+import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.TimeDuration;
@@ -478,7 +479,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long staleFollowerLagThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_STALE_FOLLOWER_LAG_THRESHOLD);
     final long staleFollowerRecoveryDurationMs = configuration.getValueAsLong(
         GlobalConfiguration.HA_STALE_FOLLOWER_RECOVERY_DURATION_MS);
-    this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs);
+    final boolean divergedFollowerRecovery = configuration.getValueAsBoolean(
+        GlobalConfiguration.HA_DIVERGED_FOLLOWER_RECOVERY);
+    final int divergedFollowerMaxReformats = configuration.getValueAsInteger(
+        GlobalConfiguration.HA_DIVERGED_FOLLOWER_MAX_REFORMATS);
+    this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs,
+        divergedFollowerRecovery, divergedFollowerMaxReformats);
     this.healthMonitor.start();
   }
 
@@ -542,6 +548,90 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Stuck-divergence detection for the {@link HealthMonitor} (issue #4741): true only when this node
+   * is a running follower that recognizes a leader at a newer term yet cannot apply the leader's
+   * current-term entries because its Raft log diverged. The signal is term-based rather than a lag
+   * count because the divergence can be a single entry on an otherwise idle cluster, where the
+   * lag-based recoveries (HA_STALE_FOLLOWER_LAG_THRESHOLD, HA_STALLED_REPLICA_RESYNC_DURATION_MS)
+   * never fire.
+   * <p>
+   * A healthy follower carries the leader's current-term entry (e.g. the post-election no-op), so its
+   * last-applied term equals the current term. A stuck-diverged follower keeps rejecting the leader's
+   * AppendEntries (term conflict), so it has applied everything it could locally commit
+   * ({@code commitIndex == appliedIndex}) yet its last-applied entry is from an older term
+   * ({@code currentTerm > appliedTerm}). The {@link HealthMonitor} requires this to persist for
+   * {@code HA_STALE_FOLLOWER_RECOVERY_DURATION_MS} before acting, which filters out the brief window
+   * around an election before the no-op commits. Returns false for the leader, when no leader is
+   * known, while actively catching up or installing a snapshot, and whenever the state cannot be read.
+   */
+  @Override
+  public boolean isFollowerStuckDiverged() {
+    if (raftServer == null || shutdownRequested || isLeader())
+      return false;
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm == null)
+      return false;
+    final TermIndex applied = sm.getLastAppliedTermIndex();
+    if (applied == null)
+      return false;
+    // The values below are read as separate Ratis getDivision(...) calls, so they can observe slightly
+    // different moments during an election. We deliberately do not take an atomic snapshot: the
+    // HealthMonitor requires the stuck condition to persist for HA_STALE_FOLLOWER_RECOVERY_DURATION_MS
+    // before acting, which absorbs any one-tick inconsistency here.
+    return isStuckDivergedState(getLeaderId() != null, sm.isCatchingUp(), sm.isSnapshotDownloadPending(),
+        getCurrentTerm(), applied.getTerm(), applied.getIndex(), getCommitIndex());
+  }
+
+  /**
+   * Pure decision function behind {@link #isFollowerStuckDiverged()}, split out so the predicate can be
+   * unit-tested in isolation from the Ratis state plumbing (the destructive recovery makes the predicate
+   * the highest-risk piece). Returns {@code true} for the "stuck at a stale term" signature: a follower
+   * that recognizes a leader, is neither catching up nor installing a snapshot, has applied everything it
+   * could locally commit ({@code commitIndex == appliedIndex}) yet at a stale term
+   * ({@code currentTerm > appliedTerm}). Any negative term/index input (state not readable) yields
+   * {@code false}, including a negative {@code appliedTerm}.
+   * <p>
+   * Note this signature is satisfied by a genuine Raft-log divergence and also, in principle, by a
+   * follower that simply cannot receive the leader's current-term entries for a sustained period (a
+   * one-sided outage where heartbeats still arrive). The caller relies on the persistence window to
+   * separate a transient hiccup from a stuck state; both resolve to the same safe (non-data-losing)
+   * recovery, so the predicate does not try to distinguish them.
+   * <p>
+   * A freshly (re)joined / empty node does not match: before it applies anything its applied
+   * {@link TermIndex} is null (handled by the caller), while it is catching up it has
+   * {@code commitIndex > appliedIndex}, and once caught up its applied term equals the current term.
+   */
+  static boolean isStuckDivergedState(final boolean leaderPresent, final boolean catchingUp,
+      final boolean snapshotPending, final long currentTerm, final long appliedTerm, final long appliedIndex,
+      final long commitIndex) {
+    if (!leaderPresent || catchingUp || snapshotPending)
+      return false;
+    if (currentTerm < 0 || appliedTerm < 0 || appliedIndex < 0 || commitIndex < 0)
+      return false;
+    // We have applied everything we could locally commit, but at a stale term: we are rejecting the
+    // leader's current-term entries and cannot move forward.
+    return currentTerm > appliedTerm && commitIndex == appliedIndex;
+  }
+
+  @Override
+  public void recoverFromDivergence() {
+    if (shutdownRequested || isLeader())
+      return;
+    // Log the exact term/index values so an operator can confirm post-incident whether this was a genuine
+    // Raft-log divergence or a follower merely stuck at a stale term for another reason (e.g. a sustained
+    // one-sided network outage where heartbeats arrive but the leader's current-term entries do not).
+    final ArcadeStateMachine sm = stateMachine;
+    final TermIndex applied = sm != null ? sm.getLastAppliedTermIndex() : null;
+    LogManager.instance().log(this, Level.WARNING,
+        "Follower stuck at a stale term (currentTerm=%d, appliedTerm=%d, appliedIndex=%d, commitIndex=%d); "
+            + "reformatting Raft storage and rejoining so the leader can reconcile it via snapshot-install. "
+            + "If this recurs without a genuine log divergence, suspect a sustained one-sided outage to the leader.",
+        getCurrentTerm(), applied != null ? applied.getTerm() : -1L, applied != null ? applied.getIndex() : -1L,
+        getCommitIndex());
+    restartRatis(true);
+  }
+
+  /**
    * Recovers from a Ratis server that has entered CLOSED or CLOSING state, typically
    * after a network partition where the node was isolated long enough for Ratis to
    * give up on the group.
@@ -561,6 +651,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   @Override
   public void restartRatisIfNeeded() {
+    restartRatis(false);
+  }
+
+  /**
+   * Restarts the local Ratis server. When {@code formatStorage} is {@code true} the Raft storage
+   * directory is deleted first and the server starts with {@link RaftStorage.StartupOption#FORMAT},
+   * so this peer rejoins the group with an empty log and is reconciled by the leader via the
+   * snapshot-install path. This is the in-process equivalent of an operator restarting a node whose
+   * Raft log diverged (issue #4741). When {@code false} the existing storage is preserved and the
+   * server starts with {@link RaftStorage.StartupOption#RECOVER} (the CLOSED/EXCEPTION recovery path).
+   */
+  private void restartRatis(final boolean formatStorage) {
     synchronized (recoveryLock) {
       if (shutdownRequested) {
         HALog.log(this, HALog.BASIC, "Recovery skipped: shutdown requested");
@@ -614,13 +716,32 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final File storageDir = getRaftStorageDir();
         RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
 
+        // For a divergence reformat (#4741) discard the local Raft log so this peer rejoins as a fresh
+        // bootstrapping member; otherwise recover the existing log in place (CLOSED/EXCEPTION path).
+        final RaftStorage.StartupOption startupOption;
+        if (formatStorage) {
+          if (storageDir.exists()) {
+            deleteRecursive(storageDir);
+            // deleteRecursive swallows per-file failures (e.g. a locked file or a permission issue on
+            // Windows). FORMAT on a non-empty directory is undefined behaviour, so abort instead of
+            // proceeding: the throw is caught below, increments restartFailureCount, and the divergence
+            // reformat budget already counted this as an attempt - so the failure escalates through the
+            // existing retry/backoff machinery rather than starting Ratis on a half-deleted directory.
+            if (storageDir.exists())
+              throw new IOException("Could not fully delete Raft storage directory " + storageDir.getAbsolutePath()
+                  + " before reformat; aborting to avoid FORMAT on a non-empty directory");
+          }
+          startupOption = RaftStorage.StartupOption.FORMAT;
+        } else
+          startupOption = RaftStorage.StartupOption.RECOVER;
+
         this.raftServer = RaftServer.newBuilder()
             .setServerId(localPeerId)
             .setGroup(raftGroup)
             .setStateMachine(stateMachine)
             .setProperties(properties)
             .setParameters(buildParameters(configuration))
-            .setOption(RaftStorage.StartupOption.RECOVER)
+            .setOption(startupOption)
             .build();
         this.raftServer.start();
         this.raftProperties = properties;
