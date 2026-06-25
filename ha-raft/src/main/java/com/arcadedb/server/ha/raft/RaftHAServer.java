@@ -585,11 +585,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * Pure decision function behind {@link #isFollowerStuckDiverged()}, split out so the predicate can be
    * unit-tested in isolation from the Ratis state plumbing (the destructive recovery makes the predicate
-   * the highest-risk piece). Returns {@code true} only for the divergence signature: a follower that
-   * recognizes a leader, is neither catching up nor installing a snapshot, has applied everything it
+   * the highest-risk piece). Returns {@code true} for the "stuck at a stale term" signature: a follower
+   * that recognizes a leader, is neither catching up nor installing a snapshot, has applied everything it
    * could locally commit ({@code commitIndex == appliedIndex}) yet at a stale term
    * ({@code currentTerm > appliedTerm}). Any negative term/index input (state not readable) yields
    * {@code false}, including a negative {@code appliedTerm}.
+   * <p>
+   * Note this signature is satisfied by a genuine Raft-log divergence and also, in principle, by a
+   * follower that simply cannot receive the leader's current-term entries for a sustained period (a
+   * one-sided outage where heartbeats still arrive). The caller relies on the persistence window to
+   * separate a transient hiccup from a stuck state; both resolve to the same safe (non-data-losing)
+   * recovery, so the predicate does not try to distinguish them.
+   * <p>
+   * A freshly (re)joined / empty node does not match: before it applies anything its applied
+   * {@link TermIndex} is null (handled by the caller), while it is catching up it has
+   * {@code commitIndex > appliedIndex}, and once caught up its applied term equals the current term.
    */
   static boolean isStuckDivergedState(final boolean leaderPresent, final boolean catchingUp,
       final boolean snapshotPending, final long currentTerm, final long appliedTerm, final long appliedIndex,
@@ -607,8 +617,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   public void recoverFromDivergence() {
     if (shutdownRequested || isLeader())
       return;
+    // Log the exact term/index values so an operator can confirm post-incident whether this was a genuine
+    // Raft-log divergence or a follower merely stuck at a stale term for another reason (e.g. a sustained
+    // one-sided network outage where heartbeats arrive but the leader's current-term entries do not).
+    final ArcadeStateMachine sm = stateMachine;
+    final TermIndex applied = sm != null ? sm.getLastAppliedTermIndex() : null;
     LogManager.instance().log(this, Level.WARNING,
-        "Follower diverged from leader and cannot reconcile its Raft log; reformatting Raft storage and rejoining the group");
+        "Follower stuck at a stale term (currentTerm=%d, appliedTerm=%d, appliedIndex=%d, commitIndex=%d); "
+            + "reformatting Raft storage and rejoining so the leader can reconcile it via snapshot-install. "
+            + "If this recurs without a genuine log divergence, suspect a sustained one-sided outage to the leader.",
+        getCurrentTerm(), applied != null ? applied.getTerm() : -1L, applied != null ? applied.getIndex() : -1L,
+        getCommitIndex());
     restartRatis(true);
   }
 
@@ -704,12 +723,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
           if (storageDir.exists()) {
             deleteRecursive(storageDir);
             // deleteRecursive swallows per-file failures (e.g. a locked file or a permission issue on
-            // Windows). If the directory survives, FORMAT on a non-empty dir can fail or misbehave, so
-            // surface it for diagnostics rather than failing opaquely later.
+            // Windows). FORMAT on a non-empty directory is undefined behaviour, so abort instead of
+            // proceeding: the throw is caught below, increments restartFailureCount, and the divergence
+            // reformat budget already counted this as an attempt - so the failure escalates through the
+            // existing retry/backoff machinery rather than starting Ratis on a half-deleted directory.
             if (storageDir.exists())
-              LogManager.instance().log(this, Level.WARNING,
-                  "Could not fully delete Raft storage directory %s before reformat; Ratis FORMAT startup may fail",
-                  storageDir.getAbsolutePath());
+              throw new IOException("Could not fully delete Raft storage directory " + storageDir.getAbsolutePath()
+                  + " before reformat; aborting to avoid FORMAT on a non-empty directory");
           }
           startupOption = RaftStorage.StartupOption.FORMAT;
         } else

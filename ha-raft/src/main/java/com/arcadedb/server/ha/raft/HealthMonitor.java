@@ -104,16 +104,16 @@ public final class HealthMonitor {
   private final    int                      divergedFollowerMaxReformats;
   private volatile ScheduledExecutorService executor;
   // Wall-clock time (ms) when the current uninterrupted lag streak was first observed; -1 = not lagging.
-  private          long                     lagObservedSinceMs        = -1;
+  private          long                     lagObservedSinceMs          = -1;
   // Wall-clock time (ms) when the current uninterrupted stuck-divergence streak was first observed; -1 = not stuck.
-  private          long                     stuckObservedSinceMs      = -1;
+  private          long                     stuckObservedSinceMs        = -1;
   // Bounded reformat budget (#4741 review): reformats fired in the current divergence episode, the
   // time the follower started looking healthy again, and whether the budget is exhausted (logged once).
-  private          int                      divergenceReformatCount   = 0;
-  private          long                     divergenceHealthySinceMs  = -1;
+  private          int                      divergenceReformatCount     = 0;
+  private          long                     divergenceHealthySinceMs    = -1;
   private          boolean                  divergenceRecoveryExhausted = false;
   // Injectable for deterministic tests; defaults to the system clock.
-  private          LongSupplier             clock                     = System::currentTimeMillis;
+  private          LongSupplier             clock                       = System::currentTimeMillis;
 
   public HealthMonitor(final HealthTarget target, final long intervalMs) {
     this(target, intervalMs, 0L, 0L, false, 0);

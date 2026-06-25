@@ -102,13 +102,28 @@ class RaftDivergedFollowerRecoveryIT extends BaseRaftHATest {
     assertClusterConsistency();
 
     // (1) No false positives: every running follower in a healthy cluster must NOT look stuck-diverged.
+    // Also validate, against the REAL Ratis getters (not the hand-fed predicate unit test), that a
+    // caught-up follower produces the invariant the detector relies on: applied term == current term and
+    // commit == applied. If Ratis ever reported these differently, isStuckDivergedState would silently
+    // never fire on a real divergence, so pinning the healthy-state getter semantics here de-risks that.
     for (int i = 0; i < getServerCount(); i++) {
       final RaftHAPlugin plugin = getRaftPlugin(i);
       if (plugin == null)
         continue;
-      assertThat(plugin.getRaftHAServer().isFollowerStuckDiverged())
+      final RaftHAServer raft = plugin.getRaftHAServer();
+      assertThat(raft.isFollowerStuckDiverged())
           .as("healthy server %d must not be reported as stuck-diverged", i)
           .isFalse();
+      if (raft.isLeader())
+        continue;
+      final var appliedTI = raft.getStateMachine().getLastAppliedTermIndex();
+      assertThat(appliedTI).as("follower %d must have applied at least one entry", i).isNotNull();
+      assertThat(raft.getCurrentTerm())
+          .as("healthy follower %d: applied term must equal current term (detector getter semantics)", i)
+          .isEqualTo(appliedTI.getTerm());
+      assertThat(raft.getCommitIndex())
+          .as("healthy follower %d: commit must equal applied", i)
+          .isEqualTo(appliedTI.getIndex());
     }
 
     // (2) Trigger the recovery action on the follower (what the HealthMonitor does once the stuck
