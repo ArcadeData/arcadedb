@@ -43,8 +43,10 @@ import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.TimeDuration;
 
+import javax.net.ssl.HttpsURLConnection;
 import java.io.File;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
@@ -263,13 +265,27 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (targetId.equals(localPeerId))
       return; // never resync the leader itself
 
-    final String followerHttpAddr = getPeerHttpAddress(targetId);
-    if (followerHttpAddr == null) {
+    // On an SSL-enabled cluster the follower listens on HTTPS (a different port from plain HTTP), so
+    // prefer its HTTPS endpoint; mirror SnapshotInstaller's behaviour and fall back to plain HTTP
+    // only when no HTTPS endpoint is known.
+    final boolean useSSL = configuration.getValueAsBoolean(GlobalConfiguration.NETWORK_USE_SSL);
+    boolean https = false;
+    String followerAddr = null;
+    if (useSSL) {
+      followerAddr = getPeerHttpsAddress(targetId);
+      if (followerAddr != null)
+        https = true;
+    }
+    if (followerAddr == null)
+      followerAddr = getPeerHttpAddress(targetId);
+    if (followerAddr == null) {
       LogManager.instance().log(this, Level.WARNING,
-          "Cannot force resync of stalled replica '%s': its HTTP address is unknown", peerId);
+          "Cannot force resync of stalled replica '%s': its address is unknown", peerId);
       return;
     }
 
+    final String address = followerAddr;
+    final boolean useHttps = https;
     final String clusterToken = getClusterToken();
 
     final Thread t = new Thread(() -> {
@@ -277,13 +293,13 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         if (ArcadeDBServer.isReservedDatabaseName(dbName))
           continue;
         try {
-          requestRemoteResync(followerHttpAddr, dbName, clusterToken);
+          requestRemoteResync(address, dbName, clusterToken, useHttps);
           LogManager.instance().log(this, Level.INFO,
-              "Requested resync of database '%s' on stalled replica '%s' (%s)", dbName, peerId, followerHttpAddr);
+              "Requested resync of database '%s' on stalled replica '%s' (%s)", dbName, peerId, address);
         } catch (final Exception e) {
           LogManager.instance().log(this, Level.WARNING,
               "Failed to request resync of database '%s' on stalled replica '%s' (%s): %s",
-              dbName, peerId, followerHttpAddr, e.getMessage());
+              dbName, peerId, address, e.getMessage());
         }
       }
     }, "arcadedb-raft-stalled-resync-" + peerId);
@@ -293,13 +309,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Sends {@code POST /api/v1/cluster/resync/{database}} to a follower, authenticated with the
-   * cluster token. Visible for testing. Throws on a non-2xx response.
+   * cluster token. When {@code https} is true the connection uses the cluster SSL context (the same
+   * one used for snapshot transfer). Visible for testing. Throws on a non-2xx response.
    */
-  void requestRemoteResync(final String followerHttpAddr, final String databaseName, final String clusterToken)
-      throws IOException {
-    final String url = "http://" + followerHttpAddr + "/api/v1/cluster/resync/" + databaseName;
+  void requestRemoteResync(final String followerAddr, final String databaseName, final String clusterToken,
+      final boolean https) throws IOException {
+    final String url = (https ? "https://" : "http://") + followerAddr + "/api/v1/cluster/resync/" + databaseName;
     final HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
     try {
+      if (conn instanceof final HttpsURLConnection httpsConn)
+        httpsConn.setSSLSocketFactory(SnapshotInstaller.buildSSLContext(arcadeServer).getSocketFactory());
       conn.setRequestMethod("POST");
       conn.setConnectTimeout(10_000);
       conn.setReadTimeout(120_000);
@@ -312,7 +331,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         conn.setRequestProperty("X-ArcadeDB-Cluster-Token", clusterToken);
         conn.setRequestProperty("X-ArcadeDB-Forwarded-User", "root");
       }
-      conn.getOutputStream().write("{}".getBytes(StandardCharsets.UTF_8));
+      try (final OutputStream os = conn.getOutputStream()) {
+        os.write("{}".getBytes(StandardCharsets.UTF_8));
+      }
       final int code = conn.getResponseCode();
       if (code < 200 || code >= 300)
         throw new IOException("resync endpoint returned HTTP " + code);

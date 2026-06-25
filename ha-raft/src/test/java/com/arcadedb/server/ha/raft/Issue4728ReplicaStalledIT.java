@@ -90,14 +90,14 @@ class Issue4728ReplicaStalledIT extends BaseRaftHATest {
     assertThat(followerHttpAddr).as("leader must resolve the follower's HTTP address").isNotNull();
 
     // A request WITHOUT the cluster token (and without operator credentials) must be refused.
-    assertThatThrownBy(() -> leaderRaft.requestRemoteResync(followerHttpAddr, getDatabaseName(), "wrong-token"))
+    assertThatThrownBy(() -> leaderRaft.requestRemoteResync(followerHttpAddr, getDatabaseName(), "wrong-token", false))
         .as("resync endpoint must reject an invalid cluster token")
         .isInstanceOf(IOException.class);
 
     // The leader-driven recovery path: force the follower to resync using the real cluster token.
     LogManager.instance().log(this, Level.INFO, "TEST: leader forcing resync of replica %d via cluster token", replicaIndex);
     try {
-      leaderRaft.requestRemoteResync(followerHttpAddr, getDatabaseName(), leaderRaft.getClusterToken());
+      leaderRaft.requestRemoteResync(followerHttpAddr, getDatabaseName(), leaderRaft.getClusterToken(), false);
     } catch (final IOException e) {
       throw new AssertionError("leader-driven resync with a valid cluster token must succeed", e);
     }
