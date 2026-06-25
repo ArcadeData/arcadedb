@@ -34,6 +34,8 @@ import io.undertow.util.Headers;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FilterOutputStream;
+import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -48,6 +50,7 @@ import java.util.concurrent.ScheduledFuture;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -254,19 +257,27 @@ public class SnapshotHttpHandler implements HttpHandler {
   private void serveSnapshotZip(final HttpServerExchange exchange, final DatabaseInternal db, final String databaseName) {
     final long writeTimeoutMs = httpServer.getServer().getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_WRITE_TIMEOUT);
     final AtomicBoolean completed = new AtomicBoolean(false);
-    final ScheduledFuture<?> watchdog = watchdogExecutor.schedule(() -> {
-      if (!completed.get()) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Snapshot write for '%s' timed out after %dms, closing connection to release semaphore slot",
-            databaseName, writeTimeoutMs);
-        try {
-          exchange.getConnection().close();
-        } catch (final Exception ignored) {
-        }
-      }
-    }, writeTimeoutMs, TimeUnit.MILLISECONDS);
 
-    try (final OutputStream out = exchange.getOutputStream();
+    // Track the wall-clock time of the last byte written to the follower. The watchdog uses this to
+    // detect a *stalled* transfer (no progress within HA_SNAPSHOT_WRITE_TIMEOUT) rather than killing a
+    // slow-but-healthy one. A large database can legitimately take longer than the timeout to stream over
+    // the network; an absolute deadline would force-close a perfectly fine transfer, surfacing as
+    // "Premature EOF" on the follower and an unrecoverable resync loop (issue #4729).
+    final AtomicLong lastProgressMs = new AtomicLong(System.currentTimeMillis());
+
+    // Poll a few times within the timeout window so a stall is detected (and the semaphore slot freed)
+    // promptly once progress halts, without spinning. Floored at 1s for very small configured timeouts.
+    final long pollIntervalMs = Math.max(1_000L, writeTimeoutMs / 4);
+    final ScheduledFuture<?> watchdog = scheduleStallWatchdog(watchdogExecutor, completed, lastProgressMs,
+        writeTimeoutMs, pollIntervalMs, databaseName, () -> {
+          try {
+            exchange.getConnection().close();
+          } catch (final Exception ignored) {
+          }
+        });
+
+    try (final OutputStream rawOut = exchange.getOutputStream();
+        final OutputStream out = new ProgressTrackingOutputStream(rawOut, lastProgressMs);
         final ZipOutputStream zipOut = new ZipOutputStream(out)) {
 
       final File configFile = ((LocalDatabase) db.getEmbedded()).getConfigurationFile();
@@ -318,5 +329,72 @@ public class SnapshotHttpHandler implements HttpHandler {
       fis.transferTo(zipOut);
     }
     zipOut.closeEntry();
+  }
+
+  /**
+   * Returns {@code true} when a snapshot transfer should be force-closed because no bytes have been
+   * written for at least {@code writeTimeoutMs}. This is a stall check (idle time since the last write),
+   * not an absolute deadline, so a large but actively-progressing transfer is never killed (issue #4729).
+   * Package-private and static so the decision can be unit-tested independently of the HTTP exchange.
+   */
+  static boolean isSnapshotWriteStalled(final long lastProgressMs, final long nowMs, final long writeTimeoutMs) {
+    return nowMs - lastProgressMs >= writeTimeoutMs;
+  }
+
+  /**
+   * Schedules a periodic stall watchdog that force-closes the connection (via {@code onStall}) only when
+   * the transfer has made no progress for {@code writeTimeoutMs}. Returns the {@link ScheduledFuture} the
+   * caller cancels once the transfer completes. Package-private so the watchdog wiring is unit-testable
+   * with a fake close action.
+   */
+  static ScheduledFuture<?> scheduleStallWatchdog(final ScheduledExecutorService executor,
+      final AtomicBoolean completed, final AtomicLong lastProgressMs, final long writeTimeoutMs,
+      final long pollIntervalMs, final String databaseName, final Runnable onStall) {
+    return executor.scheduleWithFixedDelay(() -> {
+      if (completed.get())
+        return;
+      final long now = System.currentTimeMillis();
+      if (isSnapshotWriteStalled(lastProgressMs.get(), now, writeTimeoutMs)) {
+        LogManager.instance().log(SnapshotHttpHandler.class, Level.WARNING,
+            "Snapshot write for '%s' stalled for %dms with no progress, closing connection to release semaphore slot",
+            databaseName, now - lastProgressMs.get());
+        onStall.run();
+      }
+    }, pollIntervalMs, pollIntervalMs, TimeUnit.MILLISECONDS);
+  }
+
+  /**
+   * {@link OutputStream} wrapper that records the wall-clock time of the most recent write into a shared
+   * {@link AtomicLong}, letting the snapshot watchdog tell a stalled transfer apart from a slow-but-healthy
+   * one. Each successful write to the delegate refreshes {@code lastProgressMs}; the watchdog force-closes
+   * the connection only when no progress is made within HA_SNAPSHOT_WRITE_TIMEOUT (issue #4729).
+   * Package-private for unit testing.
+   */
+  static final class ProgressTrackingOutputStream extends FilterOutputStream {
+    private final AtomicLong lastProgressMs;
+
+    ProgressTrackingOutputStream(final OutputStream out, final AtomicLong lastProgressMs) {
+      super(out);
+      this.lastProgressMs = lastProgressMs;
+    }
+
+    @Override
+    public void write(final int b) throws IOException {
+      out.write(b);
+      lastProgressMs.set(System.currentTimeMillis());
+    }
+
+    @Override
+    public void write(final byte[] b, final int off, final int len) throws IOException {
+      // FilterOutputStream.write(byte[],int,int) relays byte-by-byte; override to write the whole chunk
+      // in one call (throughput) and record progress once per chunk instead of once per byte.
+      out.write(b, off, len);
+      lastProgressMs.set(System.currentTimeMillis());
+    }
+
+    @Override
+    public void flush() throws IOException {
+      out.flush();
+    }
   }
 }
