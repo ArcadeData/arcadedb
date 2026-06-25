@@ -66,6 +66,24 @@ public final class HealthMonitor {
     }
 
     /**
+     * Returns {@code true} when this node is a running follower that is stuck against the leader: it
+     * recognizes a leader at a newer term but cannot apply the leader's current-term entries because
+     * its Raft log diverged (issue #4741). Unlike {@link #isFollowerLaggingBeyond(long)} this is not a
+     * lag count - the divergence can be a single entry on an idle cluster - so it has no threshold.
+     * Implementations must return {@code false} for the leader and whenever the state cannot be read.
+     */
+    default boolean isFollowerStuckDiverged() {
+      return false;
+    }
+
+    /**
+     * Recovers a follower that is stuck-diverged by reformatting its Raft storage and rejoining the
+     * group as a fresh peer, which lets the leader reconcile it via the snapshot-install path.
+     */
+    default void recoverFromDivergence() {
+    }
+
+    /**
      * Proactively reconciles the inbound Raft gRPC peer allowlist with current DNS so a peer that
      * restarted with a new pod IP is admitted without first being rejected (issue #4696). No-op when
      * the allowlist is disabled; the filter itself throttles the DNS re-resolution.
@@ -78,22 +96,31 @@ public final class HealthMonitor {
   private final    long                     intervalMs;
   private final    long                     staleFollowerLagThreshold;
   private final    long                     staleFollowerRecoveryDurationMs;
+  private final    boolean                  divergedFollowerRecoveryEnabled;
   private volatile ScheduledExecutorService executor;
   // Wall-clock time (ms) when the current uninterrupted lag streak was first observed; -1 = not lagging.
-  private          long                     lagObservedSinceMs = -1;
+  private          long                     lagObservedSinceMs   = -1;
+  // Wall-clock time (ms) when the current uninterrupted stuck-divergence streak was first observed; -1 = not stuck.
+  private          long                     stuckObservedSinceMs = -1;
   // Injectable for deterministic tests; defaults to the system clock.
-  private          LongSupplier             clock              = System::currentTimeMillis;
+  private          LongSupplier             clock                = System::currentTimeMillis;
 
   public HealthMonitor(final HealthTarget target, final long intervalMs) {
-    this(target, intervalMs, 0L, 0L);
+    this(target, intervalMs, 0L, 0L, false);
   }
 
   public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
       final long staleFollowerRecoveryDurationMs) {
+    this(target, intervalMs, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs, false);
+  }
+
+  public HealthMonitor(final HealthTarget target, final long intervalMs, final long staleFollowerLagThreshold,
+      final long staleFollowerRecoveryDurationMs, final boolean divergedFollowerRecoveryEnabled) {
     this.target = target;
     this.intervalMs = intervalMs;
     this.staleFollowerLagThreshold = staleFollowerLagThreshold;
     this.staleFollowerRecoveryDurationMs = staleFollowerRecoveryDurationMs;
+    this.divergedFollowerRecoveryEnabled = divergedFollowerRecoveryEnabled;
   }
 
   /** Package-private test hook to drive the persistence logic deterministically. */
@@ -138,11 +165,14 @@ public final class HealthMonitor {
       HALog.log(this, HALog.BASIC, "Health monitor detected Ratis %s state, attempting recovery", state);
       target.restartRatisIfNeeded();
       // A Ratis restart will reinitialize the state machine and re-detect any snapshot gap, so
-      // drop any pending stale-follower streak to avoid a redundant download right after recovery.
+      // drop any pending stale-follower / stuck-divergence streak to avoid a redundant recovery
+      // right after the restart.
       lagObservedSinceMs = -1;
+      stuckObservedSinceMs = -1;
       return;
     }
     checkStaleFollower();
+    checkStuckFollower();
   }
 
   /**
@@ -172,6 +202,37 @@ public final class HealthMonitor {
           staleFollowerLagThreshold, now - lagObservedSinceMs);
       target.recoverFromPersistentLag();
       lagObservedSinceMs = -1; // reset; the next streak re-arms only if the lag persists again
+    }
+  }
+
+  /**
+   * Reformats and rejoins a follower that has been stuck-diverged from the leader for at least
+   * {@link #staleFollowerRecoveryDurationMs} (issue #4741). Mirrors {@link #checkStaleFollower()}:
+   * the first observation only starts the streak, any tick where the stuck condition clears resets
+   * it, and the recovery fires at most once per streak. Reuses the stale-follower recovery duration
+   * so both self-healing paths share the same "must persist this long" knob.
+   */
+  private void checkStuckFollower() {
+    if (!divergedFollowerRecoveryEnabled)
+      return; // disabled
+
+    if (!target.isFollowerStuckDiverged()) {
+      stuckObservedSinceMs = -1;
+      return;
+    }
+
+    final long now = clock.getAsLong();
+    if (stuckObservedSinceMs == -1) {
+      stuckObservedSinceMs = now; // first observation; require persistence before acting
+      return;
+    }
+
+    if (now - stuckObservedSinceMs >= staleFollowerRecoveryDurationMs) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Follower stuck-diverged from leader for %dms, reformatting Raft storage and rejoining",
+          now - stuckObservedSinceMs);
+      target.recoverFromDivergence();
+      stuckObservedSinceMs = -1; // reset; the next streak re-arms only if the divergence persists again
     }
   }
 

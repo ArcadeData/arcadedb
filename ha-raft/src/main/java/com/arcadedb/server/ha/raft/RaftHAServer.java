@@ -39,6 +39,7 @@ import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.apache.ratis.retry.RetryPolicies;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
+import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.util.LifeCycle;
 import org.apache.ratis.util.TimeDuration;
@@ -478,7 +479,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long staleFollowerLagThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_STALE_FOLLOWER_LAG_THRESHOLD);
     final long staleFollowerRecoveryDurationMs = configuration.getValueAsLong(
         GlobalConfiguration.HA_STALE_FOLLOWER_RECOVERY_DURATION_MS);
-    this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs);
+    final boolean divergedFollowerRecovery = configuration.getValueAsBoolean(
+        GlobalConfiguration.HA_DIVERGED_FOLLOWER_RECOVERY);
+    this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs,
+        divergedFollowerRecovery);
     this.healthMonitor.start();
   }
 
@@ -542,6 +546,54 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Stuck-divergence detection for the {@link HealthMonitor} (issue #4741): true only when this node
+   * is a running follower that recognizes a leader at a newer term yet cannot apply the leader's
+   * current-term entries because its Raft log diverged. The signal is term-based rather than a lag
+   * count because the divergence can be a single entry on an otherwise idle cluster, where the
+   * lag-based recoveries (HA_STALE_FOLLOWER_LAG_THRESHOLD, HA_STALLED_REPLICA_RESYNC_DURATION_MS)
+   * never fire.
+   * <p>
+   * A healthy follower carries the leader's current-term entry (e.g. the post-election no-op), so its
+   * last-applied term equals the current term. A stuck-diverged follower keeps rejecting the leader's
+   * AppendEntries (term conflict), so it has applied everything it could locally commit
+   * ({@code commitIndex == appliedIndex}) yet its last-applied entry is from an older term
+   * ({@code currentTerm > appliedTerm}). The {@link HealthMonitor} requires this to persist for
+   * {@code HA_STALE_FOLLOWER_RECOVERY_DURATION_MS} before acting, which filters out the brief window
+   * around an election before the no-op commits. Returns false for the leader, when no leader is
+   * known, while actively catching up or installing a snapshot, and whenever the state cannot be read.
+   */
+  @Override
+  public boolean isFollowerStuckDiverged() {
+    if (raftServer == null || shutdownRequested || isLeader())
+      return false;
+    if (getLeaderId() == null)
+      return false; // no leader recognized yet: leaderless, not stuck-diverged
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm == null || sm.isCatchingUp() || sm.isSnapshotDownloadPending())
+      return false;
+    final TermIndex applied = sm.getLastAppliedTermIndex();
+    if (applied == null)
+      return false;
+    final long currentTerm = getCurrentTerm();
+    final long appliedIndex = applied.getIndex();
+    final long commit = getCommitIndex();
+    if (currentTerm < 0 || appliedIndex < 0 || commit < 0)
+      return false;
+    // We have applied everything we could locally commit, but at a stale term: we are rejecting the
+    // leader's current-term entries and cannot move forward.
+    return currentTerm > applied.getTerm() && commit == appliedIndex;
+  }
+
+  @Override
+  public void recoverFromDivergence() {
+    if (shutdownRequested || isLeader())
+      return;
+    LogManager.instance().log(this, Level.WARNING,
+        "Follower diverged from leader and cannot reconcile its Raft log; reformatting Raft storage and rejoining the group");
+    restartRatis(true);
+  }
+
+  /**
    * Recovers from a Ratis server that has entered CLOSED or CLOSING state, typically
    * after a network partition where the node was isolated long enough for Ratis to
    * give up on the group.
@@ -561,6 +613,18 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   @Override
   public void restartRatisIfNeeded() {
+    restartRatis(false);
+  }
+
+  /**
+   * Restarts the local Ratis server. When {@code formatStorage} is {@code true} the Raft storage
+   * directory is deleted first and the server starts with {@link RaftStorage.StartupOption#FORMAT},
+   * so this peer rejoins the group with an empty log and is reconciled by the leader via the
+   * snapshot-install path. This is the in-process equivalent of an operator restarting a node whose
+   * Raft log diverged (issue #4741). When {@code false} the existing storage is preserved and the
+   * server starts with {@link RaftStorage.StartupOption#RECOVER} (the CLOSED/EXCEPTION recovery path).
+   */
+  private void restartRatis(final boolean formatStorage) {
     synchronized (recoveryLock) {
       if (shutdownRequested) {
         HALog.log(this, HALog.BASIC, "Recovery skipped: shutdown requested");
@@ -614,13 +678,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final File storageDir = getRaftStorageDir();
         RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
 
+        // For a divergence reformat (#4741) discard the local Raft log so this peer rejoins as a fresh
+        // bootstrapping member; otherwise recover the existing log in place (CLOSED/EXCEPTION path).
+        final RaftStorage.StartupOption startupOption;
+        if (formatStorage) {
+          if (storageDir.exists())
+            deleteRecursive(storageDir);
+          startupOption = RaftStorage.StartupOption.FORMAT;
+        } else
+          startupOption = RaftStorage.StartupOption.RECOVER;
+
         this.raftServer = RaftServer.newBuilder()
             .setServerId(localPeerId)
             .setGroup(raftGroup)
             .setStateMachine(stateMachine)
             .setProperties(properties)
             .setParameters(buildParameters(configuration))
-            .setOption(RaftStorage.StartupOption.RECOVER)
+            .setOption(startupOption)
             .build();
         this.raftServer.start();
         this.raftProperties = properties;

@@ -33,9 +33,11 @@ class HealthMonitorTest {
     final    AtomicReference<LifeCycle.State> state                = new AtomicReference<>(LifeCycle.State.RUNNING);
     final    AtomicInteger                    recoveryCalls        = new AtomicInteger();
     final    AtomicInteger                    persistentLagRecover = new AtomicInteger();
+    final    AtomicInteger                    divergenceRecover    = new AtomicInteger();
     final    AtomicInteger                    allowlistRefreshes   = new AtomicInteger();
     volatile boolean                          shutdownRequested    = false;
     volatile boolean                          lagging              = false;
+    volatile boolean                          stuckDiverged        = false;
 
     @Override
     public LifeCycle.State getRaftLifeCycleState() {
@@ -60,6 +62,16 @@ class HealthMonitorTest {
     @Override
     public void recoverFromPersistentLag() {
       persistentLagRecover.incrementAndGet();
+    }
+
+    @Override
+    public boolean isFollowerStuckDiverged() {
+      return stuckDiverged;
+    }
+
+    @Override
+    public void recoverFromDivergence() {
+      divergenceRecover.incrementAndGet();
     }
 
     @Override
@@ -250,5 +262,122 @@ class HealthMonitorTest {
     clock.set(7000);
     monitor.tick();                 // streak restarts here, not enough elapsed
     assertThat(fake.persistentLagRecover.get()).isZero();
+  }
+
+  // --- Stuck-divergence recovery (issue #4741) ---
+
+  private static HealthMonitor stuckMonitor(final FakeHealthTarget fake, final AtomicLong clock, final long durationMs,
+      final boolean enabled) {
+    final HealthMonitor monitor = new HealthMonitor(fake, 1000, 0L, durationMs, enabled);
+    monitor.setClock(clock::get);
+    return monitor;
+  }
+
+  @Test
+  void divergenceRecoveryDisabledByLegacyConstructor() {
+    // The 4-arg constructor (used before #4741) must leave diverged-follower recovery OFF.
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = new HealthMonitor(fake, 1000, 0L, 1000L);
+    monitor.setClock(clock::get);
+    for (int i = 0; i < 5; i++) {
+      clock.addAndGet(10_000);
+      monitor.tick();
+    }
+    assertThat(fake.divergenceRecover.get()).isZero();
+  }
+
+  @Test
+  void divergenceRecoveryDisabledWhenFlagFalse() {
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 1000, false);
+    for (int i = 0; i < 5; i++) {
+      clock.addAndGet(10_000);
+      monitor.tick();
+    }
+    assertThat(fake.divergenceRecover.get()).isZero();
+  }
+
+  @Test
+  void divergenceNotTriggeredOnFirstObservation() {
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, true);
+    monitor.tick(); // first observation only starts the streak
+    assertThat(fake.divergenceRecover.get()).isZero();
+  }
+
+  @Test
+  void divergenceTriggersAfterDuration() {
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, true);
+
+    monitor.tick();                 // t=0: start streak
+    clock.set(3000);
+    monitor.tick();                 // t=3000: still within duration
+    assertThat(fake.divergenceRecover.get()).isZero();
+
+    clock.set(6000);
+    monitor.tick();                 // t=6000: divergence persisted >= 5000ms -> recover
+    assertThat(fake.divergenceRecover.get()).isEqualTo(1);
+  }
+
+  @Test
+  void divergenceStreakResetsWhenConditionClears() {
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, true);
+
+    monitor.tick();                 // t=0: start streak
+    clock.set(3000);
+    fake.stuckDiverged = false;     // transient: divergence cleared (e.g. brief election window)
+    monitor.tick();                 // resets streak
+    fake.stuckDiverged = true;
+    clock.set(7000);
+    monitor.tick();                 // restarts streak (0ms elapsed since restart)
+    assertThat(fake.divergenceRecover.get()).isZero();
+
+    clock.set(13_000);
+    monitor.tick();                 // 6000ms since restart -> recover
+    assertThat(fake.divergenceRecover.get()).isEqualTo(1);
+  }
+
+  @Test
+  void divergenceStreakResetByUnhealthyState() {
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 5000, true);
+
+    monitor.tick();                 // t=0: start streak
+    clock.set(3000);
+    fake.state.set(LifeCycle.State.CLOSED);
+    monitor.tick();                 // unhealthy: restart path runs, streak reset
+    assertThat(fake.recoveryCalls.get()).isEqualTo(1);
+
+    fake.state.set(LifeCycle.State.RUNNING);
+    clock.set(7000);
+    monitor.tick();                 // streak restarts here, not enough elapsed
+    assertThat(fake.divergenceRecover.get()).isZero();
+  }
+
+  @Test
+  void divergenceSkippedWhenShutdownRequested() {
+    final FakeHealthTarget fake = new FakeHealthTarget();
+    fake.stuckDiverged = true;
+    fake.shutdownRequested = true;
+    final AtomicLong clock = new AtomicLong(0);
+    final HealthMonitor monitor = stuckMonitor(fake, clock, 0, true);
+    monitor.tick();
+    clock.set(10_000);
+    monitor.tick();
+    assertThat(fake.divergenceRecover.get()).isZero();
   }
 }

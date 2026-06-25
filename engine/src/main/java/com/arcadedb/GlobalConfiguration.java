@@ -971,6 +971,19 @@ public enum GlobalConfiguration {
       (across consecutive health-monitor ticks) before recovery is triggered. Avoids acting on transient catch-up lag.""",
       Long.class, 60_000L),
 
+  HA_DIVERGED_FOLLOWER_RECOVERY("arcadedb.ha.divergedFollowerRecovery", SCOPE.SERVER,
+      """
+      When true (default), a follower that detects it is stuck against the leader (it recognizes a leader at a newer \
+      term but cannot apply the leader's current-term entries because its Raft log diverged) automatically reformats its \
+      Raft storage and rejoins as a fresh peer, which lets the leader reconcile it via the snapshot-install path. \
+      This covers issue #4741: a tiny (1-2 entry) Raft-log divergence on an otherwise idle cluster, where the leader's \
+      log is never compacted, so neither the follower-side stale recovery (HA_STALE_FOLLOWER_LAG_THRESHOLD) nor the \
+      leader-driven stalled-replica resync (HA_STALLED_REPLICA_RESYNC_DURATION_MS) ever fire - both need a large lag - \
+      and the leader's appender otherwise loops on INCONSISTENCY forever until an operator restarts a node. The stuck \
+      condition must persist for HA_STALE_FOLLOWER_RECOVERY_DURATION_MS before recovery triggers. Set to false to \
+      disable (node restart becomes the only mitigation).""",
+      Boolean.class, true),
+
   HA_STALLED_REPLICA_RESYNC_DURATION_MS("arcadedb.ha.stalledReplicaResyncDurationMs", SCOPE.SERVER,
       """
       How long in milliseconds a replica must stay continuously STALLED (its matchIndex not advancing while the leader \
