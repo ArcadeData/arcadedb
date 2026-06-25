@@ -105,6 +105,23 @@ class ReconcilePlanTest {
   }
 
   @Test
+  void runtimeExceptionFromOneDatabaseIsIsolatedToo() {
+    // An unchecked exception (not just IOException) from one acquire must not abort the others.
+    final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("npe", "goodnew"), List.of("healthy"), List.of());
+    final List<String> refreshCalls = new ArrayList<>();
+    final var outcome = ArcadeStateMachine.executeReconcilePlan(plan,
+        db -> {
+          if (db.equals("npe"))
+            throw new RuntimeException("unexpected");
+        },
+        refreshCalls::add);
+    assertThat(outcome.acquired()).containsExactly("goodnew");
+    assertThat(outcome.acquireFailures()).containsKey("npe");
+    assertThat(refreshCalls).containsExactly("healthy");
+    assertThat(outcome.refreshed()).containsExactly("healthy");
+  }
+
+  @Test
   void allSucceedWhenNoOperationFails() {
     final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("n1"), List.of("e1", "e2"), List.of("orphan"));
     final var outcome = ArcadeStateMachine.executeReconcilePlan(plan, db -> {

@@ -234,20 +234,23 @@ public class ArcadeStateMachine extends BaseStateMachine {
     final List<String> refreshed = new ArrayList<>();
     final Map<String, String> refreshFailures = new LinkedHashMap<>();
 
+    // Catch Exception (not just the declared IOException): an unchecked failure escaping one database's
+    // acquire/refresh must be isolated too, otherwise it would abort the whole reconcile and defeat the
+    // no-starvation guarantee that is the entire point of this method.
     for (final String db : plan.toAcquire()) {
       try {
         acquireOp.run(db);
         acquired.add(db);
-      } catch (final IOException e) {
-        acquireFailures.put(db, e.getMessage());
+      } catch (final Exception e) {
+        acquireFailures.put(db, String.valueOf(e.getMessage()));
       }
     }
     for (final String db : plan.toRefresh()) {
       try {
         refreshOp.run(db);
         refreshed.add(db);
-      } catch (final IOException e) {
-        refreshFailures.put(db, e.getMessage());
+      } catch (final Exception e) {
+        refreshFailures.put(db, String.valueOf(e.getMessage()));
       }
     }
     return new ReconcileOutcome(acquired, acquireFailures, refreshed, refreshFailures);
@@ -703,6 +706,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * <b>Additive only:</b> a database present locally but absent on the leader is never dropped (that keeps a real
    * {@code DROP_DATABASE_ENTRY} distinguishable from "the leader never had it"); it is flagged
    * {@link AcquireState#LEADER_MISSING} for operator attention.
+   * <p>
+   * <b>Documented boundary:</b> auto-acquire runs only on the follower InstallSnapshot path, so a brand-new empty
+   * node that became leader without first receiving a snapshot would not acquire anything. Raft's up-to-date-log
+   * election rule prevents an empty-log node from winning over peers that hold committed data, and the
+   * {@link AcquireState#LEADER_MISSING} alert plus the leadership-transfer flow cover the #4522 redistribution
+   * edge, so this boundary is not reachable in normal operation.
    *
    * @throws IOException if a database install fails (so the caller leaves the Ratis snapshot install incomplete
    *                     and Ratis re-triggers it; installs are idempotent).
@@ -787,8 +796,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // re-triggers it. Extracted to a package-private method so these transitions are unit-testable without a live
     // cluster (the InstallSnapshot path is not deterministically reachable in-process - see SnapshotAcquireNewDatabaseIT).
     if (applyReconcileOutcome(plan, outcome))
-      throw new IOException("Reconcile from leader had transient database failure(s); will retry: "
-          + outcome.acquireFailures() + outcome.refreshFailures());
+      throw new IOException(String.format("Reconcile from leader had database failure(s); will retry (acquire=%s, refresh=%s)",
+          outcome.acquireFailures(), outcome.refreshFailures()));
   }
 
   /**

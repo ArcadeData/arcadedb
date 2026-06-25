@@ -80,9 +80,12 @@
           <div class="d-flex align-items-center justify-content-between mb-2">
             <h6 style="color: var(--text-secondary); font-weight: 600; margin: 0;">Database Presence</h6>
             <button id="btnLoadPresence" class="btn btn-sm db-action-btn" onclick="loadPresenceMatrix()"
-                    title="Query every node for the databases it holds (leader only)">
+                    title="Query every node for the databases it holds (leader only). Each node briefly opens any closed database to read it, so use on demand rather than continuously.">
               <i class="fa fa-table"></i> Load presence matrix
             </button>
+          </div>
+          <div style="font-size: 0.72rem; color: var(--text-secondary); margin-bottom: 6px;">
+            Queries each node for its databases; a node may briefly open a closed database to report it. Run on demand.
           </div>
           <div id="clusterPresenceMatrix" style="font-size: 0.82rem;">
             <!-- Dynamically populated by renderPresenceMatrix -->
