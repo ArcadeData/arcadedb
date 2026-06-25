@@ -326,6 +326,16 @@ public enum GlobalConfiguration {
 
   PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),
 
+  FLUSH_SUSPEND_MAX_DEFERRED_RAM("arcadedb.flushSuspendMaxDeferredRAM", SCOPE.DATABASE,
+      """
+      Maximum amount of RAM (in MB) of dirty pages the page-flush thread may defer in memory while flushing \
+      is suspended (during an HA snapshot ship or a full backup, when the on-disk files must stay stable). \
+      Once the deferred backlog crosses this cap the flush thread stops draining its bounded queue, so \
+      committing threads are throttled instead of the deferred backlog growing without limit and exhausting \
+      the heap (issue #4728: a busy leader shipping a multi-GB snapshot OOM'd). Set to 0 to disable the cap \
+      (unbounded, pre-4728 behavior).""",
+      Long.class, 512),
+
   EXPLICIT_LOCK_TIMEOUT("arcadedb.explicitLockTimeout", SCOPE.DATABASE, "Timeout in ms to lock resources on explicit lock",
       Long.class, 5000),
 
@@ -892,6 +902,16 @@ public enum GlobalConfiguration {
   HA_CLIENT_ELECTION_RETRY_DELAY_MS("arcadedb.ha.clientElectionRetryDelayMs", SCOPE.SERVER,
       "Delay in milliseconds between RemoteDatabase election retries.",
       Long.class, 2000L),
+
+  HA_FORWARD_LEADER_WAIT_TIMEOUT_MS("arcadedb.ha.forwardLeaderWaitTimeoutMs", SCOPE.SERVER,
+      """
+      Maximum time in milliseconds a follower waits for a leader to be (re)elected before failing a write \
+      command it has to forward to the leader. During cluster startup or a leader change there is a window \
+      with no elected leader; without this wait a forwarded write fails immediately with "leader HTTP address \
+      is not available" and the caller's transaction is lost (issue #4728 follow-up). The follower polls for \
+      the leader and forwards as soon as one appears. Set to 0 to restore the previous fail-fast behavior. \
+      Default 20000 comfortably covers a first-election window (which can exceed 10s on cluster startup).""",
+      Long.class, 20000L),
 
   HA_RATIS_RESTART_MAX_RETRIES("arcadedb.ha.ratisRestartMaxRetries", SCOPE.SERVER,
       """

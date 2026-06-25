@@ -99,6 +99,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -137,6 +138,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       ThreadLocal.withInitial(ArrayList::new);
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
+
+  /** Poll cadence while waiting for a leader to be (re)elected before forwarding a write (issue #4728 follow-up). */
+  private static final long LEADER_WAIT_POLL_INTERVAL_MS = 100;
 
   /**
    * Emits the "no security context, forwarding as root" notice only once per JVM so embedded
@@ -1503,9 +1507,15 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   private ResultSet forwardCommandToLeaderViaRaft(final String language, final String query,
       final Map<String, Object> mapArgs, final Object[] positionalArgs) {
     final RaftHAServer raft = requireRaftServer();
-    final String leaderHttpAddress = raft.getLeaderHttpAddress();
+    // During cluster startup or a leader change there is a window with no elected leader. Rather than failing
+    // the forwarded write immediately (which loses the caller's transaction - issue #4728 follow-up), wait a
+    // bounded time for a leader to appear and forward as soon as one does. If this node becomes the leader
+    // while waiting, getLeaderHttpAddress() returns its own address and the POST to self executes locally.
+    final long leaderWaitMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_FORWARD_LEADER_WAIT_TIMEOUT_MS);
+    final String leaderHttpAddress = awaitLeaderAddress(raft::getLeaderHttpAddress, leaderWaitMs, LEADER_WAIT_POLL_INTERVAL_MS);
     if (leaderHttpAddress == null)
-      throw new TransactionException("Cannot forward command to leader: leader HTTP address is not available");
+      throw new TransactionException("Cannot forward command to leader: leader HTTP address is not available "
+          + "(no leader elected within " + leaderWaitMs + "ms; tune " + GlobalConfiguration.HA_FORWARD_LEADER_WAIT_TIMEOUT_MS.getKey() + ")");
 
     final JSONObject body = new JSONObject();
     body.put("language", language);
@@ -1567,6 +1577,36 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     } catch (final Exception e) {
       throw new TransactionException("Error forwarding command to leader at " + leaderHttpAddress, e);
     }
+  }
+
+  /**
+   * Resolves the Raft leader address, polling for up to {@code timeoutMs} when none is known yet so a write
+   * forwarded during a startup/leader-change election window is delayed rather than lost (issue #4728 follow-up).
+   *
+   * @param leaderAddressProbe supplier of the current leader address, or {@code null} when no leader is known
+   * @param timeoutMs          maximum time to wait for a leader; {@code <= 0} disables waiting (fail-fast)
+   * @param pollIntervalMs     poll cadence while waiting
+   * @return the leader address, or {@code null} if none appeared within the timeout
+   */
+  static String awaitLeaderAddress(final Supplier<String> leaderAddressProbe, final long timeoutMs, final long pollIntervalMs) {
+    String addr = leaderAddressProbe.get();
+    if (addr != null || timeoutMs <= 0)
+      return addr;
+
+    final long deadline = System.currentTimeMillis() + timeoutMs;
+    while (addr == null) {
+      final long remaining = deadline - System.currentTimeMillis();
+      if (remaining <= 0)
+        break;
+      try {
+        Thread.sleep(Math.min(pollIntervalMs, remaining));
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+        break;
+      }
+      addr = leaderAddressProbe.get();
+    }
+    return addr;
   }
 
   /**
