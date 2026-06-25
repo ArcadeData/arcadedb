@@ -18,6 +18,10 @@
  */
 package com.arcadedb.server.http.handler;
 
+import com.arcadedb.database.Database;
+import com.arcadedb.database.RID;
+import com.arcadedb.graph.Edge;
+import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.Test;
@@ -126,6 +130,43 @@ class Issue4689StudioSerializerIT extends BaseGraphServerTest {
     assertThat(result.getJSONArray("records").length()).as("Should return 2 records").isEqualTo(2);
     assertThat(result.getJSONArray("vertices").length()).isEqualTo(2);
     assertThat(result.getJSONArray("edges").length()).as("Connecting edge surfaced").isEqualTo(1);
+  }
+
+  @Test
+  void matchReturnVertexWithDanglingEdgeDoesNotReturn500() throws Exception {
+    // Reproduces the customer's exact failure: a vertex whose edge segment still references an edge
+    // record that no longer exists (dangling pointer). The studio serializer's "filter out not connected
+    // edges" pass iterates every returned vertex's edges; loading the dangling edge under REPEATABLE_READ
+    // isolation used to skip it and then throw NoSuchElementException, surfacing as an HTTP 500. Whole-record
+    // queries (RETURN u / SELECT FROM) hit this; scalar projections (RETURN u{.*}) do not. See issue #4689.
+    final Database db = getServerDatabase(0, getDatabaseName());
+
+    final RID[] danglingEdge = new RID[1];
+    db.transaction(() -> {
+      db.command("sql", "CREATE VERTEX TYPE DanglingUser");
+      db.command("sql", "CREATE EDGE TYPE DanglingKnows");
+      final MutableVertex a = db.newVertex("DanglingUser").set("name", "A").save();
+      final MutableVertex b = db.newVertex("DanglingUser").set("name", "B").save();
+      final Edge e = a.newEdge("DanglingKnows", b);
+      danglingEdge[0] = e.getIdentity();
+    });
+
+    // Create the dangling pointer: remove the edge RECORD at bucket level, bypassing graph cleanup.
+    db.transaction(() ->
+        db.getSchema().getBucketById(danglingEdge[0].getBucketId()).deleteRecord(danglingEdge[0]));
+
+    final Database.TRANSACTION_ISOLATION_LEVEL previous = db.getTransactionIsolationLevel();
+    db.setTransactionIsolationLevel(Database.TRANSACTION_ISOLATION_LEVEL.REPEATABLE_READ);
+    try {
+      final JSONObject result = studioResult("opencypher", "MATCH (u:DanglingUser) RETURN u");
+
+      assertThat(result.getJSONArray("records").length()).as("Both vertices should be returned").isEqualTo(2);
+      assertThat(result.getJSONArray("vertices").length()).isEqualTo(2);
+      assertThat(result.getJSONArray("edges").length())
+          .as("The dangling edge must be filtered out, not surfaced, and must not cause an error").isZero();
+    } finally {
+      db.setTransactionIsolationLevel(previous);
+    }
   }
 
   @Test

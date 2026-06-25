@@ -96,6 +96,51 @@ All 6 studio tests pass - the bug still cannot be reproduced over the exact seri
 The customer's case is likely data-specific (e.g. ghost/dangling edges in those 2 collections, or
 a property type that trips serialization); more reproduction detail is still needed from the reporter.
 
+### Root cause found and fixed (2026-06-25)
+
+After the reporter supplied the 2-record dataset (comment 4794871273), reproduction attempts with
+that exact data shape (UUID `id` + nanosecond `updatedAt` LocalDateTime, schemaful and schemaless,
+custom and default datetime formats, SQL and Cypher) all serialized cleanly. The data alone is not
+the trigger - the "ghost/dangling edges" hypothesis was correct.
+
+**Root cause:** the untyped `EdgeIterator` (returned by `getEdges(DIRECTION)` with no edge-type
+filter - exactly what the studio "FILTER OUT NOT CONNECTED EDGES" loop calls) violated the
+`Iterator` contract. `hasNext()` only checked the segment position, while `next()` lazily loaded the
+edge record. When a vertex has a **dangling edge pointer** (the edge record was removed but the link
+survives in the vertex's edge segment) AND the content is force-loaded, `next()` caught the
+`RecordNotFoundException`, skipped the entry, then threw `NoSuchElementException` once the segment
+ended - even though `hasNext()` had just returned `true`. A standard for-each loop propagated the NSE.
+
+The forced load (which turns the dangling pointer into a `RecordNotFoundException` inside `next()`)
+happens via `LocalDatabase.lookupByRID(rid, loadContent=false)` when either:
+- the transaction isolation is `REPEATABLE_READ` (forces content load to pin multi-page records), or
+- the edge's bucket/type no longer resolves (`type == null`).
+
+This is why only Studio failed (it is the only serializer that *iterates and loads* each vertex's
+edges; HTTP record/default and Bolt only *count* edges), why only some collections failed (only those
+with a dangling edge pointer), and why `RETURN u`/`SELECT FROM` failed while `RETURN u{.*}`/
+`SELECT field` worked (scalar projections are not vertices, so they never enter the edge-iterating
+filter loop). The sibling typed `EdgeIteratorFilter` was already robust (it validates the RID inside
+`hasNext()` and self-heals via `handleCorruption`); only the untyped `EdgeIterator` was affected.
+
+**Fix:** `EdgeIterator` now validates the (non-lightweight) edge RID inside `hasNext()` and skips
+dangling pointers there (mirroring `IteratorFilterBase`), so `hasNext()` and `next()` stay consistent
+and a dangling edge is simply skipped during iteration instead of throwing. `reset()` clears the new
+prefetch state; `remove()` semantics are preserved (its only production caller, `GraphDatabaseChecker`,
+uses the `entryIterator()`/`EdgeVertexIterator` path, not `EdgeIterator`).
+
+**Regression tests:**
+- `engine` `DanglingEdgeIteratorTest` - creates a dangling edge pointer (bucket-level record delete),
+  iterates `getEdges(OUT)` under REPEATABLE_READ; fails with NSE before the fix, skips cleanly after.
+- `server` `Issue4689StudioSerializerIT.matchReturnVertexWithDanglingEdgeDoesNotReturn500` - the exact
+  customer path: `MATCH (u) RETURN u` over the studio serializer with a dangling edge under
+  REPEATABLE_READ returns HTTP 200 (was 500) and filters the dangling edge out.
+
+**Files changed:**
+- `engine/src/main/java/com/arcadedb/graph/EdgeIterator.java` (fix)
+- `engine/src/test/java/com/arcadedb/graph/DanglingEdgeIteratorTest.java` (new)
+- `server/src/test/java/com/arcadedb/server/http/handler/Issue4689StudioSerializerIT.java` (new test)
+
 ## Location
 
 `server/src/test/java/com/arcadedb/server/http/handler/Issue4689MatchReturnVertexIT.java`
