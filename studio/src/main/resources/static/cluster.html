@@ -72,6 +72,27 @@
         <!-- Dynamically populated by JS -->
       </div>
 
+      <!-- Per-database x per-node presence matrix (issue #4727). Built on the leader via a peer fan-out
+           (GET /api/v1/cluster?presence=true), so it is loaded on demand (button) rather than on every
+           auto-poll. Lets an operator see at a glance which databases are missing on which nodes. -->
+      <div class="row mb-4" id="clusterPresenceRow">
+        <div class="col-12">
+          <div class="d-flex align-items-center justify-content-between mb-2">
+            <h6 style="color: var(--text-secondary); font-weight: 600; margin: 0;">Database Presence</h6>
+            <button id="btnLoadPresence" class="btn btn-sm db-action-btn" onclick="loadPresenceMatrix()"
+                    title="Query every node for the databases it holds (leader only). Each node briefly opens any closed database to read it, so use on demand rather than continuously.">
+              <i class="fa fa-table"></i> Load presence matrix
+            </button>
+          </div>
+          <div style="font-size: 0.72rem; color: var(--text-secondary); margin-bottom: 6px;">
+            Queries each node for its databases; a node may briefly open a closed database to report it. Run on demand.
+          </div>
+          <div id="clusterPresenceMatrix" style="font-size: 0.82rem;">
+            <!-- Dynamically populated by renderPresenceMatrix -->
+          </div>
+        </div>
+      </div>
+
     </div>
 
     <!-- ==================== METRICS TAB ==================== -->
@@ -171,6 +192,51 @@
               </p>
               <div id="clusterResyncList">
                 <!-- Dynamically populated by renderResyncRecovery -->
+              </div>
+            </div>
+          </div>
+
+          <!-- Leadership controls (issue #4727 Studio scope): transfer leadership to a chosen peer or step
+               down. Shown on the leader; followers see a hint. Toggled by renderLeadershipControls. -->
+          <div class="card mb-3" id="clusterLeadershipCard" style="border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-header py-2" style="background: var(--bg-hover); border-bottom: 1px solid var(--border-light); border-radius: 10px 10px 0 0;">
+              <i class="fas fa-crown" style="color: var(--color-brand);"></i>
+              <span style="font-weight: 600; font-size: 0.88rem; margin-left: 6px;">Leadership</span>
+            </div>
+            <div class="card-body py-3">
+              <div id="clusterLeadershipHint" class="mb-2" style="font-size:0.75rem; color:var(--text-secondary); display:none;">
+                <i class="fa fa-info-circle"></i> Leadership actions can only be performed on the leader node.
+              </div>
+              <div id="clusterLeadershipActions" style="display:none;">
+                <p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 10px;">
+                  Move leadership to a node that holds a database the current leader is missing, then resync the
+                  others (the #4522 recovery flow).
+                </p>
+                <button class="btn btn-sm db-action-btn me-2" onclick="transferLeadershipPrompt()"
+                        title="Transfer leadership to a specific peer">
+                  <i class="fa fa-exchange-alt"></i> Transfer leadership
+                </button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="stepDownLeader()"
+                        title="Relinquish leadership; the cluster elects a new leader">
+                  <i class="fa fa-sign-out-alt"></i> Step down
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Database consistency verification (issue #4727 Studio scope): per-database checksum comparison
+               across all peers. Runs from the leader; toggled by renderVerifyConsistency. -->
+          <div class="card mb-3" id="clusterVerifyCard" style="display:none; border: 1px solid var(--border-light); border-radius: 10px;">
+            <div class="card-header py-2" style="background: var(--bg-hover); border-bottom: 1px solid var(--border-light); border-radius: 10px 10px 0 0;">
+              <i class="fas fa-check-double" style="color: var(--color-brand);"></i>
+              <span style="font-weight: 600; font-size: 0.88rem; margin-left: 6px;">Database Consistency</span>
+            </div>
+            <div class="card-body py-3">
+              <p style="font-size: 0.78rem; color: var(--text-secondary); margin-bottom: 10px;">
+                Compares per-file checksums of each database across every node and reports any mismatch.
+              </p>
+              <div id="clusterVerifyList">
+                <!-- Dynamically populated by renderVerifyConsistency -->
               </div>
             </div>
           </div>

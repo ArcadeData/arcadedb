@@ -96,7 +96,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // The forwarded user the leader presents (with the cluster token) for inter-node calls such as the
   // stalled-replica resync. ArcadeDB's bootstrap 'root' user is the cluster-wide superuser; named here
   // so the coupling is visible rather than scattered as a string literal.
-  private static final String FORWARDED_ROOT_USER = "root";
+  // Package-private so other cluster-internal RPC callers (e.g. LeaderDatabaseQuery) reuse the same constant
+  // instead of re-inlining the "root" literal.
+  static final String FORWARDED_ROOT_USER = "root";
 
   private final    ArcadeDBServer          arcadeServer;
   private final    ContextConfiguration    configuration;
