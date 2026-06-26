@@ -25,6 +25,10 @@ import com.arcadedb.query.sql.executor.IteratorResultSet;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.TypeIndexBuilder;
+import com.arcadedb.schema.Type;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import de.bwaldvogel.mongo.MongoBackend;
@@ -110,6 +114,8 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
         return insertDocument(channel, document);
       else if ("aggregate".equalsIgnoreCase(command))
         return aggregateCollection(command, document, opLog);
+      else if ("createIndexes".equalsIgnoreCase(command))
+        return createIndexes(document);
       else {
         LogManager.instance()
             .log(this, Level.SEVERE, "Received unsupported command from MongoDB client '%s', (document=%s)", null, command,
@@ -284,6 +290,72 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
   private Document createCollection(final Document document) {
     database.getSchema().buildDocumentType().withName((String) document.get("create")).withTotalBuckets(1).create();
     return responseOk();
+  }
+
+  /**
+   * Handles the MongoDB {@code createIndexes} command (also used by the driver's {@code createIndex}
+   * helper). Each requested index maps to an ArcadeDB {@code LSM_TREE} type index over the same
+   * property list. MongoDB collections are schemaless, so properties not yet declared on the type
+   * are left free-form and the index falls back to {@code STRING} key serialisation (the same
+   * approach the native OpenCypher engine uses for {@code CREATE INDEX}, issue #4222), preserving
+   * the stored Java type. Re-creating an existing index is a no-op, matching MongoDB semantics.
+   */
+  private Document createIndexes(final Document document) {
+    final String collectionName = document.get("createIndexes").toString();
+
+    final boolean createdCollectionAutomatically;
+    if (!database.getSchema().existsType(collectionName)) {
+      database.getSchema().buildDocumentType().withName(collectionName).withTotalBuckets(1).create();
+      createdCollectionAutomatically = true;
+    } else
+      createdCollectionAutomatically = false;
+
+    // ArcadeDB has no implicit _id index: MongoDB always reports one, so offset both counts by 1 to
+    // keep numIndexesAfter == numIndexesBefore + <new indexes> consistent for clients that check it.
+    final int numIndexesBefore = database.getSchema().getType(collectionName).getAllIndexes(false).size() + 1;
+
+    final List<Document> indexes = (List<Document>) document.get("indexes");
+    if (indexes != null)
+      for (final Document index : indexes)
+        createSingleIndex(collectionName, index);
+
+    final int numIndexesAfter = database.getSchema().getType(collectionName).getAllIndexes(false).size() + 1;
+
+    final Document response = responseOk();
+    response.put("createdCollectionAutomatically", createdCollectionAutomatically);
+    response.put("numIndexesBefore", numIndexesBefore);
+    response.put("numIndexesAfter", numIndexesAfter);
+    return response;
+  }
+
+  private void createSingleIndex(final String collectionName, final Document index) {
+    final Document key = (Document) index.get("key");
+    if (key == null || key.isEmpty())
+      return;
+
+    final DocumentType type = database.getSchema().getType(collectionName);
+    final String[] propertyNames = key.keySet().toArray(new String[0]);
+
+    // Schemaless collections: keep undeclared properties free-form and let the index serialise
+    // their keys as STRING. Declared properties (null entry) keep their own type.
+    final Type[] defaultKeyTypes = new Type[propertyNames.length];
+    boolean anyUndeclared = false;
+    for (int i = 0; i < propertyNames.length; i++) {
+      if (type.getPolymorphicPropertyIfExists(propertyNames[i]) != null)
+        continue;
+      defaultKeyTypes[i] = Type.STRING;
+      anyUndeclared = true;
+    }
+
+    final boolean unique = Utils.isTrue(index.get("unique"));
+
+    final TypeIndexBuilder builder = database.getSchema().buildTypeIndex(collectionName, propertyNames);
+    builder.withType(Schema.INDEX_TYPE.LSM_TREE);
+    builder.withUnique(unique);
+    builder.withIgnoreIfExists(true);
+    if (anyUndeclared)
+      builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
+    builder.create();
   }
 
   private Document countCollection(final Document document) throws MongoServerException {
