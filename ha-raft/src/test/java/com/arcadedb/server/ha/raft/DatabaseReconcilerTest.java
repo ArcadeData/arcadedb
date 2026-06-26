@@ -28,18 +28,18 @@ import java.util.Set;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Unit tests for {@link ArcadeStateMachine#classifyReconcile} (issue #4727): the pure set-reconciliation that
+ * Unit tests for {@link DatabaseReconciler#classifyReconcile} (issue #4727): the pure set-reconciliation that
  * decides which leader databases a joining node must acquire, refresh, or flag as leader-missing. Keeping this
  * logic pure makes the union/difference behavior - and the LEADER_MISSING transitions behind the cluster alert -
  * deterministically testable without a Raft cluster.
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-class ReconcilePlanTest {
+class DatabaseReconcilerTest {
 
   @Test
   void emptyNodeAcquiresEverythingTheLeaderHolds() {
-    final var plan = ArcadeStateMachine.classifyReconcile(Set.of("a", "b", "c"), Set.of());
+    final var plan = DatabaseReconciler.classifyReconcile(Set.of("a", "b", "c"), Set.of());
     assertThat(plan.toAcquire()).containsExactly("a", "b", "c");
     assertThat(plan.toRefresh()).isEmpty();
     assertThat(plan.leaderMissing()).isEmpty();
@@ -47,7 +47,7 @@ class ReconcilePlanTest {
 
   @Test
   void fullyReplicatedNodeRefreshesEverythingAndAcquiresNothing() {
-    final var plan = ArcadeStateMachine.classifyReconcile(Set.of("a", "b"), Set.of("a", "b"));
+    final var plan = DatabaseReconciler.classifyReconcile(Set.of("a", "b"), Set.of("a", "b"));
     assertThat(plan.toAcquire()).isEmpty();
     assertThat(plan.toRefresh()).containsExactly("a", "b");
     assertThat(plan.leaderMissing()).isEmpty();
@@ -56,7 +56,7 @@ class ReconcilePlanTest {
   @Test
   void mixedSetSplitsIntoAcquireRefreshAndLeaderMissing() {
     // leader: a, b, c ; local: b, c, d  -> acquire a ; refresh b, c ; leader-missing d
-    final var plan = ArcadeStateMachine.classifyReconcile(Set.of("a", "b", "c"), Set.of("b", "c", "d"));
+    final var plan = DatabaseReconciler.classifyReconcile(Set.of("a", "b", "c"), Set.of("b", "c", "d"));
     assertThat(plan.toAcquire()).containsExactly("a");
     assertThat(plan.toRefresh()).containsExactly("b", "c");
     assertThat(plan.leaderMissing()).containsExactly("d");
@@ -64,7 +64,7 @@ class ReconcilePlanTest {
 
   @Test
   void databaseOnlyOnThisNodeIsFlaggedLeaderMissing() {
-    final var plan = ArcadeStateMachine.classifyReconcile(Set.of(), Set.of("orphan"));
+    final var plan = DatabaseReconciler.classifyReconcile(Set.of(), Set.of("orphan"));
     assertThat(plan.toAcquire()).isEmpty();
     assertThat(plan.toRefresh()).isEmpty();
     assertThat(plan.leaderMissing()).containsExactly("orphan");
@@ -72,7 +72,7 @@ class ReconcilePlanTest {
 
   @Test
   void outputListsAreSortedForDeterminism() {
-    final var plan = ArcadeStateMachine.classifyReconcile(Set.of("zeta", "alpha", "mike"), Set.of("alpha"));
+    final var plan = DatabaseReconciler.classifyReconcile(Set.of("zeta", "alpha", "mike"), Set.of("alpha"));
     assertThat(plan.toAcquire()).containsExactly("mike", "zeta");
     assertThat(plan.toRefresh()).containsExactly("alpha");
     assertThat(plan.toAcquire()).isSorted();
@@ -83,11 +83,11 @@ class ReconcilePlanTest {
   @Test
   void oneFailingAcquireDoesNotStarveRefreshOfHealthyDatabases() {
     // leader: acquire "bad" (fails validation) + "goodnew" ; refresh "healthy"
-    final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("bad", "goodnew"), List.of("healthy"), List.of());
+    final var plan = new DatabaseReconciler.ReconcilePlan(List.of("bad", "goodnew"), List.of("healthy"), List.of());
     final List<String> acquireCalls = new ArrayList<>();
     final List<String> refreshCalls = new ArrayList<>();
 
-    final var outcome = ArcadeStateMachine.executeReconcilePlan(plan,
+    final var outcome = DatabaseReconciler.executeReconcilePlan(plan,
         db -> {
           acquireCalls.add(db);
           if (db.equals("bad"))
@@ -107,9 +107,9 @@ class ReconcilePlanTest {
   @Test
   void runtimeExceptionFromOneDatabaseIsIsolatedToo() {
     // An unchecked exception (not just IOException) from one acquire must not abort the others.
-    final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("npe", "goodnew"), List.of("healthy"), List.of());
+    final var plan = new DatabaseReconciler.ReconcilePlan(List.of("npe", "goodnew"), List.of("healthy"), List.of());
     final List<String> refreshCalls = new ArrayList<>();
-    final var outcome = ArcadeStateMachine.executeReconcilePlan(plan,
+    final var outcome = DatabaseReconciler.executeReconcilePlan(plan,
         db -> {
           if (db.equals("npe"))
             throw new RuntimeException("unexpected");
@@ -123,8 +123,8 @@ class ReconcilePlanTest {
 
   @Test
   void allSucceedWhenNoOperationFails() {
-    final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("n1"), List.of("e1", "e2"), List.of("orphan"));
-    final var outcome = ArcadeStateMachine.executeReconcilePlan(plan, db -> {
+    final var plan = new DatabaseReconciler.ReconcilePlan(List.of("n1"), List.of("e1", "e2"), List.of("orphan"));
+    final var outcome = DatabaseReconciler.executeReconcilePlan(plan, db -> {
     }, db -> {
     });
     assertThat(outcome.acquired()).containsExactly("n1");
@@ -135,7 +135,7 @@ class ReconcilePlanTest {
 
   // ---- bookkeeping: applyReconcileOutcome status transitions + give-up decision ----
 
-  private static ArcadeStateMachine.ReconcileOutcome outcome(final List<String> acquired, final List<String> acquireFailures,
+  private static DatabaseReconciler.ReconcileOutcome outcome(final List<String> acquired, final List<String> acquireFailures,
       final List<String> refreshed, final List<String> refreshFailures) {
     final java.util.Map<String, String> af = new java.util.LinkedHashMap<>();
     for (final String d : acquireFailures)
@@ -143,52 +143,52 @@ class ReconcilePlanTest {
     final java.util.Map<String, String> rf = new java.util.LinkedHashMap<>();
     for (final String d : refreshFailures)
       rf.put(d, "boom");
-    return new ArcadeStateMachine.ReconcileOutcome(acquired, af, refreshed, rf);
+    return new DatabaseReconciler.ReconcileOutcome(acquired, af, refreshed, rf);
   }
 
   @Test
   void outcomeSetsAcquiredFailedAndLeaderMissingStatuses() {
-    final var sm = new ArcadeStateMachine();
-    final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("newok", "newbad"), List.of(), List.of("orphan"));
+    final var reconciler = new DatabaseReconciler();
+    final var plan = new DatabaseReconciler.ReconcilePlan(List.of("newok", "newbad"), List.of(), List.of("orphan"));
 
-    final boolean retry = sm.applyReconcileOutcome(plan, outcome(List.of("newok"), List.of("newbad"), List.of(), List.of()));
+    final boolean retry = reconciler.applyReconcileOutcome(plan, outcome(List.of("newok"), List.of("newbad"), List.of(), List.of()));
 
-    assertThat(sm.getAcquireStatus("newok").state()).isEqualTo(ArcadeStateMachine.AcquireState.ACQUIRED);
-    assertThat(sm.getAcquireStatus("newbad").state()).isEqualTo(ArcadeStateMachine.AcquireState.FAILED);
-    assertThat(sm.getAcquireStatus("orphan").state()).isEqualTo(ArcadeStateMachine.AcquireState.LEADER_MISSING);
+    assertThat(reconciler.getAcquireStatus("newok").state()).isEqualTo(DatabaseReconciler.AcquireState.ACQUIRED);
+    assertThat(reconciler.getAcquireStatus("newbad").state()).isEqualTo(DatabaseReconciler.AcquireState.FAILED);
+    assertThat(reconciler.getAcquireStatus("orphan").state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
     assertThat(retry).as("a fresh failure is still within the retry budget").isTrue();
   }
 
   @Test
   void refreshClearsAStaleLeaderMissingStatus() {
-    final var sm = new ArcadeStateMachine();
+    final var reconciler = new DatabaseReconciler();
     // First pass: "db" is local-only, flagged LEADER_MISSING.
-    sm.applyReconcileOutcome(new ArcadeStateMachine.ReconcilePlan(List.of(), List.of(), List.of("db")),
+    reconciler.applyReconcileOutcome(new DatabaseReconciler.ReconcilePlan(List.of(), List.of(), List.of("db")),
         outcome(List.of(), List.of(), List.of(), List.of()));
-    assertThat(sm.getAcquireStatus("db").state()).isEqualTo(ArcadeStateMachine.AcquireState.LEADER_MISSING);
+    assertThat(reconciler.getAcquireStatus("db").state()).isEqualTo(DatabaseReconciler.AcquireState.LEADER_MISSING);
 
     // Second pass: the leader now holds it, so it is refreshed -> the stale status must clear.
-    sm.applyReconcileOutcome(new ArcadeStateMachine.ReconcilePlan(List.of(), List.of("db"), List.of()),
+    reconciler.applyReconcileOutcome(new DatabaseReconciler.ReconcilePlan(List.of(), List.of("db"), List.of()),
         outcome(List.of(), List.of(), List.of("db"), List.of()));
-    assertThat(sm.getAcquireStatus("db")).isNull();
+    assertThat(reconciler.getAcquireStatus("db")).isNull();
   }
 
   @Test
   void persistentFailureStopsForcingRetryAfterGiveUpThreshold() {
-    final var sm = new ArcadeStateMachine();
-    final var plan = new ArcadeStateMachine.ReconcilePlan(List.of("bad"), List.of(), List.of());
+    final var reconciler = new DatabaseReconciler();
+    final var plan = new DatabaseReconciler.ReconcilePlan(List.of("bad"), List.of(), List.of());
     final var failing = outcome(List.of(), List.of("bad"), List.of(), List.of());
 
     // Within the budget the failure keeps forcing a retry; once the threshold is hit it stops.
-    assertThat(sm.applyReconcileOutcome(plan, failing)).isTrue();  // 1
-    assertThat(sm.applyReconcileOutcome(plan, failing)).isTrue();  // 2
-    assertThat(sm.applyReconcileOutcome(plan, failing)).isFalse(); // 3 -> give up
-    assertThat(sm.getAcquireStatus("bad").state()).isEqualTo(ArcadeStateMachine.AcquireState.FAILED);
+    assertThat(reconciler.applyReconcileOutcome(plan, failing)).isTrue();  // 1
+    assertThat(reconciler.applyReconcileOutcome(plan, failing)).isTrue();  // 2
+    assertThat(reconciler.applyReconcileOutcome(plan, failing)).isFalse(); // 3 -> give up
+    assertThat(reconciler.getAcquireStatus("bad").state()).isEqualTo(DatabaseReconciler.AcquireState.FAILED);
 
     // A later success resets the counter (and would let it retry again if it failed afresh).
-    sm.applyReconcileOutcome(new ArcadeStateMachine.ReconcilePlan(List.of("bad"), List.of(), List.of()),
+    reconciler.applyReconcileOutcome(new DatabaseReconciler.ReconcilePlan(List.of("bad"), List.of(), List.of()),
         outcome(List.of("bad"), List.of(), List.of(), List.of()));
-    assertThat(sm.getAcquireStatus("bad").state()).isEqualTo(ArcadeStateMachine.AcquireState.ACQUIRED);
-    assertThat(sm.applyReconcileOutcome(plan, failing)).as("counter reset after success").isTrue();
+    assertThat(reconciler.getAcquireStatus("bad").state()).isEqualTo(DatabaseReconciler.AcquireState.ACQUIRED);
+    assertThat(reconciler.applyReconcileOutcome(plan, failing)).as("counter reset after success").isTrue();
   }
 }

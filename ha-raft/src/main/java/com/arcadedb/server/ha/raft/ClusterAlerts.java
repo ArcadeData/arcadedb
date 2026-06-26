@@ -94,7 +94,7 @@ public class ClusterAlerts {
    * leadership to a node that holds it (or resync) to redistribute it.
    */
   static void checkLeaderMissingDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts) {
-    addLeaderMissingAlert(stateMachine.getDatabasesWithAcquireState(ArcadeStateMachine.AcquireState.LEADER_MISSING), alerts);
+    addLeaderMissingAlert(stateMachine.getReconciler().getDatabasesWithAcquireState(DatabaseReconciler.AcquireState.LEADER_MISSING), alerts);
   }
 
   /**
@@ -104,7 +104,7 @@ public class ClusterAlerts {
    * indefinitely even after the leader's copy is fixed, so surface it for an explicit operator resync.
    */
   static void checkFailedAcquireDatabases(final ArcadeStateMachine stateMachine, final JSONArray alerts) {
-    addFailedAcquireAlert(stateMachine.getDatabasesWithAcquireState(ArcadeStateMachine.AcquireState.FAILED), alerts);
+    addFailedAcquireAlert(stateMachine.getReconciler().getDatabasesWithAcquireState(DatabaseReconciler.AcquireState.FAILED), alerts);
   }
 
   /** Pure alert builder (package-private for unit testing): appends the failed-acquire alert iff {@code failed} is non-empty. */

@@ -115,7 +115,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
         dbJson.put("bootstrapFingerprint", baseline.fingerprint());
       }
       // Per-database auto-acquisition status (issue #4727), when this node has reconciled against a leader.
-      final ArcadeStateMachine.AcquireStatus acquire = stateMachine.getAcquireStatus(dbName);
+      final DatabaseReconciler.AcquireStatus acquire = stateMachine.getReconciler().getAcquireStatus(dbName);
       if (acquire != null) {
         dbJson.put("acquireStatus", acquire.state().name());
         dbJson.put("acquireTimestamp", acquire.timestamp());
