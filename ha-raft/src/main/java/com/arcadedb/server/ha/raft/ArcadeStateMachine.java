@@ -685,11 +685,17 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // for the migration target; the cleanup item is to fork onto a dedicated executor (sized via
     // a future {@code arcadedb.haSnapshotInstallThreads} knob) once we add one.
     return CompletableFuture.supplyAsync(() -> {
-      // Set the in-progress flag so isSnapshotDownloadPending() returns true during this install,
-      // preventing the HealthMonitor's recoverFromPersistentLag() from starting a concurrent
-      // triggerSnapshotDownload() that would race with reconcileDatabasesFromLeader() on the same
-      // database files (both ultimately call SnapshotInstaller.install()).
-      snapshotDownloadInProgress.set(true);
+      // Participate in the same single-flight protocol as triggerSnapshotDownload() so that
+      // isSnapshotDownloadPending() returns true during this install and the HealthMonitor's
+      // recoverFromPersistentLag() does not start a concurrent triggerSnapshotDownload().
+      // We use CAS (not unconditional set) so that:
+      //  - if triggerSnapshotDownload() is already running (flag=true), we do NOT set the flag
+      //    and we do NOT clear it in finally; the in-flight watchdog download continues uninterrupted
+      //    and will have installed current data before we call reconcileDatabasesFromLeader().
+      //  - if we won the CAS (flag=false->true), we own the flag and must clear it in finally.
+      // This avoids the asymmetric race where unconditional set + finally set(false) would clear
+      // a flag owned by a concurrently running triggerSnapshotDownload().
+      final boolean acquiredSnapshotFlag = snapshotDownloadInProgress.compareAndSet(false, true);
       try {
         final RaftPeerId leaderId = RaftPeerId.valueOf(
             roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
@@ -734,6 +740,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
           snapshotFile.createNewFile();
         storage.updateLatestSnapshot(new SingleFileSnapshotInfo(
             new FileInfo(snapshotFile.toPath(), null), snapshotTerm, snapshotIndex));
+        // The empty marker file will be re-discovered by SimpleStateMachineStorage.loadLatestSnapshot()
+        // on restart (it scans for files matching "snapshot.term_index"). No .md5 file is written
+        // alongside it, so MD5FileUtil.readStoredMd5ForFile() returns null and the SingleFileSnapshotInfo
+        // is constructed with a null digest — the same as when ArcadeDB boots fresh with no prior snapshot.
+        // ArcadeDB never validates snapshot file content via Ratis's chunk-verification path (it uses
+        // the HTTP-based DatabaseReconciler instead), so the empty file is safe across restarts.
 
         // Advance the local applied-index to the snapshot point so that the StateMachineUpdater
         // knows which log entries have been consumed by this install.
@@ -749,7 +761,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         LogManager.instance().log(this, Level.SEVERE, "Error during snapshot installation from leader", e);
         throw new RuntimeException("Error during Raft snapshot installation", e);
       } finally {
-        snapshotDownloadInProgress.set(false);
+        if (acquiredSnapshotFlag)
+          snapshotDownloadInProgress.set(false);
       }
     });
   }
