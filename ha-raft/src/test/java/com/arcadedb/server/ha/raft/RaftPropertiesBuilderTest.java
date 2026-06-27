@@ -96,4 +96,15 @@ class RaftPropertiesBuilderTest {
         .isInstanceOf(ConfigurationException.class)
         .hasMessageContaining("arcadedb.ha.appendElementLimit");
   }
+
+  @Test
+  void writeBufferSmallerThanAppendBufferThrowsConfigurationException() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_APPEND_BUFFER_SIZE, "8MB");
+    config.setValue(GlobalConfiguration.HA_WRITE_BUFFER_SIZE, "4MB");
+    assertThatThrownBy(() -> RaftPropertiesBuilder.build(config))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("arcadedb.ha.writeBufferSize")
+        .hasMessageContaining("must be >= arcadedb.ha.appendBufferSize");
+  }
 }

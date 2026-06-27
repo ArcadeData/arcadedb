@@ -742,7 +742,9 @@ public enum GlobalConfiguration {
       Maximum number of Raft log entries per AppendEntries batch. Bounds the per-batch in-memory \
       footprint on the follower during catch-up resync, where many batches may queue before the \
       state machine can apply them. Lowering this value reduces peak heap pressure on followers \
-      catching up from a far-behind state. Must be a positive integer (>= 1).""",
+      catching up from a far-behind state. The byte limit (arcadedb.ha.appendBufferSize) remains \
+      the dominant per-batch heap bound; this element count is the secondary cap that governs when \
+      entries are small enough that many fit under the byte limit. Must be a positive integer (>= 1).""",
       Integer.class, 64),
 
   HA_WRITE_BUFFER_SIZE("arcadedb.ha.writeBufferSize", SCOPE.SERVER,
