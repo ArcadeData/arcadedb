@@ -92,12 +92,12 @@ class ArcadeStateMachineLifecycleTest {
    * Simulates the sequence Ratis drives when it needs the state machine to reload
    * after a snapshot install:
    * <ol>
-   *   <li>{@link ArcadeStateMachine#pause()} — called by {@code SnapshotInstallationHandler}
+   *   <li>{@link ArcadeStateMachine#pause()} -called by {@code SnapshotInstallationHandler}
    *       before signalling {@code StateMachineUpdater} to enter RELOAD mode.</li>
    *   <li>{@code StateMachineUpdater.reload()} checks {@code getLifeCycleState() == PAUSED}
    *       at line 230. Before the fix this assertion failed with {@code IllegalStateException}
    *       because the lifecycle stayed in {@code NEW}.</li>
-   *   <li>{@link ArcadeStateMachine#reinitialize()} — called by {@code reload()} to restore
+   *   <li>{@link ArcadeStateMachine#reinitialize()} -called by {@code reload()} to restore
    *       the state machine from the installed snapshot. Must transition back to RUNNING.</li>
    * </ol>
    * The lifecycle is started manually rather than via {@code initialize()} to keep this test

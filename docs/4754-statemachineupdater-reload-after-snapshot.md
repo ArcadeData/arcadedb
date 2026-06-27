@@ -1,4 +1,4 @@
-# Issue #4754 — HA: follower never rejoins after snapshot install
+# Issue #4754 - HA: follower never rejoins after snapshot install
 
 ## Root Cause
 
@@ -9,15 +9,15 @@ Preconditions.assertTrue(stateMachine.getLifeCycleState() == LifeCycle.State.PAU
 ```
 
 This throws `IllegalStateException` because `ArcadeStateMachine` never transitions its
-`LifeCycle` state — `BaseStateMachine.pause()` is a no-op, and `ArcadeStateMachine` neither
+`LifeCycle` state - `BaseStateMachine.pause()` is a no-op, and `ArcadeStateMachine` neither
 calls `getLifeCycle().transition(STARTING)` in `initialize()` nor overrides `pause()` to
 transition to `PAUSED`. So `getLifeCycleState()` always returned `NEW`.
 
 After #4749 fixed the earlier crash in `notifyInstallSnapshotFromLeader`, the install now
 completes successfully and returns. Ratis then calls `pause()` (no-op, lifecycle stays `NEW`)
 and `state.reloadStateMachine()`, which signals the `StateMachineUpdater` to enter `RELOAD`
-mode. The updater calls `reload()`, which checks `getLifeCycleState() == PAUSED` — but the
-lifecycle is still `NEW` — and throws `IllegalStateException`. The `StateMachineUpdater` thread
+mode. The updater calls `reload()`, which checks `getLifeCycleState() == PAUSED` - but the
+lifecycle is still `NEW` - and throws `IllegalStateException`. The `StateMachineUpdater` thread
 dies, the Raft division closes, and the follower permanently rejects `AppendEntries` as
 `ServerNotReadyException: current state is CLOSED`.
 

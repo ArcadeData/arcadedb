@@ -238,6 +238,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Idempotent: if the lifecycle is already PAUSED (e.g. a concurrent path already paused it),
    * the call is a no-op. If the lifecycle is in any unexpected state, a WARNING is logged and
    * the transition is skipped rather than crashing the caller.
+   * <p>
+   * <b>Invariant (verified against Ratis 3.2.2 source):</b> All three callers of
+   * {@code StateMachine.pause()} in Ratis 3.2.2 are paired with a subsequent
+   * {@link #reinitialize()} call that transitions the lifecycle back to RUNNING:
+   * <ul>
+   *   <li>{@code SnapshotInstallationHandler}: notification path (ArcadeDB's path) - pairs with
+   *       {@code state.reloadStateMachine()} which triggers {@code reload()} then
+   *       {@code reinitialize()}.</li>
+   *   <li>{@code ServerState.installSnapshot()}: chunk-based path (not used when
+   *       {@code HA_INSTALL_SNAPSHOT=false}) - same reload chain after last chunk.</li>
+   *   <li>{@code RaftServerImpl.pause()}: external server-pause API - pairs with
+   *       {@code RaftServerImpl.resume()} which calls {@code reinitialize()} directly.</li>
+   * </ul>
+   * If a future Ratis version introduces a {@code pause()} call without a matching
+   * {@code reinitialize()}, the state machine would be stuck in PAUSED permanently.
    */
   @Override
   public void pause() {
@@ -687,14 +702,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
     return CompletableFuture.supplyAsync(() -> {
       // Participate in the same single-flight protocol as triggerSnapshotDownload() so that
       // isSnapshotDownloadPending() returns true during this install and the HealthMonitor's
-      // recoverFromPersistentLag() does not start a concurrent triggerSnapshotDownload().
-      // We use CAS (not unconditional set) so that:
-      //  - if triggerSnapshotDownload() is already running (flag=true), we do NOT set the flag
-      //    and we do NOT clear it in finally; the in-flight watchdog download continues uninterrupted
-      //    and will have installed current data before we call reconcileDatabasesFromLeader().
-      //  - if we won the CAS (flag=false->true), we own the flag and must clear it in finally.
-      // This avoids the asymmetric race where unconditional set + finally set(false) would clear
-      // a flag owned by a concurrently running triggerSnapshotDownload().
+      // recoverFromPersistentLag() does not initiate a new concurrent triggerSnapshotDownload().
+      // We use CAS (not unconditional set) to avoid clearing a flag owned by a concurrently
+      // running triggerSnapshotDownload():
+      //  - if we win (flag false->true): we own the flag and MUST clear it in finally.
+      //  - if we lose (flag already true, another download in progress): we skip the flag and let
+      //    the other download complete; we still proceed with reconcileDatabasesFromLeader() because
+      //    the two installs both pull from the same leader and SnapshotInstaller is crash-safe with
+      //    atomic directory swaps. NOTE: the two calls are not serialized by this flag; ordering
+      //    is only guaranteed when we win the CAS. Eliminating the residual race requires a mutex
+      //    or waiting on the in-flight download, which is deferred as a future improvement.
       final boolean acquiredSnapshotFlag = snapshotDownloadInProgress.compareAndSet(false, true);
       try {
         final RaftPeerId leaderId = RaftPeerId.valueOf(
@@ -728,14 +745,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
         // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
         // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
-        // We write an empty marker file — ArcadeDB's real snapshot is the database files on disk,
+        // We write an empty marker file - ArcadeDB's real snapshot is the database files on disk,
         // not a Ratis-managed chunk file. The null FileDigest passed to FileInfo is intentional and
         // safe: this path (file-less, notification-based snapshot install) does not use the Ratis
         // chunk-based verification flow that would check the digest.
         final File snapshotFile = storage.getSnapshotFile(snapshotTerm, snapshotIndex);
         final File parentDir = snapshotFile.getParentFile();
-        if (parentDir != null)
-          parentDir.mkdirs();
+        if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs())
+          LogManager.instance().log(this, Level.WARNING,
+              "Could not create snapshot storage directory %s; snapshot registration may fail", parentDir);
         if (!snapshotFile.exists())
           snapshotFile.createNewFile();
         storage.updateLatestSnapshot(new SingleFileSnapshotInfo(
@@ -743,7 +761,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // The empty marker file will be re-discovered by SimpleStateMachineStorage.loadLatestSnapshot()
         // on restart (it scans for files matching "snapshot.term_index"). No .md5 file is written
         // alongside it, so MD5FileUtil.readStoredMd5ForFile() returns null and the SingleFileSnapshotInfo
-        // is constructed with a null digest — the same as when ArcadeDB boots fresh with no prior snapshot.
+        // is constructed with a null digest - the same as when ArcadeDB boots fresh with no prior snapshot.
         // ArcadeDB never validates snapshot file content via Ratis's chunk-verification path (it uses
         // the HTTP-based DatabaseReconciler instead), so the empty file is safe across restarts.
 
