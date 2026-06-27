@@ -73,33 +73,54 @@ https://github.com/ArcadeData/arcadedb/pull/4753
 
 ### Cycle 2 - HEAD 21be24b9
 
-- claude review #2 (on the cycle-1 SHA): essentially LGTM ("clean, well-scoped ... LGTM pending
+- claude review (on the cycle-1 SHA): essentially LGTM ("clean, well-scoped ... LGTM pending
   the description fix").
 - Applied (clear & low-risk): corrected the PR description test count, added a config-doc note
   that the byte limit (`appendBufferSize`) is the dominant per-batch heap bound and the element
   count is the secondary cap, added a `ConfigurationException` test for the
   `writeBuffer < appendBuffer + 8` branch.
 
-## Deferred items
+### Cycle 3 - HEAD 1c145183
 
-### Root-cause dimension question (claude review #1, 2026-06-27T11:00:41Z) - needs heap dump
+- claude review: code is correct and above bar; no new actionable code change. Amplified the
+  open question on the default value (see Open decision below) and added two non-blocking notes
+  (no upper bound enforced; per-issue doc phrasing). Final state: deferred to the maintainer.
 
-Claude asked, soundly, which dimension actually drove the OOM: for multi-MB entries the byte
-limit (4MB default) caps a batch to ~1-2 entries long before the element count (64 vs 256) ever
-binds, so lowering the element limit may not be the effective lever for that scenario. Resolving
-this needs the #4752 heap dump, which the automated loop does not have. Claude's later review (#2,
-on the current SHA) did not carry this forward and accepted the change.
+## Open decision for the maintainer
 
-The fix completes the trio of catch-up bounds the issue author requested, all now operator-tunable:
-- entry count: `arcadedb.ha.appendElementLimit` (default 64) - added by this PR
+### Should the default be 64 or stay at 256?
+
+Claude raised this in two reviews and it is the one decision worth settling before merge. The
+element limit only binds AFTER the 4MB byte limit (`arcadedb.ha.appendBufferSize`). For the
+incident workload (entries up to several MB of compressed WAL data), the 4MB byte cap truncates a
+batch to ~1-2 entries long before 64 vs 256 ever matters - so in that regime the element-limit
+default flip is a no-op for peak heap, while the lower default does cost healthy clusters extra
+AppendEntries round-trips for small transactions.
+
+Two defensible options:
+- Keep the new default of 64 (conservative bound) - justified if the heap dump confirms the OOM
+  was driven by many small entries (element count was the governing dimension).
+- Revert the default to 256 (no behavior change) and ship only the tunable knob - the strictly
+  safer change with no regression for the small-transaction case; operators who hit the OOM lower
+  it themselves.
+
+This requires the #4752 heap dump, which is not available here, so it is left for the maintainer
+(the issue author). The knob and its validation are correct either way.
+
+The fix makes the full trio of catch-up bounds operator-tunable:
+- entry count: `arcadedb.ha.appendElementLimit` (currently default 64) - added by this PR
 - byte limit: `arcadedb.ha.appendBufferSize` (default 4MB) - pre-existing
 - gRPC inbound message size: `arcadedb.ha.grpcMessageSizeMax` (default 128MB) - pre-existing
 
-Recommended developer follow-up:
-1. Confirm from the heap dump which dimension dominated.
-2. If large *individual* entries (e.g. a 50k-vertex GraphBatch exceeding the byte limit) drove
-   it, the more effective lever is lowering `arcadedb.ha.grpcMessageSizeMax` and/or bounding
-   transaction size - a single oversized entry bypasses the per-batch byte limit because
-   `DataQueue` admits the first element even when it exceeds the byte limit (to avoid deadlock).
-3. Consider a release-note line about the default change (256 -> 64) affecting replication
-   round-trips for healthy clusters with many small transactions.
+If large *individual* entries (e.g. a 50k-vertex GraphBatch exceeding the byte limit) drove the
+OOM, the more effective lever is lowering `arcadedb.ha.grpcMessageSizeMax` and/or bounding
+transaction size: a single oversized entry bypasses the per-batch byte limit because `DataQueue`
+admits the first element even when it exceeds the byte limit (to avoid deadlock).
+
+### Minor (non-blocking)
+
+- No upper bound is enforced on `appendElementLimit` (an operator could set a very large value
+  and re-introduce the OOM). The byte limit remains the real ceiling; an explicit upper bound was
+  not added because any chosen ceiling is itself a judgment call.
+- Release note: if the default stays at 64, call out the change from 256 so operators tuning
+  replication throughput are not surprised.
