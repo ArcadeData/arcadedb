@@ -737,6 +737,16 @@ public enum GlobalConfiguration {
   HA_APPEND_BUFFER_SIZE("arcadedb.ha.appendBufferSize", SCOPE.SERVER,
       "AppendEntries batch byte limit for replication (e.g. '4MB')", String.class, "4MB"),
 
+  HA_APPEND_ELEMENT_LIMIT("arcadedb.ha.appendElementLimit", SCOPE.SERVER,
+      """
+      Maximum number of Raft log entries per AppendEntries batch. Bounds the per-batch in-memory \
+      footprint on the follower during catch-up resync, where many batches may queue before the \
+      state machine can apply them. Lowering this value reduces peak heap pressure on followers \
+      catching up from a far-behind state. The byte limit (arcadedb.ha.appendBufferSize) remains \
+      the dominant per-batch heap bound; this element count is the secondary cap that governs when \
+      entries are small enough that many fit under the byte limit. Must be a positive integer (>= 1).""",
+      Integer.class, 64),
+
   HA_WRITE_BUFFER_SIZE("arcadedb.ha.writeBufferSize", SCOPE.SERVER,
       """
       Raft log write buffer size (e.g. '8MB'). Must be at least appendBufferSize + 8 bytes, \

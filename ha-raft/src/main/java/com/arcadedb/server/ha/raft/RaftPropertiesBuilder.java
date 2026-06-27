@@ -94,11 +94,17 @@ class RaftPropertiesBuilder {
     RaftServerConfigKeys.Log.Appender.setInstallSnapshotEnabled(properties, false);
     RaftServerConfigKeys.Snapshot.setAutoTriggerEnabled(properties, true);
 
-    // AppendEntries batching: allow multiple entries per gRPC call to followers
+    // AppendEntries batching: allow multiple entries per gRPC call to followers.
+    // Element limit bounds the per-batch in-memory footprint on the follower during catch-up,
+    // where many batches may queue before the state machine can apply them (issue #4752).
     final String appendBufferSize = configuration.getValueAsString(GlobalConfiguration.HA_APPEND_BUFFER_SIZE);
     final SizeInBytes appendBuffer = SizeInBytes.valueOf(appendBufferSize);
     RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, appendBuffer);
-    RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, 256);
+    final int appendElementLimit = configuration.getValueAsInteger(GlobalConfiguration.HA_APPEND_ELEMENT_LIMIT);
+    if (appendElementLimit < 1)
+      throw new ConfigurationException(
+          "arcadedb.ha.appendElementLimit (" + appendElementLimit + ") must be >= 1");
+    RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, appendElementLimit);
 
     // Log segment size
     final String logSegmentSize = configuration.getValueAsString(GlobalConfiguration.HA_LOG_SEGMENT_SIZE);
