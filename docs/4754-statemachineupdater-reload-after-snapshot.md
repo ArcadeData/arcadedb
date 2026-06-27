@@ -69,3 +69,16 @@ resync path; end-to-end coverage is provided by the IT suite.
 
 Followers now correctly rejoin the Raft quorum after a full snapshot resync. No behavior
 change for the normal (non-snapshot) replication path.
+
+## Review Cycles
+
+| Cycle | SHA | Summary | Bot outcome |
+|-------|-----|---------|-------------|
+| 1 | `250e30a4a` | Initial fix | Gemini: COMMENTED (null check, race). Claude: medium items (doc, test gap) |
+| 2 | `c84249bc9` | Fix doc, add initialize() test, concurrent download guard | Claude: critical CAS race; Gemini: no re-review |
+| 3 | `98611005c` | Fix CAS to be symmetric, document pause() invariant | Claude: verified fix, "solid well-reasoned fix"; Gemini: no re-review |
+| 4 | `e5822dbd0` | Em-dash cleanup, soften CAS comment, mkdirs logging | TIMEOUT - no review after 15 min |
+
+## Final State
+
+`timeout` (cycle 4 - no bot review within 15 minutes; prior cycles addressed all known issues)
