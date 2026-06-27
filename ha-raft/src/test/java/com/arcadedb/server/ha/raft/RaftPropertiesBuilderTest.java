@@ -20,12 +20,14 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.ContextConfiguration;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.ConfigurationException;
 import org.apache.ratis.conf.RaftProperties;
 import org.apache.ratis.grpc.GrpcConfigKeys;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Verifies that {@link RaftPropertiesBuilder} correctly translates ArcadeDB configuration
@@ -74,5 +76,24 @@ class RaftPropertiesBuilderTest {
     final RaftProperties props = RaftPropertiesBuilder.build(config);
     assertThat(RaftServerConfigKeys.Log.writeBufferSize(props).getSizeInt())
         .isEqualTo(8 * 1024 * 1024);
+  }
+
+  @Test
+  void zeroElementLimitThrowsConfigurationException() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_APPEND_ELEMENT_LIMIT, 0);
+    assertThatThrownBy(() -> RaftPropertiesBuilder.build(config))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("arcadedb.ha.appendElementLimit")
+        .hasMessageContaining("must be >= 1");
+  }
+
+  @Test
+  void negativeElementLimitThrowsConfigurationException() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_APPEND_ELEMENT_LIMIT, -1);
+    assertThatThrownBy(() -> RaftPropertiesBuilder.build(config))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("arcadedb.ha.appendElementLimit");
   }
 }

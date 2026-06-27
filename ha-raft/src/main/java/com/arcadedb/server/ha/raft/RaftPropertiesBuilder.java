@@ -101,6 +101,9 @@ class RaftPropertiesBuilder {
     final SizeInBytes appendBuffer = SizeInBytes.valueOf(appendBufferSize);
     RaftServerConfigKeys.Log.Appender.setBufferByteLimit(properties, appendBuffer);
     final int appendElementLimit = configuration.getValueAsInteger(GlobalConfiguration.HA_APPEND_ELEMENT_LIMIT);
+    if (appendElementLimit < 1)
+      throw new ConfigurationException(
+          "arcadedb.ha.appendElementLimit (" + appendElementLimit + ") must be >= 1");
     RaftServerConfigKeys.Log.Appender.setBufferElementLimit(properties, appendElementLimit);
 
     // Log segment size
