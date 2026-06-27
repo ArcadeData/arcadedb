@@ -43,12 +43,15 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
+import org.apache.ratis.server.storage.FileInfo;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.statemachine.StateMachineStorage;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
+import org.apache.ratis.statemachine.impl.SingleFileSnapshotInfo;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
+import org.apache.ratis.util.LifeCycle;
 
 import java.io.File;
 import java.io.IOException;
@@ -208,6 +211,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   @Override
   public void initialize(final RaftServer raftServer, final RaftGroupId groupId, final RaftStorage raftStorage) throws IOException {
     super.initialize(raftServer, groupId, raftStorage);
+    // Start the LifeCycle so getLifeCycleState() returns RUNNING while the state machine is active.
+    // StateMachineUpdater.reload() asserts getLifeCycleState() == PAUSED (after pause() is called by
+    // SnapshotInstallationHandler) at Ratis StateMachineUpdater.java:230. Without this start-up the
+    // lifecycle stays in NEW and that precondition throws IllegalStateException (issue #4754).
+    getLifeCycle().transition(LifeCycle.State.STARTING);
+    getLifeCycle().transition(LifeCycle.State.RUNNING);
     storage.init(raftStorage);
     reinitialize();
     // Recover any snapshot installations that were interrupted by a crash
@@ -221,9 +230,50 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Transitions the state machine to {@link LifeCycle.State#PAUSED} so that
+   * {@code StateMachineUpdater.reload()} can proceed. Called by Ratis's
+   * {@code SnapshotInstallationHandler} after {@link #notifyInstallSnapshotFromLeader} completes,
+   * before signalling the updater to reload.
+   * <p>
+   * Idempotent: if the lifecycle is already PAUSED (e.g. a concurrent path already paused it),
+   * the call is a no-op. If the lifecycle is in any unexpected state, a WARNING is logged and
+   * the transition is skipped rather than crashing the caller.
+   * <p>
+   * <b>Invariant (verified against Ratis 3.2.2 source):</b> All three callers of
+   * {@code StateMachine.pause()} in Ratis 3.2.2 are paired with a subsequent
+   * {@link #reinitialize()} call that transitions the lifecycle back to RUNNING:
+   * <ul>
+   *   <li>{@code SnapshotInstallationHandler}: notification path (ArcadeDB's path) - pairs with
+   *       {@code state.reloadStateMachine()} which triggers {@code reload()} then
+   *       {@code reinitialize()}.</li>
+   *   <li>{@code ServerState.installSnapshot()}: chunk-based path (not used when
+   *       {@code HA_INSTALL_SNAPSHOT=false}) - same reload chain after last chunk.</li>
+   *   <li>{@code RaftServerImpl.pause()}: external server-pause API - pairs with
+   *       {@code RaftServerImpl.resume()} which calls {@code reinitialize()} directly.</li>
+   * </ul>
+   * If a future Ratis version introduces a {@code pause()} call without a matching
+   * {@code reinitialize()}, the state machine would be stuck in PAUSED permanently.
+   */
+  @Override
+  public void pause() {
+    final LifeCycle.State current = getLifeCycleState();
+    if (current == LifeCycle.State.RUNNING) {
+      getLifeCycle().transition(LifeCycle.State.PAUSING);
+      getLifeCycle().transition(LifeCycle.State.PAUSED);
+    } else if (current != LifeCycle.State.PAUSED) {
+      LogManager.instance().log(this, Level.WARNING,
+          "pause() called in unexpected lifecycle state %s; skipping transition", current);
+    }
+  }
+
+  /**
    * Restores {@link #lastAppliedIndex} from the latest Ratis {@link SimpleStateMachineStorage}
    * snapshot metadata. Called during {@link #initialize} and again if the state machine storage
    * is reset (e.g., during Ratis recovery via {@link RaftHAServer#restartRatisIfNeeded}).
+   * <p>
+   * When called from {@code StateMachineUpdater.reload()} after a snapshot install, the lifecycle
+   * is in {@link LifeCycle.State#PAUSED} and this method transitions it back to
+   * {@link LifeCycle.State#RUNNING} so the updater can resume applying log entries.
    */
   public void reinitialize() throws IOException {
     final long persistedApplied = readPersistedAppliedIndex();
@@ -261,6 +311,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotIndex);
     } else
       lastAppliedIndex.set(-1);
+
+    // When called from StateMachineUpdater.reload() after a snapshot install, the lifecycle is
+    // PAUSED (pause() was called by SnapshotInstallationHandler). Transition back to RUNNING so
+    // the updater can resume applying log entries. This is a no-op during the normal startup path
+    // (lifecycle is already RUNNING when initialize() calls reinitialize()).
+    if (getLifeCycleState() == LifeCycle.State.PAUSED) {
+      getLifeCycle().transition(LifeCycle.State.STARTING);
+      getLifeCycle().transition(LifeCycle.State.RUNNING);
+    }
   }
 
   @Override
@@ -641,6 +700,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // for the migration target; the cleanup item is to fork onto a dedicated executor (sized via
     // a future {@code arcadedb.haSnapshotInstallThreads} knob) once we add one.
     return CompletableFuture.supplyAsync(() -> {
+      // Participate in the same single-flight protocol as triggerSnapshotDownload() so that
+      // isSnapshotDownloadPending() returns true during this install and the HealthMonitor's
+      // recoverFromPersistentLag() does not initiate a new concurrent triggerSnapshotDownload().
+      // We use CAS (not unconditional set) to avoid clearing a flag owned by a concurrently
+      // running triggerSnapshotDownload():
+      //  - if we win (flag false->true): we own the flag and MUST clear it in finally.
+      //  - if we lose (flag already true, another download in progress): we skip the flag and let
+      //    the other download complete; we still proceed with reconcileDatabasesFromLeader() because
+      //    the two installs both pull from the same leader and SnapshotInstaller is crash-safe with
+      //    atomic directory swaps. NOTE: the two calls are not serialized by this flag; ordering
+      //    is only guaranteed when we win the CAS. Eliminating the residual race requires a mutex
+      //    or waiting on the in-flight download, which is deferred as a future improvement.
+      final boolean acquiredSnapshotFlag = snapshotDownloadInProgress.compareAndSet(false, true);
       try {
         final RaftPeerId leaderId = RaftPeerId.valueOf(
             roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
@@ -654,13 +726,61 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
         reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);
 
-        LogManager.instance().log(this, Level.INFO, "Full resync from leader completed");
+        // Compute the installed snapshot TermIndex. firstTermIndexInLog is the first log entry
+        // AFTER the snapshot, so the snapshot covers all entries up to getIndex()-1.
+        // Returning firstTermIndexInLog itself (as the old code did) caused two bugs:
+        // 1. SnapshotInstallationHandler called state.reloadStateMachine(firstTermIndexInLog) which
+        //    purged log entries up to firstTermIndexInLog.getIndex() instead of getIndex()-1.
+        // 2. StateMachineUpdater.reload() calls getLatestSnapshot().getIndex() and expects it to match
+        //    the TermIndex we return; returning firstTermIndexInLog while storage was never updated
+        //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
+        final long snapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
+        // Use firstTermIndexInLog.getTerm() as the snapshot term. The true last-entry term inside
+        // the snapshot is opaque to us (ArcadeDB ships database files, not Ratis snapshot chunks),
+        // so we use the term of the first available log entry as a safe upper bound. This value is
+        // only used to name the marker file (snapshot.term_index) and as metadata for Ratis's
+        // snapshotIndex tracking; it does not affect data correctness.
+        final long snapshotTerm = firstTermIndexInLog.getTerm();
+        final TermIndex installedTermIndex = TermIndex.valueOf(snapshotTerm, snapshotIndex);
+
+        // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
+        // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
+        // We write an empty marker file - ArcadeDB's real snapshot is the database files on disk,
+        // not a Ratis-managed chunk file. The null FileDigest passed to FileInfo is intentional and
+        // safe: this path (file-less, notification-based snapshot install) does not use the Ratis
+        // chunk-based verification flow that would check the digest.
+        final File snapshotFile = storage.getSnapshotFile(snapshotTerm, snapshotIndex);
+        final File parentDir = snapshotFile.getParentFile();
+        if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs())
+          LogManager.instance().log(this, Level.WARNING,
+              "Could not create snapshot storage directory %s; snapshot registration may fail", parentDir);
+        if (!snapshotFile.exists())
+          snapshotFile.createNewFile();
+        storage.updateLatestSnapshot(new SingleFileSnapshotInfo(
+            new FileInfo(snapshotFile.toPath(), null), snapshotTerm, snapshotIndex));
+        // The empty marker file will be re-discovered by SimpleStateMachineStorage.loadLatestSnapshot()
+        // on restart (it scans for files matching "snapshot.term_index"). No .md5 file is written
+        // alongside it, so MD5FileUtil.readStoredMd5ForFile() returns null and the SingleFileSnapshotInfo
+        // is constructed with a null digest - the same as when ArcadeDB boots fresh with no prior snapshot.
+        // ArcadeDB never validates snapshot file content via Ratis's chunk-verification path (it uses
+        // the HTTP-based DatabaseReconciler instead), so the empty file is safe across restarts.
+
+        // Advance the local applied-index to the snapshot point so that the StateMachineUpdater
+        // knows which log entries have been consumed by this install.
+        lastAppliedIndex.set(snapshotIndex);
+        updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
+        writePersistedAppliedIndex(snapshotIndex);
+
+        LogManager.instance().log(this, Level.INFO, "Full resync from leader completed (snapshotIndex=%d)", snapshotIndex);
         clearDivergedState();
-        return firstTermIndexInLog;
+        return installedTermIndex;
 
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error during snapshot installation from leader", e);
         throw new RuntimeException("Error during Raft snapshot installation", e);
+      } finally {
+        if (acquiredSnapshotFlag)
+          snapshotDownloadInProgress.set(false);
       }
     });
   }
