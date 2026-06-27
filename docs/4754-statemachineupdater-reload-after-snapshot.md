@@ -51,18 +51,19 @@ was called by `reload()`, `getLatestSnapshot()` would return null and cause a `N
 
 Unit test for the lifecycle contract that `StateMachineUpdater.reload()` relies on.
 
-### Updated test: `RaftFullSnapshotResyncIT.java`
+### `RaftFullSnapshotResyncIT.java`
 
-Now enabled - tests the full 3-node path: snapshot install completes → follower rejoins quorum.
+Not modified in this PR. The test was not `@Disabled` before this PR and covers the same
+resync path; end-to-end coverage is provided by the IT suite.
 
 ## Test Results
 
 | Test | Outcome |
 |------|---------|
-| `ArcadeStateMachineLifecycleTest` (3 tests) | PASS |
+| `ArcadeStateMachineLifecycleTest` (4 tests) | PASS |
 | `ArcadeStateMachineTest` (12 tests) | PASS |
 | `ArcadeStateMachineApplyRetryTest` (12 tests) | PASS |
-| Full ha-raft unit suite (151 tests) | PASS |
+| Full ha-raft unit suite (153 tests) | PASS |
 
 ## Impact
 

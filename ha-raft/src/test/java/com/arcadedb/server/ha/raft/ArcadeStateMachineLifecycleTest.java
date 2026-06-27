@@ -18,10 +18,18 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import org.apache.ratis.protocol.RaftGroupId;
+import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.server.RaftServer;
+import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
+import java.lang.reflect.Proxy;
+import java.nio.file.Path;
+import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -37,6 +45,50 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ArcadeStateMachineLifecycleTest {
 
   /**
+   * Verifies that {@link ArcadeStateMachine#initialize} starts the {@link LifeCycle} so that
+   * subsequent {@link ArcadeStateMachine#pause()} calls can transition to {@code PAUSED}. This
+   * covers the regression path: if the lifecycle-start lines are removed from {@code initialize()},
+   * the lifecycle stays {@code NEW} and {@code pause()} silently skips the transition.
+   */
+  @Test
+  void initializeStartsLifecycleToRunning(@TempDir final Path tempDir) throws IOException {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    assertThat(sm.getLifeCycleState())
+        .as("fresh state machine must start in NEW")
+        .isEqualTo(LifeCycle.State.NEW);
+
+    final RaftGroupId groupId = RaftGroupId.valueOf(UUID.randomUUID());
+    // RaftStorage.newBuilder requires an existing directory; FORMAT creates any missing subdirs.
+    final RaftStorage raftStorage = RaftStorage.newBuilder()
+        .setDirectory(tempDir.toFile())
+        .setOption(RaftStorage.StartupOption.FORMAT)
+        .build();
+    // Minimal RaftServer stub using a JDK dynamic proxy: BaseStateMachine.initialize() only
+    // calls server.complete(raftServer) and then toString() → getId() → server.join().getId(),
+    // so getId() must return non-null. All other method calls throw UnsupportedOperationException.
+    final RaftServer raftServer = (RaftServer) Proxy.newProxyInstance(
+        getClass().getClassLoader(),
+        new Class<?>[] { RaftServer.class },
+        (proxy, method, args) -> {
+          if ("getId".equals(method.getName()))
+            return RaftPeerId.valueOf("test-peer");
+          if ("close".equals(method.getName()) || "start".equals(method.getName()))
+            return null;
+          throw new UnsupportedOperationException("Stub: " + method.getName());
+        });
+    try {
+      sm.initialize(raftServer, groupId, raftStorage);
+
+      assertThat(sm.getLifeCycleState())
+          .as("initialize() must start the lifecycle so pause() can later transition to PAUSED")
+          .isEqualTo(LifeCycle.State.RUNNING);
+    } finally {
+      sm.close();
+      raftStorage.close();
+    }
+  }
+
+  /**
    * Simulates the sequence Ratis drives when it needs the state machine to reload
    * after a snapshot install:
    * <ol>
@@ -48,6 +100,9 @@ class ArcadeStateMachineLifecycleTest {
    *   <li>{@link ArcadeStateMachine#reinitialize()} — called by {@code reload()} to restore
    *       the state machine from the installed snapshot. Must transition back to RUNNING.</li>
    * </ol>
+   * The lifecycle is started manually rather than via {@code initialize()} to keep this test
+   * self-contained (no filesystem setup needed). {@link #initializeStartsLifecycleToRunning}
+   * separately verifies that {@code initialize()} itself performs this start.
    */
   @Test
   void pauseThenReinitializeFollowsLifecycleContractRequiredByReload() throws IOException {
@@ -85,7 +140,7 @@ class ArcadeStateMachineLifecycleTest {
     sm.pause();
     assertThat(sm.getLifeCycleState()).isEqualTo(LifeCycle.State.PAUSED);
 
-    // A second pause() call must not throw even though RUNNING->PAUSED is already done
+    // A second pause() call must not throw even though the lifecycle is already PAUSED
     sm.pause();
     assertThat(sm.getLifeCycleState()).isEqualTo(LifeCycle.State.PAUSED);
   }

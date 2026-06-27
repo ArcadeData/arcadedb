@@ -685,6 +685,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // for the migration target; the cleanup item is to fork onto a dedicated executor (sized via
     // a future {@code arcadedb.haSnapshotInstallThreads} knob) once we add one.
     return CompletableFuture.supplyAsync(() -> {
+      // Set the in-progress flag so isSnapshotDownloadPending() returns true during this install,
+      // preventing the HealthMonitor's recoverFromPersistentLag() from starting a concurrent
+      // triggerSnapshotDownload() that would race with reconcileDatabasesFromLeader() on the same
+      // database files (both ultimately call SnapshotInstaller.install()).
+      snapshotDownloadInProgress.set(true);
       try {
         final RaftPeerId leaderId = RaftPeerId.valueOf(
             roleInfoProto.getFollowerInfo().getLeaderInfo().getId().getId());
@@ -702,20 +707,29 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // AFTER the snapshot, so the snapshot covers all entries up to getIndex()-1.
         // Returning firstTermIndexInLog itself (as the old code did) caused two bugs:
         // 1. SnapshotInstallationHandler called state.reloadStateMachine(firstTermIndexInLog) which
-        //    purged log entries up to firstTermIndexInLog.getIndex() instead of firstTermIndexInLog.getIndex()-1.
+        //    purged log entries up to firstTermIndexInLog.getIndex() instead of getIndex()-1.
         // 2. StateMachineUpdater.reload() calls getLatestSnapshot().getIndex() and expects it to match
         //    the TermIndex we return; returning firstTermIndexInLog while storage was never updated
         //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
         final long snapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
+        // Use firstTermIndexInLog.getTerm() as the snapshot term. The true last-entry term inside
+        // the snapshot is opaque to us (ArcadeDB ships database files, not Ratis snapshot chunks),
+        // so we use the term of the first available log entry as a safe upper bound. This value is
+        // only used to name the marker file (snapshot.term_index) and as metadata for Ratis's
+        // snapshotIndex tracking; it does not affect data correctness.
         final long snapshotTerm = firstTermIndexInLog.getTerm();
         final TermIndex installedTermIndex = TermIndex.valueOf(snapshotTerm, snapshotIndex);
 
         // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
         // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
-        // We write an empty marker file (ArcadeDB's snapshot is the database files themselves,
-        // not a Ratis-managed snapshot file) and update the in-memory latestSnapshot reference.
+        // We write an empty marker file — ArcadeDB's real snapshot is the database files on disk,
+        // not a Ratis-managed chunk file. The null FileDigest passed to FileInfo is intentional and
+        // safe: this path (file-less, notification-based snapshot install) does not use the Ratis
+        // chunk-based verification flow that would check the digest.
         final File snapshotFile = storage.getSnapshotFile(snapshotTerm, snapshotIndex);
-        snapshotFile.getParentFile().mkdirs();
+        final File parentDir = snapshotFile.getParentFile();
+        if (parentDir != null)
+          parentDir.mkdirs();
         if (!snapshotFile.exists())
           snapshotFile.createNewFile();
         storage.updateLatestSnapshot(new SingleFileSnapshotInfo(
@@ -734,6 +748,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error during snapshot installation from leader", e);
         throw new RuntimeException("Error during Raft snapshot installation", e);
+      } finally {
+        snapshotDownloadInProgress.set(false);
       }
     });
   }
