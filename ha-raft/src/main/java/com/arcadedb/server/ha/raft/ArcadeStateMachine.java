@@ -43,12 +43,15 @@ import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
+import org.apache.ratis.server.storage.FileInfo;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.statemachine.StateMachineStorage;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
 import org.apache.ratis.statemachine.impl.SimpleStateMachineStorage;
+import org.apache.ratis.statemachine.impl.SingleFileSnapshotInfo;
 import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
+import org.apache.ratis.util.LifeCycle;
 
 import java.io.File;
 import java.io.IOException;
@@ -208,6 +211,12 @@ public class ArcadeStateMachine extends BaseStateMachine {
   @Override
   public void initialize(final RaftServer raftServer, final RaftGroupId groupId, final RaftStorage raftStorage) throws IOException {
     super.initialize(raftServer, groupId, raftStorage);
+    // Start the LifeCycle so getLifeCycleState() returns RUNNING while the state machine is active.
+    // StateMachineUpdater.reload() asserts getLifeCycleState() == PAUSED (after pause() is called by
+    // SnapshotInstallationHandler) at Ratis StateMachineUpdater.java:230. Without this start-up the
+    // lifecycle stays in NEW and that precondition throws IllegalStateException (issue #4754).
+    getLifeCycle().transition(LifeCycle.State.STARTING);
+    getLifeCycle().transition(LifeCycle.State.RUNNING);
     storage.init(raftStorage);
     reinitialize();
     // Recover any snapshot installations that were interrupted by a crash
@@ -221,9 +230,35 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
+   * Transitions the state machine to {@link LifeCycle.State#PAUSED} so that
+   * {@code StateMachineUpdater.reload()} can proceed. Called by Ratis's
+   * {@code SnapshotInstallationHandler} after {@link #notifyInstallSnapshotFromLeader} completes,
+   * before signalling the updater to reload.
+   * <p>
+   * Idempotent: if the lifecycle is already PAUSED (e.g. a concurrent path already paused it),
+   * the call is a no-op. If the lifecycle is in any unexpected state, a WARNING is logged and
+   * the transition is skipped rather than crashing the caller.
+   */
+  @Override
+  public void pause() {
+    final LifeCycle.State current = getLifeCycleState();
+    if (current == LifeCycle.State.RUNNING) {
+      getLifeCycle().transition(LifeCycle.State.PAUSING);
+      getLifeCycle().transition(LifeCycle.State.PAUSED);
+    } else if (current != LifeCycle.State.PAUSED) {
+      LogManager.instance().log(this, Level.WARNING,
+          "pause() called in unexpected lifecycle state %s; skipping transition", current);
+    }
+  }
+
+  /**
    * Restores {@link #lastAppliedIndex} from the latest Ratis {@link SimpleStateMachineStorage}
    * snapshot metadata. Called during {@link #initialize} and again if the state machine storage
    * is reset (e.g., during Ratis recovery via {@link RaftHAServer#restartRatisIfNeeded}).
+   * <p>
+   * When called from {@code StateMachineUpdater.reload()} after a snapshot install, the lifecycle
+   * is in {@link LifeCycle.State#PAUSED} and this method transitions it back to
+   * {@link LifeCycle.State#RUNNING} so the updater can resume applying log entries.
    */
   public void reinitialize() throws IOException {
     final long persistedApplied = readPersistedAppliedIndex();
@@ -261,6 +296,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
       updateLastAppliedTermIndex(snapshotInfo.getTerm(), snapshotIndex);
     } else
       lastAppliedIndex.set(-1);
+
+    // When called from StateMachineUpdater.reload() after a snapshot install, the lifecycle is
+    // PAUSED (pause() was called by SnapshotInstallationHandler). Transition back to RUNNING so
+    // the updater can resume applying log entries. This is a no-op during the normal startup path
+    // (lifecycle is already RUNNING when initialize() calls reinitialize()).
+    if (getLifeCycleState() == LifeCycle.State.PAUSED) {
+      getLifeCycle().transition(LifeCycle.State.STARTING);
+      getLifeCycle().transition(LifeCycle.State.RUNNING);
+    }
   }
 
   @Override
@@ -654,9 +698,38 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
         reconciler.reconcileDatabasesFromLeader(leaderHttpAddr, leaderHttpsAddr, clusterToken);
 
-        LogManager.instance().log(this, Level.INFO, "Full resync from leader completed");
+        // Compute the installed snapshot TermIndex. firstTermIndexInLog is the first log entry
+        // AFTER the snapshot, so the snapshot covers all entries up to getIndex()-1.
+        // Returning firstTermIndexInLog itself (as the old code did) caused two bugs:
+        // 1. SnapshotInstallationHandler called state.reloadStateMachine(firstTermIndexInLog) which
+        //    purged log entries up to firstTermIndexInLog.getIndex() instead of firstTermIndexInLog.getIndex()-1.
+        // 2. StateMachineUpdater.reload() calls getLatestSnapshot().getIndex() and expects it to match
+        //    the TermIndex we return; returning firstTermIndexInLog while storage was never updated
+        //    caused NullPointerException (and before that, IllegalStateException from the PAUSED check).
+        final long snapshotIndex = Math.max(0L, firstTermIndexInLog.getIndex() - 1);
+        final long snapshotTerm = firstTermIndexInLog.getTerm();
+        final TermIndex installedTermIndex = TermIndex.valueOf(snapshotTerm, snapshotIndex);
+
+        // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
+        // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
+        // We write an empty marker file (ArcadeDB's snapshot is the database files themselves,
+        // not a Ratis-managed snapshot file) and update the in-memory latestSnapshot reference.
+        final File snapshotFile = storage.getSnapshotFile(snapshotTerm, snapshotIndex);
+        snapshotFile.getParentFile().mkdirs();
+        if (!snapshotFile.exists())
+          snapshotFile.createNewFile();
+        storage.updateLatestSnapshot(new SingleFileSnapshotInfo(
+            new FileInfo(snapshotFile.toPath(), null), snapshotTerm, snapshotIndex));
+
+        // Advance the local applied-index to the snapshot point so that the StateMachineUpdater
+        // knows which log entries have been consumed by this install.
+        lastAppliedIndex.set(snapshotIndex);
+        updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
+        writePersistedAppliedIndex(snapshotIndex);
+
+        LogManager.instance().log(this, Level.INFO, "Full resync from leader completed (snapshotIndex=%d)", snapshotIndex);
         clearDivergedState();
-        return firstTermIndexInLog;
+        return installedTermIndex;
 
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, "Error during snapshot installation from leader", e);
