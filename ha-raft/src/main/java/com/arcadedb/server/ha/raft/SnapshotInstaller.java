@@ -747,8 +747,8 @@ public final class SnapshotInstaller {
       if (responseCode != 200)
         throw new IOException("Failed to download snapshot: HTTP " + responseCode);
 
-      InputStream source = new CountingInputStream(connection.getInputStream());
-      final CountingInputStream rawCounter = (CountingInputStream) source;
+      final CountingInputStream rawCounter = new CountingInputStream(connection.getInputStream());
+      InputStream source = rawCounter;
       final boolean progressLogging = server == null
           || server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING);
       if (progressLogging) {

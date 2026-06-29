@@ -120,7 +120,7 @@ public class ClusterMonitor {
 
   public void updateReplicaMatchIndex(final String replicaId, final long matchIndex, final long lastRpcElapsedMs) {
     final long now = clock.getAsLong();
-    trackReachabilityForNarrative(replicaId, lastRpcElapsedMs, now);
+    trackReachabilityForNarrative(replicaId, matchIndex, lastRpcElapsedMs, now);
     final long leaderIdx = leaderCommitIndex;
     final long lag = leaderIdx - matchIndex;
 
@@ -246,12 +246,13 @@ public class ClusterMonitor {
    * {@code org.apache.ratis.grpc.server.GrpcLogAppender} level to SEVERE in arcadedb-log.properties)
    * and never changes Raft membership.
    */
-  private void trackReachabilityForNarrative(final String replicaId, final long lastRpcElapsedMs, final long now) {
+  private void trackReachabilityForNarrative(final String replicaId, final long matchIndex, final long lastRpcElapsedMs,
+      final long now) {
     if (!resyncNarrativeEnabled || peerUnreachableThresholdMs <= 0)
       return;
 
     final ReplicaState state = replicaStates.computeIfAbsent(replicaId,
-        k -> new ReplicaState(0L, leaderCommitIndex));
+        k -> new ReplicaState(matchIndex, leaderCommitIndex));
 
     final boolean unreachable = lastRpcElapsedMs >= peerUnreachableThresholdMs;
 
