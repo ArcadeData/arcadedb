@@ -85,6 +85,41 @@ public class GrpcAdminAuthInterceptorIT extends BaseGraphServerTest {
   }
 
   @Test
+  void adminCallWithBlankUsernameIsRejectedBeforeReachingHandler() {
+    final RecordingServerCall<CreateDatabaseRequest, CreateDatabaseResponse> call = new RecordingServerCall<>(
+        ArcadeDbAdminServiceGrpc.getCreateDatabaseMethod());
+    final AtomicBoolean delivered = new AtomicBoolean(false);
+    final ServerCallHandler<CreateDatabaseRequest, CreateDatabaseResponse> handler = recordingHandler(delivered);
+
+    final ServerCall.Listener<CreateDatabaseRequest> listener = interceptor().interceptCall(call, new Metadata(), handler);
+    // Credentials present but blank username must fail closed.
+    listener.onMessage(requestWithCredentials("   ", "irrelevant"));
+    listener.onHalfClose();
+
+    assertThat(delivered).as("request with a blank username must not reach the admin handler").isFalse();
+    assertThat(call.closeStatus).isNotNull();
+    assertThat(call.closeStatus.getCode()).isEqualTo(Status.Code.UNAUTHENTICATED);
+  }
+
+  @Test
+  void adminCallPassesThroughWhenSecurityDisabled() {
+    // securityEnabled is false when no ServerSecurity is configured; admin methods are then reachable,
+    // consistent with the data-plane methods.
+    final GrpcAuthInterceptor interceptor = new GrpcAuthInterceptor(null);
+    final RecordingServerCall<CreateDatabaseRequest, CreateDatabaseResponse> call = new RecordingServerCall<>(
+        ArcadeDbAdminServiceGrpc.getCreateDatabaseMethod());
+    final AtomicBoolean delivered = new AtomicBoolean(false);
+    final ServerCallHandler<CreateDatabaseRequest, CreateDatabaseResponse> handler = recordingHandler(delivered);
+
+    final ServerCall.Listener<CreateDatabaseRequest> listener = interceptor.interceptCall(call, new Metadata(), handler);
+    listener.onMessage(requestWithCredentials(null, null));
+    listener.onHalfClose();
+
+    assertThat(delivered).as("admin call must pass through when security is disabled").isTrue();
+    assertThat(call.closeStatus).isNull();
+  }
+
+  @Test
   void adminCallWithValidCredentialsReachesHandler() {
     final RecordingServerCall<CreateDatabaseRequest, CreateDatabaseResponse> call = new RecordingServerCall<>(
         ArcadeDbAdminServiceGrpc.getCreateDatabaseMethod());

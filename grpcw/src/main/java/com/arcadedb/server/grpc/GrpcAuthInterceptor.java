@@ -79,9 +79,11 @@ class GrpcAuthInterceptor implements ServerInterceptor {
     }
 
     // Admin service: enforce authentication centrally from the request-body credentials instead of
-    // trusting every RPC to authenticate itself. This is the central choke point: a missing,
-    // malformed or invalid credential closes the call before the request reaches the handler, so an
-    // admin method that forgets its own authenticate() call cannot expose a side effect.
+    // trusting every RPC to authenticate itself. This is the central authentication choke point: a
+    // missing, malformed or invalid credential closes the call before the request reaches the
+    // handler, so an admin method that forgets its own authenticate() call cannot expose a side
+    // effect. Note this enforces authentication only, not admin-role authorization (the handlers
+    // behave the same way today).
     if (methodName.startsWith("com.arcadedb.grpc.ArcadeDbAdminService/")) {
       // If security is not enabled, allow all requests (consistent with the data-plane methods below)
       if (!securityEnabled)
@@ -179,6 +181,9 @@ class GrpcAuthInterceptor implements ServerInterceptor {
     if (!(message instanceof final Message protoMessage))
       return false;
 
+    // 'credentials' is a message-typed field on every admin request, so hasField() reports explicit
+    // presence (proto3 tracks presence for message fields). This presence check is coupled to that
+    // field staying message-typed.
     final FieldDescriptor credentialsField = protoMessage.getDescriptorForType().findFieldByName("credentials");
     if (credentialsField == null || !protoMessage.hasField(credentialsField))
       return false;

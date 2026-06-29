@@ -61,5 +61,9 @@ credentials, which the central check accepts).
 - Admin RPCs are now authenticated at a single transport-level choke point. A future
   admin method that forgets its own `authenticate()` call can no longer be invoked
   unauthenticated.
+- Scope note: this enforces *authentication* (valid credentials), not admin-role
+  *authorization*. As today, any user that authenticates can pass the check; the
+  handlers do not require a server-root role. Adding an admin-role authorization gate
+  is a worthwhile follow-up but is out of scope for this fix (pre-existing behavior).
 - No behavior change for authenticated clients (valid body credentials still pass).
 - No data-plane change; only the admin-service branch of the interceptor was modified.
