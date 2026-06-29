@@ -98,7 +98,16 @@ class GrpcAuthInterceptor implements ServerInterceptor {
         public void onMessage(final ReqT message) {
           if (halted)
             return;
-          if (!authenticateAdminRequest(message)) {
+          boolean authenticated;
+          try {
+            authenticated = authenticateAdminRequest(message);
+          } catch (final Exception e) {
+            // Keep the fail-closed posture uniform with the rest of the interceptor: any unexpected
+            // error denies the call rather than surfacing as a generic UNKNOWN status.
+            LogManager.instance().log(this, Level.FINE, "Admin authentication error", e);
+            authenticated = false;
+          }
+          if (!authenticated) {
             halted = true;
             call.close(Status.UNAUTHENTICATED.withDescription("Authentication required"), new Metadata());
             return;

@@ -38,10 +38,13 @@ reachable, matching the behavior for all other gRPC methods.
 `GrpcAdminAuthInterceptorIT` (grpcw): mock-free unit test that drives
 `GrpcAuthInterceptor.interceptCall` for an admin method with a real `ServerSecurity`
 obtained from a running server and hand-written `ServerCall`/`ServerCallHandler`
-test doubles. Verifies:
+test doubles. Five cases:
 - invalid credentials: call closed UNAUTHENTICATED, request NOT delivered to handler
   (fails before the fix because the blanket skip delivered the message)
 - missing credentials: call closed UNAUTHENTICATED, request NOT delivered
+  (fails before the fix)
+- blank username: call closed UNAUTHENTICATED, request NOT delivered (fail closed)
+- security disabled: request passes through to the handler
 - valid credentials: request delivered to handler
 
 Existing `GrpcAdminServiceIT` end-to-end tests continue to pass (clients send body
@@ -49,8 +52,9 @@ credentials, which the central check accepts).
 
 ## Verification results
 
-- `GrpcAdminAuthInterceptorIT`: 3/3 pass after fix. Before the fix the two negative
-  tests failed (the request reached the handler), proving the regression is real.
+- `GrpcAdminAuthInterceptorIT`: 5/5 pass after fix. Before the fix the invalid- and
+  missing-credentials tests failed (the request reached the handler), proving the
+  regression is real.
 - `GrpcAdminServiceIT` (existing, 12 tests): pass, no regression on the real admin path.
 - `GrpcServerIT` (existing data-plane path, 30 tests): 29 pass; the single error was an
   environmental `Address already in use` on the fixed gRPC port 50051 caused by a
