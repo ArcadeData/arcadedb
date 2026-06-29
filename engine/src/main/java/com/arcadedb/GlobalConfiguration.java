@@ -864,6 +864,10 @@ public enum GlobalConfiguration {
       "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Does not change Raft membership or quorum.",
       Long.class, 10000L),
 
+  HA_RESYNC_CATCHUP_LAG_THRESHOLD("arcadedb.ha.resyncCatchupLagThreshold", SCOPE.SERVER,
+      "Minimum number of Raft log entries a follower must be behind the leader before the catch-up resync narrative is logged. Keeps normal steady-state replication lag (typically a handful of entries under write load) from being narrated; only a genuine post-restart catch-up crosses this threshold. The narrative finishes once the follower draws back within a tenth of it.",
+      Long.class, 1000L),
+
   HA_GRPC_FLOW_CONTROL_WINDOW("arcadedb.ha.grpcFlowControlWindow", SCOPE.SERVER,
       "gRPC flow control window size in bytes for Ratis append-entries traffic. Larger values help catch-up replication after partitions.",
       Long.class, 4L * 1024 * 1024),

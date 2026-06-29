@@ -20,11 +20,13 @@ package com.arcadedb.server.ha.raft;
 
 /**
  * Pure state machine that turns a sequence of (appliedIndex, leaderCommitIndex, now) observations on a
- * follower into a concise resync narrative: one STARTED line when the follower is first seen behind the
- * leader after a (re)start, throttled PROGRESS lines while it catches up via Raft log replay, and one
- * FINISHED line when it draws level. Driven by the follower-only health-monitor tick. Holds no clock or
- * logger of its own so it can be unit-tested deterministically; the caller supplies {@code now} and logs
- * the returned message.
+ * follower into a concise resync narrative: one STARTED line when the follower is seen at least
+ * {@code catchupLagThreshold} entries behind the leader (a genuine post-restart catch-up, not the
+ * handful-of-entries steady-state lag seen under write load), throttled PROGRESS lines while it catches
+ * up via Raft log replay, and one FINISHED line when it draws back within a tenth of that threshold.
+ * The start/finish hysteresis prevents flip-flopping on normal replication lag. Driven by the
+ * follower-only health-monitor tick. Holds no clock or logger of its own so it can be unit-tested
+ * deterministically; the caller supplies {@code now} and logs the returned message.
  */
 public final class FollowerResyncProgressTracker {
 
@@ -35,14 +37,22 @@ public final class FollowerResyncProgressTracker {
   }
 
   private final long progressIntervalMs;
+  // Minimum lag (entries) that starts the narrative, and the smaller lag at which it finishes. The
+  // gap between them is deliberate hysteresis so steady-state replication lag - which under write load
+  // hovers a few entries behind and momentarily reaches zero - never flip-flops the narrative. Only a
+  // genuine post-restart catch-up crosses the start threshold.
+  private final long startLagThreshold;
+  private final long finishLagThreshold;
 
   private boolean active        = false;
   private long    startMs       = 0;
   private long    startApplied  = 0;
   private long    lastProgressMs = 0;
 
-  public FollowerResyncProgressTracker(final long progressIntervalMs) {
+  public FollowerResyncProgressTracker(final long progressIntervalMs, final long catchupLagThreshold) {
     this.progressIntervalMs = progressIntervalMs;
+    this.startLagThreshold = Math.max(1L, catchupLagThreshold);
+    this.finishLagThreshold = startLagThreshold / 10L;
   }
 
   public Tick onTick(final long appliedIndex, final long leaderCommitIndex, final long nowMs) {
@@ -52,7 +62,7 @@ public final class FollowerResyncProgressTracker {
     final long behind = leaderCommitIndex - appliedIndex;
 
     if (!active) {
-      if (behind <= 0)
+      if (behind < startLagThreshold)
         return Tick.NONE;
       active = true;
       startMs = nowMs;
@@ -63,7 +73,7 @@ public final class FollowerResyncProgressTracker {
           behind, appliedIndex, leaderCommitIndex));
     }
 
-    if (behind <= 0) {
+    if (behind <= finishLagThreshold) {
       active = false;
       final long durationMs = nowMs - startMs;
       final long caughtUp = appliedIndex - startApplied;

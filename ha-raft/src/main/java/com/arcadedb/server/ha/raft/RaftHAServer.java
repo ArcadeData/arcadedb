@@ -496,7 +496,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.healthMonitor.start();
     if (configuration.getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING))
       this.resyncProgressTracker = new FollowerResyncProgressTracker(
-          configuration.getValueAsLong(GlobalConfiguration.HA_RESYNC_PROGRESS_INTERVAL));
+          configuration.getValueAsLong(GlobalConfiguration.HA_RESYNC_PROGRESS_INTERVAL),
+          configuration.getValueAsLong(GlobalConfiguration.HA_RESYNC_CATCHUP_LAG_THRESHOLD));
   }
 
   /**

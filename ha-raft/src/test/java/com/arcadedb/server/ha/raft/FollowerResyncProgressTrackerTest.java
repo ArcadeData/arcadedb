@@ -10,13 +10,24 @@ class FollowerResyncProgressTrackerTest {
 
   @Test
   void notBehindProducesNothing() {
-    final FollowerResyncProgressTracker t = new FollowerResyncProgressTracker(5000L);
+    final FollowerResyncProgressTracker t = new FollowerResyncProgressTracker(5000L, 50L);
     assertThat(t.onTick(1000L, 1000L, 0L).event()).isEqualTo(Event.NONE);
   }
 
   @Test
+  void steadyStateLagBelowThresholdDoesNotStart() {
+    // Under continuous write load a healthy follower hovers a handful of entries behind and momentarily
+    // reaches zero. With a meaningful threshold this must never start/finish a catch-up narrative.
+    final FollowerResyncProgressTracker t = new FollowerResyncProgressTracker(5000L, 1000L);
+    assertThat(t.onTick(999L, 1000L, 0L).event()).isEqualTo(Event.NONE);   // 1 behind
+    assertThat(t.onTick(1000L, 1000L, 1000L).event()).isEqualTo(Event.NONE); // caught up
+    assertThat(t.onTick(1001L, 1002L, 2000L).event()).isEqualTo(Event.NONE); // 1 behind again
+    assertThat(t.onTick(1100L, 1102L, 9000L).event()).isEqualTo(Event.NONE); // still 2 behind, well below 1000
+  }
+
+  @Test
   void emitsStartProgressFinishAcrossCatchUp() {
-    final FollowerResyncProgressTracker t = new FollowerResyncProgressTracker(5000L);
+    final FollowerResyncProgressTracker t = new FollowerResyncProgressTracker(5000L, 50L);
 
     final Tick start = t.onTick(900L, 1000L, 0L);
     assertThat(start.event()).isEqualTo(Event.STARTED);
@@ -41,7 +52,7 @@ class FollowerResyncProgressTrackerTest {
 
   @Test
   void negativeIndexIsIgnoredWithoutStateChange() {
-    final FollowerResyncProgressTracker t = new FollowerResyncProgressTracker(5000L);
+    final FollowerResyncProgressTracker t = new FollowerResyncProgressTracker(5000L, 50L);
     assertThat(t.onTick(-1L, 1000L, 0L).event()).isEqualTo(Event.NONE);
     // A real "behind" tick still starts cleanly afterwards.
     assertThat(t.onTick(900L, 1000L, 1000L).event()).isEqualTo(Event.STARTED);
