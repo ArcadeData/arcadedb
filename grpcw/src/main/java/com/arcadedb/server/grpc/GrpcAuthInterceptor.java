@@ -92,6 +92,8 @@ class GrpcAuthInterceptor implements ServerInterceptor {
 
         @Override
         public void onMessage(final ReqT message) {
+          if (halted)
+            return;
           if (!authenticateAdminRequest(message)) {
             halted = true;
             call.close(Status.UNAUTHENTICATED.withDescription("Authentication required"), new Metadata());
