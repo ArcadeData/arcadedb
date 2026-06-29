@@ -30,6 +30,7 @@ import io.grpc.ManagedChannel;
 import io.grpc.ManagedChannelBuilder;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
+import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -114,14 +115,22 @@ public class Issue4793GrpcGetDatabaseSecurityIT extends BaseGraphServerTest {
         .build();
   }
 
+  /**
+   * Asserts the request is rejected with the INVALID_ARGUMENT status code and a message that names
+   * the offending database name, so the client-visible API contract is pinned (not masked as
+   * INTERNAL).
+   */
+  private void assertRejectedAsInvalidName(final ExecuteQueryRequest request) {
+    assertThatThrownBy(() -> authenticatedStub.executeQuery(request))
+        .isInstanceOfSatisfying(StatusRuntimeException.class,
+            e -> assertThat(e.getStatus().getCode()).isEqualTo(Status.Code.INVALID_ARGUMENT))
+        .hasMessageContaining("Invalid database name");
+  }
+
   @Test
   void parentDirectoryTraversalDatabaseNameIsRejected() {
     final String traversalTarget = "escaped4793";
-    final ExecuteQueryRequest request = queryOn(".." + File.separator + traversalTarget);
-
-    assertThatThrownBy(() -> authenticatedStub.executeQuery(request))
-        .isInstanceOf(StatusRuntimeException.class)
-        .hasMessageContaining("Invalid database name");
+    assertRejectedAsInvalidName(queryOn(".." + File.separator + traversalTarget));
 
     // The traversal must never have escaped the databases directory and created a database on disk.
     final File databasesDir = new File(GlobalConfiguration.SERVER_DATABASE_DIRECTORY.getValueAsString());
@@ -131,38 +140,23 @@ public class Issue4793GrpcGetDatabaseSecurityIT extends BaseGraphServerTest {
 
   @Test
   void forwardSlashDatabaseNameIsRejected() {
-    final ExecuteQueryRequest request = queryOn("sub/evil4793");
-
-    assertThatThrownBy(() -> authenticatedStub.executeQuery(request))
-        .isInstanceOf(StatusRuntimeException.class)
-        .hasMessageContaining("Invalid database name");
+    assertRejectedAsInvalidName(queryOn("sub/evil4793"));
   }
 
   @Test
   void backslashDatabaseNameIsRejected() {
-    final ExecuteQueryRequest request = queryOn("sub\\evil4793");
-
-    assertThatThrownBy(() -> authenticatedStub.executeQuery(request))
-        .isInstanceOf(StatusRuntimeException.class)
-        .hasMessageContaining("Invalid database name");
+    assertRejectedAsInvalidName(queryOn("sub\\evil4793"));
   }
 
   @Test
   void currentDirectoryDatabaseNameIsRejected() {
     // A bare "." resolves to the databases directory itself; it must be rejected.
-    final ExecuteQueryRequest request = queryOn(".");
-
-    assertThatThrownBy(() -> authenticatedStub.executeQuery(request))
-        .isInstanceOf(StatusRuntimeException.class)
-        .hasMessageContaining("Invalid database name");
+    assertRejectedAsInvalidName(queryOn("."));
   }
 
   @Test
   void blankDatabaseNameIsRejected() {
-    final ExecuteQueryRequest request = queryOn("   ");
-
-    assertThatThrownBy(() -> authenticatedStub.executeQuery(request))
-        .isInstanceOf(StatusRuntimeException.class);
+    assertRejectedAsInvalidName(queryOn("   "));
   }
 
   @Test

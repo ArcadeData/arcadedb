@@ -930,6 +930,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final ExecuteQueryResponse response = executeQueryInternal(request, database);
       responseObserver.onNext(response);
       responseObserver.onCompleted();
+    } catch (final StatusRuntimeException e) {
+      // Preserve the status code chosen by getDatabase (e.g. INVALID_ARGUMENT for a rejected
+      // database name, PERMISSION_DENIED/UNAUTHENTICATED for authz/authn failures) instead of
+      // masking it as INTERNAL.
+      LogManager.instance().log(this, Level.FINE, "Query rejected: %s", e, e.getMessage());
+      responseObserver.onError(e);
     } catch (Exception e) {
       LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", e, e.getMessage());
       responseObserver.onError(Status.INTERNAL.withDescription("Query execution failed: " + e.getMessage()).asException());
@@ -3157,7 +3163,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    * Resolves the authenticated username for the current request. Prefers the interceptor-set
    * gRPC context (Bearer or basic auth flows) and falls back to the credentials carried by the
    * request payload. Single source of truth for username precedence; both
-   * {@link #validateCredentials(DatabaseCredentials)} and {@link #getDatabase(String, DatabaseCredentials)}
+   * {@link #validateCredentials(DatabaseCredentials, String)} and {@link #getDatabase(String, DatabaseCredentials)}
    * delegate here so the rule cannot drift between callers.
    */
   private String resolvedUsername(final DatabaseCredentials credentials) {
@@ -3181,11 +3187,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private static void validateDatabaseName(final String databaseName) {
     if (databaseName == null || databaseName.isBlank())
-      throw new IllegalArgumentException("Invalid database name: name is required");
+      throw Status.INVALID_ARGUMENT.withDescription("Invalid database name: name is required").asRuntimeException();
     // A bare "." would resolve to the databases directory itself, so it is rejected alongside the
     // separator and parent-reference checks.
     if (databaseName.equals(".") || databaseName.contains("/") || databaseName.contains("\\") || databaseName.contains(".."))
-      throw new IllegalArgumentException("Invalid database name: " + databaseName);
+      throw Status.INVALID_ARGUMENT.withDescription("Invalid database name: " + databaseName).asRuntimeException();
   }
 
   /**
@@ -3205,7 +3211,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private void validateCredentials(final DatabaseCredentials credentials, final String databaseName) {
     final String authenticatedUser = resolvedUsername(credentials);
     if (authenticatedUser == null)
-      throw new IllegalArgumentException("Invalid credentials");
+      throw Status.UNAUTHENTICATED.withDescription("Invalid credentials").asRuntimeException();
 
     final ServerSecurity security = arcadeServer != null ? arcadeServer.getSecurity() : null;
     if (security != null && security.getUsers() != null && !security.getUsers().isEmpty()) {
@@ -3215,17 +3221,22 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // already-authenticated user for the specific database named in the request.
         final ServerSecurityUser user = security.getUser(contextUser);
         if (user == null)
-          throw new ServerSecurityException("User/Password not valid");
+          throw Status.UNAUTHENTICATED.withDescription("User/Password not valid").asRuntimeException();
         final Set<String> allowedDatabases = user.getAuthorizedDatabases();
         if (!allowedDatabases.contains(SecurityManager.ANY) && !allowedDatabases.contains(databaseName))
-          throw new ServerSecurityException("User has not access to database '" + databaseName + "'");
+          throw Status.PERMISSION_DENIED.withDescription("User has not access to database '" + databaseName + "'")
+              .asRuntimeException();
       } else {
         // No interceptor context (request-payload credentials only): authenticate the
         // username/password pair and authorize the requested database in one step.
         final String password = credentials != null ? credentials.getPassword() : null;
         if (password == null || password.isEmpty())
-          throw new ServerSecurityException("Authentication required");
-        security.authenticate(authenticatedUser, password, databaseName);
+          throw Status.UNAUTHENTICATED.withDescription("Authentication required").asRuntimeException();
+        try {
+          security.authenticate(authenticatedUser, password, databaseName);
+        } catch (final ServerSecurityException e) {
+          throw Status.PERMISSION_DENIED.withDescription(e.getMessage()).asRuntimeException();
+        }
       }
     }
 

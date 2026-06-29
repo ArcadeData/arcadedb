@@ -67,5 +67,35 @@ problems:
 - Closes the path-traversal vector (request `databaseName` can no longer escape the
   databases directory) for every gRPC entry point that resolves a database.
 - Enforces per-database authorization of the authenticated user and real
-  authentication of request-payload credentials when server security is active.
+  authentication of request-payload credentials when server security is active. This
+  also closes a cross-database authorization escape: the interceptor authenticates
+  against the `x-arcade-database` header while `getDatabase` resolves the request-body
+  database, so re-authorizing the resolved user against the actual `databaseName` is
+  required.
 - No behavioral change when security is disabled beyond the database-name sanitization.
+
+## Review cycles
+
+### Cycle 1 (gemini-code-assist, HIGH)
+
+- A bare `.` database name resolves to the databases directory itself and was not caught
+  by the separator/`..` checks. `validateDatabaseName` now also rejects `.`. Added
+  regression case `currentDirectoryDatabaseNameIsRejected`. (commit c425c28ce)
+
+### Cycle 2 (claude bot)
+
+- **Item 1 (status codes)** - addressed. `validateDatabaseName` now throws
+  `INVALID_ARGUMENT`; authn failures `UNAUTHENTICATED`; per-database authz failures
+  `PERMISSION_DENIED`. `executeQuery` preserves a `StatusRuntimeException` instead of
+  masking it as `INTERNAL`. Tests assert `Status.Code.INVALID_ARGUMENT` to pin the
+  contract.
+- **Item 2 (stale Javadoc)** - addressed. `resolvedUsername` Javadoc now links the
+  `(DatabaseCredentials, String)` signature.
+- **Item 3 (extract `authorizeDatabase` into `ServerSecurity`/`ServerSecurityUser`)** -
+  deferred. Optional cleanup that spans the `server` module; the duplicated check is the
+  two-line `ANY`/`contains` test. Tracked as a follow-up to keep this PR scoped to the
+  security boundary.
+- **Item 4 (auto-create database on a SELECT in the fallback path)** - deferred. The bot
+  itself flagged this as a pre-existing, separate follow-up; it is no longer a traversal
+  issue (confined to the databases directory) and gating creation behind an explicit
+  admin path is out of scope for this fix.
