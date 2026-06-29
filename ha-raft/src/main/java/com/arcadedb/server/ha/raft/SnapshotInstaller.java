@@ -926,7 +926,9 @@ public final class SnapshotInstaller {
         total += n;
         final String line = meter.lineIfDue(total, System.currentTimeMillis());
         if (line != null)
-          HALog.log(SnapshotInstaller.class, HALog.BASIC, line);
+          // Log at INFO (not HALog.BASIC, which HA_LOG_VERBOSE gates off by default) so snapshot
+          // download progress is visible alongside the rest of the resync narrative.
+          LogManager.instance().log(SnapshotInstaller.class, Level.INFO, line);
       }
     }
 
