@@ -3182,7 +3182,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private static void validateDatabaseName(final String databaseName) {
     if (databaseName == null || databaseName.isBlank())
       throw new IllegalArgumentException("Invalid database name: name is required");
-    if (databaseName.contains("/") || databaseName.contains("\\") || databaseName.contains(".."))
+    // A bare "." would resolve to the databases directory itself, so it is rejected alongside the
+    // separator and parent-reference checks.
+    if (databaseName.equals(".") || databaseName.contains("/") || databaseName.contains("\\") || databaseName.contains(".."))
       throw new IllegalArgumentException("Invalid database name: " + databaseName);
   }
 

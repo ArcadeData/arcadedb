@@ -148,6 +148,16 @@ public class Issue4793GrpcGetDatabaseSecurityIT extends BaseGraphServerTest {
   }
 
   @Test
+  void currentDirectoryDatabaseNameIsRejected() {
+    // A bare "." resolves to the databases directory itself; it must be rejected.
+    final ExecuteQueryRequest request = queryOn(".");
+
+    assertThatThrownBy(() -> authenticatedStub.executeQuery(request))
+        .isInstanceOf(StatusRuntimeException.class)
+        .hasMessageContaining("Invalid database name");
+  }
+
+  @Test
   void blankDatabaseNameIsRejected() {
     final ExecuteQueryRequest request = queryOn("   ");
 
