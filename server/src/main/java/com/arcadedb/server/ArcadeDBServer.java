@@ -45,6 +45,7 @@ import com.arcadedb.database.QueryTracer;
 import com.arcadedb.server.monitor.EngineMetricsBinder;
 import com.arcadedb.server.monitor.MicrometerQueryMetricsRecorder;
 import com.arcadedb.server.monitor.MicrometerQueryTracer;
+import com.arcadedb.server.monitor.HAReplicationMetrics;
 import com.arcadedb.server.monitor.PoolMetrics;
 import com.arcadedb.server.monitor.ServerQueryProfiler;
 import com.arcadedb.server.plugin.PluginManager;
@@ -237,6 +238,9 @@ public class ArcadeDBServer {
       // Engine-wide Profiler stats (cache hit/miss, pages, WAL, MVCC conflicts, open files, tx,
       // queries) - exposes arcadedb.engine.* gauges read live from the Profiler on each scrape.
       new EngineMetricsBinder().bindTo(Metrics.globalRegistry);
+      // HA replication health (heartbeat lag + replication lag) sourced live from the HA plugin -
+      // exposes arcadedb.ha.* gauges; harmless no-op (all -1/0) when HA is disabled.
+      new HAReplicationMetrics(this).bindTo(Metrics.globalRegistry);
       QueryMetricsRecorder.Holder.register(new MicrometerQueryMetricsRecorder());
 
       if (configuration.getValueAsBoolean(GlobalConfiguration.SERVER_METRICS_LOGGING)) {

@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.client.RaftClientConfigKeys;
 import org.apache.ratis.conf.Parameters;
@@ -465,8 +466,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
     final int offerTimeout = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_OFFER_TIMEOUT);
     final long grpcMessageSizeMax = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX);
+    final long maxQueuedBytes = configuration.getValueAsLong(GlobalConfiguration.HA_GROUP_COMMIT_MAX_QUEUED_BYTES);
     transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize, queueSize, offerTimeout,
-        grpcMessageSizeMax, this::refreshRaftClient);
+        grpcMessageSizeMax, maxQueuedBytes, this::refreshRaftClient);
 
     // Bootstrap election (issue #4147): runs once per cluster lifetime when this peer is elected
     // leader and the Raft log is still empty. Stays a no-op if disabled or on subsequent leader
@@ -753,8 +755,9 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
         final int offerTimeout = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_OFFER_TIMEOUT);
         final long grpcMessageSizeMax = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX);
+        final long maxQueuedBytes = configuration.getValueAsLong(GlobalConfiguration.HA_GROUP_COMMIT_MAX_QUEUED_BYTES);
         this.transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize, queueSize,
-            offerTimeout, grpcMessageSizeMax, this::refreshRaftClient);
+            offerTimeout, grpcMessageSizeMax, maxQueuedBytes, this::refreshRaftClient);
 
         restartFailureCount = 0;
         HALog.log(this, HALog.BASIC, "Ratis recovered successfully");
@@ -933,9 +936,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final int queueSize = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_QUEUE_SIZE);
       final int offerTimeout = configuration.getValueAsInteger(GlobalConfiguration.HA_GROUP_COMMIT_OFFER_TIMEOUT);
       final long grpcMessageSizeMax = configuration.getValueAsLong(GlobalConfiguration.HA_GRPC_MESSAGE_SIZE_MAX);
+      final long maxQueuedBytes = configuration.getValueAsLong(GlobalConfiguration.HA_GROUP_COMMIT_MAX_QUEUED_BYTES);
       final RaftTransactionBroker oldBroker = transactionBroker;
       transactionBroker = new RaftTransactionBroker(raftClient, quorum, quorumTimeout, batchSize, queueSize,
-          offerTimeout, grpcMessageSizeMax, this::refreshRaftClient);
+          offerTimeout, grpcMessageSizeMax, maxQueuedBytes, this::refreshRaftClient);
       // Transfer undispatched entries from the old broker to the new one BEFORE stopping the old
       // broker, so a brief leader hiccup (e.g. self-stepdown -> re-elected leader) does not surface
       // "Group committer shutting down" errors to in-flight callers. transferPendingTo() also halts
@@ -1489,6 +1493,35 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long readIndex = fetchReadIndex(false);
     // LINEARIZABLE: a timeout MUST throw (HTTP 503) - never silently degrade to a stale read.
     waitForAppliedIndex(readIndex, true);
+  }
+
+  /**
+   * Aggregates {@link #getFollowerStates()} into a single replication-health snapshot for metrics
+   * (issue #4809 follow-up). The {@code maxFollowerLastContactMs} field is the leading indicator of
+   * election churn: it is the worst time since the leader last reached any follower, and when it
+   * approaches {@code arcadedb.ha.electionTimeoutMin} an election is imminent. Returns a not-leader
+   * placeholder ({@code -1}/{@code 0}) when this node is not the leader.
+   */
+  public HAReplicationStatsProvider.HAReplicationStats getReplicationStats() {
+    if (raftServer == null || !isLeader())
+      return new HAReplicationStatsProvider.HAReplicationStats(false, -1, -1, 0);
+
+    final List<Map<String, Object>> followers = getFollowerStates();
+    if (followers.isEmpty())
+      return new HAReplicationStatsProvider.HAReplicationStats(true, -1, -1, 0);
+
+    final long commitIndex = getCommitIndex();
+    long maxContactMs = -1;
+    long maxLag = -1;
+    for (final Map<String, Object> follower : followers) {
+      final Object elapsed = follower.get("lastRpcElapsedMs");
+      if (elapsed instanceof Number n)
+        maxContactMs = Math.max(maxContactMs, n.longValue());
+      final Object matchIndex = follower.get("matchIndex");
+      if (commitIndex >= 0 && matchIndex instanceof Number n)
+        maxLag = Math.max(maxLag, Math.max(0L, commitIndex - n.longValue()));
+    }
+    return new HAReplicationStatsProvider.HAReplicationStats(true, maxContactMs, maxLag, followers.size());
   }
 
   public List<Map<String, Object>> getFollowerStates() {

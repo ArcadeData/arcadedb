@@ -25,6 +25,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.HAServerPlugin;
 import com.arcadedb.server.ServerException;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.http.HttpServer;
 
 import io.undertow.server.handlers.PathHandler;
@@ -47,7 +48,7 @@ import java.util.logging.Level;
  * Discovered via Java ServiceLoader when either {@code HA_ENABLED=true} or
  * {@code HA_SERVER_LIST} is non-blank (a configured server list implies HA intent).
  */
-public class RaftHAPlugin implements HAServerPlugin {
+public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider {
 
   private ArcadeDBServer       server;
   private ContextConfiguration configuration;
@@ -197,6 +198,12 @@ public class RaftHAPlugin implements HAServerPlugin {
   @Override
   public boolean isLeader() {
     return raftHAServer != null && raftHAServer.isLeader();
+  }
+
+  @Override
+  public HAReplicationStats getHAReplicationStats() {
+    final RaftHAServer s = raftHAServer;
+    return s != null ? s.getReplicationStats() : new HAReplicationStats(false, -1, -1, 0);
   }
 
   @Override

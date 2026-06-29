@@ -63,8 +63,20 @@ public class RaftTransactionBroker {
   public RaftTransactionBroker(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
       final int maxBatchSize, final int maxQueueSize, final int offerTimeoutMs,
       final long messageSizeMax, final Runnable onClientClosed) {
+    this(raftClient, quorum, quorumTimeout, maxBatchSize, maxQueueSize, offerTimeoutMs, messageSizeMax,
+        RaftGroupCommitter.DEFAULT_MAX_QUEUED_BYTES, onClientClosed);
+  }
+
+  /**
+   * @param maxQueuedBytes total-bytes backpressure budget for pending (not-yet-dispatched) entries,
+   *                       complementing the entry-count bound so heavy ingest backpressures with a
+   *                       retryable error instead of exhausting the leader's heap.
+   */
+  public RaftTransactionBroker(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
+      final int maxBatchSize, final int maxQueueSize, final int offerTimeoutMs,
+      final long messageSizeMax, final long maxQueuedBytes, final Runnable onClientClosed) {
     this.groupCommitter = new RaftGroupCommitter(raftClient, quorum, quorumTimeout, maxBatchSize, maxQueueSize,
-        offerTimeoutMs, messageSizeMax, onClientClosed);
+        offerTimeoutMs, messageSizeMax, maxQueuedBytes, onClientClosed);
   }
 
   /**
