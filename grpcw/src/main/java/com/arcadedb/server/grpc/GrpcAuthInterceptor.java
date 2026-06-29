@@ -89,6 +89,8 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       if (!securityEnabled)
         return next.startCall(call, headers);
 
+      // All admin RPCs are unary, so onMessage fires exactly once with the full request carrying the
+      // credentials. If a client-streaming admin RPC is ever added, revisit this per-message logic.
       return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(next.startCall(call, headers)) {
         private boolean halted = false;
 
