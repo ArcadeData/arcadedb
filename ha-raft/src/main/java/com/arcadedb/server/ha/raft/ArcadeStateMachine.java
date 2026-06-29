@@ -189,6 +189,20 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final        AtomicInteger divergedSwallowedErrors      = new AtomicInteger(0);
   private static final int           MAX_DIVERGED_SWALLOWED_ERRORS = 100;
 
+  // Locally-originated transactions whose leader-side phase 2 was abandoned because replication
+  // returned an INDETERMINATE result (the entry was dispatched to Ratis but submitAndWait timed out
+  // before quorum was confirmed - see ReplicationDispatchedTimeoutException). Keyed by
+  // "<databaseName>/<walTxId>" -> insertion time. If such an entry later reaches quorum and is
+  // applied here, applyTxEntry MUST apply it locally instead of origin-skipping it, otherwise the
+  // write lands on every follower but never on this leader: a silent, permanent divergence (issue
+  // #4790). Marking is always safe: it only changes behaviour IF the entry actually commits on this
+  // node's state machine (applying is then correct because the followers have it); if the entry
+  // never commits, the mark is inert and is pruned by TTL. Bounded by time-based pruning on insert.
+  private final        Map<String, Long> abandonedLocalTransactions    = new ConcurrentHashMap<>();
+  // Entries older than this are pruned on the next mark. Generous because a dispatched-but-stuck
+  // entry can take a long time to either commit or be overwritten by a new leader.
+  private static final long              ABANDONED_TX_TTL_MS           = 10 * 60 * 1000L;
+
 
   public void setServer(final ArcadeDBServer server) {
     this.server = server;
@@ -830,22 +844,60 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * durable page writes). Page-version guards in {@code applyChanges} detect and skip
    * already-applied pages; version-gap warnings are still logged.
    */
+  /**
+   * Marks a locally-originated transaction as abandoned by the leader's phase 2 because replication
+   * returned an indeterminate result ({@link ReplicationDispatchedTimeoutException}). If the entry
+   * later commits, {@link #applyTxEntry} applies it here instead of origin-skipping it (issue #4790).
+   * Called from {@link RaftReplicatedDatabase#commit()} on the dispatched-timeout path.
+   */
+  void markLocalTransactionAbandoned(final String databaseName, final long walTxId) {
+    final long now = System.currentTimeMillis();
+    // Prune stale marks (entries that were dispatched but never committed, e.g. the slot was
+    // overwritten by a new leader) so the map cannot grow unbounded.
+    if (!abandonedLocalTransactions.isEmpty())
+      abandonedLocalTransactions.values().removeIf(insertedAt -> now - insertedAt > ABANDONED_TX_TTL_MS);
+    abandonedLocalTransactions.put(abandonedKey(databaseName, walTxId), now);
+    HALog.log(this, HALog.BASIC,
+        "Marked locally-originated tx %d on database '%s' for local apply on commit (replication was indeterminate, #4790)",
+        walTxId, databaseName);
+  }
+
+  private static String abandonedKey(final String databaseName, final long walTxId) {
+    return databaseName + "/" + walTxId;
+  }
+
   private void applyTxEntry(final RaftLogEntryCodec.DecodedEntry decoded, final long entryIndex,
       final boolean originatedLocally) {
-    // If this entry was originated by this node in the current lifecycle, the transaction was
-    // already applied via commit2ndPhase() in RaftReplicatedDatabase. Skip to avoid double-apply.
-    // Using originatedLocally (set by startTransaction) instead of isLeader() avoids TOCTOU races
-    // when leadership changes between entry submission and state machine apply.
-    // After a crash and restart, originatedLocally is always false (startTransaction was not called
-    // in this lifecycle), so replayed entries are correctly re-applied with page-version guards
-    // providing idempotency.
-    if (originatedLocally) {
+    // Fast path (the leader's hot path): a locally-originated entry was already applied via
+    // commit2ndPhase() in RaftReplicatedDatabase, so skip to avoid double-apply. Using
+    // originatedLocally (set by startTransaction) instead of isLeader() avoids TOCTOU races when
+    // leadership changes between entry submission and state machine apply. After a crash and
+    // restart, originatedLocally is always false (startTransaction was not called in this lifecycle),
+    // so replayed entries are correctly re-applied with page-version guards providing idempotency.
+    // We short-circuit BEFORE deserializing the WAL when no abandoned transactions are pending (the
+    // common case), so the skip costs nothing extra on the hot path.
+    if (originatedLocally && abandonedLocalTransactions.isEmpty()) {
       HALog.log(this, HALog.TRACE, "Skipping tx apply on originator for database '%s'", decoded.databaseName());
       return;
     }
 
     final DatabaseInternal db = (DatabaseInternal) server.getDatabase(decoded.databaseName());
     final WALFile.WALTransaction walTx = deserializeWalTransaction(decoded.walData());
+
+    // EXCEPTION (issue #4790): commit() may have abandoned its phase 2 because replication returned
+    // an indeterminate result (entry dispatched to Ratis but the quorum wait timed out before quorum
+    // was confirmed). For such an entry phase 2 never ran, so it must be applied HERE instead of
+    // origin-skipped, otherwise this leader silently loses a write the followers already have. The
+    // mark is consumed (removed) so a later replay of the same entry correctly skips again.
+    if (originatedLocally) {
+      if (abandonedLocalTransactions.remove(abandonedKey(decoded.databaseName(), walTx.txId)) == null) {
+        HALog.log(this, HALog.TRACE, "Skipping tx apply on originator for database '%s'", decoded.databaseName());
+        return;
+      }
+      HALog.log(this, HALog.BASIC,
+          "Applying locally-originated tx %d on database '%s' whose phase 2 was abandoned (replication indeterminate, #4790)",
+          walTx.txId, decoded.databaseName());
+    }
 
     HALog.log(this, HALog.DETAILED, "Applying tx %d to database '%s' (pages=%d)",
         walTx.txId, decoded.databaseName(), walTx.pages.length);

@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Predicate;
 import java.util.logging.Level;
 
 /**
@@ -52,6 +53,16 @@ class RaftGroupCommitter {
 
   /** Throttle for the "approaching cap" warning: at most one log line per minute. */
   private static final long WARN_THROTTLE_MS = 60_000;
+
+  /**
+   * Test-only fault injection (issue #4790). When non-null and the predicate accepts an entry,
+   * {@link #submitAndWait(byte[])} still enqueues that entry (so the flusher dispatches it to Ratis
+   * for real and it commits on the followers) but then immediately throws a
+   * {@link ReplicationDispatchedTimeoutException} instead of waiting for the quorum result. This
+   * deterministically reproduces the "entry dispatched, quorum wait timed out" window without having
+   * to stall real followers. Always {@code null} in production.
+   */
+  static volatile Predicate<byte[]> TEST_FORCE_DISPATCHED_TIMEOUT = null;
 
   private final    RaftClient                                   raftClient;
   private final    Quorum                                       quorum;
@@ -151,10 +162,18 @@ class RaftGroupCommitter {
       throw new ReplicationQueueFullException("Interrupted while waiting for replication queue space");
     }
 
+    // Test-only: simulate "entry dispatched, then quorum wait timed out" deterministically. The
+    // entry stays on the queue (PENDING), so the flusher still dispatches and commits it for real;
+    // we just abandon the wait here with the same exception the production grace-expiry path uses.
+    final Predicate<byte[]> forceTimeout = TEST_FORCE_DISPATCHED_TIMEOUT;
+    if (forceTimeout != null && forceTimeout.test(entry))
+      throw new ReplicationDispatchedTimeoutException(
+          "TEST: forced dispatched-timeout simulation (entry was dispatched to Raft)");
+
     try {
       final Exception error = pending.future.get(timeoutMs, TimeUnit.MILLISECONDS);
       if (error != null)
-        throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
+        throw error instanceof RuntimeException re ? re : dispatchAware(pending, error.getMessage());
     } catch (final TimeoutException e) {
       if (pending.tryCancel())
         throw new QuorumNotReachedException("Group commit timed out after " + timeoutMs + "ms (cancelled before dispatch)");
@@ -162,20 +181,38 @@ class RaftGroupCommitter {
       try {
         final Exception error = pending.future.get(quorumTimeout, TimeUnit.MILLISECONDS);
         if (error != null)
-          throw error instanceof RuntimeException re ? re : new QuorumNotReachedException(error.getMessage());
+          throw error instanceof RuntimeException re ? re : dispatchAware(pending, error.getMessage());
       } catch (final TimeoutException e2) {
-        throw new QuorumNotReachedException(
+        // The entry was dispatched to Ratis and may still reach quorum and commit on the followers
+        // (and on this leader's state machine with the origin-skip). The outcome is INDETERMINATE,
+        // not a clean failure: surface a dedicated exception so the caller reconciles instead of
+        // rolling back and silently dropping the write on the leader (issue #4790).
+        throw new ReplicationDispatchedTimeoutException(
             "Group commit timed out after " + timeoutMs + "ms + " + quorumTimeout + "ms grace (entry was dispatched to Raft)");
       } catch (final RuntimeException re) {
         throw re;
       } catch (final Exception ex) {
-        throw new QuorumNotReachedException("Group commit failed during grace wait: " + ex.getMessage());
+        throw dispatchAware(pending, "Group commit failed during grace wait: " + ex.getMessage());
       }
     } catch (final RuntimeException e) {
       throw e;
     } catch (final Exception e) {
-      throw new QuorumNotReachedException("Group commit failed: " + e.getMessage());
+      throw dispatchAware(pending, "Group commit failed: " + e.getMessage());
     }
+  }
+
+  /**
+   * Builds the right exception for a failed wait depending on whether the entry was already
+   * dispatched to Ratis. A {@code DISPATCHED} entry may still commit on the followers (and on this
+   * leader's state machine), so its outcome is indeterminate and must be surfaced as a
+   * {@link ReplicationDispatchedTimeoutException} so the caller reconciles instead of rolling back
+   * and skipping its local apply (issue #4790). A {@code PENDING}/{@code CANCELLED} entry never left
+   * this node, so a plain {@link QuorumNotReachedException} (safe to roll back) is correct.
+   */
+  private static QuorumNotReachedException dispatchAware(final CancellablePendingEntry pending, final String message) {
+    if (pending.state.get() == CancellablePendingEntry.DISPATCHED)
+      return new ReplicationDispatchedTimeoutException(message + " (entry was dispatched to Raft)");
+    return new QuorumNotReachedException(message);
   }
 
   void stop() {

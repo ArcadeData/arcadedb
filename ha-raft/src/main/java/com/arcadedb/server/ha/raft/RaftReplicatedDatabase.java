@@ -342,6 +342,16 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           "ALL quorum watch failed after MAJORITY commit; applying locally to prevent leader divergence: db=%s", getName());
       applyLocallyAfterMajorityCommit(payload);
       throw e;
+    } catch (final ReplicationDispatchedTimeoutException e) {
+      // INDETERMINATE outcome (issue #4790): the entry was dispatched to Ratis but the quorum wait
+      // timed out before we learned its fate. Ratis may still reach quorum and commit it on the
+      // followers AND apply it on this leader's state machine - where it would be origin-skipped,
+      // silently dropping the write on the leader. Mark the transaction so that, if the entry does
+      // commit, applyTxEntry applies it locally instead of skipping. Then roll back the in-flight
+      // (un-applied) local transaction and surface the retryable error to the client.
+      markTransactionAbandonedForLocalApply(payload);
+      rollback();
+      throw e;
     } catch (final ArcadeDBException e) {
       rollback();
       throw e;
@@ -426,6 +436,34 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       }
       return null;
     });
+  }
+
+  /**
+   * Records (in the state machine) that this leader abandoned phase 2 for a locally-originated
+   * transaction whose replication returned an indeterminate result (issue #4790). If the entry
+   * later reaches quorum and is applied here, {@link ArcadeStateMachine#applyTxEntry} will apply it
+   * locally instead of origin-skipping it, preventing a silent lost write on the leader.
+   * <p>
+   * The WAL txId is the correlation key: it is embedded in the same WAL bytes that were replicated,
+   * so the state machine sees the identical value when the entry commits. Best-effort: if anything
+   * goes wrong while extracting the txId we log and continue (the caller still rolls back and throws
+   * a retryable error), rather than masking the original replication failure.
+   */
+  private void markTransactionAbandonedForLocalApply(final ReplicationPayload payload) {
+    final RaftHAServer raft = raftHAServer;
+    if (raft == null)
+      return;
+    final ArcadeStateMachine stateMachine = raft.getStateMachine();
+    if (stateMachine == null)
+      return;
+    try {
+      final long walTxId = ArcadeStateMachine.deserializeWalTransaction(payload.walData()).txId;
+      stateMachine.markLocalTransactionAbandoned(getName(), walTxId);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not mark transaction for local apply after indeterminate replication (db=%s): %s",
+          getName(), e.getMessage());
+    }
   }
 
   private static final int  STEP_DOWN_MAX_RETRIES    = 3;
