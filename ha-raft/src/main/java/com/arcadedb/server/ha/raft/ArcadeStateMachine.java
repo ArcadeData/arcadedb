@@ -122,6 +122,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // Tracks the highest term observed so notifyTermIndexUpdated can log only the first time we
   // see each term (otherwise it fires on every config/metadata entry, which is noisy).
   private final    AtomicLong                highestTermSeen  = new AtomicLong(-1);
+  // Raft term seen at the last notifyLeaderChanged. Lets us tell a genuine re-election (term
+  // advanced) from a same-term re-notification, so we only warn about real leader churn (#4809 follow-up).
+  private volatile long                      lastNotifiedLeaderTerm = -1;
 
   private volatile ArcadeDBServer server;
   private volatile RaftHAServer   raftHAServer;
@@ -613,25 +616,40 @@ public class ArcadeStateMachine extends BaseStateMachine {
     previousLeaderId = newLeaderId;
 
     final String leaderName = raftHAServer.getPeerDisplayName(newLeaderId);
-    final long currentTerm = getLastAppliedTermIndex() != null ? getLastAppliedTermIndex().getTerm() : -1;
+    // Use the actual Raft term (not the lagging last-applied term) so we can tell a genuine
+    // re-election (term advanced) from a same-term re-notification that Ratis sometimes fires.
+    final long currentTerm = raftHAServer.getCurrentTerm();
+    final long prevTerm = lastNotifiedLeaderTerm;
+    lastNotifiedLeaderTerm = currentTerm;
 
     if (prevId == null) {
       // First leader observed since startup - no churn signal yet.
       LogManager.instance().log(this, Level.INFO, "Leader elected: %s (term=%d)", leaderName, currentTerm);
     } else if (prevId.equals(newLeaderId)) {
-      // The same node is leader again. Almost always means a step-down/re-election cycle: the
-      // leader couldn't keep heartbeats flowing (busy appender threads under bulk-load, GC pause,
-      // disk stall) and another node started an election with a higher term. The original leader
-      // sees the higher term, steps down, then wins the next election because it has the most
-      // up-to-date log. If you see this repeatedly under load, raise arcadedb.ha.electionTimeoutMin
-      // and Max, or reduce per-batch size.
-      final long sinceLast = previousElectionTime > 0 ? now - previousElectionTime : -1;
-      LogManager.instance().log(this, Level.WARNING,
-          """
-          Leader churn: %s re-elected (term=%d, %d ms since last leader change). \
-          Likely cause: leader heartbeat blocked by bulk-load replication. \
-          Tune arcadedb.ha.electionTimeoutMin/Max higher or reduce batch size.""",
-          leaderName, currentTerm, sinceLast);
+      // The same node is leader again. Only a term advance means an actual step-down/re-election
+      // cycle; a same-term re-notification (currentTerm == prevTerm) is a Ratis bookkeeping callback,
+      // not churn, so do not alarm the operator about it.
+      if (currentTerm <= prevTerm && currentTerm >= 0) {
+        LogManager.instance().log(this, Level.FINE,
+            "Leader re-notified: %s (term=%d, no term change)", leaderName, currentTerm);
+      } else {
+        // A real re-election kept the same leader: the previous leader could not keep heartbeats
+        // flowing long enough, another node started an election with a higher term, and the original
+        // leader won the next round (it has the most up-to-date log). The cause is whatever stalled
+        // the leader's heartbeat: CPU/GC pause, disk stall, network blip, or appender threads busy
+        // under bulk-load replication. Confirm with the arcadedb.ha.follower.* heartbeat-lag metrics
+        // before tuning. Mitigations: raise arcadedb.ha.electionTimeoutMin/Max, reduce per-batch size,
+        // or give the node more CPU/IO headroom.
+        final long sinceLast = previousElectionTime > 0 ? now - previousElectionTime : -1;
+        LogManager.instance().log(this, Level.WARNING,
+            """
+            Leader churn: %s re-elected (term=%d, %d ms since last leader change). \
+            A heartbeat stall triggered an election; likely causes include CPU/GC pauses, disk stalls, \
+            network blips, or appender threads saturated by bulk-load replication. Check the \
+            arcadedb.ha.follower.* metrics, then raise arcadedb.ha.electionTimeoutMin/Max, reduce batch \
+            size, or add CPU/IO headroom.""",
+            leaderName, currentTerm, sinceLast);
+      }
     } else {
       // Different node became leader. Normal failover (network, server restart, etc.).
       final String prevName = raftHAServer.getPeerDisplayName(prevId);

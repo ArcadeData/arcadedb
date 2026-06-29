@@ -51,6 +51,9 @@ class RaftGroupCommitter {
    */
   static final long DEFAULT_MESSAGE_SIZE_MAX = 128L * 1024 * 1024;
 
+  /** Default total-bytes backpressure budget for pending entries when none is provided. */
+  static final long DEFAULT_MAX_QUEUED_BYTES = 256L * 1024 * 1024;
+
   /** Throttle for the "approaching cap" warning: at most one log line per minute. */
   private static final long WARN_THROTTLE_MS = 60_000;
 
@@ -70,10 +73,15 @@ class RaftGroupCommitter {
   private final    int                                          maxBatchSize;
   private final    int                                          offerTimeoutMs;
   private final    long                                         messageSizeMax;
+  private final    long                                         maxQueuedBytes;
   private final    Runnable                                     onClientClosed;
   private final    LinkedBlockingQueue<CancellablePendingEntry> queue;
   private final    Thread                                       flusher;
   private final    AtomicLong                                   lastApproachingCapWarnAt = new AtomicLong();
+  // Total bytes of entries currently sitting in the queue (reserved at enqueue, released at dequeue).
+  // Backs the byte-bounded backpressure so a flood of large transactions cannot exhaust the heap
+  // before the entry-count bound engages.
+  private final    AtomicLong                                   queuedBytes              = new AtomicLong();
   private volatile boolean                                      running                  = true;
 
   RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout) {
@@ -105,12 +113,38 @@ class RaftGroupCommitter {
   RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
       final int maxBatchSize, final int maxQueueSize, final int offerTimeoutMs,
       final long messageSizeMax, final Runnable onClientClosed) {
+    this(raftClient, quorum, quorumTimeout, maxBatchSize, maxQueueSize, offerTimeoutMs, messageSizeMax,
+        DEFAULT_MAX_QUEUED_BYTES, onClientClosed);
+  }
+
+  /**
+   * @param messageSizeMax matches the Ratis {@code raft.grpc.message.size.max} cap. Entries above this
+   *                       size are rejected synchronously in {@link #submitAndWait(byte[])} with a
+   *                       clear, retryable exception, instead of being dispatched and rejected deep
+   *                       inside the Ratis {@code SlidingWindow} client (which leaves it CLOSED for
+   *                       the lifetime of the {@link RaftClient}).
+   * @param maxQueuedBytes total-bytes backpressure budget for pending (not-yet-dispatched) entries.
+   *                       Complements {@code maxQueueSize} (an entry-count bound): since a single
+   *                       entry can be up to {@code messageSizeMax}, a count-only bound would let a
+   *                       flood of large transactions exhaust the heap before backpressure engages.
+   *                       Clamped up to {@code messageSizeMax} so one maximum-size entry always fits.
+   * @param onClientClosed invoked once when {@link #flushBatch} observes that the underlying Ratis
+   *                       client has entered a permanent {@code CLOSED} state. The caller is expected
+   *                       to rebuild the {@link RaftClient} (and this committer) so subsequent batches
+   *                       use a fresh client. May be {@code null} for tests.
+   */
+  RaftGroupCommitter(final RaftClient raftClient, final Quorum quorum, final long quorumTimeout,
+      final int maxBatchSize, final int maxQueueSize, final int offerTimeoutMs,
+      final long messageSizeMax, final long maxQueuedBytes, final Runnable onClientClosed) {
     this.raftClient = raftClient;
     this.quorum = quorum;
     this.quorumTimeout = quorumTimeout;
     this.maxBatchSize = maxBatchSize;
     this.offerTimeoutMs = offerTimeoutMs;
     this.messageSizeMax = messageSizeMax;
+    // Never set the byte budget below the single-message cap, or a legitimate maximum-size entry could
+    // never be enqueued (permanent backpressure deadlock for that transaction).
+    this.maxQueuedBytes = Math.max(maxQueuedBytes, messageSizeMax);
     this.onClientClosed = onClientClosed;
     this.queue = new LinkedBlockingQueue<>(maxQueueSize);
     this.flusher = new Thread(this::flushLoop, "arcadedb-raft-group-committer");
@@ -150,14 +184,26 @@ class RaftGroupCommitter {
       }
     }
 
+    // Byte-bounded backpressure: reserve this entry's bytes against the queued-bytes budget BEFORE
+    // enqueuing. Because a single entry can be up to messageSizeMax, the entry-count bound alone can
+    // let a flood of large transactions exhaust the heap; this reservation makes the leader throw a
+    // retryable ReplicationQueueFullException instead of running out of memory under heavy ingest.
+    if (!reserveQueuedBytes(entrySize))
+      throw new ReplicationQueueFullException(
+          "Replication queue byte budget exhausted (" + queuedBytes.get() + " of " + maxQueuedBytes
+              + " bytes pending, entry=" + entrySize + " bytes). Leader is overloaded, retry later");
+
     final long timeoutMs = 2 * quorumTimeout;
     final CancellablePendingEntry pending = new CancellablePendingEntry(entry);
     try {
-      if (!queue.offer(pending, offerTimeoutMs, TimeUnit.MILLISECONDS))
+      if (!queue.offer(pending, offerTimeoutMs, TimeUnit.MILLISECONDS)) {
+        queuedBytes.addAndGet(-entrySize); // release the reservation: the entry never entered the queue
         throw new ReplicationQueueFullException(
             "Replication queue is full (" + queue.remainingCapacity() + " remaining of " + (queue.size()
                 + queue.remainingCapacity()) + " max). Server is overloaded, retry later");
+      }
     } catch (final InterruptedException e) {
+      queuedBytes.addAndGet(-entrySize); // release the reservation on interrupt
       Thread.currentThread().interrupt();
       throw new ReplicationQueueFullException("Interrupted while waiting for replication queue space");
     }
@@ -215,12 +261,55 @@ class RaftGroupCommitter {
     return new QuorumNotReachedException(message);
   }
 
+  /**
+   * Reserves {@code entrySize} bytes against the queued-bytes budget, waiting up to
+   * {@code offerTimeoutMs} for the flusher to drain and free space. Returns {@code false} if the
+   * budget stays exhausted for the whole window (the caller then surfaces a retryable backpressure
+   * error). The reservation is released by {@link #releaseQueuedBytes} once the entry is dequeued,
+   * or directly by the caller if the subsequent {@code queue.offer} fails.
+   */
+  boolean reserveQueuedBytes(final int entrySize) {
+    final long deadline = System.currentTimeMillis() + offerTimeoutMs;
+    while (true) {
+      final long current = queuedBytes.get();
+      if (current + entrySize <= maxQueuedBytes) {
+        if (queuedBytes.compareAndSet(current, current + entrySize))
+          return true;
+        continue; // lost the CAS race; re-read and retry without backing off
+      }
+      if (System.currentTimeMillis() >= deadline)
+        return false;
+      try {
+        Thread.sleep(Math.min(5L, Math.max(1L, offerTimeoutMs / 10L)));
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
+    }
+  }
+
+  /** Bytes of entries currently reserved in the queue (for backpressure metrics and tests). */
+  long getQueuedBytes() {
+    return queuedBytes.get();
+  }
+
+  /** Releases the byte reservations of entries that have just left the queue. */
+  private void releaseQueuedBytes(final List<CancellablePendingEntry> entries) {
+    long total = 0;
+    for (final CancellablePendingEntry e : entries)
+      total += e.entry.length;
+    if (total > 0)
+      queuedBytes.addAndGet(-total);
+  }
+
   void stop() {
     running = false;
     flusher.interrupt();
     CancellablePendingEntry pending;
-    while ((pending = queue.poll()) != null)
+    while ((pending = queue.poll()) != null) {
+      queuedBytes.addAndGet(-pending.entry.length); // released: entry left the queue
       pending.future.complete(new QuorumNotReachedException("Group committer shutting down"));
+    }
   }
 
   /**
@@ -249,6 +338,9 @@ class RaftGroupCommitter {
     int dropped = 0;
     CancellablePendingEntry pending;
     while ((pending = queue.poll()) != null) {
+      // Entry left this committer's queue: release its byte reservation here. Transferred entries are
+      // re-reserved on the target below so the byte budget stays accurate across the handoff.
+      queuedBytes.addAndGet(-pending.entry.length);
       // Only PENDING entries can be safely re-sent. DISPATCHED ones are already tied to the
       // old RaftClient's SlidingWindow; CANCELLED ones already had their futures completed.
       if (pending.state.get() != CancellablePendingEntry.PENDING) {
@@ -267,6 +359,7 @@ class RaftGroupCommitter {
         dropped++;
         continue;
       }
+      target.queuedBytes.addAndGet(pending.entry.length); // account the transferred entry on the target
       transferred++;
     }
     if (transferred > 0 || dropped > 0)
@@ -287,6 +380,10 @@ class RaftGroupCommitter {
         batch.clear();
         batch.add(first);
         queue.drainTo(batch, maxBatchSize - 1);
+
+        // Entries have left the queue: release their byte reservations now (they are about to be
+        // dispatched and held by Ratis, no longer pending in our backpressure budget).
+        releaseQueuedBytes(batch);
 
         flushBatch(batch);
 

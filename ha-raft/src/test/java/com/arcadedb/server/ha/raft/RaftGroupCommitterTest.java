@@ -200,6 +200,74 @@ class RaftGroupCommitterTest {
     target.stop();
   }
 
+  /**
+   * Byte-bounded backpressure (issue #4809 follow-up): because a single entry can be up to
+   * messageSizeMax, the entry-count bound alone can let a flood of large transactions exhaust the
+   * heap. The byte-reservation gate must accept entries up to the budget and then reject (after the
+   * offer timeout) once the budget is exhausted - deterministically verified at the gate, since a
+   * null client drains too fast for bytes to accumulate through submitAndWait.
+   */
+  @Test
+  void reserveQueuedBytesEnforcesBudget() {
+    // budget = 1024 bytes (clamped up to messageSizeMax=1024), offer timeout = 50ms.
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 200,
+        500, 100_000, 50, 1024L, 1024L, null);
+    try {
+      assertThat(committer.reserveQueuedBytes(512)).as("first 512B fits").isTrue();
+      assertThat(committer.reserveQueuedBytes(512)).as("second 512B fills the 1024B budget").isTrue();
+      assertThat(committer.getQueuedBytes()).isEqualTo(1024L);
+      // Over budget: must wait the offer timeout and then refuse, leaving the accounting unchanged.
+      final long before = System.currentTimeMillis();
+      assertThat(committer.reserveQueuedBytes(1)).as("over-budget reservation is refused").isFalse();
+      assertThat(System.currentTimeMillis() - before).as("refusal waits at least the offer timeout")
+          .isGreaterThanOrEqualTo(45L);
+      assertThat(committer.getQueuedBytes()).as("a refused reservation must not change the accounting")
+          .isEqualTo(1024L);
+    } finally {
+      committer.stop();
+    }
+  }
+
+  /**
+   * The reserve (enqueue) and release (dequeue/stop) accounting must balance to exactly zero so the
+   * byte budget cannot leak and wedge the leader into permanent false backpressure.
+   */
+  @Test
+  void byteAccountingBalancesToZeroAfterDrain() throws Exception {
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 200,
+        500, 100_000, 50, 1024L, 1024L, null);
+    // Each submit reserves then (null client) fails fast; the flusher drains and releases the bytes.
+    for (int i = 0; i < 20; i++) {
+      try {
+        committer.submitAndWait(new byte[256]);
+      } catch (final QuorumNotReachedException ignored) {
+        // expected: "RaftClient not available"
+      }
+    }
+    committer.stop();
+    assertThat(committer.getQueuedBytes()).as("queued-bytes accounting must balance to zero").isZero();
+  }
+
+  /**
+   * A single maximum-size entry must always be enqueueable: the constructor clamps the byte budget up
+   * to messageSizeMax so backpressure can never permanently deadlock a legitimate max-size transaction.
+   */
+  @Test
+  void byteBudgetNeverBelowMessageSizeMax() {
+    // Request a tiny 10-byte budget but a 1KB message cap: the effective budget must be raised to 1KB.
+    final RaftGroupCommitter committer = new RaftGroupCommitter(null, Quorum.MAJORITY, 200,
+        500, 100_000, 50, 1024L, 10L, null);
+    try {
+      // A 1KB entry equals the message cap; it must pass the size pre-check and the byte reservation
+      // (failing only later with "not available" because the client is null), not a byte-budget error.
+      assertThatThrownBy(() -> committer.submitAndWait(new byte[1024]))
+          .isInstanceOf(QuorumNotReachedException.class)
+          .hasMessageNotContaining("byte budget");
+    } finally {
+      committer.stop();
+    }
+  }
+
   @Test
   void isClientClosedRecognizesAlreadyClosedException() {
     assertThat(RaftGroupCommitter.isClientClosed(null)).isFalse();

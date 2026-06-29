@@ -831,6 +831,19 @@ public enum GlobalConfiguration {
       "Timeout in ms waiting for space in the group-commit queue before throwing ReplicationQueueFullException.",
       Integer.class, 100),
 
+  HA_GROUP_COMMIT_MAX_QUEUED_BYTES("arcadedb.ha.groupCommitMaxQueuedBytes", SCOPE.SERVER,
+      """
+      Maximum total bytes of pending (not-yet-dispatched) transactions allowed in the Raft group-commit \
+      queue. This is a memory backpressure bound that complements the entry-count bound \
+      (arcadedb.ha.groupCommitQueueSize): because a single transaction can be up to \
+      arcadedb.ha.grpcMessageSizeMax (128MB by default), a count-only bound would let a flood of large \
+      transactions exhaust the heap before backpressure engages. When adding a transaction would exceed \
+      this byte budget, the server waits up to arcadedb.ha.groupCommitOfferTimeout and then throws \
+      ReplicationQueueFullException (a retryable NeedRetryException) so heavy ingest backpressures \
+      instead of running the leader out of memory. Must be at least arcadedb.ha.grpcMessageSizeMax so a \
+      single maximum-size transaction can always be enqueued. Default 256MB.""",
+      Long.class, 256L * 1024 * 1024),
+
   HA_CLUSTER_TOKEN("arcadedb.ha.clusterToken", SCOPE.SERVER,
       """
       Shared secret for inter-node request forwarding authentication. \
