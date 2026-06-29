@@ -37,6 +37,8 @@ import java.io.FileInputStream;
 import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.nio.channels.ClosedChannelException;
+import java.util.Locale;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -307,12 +309,44 @@ public class SnapshotHttpHandler implements HttpHandler {
       HALog.log(this, HALog.BASIC, "Database snapshot for '%s' sent successfully", databaseName);
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.SEVERE, "Error serving snapshot for '%s'", e, databaseName);
-      throw new RuntimeException(e);
+      // A follower that restarts (or whose stall watchdog closed the connection) drops the socket
+      // mid-transfer, surfacing here as a broken pipe / connection reset. That is benign and expected:
+      // the follower will retry. Log it quietly and do not rethrow (rethrowing would also surface a
+      // second SEVERE from the enclosing suspendFlushAndExecute). Genuine errors stay SEVERE and rethrow.
+      if (isClientDisconnect(e))
+        LogManager.instance().log(this, Level.FINE,
+            "Snapshot transfer for '%s' aborted: the follower closed the connection (%s)", databaseName, e.getMessage());
+      else {
+        LogManager.instance().log(this, Level.SEVERE, "Error serving snapshot for '%s'", e, databaseName);
+        throw new RuntimeException(e);
+      }
     } finally {
       completed.set(true);
       watchdog.cancel(false);
     }
+  }
+
+  /**
+   * Returns {@code true} when the throwable chain indicates the follower closed the connection
+   * mid-transfer (broken pipe, connection reset, or a closed channel) - a benign, expected event during
+   * a follower restart or after the stall watchdog force-closes the connection - rather than a genuine
+   * server-side snapshot error. Package-private and static so the classification is unit-testable.
+   */
+  static boolean isClientDisconnect(final Throwable t) {
+    for (Throwable c = t; c != null; c = c.getCause()) {
+      if (c instanceof ClosedChannelException)
+        return true;
+      if (c instanceof IOException) {
+        final String m = c.getMessage();
+        if (m != null) {
+          final String lower = m.toLowerCase(Locale.ROOT);
+          if (lower.contains("broken pipe") || lower.contains("connection reset")
+              || lower.contains("connection closed") || lower.contains("connection abort"))
+            return true;
+        }
+      }
+    }
+    return false;
   }
 
   private void addFileToZip(final ZipOutputStream zipOut, final File inputFile) throws Exception {

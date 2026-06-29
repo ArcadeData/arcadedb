@@ -62,8 +62,8 @@ class ClusterMonitorTest {
   void tracksReplicaLag() {
     final ClusterMonitor monitor = new ClusterMonitor(1000L);
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 90);
-    monitor.updateReplicaMatchIndex("replica2", 50);
+    monitor.updateReplicaMatchIndex("replica1", 90, 0L);
+    monitor.updateReplicaMatchIndex("replica2", 50, 0L);
 
     final Map<String, Long> lags = monitor.getReplicaLags();
     assertThat(lags).containsEntry("replica1", 10L);
@@ -74,8 +74,8 @@ class ClusterMonitorTest {
   void identifiesLaggingReplicas() {
     final ClusterMonitor monitor = new ClusterMonitor(20L);
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 90);
-    monitor.updateReplicaMatchIndex("replica2", 50);
+    monitor.updateReplicaMatchIndex("replica1", 90, 0L);
+    monitor.updateReplicaMatchIndex("replica2", 50, 0L);
 
     assertThat(monitor.isReplicaLagging("replica1")).isFalse();
     assertThat(monitor.isReplicaLagging("replica2")).isTrue();
@@ -113,7 +113,7 @@ class ClusterMonitorTest {
   @Test
   void removesReplica() {
     final ClusterMonitor monitor = new ClusterMonitor(1000L);
-    monitor.updateReplicaMatchIndex("replica1", 50);
+    monitor.updateReplicaMatchIndex("replica1", 50, 0L);
     monitor.removeReplica("replica1");
     assertThat(monitor.getReplicaLags()).isEmpty();
   }
@@ -122,7 +122,7 @@ class ClusterMonitorTest {
   void lagUpdatesWhenLeaderAdvances() {
     final ClusterMonitor monitor = new ClusterMonitor(1000L);
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 95);
+    monitor.updateReplicaMatchIndex("replica1", 95, 0L);
     assertThat(monitor.getReplicaLags().get("replica1")).isEqualTo(5L);
 
     monitor.updateLeaderCommitIndex(200);
@@ -138,12 +138,12 @@ class ClusterMonitorTest {
     final ClusterMonitor monitor = new ClusterMonitor(50L);
     // Tick 1: seed state - replica is at 100, leader at 100, no lag.
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     captured.clear(); // ignore the seeding tick
 
     // Tick 2: leader advances 1000 entries, replica is stuck at 100. Lag now 1000 (well over 50).
     monitor.updateLeaderCommitIndex(1100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
 
     final List<CapturedLine> severe = captured.linesAtLevel(Level.SEVERE);
     assertThat(severe).hasSize(1);
@@ -158,12 +158,12 @@ class ClusterMonitorTest {
     final ClusterMonitor monitor = new ClusterMonitor(50L);
     // Seed: replica at 100, leader at 100.
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     captured.clear();
 
     // Tick: leader +500, replica +200. Replica IS advancing but slower. Lag = 300 (over 50).
     monitor.updateLeaderCommitIndex(600);
-    monitor.updateReplicaMatchIndex("replica1", 300);
+    monitor.updateReplicaMatchIndex("replica1", 300, 0L);
 
     final List<CapturedLine> warns = captured.linesAtLevel(Level.WARNING);
     assertThat(warns).hasSize(1);
@@ -178,11 +178,11 @@ class ClusterMonitorTest {
   void healthyLagDoesNotLog() {
     final ClusterMonitor monitor = new ClusterMonitor(1000L);
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 95);
+    monitor.updateReplicaMatchIndex("replica1", 95, 0L);
     captured.clear();
 
     monitor.updateLeaderCommitIndex(200);
-    monitor.updateReplicaMatchIndex("replica1", 195);
+    monitor.updateReplicaMatchIndex("replica1", 195, 0L);
 
     assertThat(captured.lines).isEmpty();
   }
@@ -194,18 +194,18 @@ class ClusterMonitorTest {
   void perReplicaThrottlePreventsSpam() {
     final ClusterMonitor monitor = new ClusterMonitor(50L);
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     captured.clear();
 
     // First over-threshold tick: should log.
     monitor.updateLeaderCommitIndex(1100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     final int afterFirst = captured.lines.size();
     assertThat(afterFirst).isEqualTo(1);
 
     // Second over-threshold tick within the 30s throttle window: should NOT log.
     monitor.updateLeaderCommitIndex(2100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     assertThat(captured.lines).hasSize(afterFirst);
   }
 
@@ -223,29 +223,29 @@ class ClusterMonitorTest {
 
     // Seed: replica at 100, leader at 100 (healthy).
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
 
     // First STALLED tick (t=0): leader jumps to 1100, replica stuck at 100. Streak starts, no fire.
     monitor.updateLeaderCommitIndex(1100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     assertThat(resynced).isEmpty();
 
     // Still stalled at t=10s: duration (30s) not elapsed, no fire.
     now.set(10_000);
     monitor.updateLeaderCommitIndex(1110);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     assertThat(resynced).isEmpty();
 
     // Still stalled at t=31s: duration elapsed, fire exactly once.
     now.set(31_000);
     monitor.updateLeaderCommitIndex(1120);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     assertThat(resynced).containsExactly("replica1");
 
     // Still stalled at t=40s: already fired for this streak, no second fire.
     now.set(40_000);
     monitor.updateLeaderCommitIndex(1130);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     assertThat(resynced).containsExactly("replica1");
   }
 
@@ -258,30 +258,30 @@ class ClusterMonitorTest {
     monitor.setClock(now::get);
 
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
 
     // Stall, fire once at t=31s.
     monitor.updateLeaderCommitIndex(1100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     now.set(31_000);
     monitor.updateLeaderCommitIndex(1110);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     assertThat(resynced).hasSize(1);
 
     // Replica catches up fully (healthy) -> streak resets.
     now.set(40_000);
     monitor.updateLeaderCommitIndex(1110);
-    monitor.updateReplicaMatchIndex("replica1", 1110);
+    monitor.updateReplicaMatchIndex("replica1", 1110, 0L);
 
     // New stall streak begins.
     now.set(50_000);
     monitor.updateLeaderCommitIndex(2110);
-    monitor.updateReplicaMatchIndex("replica1", 1110);
+    monitor.updateReplicaMatchIndex("replica1", 1110, 0L);
     assertThat(resynced).hasSize(1); // first observation of the new streak, no fire yet
 
     now.set(90_000); // >30s after the new streak began
     monitor.updateLeaderCommitIndex(2120);
-    monitor.updateReplicaMatchIndex("replica1", 1110);
+    monitor.updateReplicaMatchIndex("replica1", 1110, 0L);
     assertThat(resynced).hasSize(2);
   }
 
@@ -298,25 +298,25 @@ class ClusterMonitorTest {
     monitor.setClock(now::get);
 
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
 
     // Stall begins: leader jumps ahead, replica stuck at 100.
     monitor.updateLeaderCommitIndex(1100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
 
     // Several quiet ticks where the leader does NOT advance (leaderDelta == 0) and the replica is
     // still stuck. The streak must keep counting from when it began.
     for (int t = 5; t <= 25; t += 5) {
       now.set(t * 1000L);
       monitor.updateLeaderCommitIndex(1100); // no new commits this tick
-      monitor.updateReplicaMatchIndex("replica1", 100);
+      monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     }
     assertThat(resynced).as("must not fire before the duration elapses").isEmpty();
 
     // Past the duration, still stuck on a quiet tick: must fire.
     now.set(31_000);
     monitor.updateLeaderCommitIndex(1100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     assertThat(resynced).containsExactly("replica1");
   }
 
@@ -329,13 +329,59 @@ class ClusterMonitorTest {
     monitor.setClock(now::get);
 
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     for (int i = 1; i <= 10; i++) {
       now.set(i * 60_000L);
       monitor.updateLeaderCommitIndex(100 + i * 1000L);
-      monitor.updateReplicaMatchIndex("replica1", 100);
+      monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     }
     assertThat(resynced).isEmpty();
+  }
+
+  @Test
+  void emitsUnreachableThenReconnectedNarrative() {
+    final AtomicLong now = new AtomicLong(100_000L);
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, true, 10_000L);
+    monitor.setClock(now::get);
+    monitor.updateLeaderCommitIndex(1000L);
+
+    captured.clear();
+    // Reachable tick: lastRpcElapsedMs below threshold -> no unreachable line.
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 200L);
+    assertThat(captured.linesContaining("unreachable")).isEmpty();
+
+    // Goes unreachable: lastRpcElapsedMs over threshold -> one onset line.
+    now.addAndGet(1_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+    assertThat(captured.linesContaining("unreachable")).hasSize(1);
+
+    // Still unreachable within the 30s throttle window -> no new line.
+    now.addAndGet(1_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 13_000L);
+    assertThat(captured.linesContaining("unreachable")).hasSize(1);
+
+    // Comes back: lastRpcElapsedMs below threshold -> one reconnected line.
+    now.addAndGet(1_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1005L, 150L);
+    assertThat(captured.linesContaining("reconnected")).hasSize(1);
+  }
+
+  @Test
+  void noNarrativeWhenDisabled() {
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, false, 10_000L);
+    monitor.updateLeaderCommitIndex(1000L);
+    captured.clear();
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+    assertThat(captured.linesContaining("unreachable")).isEmpty();
+  }
+
+  @Test
+  void noNarrativeWhenThresholdZero() {
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, true, 0L);
+    monitor.updateLeaderCommitIndex(1000L);
+    captured.clear();
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+    assertThat(captured.linesContaining("unreachable")).isEmpty();
   }
 
   /** ArcadeDB Logger that captures everything in memory for test assertions. */
@@ -374,6 +420,14 @@ class ClusterMonitorTest {
 
     List<CapturedLine> linesAtLevel(final Level level) {
       return lines.stream().filter(l -> l.level.equals(level)).toList();
+    }
+
+    List<String> linesContaining(final String needle) {
+      final List<String> out = new ArrayList<>();
+      for (final CapturedLine l : lines)
+        if (l.message().contains(needle))
+          out.add(l.message());
+      return out;
     }
   }
 
