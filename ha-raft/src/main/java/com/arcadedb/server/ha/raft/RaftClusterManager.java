@@ -102,17 +102,63 @@ class RaftClusterManager {
     final RaftClient client = raftHAServer.getClient();
     if (client == null)
       return false;
+
+    final RaftPeerId selfId = raftHAServer.getLocalPeerId();
+
+    // Only the leader can hand off its own leadership. If this node is not the leader there is
+    // nothing to transfer; returning success here (as the old !isLeader() heuristic did) would be a
+    // false positive, and routing the request through Ratis could even trigger an unintended transfer
+    // on the real leader (issue #4809).
+    if (!raftHAServer.isLeader()) {
+      LogManager.instance().log(this, Level.INFO,
+          "Leadership transfer requested but this node (%s) is not the leader; nothing to transfer", selfId);
+      return false;
+    }
+
     try {
       final RaftClientReply reply = client.admin().transferLeadership(null, timeoutMs);
-      return reply.isSuccess() || !raftHAServer.isLeader();
+      if (reply.isSuccess())
+        return true;
+      // Non-success reply (often because notifyLeaderChanged closed our client while the RPC was
+      // still in flight). Only report success if leadership has actually settled on a DIFFERENT peer,
+      // rather than inferring it from a transient "we are no longer leader" state - a candidate /
+      // leaderless window, or an unrelated concurrent election (issue #4809).
+      return confirmLeadershipMovedAway(selfId);
     } catch (final Exception e) {
-      // When the transfer succeeds, notifyLeaderChanged calls refreshRaftClient() which
-      // closes the old client. The in-flight RPC then fails with "is closed".
-      // If we are no longer the leader, the transfer succeeded.
-      if (!raftHAServer.isLeader())
+      // When the transfer succeeds, notifyLeaderChanged calls refreshRaftClient() which closes the
+      // old client, so the in-flight RPC fails with "is closed". Confirm an actual, settled handoff to
+      // a different peer instead of trusting !isLeader() (issue #4809).
+      if (confirmLeadershipMovedAway(selfId))
         return true;
       LogManager.instance().log(this, Level.INFO, "Leadership transfer request: %s", e.getMessage());
       return false;
+    }
+  }
+
+  private static final long LEADER_CONFIRM_TIMEOUT_MS = 3_000;
+  private static final long LEADER_CONFIRM_POLL_MS     = 50;
+
+  /**
+   * Confirms that leadership has settled on a peer OTHER than {@code selfId} within a short grace
+   * window. Used by the no-target {@link #transferLeadership(long)} so success is not reported merely
+   * because this node transiently stopped being the leader (issue #4809): a real handoff ends with a
+   * concrete, different peer established as leader, whereas a candidate / leaderless window leaves
+   * {@link RaftHAServer#getLeaderId()} null or still pointing at this node.
+   */
+  private boolean confirmLeadershipMovedAway(final RaftPeerId selfId) {
+    final long deadline = System.currentTimeMillis() + LEADER_CONFIRM_TIMEOUT_MS;
+    while (true) {
+      final RaftPeerId leaderId = raftHAServer.getLeaderId();
+      if (leaderId != null && !leaderId.equals(selfId))
+        return true;
+      if (System.currentTimeMillis() >= deadline)
+        return false;
+      try {
+        Thread.sleep(LEADER_CONFIRM_POLL_MS);
+      } catch (final InterruptedException ie) {
+        Thread.currentThread().interrupt();
+        return false;
+      }
     }
   }
 
