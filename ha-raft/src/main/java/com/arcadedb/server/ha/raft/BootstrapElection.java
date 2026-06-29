@@ -38,6 +38,8 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -59,14 +61,28 @@ import java.util.logging.Level;
  *   <li>Fan out {@code POST /api/v1/cluster/bootstrap-state} to every peer in
  *       {@code HA_SERVER_LIST} with a bounded timeout
  *       ({@code arcadedb.ha.bootstrapTimeoutMs}).</li>
- *   <li>For every database that appears on at least one peer, pick the peer with the highest
- *       {@code lastTxId} as the bootstrap source.</li>
- *   <li>If the source is the local peer, commit
- *       {@link RaftLogEntryType#BOOTSTRAP_FINGERPRINT_ENTRY} via the existing transaction broker.
- *       If the source is a different peer, transfer Raft leadership to that peer; the new leader
- *       will re-enter this protocol on its own {@code notifyLeaderChanged} callback and commit the
- *       entry then.</li>
+ *   <li>Elect a SINGLE bootstrap source node for the whole cluster. ArcadeDB runs one Raft group
+ *       with one leader for every database, so every write flows through that one leader and the
+ *       last leader necessarily holds the freshest copy of <em>all</em> databases at shutdown. We
+ *       therefore pick one node - the node that is freshest (highest {@code lastTxId}) for the most
+ *       databases (plurality), tie-broken by highest aggregate {@code lastTxId}, then prefer-self,
+ *       then lexicographically-lowest peer id - and bootstrap every database from that node.</li>
+ *   <li>If the elected source is the local peer, commit one
+ *       {@link RaftLogEntryType#BOOTSTRAP_FINGERPRINT_ENTRY} per database via the existing
+ *       transaction broker, all from the local copies. If the elected source is a different peer,
+ *       transfer Raft leadership to that peer <em>without committing anything</em> (so the cluster
+ *       commit index stays 0); the new leader re-enters this protocol on its own
+ *       {@code notifyLeaderChanged} callback, elects itself, and commits every database then.</li>
  * </ol>
+ * <p>
+ * Because the protocol never commits a baseline before transferring leadership, the single
+ * transfer-then-commit-all sequence keeps the {@code commitIndex == 0} first-formation gate valid
+ * and converges in at most one leadership move. A database whose freshest copy happens to live on a
+ * node <em>other</em> than the elected source (only reachable by an operator manually staging
+ * mismatched backups, never by normal single-leader replication) is protected by the
+ * {@code localLastTxId > baseline} "refusing to overwrite" guard in
+ * {@code ArcadeStateMachine.applyBootstrapFingerprintEntry}, which surfaces a SEVERE for the
+ * operator instead of silently discarding the fresher data.
  * <p>
  * The protocol is idempotent across leader changes: each newly-elected leader checks whether the
  * cluster's commit index is still 0 and, if so, re-runs. A leader transfer triggered by a previous
@@ -306,93 +322,137 @@ class BootstrapElection {
   }
 
   /**
-   * Pick a source per database and either commit the bootstrap entry locally or transfer
-   * leadership to the source. Returns {@link Outcome#TRANSFERRED} as soon as ANY database
-   * triggers a leadership transfer; the current leader role ends here and the new leader will
-   * handle the rest on its own {@code notifyLeaderChanged} callback.
+   * Elect a single cluster-wide bootstrap source and act on it: either commit a baseline for every
+   * local database (when the local peer is elected) or transfer leadership once to the elected peer
+   * without committing anything (when a remote peer is elected). See the class Javadoc for why a
+   * single source is both correct and sufficient under ArcadeDB's one-leader-per-cluster model.
    */
   private Outcome decideAndAct(final Map<String, List<PeerState>> states) {
     final RaftPeerId localId = haServer.getLocalPeerId();
-    boolean anyCommitted = false;
     final long timeoutMs = server.getConfiguration()
         .getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
 
-    for (final var entry : states.entrySet()) {
-      final String dbName = entry.getKey();
-      final List<PeerState> peerStates = entry.getValue();
-      if (peerStates.isEmpty())
-        continue;
+    final RaftPeerId source = electSourceNode(states, localId);
 
-      // Source picking has two rules:
-      //
-      //  1. Highest lastTxId wins. The whole point of recency-aware bootstrap.
-      //  2. On ties, PREFER THE LOCAL PEER over remote peers. Two consequences worth calling out:
-      //     - When every peer is at the same state (the customer's happy path: identical
-      //       pre-staged backups), the protocol commits the bootstrap entry on the current leader
-      //       without an unnecessary leadership transfer.
-      //     - It avoids interfering with operator-driven leadership changes (e.g. tests that
-      //       explicitly call transferLeadership() on a brand-new empty cluster).
-      //
-      // Determinism across the cluster still holds: only the leader runs this code path; the
-      // tie-break only affects WHO the leader picks, not whether peers agree on the result.
-      PeerState source = peerStates.get(0);
-      for (int i = 1; i < peerStates.size(); i++) {
-        final PeerState candidate = peerStates.get(i);
-        if (candidate.lastTxId > source.lastTxId)
-          source = candidate;
-        else if (candidate.lastTxId == source.lastTxId) {
-          // Prefer self when tied; otherwise lex-lower peer id for repeatability.
-          if (candidate.peerId.equals(localId))
-            source = candidate;
-          else if (!source.peerId.equals(localId)
-              && candidate.peerId.toString().compareTo(source.peerId.toString()) < 0)
-            source = candidate;
-        }
+    // No peer reported any data for any database (every lastTxId is -1): the offline-bootstrap path
+    // adds no value - there is nothing to ship and nothing to compare against. Skip silently.
+    if (source == null)
+      return Outcome.SKIPPED_NO_DATABASES;
+
+    if (!source.equals(localId)) {
+      // A remote peer is the elected source. Hand off Raft leadership to it WITHOUT committing
+      // anything (commit index stays 0), so its own notifyLeaderChanged callback re-runs the
+      // protocol, elects itself, and commits every database from its local copies.
+      LogManager.instance().log(this, Level.INFO,
+          "Bootstrap: transferring leadership to elected source %s (freshest copy of the cluster)", source);
+      try {
+        haServer.transferLeadership(source.toString(), timeoutMs);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Bootstrap: leadership transfer to %s failed: %s; will retry next term", source, e.getMessage());
+        throw new RuntimeException(e);
       }
+      return Outcome.TRANSFERRED;
+    }
 
-      // If no peer has any data (every lastTxId is -1) the offline-bootstrap path adds no value:
-      // there is nothing to ship and nothing to compare against. Skip silently.
-      if (source.lastTxId < 0) {
-        LogManager.instance().log(this, Level.FINE,
-            "Bootstrap: no peer has data for '%s' (all lastTxId=-1); skipping protocol", dbName);
+    // We are the elected source. Commit one BOOTSTRAP_FINGERPRINT_ENTRY per database we hold, all
+    // from our local copies, in a deterministic order (sorted by database name).
+    boolean anyCommitted = false;
+    final List<String> dbNames = new ArrayList<>(states.keySet());
+    Collections.sort(dbNames);
+    for (final String dbName : dbNames) {
+      final PeerState local = localStateFor(states.get(dbName), localId);
+      if (local == null || local.lastTxId < 0) {
+        // The elected source does not hold this database (or holds no data for it). This is only
+        // reachable when an operator staged a database onto a different node outside Raft; warn so
+        // the misconfiguration is visible. The node that does hold it keeps its copy; the overwrite
+        // guard handles reconciliation if a baseline is ever committed for it later.
+        LogManager.instance().log(this, Level.WARNING,
+            "Bootstrap: elected source %s has no local data for '%s'; skipping its baseline", localId, dbName);
         continue;
       }
 
       LogManager.instance().log(this, Level.INFO,
           "Bootstrap source for '%s': peer=%s, lastTxId=%d, fingerprint=%s",
-          dbName, source.peerId, source.lastTxId, abbreviate(source.fingerprint));
-
-      if (source.peerId.equals(localId)) {
-        // We are the source. Commit BOOTSTRAP_FINGERPRINT_ENTRY via the broker.
-        try {
-          haServer.getTransactionBroker().replicateBootstrapFingerprint(dbName, source.fingerprint, source.lastTxId);
-          anyCommitted = true;
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Bootstrap: failed to commit BOOTSTRAP_FINGERPRINT_ENTRY for '%s': %s",
-              dbName, e.getMessage());
-          // Re-throw to let runIfEligible() back off; we'll retry next term.
-          throw new RuntimeException(e);
-        }
-      } else {
-        // Another peer is the source. Hand off Raft leadership to it; that peer's own
-        // notifyLeaderChanged callback will commit the entry. Returning early ensures any
-        // remaining databases in this map are NOT processed by us - we're no longer leader.
-        LogManager.instance().log(this, Level.INFO,
-            "Bootstrap: transferring leadership to %s (source for '%s')", source.peerId, dbName);
-        try {
-          haServer.transferLeadership(source.peerId.toString(), timeoutMs);
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Bootstrap: leadership transfer to %s failed: %s; will retry next term",
-              source.peerId, e.getMessage());
-          throw new RuntimeException(e);
-        }
-        return Outcome.TRANSFERRED;
+          dbName, local.peerId, local.lastTxId, abbreviate(local.fingerprint));
+      try {
+        haServer.getTransactionBroker().replicateBootstrapFingerprint(dbName, local.fingerprint, local.lastTxId);
+        anyCommitted = true;
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Bootstrap: failed to commit BOOTSTRAP_FINGERPRINT_ENTRY for '%s': %s", dbName, e.getMessage());
+        // Re-throw to let runIfEligible() back off; we'll retry next term.
+        throw new RuntimeException(e);
       }
     }
 
     return anyCommitted ? Outcome.COMMITTED : Outcome.SKIPPED_NO_DATABASES;
+  }
+
+  /**
+   * Elect the single cluster-wide bootstrap source from the collected per-database peer states.
+   * <p>
+   * Each database votes for every peer holding its freshest ({@code max lastTxId}) copy. The winner
+   * is the peer with the most votes (freshest for the most databases), tie-broken by highest
+   * aggregate {@code lastTxId} across databases, then a preference for the local peer (to avoid an
+   * unnecessary leadership transfer when the local peer is already as fresh as the best), then the
+   * lexicographically-lowest peer id for full determinism. The function is order-independent so
+   * every peer computing it from the same data reaches the same winner.
+   *
+   * @return the elected source peer id, or {@code null} when no peer reported any data.
+   */
+  static RaftPeerId electSourceNode(final Map<String, List<PeerState>> states, final RaftPeerId localId) {
+    final Map<RaftPeerId, Integer> votes = new HashMap<>();
+    final Map<RaftPeerId, Long> aggregate = new HashMap<>();
+    for (final List<PeerState> peerStates : states.values()) {
+      if (peerStates == null || peerStates.isEmpty())
+        continue;
+      long max = -1;
+      for (final PeerState ps : peerStates)
+        if (ps.lastTxId > max)
+          max = ps.lastTxId;
+      if (max < 0)
+        continue; // no data for this database anywhere
+      for (final PeerState ps : peerStates) {
+        if (ps.lastTxId < 0)
+          continue;
+        aggregate.merge(ps.peerId, ps.lastTxId, Long::sum);
+        if (ps.lastTxId == max)
+          votes.merge(ps.peerId, 1, Integer::sum);
+      }
+    }
+    if (votes.isEmpty())
+      return null;
+
+    final List<RaftPeerId> candidates = new ArrayList<>(votes.keySet());
+    candidates.sort(Comparator.comparing(RaftPeerId::toString));
+    RaftPeerId best = null;
+    int bestVotes = -1;
+    long bestAggregate = -1;
+    for (final RaftPeerId candidate : candidates) {
+      final int candidateVotes = votes.get(candidate);
+      final long candidateAggregate = aggregate.getOrDefault(candidate, 0L);
+      if (best == null
+          || candidateVotes > bestVotes
+          || (candidateVotes == bestVotes && candidateAggregate > bestAggregate)
+          || (candidateVotes == bestVotes && candidateAggregate == bestAggregate
+              && candidate.equals(localId) && !best.equals(localId))) {
+        best = candidate;
+        bestVotes = candidateVotes;
+        bestAggregate = candidateAggregate;
+      }
+    }
+    return best;
+  }
+
+  /** Returns the local peer's state for a database from its per-peer state list, or {@code null}. */
+  private static PeerState localStateFor(final List<PeerState> peerStates, final RaftPeerId localId) {
+    if (peerStates == null)
+      return null;
+    for (final PeerState ps : peerStates)
+      if (ps.peerId.equals(localId))
+        return ps;
+    return null;
   }
 
   private static String abbreviate(final String fingerprint) {
