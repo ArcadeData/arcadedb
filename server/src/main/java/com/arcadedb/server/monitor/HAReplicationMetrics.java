@@ -18,13 +18,23 @@
  */
 package com.arcadedb.server.monitor;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
 
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.MultiGauge;
+import io.micrometer.core.instrument.Tags;
 import io.micrometer.core.instrument.binder.MeterBinder;
+
+import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
 
 /**
  * Micrometer binding for High-Availability replication health, so the heartbeat-lag and
@@ -69,6 +79,55 @@ public final class HAReplicationMetrics implements MeterBinder {
     Gauge.builder("arcadedb.ha.followers.tracked", () -> stats().trackedFollowers())
         .description("Number of followers the leader is currently tracking. 0 when not leader.")
         .register(registry);
+
+    bindPerFollowerGauges(registry);
+  }
+
+  /**
+   * Registers per-follower gauges tagged with {@code peer=<id>} so Grafana can alert on a SPECIFIC
+   * slow node (issue #4812), complementing the aggregate-max gauges above. Uses a {@link MultiGauge}
+   * re-registered every 5s from a small daemon thread, which both refreshes the values and follows
+   * membership changes (peers added/removed). Only meaningful on the leader. The 5s cadence matches
+   * the leader's lag monitor, so the per-peer gauges and the cluster status table stay in step.
+   */
+  private void bindPerFollowerGauges(final MeterRegistry registry) {
+    final MultiGauge lastContact = MultiGauge.builder("arcadedb.ha.follower.last_contact_ms")
+        .description("Per-follower ms since the leader last exchanged an RPC with it (tag peer=<id>). "
+            + "Approaching arcadedb.ha.electionTimeoutMin means that node is about to trigger an election.")
+        .baseUnit("milliseconds")
+        .register(registry);
+    final MultiGauge replicationLag = MultiGauge.builder("arcadedb.ha.follower.replication_lag")
+        .description("Per-follower committed-entry lag behind the leader (tag peer=<id>). "
+            + "Sustained growth on one node identifies the cluster's replication bottleneck.")
+        .register(registry);
+    final MultiGauge laggingFor = MultiGauge.builder("arcadedb.ha.follower.lagging_for_ms")
+        .description("Per-follower ms it has been continuously non-HEALTHY (tag peer=<id>); 0 when healthy. "
+            + "Distinguishes a constantly-slow node from a transient blip.")
+        .baseUnit("milliseconds")
+        .register(registry);
+
+    final Runnable refresh = () -> {
+      try {
+        final List<FollowerSample> samples = followerSamples();
+        lastContact.register(samples.stream()
+            .map(s -> MultiGauge.Row.of(Tags.of("peer", s.peerId()), s.lastContactMs())).toList(), true);
+        replicationLag.register(samples.stream()
+            .map(s -> MultiGauge.Row.of(Tags.of("peer", s.peerId()), s.replicationLag())).toList(), true);
+        laggingFor.register(samples.stream()
+            .map(s -> MultiGauge.Row.of(Tags.of("peer", s.peerId()), s.laggingForMs())).toList(), true);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE, "Failed to refresh per-follower HA gauges: %s", e.getMessage());
+      }
+    };
+
+    refresh.run(); // publish an initial (possibly empty) set immediately
+
+    final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
+      final Thread t = new Thread(r, "arcadedb-ha-follower-metrics");
+      t.setDaemon(true);
+      return t;
+    });
+    scheduler.scheduleAtFixedRate(refresh, 5, 5, TimeUnit.SECONDS);
   }
 
   /**
@@ -80,5 +139,13 @@ public final class HAReplicationMetrics implements MeterBinder {
       if (plugin instanceof HAReplicationStatsProvider provider)
         return provider.getHAReplicationStats();
     return new HAReplicationStats(false, -1, -1, 0);
+  }
+
+  /** Per-follower samples from the started HA plugin, or empty when HA is disabled / not the leader. */
+  private List<FollowerSample> followerSamples() {
+    for (final ServerPlugin plugin : server.getPlugins())
+      if (plugin instanceof HAReplicationStatsProvider provider)
+        return provider.getFollowerSamples();
+    return List.of();
   }
 }

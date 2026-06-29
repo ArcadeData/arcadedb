@@ -123,7 +123,29 @@ function renderClusterAlerts(data) {
 // checks never break an older Studio.
 function renderAlertDetails(a) {
   var details = a.details;
-  if (!details || !details.databases)
+  if (!details)
+    return "";
+
+  // Lagging-follower alert (issue #4812): name each slow node with its lag and how long it has been
+  // lagging, so the alert is actionable on its own without cross-referencing the node cards.
+  if (details.nodes) {
+    var nodeHtml = "";
+    for (var n = 0; n < details.nodes.length; n++) {
+      var node = details.nodes[n];
+      var pieces = ["lag=" + escapeHtml(String(node.replicationLag))];
+      if (node.laggingForMs != null && node.laggingForMs > 0)
+        pieces.push("for " + escapeHtml(formatClusterDuration(node.laggingForMs)));
+      if (node.lastContactMs != null)
+        pieces.push("heartbeat " + escapeHtml(formatClusterDuration(node.lastContactMs)));
+      nodeHtml += '<div class="mt-1"><code>' + escapeHtml(node.peerId) + '</code> '
+        + '<span class="badge bg-' + (node.status === "STALLED" ? "danger" : "warning") + '" style="font-size:0.6rem;">'
+        + escapeHtml(node.status) + '</span> '
+        + '<span class="text-muted">' + pieces.join(", ") + '</span></div>';
+    }
+    return nodeHtml;
+  }
+
+  if (!details.databases)
     return "";
 
   var html = "";
@@ -485,14 +507,28 @@ function renderNodeCards(data) {
     var dotColor = isLeader ? "limegreen" : statusStyle.dot;
     var statusDot = '<span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:' + dotColor + '; margin-right:6px;"></span>';
 
-    // Lag and matchIndex are present only when the local node is the leader (it's the leader who
-    // tracks per-follower replication state). Show them inline so a STALLED follower is obvious.
+    // Per-follower replication health is present only when the local node is the leader (it's the
+    // leader who tracks it). Show lag, heartbeat latency and how long the node has been lagging inline
+    // so a constantly-slow follower is obvious at a glance (issue #4812).
     var lagLine = "";
     if (!isLeader && peer.matchIndex != null) {
-      var lagText = "matchIndex=" + escapeHtml(String(peer.matchIndex));
+      var parts = ["matchIndex=" + escapeHtml(String(peer.matchIndex))];
+      if (peer.replicationLag != null)
+        parts.push("lag=" + escapeHtml(String(peer.replicationLag)));
+      if (peer.lastContactMs != null)
+        parts.push("heartbeat=" + escapeHtml(formatClusterDuration(peer.lastContactMs)));
       lagLine = '<div style="font-size:0.72rem; color:var(--text-secondary); margin-top:2px;">'
-        + '<i class="fas fa-tachometer-alt" style="margin-right:4px;"></i>' + lagText
+        + '<i class="fas fa-tachometer-alt" style="margin-right:4px;"></i>' + parts.join(", ")
         + '</div>';
+      // Only show a "lagging for" line once the node has actually been non-healthy for a while, so a
+      // healthy follower's card stays clean.
+      if (peer.laggingForMs != null && peer.laggingForMs > 0) {
+        var lagColor = peer.replicaStatus === "STALLED" ? "crimson" : "orange";
+        lagLine += '<div style="font-size:0.72rem; color:' + lagColor + '; margin-top:2px;">'
+          + '<i class="fas fa-hourglass-half" style="margin-right:4px;"></i>lagging for '
+          + escapeHtml(formatClusterDuration(peer.laggingForMs))
+          + '</div>';
+      }
     }
 
     var card = '<div class="' + colClass + '">'
@@ -650,6 +686,14 @@ function updateMetricsSummary(data) {
   } else {
     $("#metricUptime").text("-");
   }
+}
+
+// Like formatDuration but keeps sub-second precision, used for heartbeat latency and short lag
+// spells where "0s" would be misleading (issue #4812).
+function formatClusterDuration(ms) {
+  if (ms == null) return "";
+  if (ms < 1000) return Math.round(ms) + "ms";
+  return formatDuration(ms);
 }
 
 function formatDuration(ms) {

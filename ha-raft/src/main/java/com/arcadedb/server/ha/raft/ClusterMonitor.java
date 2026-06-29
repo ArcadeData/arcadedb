@@ -137,6 +137,15 @@ public class ClusterMonitor {
     state.lastLag = lag;
     state.status = status;
 
+    // Track how long this replica has been continuously non-HEALTHY (issue #4812). Start the clock
+    // on the first non-healthy tick, keep it across CATCHING_UP/FALLING_BEHIND/STALLED, and reset it
+    // the moment it recovers - so the JSON/alert/metrics can report a persistence duration, not just
+    // a point-in-time snapshot.
+    if (status == ReplicaStatus.HEALTHY)
+      state.laggingSinceMs = -1;
+    else if (state.laggingSinceMs == -1)
+      state.laggingSinceMs = now;
+
     // Leader-driven recovery (#4728): if the replica stays stuck long enough, the leader actively
     // forces it to resync instead of merely logging forever. Tracked regardless of the log throttle.
     trackStallForRecovery(replicaId, state, matchIndex, replicaDelta, lag, now);
@@ -250,6 +259,18 @@ public class ClusterMonitor {
     return lags;
   }
 
+  /**
+   * Milliseconds this replica has been continuously non-HEALTHY, or {@code 0} if it is healthy or
+   * unknown (issue #4812). Lets callers distinguish a transient blip from a node that is constantly
+   * slow.
+   */
+  public long getReplicaLaggingForMs(final String replicaId) {
+    final ReplicaState s = replicaStates.get(replicaId);
+    if (s == null || s.laggingSinceMs == -1)
+      return 0;
+    return Math.max(0, clock.getAsLong() - s.laggingSinceMs);
+  }
+
   public boolean isReplicaLagging(final String replicaId) {
     final ReplicaState state = replicaStates.get(replicaId);
     if (state == null)
@@ -272,6 +293,10 @@ public class ClusterMonitor {
     long          lastLag;
     long          lastWarnAtMs;
     ReplicaStatus status = ReplicaStatus.UNKNOWN;
+    // Wall-clock time (ms) when this replica first went non-HEALTHY in the current spell; -1 = healthy.
+    // Read cross-thread (status JSON / metrics), written on the lag-monitor thread - same tolerated-
+    // staleness contract as the snapshot fields above (issue #4812: surface "how long it's been slow").
+    long          laggingSinceMs    = -1;
     // Stall-streak state for leader-driven recovery. Unlike the snapshot fields above (which the
     // status table / lag map read cross-thread, tolerating staleness), these three are BOTH written
     // and read only from the single lag-monitor thread, so they need no synchronization. Any future

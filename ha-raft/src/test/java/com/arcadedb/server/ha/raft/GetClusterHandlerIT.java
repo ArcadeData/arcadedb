@@ -57,6 +57,38 @@ class GetClusterHandlerIT extends BaseRaftHATest {
     }
   }
 
+  /**
+   * Issue #4812: the leader's cluster endpoint must carry per-follower replication health so Studio /
+   * operators can pinpoint a slow node. Followers report only role (no follower indices to expose).
+   */
+  @Test
+  void leaderExposesPerFollowerReplicationHealth() throws Exception {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).as("a leader must be elected").isGreaterThanOrEqualTo(0);
+
+    final JSONObject response = queryClusterEndpoint(leaderIndex);
+    assertThat(response.getBoolean("isLeader")).isTrue();
+
+    final JSONArray peers = response.getJSONArray("peers");
+    int followersWithHealth = 0;
+    for (int i = 0; i < peers.length(); i++) {
+      final JSONObject peer = peers.getJSONObject(i);
+      if (!"FOLLOWER".equals(peer.getString("role")))
+        continue;
+      // The leader publishes lag, classified status, heartbeat latency and lagging duration per follower.
+      assertThat(peer.has("replicationLag")).as("follower must carry replicationLag").isTrue();
+      assertThat(peer.has("replicaStatus")).as("follower must carry replicaStatus").isTrue();
+      assertThat(peer.has("lastContactMs")).as("follower must carry lastContactMs").isTrue();
+      assertThat(peer.has("laggingForMs")).as("follower must carry laggingForMs").isTrue();
+      // >= -1: -1 is the documented "unknown" value before the follower has matched any commit yet.
+      assertThat(peer.getLong("replicationLag")).isGreaterThanOrEqualTo(-1L);
+      assertThat(peer.getString("replicaStatus"))
+          .isIn("HEALTHY", "CATCHING_UP", "FALLING_BEHIND", "STALLED", "UNKNOWN");
+      followersWithHealth++;
+    }
+    assertThat(followersWithHealth).as("the 2-node cluster's single follower must report health").isEqualTo(1);
+  }
+
   @Test
   void exactlyOneLeaderInCluster() throws Exception {
     int leaderCount = 0;

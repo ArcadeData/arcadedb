@@ -1524,6 +1524,35 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return new HAReplicationStatsProvider.HAReplicationStats(true, maxContactMs, maxLag, followers.size());
   }
 
+  /**
+   * Per-follower health samples for metrics, the cluster JSON, and the lagging-follower alert (issue
+   * #4812). Combines the leader's Ratis follower indices ({@link #getFollowerStates()}) with the
+   * {@link ClusterMonitor}'s classification and sustained-lag duration. Empty when not the leader.
+   */
+  public List<HAReplicationStatsProvider.FollowerSample> getFollowerSamples() {
+    if (raftServer == null || !isLeader())
+      return List.of();
+
+    final List<Map<String, Object>> followers = getFollowerStates();
+    if (followers.isEmpty())
+      return List.of();
+
+    final long commitIndex = getCommitIndex();
+    final List<HAReplicationStatsProvider.FollowerSample> samples = new ArrayList<>(followers.size());
+    for (final Map<String, Object> follower : followers) {
+      final String peerId = (String) follower.get("peerId");
+      final long matchIndex = follower.get("matchIndex") instanceof Number n ? n.longValue() : -1;
+      final long nextIndex = follower.get("nextIndex") instanceof Number n ? n.longValue() : -1;
+      final long lastContactMs = follower.get("lastRpcElapsedMs") instanceof Number n ? n.longValue() : -1;
+      final long lag = commitIndex >= 0 && matchIndex >= 0 ? Math.max(0L, commitIndex - matchIndex) : -1;
+      final String status = clusterMonitor != null ? clusterMonitor.getReplicaStatus(peerId).name() : "UNKNOWN";
+      final long laggingForMs = clusterMonitor != null ? clusterMonitor.getReplicaLaggingForMs(peerId) : 0;
+      samples.add(new HAReplicationStatsProvider.FollowerSample(
+          peerId, matchIndex, nextIndex, lag, lastContactMs, status, laggingForMs));
+    }
+    return samples;
+  }
+
   public List<Map<String, Object>> getFollowerStates() {
     if (raftServer == null || !isLeader())
       return List.of();
