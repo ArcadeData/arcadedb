@@ -26,12 +26,14 @@ import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 
 import java.util.Deque;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -88,16 +90,36 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
     response.put("lastElectionTime", stateMachine.getLastElectionTime());
     response.put("uptime", System.currentTimeMillis() - stateMachine.getStartTime());
 
+    // Per-follower replication health (leader only): replication lag, classified status, heartbeat
+    // latency, and how long the follower has been lagging - so Studio and operators can pinpoint a
+    // constantly-slow node instead of grepping logs (issue #4812). Keyed by peer id for the loop below.
+    final List<HAReplicationStatsProvider.FollowerSample> followerSamples = raftHAServer.getFollowerSamples();
+    final Map<String, HAReplicationStatsProvider.FollowerSample> followerHealth = new HashMap<>();
+    final long lagWarningThreshold = raftHAServer.getClusterMonitor() != null
+        ? raftHAServer.getClusterMonitor().getLagWarningThreshold() : 0;
+    for (final HAReplicationStatsProvider.FollowerSample sample : followerSamples)
+      followerHealth.put(sample.peerId(), sample);
+
     final JSONArray peers = new JSONArray();
     for (final RaftPeer peer : raftHAServer.getRaftGroup().getPeers()) {
       final JSONObject peerJson = new JSONObject();
-      peerJson.put("id", peer.getId().toString());
+      final String peerId = peer.getId().toString();
+      peerJson.put("id", peerId);
       peerJson.put("address", peer.getAddress());
 
-      if (leaderId != null && peer.getId().equals(leaderId))
-        peerJson.put("role", "LEADER");
-      else
-        peerJson.put("role", "FOLLOWER");
+      final boolean peerIsLeader = leaderId != null && peer.getId().equals(leaderId);
+      peerJson.put("role", peerIsLeader ? "LEADER" : "FOLLOWER");
+
+      final HAReplicationStatsProvider.FollowerSample health = followerHealth.get(peerId);
+      if (!peerIsLeader && health != null) {
+        peerJson.put("matchIndex", health.matchIndex());
+        peerJson.put("nextIndex", health.nextIndex());
+        peerJson.put("replicationLag", health.replicationLag());
+        peerJson.put("lastContactMs", health.lastContactMs());
+        peerJson.put("replicaStatus", health.status());
+        peerJson.put("laggingForMs", health.laggingForMs());
+        peerJson.put("lagging", lagWarningThreshold > 0 && health.replicationLag() > lagWarningThreshold);
+      }
 
       peers.put(peerJson);
     }
@@ -133,7 +155,7 @@ public class GetClusterHandler extends AbstractServerHttpHandler {
 
     // Cluster-level health alerts (e.g. single-bucket types that serialize concurrent writes on the
     // leader). Surfaced in Studio's HA panel so operators see actionable warnings without log-grepping.
-    response.put("alerts", ClusterAlerts.scan(httpServer.getServer(), stateMachine));
+    response.put("alerts", ClusterAlerts.scan(httpServer.getServer(), stateMachine, followerSamples));
 
     return new ExecutionResponse(200, response.toString());
   }

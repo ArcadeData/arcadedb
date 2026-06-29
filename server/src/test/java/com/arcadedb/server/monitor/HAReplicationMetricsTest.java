@@ -20,6 +20,7 @@ package com.arcadedb.server.monitor;
 
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 import com.arcadedb.server.monitor.HAReplicationStatsProvider.HAReplicationStats;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
@@ -40,10 +41,16 @@ class HAReplicationMetricsTest {
 
   /** Minimal plugin that is both a ServerPlugin (discoverable) and a stats provider. */
   private static final class FakeHAPlugin implements ServerPlugin, HAReplicationStatsProvider {
-    private final HAReplicationStats stats;
+    private final HAReplicationStats   stats;
+    private final List<FollowerSample> samples;
 
     FakeHAPlugin(final HAReplicationStats stats) {
+      this(stats, List.of());
+    }
+
+    FakeHAPlugin(final HAReplicationStats stats, final List<FollowerSample> samples) {
       this.stats = stats;
+      this.samples = samples;
     }
 
     @Override
@@ -53,6 +60,11 @@ class HAReplicationMetricsTest {
     @Override
     public HAReplicationStats getHAReplicationStats() {
       return stats;
+    }
+
+    @Override
+    public List<FollowerSample> getFollowerSamples() {
+      return samples;
     }
   }
 
@@ -84,6 +96,29 @@ class HAReplicationMetricsTest {
     assertThat(registry.find("arcadedb.ha.follower.max_last_contact_ms").gauge().value()).isEqualTo(-1.0);
     assertThat(registry.find("arcadedb.ha.follower.max_replication_lag").gauge().value()).isEqualTo(-1.0);
     assertThat(registry.find("arcadedb.ha.followers.tracked").gauge().value()).isEqualTo(0.0);
+  }
+
+  @Test
+  void perFollowerGaugesAreTaggedByPeer() {
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getPlugins()).thenReturn(List.of(new FakeHAPlugin(
+        new HAReplicationStats(true, 900, 4200, 2),
+        List.of(
+            new FollowerSample("n1", 100, 101, 12, 30, "HEALTHY", 0),
+            new FollowerSample("slow", 50, 51, 4200, 900, "FALLING_BEHIND", 8000)))));
+
+    final SimpleMeterRegistry registry = new SimpleMeterRegistry();
+    new HAReplicationMetrics(server).bindTo(registry);
+
+    // The initial refresh() runs synchronously in bindTo, so the per-peer rows exist immediately.
+    assertThat(registry.find("arcadedb.ha.follower.replication_lag").tag("peer", "slow").gauge().value())
+        .isEqualTo(4200.0);
+    assertThat(registry.find("arcadedb.ha.follower.last_contact_ms").tag("peer", "slow").gauge().value())
+        .isEqualTo(900.0);
+    assertThat(registry.find("arcadedb.ha.follower.lagging_for_ms").tag("peer", "slow").gauge().value())
+        .isEqualTo(8000.0);
+    assertThat(registry.find("arcadedb.ha.follower.replication_lag").tag("peer", "n1").gauge().value())
+        .isEqualTo(12.0);
   }
 
   @Test

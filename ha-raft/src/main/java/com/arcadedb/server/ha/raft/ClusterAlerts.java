@@ -24,6 +24,7 @@ import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
+import com.arcadedb.server.monitor.HAReplicationStatsProvider.FollowerSample;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -78,13 +79,72 @@ public class ClusterAlerts {
    * (issue #4727). Pass {@code null} for the non-HA / pre-start path.
    */
   public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine) {
+    return scan(server, stateMachine, Collections.emptyList());
+  }
+
+  /**
+   * Scan overload that also flags lagging/stalled followers from the leader's per-follower health
+   * samples (issue #4812). Pass an empty list on followers or when HA is unavailable.
+   */
+  public static JSONArray scan(final ArcadeDBServer server, final ArcadeStateMachine stateMachine,
+      final List<FollowerSample> followerSamples) {
     final JSONArray alerts = new JSONArray();
     checkSingleBucketTypes(server, alerts);
     if (stateMachine != null) {
       checkLeaderMissingDatabases(stateMachine, alerts);
       checkFailedAcquireDatabases(stateMachine, alerts);
     }
+    addLaggingFollowerAlert(followerSamples, alerts);
     return alerts;
+  }
+
+  /**
+   * Pure alert builder (package-private for unit testing): appends a "lagging follower" alert when any
+   * follower is {@code FALLING_BEHIND} or {@code STALLED} (issue #4812). A {@code STALLED} follower
+   * (matchIndex stuck while the leader advances) is {@code critical} because it will eventually force
+   * an election; a merely {@code FALLING_BEHIND} one is a {@code warning}. The alert names each slow
+   * node with its lag and how long it has been lagging, so the operator can act on the right node.
+   */
+  static void addLaggingFollowerAlert(final List<FollowerSample> samples, final JSONArray alerts) {
+    if (samples == null || samples.isEmpty())
+      return;
+
+    final JSONArray nodes = new JSONArray();
+    boolean anyStalled = false;
+    for (final FollowerSample s : samples) {
+      final boolean stalled = "STALLED".equals(s.status());
+      final boolean fallingBehind = "FALLING_BEHIND".equals(s.status());
+      if (!stalled && !fallingBehind)
+        continue;
+      anyStalled |= stalled;
+      nodes.put(new JSONObject()
+          .put("peerId", s.peerId())
+          .put("status", s.status())
+          .put("replicationLag", s.replicationLag())
+          .put("lastContactMs", s.lastContactMs())
+          .put("laggingForMs", s.laggingForMs()));
+    }
+
+    if (nodes.isEmpty())
+      return;
+
+    alerts.put(new JSONObject()
+        .put("id", "lagging-followers")
+        .put("severity", anyStalled ? SEVERITY_CRITICAL : SEVERITY_WARNING)
+        .put("title", anyStalled ? "Follower(s) stalled and bottlenecking replication"
+            : "Follower(s) falling behind the leader")
+        .put("message", nodes.length() + " follower(s) cannot keep up with the leader's write rate. "
+            + (anyStalled
+                ? "At least one is STALLED (its matchIndex is stuck while the leader advances), which will eventually "
+                    + "trigger a leader election and stalls quorum acknowledgements, forcing replication backpressure."
+                : "They are FALLING_BEHIND (lag is growing), which raises replication backpressure and risks election "
+                    + "churn if it continues.")
+            + " The slowest node is the bottleneck for the whole cluster.")
+        .put("recommendation", "Investigate the named node(s): check CPU, disk I/O, GC pauses and network to the leader. "
+            + "If the node is healthy but the write rate is simply too high, reduce per-batch size or raise "
+            + "arcadedb.ha.electionTimeoutMin/Max. A persistently STALLED node should be resynced "
+            + "(POST /api/v1/cluster/resync/{database}) or replaced.")
+        .put("details", new JSONObject().put("nodes", nodes)));
   }
 
   /**
