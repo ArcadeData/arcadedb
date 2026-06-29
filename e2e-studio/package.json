@@ -11,9 +11,9 @@
     "install-browsers": "npx playwright install"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.0",
+    "@playwright/test": "^1.61.1",
     "testcontainers": "^12.0.3",
-    "@types/node": "^26.0.0",
+    "@types/node": "^26.0.1",
     "typescript": "^6.0.3"
   },
   "engines": {

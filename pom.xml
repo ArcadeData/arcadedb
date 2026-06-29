@@ -78,25 +78,25 @@
         <maven-enforcer-plugin.version>3.4.1</maven-enforcer-plugin.version>
 
         <testcontainers.version>2.0.5</testcontainers.version>
-        <logback-classic.version>1.5.34</logback-classic.version>
+        <logback-classic.version>1.5.37</logback-classic.version>
         <micrometer.version>1.17.0</micrometer.version>
         <micrometer-tracing.version>1.7.0</micrometer-tracing.version>
         <opentelemetry.version>1.63.0</opentelemetry.version>
         <postgres.version>42.7.11</postgres.version>
 
         <assertj-core.version>3.27.7</assertj-core.version>
-        <junit.jupiter.version>6.1.0</junit.jupiter.version>
+        <junit.jupiter.version>6.1.1</junit.jupiter.version>
         <awaitility.version>4.3.0</awaitility.version>
         <json-path.version>3.0.0</json-path.version>
         <slf4j.version>2.0.18</slf4j.version>
-        <undertow-core.version>2.4.1.Final</undertow-core.version>
+        <undertow-core.version>2.4.2.Final</undertow-core.version>
         <jboss-threads.version>3.9.2</jboss-threads.version>
         <mockito-core.version>5.23.0</mockito-core.version>
         <neo4j-driver.version>6.2.0</neo4j-driver.version>
         <byte-buddy.version>1.17.7</byte-buddy.version>
 
 
-        <protobuf-maven-plugin.version>5.1.5</protobuf-maven-plugin.version>
+        <protobuf-maven-plugin.version>5.1.6</protobuf-maven-plugin.version>
         <grpc.version>1.79.0</grpc.version>
         <protoc.version>4.33.0</protoc.version>
         <protobuf-java.version>4.35.1</protobuf-java.version>

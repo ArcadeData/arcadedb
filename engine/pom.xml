@@ -37,7 +37,7 @@
         <disruptor.version>1.2.21</disruptor.version>
         <gson.version>2.14.0</gson.version>
         <lz4-java.version>1.11.0</lz4-java.version>
-        <lucene.version>10.4.0</lucene.version>
+        <lucene.version>10.5.0</lucene.version>
         <graalvm.version>25.0.3</graalvm.version>
         <jvector.version>4.0.0-rc.8-hf1</jvector.version>
         <spatial4j.version>0.8</spatial4j.version>
@@ -45,7 +45,7 @@
         <buildnumber-maven-plugin.version>3.3.0</buildnumber-maven-plugin.version>
         <antlr4.version>4.9.1</antlr4.version>
         <antlr4.visitor>true</antlr4.visitor>
-        <cucumber.version>7.34.3</cucumber.version>
+        <cucumber.version>7.34.4</cucumber.version>
         <jmh.version>1.37</jmh.version>
     </properties>
 

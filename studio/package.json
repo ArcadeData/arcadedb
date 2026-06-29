@@ -20,7 +20,7 @@
     "version": "npm run security-check && npm run build && git add src/main/resources/static/dist package.json package-lock.json"
   },
   "dependencies": {
-    "@fortawesome/fontawesome-free": "^7.2.0",
+    "@fortawesome/fontawesome-free": "^7.3.0",
     "@popperjs/core": "^2.11.8",
     "apexcharts": "^5.15.2",
     "bootstrap": "^5.3.8",
@@ -42,7 +42,7 @@
     "marked": "^18.0.5",
     "jszip": "^3.10.1",
     "pdfmake": "^0.3.11",
-    "swagger-ui-dist": "^5.32.6",
+    "swagger-ui-dist": "^5.32.8",
     "sweetalert2": "^11.26.25"
   },
   "devDependencies": {
@@ -52,8 +52,8 @@
     "html-webpack-plugin": "^5.6.7",
     "style-loader": "^4.0.0",
     "url-loader": "^4.1.1",
-    "webpack": "^5.107.2",
-    "webpack-cli": "^7.0.3"
+    "webpack": "^5.108.1",
+    "webpack-cli": "^7.1.0"
   },
   "overrides": {
     "ajv": "^8.20.0"

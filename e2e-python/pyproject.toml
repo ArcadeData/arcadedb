@@ -23,15 +23,15 @@ requires-python = ">=3.8"
 license = {text = "Apache-2.0"}
 
 dependencies = [
-    "testcontainers>=4.13.3",
-    "pytest>=8.4.2",
+    "testcontainers>=4.14.2",
+    "pytest>=9.1.1",
     "pytest-check>=2.8.0",
-    "pytest-asyncio>=1.2.0",
+    "pytest-asyncio>=1.4.0",
     "docker>=7.1.0",
-    "psycopg>=3.2.13",
-    "psycopg-binary>=3.2.13",
+    "psycopg>=3.3.4",
+    "psycopg-binary>=3.3.4",
     "asyncpg>=0.31.0",
-    "requests>=2.32.5",
+    "requests>=2.34.2",
     "sqlalchemy>=2.0.51"
 ]
 
