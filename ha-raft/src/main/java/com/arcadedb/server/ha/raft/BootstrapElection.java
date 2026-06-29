@@ -101,7 +101,7 @@ class BootstrapElection {
    */
   enum Outcome {
     SKIPPED_DISABLED,           // bootstrapFromLocalDatabase=false
-    SKIPPED_NOT_FIRST_FORMATION,// commit index > 0, the cluster has been running
+    SKIPPED_NOT_FIRST_FORMATION,// commit index not a confirmed 0 (cluster running, or index unknown)
     SKIPPED_NO_DATABASES,       // nothing to bootstrap
     NOT_LEADER,                 // we're not the leader anymore by the time we ran
     TRANSFERRED,                // leadership transferred to the source peer; new leader will retry
@@ -145,11 +145,14 @@ class BootstrapElection {
     if (!haServer.isLeader())
       return Outcome.NOT_LEADER;
 
-    // The bootstrap path is gated on first cluster formation: every peer's Raft log empty. The
-    // leader's commit index is the only piece of cluster-wide state we have to check; once any
-    // entry has been committed, we never re-engage. See section 8 ("Gating") in #4147.
+    // The bootstrap path is gated on first cluster formation: every peer's Raft log empty, i.e. a
+    // commit index of exactly 0. The leader's commit index is the only piece of cluster-wide state
+    // we have to check; once any entry has been committed, we never re-engage. See section 8
+    // ("Gating") in #4147. A negative value means the index is UNKNOWN (the Raft division is not
+    // ready, or getCommitIndex() hit a transient IOException) and must NOT be mistaken for an empty
+    // log - see isConfirmedFirstFormation and issue #4800.
     final long commitIndex = haServer.getCommitIndex();
-    if (commitIndex > 0)
+    if (!isConfirmedFirstFormation(commitIndex))
       return Outcome.SKIPPED_NOT_FIRST_FORMATION;
 
     final List<String> dbNames = collectLocalDatabaseNames();
@@ -174,6 +177,19 @@ class BootstrapElection {
       attemptedThisTerm.removeAll(pending);
       return Outcome.FAILED;
     }
+  }
+
+  /**
+   * The first-formation gate. Bootstrap may only engage on a positively-confirmed empty cluster,
+   * i.e. a commit index of exactly {@code 0}. A negative value means the commit index is UNKNOWN -
+   * {@link RaftHAServer#getCommitIndex()} returns {@code -1} when the Raft division is not ready yet
+   * or a transient {@code IOException} is thrown while reading it - and MUST be treated as "skip" so
+   * a transient read failure during a leader-change callback can never re-trigger bootstrap on a
+   * live cluster (issue #4800). Any positive value means the cluster has already committed entries
+   * and the first-formation window is long past.
+   */
+  static boolean isConfirmedFirstFormation(final long commitIndex) {
+    return commitIndex == 0L;
   }
 
   /**
