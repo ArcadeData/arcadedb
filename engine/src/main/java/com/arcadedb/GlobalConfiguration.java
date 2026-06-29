@@ -851,9 +851,11 @@ public enum GlobalConfiguration {
 
   HA_RESYNC_PROGRESS_LOGGING("arcadedb.ha.resyncProgressLogging", SCOPE.SERVER,
       """
-      When true (default), the leader emits a concise per-follower unreachable/reconnected narrative instead of \
-      the raw per-retry Ratis appender flood, and a restarting follower logs its resync progress (Raft log \
-      catch-up and full snapshot download). Set to false to restore the legacy raw Ratis logging.""",
+      When true (default), the leader emits a concise per-follower unreachable/reconnected narrative and a \
+      restarting follower logs its resync progress (Raft log catch-up and full snapshot download). Set to false \
+      to disable that narrative. Note: this flag does NOT control the raw Apache Ratis retry flood - that is \
+      suppressed unconditionally by the org.apache.ratis.grpc.server.GrpcLogAppender level in \
+      arcadedb-log.properties, which is the switch to change to see those raw lines again.""",
       Boolean.class, true),
 
   HA_RESYNC_PROGRESS_INTERVAL("arcadedb.ha.resyncProgressInterval", SCOPE.SERVER,
@@ -865,7 +867,7 @@ public enum GlobalConfiguration {
       Long.class, 10000L),
 
   HA_RESYNC_CATCHUP_LAG_THRESHOLD("arcadedb.ha.resyncCatchupLagThreshold", SCOPE.SERVER,
-      "Minimum number of Raft log entries a follower must be behind the leader before the catch-up resync narrative is logged. Keeps normal steady-state replication lag (typically a handful of entries under write load) from being narrated; only a genuine post-restart catch-up crosses this threshold. The narrative finishes once the follower draws back within a tenth of it.",
+      "Minimum apply backlog (Raft log entries a follower has committed/received but not yet applied to its state machine) before the catch-up resync narrative is logged. This is a locally observable signal, not the distance from the leader's commit index. Keeps the small steady-state apply backlog under write load from being narrated; only a genuine post-restart burst crosses this threshold. The narrative finishes once the backlog drains to within a tenth of it.",
       Long.class, 1000L),
 
   HA_GRPC_FLOW_CONTROL_WINDOW("arcadedb.ha.grpcFlowControlWindow", SCOPE.SERVER,

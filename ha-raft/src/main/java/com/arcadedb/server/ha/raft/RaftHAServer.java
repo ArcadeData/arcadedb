@@ -140,7 +140,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile LifeCycle.State           forcedStateForTesting = null;
   private          HealthMonitor             healthMonitor;
   // Follower-side Raft log catch-up narrative. Driven by the health-monitor tick; only active on a
-  // follower that is behind the leader and not installing a snapshot.
+  // follower with a non-trivial apply backlog (committed-but-not-yet-applied entries) and not installing
+  // a snapshot.
   private volatile FollowerResyncProgressTracker resyncProgressTracker = null;
   private          ClusterTokenProvider      tokenProvider;
   private volatile int                       restartFailureCount   = 0;

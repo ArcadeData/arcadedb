@@ -31,15 +31,15 @@ class FollowerResyncProgressTrackerTest {
 
     final Tick start = t.onTick(900L, 1000L, 0L);
     assertThat(start.event()).isEqualTo(Event.STARTED);
-    assertThat(start.message()).contains("mode=catch-up").contains("100 entries behind");
+    assertThat(start.message()).contains("mode=catch-up").contains("100 entries to apply");
 
     // Within the progress interval: no progress line.
     assertThat(t.onTick(920L, 1000L, 1000L).event()).isEqualTo(Event.NONE);
 
-    // After the interval, still behind: progress line.
+    // After the interval, still draining backlog: progress line.
     final Tick prog = t.onTick(960L, 1000L, 6000L);
     assertThat(prog.event()).isEqualTo(Event.PROGRESS);
-    assertThat(prog.message()).contains("catch-up").contains("960/1000");
+    assertThat(prog.message()).contains("catch-up").contains("applied=960, committed=1000");
 
     // Caught up: finished line, once.
     final Tick done = t.onTick(1000L, 1000L, 7000L);

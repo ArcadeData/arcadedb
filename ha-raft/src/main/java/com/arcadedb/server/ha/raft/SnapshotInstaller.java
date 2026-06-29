@@ -921,29 +921,29 @@ public final class SnapshotInstaller {
       this.meter = meter;
     }
 
-    private void account(final int n) {
-      if (n > 0) {
-        total += n;
-        final String line = meter.lineIfDue(total, System.currentTimeMillis());
-        if (line != null)
-          // Log at INFO (not HALog.BASIC, which HA_LOG_VERBOSE gates off by default) so snapshot
-          // download progress is visible alongside the rest of the resync narrative.
-          LogManager.instance().log(SnapshotInstaller.class, Level.INFO, line);
-      }
+    private void reportProgress() {
+      final String line = meter.lineIfDue(total, System.currentTimeMillis());
+      if (line != null)
+        // Log at INFO (not HALog.BASIC, which HA_LOG_VERBOSE gates off by default) so snapshot
+        // download progress is visible alongside the rest of the resync narrative.
+        LogManager.instance().log(SnapshotInstaller.class, Level.INFO, line);
     }
 
     @Override
     public int read() throws IOException {
       final int b = super.read();
       if (b != -1)
-        account(1);
+        total++; // single-byte path: only count; the bulk path samples the clock and reports progress
       return b;
     }
 
     @Override
     public int read(final byte[] b, final int off, final int len) throws IOException {
       final int n = super.read(b, off, len);
-      account(n);
+      if (n > 0) {
+        total += n;
+        reportProgress();
+      }
       return n;
     }
   }

@@ -19,14 +19,18 @@
 package com.arcadedb.server.ha.raft;
 
 /**
- * Pure state machine that turns a sequence of (appliedIndex, leaderCommitIndex, now) observations on a
- * follower into a concise resync narrative: one STARTED line when the follower is seen at least
- * {@code catchupLagThreshold} entries behind the leader (a genuine post-restart catch-up, not the
- * handful-of-entries steady-state lag seen under write load), throttled PROGRESS lines while it catches
- * up via Raft log replay, and one FINISHED line when it draws back within a tenth of that threshold.
- * The start/finish hysteresis prevents flip-flopping on normal replication lag. Driven by the
- * follower-only health-monitor tick. Holds no clock or logger of its own so it can be unit-tested
- * deterministically; the caller supplies {@code now} and logs the returned message.
+ * Pure state machine that turns a sequence of (appliedIndex, committedIndex, now) observations on a
+ * follower into a concise resync narrative. The signal is the local <i>apply backlog</i>
+ * ({@code committedIndex - appliedIndex}): entries the follower has received/committed but not yet
+ * applied to its state machine. This is what a follower can observe locally - it is NOT the distance
+ * from the leader's commit index, which a follower cannot read directly. The backlog spikes as a
+ * restarting follower streams entries in faster than it applies them, which is the catch-up signal.
+ * Emits one STARTED line when the backlog reaches {@code catchupLagThreshold} (a genuine post-restart
+ * catch-up, not the handful-of-entries steady-state backlog under write load), throttled PROGRESS lines
+ * while it drains, and one FINISHED line when it falls back within a tenth of that threshold. The
+ * start/finish hysteresis prevents flip-flopping on normal backlog. Driven by the follower-only
+ * health-monitor tick. Holds no clock or logger of its own so it can be unit-tested deterministically;
+ * the caller supplies {@code now} and logs the returned message.
  */
 public final class FollowerResyncProgressTracker {
 
@@ -55,41 +59,45 @@ public final class FollowerResyncProgressTracker {
     this.finishLagThreshold = startLagThreshold / 10L;
   }
 
-  public Tick onTick(final long appliedIndex, final long leaderCommitIndex, final long nowMs) {
-    if (appliedIndex < 0 || leaderCommitIndex < 0)
+  public Tick onTick(final long appliedIndex, final long committedIndex, final long nowMs) {
+    if (appliedIndex < 0 || committedIndex < 0)
       return Tick.NONE; // transient read failure: do not change state
 
-    final long behind = leaderCommitIndex - appliedIndex;
+    // Apply backlog: entries this follower has committed (received) but not yet applied to its state
+    // machine. This is what is observable locally; it is NOT the distance from the leader's commit
+    // index, which a follower cannot read directly. The backlog spikes as a restarting follower streams
+    // entries in faster than it applies them, which is the catch-up signal we narrate.
+    final long backlog = committedIndex - appliedIndex;
 
     if (!active) {
-      if (behind < startLagThreshold)
+      if (backlog < startLagThreshold)
         return Tick.NONE;
       active = true;
       startMs = nowMs;
       startApplied = appliedIndex;
       lastProgressMs = nowMs;
       return new Tick(Event.STARTED, String.format(
-          "HA resync started (mode=catch-up): %d entries behind leader (applied=%d, leader=%d)",
-          behind, appliedIndex, leaderCommitIndex));
+          "HA resync started (mode=catch-up): %d entries to apply (applied=%d, committed=%d)",
+          backlog, appliedIndex, committedIndex));
     }
 
-    if (behind <= finishLagThreshold) {
+    if (backlog <= finishLagThreshold) {
       active = false;
       final long durationMs = nowMs - startMs;
-      final long caughtUp = appliedIndex - startApplied;
+      final long applied = appliedIndex - startApplied;
       return new Tick(Event.FINISHED, String.format(
-          "HA resync finished (mode=catch-up, duration=%dms, result=ok): caught up %d entries to index %d",
-          durationMs, caughtUp, appliedIndex));
+          "HA resync finished (mode=catch-up, duration=%dms, result=ok): applied %d entries to index %d",
+          durationMs, applied, appliedIndex));
     }
 
     if (nowMs - lastProgressMs >= progressIntervalMs) {
       lastProgressMs = nowMs;
       final long elapsedMs = Math.max(1L, nowMs - startMs);
-      final long caughtUp = appliedIndex - startApplied;
-      final double ratePerSec = caughtUp * 1000.0 / elapsedMs;
+      final long applied = appliedIndex - startApplied;
+      final double ratePerSec = applied * 1000.0 / elapsedMs;
       return new Tick(Event.PROGRESS, String.format(
-          "catch-up: applied=%d/%d (%d behind, ~%.0f entries/s)",
-          appliedIndex, leaderCommitIndex, behind, ratePerSec));
+          "catch-up: applied=%d, committed=%d (%d to apply, ~%.0f entries/s)",
+          appliedIndex, committedIndex, backlog, ratePerSec));
     }
 
     return Tick.NONE;
