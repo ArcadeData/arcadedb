@@ -71,6 +71,8 @@ public class ClusterMonitor {
   private final    long                            lagWarningThreshold;
   private final    long                            stalledResyncDurationMs;
   private final    Consumer<String>                stalledReplicaHandler;
+  private final    boolean                         resyncNarrativeEnabled;
+  private final    long                            peerUnreachableThresholdMs;
   private volatile long                            leaderCommitIndex;
   private final    ConcurrentHashMap<String, ReplicaState> replicaStates = new ConcurrentHashMap<>();
   // Injectable clock for deterministic tests; defaults to the wall clock. Volatile because the test
@@ -91,12 +93,20 @@ public class ClusterMonitor {
    */
   public ClusterMonitor(final long lagWarningThreshold, final long stalledResyncDurationMs,
       final Consumer<String> stalledReplicaHandler) {
+    this(lagWarningThreshold, stalledResyncDurationMs, stalledReplicaHandler, false, 0L);
+  }
+
+  public ClusterMonitor(final long lagWarningThreshold, final long stalledResyncDurationMs,
+      final Consumer<String> stalledReplicaHandler, final boolean resyncNarrativeEnabled,
+      final long peerUnreachableThresholdMs) {
     if (stalledResyncDurationMs > 0 && stalledReplicaHandler == null)
       throw new IllegalArgumentException(
           "stalledReplicaHandler must be non-null when stalledResyncDurationMs > 0 (leader-driven recovery enabled)");
     this.lagWarningThreshold = lagWarningThreshold;
     this.stalledResyncDurationMs = stalledResyncDurationMs;
     this.stalledReplicaHandler = stalledReplicaHandler;
+    this.resyncNarrativeEnabled = resyncNarrativeEnabled;
+    this.peerUnreachableThresholdMs = peerUnreachableThresholdMs;
   }
 
   /** Package-private test hook to drive the stall-duration logic deterministically. */
@@ -108,8 +118,9 @@ public class ClusterMonitor {
     this.leaderCommitIndex = commitIndex;
   }
 
-  public void updateReplicaMatchIndex(final String replicaId, final long matchIndex) {
+  public void updateReplicaMatchIndex(final String replicaId, final long matchIndex, final long lastRpcElapsedMs) {
     final long now = clock.getAsLong();
+    trackReachabilityForNarrative(replicaId, lastRpcElapsedMs, now);
     final long leaderIdx = leaderCommitIndex;
     final long lag = leaderIdx - matchIndex;
 
@@ -228,6 +239,45 @@ public class ClusterMonitor {
   }
 
   /**
+   * Emits a concise per-follower unreachable/reconnected narrative driven by the time since the last
+   * successful RPC to the follower. Onset and reconnect are logged once each; while unreachable, a
+   * reminder is logged at most once per {@link #LAG_LOG_THROTTLE_MS}. This replaces the raw Ratis
+   * per-retry appender flood (which is suppressed by pinning the
+   * {@code org.apache.ratis.grpc.server.GrpcLogAppender} level to SEVERE in arcadedb-log.properties)
+   * and never changes Raft membership.
+   */
+  private void trackReachabilityForNarrative(final String replicaId, final long lastRpcElapsedMs, final long now) {
+    if (!resyncNarrativeEnabled || peerUnreachableThresholdMs <= 0)
+      return;
+
+    final ReplicaState state = replicaStates.computeIfAbsent(replicaId,
+        k -> new ReplicaState(0L, leaderCommitIndex));
+
+    final boolean unreachable = lastRpcElapsedMs >= peerUnreachableThresholdMs;
+
+    if (unreachable) {
+      if (state.unreachableSinceMs == -1) {
+        state.unreachableSinceMs = now;
+        state.lastUnreachableWarnAtMs = now;
+        LogManager.instance().log(this, Level.INFO,
+            "Follower '%s' unreachable (no successful RPC for %dms); holding replication and retrying. It will recover automatically when it returns.",
+            replicaId, lastRpcElapsedMs);
+      } else if (now - state.lastUnreachableWarnAtMs >= LAG_LOG_THROTTLE_MS) {
+        state.lastUnreachableWarnAtMs = now;
+        LogManager.instance().log(this, Level.INFO,
+            "Follower '%s' still unreachable for %dms (matchIndex=%d).",
+            replicaId, now - state.unreachableSinceMs, state.lastMatchIndex);
+      }
+    } else if (state.unreachableSinceMs != -1) {
+      final long downMs = now - state.unreachableSinceMs;
+      state.unreachableSinceMs = -1;
+      LogManager.instance().log(this, Level.INFO,
+          "Follower '%s' reconnected after %dms; replication resuming (matchIndex=%d).",
+          replicaId, downMs, state.lastMatchIndex);
+    }
+  }
+
+  /**
    * Returns the latest classified status for {@code replicaId}, or {@link ReplicaStatus#UNKNOWN}
    * if no tick has been recorded yet (e.g. just-started leader, or peer that has never replied).
    */
@@ -277,11 +327,14 @@ public class ClusterMonitor {
     // and read only from the single lag-monitor thread, so they need no synchronization. Any future
     // change that reads or mutates them from another thread MUST add it.
     // Wall-clock time (ms) when the current uninterrupted stall streak began; -1 = not stalled.
-    long          stalledSinceMs    = -1;
+    long          stalledSinceMs        = -1;
     // matchIndex observed when the streak began; the streak ends as soon as matchIndex moves past it.
-    long          stalledAtMatchIndex = -1;
+    long          stalledAtMatchIndex   = -1;
     // True once the leader-driven resync has been fired for the current streak (re-armed on recovery).
-    boolean       resyncTriggered   = false;
+    boolean       resyncTriggered       = false;
+    // Reachability-narrative state, mutated only from the single lag-monitor thread.
+    long          unreachableSinceMs      = -1;
+    long          lastUnreachableWarnAtMs = 0;
 
     ReplicaState(final long initialMatchIndex, final long initialLeaderCommitIndex) {
       this.lastMatchIndex = initialMatchIndex;

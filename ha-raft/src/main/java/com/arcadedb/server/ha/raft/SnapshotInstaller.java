@@ -747,8 +747,18 @@ public final class SnapshotInstaller {
       if (responseCode != 200)
         throw new IOException("Failed to download snapshot: HTTP " + responseCode);
 
-      final CountingInputStream rawCounter = new CountingInputStream(connection.getInputStream());
-      try (final ZipInputStream zipIn = new ZipInputStream(rawCounter)) {
+      InputStream source = new CountingInputStream(connection.getInputStream());
+      final CountingInputStream rawCounter = (CountingInputStream) source;
+      final boolean progressLogging = server == null
+          || server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING);
+      if (progressLogging) {
+        final String dbName = targetDir.getFileName() != null ? targetDir.getFileName().toString() : "snapshot";
+        final long intervalMs = server != null
+            ? server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_RESYNC_PROGRESS_INTERVAL)
+            : 5000L;
+        source = new ProgressReportingInputStream(rawCounter, new SnapshotDownloadProgressMeter(dbName, intervalMs));
+      }
+      try (final ZipInputStream zipIn = new ZipInputStream(source)) {
         ZipEntry zipEntry;
         while ((zipEntry = zipIn.getNextEntry()) != null) {
           final Path targetFile = targetDir.resolve(zipEntry.getName()).normalize();
@@ -894,6 +904,45 @@ public final class SnapshotInstaller {
     @Override
     public boolean markSupported() {
       return false;
+    }
+  }
+
+  /**
+   * Wraps the snapshot download stream to feed the cumulative byte count to a progress meter and log
+   * any due progress line. Reports compressed bytes read off the wire (the meter measures download, not
+   * decompression). No-op when the meter is null (resync logging disabled).
+   */
+  private static final class ProgressReportingInputStream extends FilterInputStream {
+    private final SnapshotDownloadProgressMeter meter;
+    private       long                          total;
+
+    ProgressReportingInputStream(final InputStream in, final SnapshotDownloadProgressMeter meter) {
+      super(in);
+      this.meter = meter;
+    }
+
+    private void account(final int n) {
+      if (n > 0) {
+        total += n;
+        final String line = meter.lineIfDue(total, System.currentTimeMillis());
+        if (line != null)
+          HALog.log(SnapshotInstaller.class, HALog.BASIC, line);
+      }
+    }
+
+    @Override
+    public int read() throws IOException {
+      final int b = super.read();
+      if (b != -1)
+        account(1);
+      return b;
+    }
+
+    @Override
+    public int read(final byte[] b, final int off, final int len) throws IOException {
+      final int n = super.read(b, off, len);
+      account(n);
+      return n;
     }
   }
 
