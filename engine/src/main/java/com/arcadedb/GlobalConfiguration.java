@@ -862,6 +862,27 @@ public enum GlobalConfiguration {
       "Interval in milliseconds for the Raft health monitor to check for CLOSED/EXCEPTION state and auto-recover. 0 disables.",
       Long.class, 3000L),
 
+  HA_RESYNC_PROGRESS_LOGGING("arcadedb.ha.resyncProgressLogging", SCOPE.SERVER,
+      """
+      When true (default), the leader emits a concise per-follower unreachable/reconnected narrative and a \
+      restarting follower logs its resync progress (Raft log catch-up and full snapshot download). Set to false \
+      to disable that narrative. Note: this flag does NOT control the raw Apache Ratis retry flood - that is \
+      suppressed unconditionally by the org.apache.ratis.grpc.server.GrpcLogAppender level in \
+      arcadedb-log.properties, which is the switch to change to see those raw lines again.""",
+      Boolean.class, true),
+
+  HA_RESYNC_PROGRESS_INTERVAL("arcadedb.ha.resyncProgressInterval", SCOPE.SERVER,
+      "Minimum interval in milliseconds between follower resync progress log lines (Raft log catch-up and snapshot download). Throttles progress output so a fast resync logs only start and finish.",
+      Long.class, 5000L),
+
+  HA_PEER_UNREACHABLE_THRESHOLD("arcadedb.ha.peerUnreachableThreshold", SCOPE.SERVER,
+      "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Does not change Raft membership or quorum.",
+      Long.class, 10000L),
+
+  HA_RESYNC_CATCHUP_LAG_THRESHOLD("arcadedb.ha.resyncCatchupLagThreshold", SCOPE.SERVER,
+      "Minimum apply backlog (Raft log entries a follower has committed/received but not yet applied to its state machine) before the catch-up resync narrative is logged. This is a locally observable signal, not the distance from the leader's commit index. Keeps the small steady-state apply backlog under write load from being narrated; only a genuine post-restart burst crosses this threshold. The narrative finishes once the backlog drains to within a tenth of it.",
+      Long.class, 1000L),
+
   HA_GRPC_FLOW_CONTROL_WINDOW("arcadedb.ha.grpcFlowControlWindow", SCOPE.SERVER,
       "gRPC flow control window size in bytes for Ratis append-entries traffic. Larger values help catch-up replication after partitions.",
       Long.class, 4L * 1024 * 1024),

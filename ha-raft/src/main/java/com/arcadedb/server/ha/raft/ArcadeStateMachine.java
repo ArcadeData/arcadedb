@@ -720,7 +720,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final RaftProtos.RoleInfoProto roleInfoProto, final TermIndex firstTermIndexInLog) {
 
     LogManager.instance().log(this, Level.INFO,
-        "Snapshot installation requested from leader (firstLogIndex=%s). Starting full resync...", firstTermIndexInLog);
+        "HA resync started (mode=snapshot, reason=leader snapshot install): firstLogIndex=%s", firstTermIndexInLog);
 
     // Runs on the JDK common ForkJoinPool via supplyAsync(). Apache-ratis uses a dedicated pool
     // to avoid blocking Ratis internal threads, so this offload IS necessary - we must not run
@@ -803,7 +803,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
         updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
         writePersistedAppliedIndex(snapshotIndex);
 
-        LogManager.instance().log(this, Level.INFO, "Full resync from leader completed (snapshotIndex=%d)", snapshotIndex);
+        LogManager.instance().log(this, Level.INFO,
+            "HA resync finished (mode=snapshot, result=ok): snapshotIndex=%d", snapshotIndex);
         clearDivergedState();
         return installedTermIndex;
 

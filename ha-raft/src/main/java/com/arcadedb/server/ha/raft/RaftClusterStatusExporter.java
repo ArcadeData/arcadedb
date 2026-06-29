@@ -319,7 +319,8 @@ class RaftClusterStatusExporter {
         return;
       clusterMonitor.updateLeaderCommitIndex(haServer.getCommitIndex());
       for (final var fs : haServer.getFollowerStates())
-        clusterMonitor.updateReplicaMatchIndex((String) fs.get("peerId"), (Long) fs.get("matchIndex"));
+        clusterMonitor.updateReplicaMatchIndex((String) fs.get("peerId"), (Long) fs.get("matchIndex"),
+            (Long) fs.get("lastRpcElapsedMs"));
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Error checking replica lag", e);
     }

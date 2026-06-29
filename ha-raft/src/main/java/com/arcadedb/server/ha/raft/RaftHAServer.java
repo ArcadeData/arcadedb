@@ -140,6 +140,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private volatile boolean                   shutdownRequested     = false;
   private volatile LifeCycle.State           forcedStateForTesting = null;
   private          HealthMonitor             healthMonitor;
+  // Follower-side Raft log catch-up narrative. Driven by the health-monitor tick; only active on a
+  // follower with a non-trivial apply backlog (committed-but-not-yet-applied entries) and not installing
+  // a snapshot.
+  private volatile FollowerResyncProgressTracker resyncProgressTracker = null;
   private          ClusterTokenProvider      tokenProvider;
   private volatile int                       restartFailureCount   = 0;
   private volatile BootstrapElection         bootstrapElection;
@@ -218,7 +222,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     final long stalledResyncDurationMs = configuration.getValueAsLong(
         GlobalConfiguration.HA_STALLED_REPLICA_RESYNC_DURATION_MS);
-    this.clusterMonitor = new ClusterMonitor(lagWarningThreshold, stalledResyncDurationMs, this::forceResyncStalledReplica);
+    final boolean resyncNarrative = configuration.getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING);
+    final long peerUnreachableThresholdMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_UNREACHABLE_THRESHOLD);
+    this.clusterMonitor = new ClusterMonitor(lagWarningThreshold, stalledResyncDurationMs,
+        this::forceResyncStalledReplica, resyncNarrative, peerUnreachableThresholdMs);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
@@ -490,6 +497,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     this.healthMonitor = new HealthMonitor(this, healthInterval, staleFollowerLagThreshold, staleFollowerRecoveryDurationMs,
         divergedFollowerRecovery, divergedFollowerMaxReformats);
     this.healthMonitor.start();
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING))
+      this.resyncProgressTracker = new FollowerResyncProgressTracker(
+          configuration.getValueAsLong(GlobalConfiguration.HA_RESYNC_PROGRESS_INTERVAL),
+          configuration.getValueAsLong(GlobalConfiguration.HA_RESYNC_CATCHUP_LAG_THRESHOLD));
   }
 
   /**
@@ -549,6 +560,21 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final ArcadeStateMachine sm = stateMachine;
     if (sm != null)
       sm.recoverFromPersistentLag();
+  }
+
+  @Override
+  public void reportResyncProgress() {
+    final FollowerResyncProgressTracker tracker = resyncProgressTracker;
+    if (tracker == null || raftServer == null || shutdownRequested || isLeader())
+      return;
+    final ArcadeStateMachine sm = stateMachine;
+    if (sm == null || sm.isSnapshotDownloadPending())
+      return; // the snapshot path logs its own bookends
+    final long applied = getLastAppliedIndex();
+    final long commit = getCommitIndex();
+    final FollowerResyncProgressTracker.Tick tick = tracker.onTick(applied, commit, System.currentTimeMillis());
+    if (tick.event() != FollowerResyncProgressTracker.Event.NONE)
+      LogManager.instance().log(this, Level.INFO, tick.message());
   }
 
   /**

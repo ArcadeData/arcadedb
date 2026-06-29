@@ -90,6 +90,13 @@ public final class HealthMonitor {
      */
     default void refreshPeerAllowlist() {
     }
+
+    /**
+     * Logs Raft log catch-up resync progress when this node is a follower that is behind the leader.
+     * No-op on the leader, when resync logging is disabled, or while a snapshot install is in progress.
+     */
+    default void reportResyncProgress() {
+    }
   }
 
   // How long (as a multiple of the recovery duration) the follower must look healthy before a prior
@@ -177,6 +184,7 @@ public final class HealthMonitor {
     // state, so a returned peer's new pod IP is admitted proactively (issue #4696). The filter throttles
     // the actual re-resolution to its configured refresh interval.
     target.refreshPeerAllowlist();
+    target.reportResyncProgress();
     final LifeCycle.State state = target.getRaftLifeCycleState();
     if (state == LifeCycle.State.CLOSED || state == LifeCycle.State.EXCEPTION) {
       HALog.log(this, HALog.BASIC, "Health monitor detected Ratis %s state, attempting recovery", state);

@@ -81,6 +81,22 @@ class HealthMonitorTest {
   }
 
   @Test
+  void tickInvokesReportResyncProgress() {
+    final AtomicInteger reportCalls = new AtomicInteger();
+    final HealthMonitor.HealthTarget target = new HealthMonitor.HealthTarget() {
+      @Override public LifeCycle.State getRaftLifeCycleState() {
+        return LifeCycle.State.RUNNING;
+      }
+      @Override public boolean isShutdownRequested() { return false; }
+      @Override public void restartRatisIfNeeded() { }
+      @Override public void reportResyncProgress() { reportCalls.incrementAndGet(); }
+    };
+    final HealthMonitor monitor = new HealthMonitor(target, 1000L);
+    monitor.tick();
+    assertThat(reportCalls.get()).isEqualTo(1);
+  }
+
+  @Test
   void tickDoesNothingWhenStateIsRunning() {
     final FakeHealthTarget fake = new FakeHealthTarget();
     final HealthMonitor monitor = new HealthMonitor(fake, 0);
