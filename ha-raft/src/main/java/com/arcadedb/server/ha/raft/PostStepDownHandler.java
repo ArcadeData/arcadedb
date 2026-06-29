@@ -37,6 +37,8 @@ public class PostStepDownHandler extends AbstractServerHttpHandler {
   @Override
   public ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user,
       final JSONObject payload) {
+    checkRootUser(user);
+
     final RaftHAServer raftHAServer = plugin.getRaftHAServer();
     if (raftHAServer == null)
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
