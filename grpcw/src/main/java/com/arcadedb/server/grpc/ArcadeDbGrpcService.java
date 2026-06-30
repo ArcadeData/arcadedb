@@ -2002,9 +2002,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           streamFailed.set(true);
           // insertRows discards its partial Counts when it throws, so the failing chunk's rows never
           // reach totals via totals.add(cts). Count them as received (the client did send them) so the
-          // summary cannot report failed > received. Unlike recordCommitException (used for the whole
-          // -stream deferred commit), do NOT reclassify previously counted inserted/updated as failed:
-          // in PER_BATCH/PER_ROW the earlier batches already committed and persisted.
+          // summary cannot report failed > received.
           //
           // Known limitation (out of scope for #4806): when server_batch_size is smaller than a single
           // chunk, insertRows may have already committed earlier mini-batches of this chunk before a
@@ -2018,8 +2016,18 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // where it is bound) so its locks are released immediately and it is not leaked into a later
           // request that reuses the thread.
           final InsertContext failedCtx = ctxRef.get();
-          if (failedCtx != null)
-            failedCtx.abortTransaction();
+          final boolean rolledBack = failedCtx != null && failedCtx.abortTransaction();
+          // If that rollback actually discarded uncommitted rows - PER_STREAM/PER_REQUEST never commit
+          // before onCompleted, and PER_BATCH with a batch larger than the chunk leaves rows buffered -
+          // then rows already folded into totals.inserted/updated are no longer in the database, so
+          // reclassify them as failed (symmetric to recordCommitException; the -1 error is already
+          // recorded above). When nothing was rolled back (rolledBack == false) the earlier batches had
+          // already committed and persisted, so their counts stand.
+          if (rolledBack) {
+            totals.failed += totals.inserted + totals.updated;
+            totals.inserted = 0;
+            totals.updated = 0;
+          }
         } finally {
           if (!cancelled.get())
             call.request(1);
@@ -3309,7 +3317,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
 
-      captureTransaction();
+      // Issue #4806: if anything after db.begin() throws, the caller never receives this context (it is
+      // not yet stored in ctxRef), so its mid-stream failure path cannot roll the just-begun transaction
+      // back - it would leak, bound to this pooled gRPC thread. Clean up our own transaction before
+      // propagating the failure.
+      try {
+        captureTransaction();
+      } catch (final RuntimeException e) {
+        abortTransaction();
+        throw e;
+      }
     }
 
     /**
@@ -3353,13 +3370,21 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
      * re-bound onto a pooled gRPC thread. Idempotent and best-effort: a mid-stream commit failure has
      * usually already terminated the transaction (isTransactionActive() == false), in which case this
      * only clears the handle. Must be called on the thread whose context holds the transaction.
+     *
+     * @return {@code true} if an active transaction was actually rolled back (its uncommitted rows are
+     *         no longer in the database); {@code false} if there was nothing to roll back (the
+     *         transaction had already been terminated by a failed commit, so earlier batches persisted).
      */
-    void abortTransaction() {
+    boolean abortTransaction() {
       try {
-        if (db.isTransactionActive())
+        if (db.isTransactionActive()) {
           db.rollback();
+          return true;
+        }
+        return false;
       } catch (final Exception ignore) {
         // best-effort: the engine may have already rolled the transaction back on the failed commit
+        return false;
       } finally {
         tx = null;
       }

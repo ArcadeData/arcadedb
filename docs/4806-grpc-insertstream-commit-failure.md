@@ -59,8 +59,41 @@ not processed against the broken transaction.
 - **Cycle 2 - claude**: (1) counted the failing chunk's rows as `received` so the summary can no
   longer report `failed > received`; (2/3) documented the intentional all-or-nothing stance and the
   asymmetry with `recordCommitException`; (4) extracted `commitErrorCode()`/`exceptionMessage()`
-  helpers shared by both failure paths; (5) the contract-change test covers the `COMMIT_FAILED` branch.
+  helpers shared by both failure paths; (5) the contract-change test asserts the `CONTRACT_VIOLATION`
+  branch (a pre-insert contract rejection is not a commit failure).
+- **Cycle 3 - claude** (post-rebase onto `main`, which now includes #4801's thread-safe `out` observer):
+  - **(#1, medium) Fixed summary over-reporting `inserted`/`updated` after a mid-stream rollback.** In
+    `PER_STREAM`/`PER_REQUEST` (and `PER_BATCH` when the batch is larger than the chunk) earlier rows stay
+    uncommitted; `abortTransaction()` rolls them back but they were already counted. `abortTransaction()`
+    now returns whether it actually rolled back an active transaction; when it did, the `onNext` catch
+    reclassifies the still-uncommitted `inserted`/`updated` as `failed` (symmetric to
+    `recordCommitException`). When nothing was rolled back (`PER_BATCH`/`PER_ROW` whose earlier batches
+    already committed) the counts stand. The contract-change test now asserts `inserted == 0`,
+    `received == 2`, `failed == 2` (counts balance).
+  - **(#5, edge) Closed a transaction leak in the `InsertContext` constructor.** If construction threw
+    after `db.begin()` but before the context reached `ctxRef`, the mid-stream catch could not roll the
+    begun transaction back (it saw `ctxRef.get() == null`). The constructor now rolls back its own
+    just-begun transaction on failure before propagating.
+  - **(#2, minor) Not changed:** `commitErrorCode()` keeps `COMMIT_FAILED` as the catch-all even for a
+    pre-loop structural failure (e.g. a missing target type from `schema.getType`). The `InsertError.code`
+    values are a client-visible contract; renaming the default is itself a compatibility change for a
+    cosmetic mislabel, so the dominant-case label stands.
+  - **(#3, minor) Error-code set documented** (below).
+
+## InsertError.code values (client-facing contract)
+
+`InsertError.code` is a free-form string; clients may switch on it. The full set currently emitted by the
+insert paths:
+
+- `CONFLICT` - a unique-key/`DuplicatedKeyException` violation.
+- `CONTRACT_VIOLATION` - a stream contract rejection (`IllegalArgumentException`, e.g. "options changed
+  mid-stream"); not a commit failure.
+- `COMMIT_FAILED` - any other transaction-level failure escaping `insertRows` (catch-all).
+- `DB_ERROR` - a per-row insert/update error caught inside `insertRows`.
+- `MISSING_ENDPOINTS` - an edge row missing its required `from`/`to` endpoints.
+- `INVALID_KEY_COLUMN` - a key-column reference that does not resolve on the row.
 
 ## Final state
 
 Fix complete. 2 new ITs + 21 existing insertStream ITs (#4198/#4214/#4644/#4656) pass; no regressions.
+Rebased onto `main` (resolves the #4801 thread-safe-observer overlap in `ArcadeDbGrpcService`).

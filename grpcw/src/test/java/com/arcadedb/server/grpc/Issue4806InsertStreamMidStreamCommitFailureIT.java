@@ -285,6 +285,20 @@ public class Issue4806InsertStreamMidStreamCommitFailureIT extends BaseGraphServ
       // A pre-insert contract rejection is not a commit failure: it is reported as CONTRACT_VIOLATION.
       assertThat(error.getCode()).isEqualTo("CONTRACT_VIOLATION");
 
+      // The buffered row was counted as inserted before the transaction was aborted. Once abortTransaction()
+      // rolls it back it is no longer in the database, so the summary must not still report it as inserted -
+      // it must be reclassified as failed so the counts match the durable state.
+      assertThat(summary.getInserted())
+          .as("rows rolled back by the mid-stream abort must not be reported as inserted")
+          .isEqualTo(0);
+      assertThat(summary.getUpdated()).isEqualTo(0);
+      // Both rows end up not persisted: the rolled-back "Buffered" row (reclassified) and the rejected
+      // "Never" row (the structural failure). The summary balances: received == inserted + updated + failed.
+      assertThat(summary.getReceived()).isEqualTo(2);
+      assertThat(summary.getFailed())
+          .as("the rolled-back buffered row and the rejected row must both be counted as failed")
+          .isEqualTo(2);
+
       // The buffered row must have been rolled back with the aborted transaction, not committed by the
       // deferred onCompleted commit running against a leaked active transaction.
       final ExecuteQueryResponse queryResp = authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
