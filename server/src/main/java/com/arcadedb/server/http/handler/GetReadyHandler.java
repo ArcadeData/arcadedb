@@ -48,13 +48,14 @@ public class GetReadyHandler extends AbstractServerHttpHandler {
       if (ha == null || ha.getElectionStatus() != HAServerPlugin.ELECTION_STATUS.DONE)
         return new ExecutionResponse(503, "Node has not yet joined the Raft group");
 
-      // Deeper consensus gate: the node must be in the committed Raft configuration and (for a follower)
-      // have replayed the committed log to within a small bound. Without it, a restarted follower with a
+      // Deeper consensus gate: the node must be in the current Raft configuration and (for a follower) have
+      // replayed the committed log to within a small bound. Without it, a restarted follower with a
       // wiped/lagging log would report Ready before catch-up and a rolling restart could drop the write
-      // quorum. A null signal means the HA implementation provides none: no extra gating.
-      final long maxLag = server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_READINESS_HA_MAX_LAG);
+      // quorum. A null signal means the HA implementation provides none: no extra gating. The lag bound is
+      // clamped to >= 0 so a misconfigured negative value cannot wedge a caught-up node out of readiness.
+      final long maxLag = Math.max(0L, server.getConfiguration().getValueAsLong(GlobalConfiguration.SERVER_READINESS_HA_MAX_LAG));
       if (ha.getReadinessSignal(maxLag) == HAServerPlugin.READINESS_SIGNAL.NOT_READY)
-        return new ExecutionResponse(503, "Node is not yet in the committed Raft configuration or has not caught up");
+        return new ExecutionResponse(503, "Node is not yet in the Raft configuration or has not caught up");
     }
 
     return new ExecutionResponse(204, "");

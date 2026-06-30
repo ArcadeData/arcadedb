@@ -26,11 +26,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Unit tests for the {@link RaftHAServer#isReadyForTrafficState} predicate behind the issue #4834 fix.
  * The readiness probe relies on this gate so a node does not advertise Ready before it has (re)joined the
- * committed Raft configuration and replayed the committed log. Advertising Ready too early during a
- * Kubernetes StatefulSet rolling restart lets the orchestrator terminate the next pod and drop the write
- * quorum.
+ * Raft configuration and replayed the committed log. Advertising Ready too early during a Kubernetes
+ * StatefulSet rolling restart lets the orchestrator terminate the next pod and drop the write quorum.
  *
- * Argument order: leaderPresent, localInCommittedConfig, leader, commitIndex, appliedIndex, maxLagEntries.
+ * Argument order: leaderPresent, localInConfig, leader, commitIndex, appliedIndex, maxLagEntries.
  */
 class RaftHAServerReadinessTest {
 
@@ -47,8 +46,8 @@ class RaftHAServerReadinessTest {
   }
 
   @Test
-  void notInCommittedConfigIsNotReady() {
-    // A restarted node that has not yet been admitted into the committed configuration must not be Ready
+  void notInCurrentConfigIsNotReady() {
+    // A restarted node that has not yet been admitted into the cluster configuration must not be Ready
     // even if it happens to recognize a leader and its local indices look caught up.
     assertThat(isReadyForTrafficState(true, false, false, 100, 100, 100)).isFalse();
   }

@@ -24,17 +24,37 @@ HA method exposing committed-config membership or applied-vs-commit lag to the r
 
 ## Fix
 
-1. New `HAServerPlugin.isReadyForTraffic(long maxLagEntries)` returning a nullable `Boolean`
-   (null = this HA implementation provides no consensus readiness signal, so the probe applies
-   no extra gating; the Raft implementation returns a concrete `true`/`false`).
-2. `RaftHAPlugin` delegates to `RaftHAServer.isReadyForTraffic(maxLagEntries)`, which requires:
-   leader known, local peer present in the committed config (`getLivePeers()`), and (for a
-   follower) `commitIndex - lastAppliedIndex <= maxLagEntries`. The leader is always caught up
-   with itself. Decision split into pure static `isReadyForTrafficState(...)` for unit testing.
+1. New `HAServerPlugin.getReadinessSignal(long maxLagEntries)` returning a `READINESS_SIGNAL`
+   enum (`READY`/`NOT_READY`), or `null` when the HA implementation provides no consensus
+   readiness signal (the probe applies no extra gating). A nullable enum is used rather than a
+   `Boolean` because a Mockito mock defaults an unstubbed `Boolean`-returning method to `false`,
+   which would have silently broken the existing `flagOnAndElectionDoneReturns204` test; an
+   unstubbed enum-returning method defaults to `null` ("no signal").
+2. `RaftHAPlugin.getReadinessSignal` delegates to `RaftHAServer.isReadyForTraffic(maxLagEntries)`,
+   which reads a single `getDivision(...)` snapshot and requires: leader known, local peer present
+   in the current configuration (`getRaftConf().getCurrentPeers()`), and (for a follower)
+   `0 <= commitIndex - lastAppliedIndex <= maxLagEntries`. The leader is always caught up with
+   itself; unreadable or inconsistent (`applied > commit`) state fails closed. Decision split into
+   pure static `isReadyForTrafficState(...)` for unit testing.
 3. New config `SERVER_READINESS_HA_MAX_LAG` (`arcadedb.server.readinessHAMaxLag`, default 100)
-   for the catch-up bound, read by the handler and passed to the plugin.
+   for the catch-up bound, read by the handler (clamped to `>= 0`) and passed to the plugin.
 4. `GetReadyHandler` keeps the existing election gate, then applies the new catch-up/membership
-   gate when `isReadyForTraffic` returns a non-null `false`.
+   gate when `getReadinessSignal` returns `NOT_READY`.
+
+### A note on "committed" vs "current" configuration
+
+Membership is checked against the *current* Raft configuration (the most recent conf in the log,
+which during a joint-consensus change may not yet be committed). For the targeted scenario - a
+wiped/lagging restarted follower - this is conservative and correct: such a node is not in the
+current conf either way. Naming and Javadoc say "current configuration" to avoid overstating the
+guarantee.
+
+### Deferred / follow-up
+
+- An end-to-end test asserting a freshly (re)joined follower in a *running* multi-node Raft cluster
+  returns 503 until catch-up would lock in the integrated contract (membership read + index
+  plumbing are currently exercised through the pure predicate and handler mocks). Deferred: it
+  requires a real multi-node cluster with a wiped follower and is slow/flaky for the unit suite.
 
 ## Tests
 

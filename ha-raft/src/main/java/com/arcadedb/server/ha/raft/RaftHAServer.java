@@ -1300,30 +1300,50 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   /**
    * Reports whether this node is ready to serve traffic for the readiness probe (issue #4834): a leader is
-   * known, this node is a member of the committed Raft configuration, and - for a follower - the local
+   * known, this node is a member of the current Raft configuration, and - for a follower - the local
    * applied index is within {@code maxLagEntries} of the commit index. The leader is always caught up with
    * itself. Returns {@code false} before the Raft server has started, during shutdown, or when the state
-   * cannot be read. See {@link #isReadyForTrafficState} for the pure decision.
+   * cannot be read.
+   * <p>
+   * All inputs are read from a single {@code getDivision(...)} snapshot so leader/membership/commit/applied
+   * come from one consistent view rather than re-resolving the division per field (cheaper, and avoids a
+   * torn read if leadership changes mid-evaluation). Membership uses the <em>current</em> configuration
+   * (the most recent conf in the log, which during a joint-consensus change may not yet be committed); that
+   * is conservative for the targeted scenario - a wiped/lagging follower is not in it either way. See
+   * {@link #isReadyForTrafficState} for the pure decision.
    */
   public boolean isReadyForTraffic(final long maxLagEntries) {
-    if (raftServer == null || shutdownRequested)
+    final RaftServer server = raftServer;
+    if (server == null || shutdownRequested)
       return false;
-    return isReadyForTrafficState(getLeaderId() != null, isLocalPeerInCommittedConfig(), isLeader(),
-        getCommitIndex(), getLastAppliedIndex(), maxLagEntries);
+    try {
+      final var division = server.getDivision(raftGroup.getGroupId());
+      final var info = division.getInfo();
+      final var conf = division.getRaftConf();
+      final boolean leaderPresent = info.getLeaderId() != null;
+      final boolean localInConfig = conf != null && isPeerInConfig(conf.getCurrentPeers(), localPeerId);
+      final long commitIndex = division.getRaftLog().getLastCommittedIndex();
+      final long appliedIndex = info.getLastAppliedIndex();
+      return isReadyForTrafficState(leaderPresent, localInConfig, info.isLeader(), commitIndex, appliedIndex,
+          maxLagEntries);
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.FINE, "Cannot read Raft state for readiness probe", e);
+      return false;
+    }
   }
 
   /**
    * Pure decision function behind {@link #isReadyForTraffic(long)}, split out so the predicate can be
    * unit-tested without the Ratis state plumbing. Returns {@code true} only when a leader is present and
-   * this node is in the committed configuration, and either this node is the leader (caught up with itself
-   * by definition) or - as a follower - the lag {@code commitIndex - appliedIndex} is in
+   * this node is in the current configuration, and either this node is the leader (caught up with itself by
+   * definition) or - as a follower - the lag {@code commitIndex - appliedIndex} is in
    * {@code [0, maxLagEntries]}. A negative {@code commitIndex}/{@code appliedIndex} (state not readable this
    * tick) or a negative lag ({@code appliedIndex > commitIndex}, an inconsistent state) returns
    * {@code false} so the probe fails closed rather than advertising Ready on unreadable/inconsistent state.
    */
-  static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInCommittedConfig,
+  static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInConfig,
       final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries) {
-    if (!leaderPresent || !localInCommittedConfig)
+    if (!leaderPresent || !localInConfig)
       return false;
     if (leader)
       return true;
@@ -1333,10 +1353,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return lag >= 0 && lag <= maxLagEntries;
   }
 
-  /** True when the local peer is part of the committed Raft configuration (its current peer set). */
-  private boolean isLocalPeerInCommittedConfig() {
-    for (final RaftPeer peer : getLivePeers())
-      if (peer.getId().equals(localPeerId))
+  /** True when {@code peerId} is a member of the given Raft peer set (the current configuration). */
+  private static boolean isPeerInConfig(final Collection<RaftPeer> peers, final RaftPeerId peerId) {
+    for (final RaftPeer peer : peers)
+      if (peer.getId().equals(peerId))
         return true;
     return false;
   }
