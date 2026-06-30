@@ -282,7 +282,8 @@ public class Issue4806InsertStreamMidStreamCommitFailureIT extends BaseGraphServ
           .hasSize(1);
       final InsertError error = summary.getErrors(0);
       assertThat(error.getRowIndex()).isEqualTo(-1);
-      assertThat(error.getCode()).isEqualTo("COMMIT_FAILED");
+      // A pre-insert contract rejection is not a commit failure: it is reported as CONTRACT_VIOLATION.
+      assertThat(error.getCode()).isEqualTo("CONTRACT_VIOLATION");
 
       // The buffered row must have been rolled back with the aborted transaction, not committed by the
       // deferred onCompleted commit running against a leaked active transaction.

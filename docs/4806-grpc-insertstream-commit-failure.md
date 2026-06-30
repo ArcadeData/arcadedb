@@ -47,3 +47,20 @@ not processed against the broken transaction.
 - [x] Test (fails before fix)
 - [x] Fix
 - [x] Verify
+
+## Review cycles
+
+- **Cycle 1 - gemini-code-assist** (transaction leak): a transaction-level failure that is not a
+  commit failure (e.g. "options changed mid-stream") leaves the transaction active and bound to the
+  pooled gRPC thread. Added `InsertContext.abortTransaction()` (rolls back only if still active on the
+  calling thread, then drops the captured handle; never re-binds a dead transaction). Called from the
+  `onNext` catch and defensively from `onCompleted` when `streamFailed`. Added the contract-change
+  regression test.
+- **Cycle 2 - claude**: (1) counted the failing chunk's rows as `received` so the summary can no
+  longer report `failed > received`; (2/3) documented the intentional all-or-nothing stance and the
+  asymmetry with `recordCommitException`; (4) extracted `commitErrorCode()`/`exceptionMessage()`
+  helpers shared by both failure paths; (5) the contract-change test covers the `COMMIT_FAILED` branch.
+
+## Final state
+
+Fix complete. 2 new ITs + 21 existing insertStream ITs (#4198/#4214/#4644/#4656) pass; no regressions.
