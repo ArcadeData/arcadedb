@@ -22,8 +22,11 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.server.http.HttpAuthSession;
 import com.arcadedb.server.http.HttpAuthSessionManager;
 import com.arcadedb.server.security.ServerSecurity;
+import com.google.protobuf.Descriptors.FieldDescriptor;
+import com.google.protobuf.Message;
 import io.grpc.Context;
 import io.grpc.Contexts;
+import io.grpc.ForwardingServerCallListener;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
@@ -75,9 +78,50 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       return next.startCall(call, headers);
     }
 
-    // Skip auth for admin service - it handles its own authentication via request body
+    // Admin service: enforce authentication centrally from the request-body credentials instead of
+    // trusting every RPC to authenticate itself. This is the central authentication choke point: a
+    // missing, malformed or invalid credential closes the call before the request reaches the
+    // handler, so an admin method that forgets its own authenticate() call cannot expose a side
+    // effect. Note this enforces authentication only, not admin-role authorization (the handlers
+    // behave the same way today).
     if (methodName.startsWith("com.arcadedb.grpc.ArcadeDbAdminService/")) {
-      return next.startCall(call, headers);
+      // If security is not enabled, allow all requests (consistent with the data-plane methods below)
+      if (!securityEnabled)
+        return next.startCall(call, headers);
+
+      // All admin RPCs are unary, so onMessage fires exactly once with the full request carrying the
+      // credentials. If a client-streaming admin RPC is ever added, revisit this per-message logic.
+      return new ForwardingServerCallListener.SimpleForwardingServerCallListener<>(next.startCall(call, headers)) {
+        private boolean halted = false;
+
+        @Override
+        public void onMessage(final ReqT message) {
+          if (halted)
+            return;
+          boolean authenticated;
+          try {
+            authenticated = authenticateAdminRequest(message);
+          } catch (final Exception e) {
+            // Keep the fail-closed posture uniform with the rest of the interceptor: any unexpected
+            // error denies the call rather than surfacing as a generic UNKNOWN status.
+            LogManager.instance().log(this, Level.FINE, "Admin authentication error", e);
+            authenticated = false;
+          }
+          if (!authenticated) {
+            halted = true;
+            call.close(Status.UNAUTHENTICATED.withDescription("Authentication required"), new Metadata());
+            return;
+          }
+          super.onMessage(message);
+        }
+
+        @Override
+        public void onHalfClose() {
+          if (halted)
+            return;
+          super.onHalfClose();
+        }
+      };
     }
 
     // If security is not enabled, allow all requests
@@ -134,6 +178,35 @@ class GrpcAuthInterceptor implements ServerInterceptor {
       return new ServerCall.Listener<ReqT>() {
       };
     }
+  }
+
+  /**
+   * Validates the credentials carried in the body of an admin request. Every admin request message
+   * declares an optional {@code DatabaseCredentials credentials = 1} field; the credential is
+   * resolved generically via the protobuf descriptor so new admin RPCs are covered automatically.
+   * Returns {@code true} only when valid credentials authenticate against server security. Fails
+   * closed: a non-protobuf message, a missing credentials field, a blank username or any
+   * authentication failure all return {@code false}.
+   */
+  private boolean authenticateAdminRequest(final Object message) {
+    if (!(message instanceof final Message protoMessage))
+      return false;
+
+    // 'credentials' is a message-typed field on every admin request, so hasField() reports explicit
+    // presence (proto3 tracks presence for message fields). This presence check is coupled to that
+    // field staying message-typed.
+    final FieldDescriptor credentialsField = protoMessage.getDescriptorForType().findFieldByName("credentials");
+    if (credentialsField == null || !protoMessage.hasField(credentialsField))
+      return false;
+
+    if (!(protoMessage.getField(credentialsField) instanceof final DatabaseCredentials credentials))
+      return false;
+
+    final String username = credentials.getUsername();
+    if (username == null || username.isBlank())
+      return false;
+
+    return validateCredentials(username, credentials.getPassword(), null);
   }
 
   private HttpAuthSession getValidSession(final String token, final String database) {
