@@ -1853,6 +1853,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   void startLagMonitor() {
     if (lagMonitorExecutor != null)
       return;
+    // Fresh leadership term: discard any per-replica lag state captured while this node led a previous
+    // term. Comparing the new term's (Ratis-reset) matchIndex against that stale baseline would
+    // mis-classify a healthy follower as STALLED on the first tick after the election (issue #4841).
+    // The executor==null guard above ensures this only fires on a genuine (re)acquisition, never on a
+    // same-term re-notification while the monitor is already running.
+    clusterMonitor.reset();
     lagMonitorExecutor = Executors.newSingleThreadScheduledExecutor(r -> {
       final Thread t = new Thread(r, "arcadedb-raft-lag-monitor");
       t.setDaemon(true);

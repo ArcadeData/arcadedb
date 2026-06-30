@@ -300,6 +300,29 @@ public class ClusterMonitor {
     replicaStates.remove(replicaId);
   }
 
+  /**
+   * Discards all per-replica tracking and the cached leader commit index. Called whenever this node
+   * (re)acquires leadership so the lag classifier starts from a clean baseline for the new term
+   * (issue #4841).
+   * <p>
+   * A {@link ReplicaState} baseline ({@code lastMatchIndex}, {@code lastLeaderCommitIndex}, lag streak,
+   * {@code laggingSinceMs}) is only meaningful within a single leadership term. After a re-election
+   * Ratis resets each follower's {@code matchIndex} (it climbs again from the leader's probe), so the
+   * first tick of the new term would compare the fresh low {@code matchIndex} against the high baseline
+   * captured during a previous term, producing a large negative {@code replicaDelta} against a positive
+   * {@code leaderDelta} and mis-classifying a healthy follower as {@link ReplicaStatus#STALLED} - which
+   * can also trip the leader-driven resync (#4728). Clearing the map makes the next tick re-seed each
+   * replica with {@code computeIfAbsent}, yielding {@code replicaDelta == 0} and {@code leaderDelta == 0}.
+   * <p>
+   * Safe to call concurrently with the lag-monitor thread: {@code replicaStates} is a
+   * {@link ConcurrentHashMap} and {@code leaderCommitIndex} is volatile (and re-set on the next tick
+   * before any replica is classified).
+   */
+  public void reset() {
+    replicaStates.clear();
+    leaderCommitIndex = 0;
+  }
+
   public Map<String, Long> getReplicaLags() {
     if (replicaStates.isEmpty())
       return Collections.emptyMap();
