@@ -161,13 +161,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final AtomicBoolean needsSnapshotDownload      = new AtomicBoolean(false);
   private final AtomicBoolean snapshotDownloadInProgress = new AtomicBoolean(false);
   private final AtomicBoolean catchingUp                 = new AtomicBoolean(false);
-  // Set to true after applyTransaction catches an unexpected Throwable (OOM, NPE, etc.). The
-  // state machine's in-memory schema/page state can be inconsistent at that point (issue #4219:
-  // mid-load OOM leaves bucketMap cleared but not repopulated), so any subsequent apply
-  // attempt would surface as a cascade of "Bucket with id X was not found" errors before the
-  // async server.stop() completes. Once tripped, applyTransaction fails fast without touching
-  // database state and the recovery path is the asynchronous server shutdown plus a snapshot
-  // resync on the next start.
+  // Set to true after applyTransaction hits a genuinely unrecoverable, node-wide condition: a JVM
+  // Error (OOM, StackOverflow - the JVM itself is unstable), an unknown committed entry type (#4798,
+  // rolling-upgrade safety), or an unexpected error on an entry with no single target database
+  // (e.g. SECURITY_USERS_ENTRY). In those cases the state machine's in-memory schema/page state can
+  // be inconsistent (issue #4219: mid-load OOM leaves bucketMap cleared but not repopulated), so any
+  // subsequent apply would cascade into "Bucket with id X was not found" errors before the async
+  // server.stop() completes. Once tripped, applyTransaction fails fast without touching database
+  // state and the recovery path is the asynchronous server shutdown plus a snapshot resync on the
+  // next start.
+  //
+  // NOTE (issue #4797): an unexpected error applying an entry for a SINGLE database no longer trips
+  // this node-wide flag. Because one ArcadeStateMachine multiplexes every database, halting the whole
+  // node for one database's bad entry froze replication for all co-located databases. Such failures
+  // are now quarantined per-database (see applyWithRetry): the affected database is marked diverged
+  // and resynced from the leader while the node stays up and healthy databases keep replicating.
   private final AtomicBoolean haltedAfterCriticalError = new AtomicBoolean(false);
 
   // Database names whose state has diverged from the committed Raft log (a WALVersionGapException
@@ -563,27 +571,48 @@ public class ArcadeStateMachine extends BaseStateMachine {
         // recoverable resync condition - leaving them uncaught lets them propagate unchanged to
         // applyTransaction's fatal halt path so the node stops loudly rather than masking a corrupt
         // runtime.
-        // When this database has already diverged (WAL gap detected earlier), an unexpected error
-        // most likely stems from the engine operating on the inconsistent in-memory state left by
-        // the gap - e.g. NPE on a page that wasn't refreshed, ClassCastException on a stale object.
-        // Treat it as a recoverable resync condition (issue #4740) instead of propagating to
-        // applyTransaction's fatal catch (Throwable) path that would halt the server. The ongoing
-        // snapshot download will restore consistent state once a stable leader is available.
-        if (databaseName != null && divergedDatabases.contains(databaseName)) {
+        //
+        // Per-database quarantine (issue #4797): a single ArcadeStateMachine multiplexes every
+        // database on the node, so tripping the node-wide critical halt for one entry would freeze
+        // the apply pipeline for ALL co-located databases. When the failing entry targets a single
+        // database (databaseName non-null and non-empty) the failure is isolable: quarantine that
+        // database (mark it diverged and trigger a targeted snapshot resync) and report the error as
+        // a recoverable ReplicationException instead of the fatal catch (Throwable) path that would
+        // halt the server. The node stays up, healthy databases keep replicating, and only the
+        // affected database is reinstalled from the leader. This subsumes the earlier issue #4740
+        // behaviour (an unexpected error on an already-diverged database is a resync condition): the
+        // only change is that the FIRST unexpected error on a healthy database now quarantines it
+        // rather than halting the node.
+        //
+        // Entries with no single target database (databaseName null or empty, e.g. a
+        // SECURITY_USERS_ENTRY) are NOT isolable to one database's state, so their failure still
+        // propagates to the node-wide fatal halt.
+        if (databaseName != null && !databaseName.isEmpty()) {
+          // Mark the database diverged on the first error so subsequent errors for it route here too.
+          // add() returns true only the first time, which is when we kick off the targeted resync.
+          if (divergedDatabases.add(databaseName)) {
+            LogManager.instance().log(this, Level.SEVERE,
+                "Unexpected error applying Raft entry for database '%s' at index %d; quarantining the database and "
+                    + "triggering a targeted snapshot resync instead of halting the node (issue #4797): %s",
+                databaseName, index, t.getMessage());
+            triggerDatabaseResync(databaseName);
+          } else {
+            LogManager.instance().log(this, Level.SEVERE,
+                "Unexpected error at index %d while database '%s' is quarantined (snapshot resync in progress); "
+                    + "treating as resync condition: %s",
+                index, databaseName, t.getMessage());
+          }
           // Bounded escalation: a node that can never resync (no stable leader) must not swallow
           // errors forever and degrade silently. Once the swallow count exceeds the threshold, let
           // the error propagate to the fatal halt path so a truly stuck node surfaces loudly.
           if (divergedSwallowedErrors.incrementAndGet() > MAX_DIVERGED_SWALLOWED_ERRORS) {
             LogManager.instance().log(this, Level.SEVERE,
-                "Diverged database '%s' swallowed over %d unexpected errors without resyncing (index %d); escalating to fatal halt: %s",
+                "Quarantined database '%s' swallowed over %d unexpected errors without resyncing (index %d); escalating to fatal halt: %s",
                 databaseName, MAX_DIVERGED_SWALLOWED_ERRORS, index, t.getMessage());
             throw t;
           }
-          LogManager.instance().log(this, Level.SEVERE,
-              "Unexpected error at index %d while database '%s' is diverged (WAL gap detected earlier); treating as resync condition: %s",
-              index, databaseName, t.getMessage());
           throw new ReplicationException(
-              "Apply error on diverged state at index " + index + "; snapshot resync in progress", t);
+              "Apply error on database '" + databaseName + "' at index " + index + "; per-database snapshot resync in progress", t);
         }
         throw t;
       }
@@ -1573,6 +1602,73 @@ public class ArcadeStateMachine extends BaseStateMachine {
     } finally {
       snapshotDownloadInProgress.set(false);
     }
+  }
+
+  /**
+   * Triggers a targeted snapshot resync of a single database from the leader (issue #4797).
+   * <p>
+   * Used when an unexpected error while applying an entry for {@code dbName} quarantines it: only the
+   * affected database is reinstalled from the leader, leaving the healthy co-located databases on the
+   * same shared {@link ArcadeStateMachine} untouched and the node running. On success the database is
+   * removed from the diverged set via {@link #clearDivergedDatabase(String)}.
+   * <p>
+   * Participates in the same {@link #snapshotDownloadInProgress} single-flight protocol as
+   * {@link #triggerSnapshotDownload()} so a targeted resync never overlaps a full download; if a full
+   * download is already running it reinstalls this database too, so skipping here is safe. A skipped
+   * resync is recovered by the {@link HealthMonitor} persistent-lag backstop ({@link #recoverFromPersistentLag()}).
+   * No-op when there is no leader/server context or the lifecycle executor is shutting down.
+   */
+  private void triggerDatabaseResync(final String dbName) {
+    if (raftHAServer == null || server == null)
+      return;
+    try {
+      lifecycleExecutor.submit(() -> {
+        if (!snapshotDownloadInProgress.compareAndSet(false, true)) {
+          HALog.log(this, HALog.BASIC, "Snapshot download already in progress, skipping targeted resync of '%s'", dbName);
+          return;
+        }
+        try {
+          final String leaderHttpAddr = raftHAServer.getLeaderHttpAddress();
+          if (leaderHttpAddr == null) {
+            LogManager.instance().log(this, Level.WARNING,
+                "Cannot resync quarantined database '%s': leader HTTP address unknown", dbName);
+            return;
+          }
+          final String leaderHttpsAddr = raftHAServer.getLeaderHttpsAddress();
+          final String clusterToken = raftHAServer.getClusterToken();
+          // install() keeps the database open during the download and rolls back on failure, so a
+          // targeted resync never leaves it closed.
+          if (server.existsDatabase(dbName)) {
+            SnapshotInstaller.install(dbName, SnapshotInstaller.resolveDatabasePath(server, dbName),
+                leaderHttpAddr, leaderHttpsAddr, clusterToken, server);
+            LogManager.instance().log(this, Level.INFO,
+                "Targeted snapshot resync of quarantined database '%s' completed", dbName);
+            clearDivergedDatabase(dbName);
+          }
+        } catch (final Exception e) {
+          LogManager.instance().log(this, Level.SEVERE,
+              "Targeted snapshot resync of quarantined database '" + dbName + "' failed", e);
+        } finally {
+          snapshotDownloadInProgress.set(false);
+        }
+      });
+    } catch (final RejectedExecutionException ree) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Cannot schedule targeted resync for database '%s': executor is shut down", ree, dbName);
+    }
+  }
+
+  /**
+   * Removes a single database from the diverged set after a targeted resync restored its state
+   * (issue #4797). When the set becomes empty the bounded-escalation counter is reset, mirroring
+   * {@link #clearDivergedState()} which clears everything after a full resync. The counter is shared
+   * across databases, so it is only safe to reset once no database remains quarantined.
+   */
+  // @VisibleForTesting
+  void clearDivergedDatabase(final String dbName) {
+    divergedDatabases.remove(dbName);
+    if (divergedDatabases.isEmpty())
+      divergedSwallowedErrors.set(0);
   }
 
   /**
