@@ -1990,17 +1990,26 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         } catch (Exception e) {
           // Issue #4806: per-row errors are handled row-by-row inside insertRows, so an exception
           // reaching here is a transaction-level failure (typically a mid-stream PER_BATCH/PER_ROW
-          // commit that has already rolled the transaction back). Record it once at the transaction
+          // commit that has already rolled the transaction back, or a structural error such as an
+          // "options changed mid-stream" rejection in any mode). Record it once at the transaction
           // level (rowIndex -1) instead of mis-attributing it to a single row, and mark the stream
           // failed so subsequent chunks are not inserted into the broken transaction. onCompleted
-          // delivers the summary.
+          // delivers the summary. This is deliberately all-or-nothing for the failed chunk and
+          // (for PER_STREAM / PER_REQUEST) for the whole stream: a structural failure is not a
+          // recoverable per-row error, so the deferred commit is skipped rather than persisting a
+          // partial stream the client did not intend.
           streamFailed.set(true);
-          final String code = e instanceof DuplicatedKeyException ? "CONFLICT" : "COMMIT_FAILED";
-          totals.err(-1, code, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(), "");
-          // Not every transaction-level failure is a commit failure: an "options changed mid-stream"
-          // rejection or a schema error leaves the transaction still active and bound to this pooled
-          // gRPC thread. Roll it back here (on the failing thread, where it is bound) so its locks are
-          // released immediately and it is not leaked into a later request that reuses the thread.
+          // insertRows discards its partial Counts when it throws, so the failing chunk's rows never
+          // reach totals via totals.add(cts). Count them as received (the client did send them) so the
+          // summary cannot report failed > received. Unlike recordCommitException (used for the whole
+          // -stream deferred commit), do NOT reclassify previously counted inserted/updated as failed:
+          // in PER_BATCH/PER_ROW the earlier batches already committed and persisted.
+          totals.received += c.getRowsCount();
+          totals.err(-1, commitErrorCode(e), exceptionMessage(e), "");
+          // A structural failure (e.g. "options changed mid-stream") leaves the transaction still
+          // active and bound to this pooled gRPC thread. Roll it back here (on the failing thread,
+          // where it is bound) so its locks are released immediately and it is not leaked into a later
+          // request that reuses the thread.
           final InsertContext failedCtx = ctxRef.get();
           if (failedCtx != null)
             failedCtx.abortTransaction();
@@ -2092,14 +2101,30 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (rolledBack == 0)
       totals.failed++;
 
-    final String code = e instanceof DuplicatedKeyException ? "CONFLICT" : "COMMIT_FAILED";
-    final String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
     totals.errors.add(InsertError.newBuilder()
         .setRowIndex(-1)
-        .setCode(code)
-        .setMessage(message)
+        .setCode(commitErrorCode(e))
+        .setMessage(exceptionMessage(e))
         .setField("")
         .build());
+  }
+
+  /**
+   * Classifies a commit/transaction-level exception into the structured {@link InsertError} code:
+   * {@code CONFLICT} for a {@link DuplicatedKeyException}, {@code COMMIT_FAILED} otherwise. Shared by
+   * the mid-stream onNext failure path (Issue #4806) and the deferred whole-stream commit path
+   * (Issue #4198) so the two stay in sync.
+   */
+  private static String commitErrorCode(final Exception e) {
+    return e instanceof DuplicatedKeyException ? "CONFLICT" : "COMMIT_FAILED";
+  }
+
+  /**
+   * Returns a non-null human-readable message for an exception, falling back to the simple class name
+   * when {@link Exception#getMessage()} is null.
+   */
+  private static String exceptionMessage(final Exception e) {
+    return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
   }
 
   // --- 3) Client-streaming graph batch load ---
