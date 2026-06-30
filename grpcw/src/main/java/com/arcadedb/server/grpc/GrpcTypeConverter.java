@@ -55,6 +55,17 @@ class GrpcTypeConverter {
   }
 
   /**
+   * Convert a protobuf Timestamp to an {@link Instant}, preserving full nanosecond precision.
+   * Used on write paths for DATETIME_MICROS / DATETIME_NANOS columns so the engine can truncate
+   * to the column's declared precision instead of losing sub-millisecond digits up front.
+   */
+  static Instant tsToInstant(final Timestamp ts) {
+    if (ts == null)
+      return null;
+    return Instant.ofEpochSecond(ts.getSeconds(), ts.getNanos());
+  }
+
+  /**
    * Convert milliseconds since epoch to a protobuf Timestamp.
    */
   static Timestamp msToTimestamp(final long ms) {

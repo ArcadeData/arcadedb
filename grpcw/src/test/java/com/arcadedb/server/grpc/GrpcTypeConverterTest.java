@@ -47,6 +47,21 @@ class GrpcTypeConverterTest {
   }
 
   @Test
+  void tsToInstantPreservesNanos() {
+    // Issue #4805: the write path must keep full nanosecond precision (not collapse to millis)
+    // so DATETIME_MICROS / DATETIME_NANOS columns receive the precision the proto Timestamp carries.
+    final Timestamp ts = Timestamp.newBuilder()
+        .setSeconds(1000)
+        .setNanos(123_456_789)
+        .build();
+
+    final Instant instant = GrpcTypeConverter.tsToInstant(ts);
+
+    assertThat(instant.getEpochSecond()).isEqualTo(1000L);
+    assertThat(instant.getNano()).isEqualTo(123_456_789);
+  }
+
+  @Test
   void msToTimestampConvertsCorrectly() {
     long millis = 1000_500L;
 
