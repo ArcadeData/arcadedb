@@ -1648,6 +1648,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     call.disableAutoInboundFlowControl();
 
+    // gRPC StreamObserver is not thread-safe. Route every write/terminal call through a single
+    // serialization point so a cancellation racing a terminal call cannot interleave terminal calls.
+    final SynchronizedStreamObserver<InsertSummary> out = new SynchronizedStreamObserver<>(resp);
+
     final long startedAt = System.currentTimeMillis();
 
     final AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -1658,7 +1662,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // cache the first-chunk effective options to validate consistency
     final AtomicReference<InsertOptions> firstOptsRef = new AtomicReference<>();
 
-    call.setOnCancelHandler(() -> cancelled.set(true));
+    call.setOnCancelHandler(() -> {
+      cancelled.set(true);
+      out.markTerminated();
+    });
 
     // Pull the very first inbound message
     call.request(1);
@@ -1737,6 +1744,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       @Override
       public void onError(Throwable t) {
+        out.markTerminated();
         InsertContext ctx = ctxRef.get();
         if (ctx != null)
           ctx.closeQuietly();
@@ -1751,10 +1759,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           if (ctx == null) {
             // Client closed without sending a first chunk → nothing to do
-            resp.onNext(InsertSummary.newBuilder().setReceived(0).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0)
+            out.onNext(InsertSummary.newBuilder().setReceived(0).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0)
                 .setExecutionTimeMs(System.currentTimeMillis() - startedAt).build());
 
-            resp.onCompleted();
+            out.onCompleted();
             return;
           }
 
@@ -1772,11 +1780,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
 
           if (!cancelled.get()) {
-            resp.onNext(ctx.summary(totals, startedAt));
-            resp.onCompleted();
+            out.onNext(ctx.summary(totals, startedAt));
+            out.onCompleted();
           }
         } catch (Exception e) {
-          resp.onError(Status.INTERNAL.withDescription("insertStream: " + e.getMessage()).asException());
+          out.onError(Status.INTERNAL.withDescription("insertStream: " + e.getMessage()).asException());
         } finally {
           InsertContext ctx = ctxRef.get();
           if (ctx != null)

@@ -56,3 +56,18 @@ Regression: `GrpcServerIT#graphBatchLoadVerticesAndEdges` still passes end-to-en
 
 - Scope limited to grpcw streaming handlers. Unary RPCs were already single-threaded and untouched.
 - No new dependencies. Negligible overhead (one monitor + one AtomicBoolean per stream).
+
+## Review cycles
+
+### Cycle 1 (gemini-code-assist + claude)
+
+- gemini: also catch `io.grpc.StatusRuntimeException` (not only `IllegalStateException`) in all
+  three guarded delegate calls, since gRPC can throw a `StatusRuntimeException` (e.g. CANCELLED)
+  when the transport closes the call. Applied via multi-catch with an explicit import.
+- claude: `insertStream` (`ArcadeDbGrpcService.java:1646`) has the identical TOCTOU
+  cancel-vs-terminal race and was left untouched. Applied the same `SynchronizedStreamObserver`
+  wrapper to `insertStream` for consistency (cancel handler + onError + onCompleted paths).
+- claude (test suggestion): added `happyPathDeliversExactlyOneTerminalToDelegate` asserting exactly
+  one terminal reaches the delegate on the no-cancel path.
+- Verified: `Issue4801SynchronizedStreamObserverTest` 6/6, plus `GrpcServerIT#graphBatchLoadVerticesAndEdges`
+  and `Issue4198InsertStreamCommitErrorIT` pass end-to-end.

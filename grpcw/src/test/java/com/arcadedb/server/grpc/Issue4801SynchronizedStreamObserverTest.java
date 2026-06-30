@@ -102,6 +102,20 @@ class Issue4801SynchronizedStreamObserverTest {
   }
 
   @Test
+  void happyPathDeliversExactlyOneTerminalToDelegate() {
+    final ContractEnforcingObserver delegate = new ContractEnforcingObserver();
+    final SynchronizedStreamObserver<String> obs = new SynchronizedStreamObserver<>(delegate);
+
+    obs.onNext("a");
+    obs.onNext("b");
+    obs.onCompleted();
+
+    assertThat(delegate.onNextCount.get()).isEqualTo(2);
+    assertThat(delegate.terminalCount.get()).isEqualTo(1);
+    assertThat(delegate.violations.get()).isZero();
+  }
+
+  @Test
   void duplicateTerminalCallsAreCollapsedToOne() {
     final ContractEnforcingObserver delegate = new ContractEnforcingObserver();
     final SynchronizedStreamObserver<String> obs = new SynchronizedStreamObserver<>(delegate);

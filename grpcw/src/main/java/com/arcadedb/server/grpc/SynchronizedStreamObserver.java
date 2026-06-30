@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import io.grpc.StatusRuntimeException;
 import io.grpc.stub.StreamObserver;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -54,8 +55,10 @@ final class SynchronizedStreamObserver<T> implements StreamObserver<T> {
         return;
       try {
         delegate.onNext(value);
-      } catch (final IllegalStateException closed) {
-        // The underlying call was concurrently cancelled/closed by the transport: stop sending.
+      } catch (final IllegalStateException | StatusRuntimeException closed) {
+        // The underlying call was concurrently cancelled/closed by the transport: mark terminated
+        // and stop sending. No terminal call is delegated in this path, by design - the transport
+        // has already closed the call.
         completed.set(true);
       }
     }
@@ -68,8 +71,8 @@ final class SynchronizedStreamObserver<T> implements StreamObserver<T> {
         return;
       try {
         delegate.onError(t);
-      } catch (final IllegalStateException ignore) {
-        // Call already closed: nothing more to deliver.
+      } catch (final IllegalStateException | StatusRuntimeException ignore) {
+        // Call already closed/cancelled by the transport: nothing more to deliver.
       }
     }
   }
@@ -81,8 +84,8 @@ final class SynchronizedStreamObserver<T> implements StreamObserver<T> {
         return;
       try {
         delegate.onCompleted();
-      } catch (final IllegalStateException ignore) {
-        // Call already closed: nothing more to deliver.
+      } catch (final IllegalStateException | StatusRuntimeException ignore) {
+        // Call already closed/cancelled by the transport: nothing more to deliver.
       }
     }
   }
