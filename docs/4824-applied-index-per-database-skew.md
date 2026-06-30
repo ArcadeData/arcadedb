@@ -55,3 +55,19 @@ Make applied-index tracking per-database-aware (suggested fix option 2):
   still skip its bootstrap verification (legitimate skip preserved).
 - `legacyPlainNumberFileReadAsGlobalNotPerDatabase` — a legacy plain-number file is honoured as
   the global value and yields no per-database evidence.
+- `perDatabaseValuesRoundTripAcrossRestart` — per-database and global values round-trip through the
+  file and recover in a fresh state machine.
+- `fullInstallRecordsSnapshotIndexForEveryPresentDatabase` — a full state-machine install records
+  the snapshot index for every present database (exercises the `getDatabaseNames()` path).
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4847
+
+## Review cycles
+
+- cycle 1 (`5267f6b`): gemini + claude reviewed. Addressed: synchronise the persisted-index writers
+  on `appliedIndexFileLock` (in-memory + shared temp-file race; both bots); evict dropped databases
+  from the per-database map (claude); add a test for the full-install path and stub
+  `getDatabaseNames()` (claude); document that the hot-path JSON allocation is dominated by the
+  atomic-rename I/O that already ran every apply (claude); fix the doc test count (claude).

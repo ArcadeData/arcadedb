@@ -35,6 +35,7 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.atLeastOnce;
@@ -195,5 +196,28 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
         .as("global tracks the last applied index across all databases")
         .isEqualTo(20L);
     assertThat(reopened.readPersistedAppliedIndex("never-seen")).isEqualTo(-1L);
+  }
+
+  /**
+   * A full state-machine snapshot install records the snapshot index for EVERY present database, so a
+   * subsequent bootstrap entry for any of them is correctly recognised as already applied. This locks
+   * in the documented {@code writePersistedAppliedIndexForAllDatabases} behaviour and exercises the
+   * {@code getDatabaseNames()} path.
+   */
+  @Test
+  void fullInstallRecordsSnapshotIndexForEveryPresentDatabase() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
+
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getConfiguration()).thenReturn(config);
+    when(server.getDatabaseNames()).thenReturn(Set.of(DB_A, DB_OTHER));
+
+    final ArcadeStateMachine sm = newStateMachine(server);
+    sm.writePersistedAppliedIndexForAllDatabases(500L);
+
+    assertThat(sm.readPersistedAppliedIndex()).isEqualTo(500L);
+    assertThat(sm.readPersistedAppliedIndex(DB_A)).isEqualTo(500L);
+    assertThat(sm.readPersistedAppliedIndex(DB_OTHER)).isEqualTo(500L);
   }
 }

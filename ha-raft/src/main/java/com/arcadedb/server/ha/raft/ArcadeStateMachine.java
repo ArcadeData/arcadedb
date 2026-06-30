@@ -447,8 +447,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Record the index globally AND against the database this entry targeted, so the per-database
       // bootstrap replay-skip can trust a value that is not mixed across databases (issue #4824).
       // decoded.databaseName() is null only for database-agnostic entries (e.g. SECURITY_USERS_ENTRY),
-      // which advance the global position only.
-      writePersistedAppliedIndex(index, decoded.databaseName());
+      // which advance the global position only. A DROP entry removes the database, so we advance only
+      // the global position and evict its per-database entry below (avoids growing the map for the
+      // node lifetime with names of dropped databases).
+      final boolean droppedDatabase = decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY;
+      writePersistedAppliedIndex(index, droppedDatabase ? null : decoded.databaseName());
+      if (droppedDatabase)
+        removePersistedAppliedIndexForDatabase(decoded.databaseName());
 
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
       final RaftHAServer raftHA = this.raftHAServer;
@@ -1652,27 +1657,53 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * Records {@code index} as the global applied position and, when {@code dbName} is non-null, as the
    * per-database applied position for that database, then serialises the bookkeeping to disk.
    * Package-private for tests.
+   * <p>
+   * Synchronised on {@link #appliedIndexFileLock}: the apply thread and the snapshot-install thread
+   * (see {@link #writePersistedAppliedIndexForAllDatabases}) are the two writers, and the lock keeps
+   * the in-memory update and the temp-file write+rename atomic with respect to each other so the
+   * shared {@code applied-index.tmp} is never raced.
    */
   void writePersistedAppliedIndex(final long index, final String dbName) {
-    ensureAppliedIndexLoaded();
-    globalAppliedIndex = index;
-    if (dbName != null)
-      appliedIndexByDb.put(dbName, index);
-    persistAppliedIndexFile();
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      globalAppliedIndex = index;
+      if (dbName != null)
+        appliedIndexByDb.put(dbName, index);
+      persistAppliedIndexFile();
+    }
+  }
+
+  /**
+   * Removes {@code dbName} from the per-database applied-index map and serialises, so a dropped
+   * database does not leave a stale entry that grows the map and persisted JSON for the node lifetime
+   * (issue #4824). The global position is left untouched.
+   */
+  private void removePersistedAppliedIndexForDatabase(final String dbName) {
+    if (dbName == null)
+      return;
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      if (appliedIndexByDb.remove(dbName) != null)
+        persistAppliedIndexFile();
+    }
   }
 
   /**
    * Records {@code index} as the global applied position and as the per-database position for every
    * database currently present on this node, then serialises once. Used by the full state-machine
-   * snapshot install, after which every present database is at {@code index}.
+   * snapshot install, after which every present database is at {@code index}. Synchronised on
+   * {@link #appliedIndexFileLock} so it never races the apply-thread writer on the in-memory state or
+   * the shared temp file.
    */
-  private void writePersistedAppliedIndexForAllDatabases(final long index) {
-    ensureAppliedIndexLoaded();
-    globalAppliedIndex = index;
-    if (server != null)
-      for (final String dbName : server.getDatabaseNames())
-        appliedIndexByDb.put(dbName, index);
-    persistAppliedIndexFile();
+  void writePersistedAppliedIndexForAllDatabases(final long index) {
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      globalAppliedIndex = index;
+      if (server != null)
+        for (final String dbName : server.getDatabaseNames())
+          appliedIndexByDb.put(dbName, index);
+      persistAppliedIndexFile();
+    }
   }
 
   /**
@@ -1714,6 +1745,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Serialises the in-memory applied-index bookkeeping to {@code .raft/applied-index} via a temp file
    * and atomic rename, so a crash mid-write never leaves a corrupt file.
+   * <p>
+   * Called once per applied entry (the file was already rewritten every apply before this change).
+   * The per-database map is tiny (one entry per co-located database) and the small JSON it allocates
+   * is dominated by the {@code createDirectories} + {@code writeString} + atomic {@code move} syscalls
+   * that already ran every apply, so the extra allocation is negligible on the apply path.
    */
   private void persistAppliedIndexFile() {
     try {
