@@ -223,8 +223,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       this.peerDisplayNames.put(peerId, httpAddr != null ? nodeName + " (" + httpAddr + ")" : nodeName);
     }
 
-    this.stateMachine = new ArcadeStateMachine();
-    this.stateMachine.setServer(arcadeServer);
+    this.stateMachine = createStateMachine();
 
     final long stalledResyncDurationMs = configuration.getValueAsLong(
         GlobalConfiguration.HA_STALLED_REPLICA_RESYNC_DURATION_MS);
@@ -730,6 +729,22 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Builds a fully wired {@link ArcadeStateMachine}. Both collaborators must be set: {@code setServer}
+   * gives it the {@link ArcadeDBServer} and {@code setRaftHAServer} the owning {@code RaftHAServer}.
+   * Missing the latter leaves {@code raftHAServer} null on the new machine, so the recovered node can
+   * no longer install snapshots ({@code notifyInstallSnapshotFromLeader} NPEs), never marks
+   * locally-originated transactions (origin-skip fails, the leader re-applies its own committed txns),
+   * and silently skips leader-change handling (issue #4839). Used by both the startup constructor and
+   * the {@link #restartRatis(boolean)} recovery path so the two can never drift.
+   */
+  private ArcadeStateMachine createStateMachine() {
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    sm.setServer(arcadeServer);
+    sm.setRaftHAServer(this);
+    return sm;
+  }
+
+  /**
    * Restarts the local Ratis server. When {@code formatStorage} is {@code true} the Raft storage
    * directory is deleted first and the server starts with {@link RaftStorage.StartupOption#FORMAT},
    * so this peer rejoins the group with an empty log and is reconciled by the leader via the
@@ -784,8 +799,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       }
 
       try {
-        this.stateMachine = new ArcadeStateMachine();
-        this.stateMachine.setServer(arcadeServer);
+        this.stateMachine = createStateMachine();
 
         final RaftProperties properties = RaftPropertiesBuilder.build(configuration);
         final File storageDir = getRaftStorageDir();

@@ -80,7 +80,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
     try {
       raftHAServer = new RaftHAServer(server, configuration);
-      raftHAServer.getStateMachine().setRaftHAServer(raftHAServer);
+      // The state machine is fully wired (server + raftHAServer) inside RaftHAServer itself, both at
+      // construction and on every HealthMonitor-driven Ratis restart, so no external wiring is needed
+      // here (issue #4839).
       raftHAServer.start();
 
       // Register the database wrapper so the server wraps databases with RaftReplicatedDatabase.
