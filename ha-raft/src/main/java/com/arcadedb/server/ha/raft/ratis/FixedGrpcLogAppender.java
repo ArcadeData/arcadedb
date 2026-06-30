@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.ha.raft.ratis;
 
-import com.arcadedb.log.LogManager;
 import org.apache.ratis.grpc.server.GrpcLogAppender;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.leader.FollowerInfo;
@@ -27,7 +26,6 @@ import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.raftlog.RaftLogIndex;
 
 import java.lang.reflect.Field;
-import java.util.logging.Level;
 
 /**
  * Drop-in replacement for Apache Ratis 3.2.2's {@link GrpcLogAppender} that fixes
@@ -56,14 +54,26 @@ import java.util.logging.Level;
  */
 public class FixedGrpcLogAppender extends GrpcLogAppender {
 
+  /**
+   * Cached, validated reflective handle on {@code FollowerInfoImpl.matchIndex}. Resolved once
+   * (fail-loud) at the first appender construction and reused for every rewind. {@code volatile}
+   * for safe publication across the appender threads.
+   */
+  private static volatile Field matchIndexField;
+
   public FixedGrpcLogAppender(final RaftServer.Division server, final LeaderState leaderState, final FollowerInfo f) {
     super(server, leaderState, f);
+    // Fail-loud startup self-check: verify the Ratis-internal matchIndex field is still present
+    // and of the expected type. If a Ratis upgrade renamed/retyped the field, fail now (loudly)
+    // instead of silently no-op'ing the RATIS-2523 workaround later and re-exposing the bug.
+    resolveMatchIndexField(f.getClass());
   }
 
   @Override
   protected long getNextIndexForInconsistency(final long requestFirstIndex, final long replyNextIndex) {
+    final long currentMatchIndex = getFollower().getMatchIndex();
     if (requestFirstIndex == RaftLog.INVALID_LOG_INDEX
-        && replyNextIndex <= getFollower().getMatchIndex()) {
+        && replyNextIndex <= currentMatchIndex) {
       // RATIS-2523: heartbeat path with a follower whose hint is at or below our recorded
       // matchIndex. Our matchIndex is stale (the follower restarted with empty storage and we
       // never observed a SUCCESS that would have rolled it back). Setting only nextIndex back
@@ -72,11 +82,13 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
       // skips the corresponding updateNextIndex. The appender then loops at the SUCCESS layer
       // instead of the INCONSISTENCY layer.
       //
-      // Force matchIndex back to (replyNextIndex - 1) via reflection on FollowerInfoImpl. The
+      // Rewind matchIndex back to (replyNextIndex - 1) via reflection on FollowerInfoImpl. The
       // public FollowerInfo API only offers setSnapshotIndex which also rewrites snapshotIndex
       // and risks confusing Ratis's snapshot-install detection; we want the surgical reset.
-      // Once RATIS-2523 ships, drop this whole subclass.
-      forceMatchIndex(getFollower(), replyNextIndex - 1);
+      // The rewind is an atomic compare-and-set against the value we just observed, so a
+      // concurrent SUCCESS reply that legitimately raised matchIndex wins and we never push it
+      // backwards. Once RATIS-2523 ships, drop this whole subclass.
+      forceMatchIndex(getFollower(), currentMatchIndex, replyNextIndex - 1);
       return replyNextIndex;
     }
     return super.getNextIndexForInconsistency(requestFirstIndex, replyNextIndex);
@@ -84,22 +96,67 @@ public class FixedGrpcLogAppender extends GrpcLogAppender {
 
   /**
    * Surgically rewinds {@code FollowerInfoImpl.matchIndex} backwards. The public
-   * {@link FollowerInfo#updateMatchIndex} method only takes the max, so to undo a stale value
-   * we read the private {@code matchIndex} {@link RaftLogIndex} field and call its public
-   * {@code setUnconditionally}. Failures (e.g. Ratis layout change) are logged and the
-   * recovery falls back to the no-op upstream behaviour.
+   * {@link FollowerInfo#updateMatchIndex} method only takes the max, so to undo a stale value we
+   * read the private {@code matchIndex} {@link RaftLogIndex} field and rewrite it atomically. A
+   * Ratis layout change throws (the field was already validated at construction time, so this
+   * only fires on a genuinely unexpected runtime state) rather than silently degrading.
+   *
+   * @param observedMatchIndex the matchIndex value observed by the caller; the rewind only
+   *                           applies if matchIndex is still that value (compare-and-set)
    */
-  private static void forceMatchIndex(final FollowerInfo follower, final long newMatchIndex) {
+  private static void forceMatchIndex(final FollowerInfo follower, final long observedMatchIndex, final long newMatchIndex) {
     try {
-      final Field f = follower.getClass().getDeclaredField("matchIndex");
-      f.setAccessible(true);
-      final RaftLogIndex idx = (RaftLogIndex) f.get(follower);
-      idx.setUnconditionally(newMatchIndex, msg -> {
-      });
+      final RaftLogIndex idx = (RaftLogIndex) resolveMatchIndexField(follower.getClass()).get(follower);
+      rewindMatchIndex(idx, observedMatchIndex, newMatchIndex);
     } catch (final ReflectiveOperationException | ClassCastException e) {
-      LogManager.instance().log(FixedGrpcLogAppender.class, Level.WARNING,
-          "RATIS-2523 workaround: cannot reset matchIndex for follower %s: %s",
-          null, follower.getName(), e.getMessage());
+      throw new IllegalStateException("RATIS-2523 workaround: cannot rewind matchIndex for follower " + follower.getName()
+          + "; the Ratis internal layout changed. Update or remove FixedGrpcLogAppender.", e);
     }
+  }
+
+  /**
+   * Atomically rewinds {@code matchIndex} to {@code newMatchIndex}, but only if it is still the
+   * {@code observedMatchIndex} the caller saw. Folding the guard into the atomic read-modify-write
+   * keeps the operation race-free against Ratis's concurrent {@code updateMatchIndex} (which takes
+   * the max): a SUCCESS reply that raised matchIndex above the observed value wins and this call
+   * no-ops, preserving Ratis's monotonic-matchIndex invariant.
+   * <p>
+   * Package-private for direct unit testing of the concurrency-sensitive logic.
+   */
+  static void rewindMatchIndex(final RaftLogIndex matchIndex, final long observedMatchIndex, final long newMatchIndex) {
+    if (newMatchIndex < RaftLog.INVALID_LOG_INDEX)
+      throw new IllegalArgumentException(
+          "RATIS-2523 workaround: refusing to set matchIndex below " + RaftLog.INVALID_LOG_INDEX + " (got " + newMatchIndex + ")");
+
+    matchIndex.updateUnconditionally(old -> old == observedMatchIndex ? newMatchIndex : old, msg -> {
+    });
+  }
+
+  /**
+   * Resolves and validates the reflective handle on {@code FollowerInfoImpl.matchIndex}, caching
+   * the result. Throws {@link IllegalStateException} (fail-loud) if the field is missing or is not
+   * a {@link RaftLogIndex}, which can only happen if the Ratis internal layout changes on an
+   * upgrade. Package-private so the self-check can be exercised by unit tests.
+   */
+  static Field resolveMatchIndexField(final Class<?> followerClass) {
+    final Field cached = matchIndexField;
+    if (cached != null && cached.getDeclaringClass() == followerClass)
+      return cached;
+
+    final Field found;
+    try {
+      found = followerClass.getDeclaredField("matchIndex");
+    } catch (final NoSuchFieldException e) {
+      throw new IllegalStateException("RATIS-2523 workaround self-check failed: " + followerClass.getName()
+          + " has no 'matchIndex' field. The Ratis internal layout changed; update or remove FixedGrpcLogAppender.", e);
+    }
+    if (!RaftLogIndex.class.isAssignableFrom(found.getType()))
+      throw new IllegalStateException("RATIS-2523 workaround self-check failed: " + followerClass.getName()
+          + ".matchIndex has unexpected type " + found.getType().getName() + " (expected " + RaftLogIndex.class.getName()
+          + "). The Ratis internal layout changed; update or remove FixedGrpcLogAppender.");
+
+    found.setAccessible(true);
+    matchIndexField = found;
+    return found;
   }
 }
