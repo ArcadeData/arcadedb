@@ -3743,9 +3743,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       case DATETIME_SECOND:
       case DATETIME_MICROS:
       case DATETIME_NANOS: {
-        // Same handling as DATETIME
+        // Keep full nanosecond precision from the proto Timestamp (matching the parameter-binding
+        // path fromGrpcValue). Type.convert() truncates the Instant to the column's declared
+        // precision via DateUtils.getPrecisionFromType(...); a java.util.Date would collapse the
+        // value to milliseconds up front, discarding the sub-millisecond digits these types keep.
         return switch (v.getKindCase()) {
-          case TIMESTAMP_VALUE -> new Date(GrpcTypeConverter.tsToMillis(v.getTimestampValue()));
+          case TIMESTAMP_VALUE -> GrpcTypeConverter.tsToInstant(v.getTimestampValue());
           case INT64_VALUE -> new Date(v.getInt64Value()); // epoch ms expected
           case STRING_VALUE -> new Date(Long.parseLong(v.getStringValue()));
           default -> null;
