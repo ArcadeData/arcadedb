@@ -124,9 +124,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // which compares against the inherently global Ratis snapshot index) AND a per-database map (used by
   // the per-database bootstrap replay-skip). The values live in memory so the hot apply path never
   // reads the file back; the file is parsed once lazily on first access and serialised on each write.
-  // globalAppliedIndex mirrors lastAppliedIndex (the AtomicLong above) after each apply: they are
-  // seeded differently (this one from the persisted file on load, lastAppliedIndex in reinitialize())
-  // but both advance to the same value on every applyTransaction and must stay in sync.
+  // globalAppliedIndex tracks the same value as lastAppliedIndex (the AtomicLong above) on the apply
+  // path. They are seeded independently (this one from the persisted file on load, lastAppliedIndex
+  // from the Ratis snapshot in reinitialize()) and can briefly differ after reinitialize() - e.g. when
+  // there is no snapshot lastAppliedIndex is -1 while globalAppliedIndex may hold the persisted value -
+  // but every applyTransaction advances both to the same index, reconverging them.
   private final    Map<String, Long>         appliedIndexByDb     = new ConcurrentHashMap<>();
   private volatile long                      globalAppliedIndex   = -1;
   private volatile boolean                   appliedIndexLoaded   = false;
@@ -1761,6 +1763,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
       } finally {
         // The path was resolvable and we attempted a read: latch even on a parse failure so a corrupt
         // file is not re-read on every apply (it degrades to -1, re-running the idempotent verification).
+        // Deliberate coupling: a corrupt file leaving globalAppliedIndex at -1 also makes
+        // reinitialize()'s snapshot-gap check (persistedApplied >= 0 && ...) evaluate false, i.e. it
+        // suppresses the "snapshot ahead, download from leader" path. This matches the pre-change
+        // behavior (a parse failure already returned -1), so it is intentional, not a regression.
         appliedIndexLoaded = true;
       }
     }

@@ -246,4 +246,33 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
         .as("the global position still advances on the drop entry")
         .isEqualTo(99L);
   }
+
+  /**
+   * A write that targets one database must preserve the other databases' entries already on disk: the
+   * write loads the existing map before mutating (load-before-mutate), so an unrelated database's
+   * persisted index is not clobbered when the file is rewritten.
+   */
+  @Test
+  void writePreservesOtherDatabasesEntriesOnDisk() {
+    final ArcadeDBServer server = mockServer();
+
+    // First instance persists entries for both databases.
+    final ArcadeStateMachine writer = newStateMachine(server);
+    writer.writePersistedAppliedIndex(10L, DB_A);
+    writer.writePersistedAppliedIndex(20L, DB_OTHER);
+
+    // A fresh instance (no in-memory state) writes a NEW index for db-a only; db-other must survive.
+    final ArcadeStateMachine reopened = newStateMachine(server);
+    reopened.writePersistedAppliedIndex(30L, DB_A);
+
+    assertThat(reopened.readPersistedAppliedIndex(DB_A)).isEqualTo(30L);
+    assertThat(reopened.readPersistedAppliedIndex(DB_OTHER))
+        .as("an unrelated database's persisted entry survives a single-database rewrite")
+        .isEqualTo(20L);
+
+    // And it is durable: a third instance reading from disk still sees both.
+    final ArcadeStateMachine third = newStateMachine(server);
+    assertThat(third.readPersistedAppliedIndex(DB_A)).isEqualTo(30L);
+    assertThat(third.readPersistedAppliedIndex(DB_OTHER)).isEqualTo(20L);
+  }
 }

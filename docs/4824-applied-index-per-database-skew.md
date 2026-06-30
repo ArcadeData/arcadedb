@@ -102,3 +102,14 @@ https://github.com/ArcadeData/arcadedb/pull/4847
   so a later-available file is never masked; add a direct DROP-eviction test; note the graceful
   downgrade path; comment that `globalAppliedIndex` mirrors `lastAppliedIndex`; replace em dashes in
   this doc. The "Review cycles" section is retained per the resolve-issue-with-review Phase 6 convention.
+- cycle 4 (`5c3e016`): gemini re-posted the (already-applied) synchronisation suggestion - no-op.
+  Claude rated all remaining points non-blocking polish. Applied: soften the
+  `globalAppliedIndex`/`lastAppliedIndex` comment (they can briefly differ after `reinitialize()`);
+  note that the corrupt-file -> gap-detection suppression coupling is deliberate; add the upgrade-merge
+  test (`writePreservesOtherDatabasesEntriesOnDisk`) for the load-before-mutate property.
+
+## Final state
+
+max-cycles-reached (4 cycles). All actionable review feedback addressed; the final-cycle reviews are
+approval-level / non-blocking polish (gemini's recurring synchronisation note was already implemented
+in cycle 1). Merge remains the developer's responsibility.
