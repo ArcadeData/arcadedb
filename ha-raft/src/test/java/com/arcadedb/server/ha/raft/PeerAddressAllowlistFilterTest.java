@@ -261,6 +261,42 @@ class PeerAddressAllowlistFilterTest {
   }
 
   @Test
+  void stopsFailingOpenOnceAQuorumOfPeersResolveEvenIfOnePeerStaysDown() {
+    // Issue #4828: with one peer permanently down at startup, the all-peers-resolved latch never
+    // trips, so the fail-open branch used to stay active for the ENTIRE configured grace window,
+    // admitting any namespace IP. Once a quorum of declared peers resolve, the cluster can already
+    // form a Raft majority, so fail-open must end early instead of waiting for the down peer.
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    // Three-node cluster: self (peerA) + peerB are up; peerC's pod is permanently down so its DNS
+    // record never publishes. 2/3 resolved = a Raft quorum.
+    dns.table.put("peerA", List.of("10.1.13.7"));
+    dns.table.put("peerB", List.of("10.1.13.8"));
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA", "peerB", "peerC"), 30_000L, 60_000L, 300_000L, clock, dns);
+
+    // Genuine peers are admitted.
+    assertThat(f.isAllowed("10.1.13.7")).isTrue();
+    assertThat(f.isAllowed("10.1.13.8")).isTrue();
+    // A quorum (2/3) has resolved, so a stranger is rejected immediately - well inside the grace
+    // window - rather than being admitted for the full window because peerC never resolves.
+    assertThat(f.isQuorumResolved()).isTrue();
+    assertThat(f.isAllowed("10.99.99.99")).isFalse();
+  }
+
+  @Test
+  void keepsFailingOpenWhileBelowQuorumDuringStartupGrace() {
+    // Only self has resolved (1/3) - no quorum yet - so a legitimately-restarting peer whose DNS is
+    // not published must still be admitted during the grace window (issue #4471 self-partition guard).
+    final AtomicLong clock = new AtomicLong(0);
+    final FakeResolver dns = new FakeResolver();
+    dns.table.put("peerA", List.of("10.1.13.7"));
+    final PeerAddressAllowlistFilter f = filter(List.of("peerA", "peerB", "peerC"), 30_000L, 60_000L, 300_000L, clock, dns);
+
+    assertThat(f.isQuorumResolved()).isFalse();
+    assertThat(f.isAllowed("10.1.13.9")).isTrue(); // still failing open below quorum
+  }
+
+  @Test
   void failOpenDisabledWhenGraceZero() {
     final AtomicLong clock = new AtomicLong(0);
     final FakeResolver dns = new FakeResolver();

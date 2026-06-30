@@ -1133,12 +1133,14 @@ public enum GlobalConfiguration {
   HA_PEER_ALLOWLIST_STARTUP_GRACE_MS("arcadedb.ha.peerAllowlistStartupGraceMs", SCOPE.SERVER,
       """
       Startup grace window in milliseconds during which the gRPC peer allowlist filter fails OPEN (accepts and logs a \
-      warning) for an inbound address it cannot yet match, as long as it has never resolved every host in \
-      arcadedb.ha.serverList at least once. This prevents a self-inflicted partition on Kubernetes, where a peer's \
-      headless-service DNS record is only published once its pod is Ready, so a legitimately-restarting peer connects \
-      before its own name resolves. Measured from filter creation. Once all peer hosts have resolved at least once, or \
-      the window elapses, the filter enforces normally. Set to 0 to disable fail-open (strict from the first connection); \
-      the filter is not an mTLS substitute (see issue #3890), so a bounded fail-open window is the safer default.""",
+      warning) for an inbound address it cannot yet match, as long as a quorum (majority) of the hosts in \
+      arcadedb.ha.serverList has never resolved at least once. This prevents a self-inflicted partition on Kubernetes, \
+      where a peer's headless-service DNS record is only published once its pod is Ready, so a legitimately-restarting \
+      peer connects before its own name resolves. Measured from filter creation. Once a quorum of peer hosts has \
+      resolved at least once, or the window elapses, the filter enforces normally; the gate is a quorum rather than the \
+      full peer set so a single permanently-down peer does not hold the window open for its full duration (issue #4828). \
+      Set to 0 to disable fail-open (strict from the first connection); the filter is not an mTLS substitute (see issue \
+      #3890), so a bounded fail-open window is the safer default.""",
       Long.class, 60_000L),
 
   HA_PEER_ALLOWLIST_STICKY_TTL_MS("arcadedb.ha.peerAllowlistStickyTtlMs", SCOPE.SERVER,

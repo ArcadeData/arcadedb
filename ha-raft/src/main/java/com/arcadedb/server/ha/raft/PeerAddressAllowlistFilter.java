@@ -59,10 +59,15 @@ import java.util.logging.Level;
  *   <li><b>Sticky last-known-good IPs.</b> When a host that resolved before fails to resolve now
  *       (transient DNS outage, pod-IP churn mid-restart), its previous IPs are retained for
  *       {@code stickyTtlMs} rather than being evicted immediately.</li>
- *   <li><b>Startup fail-open grace.</b> Until the first time all peer hosts have resolved, and for
+ *   <li><b>Startup fail-open grace.</b> Until a quorum (majority) of peer hosts has resolved, and for
  *       at most {@code startupGraceMs} from creation, an unmatched address is accepted with a
- *       warning instead of rejected. After the allowlist is once complete, or the window elapses,
- *       the filter enforces normally.</li>
+ *       warning instead of rejected. After a quorum has resolved once, or the window elapses,
+ *       the filter enforces normally. The gate is a quorum rather than the full peer set (issue
+ *       #4828): if one pod is permanently down at startup its DNS record never publishes, so an
+ *       all-peers latch would never trip and the fail-open branch would stay active for the entire
+ *       configured window. A Raft majority is enough to form the cluster, so once that many peers
+ *       are known the allowlist is functional and fail-open ends - a returning peer's new IP is then
+ *       picked up by the reactive miss path and the background {@link #proactiveRefresh()}.</li>
  * </ul>
  * <p>
  * This is NOT a substitute for mTLS: it does not authenticate peer identity and does not
@@ -83,6 +88,10 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   private static final long        INCOMPLETE_RESOLVE_FLOOR_MS = 1_000L;
 
   private final List<String>                 peerHosts;
+  // Number of declared peer hosts that must resolve before the startup fail-open ends: a Raft
+  // majority (floor(n/2)+1). Enough peers to form the cluster, so a single permanently-down peer
+  // no longer holds the fail-open window open for its full duration (issue #4828).
+  private final int                          resolveQuorum;
   private final long                         refreshIntervalMs;
   private final long                         startupGraceMs;
   private final long                         stickyTtlMs;
@@ -95,8 +104,12 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   private final Map<String, Set<String>>     lastKnownIps = new HashMap<>();
   private final Map<String, Long>            lastKnownMs  = new HashMap<>();
   private volatile long                      lastResolveMs;
-  // Latches true the first time every peer host is covered by the allowlist; gates the fail-open grace.
+  // Latches true the first time every peer host is covered by the allowlist; drives the fast-converge
+  // resolve floor so the still-missing minority is re-resolved aggressively at startup.
   private volatile boolean                   everCompletelyResolved;
+  // Latches true the first time a quorum of peer hosts is covered; gates the fail-open grace so the
+  // window ends as soon as a Raft majority is known, even if a peer is permanently down (issue #4828).
+  private volatile boolean                   everQuorumResolved;
 
   PeerAddressAllowlistFilter(final List<String> peerHosts, final long refreshIntervalMs) {
     this(peerHosts, refreshIntervalMs,
@@ -115,6 +128,7 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     if (peerHosts == null || peerHosts.isEmpty())
       throw new IllegalArgumentException("Peer allowlist requires at least one host");
     this.peerHosts = List.copyOf(peerHosts);
+    this.resolveQuorum = this.peerHosts.size() / 2 + 1;
     this.refreshIntervalMs = Math.max(0L, refreshIntervalMs);
     this.startupGraceMs = Math.max(0L, startupGraceMs);
     this.stickyTtlMs = Math.max(0L, stickyTtlMs);
@@ -160,14 +174,16 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     if (allowedIps.get().contains(ip))
       return true;
 
-    // Startup fail-open: we have never seen the full peer set resolve and are still within the grace
-    // window. Accept rather than partition the cluster against itself while DNS catches up.
+    // Startup fail-open: a quorum of peers has never resolved and we are still within the grace
+    // window. Accept rather than partition the cluster against itself while DNS catches up. The gate
+    // is a quorum, not the full peer set, so a single permanently-down peer does not hold the window
+    // open for its full duration (issue #4828).
     final long now = clock.getAsLong();
-    if (!everCompletelyResolved && startupGraceMs > 0 && now - createdMs < startupGraceMs) {
+    if (!everQuorumResolved && startupGraceMs > 0 && now - createdMs < startupGraceMs) {
       LogManager.instance().log(this, Level.WARNING,
-          "Accepting Raft gRPC connection from %s during startup grace: peer allowlist not yet complete "
-              + "(resolved %d/%d hosts, allowed=%s). Will enforce once all peers resolve or after %dms.",
-          ip, lastKnownIps.size(), peerHosts.size(), allowedIps.get(), startupGraceMs);
+          "Accepting Raft gRPC connection from %s during startup grace: peer allowlist below quorum "
+              + "(resolved %d/%d hosts, quorum=%d, allowed=%s). Will enforce once a quorum of peers resolves or after %dms.",
+          ip, lastKnownIps.size(), peerHosts.size(), resolveQuorum, allowedIps.get(), startupGraceMs);
       return true;
     }
 
@@ -184,6 +200,11 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
   /** True once every peer host has been covered by the allowlist at least once. Exposed for testing. */
   boolean isEverCompletelyResolved() {
     return everCompletelyResolved;
+  }
+
+  /** True once a quorum (majority) of peer hosts has been covered at least once. Exposed for testing. */
+  boolean isQuorumResolved() {
+    return everQuorumResolved;
   }
 
   /** Triggers an immediate DNS re-resolution. Exposed for testing. */
@@ -258,6 +279,8 @@ final class PeerAddressAllowlistFilter extends ServerTransportFilter {
     }
     allowedIps.set(Collections.unmodifiableSet(effective));
     lastResolveMs = now;
+    if (covered >= resolveQuorum)
+      everQuorumResolved = true;
     if (covered == peerHosts.size())
       everCompletelyResolved = true;
   }
