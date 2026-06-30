@@ -45,6 +45,7 @@ import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.raftlog.RaftLog;
 import org.apache.ratis.server.storage.FileInfo;
 import org.apache.ratis.server.storage.RaftStorage;
+import org.apache.ratis.statemachine.SnapshotRetentionPolicy;
 import org.apache.ratis.statemachine.StateMachineStorage;
 import org.apache.ratis.statemachine.TransactionContext;
 import org.apache.ratis.statemachine.impl.BaseStateMachine;
@@ -632,14 +633,88 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * transaction is already durably flushed by the {@link com.arcadedb.engine.TransactionManager}.
    * Returning the last-applied index here tells Ratis it may purge log entries up to that index,
    * reducing log disk usage over time.
+   * <p>
+   * <b>Why a marker file is written (issue #4829):</b> the returned index is the Ratis contract
+   * "state up to here is durable, you may purge the log up to it". Returning it without also writing
+   * a {@code snapshot.<term>_<index>} file would leave {@link SimpleStateMachineStorage#getLatestSnapshot()}
+   * (which discovers snapshots by scanning for those files) returning {@code null} forever. With
+   * auto-snapshot + {@code purgeUptoSnapshotIndex} enabled, Ratis would purge log entries up to the
+   * returned index even though no snapshot exists; after a restart {@link #reinitialize()} would seed
+   * {@code lastAppliedIndex = -1} and Ratis would try to replay from the start of a log whose early
+   * entries were already purged - permanently orphaning applied state. We therefore persist a real
+   * (empty) marker BEFORE returning the purge index, the same marker {@link #notifyInstallSnapshotFromLeader}
+   * writes on the follower install path. If the marker cannot be written we report
+   * {@link RaftLog#INVALID_LOG_INDEX} so Ratis does not purge a log with no backing snapshot.
    */
   @Override
   public long takeSnapshot() {
     final long currentIndex = lastAppliedIndex.get();
     if (currentIndex < 0)
       return RaftLog.INVALID_LOG_INDEX;
-    HALog.log(this, HALog.BASIC, "ArcadeStateMachine: snapshot checkpoint at index %d", currentIndex);
+
+    final TermIndex applied = getLastAppliedTermIndex();
+    final long term = applied != null && applied.getTerm() > 0 ? applied.getTerm() : 0L;
+    if (!registerSnapshotMarker(term, currentIndex)) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not persist snapshot marker at index %d; not authorising log purge", currentIndex);
+      return RaftLog.INVALID_LOG_INDEX;
+    }
+    HALog.log(this, HALog.BASIC, "ArcadeStateMachine: snapshot checkpoint at index %d (term %d)", currentIndex, term);
     return currentIndex;
+  }
+
+  /**
+   * Writes an empty Ratis snapshot marker file at {@code (term, index)} and registers it as the
+   * latest snapshot in {@link #storage}, so {@link SimpleStateMachineStorage#getLatestSnapshot()}
+   * can rediscover it after a restart (it scans for {@code snapshot.<term>_<index>} files).
+   * <p>
+   * ArcadeDB's real snapshot is the set of database files on disk - every committed transaction is
+   * already durably flushed by the {@link com.arcadedb.engine.TransactionManager} - so the marker is
+   * a zero-byte placeholder whose name carries the {@code (term, index)} that Ratis's snapshot-index
+   * bookkeeping and log-purge contract point at. No {@code .md5} companion is written, so the
+   * rediscovered {@link SingleFileSnapshotInfo} carries a null digest, the same as a fresh boot;
+   * ArcadeDB never exercises Ratis's chunk-verification path (it resyncs over HTTP via
+   * {@link DatabaseReconciler}), so the empty file is safe across restarts.
+   * <p>
+   * Used by both {@link #takeSnapshot()} (leader-side periodic compaction checkpoint) and
+   * {@link #notifyInstallSnapshotFromLeader} (follower-side install). Only the most recent marker is
+   * retained; older zero-byte markers are pruned best-effort.
+   *
+   * @return {@code true} if the marker was written and registered, {@code false} on I/O failure
+   */
+  private boolean registerSnapshotMarker(final long term, final long index) {
+    try {
+      final File snapshotFile = storage.getSnapshotFile(term, index);
+      final File parentDir = snapshotFile.getParentFile();
+      if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs()) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Could not create snapshot storage directory %s; snapshot registration failed", parentDir);
+        return false;
+      }
+      if (!snapshotFile.exists())
+        snapshotFile.createNewFile();
+      storage.updateLatestSnapshot(new SingleFileSnapshotInfo(
+          new FileInfo(snapshotFile.toPath(), null), term, index));
+      // Keep only the latest marker; older zero-byte markers are obsolete once a newer one exists.
+      // SnapshotRetentionPolicy declares getNumSnapshotsRetained() as a default method (not abstract),
+      // so it is not a functional interface and cannot be supplied as a lambda.
+      try {
+        storage.cleanupOldSnapshots(new SnapshotRetentionPolicy() {
+          @Override
+          public int getNumSnapshotsRetained() {
+            return 1;
+          }
+        });
+      } catch (final IOException cleanupEx) {
+        LogManager.instance().log(this, Level.FINE,
+            "Could not clean up old snapshot markers: %s", cleanupEx.getMessage());
+      }
+      return true;
+    } catch (final IOException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Failed to write Raft snapshot marker at (term=%d, index=%d): %s", term, index, e.getMessage());
+      return false;
+    }
   }
 
   /**
@@ -824,25 +899,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
         // Register the snapshot in SimpleStateMachineStorage. StateMachineUpdater.reload() calls
         // getLatestSnapshot() immediately after reinitialize() and requires a non-null result.
-        // We write an empty marker file - ArcadeDB's real snapshot is the database files on disk,
-        // not a Ratis-managed chunk file. The null FileDigest passed to FileInfo is intentional and
-        // safe: this path (file-less, notification-based snapshot install) does not use the Ratis
-        // chunk-based verification flow that would check the digest.
-        final File snapshotFile = storage.getSnapshotFile(snapshotTerm, snapshotIndex);
-        final File parentDir = snapshotFile.getParentFile();
-        if (parentDir != null && !parentDir.exists() && !parentDir.mkdirs())
-          LogManager.instance().log(this, Level.WARNING,
-              "Could not create snapshot storage directory %s; snapshot registration may fail", parentDir);
-        if (!snapshotFile.exists())
-          snapshotFile.createNewFile();
-        storage.updateLatestSnapshot(new SingleFileSnapshotInfo(
-            new FileInfo(snapshotFile.toPath(), null), snapshotTerm, snapshotIndex));
-        // The empty marker file will be re-discovered by SimpleStateMachineStorage.loadLatestSnapshot()
-        // on restart (it scans for files matching "snapshot.term_index"). No .md5 file is written
-        // alongside it, so MD5FileUtil.readStoredMd5ForFile() returns null and the SingleFileSnapshotInfo
-        // is constructed with a null digest - the same as when ArcadeDB boots fresh with no prior snapshot.
-        // ArcadeDB never validates snapshot file content via Ratis's chunk-verification path (it uses
-        // the HTTP-based DatabaseReconciler instead), so the empty file is safe across restarts.
+        // registerSnapshotMarker() writes the empty marker file and updates the latest-snapshot
+        // reference; see its javadoc for why a file-less, null-digest marker is safe for ArcadeDB.
+        if (!registerSnapshotMarker(snapshotTerm, snapshotIndex))
+          throw new IOException("Failed to register snapshot marker at index " + snapshotIndex);
 
         // Advance the local applied-index to the snapshot point so that the StateMachineUpdater
         // knows which log entries have been consumed by this install.
