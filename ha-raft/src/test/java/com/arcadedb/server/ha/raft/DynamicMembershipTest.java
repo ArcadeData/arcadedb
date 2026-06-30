@@ -63,6 +63,44 @@ class DynamicMembershipTest extends BaseRaftHATest {
   }
 
   @Test
+  void removePeerRefusedWhenItWouldBreakQuorum() {
+    final int leaderIndex = findLeaderIndex();
+    assertThat(leaderIndex).isGreaterThanOrEqualTo(0);
+
+    final RaftHAServer raftServer = getRaftPlugin(leaderIndex).getRaftHAServer();
+    assertThat(raftServer.getLivePeers()).hasSize(3);
+
+    // 3 -> 2 is allowed (quorum of 3 is 2). Remove a non-leader so the leader can commit the change.
+    final int firstTarget = leaderIndex == 0 ? 2 : 0;
+    raftServer.removePeer(peerIdForIndex(firstTarget));
+    assertThat(raftServer.getLivePeers()).hasSize(2);
+
+    // 2 -> 1 would drop below quorum: must be refused without force.
+    final int secondTarget = pickRemainingNonLeader(raftServer, leaderIndex, firstTarget);
+    Assertions.assertThatThrownBy(() -> raftServer.removePeer(peerIdForIndex(secondTarget)))
+        .isInstanceOf(ConfigurationException.class)
+        .hasMessageContaining("quorum");
+
+    // The cluster configuration is untouched by the refused removal.
+    assertThat(raftServer.getLivePeers()).hasSize(2);
+
+    // With force=true the same removal proceeds.
+    raftServer.removePeer(peerIdForIndex(secondTarget), true);
+    assertThat(raftServer.getLivePeers()).hasSize(1);
+  }
+
+  private int pickRemainingNonLeader(final RaftHAServer raftServer, final int leaderIndex, final int alreadyRemoved) {
+    final String localPeer = raftServer.getLocalPeerId().toString();
+    for (int i = 0; i < getServerCount(); i++) {
+      if (i == leaderIndex || i == alreadyRemoved)
+        continue;
+      if (!peerIdForIndex(i).equals(localPeer))
+        return i;
+    }
+    throw new IllegalStateException("No remaining non-leader peer to remove");
+  }
+
+  @Test
   void removePeerThrowsForUnknownPeer() {
     final int leaderIndex = findLeaderIndex();
     assertThat(leaderIndex).isGreaterThanOrEqualTo(0);

@@ -309,9 +309,14 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
   @Override
   public void removePeer(final String peerId) {
+    removePeer(peerId, false);
+  }
+
+  @Override
+  public void removePeer(final String peerId, final boolean force) {
     if (raftHAServer == null)
       throw new RuntimeException("Raft HA server not started");
-    raftHAServer.removePeer(peerId);
+    raftHAServer.removePeer(peerId, force);
   }
 
   @Override
@@ -330,9 +335,14 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
 
   @Override
   public void leaveCluster() {
+    leaveCluster(false);
+  }
+
+  @Override
+  public void leaveCluster(final boolean force) {
     if (raftHAServer == null)
       throw new RuntimeException("Raft HA server not started");
-    raftHAServer.leaveCluster();
+    raftHAServer.leaveCluster(force);
   }
 
   private boolean isRaftEnabled() {

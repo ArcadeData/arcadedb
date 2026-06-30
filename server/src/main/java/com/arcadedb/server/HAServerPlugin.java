@@ -114,6 +114,15 @@ public interface HAServerPlugin extends ServerPlugin {
   }
 
   /**
+   * Removes a peer from the cluster at runtime. When {@code force} is false the implementation refuses
+   * a removal that would drop the cluster below its voting quorum (issue #4796); pass {@code force=true}
+   * to override for an intentional scale-down.
+   */
+  default void removePeer(final String peerId, final boolean force) {
+    removePeer(peerId);
+  }
+
+  /**
    * Transfers leadership to the specified peer.
    */
   default void transferLeadership(final String targetPeerId, final long timeoutMs) {
@@ -132,6 +141,15 @@ public interface HAServerPlugin extends ServerPlugin {
    */
   default void leaveCluster() {
     throw new UnsupportedOperationException("Dynamic membership not supported by this HA implementation");
+  }
+
+  /**
+   * Gracefully leaves the cluster. When {@code force} is false the implementation refuses to leave if
+   * doing so would drop the cluster below its voting quorum (issue #4796); pass {@code force=true} to
+   * override for an intentional scale-down.
+   */
+  default void leaveCluster(final boolean force) {
+    leaveCluster();
   }
 
   /**
