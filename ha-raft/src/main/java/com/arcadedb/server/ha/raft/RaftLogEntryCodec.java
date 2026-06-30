@@ -361,8 +361,9 @@ public final class RaftLogEntryCodec {
       };
 
       // Trailing-byte validation: detect truncated or corrupted entries.
-      // SCHEMA_ENTRY is excluded because older entries may lack the embedded WAL section
-      // and the decoder already handles that gracefully via IOException catch.
+      // SCHEMA_ENTRY is excluded because it carries optional, self-describing trailing sections
+      // (the embedded WAL section and the TimeSeries sealed-blob section) that newer nodes may
+      // append and older decoders stop before; a clean EOF at a section boundary is normal here.
       if (type != RaftLogEntryType.SCHEMA_ENTRY && dis.available() > 0)
         throw new IllegalStateException(
             "Corrupted Raft log entry: " + dis.available() + " trailing bytes after " + type + " decode");
@@ -404,11 +405,23 @@ public final class RaftLogEntryCodec {
     final Map<Integer, String> filesToAdd = readFileMap(dis);
     final Map<Integer, String> filesToRemove = readFileMap(dis);
 
-    // Read embedded WAL entries; older entries without this section are handled gracefully
+    // Read embedded WAL entries. The section is optional: log entries produced by nodes that predate
+    // it end the stream cleanly right here, so the very first read (the WAL count) hits EOF. That
+    // single case is the only legitimate one and is decoded as an absent (empty) section. Once the
+    // WAL count has been read the section IS present, so any subsequent truncation or misalignment is
+    // corruption and must propagate rather than silently yield empty/partial WAL pages (which would
+    // apply a schema change with missing index/WAL pages on followers).
     List<byte[]> walEntries = Collections.emptyList();
     List<Map<Integer, Integer>> bucketDeltas = Collections.emptyList();
+    boolean walSectionPresent = true;
+    int walCount = 0;
     try {
-      final int walCount = dis.readInt();
+      walCount = dis.readInt();
+    } catch (final EOFException ignored) {
+      // Older log entry without the embedded WAL section - treat as absent.
+      walSectionPresent = false;
+    }
+    if (walSectionPresent) {
       checkCollectionSize(walCount, "SCHEMA_ENTRY WAL entries");
       if (walCount > 0) {
         walEntries = new ArrayList<>(walCount);
@@ -431,8 +444,6 @@ public final class RaftLogEntryCodec {
           bucketDeltas.add(delta);
         }
       }
-    } catch (final IOException ignored) {
-      // Older log entries without embedded WAL section - treat as empty
     }
 
     // TimeSeries sealed-store blob section (issue #4382). Trailing section: a missing one (older
