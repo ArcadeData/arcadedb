@@ -18,12 +18,12 @@
  */
 package com.arcadedb.server.grpc;
 
-import com.arcadedb.server.ArcadeDBServer;
 import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import io.grpc.ServerCall;
 import io.grpc.ServerCallHandler;
 import io.grpc.Status;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -58,8 +58,7 @@ class Issue4804GrpcCommandErrorMetricsTest {
   @BeforeEach
   @SuppressWarnings("unchecked")
   void setUp() {
-    final ArcadeDBServer mockServer = mock(ArcadeDBServer.class);
-    interceptor = new GrpcMetricsInterceptor(mockServer);
+    interceptor = new GrpcMetricsInterceptor(new SimpleMeterRegistry());
     mockCall = mock(ServerCall.class);
     mockHandler = mock(ServerCallHandler.class);
     mockMethodDescriptor = mock(MethodDescriptor.class);
