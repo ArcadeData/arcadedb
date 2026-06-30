@@ -144,6 +144,12 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   // follower with a non-trivial apply backlog (committed-but-not-yet-applied entries) and not installing
   // a snapshot.
   private volatile FollowerResyncProgressTracker resyncProgressTracker = null;
+  // Applied index observed at the previous stale-follower lag check (issue #4840). Compared against the
+  // current applied index to tell a healthy-but-slow follower (applied advancing one entry at a time)
+  // apart from a genuinely stuck one (applied frozen). Read/written only on the single HealthMonitor
+  // tick thread, so it needs no synchronization. -1 = no prior sample (first check or just resumed
+  // follower duty).
+  private          long                      lastLagCheckAppliedIndex = -1;
   private          ClusterTokenProvider      tokenProvider;
   private volatile int                       restartFailureCount   = 0;
   private volatile BootstrapElection         bootstrapElection;
@@ -538,21 +544,60 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   /**
    * Stale-follower detection for the {@link HealthMonitor} (issue #3893): true only when this node
    * is a running follower lagging more than {@code lagThreshold} entries behind the commit index,
-   * is NOT actively catching up, and has no snapshot download already pending. Returns false for
-   * the leader and whenever the Raft state cannot be read.
+   * is NOT actively catching up, has no snapshot download already pending, AND is not making forward
+   * progress on its applied index (issue #4840). Returns false for the leader and whenever the Raft
+   * state cannot be read.
+   * <p>
+   * The progress check is what distinguishes a healthy-but-slow follower from a genuinely stuck one.
+   * The {@link ArcadeStateMachine} {@code catchingUp} flag only trips on a snapshot-style index jump
+   * ({@code gap > 1}); a follower applying steady-state AppendEntries one entry at a time never sets it,
+   * so without comparing the applied index between ticks a slow-but-progressing follower under sustained
+   * writes would be misclassified as lagging and needlessly resynced. By remembering the applied index
+   * seen on the previous tick, this returns false as soon as the index advances, and only true while the
+   * index is stuck beyond the threshold.
    */
   @Override
   public boolean isFollowerLaggingBeyond(final long lagThreshold) {
-    if (raftServer == null || shutdownRequested || isLeader())
+    if (raftServer == null || shutdownRequested || isLeader()) {
+      lastLagCheckAppliedIndex = -1; // not a follower right now: drop the progress baseline
       return false;
+    }
     final ArcadeStateMachine sm = stateMachine;
-    if (sm == null || sm.isCatchingUp() || sm.isSnapshotDownloadPending())
+    if (sm == null || sm.isCatchingUp() || sm.isSnapshotDownloadPending()) {
+      lastLagCheckAppliedIndex = -1; // already known to be catching up: re-baseline when normal checks resume
       return false;
+    }
     final long commit = getCommitIndex();
     final long applied = getLastAppliedIndex();
-    if (commit < 0 || applied < 0)
+    final boolean lagging = isPersistentlyLagging(commit, applied, lagThreshold, lastLagCheckAppliedIndex);
+    if (applied >= 0)
+      lastLagCheckAppliedIndex = applied;
+    return lagging;
+  }
+
+  /**
+   * Pure decision function behind {@link #isFollowerLaggingBeyond(long)}, split out so the predicate can be
+   * unit-tested without the Ratis state plumbing. Returns {@code true} only for a follower that is both far
+   * enough behind ({@code commitIndex - appliedIndex > lagThreshold}) AND stuck (no forward progress on the
+   * applied index since the previous tick). A follower applying entries one at a time keeps
+   * {@code appliedIndex > previousAppliedIndex} every tick, so it returns {@code false}: healthy-but-slow,
+   * must not be resynced (issue #4840). A negative {@code commitIndex}/{@code appliedIndex} (state not
+   * readable this tick) or a lag within the threshold returns {@code false}. {@code previousAppliedIndex < 0}
+   * means "no prior sample" (first observation or just resumed follower duty): progress cannot be determined
+   * yet, so the lag alone decides - the {@link HealthMonitor}'s persistence window still requires the
+   * condition to repeat before it acts.
+   */
+  static boolean isPersistentlyLagging(final long commitIndex, final long appliedIndex, final long lagThreshold,
+      final long previousAppliedIndex) {
+    if (commitIndex < 0 || appliedIndex < 0)
       return false;
-    return commit - applied > lagThreshold;
+    if (commitIndex - appliedIndex <= lagThreshold)
+      return false;
+    // Forward progress since the previous tick: the follower is actively replaying the backlog one entry
+    // at a time, so it is not stuck and must not be resynced even though it still trails the leader.
+    if (previousAppliedIndex >= 0 && appliedIndex > previousAppliedIndex)
+      return false;
+    return true;
   }
 
   @Override
