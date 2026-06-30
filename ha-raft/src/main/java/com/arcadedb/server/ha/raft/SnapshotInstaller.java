@@ -30,6 +30,7 @@ import com.arcadedb.utility.FileUtils;
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.TrustManagerFactory;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.FilterInputStream;
@@ -39,17 +40,23 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.KeyStore;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 import java.util.logging.Level;
+import java.util.zip.CRC32;
+import java.util.zip.CheckedOutputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 
@@ -786,6 +793,12 @@ public final class SnapshotInstaller {
       if (responseCode != 200)
         throw new IOException("Failed to download snapshot: HTTP " + responseCode);
 
+      // A leader on issue #4831 or later advertises a completeness manifest via this header; when present
+      // the manifest becomes mandatory, so a truncated download (manifest dropped) fails loudly. A leader
+      // predating #4831 omits the header, and the follower keeps the legacy "ZipInputStream reached EOF"
+      // acceptance for backward compatibility during a rolling upgrade.
+      final boolean manifestRequired = "1".equals(connection.getHeaderField(SnapshotManager.MANIFEST_HEADER));
+
       final CountingInputStream rawCounter = new CountingInputStream(connection.getInputStream());
       InputStream source = rawCounter;
       final boolean progressLogging = server == null
@@ -797,49 +810,135 @@ public final class SnapshotInstaller {
             : 5000L;
         source = new ProgressReportingInputStream(rawCounter, new SnapshotDownloadProgressMeter(dbName, intervalMs));
       }
-      try (final ZipInputStream zipIn = new ZipInputStream(source)) {
-        ZipEntry zipEntry;
-        while ((zipEntry = zipIn.getNextEntry()) != null) {
-          final Path targetFile = targetDir.resolve(zipEntry.getName()).normalize();
-
-          // Zip-slip protection: normalized path must remain inside targetDir
-          if (!targetFile.startsWith(targetDir))
-            throw new ReplicationException("Zip slip detected in snapshot: " + zipEntry.getName());
-
-          // Reject suspicious path components before touching the filesystem
-          if (zipEntry.getName().contains(".."))
-            throw new ReplicationException("Suspicious path in snapshot ZIP: " + zipEntry.getName());
-
-          // Create parent directories and perform real-path symlink-escape check
-          Files.createDirectories(targetFile.getParent());
-          final Path realParent = targetFile.getParent().toRealPath();
-          if (!realParent.startsWith(targetDir.toRealPath()))
-            throw new ReplicationException(
-                "Symlink escape detected in snapshot: entry '" + zipEntry.getName() + "' resolves outside target directory");
-
-          // Reject symlinks at the target file path
-          if (Files.isSymbolicLink(targetFile))
-            throw new ReplicationException("Symlink detected at extraction target: " + targetFile);
-
-          final long compressedStart = rawCounter.getCount();
-          try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile())) {
-            final long uncompressedBytes = copyWithLimit(zipIn, fos, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES, zipEntry.getName());
-
-            // Decompression-bomb defense: check ratio for entries large enough to matter.
-            // Uses raw counter delta (compressed bytes including headers) which slightly
-            // over-estimates compressed size, under-estimating ratio - safe direction.
-            final long compressedBytes = Math.max(1L, rawCounter.getCount() - compressedStart);
-            if (uncompressedBytes > MIN_RATIO_CHECK_BYTES
-                && uncompressedBytes / compressedBytes > MAX_COMPRESSION_RATIO)
-              throw new ReplicationException("Suspicious compression ratio for snapshot entry '"
-                  + zipEntry.getName() + "': inflated " + uncompressedBytes + " bytes from "
-                  + compressedBytes + " (ratio > " + MAX_COMPRESSION_RATIO + ":1)");
-          }
-          zipIn.closeEntry();
-        }
-      }
+      extractAndVerifySnapshot(source, rawCounter, targetDir, manifestRequired);
     } finally {
       connection.disconnect();
+    }
+  }
+
+  /**
+   * Maximum bytes the manifest entry is allowed to occupy uncompressed (8 MB). The manifest is a small JSON
+   * document (one record per database file), so this is a generous ceiling that still caps a hostile or
+   * corrupt stream claiming a huge manifest. Package-private for unit testing.
+   */
+  static final long MAX_MANIFEST_BYTES = 8L * 1024 * 1024;
+
+  /**
+   * Extracts every entry of the snapshot ZIP read from {@code source} into {@code targetDir} and, when a
+   * {@link SnapshotManager#MANIFEST_ENTRY_NAME manifest} is present (or {@code manifestRequired}), verifies
+   * the transfer is complete: every file the manifest lists must have been extracted with a matching size
+   * and CRC32 (issue #4831).
+   * <p>
+   * The manifest entry itself is read into memory and never written to disk. Because the leader writes it
+   * last, a download truncated at any ZIP-entry boundary loses it; with {@code manifestRequired} the install
+   * then fails (and the caller retries) instead of opening a structurally-incomplete database.
+   * <p>
+   * Package-private and decoupled from the HTTP connection so the verification can be unit-tested by feeding
+   * a {@link ByteArrayInputStream} of a hand-built (and deliberately truncated) ZIP.
+   *
+   * @param source           the snapshot byte stream (possibly wrapped for progress reporting)
+   * @param rawCounter       the underlying byte counter, used for the per-entry compression-ratio check
+   * @param targetDir        the staging directory the entries are extracted into
+   * @param manifestRequired when true, a missing manifest is treated as a truncated download and rejected
+   */
+  static void extractAndVerifySnapshot(final InputStream source, final CountingInputStream rawCounter,
+      final Path targetDir, final boolean manifestRequired) throws IOException {
+    // Records the size+CRC32 of each file actually extracted, used to verify against the manifest.
+    final Map<String, long[]> extracted = new HashMap<>();
+    byte[] manifestBytes = null;
+
+    try (final ZipInputStream zipIn = new ZipInputStream(source)) {
+      ZipEntry zipEntry;
+      while ((zipEntry = zipIn.getNextEntry()) != null) {
+        final String entryName = zipEntry.getName();
+
+        // The manifest is metadata, not a database file: read it into memory (capped) and never write it
+        // to the staging directory, so it is not carried into the live database by the swap.
+        if (SnapshotManager.MANIFEST_ENTRY_NAME.equals(entryName)) {
+          final ByteArrayOutputStream buf = new ByteArrayOutputStream();
+          copyWithLimit(zipIn, buf, MAX_MANIFEST_BYTES, entryName);
+          manifestBytes = buf.toByteArray();
+          zipIn.closeEntry();
+          continue;
+        }
+
+        final Path targetFile = targetDir.resolve(entryName).normalize();
+
+        // Zip-slip protection: normalized path must remain inside targetDir
+        if (!targetFile.startsWith(targetDir))
+          throw new ReplicationException("Zip slip detected in snapshot: " + entryName);
+
+        // Reject suspicious path components before touching the filesystem
+        if (entryName.contains(".."))
+          throw new ReplicationException("Suspicious path in snapshot ZIP: " + entryName);
+
+        // Create parent directories and perform real-path symlink-escape check
+        Files.createDirectories(targetFile.getParent());
+        final Path realParent = targetFile.getParent().toRealPath();
+        if (!realParent.startsWith(targetDir.toRealPath()))
+          throw new ReplicationException(
+              "Symlink escape detected in snapshot: entry '" + entryName + "' resolves outside target directory");
+
+        // Reject symlinks at the target file path
+        if (Files.isSymbolicLink(targetFile))
+          throw new ReplicationException("Symlink detected at extraction target: " + targetFile);
+
+        final long compressedStart = rawCounter.getCount();
+        final CRC32 crc = new CRC32();
+        try (final FileOutputStream fos = new FileOutputStream(targetFile.toFile());
+            final CheckedOutputStream cos = new CheckedOutputStream(fos, crc)) {
+          final long uncompressedBytes = copyWithLimit(zipIn, cos, MAX_ZIP_ENTRY_UNCOMPRESSED_BYTES, entryName);
+
+          // Decompression-bomb defense: check ratio for entries large enough to matter.
+          // Uses raw counter delta (compressed bytes including headers) which slightly
+          // over-estimates compressed size, under-estimating ratio - safe direction.
+          final long compressedBytes = Math.max(1L, rawCounter.getCount() - compressedStart);
+          if (uncompressedBytes > MIN_RATIO_CHECK_BYTES
+              && uncompressedBytes / compressedBytes > MAX_COMPRESSION_RATIO)
+            throw new ReplicationException("Suspicious compression ratio for snapshot entry '"
+                + entryName + "': inflated " + uncompressedBytes + " bytes from "
+                + compressedBytes + " (ratio > " + MAX_COMPRESSION_RATIO + ":1)");
+
+          extracted.put(entryName, new long[] { uncompressedBytes, crc.getValue() });
+        }
+        zipIn.closeEntry();
+      }
+    }
+
+    verifyManifest(manifestBytes, extracted, manifestRequired);
+  }
+
+  /**
+   * Validates the extracted snapshot against its manifest (issue #4831).
+   * <ul>
+   *   <li>manifest absent + not required: legacy leader, nothing to verify;</li>
+   *   <li>manifest absent + required: the leader advertised a manifest but it never arrived - the download
+   *       was truncated before the final entry, so reject;</li>
+   *   <li>manifest present: every listed file must have been extracted with a matching size and CRC32.</li>
+   * </ul>
+   */
+  private static void verifyManifest(final byte[] manifestBytes, final Map<String, long[]> extracted,
+      final boolean manifestRequired) throws IOException {
+    if (manifestBytes == null) {
+      if (manifestRequired)
+        throw new IOException("Snapshot transfer incomplete: the leader advertised a completeness manifest but it was "
+            + "not received - the download was truncated before completion (" + extracted.size() + " file(s) extracted)");
+      return;
+    }
+
+    final List<SnapshotManager.ManifestEntry> manifest = SnapshotManager.parseManifest(
+        new String(manifestBytes, StandardCharsets.UTF_8));
+    for (final SnapshotManager.ManifestEntry entry : manifest) {
+      final long[] got = extracted.get(entry.name());
+      if (got == null)
+        throw new IOException("Snapshot transfer incomplete: file '" + entry.name()
+            + "' is listed in the manifest but was not received (truncated download)");
+      if (got[0] != entry.size())
+        throw new IOException("Snapshot file '" + entry.name() + "' size mismatch: manifest declares "
+            + entry.size() + " bytes but " + got[0] + " were received (truncated or corrupt download)");
+      if (got[1] != entry.crc())
+        throw new IOException("Snapshot file '" + entry.name() + "' CRC32 mismatch: manifest declares "
+            + entry.crc() + " but received content hashes to " + got[1] + " (corrupt download)");
     }
   }
 
