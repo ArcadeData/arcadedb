@@ -115,6 +115,24 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final    SimpleStateMachineStorage storage          = new SimpleStateMachineStorage();
   private final    AtomicLong                lastAppliedIndex = new AtomicLong(-1);
   private final    AtomicLong                electionCount    = new AtomicLong(0);
+
+  // Persisted applied-index bookkeeping. One ArcadeStateMachine multiplexes every database onto a
+  // single Raft group, so a single global scalar cannot answer a per-database question: a co-located
+  // database advancing the shared log past another database's entry would make the global value
+  // overstate that other database's progress (issue #4824). We keep BOTH: a global Raft-log position
+  // (the highest applied index across all databases, used by reinitialize()'s snapshot-gap check,
+  // which compares against the inherently global Ratis snapshot index) AND a per-database map (used by
+  // the per-database bootstrap replay-skip). The values live in memory so the hot apply path never
+  // reads the file back; the file is parsed once lazily on first access and serialised on each write.
+  // globalAppliedIndex tracks the same value as lastAppliedIndex (the AtomicLong above) on the apply
+  // path. They are seeded independently (this one from the persisted file on load, lastAppliedIndex
+  // from the Ratis snapshot in reinitialize()) and can briefly differ after reinitialize() - e.g. when
+  // there is no snapshot lastAppliedIndex is -1 while globalAppliedIndex may hold the persisted value -
+  // but every applyTransaction advances both to the same index, reconverging them.
+  private final    Map<String, Long>         appliedIndexByDb     = new ConcurrentHashMap<>();
+  private volatile long                      globalAppliedIndex   = -1;
+  private volatile boolean                   appliedIndexLoaded   = false;
+  private final    Object                    appliedIndexFileLock = new Object();
   private volatile long                      lastElectionTime = 0;
   private final    long                      startTime        = System.currentTimeMillis();
   // Tracks the previous leader so leader-change logs can show "X -> Y" instead of just "Y".
@@ -431,7 +449,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
 
       final long previousApplied = lastAppliedIndex.getAndSet(index);
       updateLastAppliedTermIndex(termIndex.getTerm(), index);
-      writePersistedAppliedIndex(index);
+      // Record the index globally AND against the database this entry targeted, so the per-database
+      // bootstrap replay-skip can trust a value that is not mixed across databases (issue #4824).
+      // decoded.databaseName() is null only for database-agnostic entries (e.g. SECURITY_USERS_ENTRY),
+      // which advance the global position only. A DROP entry removes the database, so the global
+      // position advances and its per-database entry is evicted in a single atomic write (avoids
+      // growing the map for the node lifetime with names of dropped databases).
+      if (decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY)
+        writePersistedAppliedIndexDroppingDatabase(index, decoded.databaseName());
+      else
+        writePersistedAppliedIndex(index, decoded.databaseName());
 
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
       final RaftHAServer raftHA = this.raftHAServer;
@@ -910,10 +937,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
           throw new IOException("Failed to register snapshot marker at index " + snapshotIndex);
 
         // Advance the local applied-index to the snapshot point so that the StateMachineUpdater
-        // knows which log entries have been consumed by this install.
+        // knows which log entries have been consumed by this install. A full state-machine install
+        // brings EVERY present database to the snapshot point, so record the snapshot index for each
+        // of them too (not just the global position) - this keeps the per-database bootstrap
+        // replay-skip honest after a full resync (issue #4824).
         lastAppliedIndex.set(snapshotIndex);
         updateLastAppliedTermIndex(snapshotTerm, snapshotIndex);
-        writePersistedAppliedIndex(snapshotIndex);
+        writePersistedAppliedIndexForAllDatabases(snapshotIndex);
 
         LogManager.instance().log(this, Level.INFO,
             "HA resync finished (mode=snapshot, result=ok): snapshotIndex=%d", snapshotIndex);
@@ -1353,7 +1383,21 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // the install path here would race leader-discovery (the StateMachineUpdater thread is
     // inside applyTransaction and blocks Ratis leader-info notifications), exhaust the snapshot
     // retry budget with null leader addresses, and trip the critical-error halt.
-    final long persistedApplied = readPersistedAppliedIndex();
+    // This is a PER-DATABASE decision, so it must consult THIS database's applied index, not the
+    // global one: one ArcadeStateMachine multiplexes every database, and a co-located database that
+    // advanced the global index past this entry must not suppress this database's verification
+    // (issue #4824). Absent positive per-database evidence the verification re-runs, which is
+    // idempotent (a fingerprint match returns immediately without moving any bytes).
+    //
+    // Upgrade note: a legacy plain-number applied-index file carries no per-database breakdown, so on
+    // the FIRST restart after upgrading, this read returns -1 for every database and verification
+    // re-runs for any bootstrap entry still above the latest Ratis snapshot. That is a bounded,
+    // one-time cost and is safe: a matching local fingerprint returns immediately; a locally-fresher
+    // copy (local lastTxId > baseline) hits the "refusing to overwrite local data" guard below (no
+    // data loss, just a SEVERE log line); a genuinely-behind copy re-installs from the leader, which
+    // is the correct action anyway. From the first post-upgrade apply onwards the per-database map is
+    // authoritative.
+    final long persistedApplied = readPersistedAppliedIndex(dbName);
     if (persistedApplied >= index) {
       HALog.log(this, HALog.BASIC,
           "Bootstrap baseline for '%s' already applied (persistedAppliedIndex=%d >= entryIndex=%d); skipping verification",
@@ -1597,26 +1641,161 @@ public class ArcadeStateMachine extends BaseStateMachine {
     HALog.log(this, HALog.DETAILED, "Applied SECURITY_USERS_ENTRY (%d bytes)", payload.length());
   }
 
-  private long readPersistedAppliedIndex() {
-    try {
-      final Path file = getAppliedIndexFile();
-      if (file != null && Files.exists(file))
-        return Long.parseLong(Files.readString(file).trim());
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.FINE, "Could not read persisted applied index: %s", e.getMessage());
-    }
-    return -1;
+  /**
+   * Returns the GLOBAL persisted applied index: the highest Raft-log index applied across all
+   * databases multiplexed on this state machine, or {@code -1} if none was persisted. This is a
+   * Raft-log position, not a per-database guarantee; {@link #reinitialize()} compares it against the
+   * (inherently global) Ratis snapshot index. Package-private for tests.
+   */
+  long readPersistedAppliedIndex() {
+    ensureAppliedIndexLoaded();
+    return globalAppliedIndex;
   }
 
-  private void writePersistedAppliedIndex(final long index) {
+  /**
+   * Returns the persisted applied index for a single {@code dbName}, or {@code -1} when there is no
+   * per-database evidence that this database was advanced (issue #4824). A legacy plain-number file
+   * carries only the global value and therefore yields {@code -1} here: per-database decisions never
+   * fall back to the global value, so a co-located database can never falsely satisfy them.
+   * Package-private for tests.
+   */
+  long readPersistedAppliedIndex(final String dbName) {
+    if (dbName == null)
+      return -1;
+    ensureAppliedIndexLoaded();
+    final Long v = appliedIndexByDb.get(dbName);
+    return v != null ? v : -1;
+  }
+
+  /**
+   * Records {@code index} as the global applied position and, when {@code dbName} is non-null, as the
+   * per-database applied position for that database, then serialises the bookkeeping to disk.
+   * Package-private for tests.
+   * <p>
+   * Synchronised on {@link #appliedIndexFileLock}: the apply thread and the snapshot-install thread
+   * (see {@link #writePersistedAppliedIndexForAllDatabases}) are the two writers, and the lock keeps
+   * the in-memory update and the temp-file write+rename atomic with respect to each other so the
+   * shared {@code applied-index.tmp} is never raced.
+   */
+  void writePersistedAppliedIndex(final long index, final String dbName) {
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      globalAppliedIndex = index;
+      if (dbName != null)
+        appliedIndexByDb.put(dbName, index);
+      persistAppliedIndexFile();
+    }
+  }
+
+  /**
+   * Advances the global applied position to {@code index} and, in the SAME serialised write, evicts
+   * {@code dbName} from the per-database map. Used for a {@code DROP_DATABASE_ENTRY}: the database is
+   * gone, so its per-database entry must not linger and grow the map/persisted JSON for the node
+   * lifetime (issue #4824). Folding the global advance and the eviction into one atomic write avoids
+   * a crash window that could leave a stale per-database entry for a database that no longer exists.
+   * Package-private for tests.
+   */
+  void writePersistedAppliedIndexDroppingDatabase(final long index, final String dbName) {
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      globalAppliedIndex = index;
+      if (dbName != null)
+        appliedIndexByDb.remove(dbName);
+      persistAppliedIndexFile();
+    }
+  }
+
+  /**
+   * Records {@code index} as the global applied position and as the per-database position for every
+   * database currently present on this node, then serialises once. Used by the full state-machine
+   * snapshot install, after which every present database is at {@code index}. Synchronised on
+   * {@link #appliedIndexFileLock} so it never races the apply-thread writer on the in-memory state or
+   * the shared temp file.
+   */
+  void writePersistedAppliedIndexForAllDatabases(final long index) {
+    synchronized (appliedIndexFileLock) {
+      ensureAppliedIndexLoaded();
+      globalAppliedIndex = index;
+      if (server != null)
+        for (final String dbName : server.getDatabaseNames())
+          appliedIndexByDb.put(dbName, index);
+      persistAppliedIndexFile();
+    }
+  }
+
+  /**
+   * Lazily parses the persisted applied-index file once into the in-memory cache. Accepts both the
+   * new JSON document ({@code {"global": n, "db": {"name": n, ...}}}) and a legacy plain-number file
+   * (read as the global value with an empty per-database map). A missing/unreadable file simply means
+   * "nothing persisted yet" (-1) and still latches the cache as loaded.
+   * <p>
+   * When the file path cannot yet be resolved (no server wired, so {@code getAppliedIndexFile()} is
+   * {@code null}) the cache is NOT latched, so a later call retries once the server is available and
+   * a persisted file is no longer masked. In the current wiring {@code setServer(...)} always runs
+   * before the first read, so this only guards against a future reordering.
+   */
+  private void ensureAppliedIndexLoaded() {
+    if (appliedIndexLoaded)
+      return;
+    synchronized (appliedIndexFileLock) {
+      if (appliedIndexLoaded)
+        return;
+      final Path file = getAppliedIndexFile();
+      if (file == null)
+        return; // server not wired yet: do not latch, retry once the path is resolvable
+      try {
+        if (Files.exists(file)) {
+          final String content = Files.readString(file).trim();
+          if (!content.isEmpty()) {
+            if (content.charAt(0) == '{') {
+              final JSONObject json = new JSONObject(content);
+              globalAppliedIndex = json.getLong("global", -1);
+              final JSONObject perDb = json.getJSONObject("db", new JSONObject());
+              for (final String name : perDb.keySet())
+                appliedIndexByDb.put(name, perDb.getLong(name, -1));
+            } else
+              // Legacy format: a single plain number is the global Raft-log position.
+              globalAppliedIndex = Long.parseLong(content);
+          }
+        }
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.FINE, "Could not read persisted applied index: %s", e.getMessage());
+      } finally {
+        // The path was resolvable and we attempted a read: latch even on a parse failure so a corrupt
+        // file is not re-read on every apply (it degrades to -1, re-running the idempotent verification).
+        // Deliberate coupling: a corrupt file leaving globalAppliedIndex at -1 also makes
+        // reinitialize()'s snapshot-gap check (persistedApplied >= 0 && ...) evaluate false, i.e. it
+        // suppresses the "snapshot ahead, download from leader" path. This matches the pre-change
+        // behavior (a parse failure already returned -1), so it is intentional, not a regression.
+        appliedIndexLoaded = true;
+      }
+    }
+  }
+
+  /**
+   * Serialises the in-memory applied-index bookkeeping to {@code .raft/applied-index} via a temp file
+   * and atomic rename, so a crash mid-write never leaves a corrupt file.
+   * <p>
+   * Called once per applied entry (the file was already rewritten every apply before this change).
+   * The per-database map is tiny (one entry per co-located database) and the small JSON it allocates
+   * is dominated by the {@code createDirectories} + {@code writeString} + atomic {@code move} syscalls
+   * that already ran every apply, so the extra allocation is negligible on the apply path.
+   */
+  private void persistAppliedIndexFile() {
     try {
       final Path file = getAppliedIndexFile();
       if (file == null)
         return;
+      final JSONObject json = new JSONObject();
+      json.put("global", globalAppliedIndex);
+      final JSONObject perDb = new JSONObject();
+      for (final Map.Entry<String, Long> entry : appliedIndexByDb.entrySet())
+        perDb.put(entry.getKey(), entry.getValue());
+      json.put("db", perDb);
+
       Files.createDirectories(file.getParent());
-      // Write via a temp file + atomic rename to avoid corruption on crash
       final Path tmp = file.resolveSibling("applied-index.tmp");
-      Files.writeString(tmp, Long.toString(index));
+      Files.writeString(tmp, json.toString());
       Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.FINE, "Could not write persisted applied index: %s", e.getMessage());
