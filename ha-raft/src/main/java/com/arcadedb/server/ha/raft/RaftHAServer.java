@@ -434,7 +434,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     // Only delete existing Raft storage when persistence is not requested.
     // Persistent mode (HA_RAFT_PERSIST_STORAGE=true) is used in tests that restart nodes
     // within a single test run, so the Raft log survives across stop/start calls.
-    final boolean persistStorage = configuration.getValueAsBoolean(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE);
+    final boolean persistStorage = resolvePersistStorage(configuration);
     if (storageDir.exists() && !persistStorage)
       deleteRecursive(storageDir);
     RaftServerConfigKeys.setStorageDir(properties, Collections.singletonList(storageDir));
@@ -1844,6 +1844,44 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (raftDir == null || raftDir.isBlank())
       raftDir = arcadeServer.getRootPath();
     return new File(raftDir, "raft-storage-" + localPeerId);
+  }
+
+  /**
+   * Decides whether the Raft storage directory must be preserved across server restarts instead of
+   * being wiped and re-FORMATted on every {@link #start()} (issue #4835).
+   * <p>
+   * {@link GlobalConfiguration#HA_RAFT_PERSIST_STORAGE} defaults to {@code false} (ephemeral) for
+   * testing convenience, but in Kubernetes the storage normally lives on a PersistentVolume that
+   * outlives the pod. Wiping it on every pod restart forces a full snapshot resync and, on a
+   * single-seed cluster, silently re-forms a fresh empty single-node cluster (data loss / split
+   * brain). So when running under Kubernetes ({@link GlobalConfiguration#HA_K8S}=true) and the
+   * operator has <em>not</em> explicitly opted into ephemeral storage, default to persisting.
+   * An explicit {@code raftPersistStorage=false} is still honored for the rare operator who really
+   * wants ephemeral storage in K8s.
+   */
+  static boolean resolvePersistStorage(final ContextConfiguration configuration) {
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE))
+      return true;
+
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)
+        && !isExplicitlyConfigured(configuration, GlobalConfiguration.HA_RAFT_PERSIST_STORAGE)) {
+      LogManager.instance().log(RaftHAServer.class, Level.INFO,
+          "Kubernetes mode detected: preserving Raft storage across restarts (raftPersistStorage defaulted to true to "
+              + "avoid wiping PersistentVolume-backed storage on pod restart - issue #4835). Set raftPersistStorage=false "
+              + "explicitly to force ephemeral storage.");
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Returns {@code true} when the operator explicitly provided a value for the given configuration
+   * key, either through this {@link ContextConfiguration} (config file, programmatic set, or server
+   * settings) or via a JVM system property. Used by {@link #resolvePersistStorage} to distinguish a
+   * deliberate {@code raftPersistStorage=false} from the implicit default.
+   */
+  static boolean isExplicitlyConfigured(final ContextConfiguration configuration, final GlobalConfiguration key) {
+    return configuration.hasValue(key.getKey()) || System.getProperty(key.getKey()) != null;
   }
 
   /**

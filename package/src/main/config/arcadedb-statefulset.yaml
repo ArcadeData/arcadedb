@@ -114,6 +114,13 @@ spec:
             - "-Darcadedb.ha.serverList=arcadedb-0.arcadedb.default.svc.cluster.local:2424"
             - "-Darcadedb.ha.k8s=true"
             - "-Darcadedb.ha.k8sSuffix=.arcadedb.default.svc.cluster.local"
+            # Keep the Raft log on the PersistentVolume (mounted at /mnt/data0) so it survives pod
+            # restarts instead of being re-created on the ephemeral container layer. Without this the
+            # Raft storage defaults to the server root and is lost on every restart, forcing a full
+            # snapshot resync on rejoin (issue #4835). raftPersistStorage defaults to true under k8s,
+            # but it is set explicitly here to document the durable intent.
+            - "-Darcadedb.ha.raftStorageDirectory=/mnt/data0/raft"
+            - "-Darcadedb.ha.raftPersistStorage=true"
           resources:
             requests:
               memory: "512Mi"
