@@ -93,20 +93,20 @@ class ClusterMonitorTest {
 
     // Healthy tick: no lagging duration.
     monitor.updateLeaderCommitIndex(100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
     assertThat(monitor.getReplicaLaggingForMs("replica1")).isZero();
 
     // Goes over the threshold (lag 1000 > 50): the lagging clock starts now.
     now[0] = 2_000L;
     monitor.updateLeaderCommitIndex(1100);
-    monitor.updateReplicaMatchIndex("replica1", 100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
 
     now[0] = 5_000L; // 3s later, still lagging
     assertThat(monitor.getReplicaLaggingForMs("replica1")).isEqualTo(3_000L);
 
     // Recovers (lag back under threshold): the duration resets to 0.
     monitor.updateLeaderCommitIndex(1100);
-    monitor.updateReplicaMatchIndex("replica1", 1100);
+    monitor.updateReplicaMatchIndex("replica1", 1100, 0L);
     assertThat(monitor.getReplicaLaggingForMs("replica1")).isZero();
   }
 
