@@ -230,6 +230,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     this.raftHAServer = raftHAServer;
   }
 
+  /** Owning Raft HA server. Package-private: used by the recovery-rewiring regression test (issue #4839). */
+  RaftHAServer getRaftHAServer() {
+    return raftHAServer;
+  }
+
   /**
    * Initialises the state machine using Ratis-native SimpleStateMachineStorage so that snapshot
    * index tracking is delegated to the framework instead of a hand-rolled text file.
