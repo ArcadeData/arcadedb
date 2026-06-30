@@ -387,14 +387,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(data);
 
       if (decoded.type() == null) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Unknown Raft log entry type at index %d, skipping - likely from a newer node version", index);
-        lastAppliedIndex.set(index);
-        updateLastAppliedTermIndex(termIndex.getTerm(), index);
-        writePersistedAppliedIndex(index);
-        if (raftHAServer != null)
-          raftHAServer.notifyApplied();
-        return CompletableFuture.completedFuture(Message.valueOf("OK"));
+        // A committed entry whose leading type byte is unrecognised (e.g. written by a newer node
+        // during a rolling upgrade) is NOT safe to skip. Advancing lastAppliedIndex past it would
+        // permanently discard a committed mutation on this node, and because the index still moved
+        // forward no lag/gap recovery would ever notice - a silent divergence (issue #4798). Halt
+        // loudly instead: leave lastAppliedIndex untouched so the entry is replayed once this node
+        // is upgraded to a version that understands the type, and surface the problem to operators.
+        LogManager.instance().log(this, Level.SEVERE,
+            "CRITICAL: Unknown Raft log entry type at index %d (likely written by a newer node version). "
+                + "Refusing to skip a committed entry and halting to prevent silent state divergence; "
+                + "upgrade this node to a compatible version to resume.", index);
+        triggerCriticalHalt();
+        return CompletableFuture.failedFuture(new ReplicationException(
+            "Unknown Raft log entry type at index " + index + "; node halted to prevent silent divergence"));
       }
 
       final boolean originatedLocally = Boolean.TRUE.equals(trx.getStateMachineContext());
@@ -449,21 +454,34 @@ public class ArcadeStateMachine extends BaseStateMachine {
           """
           CRITICAL: Unexpected error applying Raft log entry at index %d. \
           Shutting down to prevent state divergence.""", e, index);
-      // Trip the halt flag BEFORE starting the async server.stop() so the StateMachineUpdater's
-      // next applyTransaction call short-circuits instead of cascading on inconsistent state.
-      haltedAfterCriticalError.set(true);
-      final Thread stopThread = new Thread(() -> {
-        try {
-          if (server != null)
-            server.stop();
-        } catch (final Throwable t) {
-          LogManager.instance().log(this, Level.SEVERE, "Emergency stop failed", t);
-        }
-      }, "arcadedb-emergency-stop");
-      stopThread.setDaemon(true);
-      stopThread.start();
+      triggerCriticalHalt();
       return CompletableFuture.failedFuture(e instanceof Exception ex ? ex : new RuntimeException(e));
     }
+  }
+
+  /**
+   * Trips the critical-error halt and asynchronously stops the server so the node recovers via a
+   * snapshot/log replay on the next start. Used by {@link #applyTransaction} for both unexpected
+   * apply errors and unknown (un-decodable) committed entry types (issue #4798).
+   * <p>
+   * The halt flag is set BEFORE the async {@code server.stop()} starts so the StateMachineUpdater's
+   * next {@code applyTransaction} call short-circuits instead of cascading on inconsistent state.
+   * Callers must NOT advance or persist {@link #lastAppliedIndex} before invoking this: leaving the
+   * index untouched is what lets the offending entry be replayed (instead of silently skipped) once
+   * the node restarts on a compatible version.
+   */
+  private void triggerCriticalHalt() {
+    haltedAfterCriticalError.set(true);
+    final Thread stopThread = new Thread(() -> {
+      try {
+        if (server != null)
+          server.stop();
+      } catch (final Throwable t) {
+        LogManager.instance().log(this, Level.SEVERE, "Emergency stop failed", t);
+      }
+    }, "arcadedb-emergency-stop");
+    stopThread.setDaemon(true);
+    stopThread.start();
   }
 
   /**
@@ -1587,6 +1605,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // @VisibleForTesting
   int divergedSwallowedErrorCount() {
     return divergedSwallowedErrors.get();
+  }
+
+  // @VisibleForTesting
+  boolean isHaltedAfterCriticalError() {
+    return haltedAfterCriticalError.get();
   }
 
   /**
