@@ -69,11 +69,25 @@ class GrpcMetricsInterceptor implements ServerInterceptor {
     requestCounter.increment();
 
     ServerCall<ReqT, RespT> wrappedCall = new ForwardingServerCall.SimpleForwardingServerCall<ReqT, RespT>(call) {
+      private boolean inBandFailure = false;
+
+      @Override
+      public void sendMessage(RespT message) {
+        // executeCommand reports execution failures in-band as ExecuteCommandResponse.success=false
+        // while still closing the RPC with status OK (unlike executeQuery/createRecord, which call
+        // onError). Without this check every command failure would be counted as a success. Detect
+        // the in-band failure here so it is reflected in the error counter at close() time.
+        if (message instanceof ExecuteCommandResponse response && !response.getSuccess())
+          inBandFailure = true;
+
+        super.sendMessage(message);
+      }
+
       @Override
       public void close(Status status, Metadata trailers) {
         sample.stop(requestTimer);
 
-        if (!status.isOk()) {
+        if (!status.isOk() || inBandFailure) {
           errorCounter.increment();
         }
 
@@ -86,5 +100,21 @@ class GrpcMetricsInterceptor implements ServerInterceptor {
     };
 
     return next.startCall(wrappedCall, headers);
+  }
+
+  /**
+   * Current value of the gRPC error counter. Exposed for testing so that error accounting
+   * (including in-band command failures reported as ExecuteCommandResponse.success=false) can be
+   * verified without reflection.
+   */
+  double getErrorCount() {
+    return errorCounter.count();
+  }
+
+  /**
+   * Current value of the gRPC request counter. Exposed for testing.
+   */
+  double getRequestCount() {
+    return requestCounter.count();
   }
 }
