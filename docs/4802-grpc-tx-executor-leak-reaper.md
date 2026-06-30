@@ -58,3 +58,21 @@ so the test fails; after the fix it passes.
 
 Existing `GrpcServerIT` begin/commit/rollback tests confirm no regression to the
 normal transaction lifecycle.
+
+## Review cycles
+
+- Cycle 1 (claude + gemini): both flagged the synchronous `.get()` blocking the
+  reaper thread and the "throttled WARNING" wording not matching per-transaction
+  logging; claude additionally asked for max-age and disabled-reaper test
+  coverage and a TOCTOU note. Addressed in commit 66337b09b: async rollback via
+  cooperative `shutdown()`, one summary WARNING per sweep (per-tx at FINE),
+  TOCTOU comment, plus `ArcadeDbGrpcServiceReaperTest` and
+  `GrpcTransactionMaxAgeReaperIT`.
+- Cycle 2 (re-review): gemini approved ("ready to go"); claude verified every
+  prior item resolved ("ready to merge"), with a single explicitly non-blocking
+  observation about the broad catch in the busy-loop test.
+
+## Final state
+
+Clean approval from both reviewers after 2 cycles. No outstanding actionable
+feedback.
