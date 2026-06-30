@@ -113,3 +113,39 @@ Both bots reviewed the initial PR head. Applied the gating items; deferred lower
   `RESOURCE_EXHAUSTED` unary cap-breach).
 - `Issue4803WaitUntilReadyTimeoutTest` 3/3 (monotonic-deadline change).
 - Regression: `GrpcStreamMetricsIT` 1/1, `Issue4197GrpcExecuteQueryResultSetLeakIT` 1/1 - no regressions.
+
+## Review cycle 2 (claude + gemini-code-assist)
+
+Claude's re-review was an approval with nits ("clean, well-tested DoS hardening"); gemini re-posted
+its cycle-1 review verbatim.
+
+### Applied
+- **Config rationale for the 100k vs 1M asymmetry (claude).** The unary cap description now explains it
+  is lower than `grpcStreamMaxMaterializedRows` because the unary response is a single gRPC message
+  (also bounded by the max message size), whereas StreamQuery emits incrementally.
+- **Disabled-path regression test (claude).** Added `unaryExecuteQueryWithCapDisabledReturnsAllRows`:
+  sets the cap to `-1` and asserts the limitless query returns the full result (well past the former
+  ceiling) without `RESOURCE_EXHAUSTED`, locking in that the opt-out does not silently regress.
+
+### Not actioned (with rationale)
+- **gemini line-1690 `System.currentTimeMillis()` re-flag.** Stale: `awaitTransportReady` was already
+  converted to a monotonic `System.nanoTime()` deadline in cycle 1, and gemini's suggested replacement
+  is functionally identical to the current code. The only `currentTimeMillis` token left in that method
+  is inside an explanatory comment. No change.
+- **`count >= configuredMax && resultSet.hasNext()` double-evaluates `hasNext()` (claude minor).**
+  Idempotent for `ResultSet`; harmless, not worth restructuring.
+- **Write-timeout path conflates server deadline with client cancel (claude).** Confirmed conscious gap,
+  already deferred in cycle 1; the per-sweep WARNING gives operators visibility.
+- **Timing-based / hardcoded-port test notes (claude).** Bounds are generous and the port matches the
+  existing gRPC IT convention; no change.
+
+### BREAKING CHANGE - for release/upgrade notes
+The unary `ExecuteQuery` change is **backward-incompatible by design**: a limitless query whose result
+exceeds `arcadedb.server.grpcQueryMaxResultRows` (default 100000) now fails with `RESOURCE_EXHAUSTED`
+instead of returning everything. This is the correct DoS posture (loud failure over silent truncation)
+and is opt-out via `-1`/`0`, but clients running large limitless unary gRPC queries will get hard errors
+after upgrade. **This must be surfaced in the release notes / upgrade guide, not only in this doc.**
+
+### Verification (post-cycle-2)
+- `Issue4803GrpcResultBoundingIT` 5/5 (adds the disabled-cap opt-out test).
+- `Issue4803WaitUntilReadyTimeoutTest` 3/3.

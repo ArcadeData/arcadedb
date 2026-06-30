@@ -168,6 +168,30 @@ public class Issue4803GrpcResultBoundingIT extends BaseGraphServerTest {
   }
 
   @Test
+  void unaryExecuteQueryWithCapDisabledReturnsAllRows() {
+    // The -1 opt-out must restore the legacy unlimited behavior so disabling DoS protection does not
+    // silently keep capping (or now, failing) large results.
+    GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS.setValue(-1);
+    try {
+      final ExecuteQueryResponse response = authenticatedStub.executeQuery(
+          ExecuteQueryRequest.newBuilder()
+              .setDatabase(getDatabaseName())
+              .setCredentials(credentials())
+              .setQuery("SELECT FROM " + VERTEX1_TYPE_NAME) // no limit, cap disabled
+              .build());
+
+      // The seeded rows alone exceed the (now disabled) cap, so the opt-out is proven by the call returning
+      // the full result without a RESOURCE_EXHAUSTED failure and without truncating at the former ceiling.
+      assertThat(response.getResults(0).getRecordsCount())
+          .as("a disabled cap (-1) must opt back into unlimited and return the full result, not cap at the ceiling")
+          .isGreaterThanOrEqualTo(ROWS_INSERTED)
+          .isGreaterThan(MAX_QUERY_ROWS);
+    } finally {
+      GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS.setValue(MAX_QUERY_ROWS);
+    }
+  }
+
+  @Test
   void unaryExecuteQueryHonorsExplicitSmallerLimit() {
     final int explicitLimit = 3;
     final ExecuteQueryResponse response = authenticatedStub.executeQuery(

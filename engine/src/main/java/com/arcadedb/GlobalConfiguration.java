@@ -655,8 +655,10 @@ public enum GlobalConfiguration {
       Hard ceiling on the number of rows the gRPC unary ExecuteQuery materializes. A request limit at or below \
       this cap is honored; a result that would exceed it fails the call with RESOURCE_EXHAUSTED (consistent with \
       the StreamQuery MATERIALIZE_ALL path) rather than silently truncating, and a client cannot bypass it with a \
-      larger limit. Bounds heap usage and protects against limitless-query DoS. Set to -1 or 0 for unlimited \
-      (WARNING: removes DoS protection). Default is 100000.""",
+      larger limit. Bounds heap usage and protects against limitless-query DoS. The default is lower than \
+      grpcStreamMaxMaterializedRows because the unary response is built and returned as a single gRPC message \
+      (also bounded by the max inbound/outbound message size), whereas StreamQuery emits incrementally. \
+      Set to -1 or 0 for unlimited (WARNING: removes DoS protection). Default is 100000.""",
       Integer.class, 100_000),
 
   SERVER_GRPC_STREAM_MAX_MATERIALIZED_ROWS("arcadedb.server.grpcStreamMaxMaterializedRows", SCOPE.SERVER,
