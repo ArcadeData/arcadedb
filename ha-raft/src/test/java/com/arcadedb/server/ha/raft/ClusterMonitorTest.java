@@ -338,6 +338,88 @@ class ClusterMonitorTest {
     assertThat(resynced).isEmpty();
   }
 
+  /**
+   * Issue #4841: per-replica state must not survive a leadership term boundary. After a re-election,
+   * Ratis resets a follower's matchIndex (it climbs again from the leader's probe). If the monitor
+   * still carries the high matchIndex baseline captured while this node led a previous term, the first
+   * tick of the new term sees a large negative replicaDelta against a positive leaderDelta and
+   * mis-classifies a perfectly healthy follower as STALLED. {@link ClusterMonitor#reset()} (invoked on
+   * every fresh leadership acquisition) clears that baseline.
+   */
+  @Test
+  void resetClearsStaleStateSoReElectionDoesNotFalselyReportStalled() {
+    final ClusterMonitor monitor = new ClusterMonitor(50L);
+
+    // Term 1: this node is leader, replica fully caught up at index 5000 (healthy, no log).
+    monitor.updateLeaderCommitIndex(5000);
+    monitor.updateReplicaMatchIndex("replica1", 5000, 0L);
+    assertThat(monitor.getReplicaStatus("replica1")).isEqualTo(ClusterMonitor.ReplicaStatus.HEALTHY);
+    captured.clear();
+
+    // Leadership is lost and later re-acquired: the lag monitor restarts and resets its state.
+    monitor.reset();
+    assertThat(monitor.getReplicaStatus("replica1")).isEqualTo(ClusterMonitor.ReplicaStatus.UNKNOWN);
+    assertThat(monitor.getReplicaLags()).isEmpty();
+
+    // Term N first tick: the cluster log advanced to 20000 under other leaders while this node was a
+    // follower, and Ratis reports the follower's matchIndex reset low (probe just started).
+    monitor.updateLeaderCommitIndex(20000);
+    monitor.updateReplicaMatchIndex("replica1", 0, 0L);
+
+    // The follower is genuinely catching up, NOT stalled: a fresh baseline yields replicaDelta == 0
+    // and leaderDelta == 0, so the STALLED rule (replicaDelta <= 0 && leaderDelta > 0) cannot fire.
+    assertThat(monitor.getReplicaStatus("replica1")).isNotEqualTo(ClusterMonitor.ReplicaStatus.STALLED);
+    assertThat(captured.linesAtLevel(Level.SEVERE)).isEmpty();
+  }
+
+  /**
+   * Companion to {@link #resetClearsStaleStateSoReElectionDoesNotFalselyReportStalled()}: without the
+   * reset, the carried-over baseline DOES produce the false STALLED classification. This documents the
+   * defect the reset prevents.
+   */
+  @Test
+  void withoutResetStaleBaselineFalselyReportsStalledAfterReElection() {
+    final ClusterMonitor monitor = new ClusterMonitor(50L);
+
+    monitor.updateLeaderCommitIndex(5000);
+    monitor.updateReplicaMatchIndex("replica1", 5000, 0L);
+
+    // No reset() here: the new term's low matchIndex is compared against the stale 5000 baseline.
+    monitor.updateLeaderCommitIndex(20000);
+    monitor.updateReplicaMatchIndex("replica1", 0, 0L);
+
+    assertThat(monitor.getReplicaStatus("replica1")).isEqualTo(ClusterMonitor.ReplicaStatus.STALLED);
+  }
+
+  /**
+   * Issue #4841: a stale lag streak must not survive into the next term either. If a replica was mid
+   * stall-streak when this node lost leadership, {@link ClusterMonitor#reset()} must clear the streak
+   * so the leader-driven resync (#4728) does not fire spuriously on the first tick of the new term.
+   */
+  @Test
+  void resetClearsStallStreakSoLeaderDrivenResyncDoesNotFireOnReElection() {
+    final List<String> resynced = new ArrayList<>();
+    final AtomicLong now = new AtomicLong(0);
+    final ClusterMonitor monitor = new ClusterMonitor(50L, 30_000L, resynced::add);
+    monitor.setClock(now::get);
+
+    // Build a stall streak in term 1.
+    monitor.updateLeaderCommitIndex(100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
+    monitor.updateLeaderCommitIndex(1100);
+    monitor.updateReplicaMatchIndex("replica1", 100, 0L);
+
+    // Re-election: reset wipes the streak.
+    monitor.reset();
+
+    // Long after the old streak would have elapsed, the new term's first ticks must not fire a resync
+    // off the cleared streak (the replica is healthy again under the new baseline).
+    now.set(1_000_000);
+    monitor.updateLeaderCommitIndex(20000);
+    monitor.updateReplicaMatchIndex("replica1", 20000, 0L);
+    assertThat(resynced).isEmpty();
+  }
+
   @Test
   void emitsUnreachableThenReconnectedNarrative() {
     final AtomicLong now = new AtomicLong(100_000L);
