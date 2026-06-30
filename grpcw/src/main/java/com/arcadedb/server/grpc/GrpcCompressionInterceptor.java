@@ -19,6 +19,7 @@
 package com.arcadedb.server.grpc;
 
 import com.arcadedb.log.LogManager;
+import io.grpc.CompressorRegistry;
 import io.grpc.Context;
 import io.grpc.Contexts;
 import io.grpc.ForwardingServerCall;
@@ -30,7 +31,9 @@ import io.grpc.ServerInterceptor;
 import java.util.logging.Level;
 
 /**
- * Compression interceptor that can force compression based on configuration
+ * Compression interceptor that forces server-side response compression using the configured codec, but
+ * only when the client advertised support for that codec in its {@code grpc-accept-encoding} header and the
+ * codec is registered server-side. This guarantees the client is always able to decode the response.
  */
 class GrpcCompressionInterceptor implements ServerInterceptor {
 
@@ -42,77 +45,72 @@ class GrpcCompressionInterceptor implements ServerInterceptor {
       Metadata.ASCII_STRING_MARSHALLER);
   private final        boolean                      forceCompression;
   private final        String                       compressionType;
-  private final        int                          minMessageSizeForCompression;
 
-  public GrpcCompressionInterceptor(boolean forceCompression, String compressionType, int minMessageSizeBytes) {
+  public GrpcCompressionInterceptor(final boolean forceCompression, final String compressionType) {
     this.forceCompression = forceCompression;
     this.compressionType = compressionType != null ? compressionType : "gzip";
-    this.minMessageSizeForCompression = minMessageSizeBytes;
   }
 
   @Override
-  public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(ServerCall<ReqT, RespT> call, Metadata headers,
-      ServerCallHandler<ReqT, RespT> next) {
+  public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(final ServerCall<ReqT, RespT> call, final Metadata headers,
+      final ServerCallHandler<ReqT, RespT> next) {
 
-    String methodName = call.getMethodDescriptor().getFullMethodName();
+    final String methodName = call.getMethodDescriptor().getFullMethodName();
 
     // Check if request is compressed
-    String requestEncoding = headers.get(Metadata.Key.of("grpc-encoding", Metadata.ASCII_STRING_MARSHALLER));
-    boolean requestCompressed = requestEncoding != null && !"identity".equals(requestEncoding);
+    final String requestEncoding = headers.get(GRPC_ENCODING);
+    final boolean requestCompressed = requestEncoding != null && !"identity".equals(requestEncoding);
 
-    final boolean clientAcceptsGzip =
-        headers.get(GRPC_ACCEPT_ENCODING) != null && headers.get(GRPC_ACCEPT_ENCODING).contains("gzip");
+    // Only force compression when the client advertised support for the configured codec, otherwise the
+    // response would be undecodable on the client side.
+    final boolean clientAcceptsCodec = clientAcceptsEncoding(headers, compressionType);
+
+    // The compressor must also be registered server-side, otherwise gRPC would fail when sending the message.
+    final boolean codecAvailable = CompressorRegistry.getDefaultInstance().lookupCompressor(compressionType) != null;
+
+    final boolean compressResponse = forceCompression && clientAcceptsCodec && codecAvailable;
+
+    if (forceCompression && clientAcceptsCodec && !codecAvailable)
+      LogManager.instance().log(this, Level.WARNING,
+          "gRPC compression codec '%s' is not registered: responses for method '%s' will not be compressed", compressionType,
+          methodName);
 
     // Store compression info in context
-    CompressionInfo compressionInfo = new CompressionInfo(requestCompressed, requestEncoding);
-    Context context = Context.current().withValue(COMPRESSION_KEY, compressionInfo);
+    final CompressionInfo compressionInfo = new CompressionInfo(requestCompressed, requestEncoding);
+    final Context context = Context.current().withValue(COMPRESSION_KEY, compressionInfo);
 
-    // Wrap the call to control compression
-    ServerCall<ReqT, RespT> compressedCall = new ForwardingServerCall.SimpleForwardingServerCall<ReqT, RespT>(call) {
-      private boolean compressionSet = false;
-
+    // Wrap the call to select the response compressor before the headers are flushed
+    final ServerCall<ReqT, RespT> compressedCall = new ForwardingServerCall.SimpleForwardingServerCall<ReqT, RespT>(call) {
       @Override
-      public void sendHeaders(Metadata responseHeaders) {
+      public void sendHeaders(final Metadata responseHeaders) {
 
-        if (clientAcceptsGzip && !compressionSet) {
-
-          // Pick the compressor for this call before headers go out
-          super.setCompression("gzip");
+        if (compressResponse) {
+          // The compressor must be selected before the response headers are sent out
+          super.setCompression(compressionType);
           setMessageCompression(true);
 
           LogManager.instance()
               .log(GrpcCompressionInterceptor.this, Level.FINE, "Forced %s compression for method: %s", compressionType,
                   methodName);
-
-          compressionSet = true;
         }
 
         super.sendHeaders(responseHeaders);
       }
-
-      @Override
-      public void sendMessage(RespT message) {
-
-        if (!compressionSet && forceCompression) {
-
-          // Force compression for this response
-
-          if (this.getMethodDescriptor().getType().serverSendsOneMessage()) {
-            // For unary calls, we can set compression
-            setMessageCompression(true);
-            compressionSet = true;
-
-            LogManager.instance()
-                .log(GrpcCompressionInterceptor.this, Level.FINE, "Forced %s compression for method: %s", compressionType,
-                    methodName);
-          }
-        }
-
-        super.sendMessage(message);
-      }
     };
 
     return Contexts.interceptCall(context, compressedCall, headers, next);
+  }
+
+  private static boolean clientAcceptsEncoding(final Metadata headers, final String encoding) {
+    final String acceptEncoding = headers.get(GRPC_ACCEPT_ENCODING);
+    if (acceptEncoding == null)
+      return false;
+
+    for (final String token : acceptEncoding.split(","))
+      if (token.trim().equalsIgnoreCase(encoding))
+        return true;
+
+    return false;
   }
 
   /**
