@@ -40,12 +40,14 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.security.KeyStore;
 import java.util.HashMap;
 import java.util.List;
@@ -78,6 +80,14 @@ import java.util.zip.ZipInputStream;
  * </ol>
  * On startup, {@link #recoverPendingSnapshotSwaps(Path)} detects incomplete swaps
  * via the {@code .snapshot-pending} marker and either completes or rolls back each one.
+ * <p>
+ * <b>Durability ordering (issue #4830).</b> Crash recovery is only sound if the on-disk state it reads
+ * back is actually durable, so each boundary is fsynced before the next step depends on it: extracted
+ * files are fsynced individually as they are written, the {@code .snapshot-pending}/{@code .snapshot-complete}
+ * markers are fsynced together with their parent directory, and the post-swap directory entries are fsynced
+ * before the retained backup is deleted. This guarantees the backup is never removed while the newly
+ * installed files are still only in the OS page cache, so a power loss can always fall back to a complete
+ * copy (either the old one via the backup, or the new one once the swap is durable).
  */
 public final class SnapshotInstaller {
 
@@ -198,8 +208,10 @@ public final class SnapshotInstaller {
 
       Files.createDirectories(snapshotNew);
 
-      // Write the pending marker BEFORE starting extraction
-      Files.writeString(pendingMarker, "");
+      // Write the pending marker BEFORE starting extraction, and fsync it together with the parent
+      // directory so a crash right after this point still leaves the marker on disk for startup
+      // recovery to find (issue #4830).
+      writeMarkerDurable(pendingMarker);
 
       final int maxRetries = server.getConfiguration().getValueAsInteger(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRIES);
       final long retryBaseMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_SNAPSHOT_INSTALL_RETRY_BASE_MS);
@@ -218,8 +230,11 @@ public final class SnapshotInstaller {
         throw e;
       }
 
-      // Mark download as complete
-      Files.writeString(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE), "");
+      // Mark download as complete. The extracted files were each fsynced as they were written
+      // (see extractAndVerifySnapshot), so fsyncing this marker and the staging directory now
+      // establishes the durability barrier: if this marker is on disk after a crash, every snapshot
+      // file it vouches for is on disk too, and the swap can be safely completed by startup recovery.
+      writeMarkerDurable(snapshotNew.resolve(SNAPSHOT_COMPLETE_FILE));
 
       // PHASE 2 - SWAP. Set the server-wide flag BEFORE closing the database so HTTP handlers return 503
       // while the files are being moved.
@@ -448,6 +463,9 @@ public final class SnapshotInstaller {
     } catch (final AtomicMoveNotSupportedException e) {
       Files.move(staging, dbPath);
     }
+    // Persist the new directory entry in the parent so a crash right after publish cannot lose the
+    // freshly-acquired database (issue #4830). The staged files were already fsynced at extraction.
+    fsyncDirectory(dbPath.getParent());
   }
 
   /**
@@ -899,6 +917,13 @@ public final class SnapshotInstaller {
                 + entryName + "': inflated " + uncompressedBytes + " bytes from "
                 + compressedBytes + " (ratio > " + MAX_COMPRESSION_RATIO + ":1)");
 
+          // Force this file's bytes to stable storage before it is later renamed into the live
+          // database. Without this the extracted data lingers in the OS page cache and a power loss
+          // after the swap (when the backup is already gone) would expose torn/partial files with no
+          // way to roll back (issue #4830).
+          cos.flush();
+          fos.getFD().sync();
+
           extracted.put(entryName, new long[] { uncompressedBytes, crc.getValue() });
         }
         zipIn.closeEntry();
@@ -1131,6 +1156,11 @@ public final class SnapshotInstaller {
           Files.move(entry, dbDir.resolve(name), StandardCopyOption.REPLACE_EXISTING);
         }
       }
+
+      // Make the rename directory entries durable before the caller deletes the retained backup. The
+      // file data itself was already fsynced at extraction time; this fsync persists the directory
+      // entries that now point at it, so a crash after the backup is gone cannot lose the swap (#4830).
+      fsyncDirectory(dbDir);
     } catch (final IOException e) {
       // Log the root cause FIRST, before any restore step can throw and mask it.
       LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
@@ -1164,6 +1194,9 @@ public final class SnapshotInstaller {
         // reconstruct the exact original set without leaving stale files behind.
         Files.move(entry, dbDir.resolve(entry.getFileName().toString()), StandardCopyOption.REPLACE_EXISTING);
     }
+    // Persist the restored directory entries before the backup is deleted so a crash during rollback
+    // recovery cannot lose the originals we just moved back (issue #4830).
+    fsyncDirectory(dbDir);
     deleteDirectoryIfExists(backupDir);
   }
 
@@ -1174,6 +1207,39 @@ public final class SnapshotInstaller {
         if (!walFile.delete())
           LogManager.instance().log(SnapshotInstaller.class, Level.WARNING,
               "Failed to delete stale WAL file: %s", null, walFile.getName());
+  }
+
+  /**
+   * Writes an empty marker file and forces both the file and its parent directory to stable storage.
+   * Used for the {@code .snapshot-pending} and {@code .snapshot-complete} markers so the crash-recovery
+   * state machine never reads back a marker whose creation was still buffered in the OS page cache
+   * (issue #4830).
+   */
+  private static void writeMarkerDurable(final Path marker) throws IOException {
+    Files.writeString(marker, "");
+    try (final FileChannel channel = FileChannel.open(marker, StandardOpenOption.WRITE)) {
+      channel.force(true);
+    }
+    fsyncDirectory(marker.getParent());
+  }
+
+  /**
+   * Best-effort fsync of a directory so that file creations, renames and deletions within it survive a
+   * power loss. Opening a directory as a {@link FileChannel} and forcing it is the POSIX way to persist
+   * directory entries, but it is not supported on every platform (notably Windows, where opening a
+   * directory throws). A failure here is therefore logged at FINE and ignored rather than aborting the
+   * install: the snapshot file data itself is always fsynced individually, so the worst case on such a
+   * platform is the pre-existing behaviour, not a regression. Package-private for unit testing.
+   */
+  static void fsyncDirectory(final Path dir) {
+    if (dir == null)
+      return;
+    try (final FileChannel channel = FileChannel.open(dir, StandardOpenOption.READ)) {
+      channel.force(true);
+    } catch (final IOException e) {
+      LogManager.instance().log(SnapshotInstaller.class, Level.FINE,
+          "Directory fsync not supported or failed for %s: %s", null, dir, e.getMessage());
+    }
   }
 
   private static void deleteDirectoryIfExists(final Path dir) throws IOException {
