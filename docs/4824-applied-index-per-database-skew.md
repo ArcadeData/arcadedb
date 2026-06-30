@@ -60,6 +60,22 @@ Make applied-index tracking per-database-aware (suggested fix option 2):
 - `fullInstallRecordsSnapshotIndexForEveryPresentDatabase` — a full state-machine install records
   the snapshot index for every present database (exercises the `getDatabaseNames()` path).
 
+## Upgrade behavior (one-time)
+
+A legacy plain-number `.raft/applied-index` file written by an older version carries no per-database
+breakdown, so on the FIRST restart after upgrade every per-database read returns -1. Any
+`BOOTSTRAP_FINGERPRINT_ENTRY` still above the latest Ratis snapshot at that moment will re-run
+verification instead of being skipped. This is bounded (it only affects bootstrap entries still above
+the latest snapshot, mostly recently-formed/low-snapshot clusters) and safe:
+
+- matching local fingerprint -> returns immediately (no bytes moved);
+- locally-fresher copy (`local lastTxId > baseline`) -> hits the existing "refusing to overwrite
+  local data" guard: a SEVERE log line, but no data loss;
+- genuinely-behind copy (`local < baseline`) -> re-installs from the leader, the correct action
+  anyway (download-before-close keeps the database open on failure).
+
+From the first post-upgrade apply onwards the per-database map is authoritative and the skew is fixed.
+
 ## PR
 
 https://github.com/ArcadeData/arcadedb/pull/4847
@@ -71,3 +87,8 @@ https://github.com/ArcadeData/arcadedb/pull/4847
   from the per-database map (claude); add a test for the full-install path and stub
   `getDatabaseNames()` (claude); document that the hot-path JSON allocation is dominated by the
   atomic-rename I/O that already ran every apply (claude); fix the doc test count (claude).
+- cycle 2 (`851e3d5`): gemini re-posted the (already-applied) synchronisation suggestion - no-op.
+  Addressed claude: fold the DROP-entry global advance + per-database eviction into a single atomic
+  write (`writePersistedAppliedIndexDroppingDatabase`) to remove the two-write crash window;
+  document the one-time legacy-upgrade re-verification behavior (bounded and safe) in code and in the
+  "Upgrade behavior" section above.

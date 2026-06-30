@@ -447,13 +447,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       // Record the index globally AND against the database this entry targeted, so the per-database
       // bootstrap replay-skip can trust a value that is not mixed across databases (issue #4824).
       // decoded.databaseName() is null only for database-agnostic entries (e.g. SECURITY_USERS_ENTRY),
-      // which advance the global position only. A DROP entry removes the database, so we advance only
-      // the global position and evict its per-database entry below (avoids growing the map for the
-      // node lifetime with names of dropped databases).
-      final boolean droppedDatabase = decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY;
-      writePersistedAppliedIndex(index, droppedDatabase ? null : decoded.databaseName());
-      if (droppedDatabase)
-        removePersistedAppliedIndexForDatabase(decoded.databaseName());
+      // which advance the global position only. A DROP entry removes the database, so the global
+      // position advances and its per-database entry is evicted in a single atomic write (avoids
+      // growing the map for the node lifetime with names of dropped databases).
+      if (decoded.type() == RaftLogEntryType.DROP_DATABASE_ENTRY)
+        writePersistedAppliedIndexDroppingDatabase(index, decoded.databaseName());
+      else
+        writePersistedAppliedIndex(index, decoded.databaseName());
 
       // Wake up any threads waiting for this index (READ_YOUR_WRITES, waitForLocalApply)
       final RaftHAServer raftHA = this.raftHAServer;
@@ -1383,6 +1383,15 @@ public class ArcadeStateMachine extends BaseStateMachine {
     // advanced the global index past this entry must not suppress this database's verification
     // (issue #4824). Absent positive per-database evidence the verification re-runs, which is
     // idempotent (a fingerprint match returns immediately without moving any bytes).
+    //
+    // Upgrade note: a legacy plain-number applied-index file carries no per-database breakdown, so on
+    // the FIRST restart after upgrading, this read returns -1 for every database and verification
+    // re-runs for any bootstrap entry still above the latest Ratis snapshot. That is a bounded,
+    // one-time cost and is safe: a matching local fingerprint returns immediately; a locally-fresher
+    // copy (local lastTxId > baseline) hits the "refusing to overwrite local data" guard below (no
+    // data loss, just a SEVERE log line); a genuinely-behind copy re-installs from the leader, which
+    // is the correct action anyway. From the first post-upgrade apply onwards the per-database map is
+    // authoritative.
     final long persistedApplied = readPersistedAppliedIndex(dbName);
     if (persistedApplied >= index) {
       HALog.log(this, HALog.BASIC,
@@ -1674,17 +1683,19 @@ public class ArcadeStateMachine extends BaseStateMachine {
   }
 
   /**
-   * Removes {@code dbName} from the per-database applied-index map and serialises, so a dropped
-   * database does not leave a stale entry that grows the map and persisted JSON for the node lifetime
-   * (issue #4824). The global position is left untouched.
+   * Advances the global applied position to {@code index} and, in the SAME serialised write, evicts
+   * {@code dbName} from the per-database map. Used for a {@code DROP_DATABASE_ENTRY}: the database is
+   * gone, so its per-database entry must not linger and grow the map/persisted JSON for the node
+   * lifetime (issue #4824). Folding the global advance and the eviction into one atomic write avoids
+   * a crash window that could leave a stale per-database entry for a database that no longer exists.
    */
-  private void removePersistedAppliedIndexForDatabase(final String dbName) {
-    if (dbName == null)
-      return;
+  private void writePersistedAppliedIndexDroppingDatabase(final long index, final String dbName) {
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
-      if (appliedIndexByDb.remove(dbName) != null)
-        persistAppliedIndexFile();
+      globalAppliedIndex = index;
+      if (dbName != null)
+        appliedIndexByDb.remove(dbName);
+      persistAppliedIndexFile();
     }
   }
 
