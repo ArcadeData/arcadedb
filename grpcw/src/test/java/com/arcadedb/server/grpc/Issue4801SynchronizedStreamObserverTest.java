@@ -178,6 +178,42 @@ class Issue4801SynchronizedStreamObserverTest {
   }
 
   @Test
+  void failedWriteOnLiveCallDeliversTerminalSoClientDoesNotHang() {
+    // Delegate whose onNext rejects this one message but is otherwise live (records onError).
+    final AtomicInteger onNextAttempts = new AtomicInteger();
+    final AtomicReference<Throwable> deliveredError = new AtomicReference<>();
+    final StreamObserver<String> liveButRejecting = new StreamObserver<>() {
+      @Override
+      public void onNext(final String value) {
+        onNextAttempts.incrementAndGet();
+        throw new IllegalStateException("message rejected");
+      }
+
+      @Override
+      public void onError(final Throwable t) {
+        deliveredError.compareAndSet(null, t);
+      }
+
+      @Override
+      public void onCompleted() {
+      }
+    };
+
+    final SynchronizedStreamObserver<String> obs = new SynchronizedStreamObserver<>(liveButRejecting);
+
+    obs.onNext("x");
+
+    // A terminal must have been delivered so the client is not left hanging.
+    assertThat(obs.isTerminated()).isTrue();
+    assertThat(deliveredError.get()).isInstanceOf(IllegalStateException.class);
+
+    // The stream is terminal now: further calls are dropped.
+    obs.onNext("y");
+    obs.onCompleted();
+    assertThat(onNextAttempts.get()).isEqualTo(1);
+  }
+
+  @Test
   void concurrentTerminalAndWriteCallsNeverInterleave() throws Exception {
     final int threads = 32;
     final ExecutorService pool = Executors.newFixedThreadPool(threads);

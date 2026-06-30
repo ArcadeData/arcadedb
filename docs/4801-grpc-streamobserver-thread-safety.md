@@ -71,3 +71,20 @@ Regression: `GrpcServerIT#graphBatchLoadVerticesAndEdges` still passes end-to-en
   one terminal reaches the delegate on the no-cancel path.
 - Verified: `Issue4801SynchronizedStreamObserverTest` 6/6, plus `GrpcServerIT#graphBatchLoadVerticesAndEdges`
   and `Issue4198InsertStreamCommitErrorIT` pass end-to-end.
+
+### Cycle 2 (claude - "looks good to merge")
+
+- Clarity-only: documented why `markTerminated()` is lock-free (cancel handler must not block behind
+  an in-flight `onNext`) and why `graphBatchLoad`'s `errorSent` flag is retained.
+- executeQuery / streamMaterialized-Cursor-Paged path left out of scope (single producer thread, already
+  self-heals via `safeOnNext` catching `StatusRuntimeException`); flagged as a dedicated follow-up.
+
+### Cycle 3 (claude)
+
+- Acted on the one pre-merge item: `onNext` now best-effort delivers `onError` when a write throws, so a
+  still-live call that rejects a single message (e.g. `RESOURCE_EXHAUSTED`) does not leave the client
+  hanging without a terminal. `compareAndSet` skips it if a concurrent `markTerminated` already fired; an
+  already-closed call swallows the no-op `onError`.
+- Added `failedWriteOnLiveCallDeliversTerminalSoClientDoesNotHang`. Unit suite now 7/7.
+- `insertBidirectional` half-close-without-COMMIT delivering no terminal is pre-existing and left as a
+  documented follow-up.

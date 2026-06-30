@@ -55,11 +55,19 @@ final class SynchronizedStreamObserver<T> implements StreamObserver<T> {
         return;
       try {
         delegate.onNext(value);
-      } catch (final IllegalStateException | StatusRuntimeException closed) {
-        // The underlying call was concurrently cancelled/closed by the transport: mark terminated
-        // and stop sending. No terminal call is delegated in this path, by design - the transport
-        // has already closed the call.
-        completed.set(true);
+      } catch (final IllegalStateException | StatusRuntimeException failed) {
+        // The write failed: usually the transport already cancelled/closed the call. Best-effort
+        // terminate the stream so a still-live call that rejected this one message (e.g. a
+        // RESOURCE_EXHAUSTED) does not leave the client hanging without a terminal. compareAndSet
+        // skips the terminal if a concurrent markTerminated (cancel handler) already flipped the
+        // flag; if the call is already closed, the onError itself is a no-op and is swallowed.
+        if (completed.compareAndSet(false, true)) {
+          try {
+            delegate.onError(failed);
+          } catch (final IllegalStateException | StatusRuntimeException ignore) {
+            // Call already closed: nothing more to deliver.
+          }
+        }
       }
     }
   }
