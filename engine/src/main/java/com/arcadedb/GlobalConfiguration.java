@@ -324,6 +324,15 @@ public enum GlobalConfiguration {
   ASYNC_BACK_PRESSURE("arcadedb.asyncBackPressure", SCOPE.DATABASE,
       "When the asynchronous queue is full at a certain percentage, back pressure is applied", Integer.class, 0),
 
+  TRUNCATE_BATCH_SIZE("arcadedb.truncateBatchSize", SCOPE.DATABASE,
+      """
+      Number of records TRUNCATE TYPE/BUCKET deletes per committed transaction. Each batch is committed as one \
+      transaction, which in HA becomes one Raft log entry: keeping the batch small keeps that entry small so the \
+      leader's per-follower append pipeline returns to sending heartbeats between batches instead of stalling on a \
+      single multi-MB entry (issue #4817, which caused leader churn, an interrupted commit and a partial truncate). \
+      Larger values reduce commit overhead on single-node setups at the cost of bigger transactions.""",
+      Integer.class, 1000),
+
   PAGE_FLUSH_QUEUE("arcadedb.pageFlushQueue", SCOPE.DATABASE, "Size of the asynchronous page flush queue", Integer.class, 512),
 
   FLUSH_SUSPEND_MAX_DEFERRED_RAM("arcadedb.flushSuspendMaxDeferredRAM", SCOPE.DATABASE,

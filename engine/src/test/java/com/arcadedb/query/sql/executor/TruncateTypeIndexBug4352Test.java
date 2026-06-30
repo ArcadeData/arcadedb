@@ -123,7 +123,7 @@ class TruncateTypeIndexBug4352Test extends TestHelper {
   }
 
   /**
-   * Truncate a large type (more records than TRUNCATE_BATCH_SIZE) so the in-loop commit/begin runs.
+   * Truncate a large type (more records than the truncateBatchSize) so the batched commit/begin runs.
    */
   @Test
   void truncateLargeTypeWithBatchedCommitClearsUniqueIndex() {

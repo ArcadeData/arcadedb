@@ -20,6 +20,7 @@
 /* JavaCCOptions:MULTI=true,NODE_USES_PARSER=false,VISITOR=true,TRACK_TOKENS=true,NODE_PREFIX=O,NODE_EXTENDS=,NODE_FACTORY=,SUPPORT_USERTYPE_VISIBILITY_PUBLIC=true */
 package com.arcadedb.query.sql.parser;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.engine.Bucket;
 import com.arcadedb.exception.CommandExecutionException;
@@ -36,8 +37,6 @@ import java.util.Map;
 import java.util.Objects;
 
 public class TruncateBucketStatement extends DDLStatement {
-
-  public static final int TRUNCATE_BATCH_SIZE = 50_000;
 
   public Identifier bucketName;
   public PInteger   bucketNumber;
@@ -97,16 +96,33 @@ public class TruncateBucketStatement extends DDLStatement {
       }
     }
 
-    // Scan and delete all records in the bucket, committing in batches to avoid OOM
-    final long[] count = {0};
+    // Delete all records in the bucket, committing one transaction per (small) batch so that in HA each
+    // Raft log entry stays small and leader heartbeats are not starved by a single multi-MB entry. The
+    // batch commit runs inside the scan callback, but LocalBucket.scan swallows any callback exception
+    // (including a commit failure from an HA leader change) as a per-record "Error on loading record"
+    // and keeps scanning - which silently turned a failure into a partial truncate reported as success
+    // (issue #4817). Catch the failure here, before that swallowing catch sees it, stop the scan and
+    // rethrow it so the command fails loudly.
+    final int batchSize = Math.max(1, db.getConfiguration().getValueAsInteger(GlobalConfiguration.TRUNCATE_BATCH_SIZE));
+
+    final RuntimeException[] deletionFailure = { null };
+    final long[] count = { 0 };
     db.scanBucket(resolvedBucketName, record -> {
-      record.delete();
-      if (++count[0] % TRUNCATE_BATCH_SIZE == 0 && db.isTransactionActive()) {
-        db.commit();
-        db.begin();
+      try {
+        record.delete();
+        if (++count[0] % batchSize == 0 && db.isTransactionActive()) {
+          db.commit();
+          db.begin();
+        }
+        return true;
+      } catch (final RuntimeException e) {
+        deletionFailure[0] = e;
+        return false; // stop the scan; surface the failure below
       }
-      return true;
     });
+
+    if (deletionFailure[0] != null)
+      throw deletionFailure[0];
 
     // Build result
     final ResultInternal result = new ResultInternal(db);
