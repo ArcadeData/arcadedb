@@ -114,6 +114,11 @@ public class ArcadeDBServer {
   private             AiConfiguration                       aiConfiguration;
   private             ServerQueryProfiler                   queryProfiler;
   private final       ConcurrentMap<String, ServerDatabase> databases                            = new ConcurrentHashMap<>();
+  // Monitor serialising every check-then-act on the database registry (load, create, register, reopen). The HA
+  // snapshot installer also holds it across close->file-swap->reopen so no concurrent open observes the transient
+  // half-swapped directory or reopens it from disk mid-swap (issue #4832). Kept distinct from the map so it can be
+  // exposed via getDatabasesLock() without leaking the registry itself.
+  private final       Object                                databasesLock                        = new Object();
   private final       List<ReplicationCallback>             testEventListeners                   = new ArrayList<>();
   private volatile    STATUS                                status                               = STATUS.OFFLINE;
   private final       AtomicBoolean snapshotInstallInProgress            = new AtomicBoolean(false);
@@ -539,9 +544,20 @@ public class ArcadeDBServer {
     return databases.containsKey(databaseName);
   }
 
+  /**
+   * Returns the monitor that serialises every check-then-act on the database registry (load, create, register,
+   * reopen). Callers that must make a multi-step registry mutation atomic with respect to concurrent
+   * {@link #getDatabase} / {@link #createDatabase} calls synchronize on this object. The HA snapshot installer
+   * holds it across its close-&gt;file-swap-&gt;reopen sequence so no concurrent open observes the transient
+   * half-swapped on-disk directory (issue #4832).
+   */
+  public Object getDatabasesLock() {
+    return databasesLock;
+  }
+
   public ServerDatabase createDatabase(final String databaseName, final ComponentFile.MODE mode) {
     ServerDatabase serverDatabase;
-    synchronized (databases) {
+    synchronized (databasesLock) {
       serverDatabase = databases.get(databaseName);
       if (serverDatabase != null)
         throw new IllegalArgumentException("Database '" + databaseName + "' already exists");
@@ -630,7 +646,7 @@ public class ArcadeDBServer {
     if (databaseWrapper == null)
       return;
 
-    synchronized (databases) {
+    synchronized (databasesLock) {
       for (final var entry : databases.entrySet()) {
         final ServerDatabase serverDb = entry.getValue();
         final DatabaseInternal wrapped = serverDb.getWrappedDatabaseInstance();
@@ -702,7 +718,7 @@ public class ArcadeDBServer {
       throw new IllegalArgumentException("Invalid database name " + databaseName);
 
     ServerDatabase db;
-    synchronized (databases) {
+    synchronized (databasesLock) {
       db = databases.get(databaseName);
 
       if (db == null || !db.isOpen()) {
