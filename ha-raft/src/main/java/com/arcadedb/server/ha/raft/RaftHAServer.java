@@ -1269,19 +1269,71 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   public void stepDown() {
-    for (final var peer : getLivePeers()) {
-      if (!peer.getId().toString().equals(localPeerId.toString())) {
-        try {
-          transferLeadership(peer.getId().toString(), 10_000);
-          return;
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.SEVERE,
-              "Failed to step down (transfer to %s): %s", peer.getId(), e.getMessage());
-        }
+    final List<RaftPeer> candidates = selectStepDownTargets(getLivePeers(), localPeerId, clusterMonitor);
+
+    for (final RaftPeer peer : candidates) {
+      try {
+        transferLeadership(peer.getId().toString(), 10_000);
+        return;
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Failed to step down (transfer to %s): %s", peer.getId(), e.getMessage());
       }
     }
+
+    // No eligible explicit target (every other peer is a priority-0 witness/replica or is lagging, or
+    // every explicit transfer failed). Delegate the choice to Ratis: the no-target transfer honors Raft
+    // priorities and never elects a priority-0 peer, which is safer than abandoning the step-down (issue #4808).
+    LogManager.instance().log(this, Level.INFO,
+        "No explicit step-down target eligible; delegating leadership-transfer target selection to Ratis");
+    if (transferLeadership(10_000L))
+      return;
+
     LogManager.instance().log(this, Level.SEVERE,
         "Cannot step down: no other peer available for leadership transfer");
+  }
+
+  /**
+   * Selects, in preference order, the peers eligible to receive leadership when this leader steps
+   * down (issue #4808). A peer is eligible when it is not this node, is not lagging behind the leader
+   * ({@link ClusterMonitor#isReplicaLagging}), and is not a priority-0 witness/replica while peers with
+   * a higher priority exist - Ratis is configured never to elect a priority-0 peer, so handing it
+   * leadership would just bounce it straight back and prolong write unavailability. The list is ordered
+   * by descending Raft priority so the strongest candidate is tried first; equal priorities keep the
+   * cluster iteration order.
+   *
+   * @return an ordered list of candidate peers, possibly empty (the caller then delegates the choice to
+   *         Ratis via the no-target transfer).
+   */
+  static List<RaftPeer> selectStepDownTargets(final Collection<RaftPeer> livePeers, final RaftPeerId localPeerId,
+      final ClusterMonitor clusterMonitor) {
+    final String localId = localPeerId.toString();
+
+    // Highest priority among the other peers. When it is 0 the cluster runs with the default,
+    // homogeneous priorities and every follower is equally electable; only when some peer carries an
+    // explicit positive priority do the priority-0 peers become non-electable witnesses to be skipped.
+    int maxPriority = 0;
+    for (final RaftPeer peer : livePeers)
+      if (!peer.getId().toString().equals(localId))
+        maxPriority = Math.max(maxPriority, peer.getPriority());
+
+    final List<RaftPeer> candidates = new ArrayList<>();
+    for (final RaftPeer peer : livePeers) {
+      final String peerId = peer.getId().toString();
+      if (peerId.equals(localId))
+        continue;
+      // Priority-0 witness/replica while real voters exist: Ratis would never keep it as leader.
+      if (maxPriority > 0 && peer.getPriority() <= 0)
+        continue;
+      // Lagging follower: promoting it would prolong write unavailability while it catches up.
+      if (clusterMonitor != null && clusterMonitor.isReplicaLagging(peerId))
+        continue;
+      candidates.add(peer);
+    }
+
+    // Strongest (highest priority) first; List.sort is stable so equal priorities keep iteration order.
+    candidates.sort((a, b) -> Integer.compare(b.getPriority(), a.getPriority()));
+    return candidates;
   }
 
   public void leaveCluster() {
