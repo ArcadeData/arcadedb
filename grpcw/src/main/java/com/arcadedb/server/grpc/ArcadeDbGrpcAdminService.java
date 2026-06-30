@@ -297,6 +297,10 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   // Helpers
   // ------------------------------------------------------------------------------------
 
+  // Defense-in-depth: GrpcAuthInterceptor already authenticates these body credentials centrally
+  // before the call reaches this handler. This handler-side check is intentionally kept (do not
+  // remove it assuming the interceptor covers it) so the service stays safe even if the central
+  // gate is ever bypassed or reconfigured.
   private void authenticate(DatabaseCredentials creds) {
 
     if (creds == null)

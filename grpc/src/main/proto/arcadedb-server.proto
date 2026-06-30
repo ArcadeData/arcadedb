@@ -567,7 +567,7 @@ service ArcadeDbAdminService {
 }
 
 message PingRequest {
-  DatabaseCredentials credentials = 1; // optional if you allow unauth ping
+  DatabaseCredentials credentials = 1; // required when server security is enabled (enforced centrally by the auth interceptor)
 }
 message PingResponse {
   bool ok = 1;
