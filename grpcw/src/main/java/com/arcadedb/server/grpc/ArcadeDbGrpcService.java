@@ -1830,6 +1830,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final long startedAt = System.currentTimeMillis();
     final AtomicBoolean cancelled = new AtomicBoolean(false);
+    // errorSent gates the onCompleted flush and the call.request(1) flow-control pull; the
+    // SynchronizedStreamObserver above independently guarantees terminal-call safety.
     final boolean[] errorSent = { false };
     final AtomicReference<GraphBatch> batchRef = new AtomicReference<>();
     final AtomicReference<Database> dbRef = new AtomicReference<>();

@@ -94,6 +94,11 @@ final class SynchronizedStreamObserver<T> implements StreamObserver<T> {
    * Flags the stream as terminated without delegating any call. Intended for the gRPC call's cancel
    * handler: once the transport has cancelled the call, no further {@code onNext}/{@code onError}/
    * {@code onCompleted} may be delivered, so subsequent calls become no-ops.
+   *
+   * <p>This is deliberately lock-free (a plain flag flip, not guarded by {@code lock}) so the
+   * transport cancel handler never blocks behind an in-flight {@code delegate.onNext()}. A call
+   * already past the {@code completed} gate races at worst into {@code delegate.onNext} after close,
+   * which throws and is caught.
    */
   void markTerminated() {
     completed.set(true);
