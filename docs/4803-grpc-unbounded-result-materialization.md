@@ -149,3 +149,39 @@ after upgrade. **This must be surfaced in the release notes / upgrade guide, not
 ### Verification (post-cycle-2)
 - `Issue4803GrpcResultBoundingIT` 5/5 (adds the disabled-cap opt-out test).
 - `Issue4803WaitUntilReadyTimeoutTest` 3/3.
+
+## Review cycle 3 (claude + gemini-code-assist)
+
+Claude re-surfaced the write-timeout client-status gap and asked for it to be resolved before merge
+(escalated from a deferred follow-up). Acted on it this cycle.
+
+### Applied
+- **Explicit `DEADLINE_EXCEEDED` on a server-induced write timeout (claude #1, previously deferred).**
+  A server timeout previously set the shared `cancelled` flag and the stream loop returned with no
+  terminal status, leaving a healthy-but-slow client blocked until its own deadline - the exact "stream
+  silently stops" symptom a DoS feature should not create. Introduced a per-call `serverTimedOut`
+  `AtomicBoolean`, threaded from `streamQuery` through `streamCursor`/`streamMaterialized`/`streamPaged`
+  into `waitUntilReady`, which now sets it (alongside `cancelled`) only on the deadline path - never on a
+  genuine client cancel. `streamQuery`'s cancelled branch surfaces `Status.DEADLINE_EXCEEDED` (before the
+  best-effort rollback, so the client is signaled even if rollback throws) when `serverTimedOut` is set,
+  and stays silent for a real client cancel (transport already tearing down). Single terminal preserved:
+  the catch block only emits when `!cancelled.get()`, so there is no double-terminal.
+
+### Not actioned (with rationale)
+- **gemini line-1690 `currentTimeMillis` (3rd identical post).** Still stale - the method has used a
+  monotonic `nanoTime` deadline since cycle 1; gemini re-posts its whole original review each push.
+- **`MATERIALIZE_ALL` 1M default may still spike heap (claude #2).** Deliberate tradeoff, "no change
+  strictly required"; the default is the operator's tuning call and is documented with its rationale.
+- **Boundary-semantics one-row asymmetry, poll granularity, test-config/port nits (claude).** All
+  confirmed harmless / convention-matching; not worth a behavior change.
+
+### Known test gap
+The `DEADLINE_EXCEEDED` emission is not covered by an end-to-end IT: deterministically forcing
+`ServerCallStreamObserver.isReady()` to stay false against a real client transport is not feasible in
+this harness (the same reason the original PR unit-tested only the `awaitTransportReady` helper). The
+threading and the helper's deadline logic are covered by `Issue4803WaitUntilReadyTimeoutTest` (3/3) plus
+the full stream-path regression (no regressions).
+
+### Verification (post-cycle-3)
+- `Issue4803GrpcResultBoundingIT` 5/5, `Issue4803WaitUntilReadyTimeoutTest` 3/3.
+- Regression: `GrpcStreamMetricsIT` 1/1, `Issue4197GrpcExecuteQueryResultSetLeakIT` 1/1 - no regressions.

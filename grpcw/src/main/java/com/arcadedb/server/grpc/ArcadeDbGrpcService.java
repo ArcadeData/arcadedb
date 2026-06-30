@@ -1288,6 +1288,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     QueryProfile.pushCurrent(profile);
     final long engineStart = System.nanoTime();
     final AtomicBoolean cancelled = new AtomicBoolean(false);
+    // Distinguishes a server-induced write timeout (we gave up on a healthy-but-slow client) from a genuine
+    // client cancel: only the former should surface an explicit DEADLINE_EXCEEDED terminal to the client.
+    final AtomicBoolean serverTimedOut = new AtomicBoolean(false);
 
     Database db = null;
     boolean beganHere = false;
@@ -1317,20 +1320,35 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // --- Dispatch on mode (helpers do NOT manage transactions) ---
       // PAGED mode uses SQL-specific SKIP/LIMIT wrapping, so fall back to CURSOR for non-SQL languages
       switch (request.getRetrievalMode()) {
-        case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
         case PAGED -> {
           if (!"sql".equalsIgnoreCase(language))
-            streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
+            streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
           else
-            streamPaged(db, request, batchSize, scso, cancelled, projectionConfig, language);
+            streamPaged(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
         }
-        case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
-        default -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
+        default -> streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
       }
 
       // If the client cancelled mid-stream, choose rollback unless caller explicitly
       // asked to commit/rollback.
       if (cancelled.get()) {
+        // A server-induced write timeout is not a client cancel: the client transport is healthy, we gave up
+        // on it. Surface an explicit DEADLINE_EXCEEDED first (before the best-effort rollback, so the client is
+        // always signaled even if rollback fails) so it fails fast instead of blocking on its own deadline. A
+        // genuine client cancel needs no terminal - its transport is already tearing down.
+        if (serverTimedOut.get()) {
+          final long timeoutMs = GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.getValueAsLong();
+          try {
+            scso.onError(Status.DEADLINE_EXCEEDED
+                .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
+                    + " ms (arcadedb.server.grpcStreamWriteTimeoutMs); slow or abandoned consumer")
+                .asRuntimeException());
+          } catch (final StatusRuntimeException ignore) {
+            // transport may have closed concurrently; the terminal is already moot
+          }
+        }
         if (hasTx) {
           if (tx.getRollback()) {
             db.rollback();
@@ -1340,7 +1358,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             db.rollback(); // safe default on cancellation
           }
         }
-        return; // don't call onCompleted()
+        return; // terminal already sent (DEADLINE_EXCEEDED) or intentionally omitted (client cancel)
       }
 
       // --- TX end (normal path) — precedence: rollback > commit > begin-only ⇒
@@ -1399,7 +1417,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamCursor(Database db, StreamQueryRequest request, int batchSize,
                             ServerCallStreamObserver<QueryResult> scso,
-                            AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
+                            AtomicBoolean cancelled, AtomicBoolean serverTimedOut, ProjectionConfig projectionConfig, String language) {
 
     long running = 0L;
 
@@ -1413,7 +1431,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         if (cancelled.get())
           return;
-        waitUntilReady(scso, cancelled);
+        waitUntilReady(scso, cancelled, serverTimedOut);
 
         Result r = rs.next();
 
@@ -1470,7 +1488,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamMaterialized(Database db, StreamQueryRequest request, int batchSize,
                                   ServerCallStreamObserver<QueryResult> scso,
-                                  AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
+                                  AtomicBoolean cancelled, AtomicBoolean serverTimedOut, ProjectionConfig projectionConfig, String language) {
 
     final List<GrpcRecord> all = new ArrayList<>();
 
@@ -1515,7 +1533,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     for (int i = 0; i < all.size(); i += batchSize) {
       if (cancelled.get())
         return;
-      waitUntilReady(scso, cancelled);
+      waitUntilReady(scso, cancelled, serverTimedOut);
 
       int end = Math.min(i + batchSize, all.size());
       QueryResult.Builder b = QueryResult.newBuilder();
@@ -1535,7 +1553,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamPaged(Database db, StreamQueryRequest request, int batchSize,
                            ServerCallStreamObserver<QueryResult> scso,
-                           AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
+                           AtomicBoolean cancelled, AtomicBoolean serverTimedOut, ProjectionConfig projectionConfig, String language) {
 
     final String pagedSql = wrapWithSkipLimit(request.getQuery()); // see helper below
     int offset = 0;
@@ -1544,7 +1562,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     while (true) {
       if (cancelled.get())
         return;
-      waitUntilReady(scso, cancelled);
+      waitUntilReady(scso, cancelled, serverTimedOut);
 
       Map<String, Object> params = new HashMap<>(GrpcTypeConverter.convertParameters(request.getParametersMap()));
       params.put("_skip", offset);
@@ -1642,15 +1660,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
-  private void waitUntilReady(ServerCallStreamObserver<?> scso, AtomicBoolean cancelled) {
+  private void waitUntilReady(ServerCallStreamObserver<?> scso, AtomicBoolean cancelled, AtomicBoolean serverTimedOut) {
     // Honor transport readiness, but bound the wait: a slow or abandoned client must not pin this worker
     // thread (and the open ResultSet/transaction) indefinitely.
     final long timeoutMs = GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.getValueAsLong();
     if (!awaitTransportReady(scso::isReady, cancelled, timeoutMs)) {
       // Not ready: either the caller already cancelled, or we hit the deadline / were interrupted. In the
       // latter case mark the stream cancelled so the surrounding loop stops, rolls back, and releases the
-      // ResultSet/transaction instead of busy-waiting forever.
+      // ResultSet/transaction instead of busy-waiting forever, and flag it as a server-induced timeout so the
+      // caller surfaces an explicit DEADLINE_EXCEEDED to the client rather than silently dropping the stream.
       if (!cancelled.get()) {
+        serverTimedOut.set(true);
         cancelled.set(true);
         LogManager.instance().log(this, Level.WARNING,
             "gRPC stream aborted: client transport not ready within %d ms (slow or abandoned consumer)", timeoutMs);
