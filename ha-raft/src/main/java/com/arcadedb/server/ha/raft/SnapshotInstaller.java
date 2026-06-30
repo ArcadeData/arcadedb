@@ -123,6 +123,15 @@ public final class SnapshotInstaller {
    */
   private static final Set<String> INSTALLS_IN_FLIGHT = ConcurrentHashMap.newKeySet();
 
+  /**
+   * Test-only barrier invoked once inside the registry-locked swap region of {@link #swapAndReopen}, after the
+   * live database has been closed/deregistered and before the staged snapshot is moved into place. {@code null}
+   * in production (the only cost is a single reference read per install). The issue-#4832 regression test sets it
+   * to pause inside the critical section and prove a concurrent {@link ArcadeDBServer#getDatabase} blocks on the
+   * registry lock instead of re-opening the database mid-swap.
+   */
+  static volatile Runnable swapBarrierForTesting = null;
+
   private SnapshotInstaller() {
   }
 
@@ -209,60 +218,90 @@ public final class SnapshotInstaller {
       // while the files are being moved.
       server.setSnapshotInstallInProgress(true);
       try {
-        // Close + deregister the live database now that a complete snapshot is staged on disk. The DB
-        // must be closed before the file move so no open handles point at the directory being swapped.
-        // This deliberately closes the embedded instance directly (skipping the HA wrapper's replicated-
-        // close semantics): this is a local file swap, not a cluster-wide close. See closeLocalDatabaseIfOpen.
-        closeLocalDatabaseIfOpen(server, databaseName);
-
-        // Swap: live -> backup, new -> live. atomicSwap restores the original live files on a failure in
-        // either phase (see its contract), so on an IOException here dbPath holds the previous copy.
-        try {
-          atomicSwap(dbPath, snapshotNew, snapshotBackup);
-        } catch (final IOException swapEx) {
-          // Reopen the restored previous database so the node keeps serving. Leave the pending marker in
-          // place: if atomicSwap's own restore was interrupted, recoverPendingSnapshotSwaps reconciles
-          // dbPath (and removes the leftover .snapshot-new) on the next startup.
-          reopenQuietly(server, databaseName);
-          throw swapEx;
-        }
-
-        // Swap succeeded: live = new snapshot, .snapshot-backup = previous copy (retained until the new
-        // snapshot is confirmed to open). Cleanup then validate the install by reopening.
-        cleanupWalFiles(dbPath);
-        // Remove the completion marker from the now-live directory
-        Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_FILE));
-
-        try {
-          // Re-open the database so the server registers it (also validates the snapshot is loadable)
-          server.getDatabase(databaseName);
-        } catch (final RuntimeException openEx) {
-          // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
-          // previous local copy and reopen it so the node is never left with a closed database.
-          // The pending marker is intentionally NOT cleared here: it is dropped only on the success path
-          // below. If rollbackToBackup succeeds, the next startup's recoverSingleDatabase sees both
-          // .snapshot-new and .snapshot-backup gone (!hasCompleteMarker && !hasBackup), logs "orphaned
-          // snapshot directory", and clears the marker - so leaving it is harmless and keeps recovery
-          // logic in one place. If the rollback was instead interrupted, that same startup pass restores
-          // the backup. Either way the marker is the single recovery hook.
-          LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
-              "Installed snapshot for '%s' failed to open; rolling back to the previous local copy", openEx, databaseName);
-          rollbackToBackup(dbPath, snapshotBackup);
-          reopenQuietly(server, databaseName);
-          throw new IOException("Snapshot for '" + databaseName
-              + "' downloaded but failed to open; rolled back to the previous local copy", openEx);
-        }
-
-        // Success: drop the retained backup and clear the pending marker.
-        deleteDirectoryIfExists(snapshotBackup);
-        Files.deleteIfExists(pendingMarker);
-
-        HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
+        swapAndReopen(databaseName, dbPath, snapshotNew, snapshotBackup, pendingMarker, server);
       } finally {
         server.setSnapshotInstallInProgress(false);
       }
     } finally {
       INSTALLS_IN_FLIGHT.remove(inFlightKey);
+    }
+  }
+
+  /**
+   * Closes the live database, atomically swaps the staged snapshot into place, and reopens it - the whole
+   * sequence held under the server's database-registry lock ({@link ArcadeDBServer#getDatabasesLock()}).
+   * <p>
+   * The {@link #atomicSwap} itself moves files entry-by-entry, so for a brief window the on-disk directory holds
+   * a mix of old-removed and new-installed files. The {@link ArcadeDBServer#setSnapshotInstallInProgress} flag
+   * deflects HTTP clients with a clean 503 during that window, but the engine-internal open paths
+   * (reconcile / apply / health-monitor threads calling {@link ArcadeDBServer#getDatabase}) do not consult that
+   * flag, and the close here deregisters the database, so a concurrent open could otherwise re-register it from
+   * the half-swapped directory. Holding the registry lock across close -&gt; swap -&gt; reopen makes the swap
+   * window invisible to <i>every</i> open path: a concurrent open blocks on the lock and, once it proceeds, sees
+   * the fully installed snapshot (or, on failure, the restored previous copy) - never an intermediate mix
+   * (issue #4832).
+   * <p>
+   * The database is closed via {@link #closeLocalDatabaseIfOpen} (which closes the embedded instance directly,
+   * skipping the HA wrapper's replicated-close semantics: this is a local file swap, not a cluster-wide close).
+   * On a swap or reopen failure the previous copy is restored and reopened so the node never stays closed; the
+   * caller's {@code .snapshot-pending} marker remains the single startup-recovery hook.
+   */
+  static void swapAndReopen(final String databaseName, final Path dbPath, final Path snapshotNew,
+      final Path snapshotBackup, final Path pendingMarker, final ArcadeDBServer server) throws IOException {
+    synchronized (server.getDatabasesLock()) {
+      // Close + deregister the live database now that a complete snapshot is staged on disk. The DB
+      // must be closed before the file move so no open handles point at the directory being swapped.
+      closeLocalDatabaseIfOpen(server, databaseName);
+
+      // Test seam: pause inside the critical section so a regression test can prove a concurrent open blocks
+      // on the registry lock rather than re-opening the half-swapped directory. No-op in production.
+      final Runnable barrier = swapBarrierForTesting;
+      if (barrier != null)
+        barrier.run();
+
+      // Swap: live -> backup, new -> live. atomicSwap restores the original live files on a failure in
+      // either phase (see its contract), so on an IOException here dbPath holds the previous copy.
+      try {
+        atomicSwap(dbPath, snapshotNew, snapshotBackup);
+      } catch (final IOException swapEx) {
+        // Reopen the restored previous database so the node keeps serving. Leave the pending marker in
+        // place: if atomicSwap's own restore was interrupted, recoverPendingSnapshotSwaps reconciles
+        // dbPath (and removes the leftover .snapshot-new) on the next startup.
+        reopenQuietly(server, databaseName);
+        throw swapEx;
+      }
+
+      // Swap succeeded: live = new snapshot, .snapshot-backup = previous copy (retained until the new
+      // snapshot is confirmed to open). Cleanup then validate the install by reopening.
+      cleanupWalFiles(dbPath);
+      // Remove the completion marker from the now-live directory
+      Files.deleteIfExists(dbPath.resolve(SNAPSHOT_COMPLETE_FILE));
+
+      try {
+        // Re-open the database so the server registers it (also validates the snapshot is loadable)
+        server.getDatabase(databaseName);
+      } catch (final RuntimeException openEx) {
+        // The freshly installed snapshot will not open (corrupt/incompatible files). Roll back to the
+        // previous local copy and reopen it so the node is never left with a closed database.
+        // The pending marker is intentionally NOT cleared here: it is dropped only on the success path
+        // below. If rollbackToBackup succeeds, the next startup's recoverSingleDatabase sees both
+        // .snapshot-new and .snapshot-backup gone (!hasCompleteMarker && !hasBackup), logs "orphaned
+        // snapshot directory", and clears the marker - so leaving it is harmless and keeps recovery
+        // logic in one place. If the rollback was instead interrupted, that same startup pass restores
+        // the backup. Either way the marker is the single recovery hook.
+        LogManager.instance().log(SnapshotInstaller.class, Level.SEVERE,
+            "Installed snapshot for '%s' failed to open; rolling back to the previous local copy", openEx, databaseName);
+        rollbackToBackup(dbPath, snapshotBackup);
+        reopenQuietly(server, databaseName);
+        throw new IOException("Snapshot for '" + databaseName
+            + "' downloaded but failed to open; rolled back to the previous local copy", openEx);
+      }
+
+      // Success: drop the retained backup and clear the pending marker.
+      deleteDirectoryIfExists(snapshotBackup);
+      Files.deleteIfExists(pendingMarker);
+
+      HALog.log(SnapshotInstaller.class, HALog.BASIC, "Snapshot for '%s' installed successfully", databaseName);
     }
   }
 
