@@ -71,3 +71,30 @@ https://github.com/ArcadeData/arcadedb/pull/4845
     added the length-prefix boundary test. **Applied.**
   - Result: both WAL and sealed-blob sections now use the `available() > 0` presence check; the
     `EOFException` import was removed (no longer referenced).
+- Cycle 2 (`caa0457`): claude approved (LGTM, only cosmetic/optional items); gemini-code-assist did
+  not re-review within the 15-minute per-iteration window (it reviewed cycle 1, and all of its
+  feedback was already applied). No code changes were required in this cycle.
+  - Verified claude's non-blocking consideration about a "poison" (now-throwing) committed entry:
+    `RaftLogEntryCodec.decode()` is called in `ArcadeStateMachine.applyTransaction` *before*
+    `applyWithRetry`, so a decode `IllegalStateException` is not retried. It falls into the final
+    `catch (Throwable)`, which logs SEVERE, triggers the critical halt + server stop (snapshot
+    recovery on restart), and leaves `lastAppliedIndex` untouched. No infinite apply-retry loop is
+    introduced; this matches the existing fail-loud handling for unknown entry types (#4798).
+  - Addressed the stale test name in the PR description (the committed tests are
+    `decodeSchemaEntryWithTruncatedWalPayloadThrows` and `decodeSchemaEntryTruncatedInWalLengthPrefixThrows`).
+
+## Known limitation (accepted trade-off)
+
+The fix narrows but cannot fully eliminate silent truncation: a stream cut *exactly* at a section
+boundary (e.g. the whole sealed-blob section lost after a fully-intact WAL section) is
+indistinguishable from "an older node never wrote that section", so it still decodes as absent. This
+is inherent to the length-prefix-free, self-describing trailing-section format and is the accepted
+cost of backward compatibility. A per-entry total-length prefix or whole-entry CRC would be required
+to close it if stronger integrity is ever wanted.
+
+## Final state
+
+timeout (cycle 2): claude approved; gemini-code-assist did not re-review cycle 2 within 15 minutes.
+All actionable review feedback (gemini cycle 1 + claude main point) was applied in cycle 1; the only
+remaining items were cosmetic (PR-body test name, handled) and an optional documentation note (added
+above). No outstanding actionable code feedback.
