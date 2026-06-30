@@ -1900,6 +1900,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicReference<InsertContext> ctxRef = new AtomicReference<>();
 
+    // Issue #4806: set when a chunk fails at the transaction level (e.g. a mid-stream commit that
+    // rolled the transaction back). Once set, no further rows are inserted: the stream just drains
+    // the remaining inbound chunks and delivers the summary in onCompleted.
+    final AtomicBoolean streamFailed = new AtomicBoolean(false);
+
     final Counts totals = new Counts();
 
     // cache the first-chunk effective options to validate consistency
@@ -1919,6 +1924,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       public void onNext(InsertChunk c) {
 
         if (cancelled.get()) {
+          return;
+        }
+
+        // Issue #4806: a previous chunk failed at the transaction level and rolled the transaction
+        // back. Do not insert further rows into the broken transaction; just keep draining the
+        // remaining inbound chunks so the stream still reaches onCompleted and delivers the summary.
+        if (streamFailed.get()) {
+          if (!cancelled.get())
+            call.request(1);
           return;
         }
 
@@ -1975,10 +1989,45 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           Counts cts = insertRows(ctxRef.get(), c.getRowsList().iterator());
           totals.add(cts);
         } catch (Exception e) {
-          // Register as an error on totals; keep stream alive unless you prefer to fail
-          // the call
-          totals.err(Math.max(0, (ctxRef.get() != null ? ctxRef.get().received : 0) - 1), "DB_ERROR", e.getMessage(),
-              "");
+          // Issue #4806: per-row errors are handled row-by-row inside insertRows, so an exception
+          // reaching here is a transaction-level failure (typically a mid-stream PER_BATCH/PER_ROW
+          // commit that has already rolled the transaction back, or a structural error such as an
+          // "options changed mid-stream" rejection in any mode). Record it once at the transaction
+          // level (rowIndex -1) instead of mis-attributing it to a single row, and mark the stream
+          // failed so subsequent chunks are not inserted into the broken transaction. onCompleted
+          // delivers the summary. This is deliberately all-or-nothing for the failed chunk and
+          // (for PER_STREAM / PER_REQUEST) for the whole stream: a structural failure is not a
+          // recoverable per-row error, so the deferred commit is skipped rather than persisting a
+          // partial stream the client did not intend.
+          streamFailed.set(true);
+          // insertRows discards its partial Counts when it throws, so the failing chunk's rows never
+          // reach totals via totals.add(cts). Count them as received (the client did send them) so the
+          // summary cannot report failed > received.
+          //
+          // Known limitation (out of scope for #4806): when server_batch_size is smaller than a single
+          // chunk, insertRows may have already committed earlier mini-batches of this chunk before a
+          // later mini-batch's commit failed. Those rows are durable but their inserted/updated counts
+          // were in the discarded Counts, so the summary under-reports inserted for this chunk. The
+          // tests use single-row chunks; a precise per-chunk reconciliation is a separate follow-up.
+          totals.received += c.getRowsCount();
+          totals.err(-1, commitErrorCode(e), exceptionMessage(e), "");
+          // A structural failure (e.g. "options changed mid-stream") leaves the transaction still
+          // active and bound to this pooled gRPC thread. Roll it back here (on the failing thread,
+          // where it is bound) so its locks are released immediately and it is not leaked into a later
+          // request that reuses the thread.
+          final InsertContext failedCtx = ctxRef.get();
+          final boolean rolledBack = failedCtx != null && failedCtx.abortTransaction();
+          // If that rollback actually discarded uncommitted rows - PER_STREAM/PER_REQUEST never commit
+          // before onCompleted, and PER_BATCH with a batch larger than the chunk leaves rows buffered -
+          // then rows already folded into totals.inserted/updated are no longer in the database, so
+          // reclassify them as failed (symmetric to recordCommitException; the -1 error is already
+          // recorded above). When nothing was rolled back (rolledBack == false) the earlier batches had
+          // already committed and persisted, so their counts stand.
+          if (rolledBack) {
+            totals.failed += totals.inserted + totals.updated;
+            totals.inserted = 0;
+            totals.updated = 0;
+          }
         } finally {
           if (!cancelled.get())
             call.request(1);
@@ -2001,8 +2050,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           InsertContext ctx = ctxRef.get();
 
           if (ctx == null) {
-            // Client closed without sending a first chunk → nothing to do
-            out.onNext(InsertSummary.newBuilder().setReceived(0).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0)
+            // Client closed without sending a first chunk, or the first chunk failed before a context
+            // could be built (Issue #4806). Deliver whatever was recorded: zeros when truly empty, or
+            // the recorded error when first-chunk setup failed. Route through the thread-safe observer
+            // (Issue #4801).
+            out.onNext(InsertSummary.newBuilder()
+                .setReceived(totals.received).setInserted(totals.inserted).setUpdated(totals.updated)
+                .setIgnored(totals.ignored).setFailed(totals.failed).addAllErrors(totals.errors)
                 .setExecutionTimeMs(System.currentTimeMillis() - startedAt).build());
 
             out.onCompleted();
@@ -2013,14 +2067,24 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // violation (e.g. DuplicatedKeyException) used to bubble up to the outer catch and become
           // Status.INTERNAL, leaving the client without an InsertSummary. Instead, surface those as
           // structured errors in totals.errors and still deliver the summary.
-          try {
-            // Issue #4644: onCompleted may run on a different pool thread than the onNext that began
-            // the transaction; re-bind it to this thread so the deferred commit finds it.
-            ctx.bindToCurrentThread();
-            ctx.flushCommit(true); // commit if not validate-only
-          } catch (Exception commitEx) {
-            recordCommitException(totals, commitEx);
+          //
+          // Issue #4806: when a chunk already failed at the transaction level mid-stream the
+          // transaction was rolled back, so there is nothing left to commit - attempting the deferred
+          // commit would just re-raise "Transaction not begun". Skip it and deliver the summary as-is.
+          if (!streamFailed.get()) {
+            try {
+              // Issue #4644: onCompleted may run on a different pool thread than the onNext that began
+              // the transaction; re-bind it to this thread so the deferred commit finds it.
+              ctx.bindToCurrentThread();
+              ctx.flushCommit(true); // commit if not validate-only
+            } catch (Exception commitEx) {
+              recordCommitException(totals, commitEx);
+            }
           }
+          // Issue #4806: when streamFailed is set the onNext catch already aborted the transaction on
+          // the thread it was bound to and cleared the handle, so there is nothing to clean up here.
+          // Deliberately do NOT call abortTransaction()/rollback() on this (possibly different, pooled)
+          // thread: it could roll back an unrelated transaction that another request left bound to it.
 
           if (!cancelled.get()) {
             out.onNext(ctx.summary(totals, startedAt));
@@ -2051,14 +2115,36 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     if (rolledBack == 0)
       totals.failed++;
 
-    final String code = e instanceof DuplicatedKeyException ? "CONFLICT" : "COMMIT_FAILED";
-    final String message = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
     totals.errors.add(InsertError.newBuilder()
         .setRowIndex(-1)
-        .setCode(code)
-        .setMessage(message)
+        .setCode(commitErrorCode(e))
+        .setMessage(exceptionMessage(e))
         .setField("")
         .build());
+  }
+
+  /**
+   * Classifies a transaction-level exception into the structured {@link InsertError} code:
+   * {@code CONFLICT} for a {@link DuplicatedKeyException}, {@code CONTRACT_VIOLATION} for a stream
+   * contract rejection ({@link IllegalArgumentException}, e.g. "options changed mid-stream", which is
+   * not a commit failure at all), and {@code COMMIT_FAILED} otherwise. Shared by the mid-stream onNext
+   * failure path (Issue #4806) and the deferred whole-stream commit path (Issue #4198) so the two stay
+   * in sync.
+   */
+  private static String commitErrorCode(final Exception e) {
+    if (e instanceof DuplicatedKeyException)
+      return "CONFLICT";
+    if (e instanceof IllegalArgumentException)
+      return "CONTRACT_VIOLATION";
+    return "COMMIT_FAILED";
+  }
+
+  /**
+   * Returns a non-null human-readable message for an exception, falling back to the simple class name
+   * when {@link Exception#getMessage()} is null.
+   */
+  private static String exceptionMessage(final Exception e) {
+    return e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
   }
 
   // --- 3) Client-streaming graph batch load ---
@@ -3231,7 +3317,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         }
       }
 
-      captureTransaction();
+      // Issue #4806: if anything after db.begin() throws, the caller never receives this context (it is
+      // not yet stored in ctxRef), so its mid-stream failure path cannot roll the just-begun transaction
+      // back - it would leak, bound to this pooled gRPC thread. Clean up our own transaction before
+      // propagating the failure.
+      try {
+        captureTransaction();
+      } catch (final RuntimeException e) {
+        abortTransaction();
+        throw e;
+      }
     }
 
     /**
@@ -3265,6 +3360,33 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } else {
         tx = null;
         txUser = null;
+      }
+    }
+
+    /**
+     * Issue #4806: abort the in-flight transaction after a transaction-level failure. Rolls back the
+     * transaction if it is still active on the calling thread - which releases its locks and clears
+     * this thread's binding - and drops the captured handle so the (now dead) transaction is never
+     * re-bound onto a pooled gRPC thread. Idempotent and best-effort: a mid-stream commit failure has
+     * usually already terminated the transaction (isTransactionActive() == false), in which case this
+     * only clears the handle. Must be called on the thread whose context holds the transaction.
+     *
+     * @return {@code true} if an active transaction was actually rolled back (its uncommitted rows are
+     *         no longer in the database); {@code false} if there was nothing to roll back (the
+     *         transaction had already been terminated by a failed commit, so earlier batches persisted).
+     */
+    boolean abortTransaction() {
+      try {
+        if (db.isTransactionActive()) {
+          db.rollback();
+          return true;
+        }
+        return false;
+      } catch (final Exception ignore) {
+        // best-effort: the engine may have already rolled the transaction back on the failed commit
+        return false;
+      } finally {
+        tx = null;
       }
     }
 
