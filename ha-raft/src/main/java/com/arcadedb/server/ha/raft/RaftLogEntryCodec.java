@@ -24,7 +24,6 @@ import org.apache.ratis.thirdparty.com.google.protobuf.ByteString;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
-import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
@@ -406,22 +405,15 @@ public final class RaftLogEntryCodec {
     final Map<Integer, String> filesToRemove = readFileMap(dis);
 
     // Read embedded WAL entries. The section is optional: log entries produced by nodes that predate
-    // it end the stream cleanly right here, so the very first read (the WAL count) hits EOF. That
-    // single case is the only legitimate one and is decoded as an absent (empty) section. Once the
-    // WAL count has been read the section IS present, so any subsequent truncation or misalignment is
-    // corruption and must propagate rather than silently yield empty/partial WAL pages (which would
-    // apply a schema change with missing index/WAL pages on followers).
+    // it end the stream cleanly right after the file maps. A clean section boundary leaves no bytes
+    // (available()==0) and is decoded as an absent (empty) section, mirroring decodeInstallDatabaseEntry.
+    // Once any bytes remain the section IS present, so a truncated/misaligned section makes the reads
+    // below hit EOF and propagate as corruption rather than silently yielding empty/partial WAL pages
+    // (which would apply a schema change with missing index/WAL pages on followers).
     List<byte[]> walEntries = Collections.emptyList();
     List<Map<Integer, Integer>> bucketDeltas = Collections.emptyList();
-    boolean walSectionPresent = true;
-    int walCount = 0;
-    try {
-      walCount = dis.readInt();
-    } catch (final EOFException ignored) {
-      // Older log entry without the embedded WAL section - treat as absent.
-      walSectionPresent = false;
-    }
-    if (walSectionPresent) {
+    if (dis.available() > 0) {
+      final int walCount = dis.readInt();
       checkCollectionSize(walCount, "SCHEMA_ENTRY WAL entries");
       if (walCount > 0) {
         walEntries = new ArrayList<>(walCount);
@@ -446,10 +438,13 @@ public final class RaftLogEntryCodec {
       }
     }
 
-    // TimeSeries sealed-store blob section (issue #4382). Trailing section: a missing one (older
-    // entry) ends the stream and is treated as empty; a CRC mismatch is a hard failure.
+    // TimeSeries sealed-store blob section (issue #4382). Trailing, self-describing section with the
+    // same presence rule as the WAL section above: no remaining bytes (available()==0) means the
+    // section is absent (older entry) and is decoded as empty. Once any bytes remain the section IS
+    // present, so a truncated/misaligned blob makes the reads below hit EOF and propagate rather than
+    // being silently dropped; a CRC mismatch on a fully-read blob is likewise a hard failure.
     List<TsSealedBlob> sealedFileBlobs = Collections.emptyList();
-    try {
+    if (dis.available() > 0) {
       final int blobCount = dis.readInt();
       checkCollectionSize(blobCount, "SCHEMA_ENTRY sealed blobs");
       if (blobCount > 0) {
@@ -474,8 +469,6 @@ public final class RaftLogEntryCodec {
           sealedFileBlobs.add(new TsSealedBlob(typeName, shardIndex, fileName, raw));
         }
       }
-    } catch (final EOFException ignored) {
-      // Older log entry without the sealed-blob section - treat as empty
     }
 
     return new DecodedEntry(RaftLogEntryType.SCHEMA_ENTRY, databaseName, null, null,

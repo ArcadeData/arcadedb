@@ -38,13 +38,36 @@ carries optional self-describing trailing sections that newer nodes may append.
 ## Tests (TDD)
 
 Added to `RaftLogEntryCodecTest`:
-- `decodeSchemaEntryWithTruncatedWalSectionThrows` — encodes a SCHEMA_ENTRY with an embedded WAL
-  entry, truncates the bytes mid-WAL-section, asserts `decode()` throws (fails before the fix:
-  silently returns empty WAL entries).
+- `decodeSchemaEntryWithTruncatedWalPayloadThrows` — encodes a SCHEMA_ENTRY with an embedded WAL
+  entry, truncates the bytes a few bytes into the compressed WAL payload (count + length prefixes
+  fully read), asserts `decode()` throws (fails before the fix: silently returns empty WAL entries).
+- `decodeSchemaEntryTruncatedInWalLengthPrefixThrows` — truncates 2 bytes into the first WAL entry's
+  length prefix to lock the boundary semantics (count read, then truncation propagates).
 - `decodeLegacySchemaEntryWithoutWalSectionDecodesEmpty` — hand-crafts a legacy SCHEMA_ENTRY that
   ends right after `filesToRemove` (no WAL section); asserts it still decodes with empty WAL/blob
   lists (backward compatibility preserved).
 
+Truncation offsets are computed explicitly from the wire format (not as a fraction of the entry
+size) so they stay anchored if the encoder or compression ratio changes.
+
 ## Verification
 
-- `mvn -q -pl ha-raft -am test -Dtest=RaftLogEntryCodecTest`
+- `mvn -pl ha-raft test -Dtest=RaftLogEntryCodecTest` — 33/33 pass.
+- `mvn -pl ha-raft test -Dtest='ArcadeStateMachine*Test,RaftLogEntry*Test'` — 74/74 pass.
+
+## PR
+
+https://github.com/ArcadeData/arcadedb/pull/4845
+
+## Review cycles
+
+- Cycle 1 (`a8f149f`): initial fix (WAL section only, boundary-only `try`/`EOFException`).
+  - gemini-code-assist (high): use `dis.available() > 0` to detect the optional WAL section instead
+    of a `try`/catch on the count, matching `decodeInstallDatabaseEntry`; also fixes a mid-`walCount`
+    truncation hole (1-3 bytes left) that the catch would have swallowed. **Applied.**
+  - claude (main): the sibling TimeSeries sealed-blob section has the identical latent bug (reads
+    `blobCount` inside the same swallowing `catch (EOFException)`). **Applied** the analogous
+    `available() > 0` guard there too. Minor: made the truncation-test offsets deterministic and
+    added the length-prefix boundary test. **Applied.**
+  - Result: both WAL and sealed-blob sections now use the `available() > 0` presence check; the
+    `EOFException` import was removed (no longer referenced).

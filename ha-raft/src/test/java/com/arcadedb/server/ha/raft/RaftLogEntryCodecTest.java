@@ -486,10 +486,18 @@ class RaftLogEntryCodecTest {
 
   // --- Embedded WAL section truncation/backward-compatibility (issue #4825) ---
 
+  // Wire-format offsets of an encoded SCHEMA_ENTRY with dbName "testdb", schema "{}", empty file maps,
+  // and a single embedded WAL entry. Computed explicitly (rather than via a fraction of the entry size)
+  // so the truncation points stay anchored to the format if the encoder or compression ratio changes.
+  // Layout: type(1) + writeUTF("testdb")=2+6 + schemaLen(4)+"{}"(2) + filesToAdd count(4)
+  //         + filesToRemove count(4) + walCount(4) + walUncompressedLen(4) + walCompressedLen(4) ...
+  private static final int SCHEMA_WAL_COUNT_END     = 1 + (2 + 6) + (4 + 2) + 4 + 4 + 4; // = 27
+  private static final int SCHEMA_WAL_PAYLOAD_START = SCHEMA_WAL_COUNT_END + 4 + 4;       // = 35
+
   @Test
-  void decodeSchemaEntryWithTruncatedWalSectionThrows() {
-    // A SCHEMA_ENTRY whose embedded WAL section is present but truncated mid-section must surface as
-    // a decode failure, not silently decode with empty/partial WAL entries. A silently emptied WAL
+  void decodeSchemaEntryWithTruncatedWalPayloadThrows() {
+    // A SCHEMA_ENTRY whose embedded WAL section is present but truncated mid-payload must surface as a
+    // decode failure, not silently decode with empty/partial WAL entries. A silently emptied WAL
     // section makes a follower apply the schema change with missing index/WAL pages (the
     // "Cannot find indexes ..." class of failure) with no error surfaced.
     final byte[] walData = new byte[4096];
@@ -500,9 +508,30 @@ class RaftLogEntryCodecTest {
     final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{}",
         Map.of(), Map.of(), List.of(walData), List.of(delta));
 
-    // Keep the entry header + WAL count + length prefixes, but cut off the WAL payload mid-stream.
-    // Half the entry lands inside the compressed WAL bytes, after the count has been read.
-    final ByteString truncated = encoded.substring(0, encoded.size() / 2);
+    // Cut a few bytes into the compressed WAL payload: the WAL count and both length prefixes are read
+    // in full, then readFully hits EOF inside the payload.
+    final int cut = SCHEMA_WAL_PAYLOAD_START + 4;
+    assertThat(cut).isLessThan(encoded.size());
+    final ByteString truncated = encoded.substring(0, cut);
+
+    Assertions.assertThatThrownBy(() -> RaftLogEntryCodec.decode(truncated))
+        .isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  void decodeSchemaEntryTruncatedInWalLengthPrefixThrows() {
+    // Boundary semantics: once the WAL count has been read, a truncation a couple of bytes into the
+    // first entry's length prefix (before any payload) must still propagate rather than being treated
+    // as an absent section.
+    final byte[] walData = new byte[64];
+    Arrays.fill(walData, (byte) 7);
+
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{}",
+        Map.of(), Map.of(), List.of(walData), List.of(Map.of(1, 5)));
+
+    final int cut = SCHEMA_WAL_COUNT_END + 2; // 2 of the 4 bytes of walUncompressedLen present
+    assertThat(cut).isLessThan(encoded.size());
+    final ByteString truncated = encoded.substring(0, cut);
 
     Assertions.assertThatThrownBy(() -> RaftLogEntryCodec.decode(truncated))
         .isInstanceOf(IllegalStateException.class);
