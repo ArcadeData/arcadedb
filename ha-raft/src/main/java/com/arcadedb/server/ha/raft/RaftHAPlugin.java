@@ -50,9 +50,11 @@ import java.util.logging.Level;
  */
 public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider {
 
-  private ArcadeDBServer       server;
-  private ContextConfiguration configuration;
-  private RaftHAServer         raftHAServer;
+  private          ArcadeDBServer       server;
+  private          ContextConfiguration configuration;
+  // Read by concurrent HTTP worker threads (e.g. the readiness probe via getReadinessSignal) while it is
+  // (re)assigned by the server startup/shutdown thread, so the reference must be published with volatile.
+  private volatile RaftHAServer         raftHAServer;
 
   // Databases already warned about single-bucket types, so the diagnostic is logged once per
   // database per plugin lifetime instead of on every (re)wrap.

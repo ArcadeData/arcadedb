@@ -89,4 +89,11 @@ class RaftHAServerReadinessTest {
     assertThat(isReadyForTrafficState(true, true, false, -1, 1000, 100)).as("negative commitIndex").isFalse();
     assertThat(isReadyForTrafficState(true, true, false, 1000, -1, 100)).as("negative appliedIndex").isFalse();
   }
+
+  @Test
+  void followerWithAppliedIndexAheadOfCommitIndexIsNotReady() {
+    // appliedIndex > commitIndex is an inconsistent state: the negative lag must not be treated as "within
+    // the bound" and report Ready - the probe must fail closed.
+    assertThat(isReadyForTrafficState(true, true, false, 900, 1000, 100)).isFalse();
+  }
 }

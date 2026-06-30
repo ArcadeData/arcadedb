@@ -43,8 +43,8 @@ public class GetReadyHandler extends AbstractServerHttpHandler {
     if (server.getConfiguration().getValueAsBoolean(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA)
         && server.getConfiguration().getValueAsBoolean(GlobalConfiguration.HA_ENABLED)) {
       final HAServerPlugin ha = server.getHA();
-      // ELECTION_STATUS.DONE means a leader is known; it does not guarantee this follower has
-      // replicated all committed log entries, so a slow follower may report ready before catch-up.
+      // First gate: a leader must be known (election settled). Necessary but not sufficient - the deeper
+      // consensus gate below also requires committed-config membership and follower catch-up.
       if (ha == null || ha.getElectionStatus() != HAServerPlugin.ELECTION_STATUS.DONE)
         return new ExecutionResponse(503, "Node has not yet joined the Raft group");
 

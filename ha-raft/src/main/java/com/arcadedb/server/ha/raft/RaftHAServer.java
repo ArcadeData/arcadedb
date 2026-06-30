@@ -1316,9 +1316,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Pure decision function behind {@link #isReadyForTraffic(long)}, split out so the predicate can be
    * unit-tested without the Ratis state plumbing. Returns {@code true} only when a leader is present and
    * this node is in the committed configuration, and either this node is the leader (caught up with itself
-   * by definition) or - as a follower - {@code commitIndex - appliedIndex <= maxLagEntries}. A negative
-   * {@code commitIndex}/{@code appliedIndex} (state not readable this tick) returns {@code false} so the
-   * probe fails closed rather than advertising Ready on unreadable state.
+   * by definition) or - as a follower - the lag {@code commitIndex - appliedIndex} is in
+   * {@code [0, maxLagEntries]}. A negative {@code commitIndex}/{@code appliedIndex} (state not readable this
+   * tick) or a negative lag ({@code appliedIndex > commitIndex}, an inconsistent state) returns
+   * {@code false} so the probe fails closed rather than advertising Ready on unreadable/inconsistent state.
    */
   static boolean isReadyForTrafficState(final boolean leaderPresent, final boolean localInCommittedConfig,
       final boolean leader, final long commitIndex, final long appliedIndex, final long maxLagEntries) {
@@ -1328,7 +1329,8 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       return true;
     if (commitIndex < 0 || appliedIndex < 0)
       return false;
-    return commitIndex - appliedIndex <= maxLagEntries;
+    final long lag = commitIndex - appliedIndex;
+    return lag >= 0 && lag <= maxLagEntries;
   }
 
   /** True when the local peer is part of the committed Raft configuration (its current peer set). */
