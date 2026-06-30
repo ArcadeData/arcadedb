@@ -370,6 +370,61 @@ final class RaftPeerAddressResolver {
   }
 
   /**
+   * Synthesizes the local Raft peer for a Kubernetes StatefulSet scale-up pod whose ordinal is beyond
+   * the static {@code HA_SERVER_LIST} (issue #4836). A {@code kubectl scale} that grows the StatefulSet
+   * without simultaneously editing {@code HA_SERVER_LIST} starts pods (e.g. {@code arcadedb-3} for a
+   * 3-entry list) whose ordinal is {@code >= peers.size()}; {@link #findLocalPeerId} would throw
+   * "index out of range" and the pod would crash-loop. In K8s mode the local peer is instead
+   * reconstructed from the pod name + DNS suffix so the node can boot and let
+   * {@link KubernetesAutoJoin} add it to the running cluster via an atomic {@code Mode.ADD}.
+   * <p>
+   * Returns {@code null} (no synthesis, caller falls back to the normal/error path) when:
+   * <ul>
+   *   <li>not in K8s mode ({@code k8sMode == false});</li>
+   *   <li>the server name has no parseable {@code prefix-N} / {@code prefix_N} ordinal, so it cannot be
+   *       a StatefulSet pod;</li>
+   *   <li>the ordinal is within {@code [0, peers.size())} - a normal node that resolves through the
+   *       index path and must not be duplicated.</li>
+   * </ul>
+   * The synthesized address follows {@code <pod-name><dnsSuffix>:<raftPort>}, matching the local
+   * listening address computed by {@code ArcadeDBServer#assignHostAddress} ({@code HOSTNAME + dnsSuffix})
+   * and the {@code HA_RAFT_PORT} this node binds to, so the address advertised to the cluster is the one
+   * peers actually reach.
+   */
+  static RaftPeer synthesizeK8sScaleUpPeer(final boolean k8sMode, final List<RaftPeer> peers,
+      final String serverName, final String dnsSuffix, final int raftPort) {
+    if (!k8sMode)
+      return null;
+
+    final int separatorIdx;
+    try {
+      separatorIdx = findLastSeparatorIndex(serverName);
+    } catch (final IllegalArgumentException e) {
+      return null;
+    }
+
+    final int index;
+    try {
+      index = Integer.parseInt(serverName.substring(separatorIdx + 1));
+    } catch (final NumberFormatException e) {
+      return null;
+    }
+
+    // Within the configured range: the node resolves through the normal index path - do not synthesize.
+    if (index < peers.size())
+      return null;
+
+    final String host = serverName + (dnsSuffix == null ? "" : dnsSuffix);
+    final String raftAddress = host + ":" + raftPort;
+    // Use host_raftPort as peer ID (underscore avoids JMX ObjectName issues with colons), matching parsePeerList.
+    final String peerIdStr = raftAddress.replace(':', '_');
+    return RaftPeer.newBuilder()
+        .setId(peerIdStr)
+        .setAddress(raftAddress)
+        .build();
+  }
+
+  /**
    * Validates a peer address of the form {@code host:port} or {@code [ipv6]:port}.
    * Throws {@link ConfigurationException} if the address is malformed.
    */

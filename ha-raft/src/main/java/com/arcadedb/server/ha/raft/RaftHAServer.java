@@ -171,7 +171,32 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.httpAddresses.putAll(parsed.httpAddresses());
     this.httpsAddresses.putAll(parsed.httpsAddresses());
-    this.localPeerId = RaftPeerAddressResolver.findLocalPeerId(peers, configuredPeerNames, serverName, arcadeServer);
+
+    RaftPeerId resolvedLocalPeerId;
+    try {
+      resolvedLocalPeerId = RaftPeerAddressResolver.findLocalPeerId(peers, configuredPeerNames, serverName, arcadeServer);
+    } catch (final IllegalArgumentException e) {
+      // Issue #4836: a Kubernetes StatefulSet scaled past the static HA_SERVER_LIST starts pods whose
+      // ordinal is beyond the configured peer list. Rather than crash-loop, synthesize the local peer
+      // from the pod name + DNS suffix and let KubernetesAutoJoin add it to the running cluster.
+      final RaftPeer synthesized = RaftPeerAddressResolver.synthesizeK8sScaleUpPeer(
+          configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S), peers, serverName,
+          configuration.getValueAsString(GlobalConfiguration.HA_K8S_DNS_SUFFIX), raftPort);
+      if (synthesized == null)
+        // Not a K8s scale-up node: surface the original, actionable resolution error.
+        throw e;
+
+      final int configuredPeers = peers.size();
+      final List<RaftPeer> augmented = new ArrayList<>(peers);
+      augmented.add(synthesized);
+      peers = Collections.unmodifiableList(augmented);
+      resolvedLocalPeerId = synthesized.getId();
+      LogManager.instance().log(this, Level.INFO,
+          "K8s scale-up detected: node '%s' is beyond the configured server list (%d peers). "
+              + "Synthesized local Raft peer %s; it will auto-join the existing cluster.",
+          serverName, configuredPeers, synthesized.getId());
+    }
+    this.localPeerId = resolvedLocalPeerId;
 
     // If this node is configured as a replica, override its Raft peer priority to 0
     // so Ratis never elects it as leader (useful for read-scale or witness nodes).
