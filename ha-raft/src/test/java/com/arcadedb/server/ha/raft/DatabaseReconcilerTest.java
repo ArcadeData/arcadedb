@@ -173,6 +173,24 @@ class DatabaseReconcilerTest {
     assertThat(reconciler.getAcquireStatus("db")).isNull();
   }
 
+  // ---- issue #4799: a fresh/empty follower must not ACK the snapshot index when the leader's database list
+  //      could not be enumerated (auto-acquire fallback). It must fail the install so Ratis retries. ----
+
+  @Test
+  void freshEmptyFollowerFailsInstallWhenLeaderListUnavailable() {
+    // No local user databases and the leader's list is unavailable: ACKing would install nothing yet advance the
+    // applied index (the data gap the gap-detector cannot catch). Must fail the install so Ratis retries.
+    assertThat(DatabaseReconciler.mustFailInstallWhenLeaderListUnavailable(Set.of())).isTrue();
+  }
+
+  @Test
+  void populatedFollowerKeepsLegacyRefreshWhenLeaderListUnavailable() {
+    // The node already holds databases: keep the best-effort legacy refresh (do not fail the install); the
+    // missing databases are retried on the next reconcile.
+    assertThat(DatabaseReconciler.mustFailInstallWhenLeaderListUnavailable(Set.of("existing"))).isFalse();
+    assertThat(DatabaseReconciler.mustFailInstallWhenLeaderListUnavailable(Set.of("a", "b"))).isFalse();
+  }
+
   @Test
   void persistentFailureStopsForcingRetryAfterGiveUpThreshold() {
     final var reconciler = new DatabaseReconciler();

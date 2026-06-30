@@ -201,7 +201,9 @@ public class DatabaseReconciler {
     }
 
     // Enumerate the leader's databases via the existing bootstrap-state RPC. On failure, degrade to the legacy
-    // refresh-existing-only path rather than failing the whole install.
+    // refresh-existing-only path rather than failing the whole install - UNLESS this node holds no databases at
+    // all, in which case ACKing the snapshot index would leave a fresh/empty follower believing it is caught up
+    // with zero data installed (issue #4799); fail the install instead so Ratis retries.
     final List<LeaderDatabaseQuery.DatabaseInfo> leaderDbs;
     try {
       final long timeoutMs = server.getConfiguration().getValueAsLong(GlobalConfiguration.HA_BOOTSTRAP_TIMEOUT_MS);
@@ -212,13 +214,13 @@ public class DatabaseReconciler {
       LogManager.instance().log(this, Level.WARNING,
           "Interrupted while listing the leader's databases for auto-acquire; refreshing only the databases "
               + "already present locally.");
-      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
       return;
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING,
           "Could not list the leader's databases for auto-acquire (%s); refreshing only the databases already "
               + "present locally. Missing databases will be retried on the next reconcile.", e.getMessage());
-      refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
+      refreshExistingDatabasesOrFailWhenEmpty(leaderHttpAddr, leaderHttpsAddr, clusterToken);
       return;
     }
 
@@ -235,10 +237,7 @@ public class DatabaseReconciler {
       leaderDbNames.add(info.name());
     }
 
-    final Set<String> localDbNames = new HashSet<>();
-    for (final String name : server.getDatabaseNames())
-      if (!name.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
-        localDbNames.add(name);
+    final Set<String> localDbNames = localUserDatabaseNames();
 
     // Prune acquisition statuses for databases that are neither local nor on the leader (e.g. a previously
     // LEADER_MISSING database later dropped via DROP_DATABASE_ENTRY). Otherwise the leader-missing alert would
@@ -339,6 +338,46 @@ public class DatabaseReconciler {
               + "the snapshot install for it (it will be retried on the next install). Check the leader's copy.",
           dbName, count);
     return false;
+  }
+
+  /** This node's local non-reserved (user) database names. */
+  private Set<String> localUserDatabaseNames() {
+    final Set<String> names = new HashSet<>();
+    for (final String name : server.getDatabaseNames())
+      if (!name.startsWith(ArcadeDBServer.RESERVED_DATABASE_PREFIX))
+        names.add(name);
+    return names;
+  }
+
+  /**
+   * Decides whether the failure-path fallback (the leader's database list could not be enumerated while
+   * auto-acquire is enabled) must fail the snapshot install instead of silently refreshing only what is already
+   * on disk. Returns {@code true} when this node has NO local user databases: a fresh/empty follower that cannot
+   * discover what the leader holds must not ACK the snapshot index with zero data installed, or later
+   * {@code AppendEntries} deltas would apply to databases that were never created and the gap-detector could not
+   * catch it (issue #4799). When the node already holds at least one user database, the legacy best-effort refresh
+   * is kept and the missing databases are retried on the next reconcile. Pure and package-private so the decision
+   * is unit-testable without a Raft cluster.
+   */
+  static boolean mustFailInstallWhenLeaderListUnavailable(final Set<String> localUserDbNames) {
+    return localUserDbNames.isEmpty();
+  }
+
+  /**
+   * Failure-path fallback for the auto-acquire flow when the leader's database list could not be enumerated.
+   * Refreshes the databases already present locally (best effort, legacy behavior). If this node holds no
+   * databases at all, throws instead so the caller leaves the Ratis snapshot install incomplete and Ratis
+   * re-triggers it once the leader's list is reachable again - rather than ACKing the snapshot index on an
+   * empty follower that received no data (issue #4799).
+   */
+  private void refreshExistingDatabasesOrFailWhenEmpty(final String leaderHttpAddr, final String leaderHttpsAddr,
+      final String clusterToken) throws IOException {
+    if (mustFailInstallWhenLeaderListUnavailable(localUserDatabaseNames()))
+      throw new IOException(
+          "Cannot enumerate the leader's databases for auto-acquire and this node holds no databases locally; "
+              + "failing the snapshot install so Ratis retries rather than ACKing the snapshot index with no data "
+              + "installed (issue #4799)");
+    refreshExistingDatabases(leaderHttpAddr, leaderHttpsAddr, clusterToken);
   }
 
   /**
