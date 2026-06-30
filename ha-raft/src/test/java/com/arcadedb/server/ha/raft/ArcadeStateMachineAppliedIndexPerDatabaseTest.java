@@ -35,14 +35,9 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.mockito.Mockito.atLeastOnce;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression tests for issue #4824.
@@ -57,6 +52,12 @@ import static org.mockito.Mockito.when;
  * <p>
  * The fix makes applied-index tracking per-database-aware: the skip now consults this database's own
  * applied index and only skips when there is positive per-database evidence.
+ * <p>
+ * The tests drive a real (unstarted) {@link ArcadeDBServer} with real {@link LocalDatabase}
+ * collaborators registered into its registry - no mocking framework. To observe whether the
+ * verification path was reached, a tiny {@link CountingServer} subclass tallies the single-argument
+ * {@code getDatabase} calls that {@code applyBootstrapFingerprintEntry} makes only after it decides
+ * NOT to skip.
  */
 class ArcadeStateMachineAppliedIndexPerDatabaseTest {
 
@@ -64,38 +65,70 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
   private static final String DB_OTHER = "db-other";
 
   @TempDir
-  private Path        serverDir;
-  private LocalDatabase localDbA;
-  private String        dbAPath;
+  private Path          serverDir;
+  private CountingServer server;
+  private LocalDatabase  localDbA;
+  private LocalDatabase  localDbOther;
+  private String         dbAPath;
+  private String         dbOtherPath;
+
+  /**
+   * A real {@link ArcadeDBServer} that records how many times the single-argument
+   * {@link #getDatabase(String)} - the call {@code applyBootstrapFingerprintEntry} reaches only on the
+   * non-skip (verification) path - has been invoked. Everything else delegates to the real server.
+   */
+  private static final class CountingServer extends ArcadeDBServer {
+    final AtomicInteger getDatabaseInvocations = new AtomicInteger();
+
+    CountingServer(final ContextConfiguration configuration) {
+      super(configuration);
+    }
+
+    @Override
+    public ServerDatabase getDatabase(final String databaseName) {
+      getDatabaseInvocations.incrementAndGet();
+      return super.getDatabase(databaseName);
+    }
+  }
 
   @BeforeEach
   void setUp() {
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
+    server = new CountingServer(config);
+
     dbAPath = serverDir.resolve(DB_A).toString();
     localDbA = (LocalDatabase) new DatabaseFactory(dbAPath).create();
+    server.registerDatabase(DB_A, localDbA);
   }
 
   @AfterEach
   void tearDown() {
     if (localDbA != null && localDbA.isOpen())
       localDbA.close();
-    FileUtils.deleteRecursively(new File(dbAPath));
+    if (localDbOther != null && localDbOther.isOpen())
+      localDbOther.close();
+    if (dbAPath != null)
+      FileUtils.deleteRecursively(new File(dbAPath));
+    if (dbOtherPath != null)
+      FileUtils.deleteRecursively(new File(dbOtherPath));
   }
 
-  private ArcadeStateMachine newStateMachine(final ArcadeDBServer server) {
+  private ArcadeStateMachine newStateMachine() {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.setServer(server);
     return sm;
   }
 
-  private ArcadeDBServer mockServer() {
-    final ContextConfiguration config = new ContextConfiguration();
-    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
-
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.existsDatabase(DB_A)).thenReturn(true);
-    when(server.getDatabase(DB_A)).thenReturn(new ServerDatabase(null, localDbA));
-    return server;
+  /**
+   * Registers a real second database so {@code getDatabaseNames()} reports it. Used by the
+   * full-install test, the only one that needs DB_OTHER actually present on the node (the others use
+   * the name purely as an applied-index map key).
+   */
+  private void registerSecondDatabase() {
+    dbOtherPath = serverDir.resolve(DB_OTHER).toString();
+    localDbOther = (LocalDatabase) new DatabaseFactory(dbOtherPath).create();
+    server.registerDatabase(DB_OTHER, localDbOther);
   }
 
   /**
@@ -106,8 +139,7 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
    */
   @Test
   void bootstrapSkipNotTriggeredByAnotherDatabasesAppliedIndex() throws Exception {
-    final ArcadeDBServer server = mockServer();
-    final ArcadeStateMachine sm = newStateMachine(server);
+    final ArcadeStateMachine sm = newStateMachine();
 
     // A co-located database advanced the shared Raft log far ahead of db-a's bootstrap entry.
     sm.writePersistedAppliedIndex(100L, DB_OTHER);
@@ -119,12 +151,16 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
     final ByteString encoded = RaftLogEntryCodec.encodeBootstrapFingerprintEntry(DB_A, realFingerprint, realLastTxId);
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
 
+    final int callsBefore = server.getDatabaseInvocations.get();
+
     // db-a's own bootstrap entry sits at index 50, below the global 100.
     sm.applyBootstrapFingerprintEntry(decoded, 50L);
 
     // Verification must have run for db-a (its local state was read), proving the global index of a
     // different database did not suppress it.
-    verify(server, atLeastOnce()).getDatabase(DB_A);
+    assertThat(server.getDatabaseInvocations.get())
+        .as("verification consulted the local database despite a higher global applied index")
+        .isGreaterThan(callsBefore);
 
     // The baseline is recorded regardless of the skip decision.
     assertThat(sm.getBootstrapBaseline(DB_A)).isNotNull();
@@ -138,8 +174,7 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
    */
   @Test
   void bootstrapSkipHonorsPerDatabaseAppliedIndex() throws Exception {
-    final ArcadeDBServer server = mockServer();
-    final ArcadeStateMachine sm = newStateMachine(server);
+    final ArcadeStateMachine sm = newStateMachine();
 
     // Positive per-database evidence that db-a was already applied past its bootstrap entry index.
     sm.writePersistedAppliedIndex(50L, DB_A);
@@ -147,10 +182,14 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
     final ByteString encoded = RaftLogEntryCodec.encodeBootstrapFingerprintEntry(DB_A, "0".repeat(64), Long.MAX_VALUE);
     final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(encoded);
 
+    final int callsBefore = server.getDatabaseInvocations.get();
+
     sm.applyBootstrapFingerprintEntry(decoded, 50L);
 
     // Skipped: the local database was never consulted.
-    verify(server, never()).getDatabase(DB_A);
+    assertThat(server.getDatabaseInvocations.get())
+        .as("skip fired on positive per-database evidence; the local database is never consulted")
+        .isEqualTo(callsBefore);
     // Baseline is still recorded before the skip check.
     assertThat(sm.getBootstrapBaseline(DB_A)).isNotNull();
   }
@@ -162,8 +201,7 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
    */
   @Test
   void legacyPlainNumberFileReadAsGlobalNotPerDatabase() throws Exception {
-    final ArcadeDBServer server = mockServer();
-    final ArcadeStateMachine sm = newStateMachine(server);
+    final ArcadeStateMachine sm = newStateMachine();
 
     final Path raftDir = serverDir.resolve(".raft");
     Files.createDirectories(raftDir);
@@ -183,13 +221,11 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
    */
   @Test
   void perDatabaseValuesRoundTripAcrossRestart() {
-    final ArcadeDBServer server = mockServer();
-
-    final ArcadeStateMachine writer = newStateMachine(server);
+    final ArcadeStateMachine writer = newStateMachine();
     writer.writePersistedAppliedIndex(10L, DB_A);
     writer.writePersistedAppliedIndex(20L, DB_OTHER);
 
-    final ArcadeStateMachine reopened = newStateMachine(server);
+    final ArcadeStateMachine reopened = newStateMachine();
     assertThat(reopened.readPersistedAppliedIndex(DB_A)).isEqualTo(10L);
     assertThat(reopened.readPersistedAppliedIndex(DB_OTHER)).isEqualTo(20L);
     assertThat(reopened.readPersistedAppliedIndex())
@@ -206,14 +242,9 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
    */
   @Test
   void fullInstallRecordsSnapshotIndexForEveryPresentDatabase() {
-    final ContextConfiguration config = new ContextConfiguration();
-    config.setValue(GlobalConfiguration.SERVER_DATABASE_DIRECTORY, serverDir.toString());
+    registerSecondDatabase();
 
-    final ArcadeDBServer server = mock(ArcadeDBServer.class);
-    when(server.getConfiguration()).thenReturn(config);
-    when(server.getDatabaseNames()).thenReturn(Set.of(DB_A, DB_OTHER));
-
-    final ArcadeStateMachine sm = newStateMachine(server);
+    final ArcadeStateMachine sm = newStateMachine();
     sm.writePersistedAppliedIndexForAllDatabases(500L);
 
     assertThat(sm.readPersistedAppliedIndex()).isEqualTo(500L);
@@ -227,8 +258,7 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
    */
   @Test
   void dropDatabaseEvictsPerDatabaseEntryAndAdvancesGlobal() {
-    final ArcadeDBServer server = mockServer();
-    final ArcadeStateMachine sm = newStateMachine(server);
+    final ArcadeStateMachine sm = newStateMachine();
 
     sm.writePersistedAppliedIndex(40L, DB_A);
     sm.writePersistedAppliedIndex(41L, DB_OTHER);
@@ -254,15 +284,13 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
    */
   @Test
   void writePreservesOtherDatabasesEntriesOnDisk() {
-    final ArcadeDBServer server = mockServer();
-
     // First instance persists entries for both databases.
-    final ArcadeStateMachine writer = newStateMachine(server);
+    final ArcadeStateMachine writer = newStateMachine();
     writer.writePersistedAppliedIndex(10L, DB_A);
     writer.writePersistedAppliedIndex(20L, DB_OTHER);
 
     // A fresh instance (no in-memory state) writes a NEW index for db-a only; db-other must survive.
-    final ArcadeStateMachine reopened = newStateMachine(server);
+    final ArcadeStateMachine reopened = newStateMachine();
     reopened.writePersistedAppliedIndex(30L, DB_A);
 
     assertThat(reopened.readPersistedAppliedIndex(DB_A)).isEqualTo(30L);
@@ -271,7 +299,7 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
         .isEqualTo(20L);
 
     // And it is durable: a third instance reading from disk still sees both.
-    final ArcadeStateMachine third = newStateMachine(server);
+    final ArcadeStateMachine third = newStateMachine();
     assertThat(third.readPersistedAppliedIndex(DB_A)).isEqualTo(30L);
     assertThat(third.readPersistedAppliedIndex(DB_OTHER)).isEqualTo(20L);
   }
