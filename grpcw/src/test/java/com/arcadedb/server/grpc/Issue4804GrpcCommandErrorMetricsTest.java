@@ -92,6 +92,8 @@ class Issue4804GrpcCommandErrorMetricsTest {
 
     // Even though the gRPC status is OK, the command failure must be counted as an error.
     assertThat(interceptor.getErrorCount()).isEqualTo(1.0);
+    // A failed command is still one request.
+    assertThat(interceptor.getRequestCount()).isEqualTo(1.0);
   }
 
   @Test

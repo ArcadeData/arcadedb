@@ -69,7 +69,9 @@ class GrpcMetricsInterceptor implements ServerInterceptor {
     requestCounter.increment();
 
     ServerCall<ReqT, RespT> wrappedCall = new ForwardingServerCall.SimpleForwardingServerCall<ReqT, RespT>(call) {
-      private boolean inBandFailure = false;
+      // gRPC may invoke sendMessage and close on different threads, so publish the flag with
+      // volatile to guarantee the value written in sendMessage is visible in close.
+      private volatile boolean inBandFailure = false;
 
       @Override
       public void sendMessage(RespT message) {
