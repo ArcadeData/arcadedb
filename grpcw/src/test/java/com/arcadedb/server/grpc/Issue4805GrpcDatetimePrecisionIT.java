@@ -194,4 +194,41 @@ public class Issue4805GrpcDatetimePrecisionIT extends BaseGraphServerTest {
     // Before the fix the write path collapsed to millis (123_000_000).
     assertThat(readBackNanos("MicrosTest4805")).isEqualTo(123_456_000);
   }
+
+  @Test
+  void updateRecordPreservesNanosForDatetimeNanos() {
+    executeCommand("CREATE DOCUMENT TYPE NanosUpdate4805 IF NOT EXISTS");
+    executeCommand("CREATE PROPERTY NanosUpdate4805.t IF NOT EXISTS DATETIME_NANOS");
+
+    // Create with a placeholder timestamp, then update through the updateRecord path
+    // (which also routes through convertWithSchemaType).
+    final Timestamp placeholder = Timestamp.newBuilder().setSeconds(TEST_SECONDS).setNanos(0).build();
+    final String rid = authenticatedStub.createRecord(
+        CreateRecordRequest.newBuilder()
+            .setDatabase(getDatabaseName())
+            .setCredentials(credentials())
+            .setType("NanosUpdate4805")
+            .setRecord(GrpcRecord.newBuilder()
+                .setType("NanosUpdate4805")
+                .putProperties("t", GrpcValue.newBuilder().setTimestampValue(placeholder).build())
+                .build())
+            .build())
+        .getRid();
+    assertThat(rid).isNotEmpty();
+
+    final Timestamp ts = Timestamp.newBuilder().setSeconds(TEST_SECONDS).setNanos(TEST_NANOS).build();
+    final UpdateRecordResponse updateResp = authenticatedStub.updateRecord(
+        UpdateRecordRequest.newBuilder()
+            .setDatabase(getDatabaseName())
+            .setCredentials(credentials())
+            .setRid(rid)
+            .setRecord(GrpcRecord.newBuilder()
+                .setType("NanosUpdate4805")
+                .putProperties("t", GrpcValue.newBuilder().setTimestampValue(ts).build())
+                .build())
+            .build());
+    assertThat(updateResp.getSuccess()).isTrue();
+
+    assertThat(readBackNanos("NanosUpdate4805")).isEqualTo(TEST_NANOS);
+  }
 }

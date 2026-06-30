@@ -60,6 +60,8 @@ class GrpcTypeConverter {
    * to the column's declared precision instead of losing sub-millisecond digits up front.
    */
   static Instant tsToInstant(final Timestamp ts) {
+    if (ts == null)
+      return null;
     return Instant.ofEpochSecond(ts.getSeconds(), ts.getNanos());
   }
 
