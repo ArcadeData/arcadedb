@@ -1997,6 +1997,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           streamFailed.set(true);
           final String code = e instanceof DuplicatedKeyException ? "CONFLICT" : "COMMIT_FAILED";
           totals.err(-1, code, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName(), "");
+          // Not every transaction-level failure is a commit failure: an "options changed mid-stream"
+          // rejection or a schema error leaves the transaction still active and bound to this pooled
+          // gRPC thread. Roll it back here (on the failing thread, where it is bound) so its locks are
+          // released immediately and it is not leaked into a later request that reuses the thread.
+          final InsertContext failedCtx = ctxRef.get();
+          if (failedCtx != null)
+            failedCtx.abortTransaction();
         } finally {
           if (!cancelled.get())
             call.request(1);
@@ -2049,6 +2056,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             } catch (Exception commitEx) {
               recordCommitException(totals, commitEx);
             }
+          } else {
+            // Issue #4806: the mid-stream failure already aborted the transaction in onNext. Defensively
+            // ensure nothing is left active and bound to this (pooled) thread before the summary is sent.
+            // Do not re-bind here: the captured handle points at a dead transaction.
+            ctx.abortTransaction();
           }
 
           if (!cancelled.get()) {
@@ -3294,6 +3306,25 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       } else {
         tx = null;
         txUser = null;
+      }
+    }
+
+    /**
+     * Issue #4806: abort the in-flight transaction after a transaction-level failure. Rolls back the
+     * transaction if it is still active on the calling thread - which releases its locks and clears
+     * this thread's binding - and drops the captured handle so the (now dead) transaction is never
+     * re-bound onto a pooled gRPC thread. Idempotent and best-effort: a mid-stream commit failure has
+     * usually already terminated the transaction (isTransactionActive() == false), in which case this
+     * only clears the handle. Must be called on the thread whose context holds the transaction.
+     */
+    void abortTransaction() {
+      try {
+        if (db.isTransactionActive())
+          db.rollback();
+      } catch (final Exception ignore) {
+        // best-effort: the engine may have already rolled the transaction back on the failed commit
+      } finally {
+        tx = null;
       }
     }
 

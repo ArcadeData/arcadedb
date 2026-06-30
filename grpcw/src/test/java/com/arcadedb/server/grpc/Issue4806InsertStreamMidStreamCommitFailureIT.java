@@ -210,4 +210,96 @@ public class Issue4806InsertStreamMidStreamCommitFailureIT extends BaseGraphServ
           .setCommand("DROP TYPE " + typeName + " IF EXISTS UNSAFE").build());
     }
   }
+
+  /**
+   * A transaction-level failure that is NOT a commit failure (here: an "options changed mid-stream"
+   * rejection) leaves the PER_BATCH transaction still active and bound to the pooled gRPC thread. It
+   * must be rolled back (not silently abandoned active), so the rows buffered in the failed
+   * transaction are not committed and the failure is reported once at the transaction level.
+   */
+  @Test
+  void midStreamContractChangeAbortsActiveTransactionAndReportsSingleError() throws Exception {
+    final String typeName = "Issue4806ContractChange_" + System.currentTimeMillis();
+
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setCommand("CREATE DOCUMENT TYPE " + typeName).build());
+    authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+        .setDatabase(getDatabaseName()).setCredentials(credentials())
+        .setCommand("CREATE PROPERTY " + typeName + ".name STRING").build());
+
+    try {
+      final CountDownLatch done = new CountDownLatch(1);
+      final AtomicReference<InsertSummary> summaryRef = new AtomicReference<>();
+      final AtomicReference<Throwable> errorRef = new AtomicReference<>();
+
+      final StreamObserver<InsertChunk> req = asyncAuthenticatedStub.insertStream(new StreamObserver<>() {
+        @Override public void onNext(final InsertSummary s) { summaryRef.set(s); }
+        @Override public void onError(final Throwable t) { errorRef.set(t); done.countDown(); }
+        @Override public void onCompleted() { done.countDown(); }
+      });
+
+      // PER_BATCH with the default (large) batch size keeps the first chunk's row buffered in an
+      // active, uncommitted transaction.
+      req.onNext(InsertChunk.newBuilder()
+          .setSessionId("issue-4806-contract")
+          .setChunkSeq(0)
+          .setOptions(InsertOptions.newBuilder()
+              .setDatabase(getDatabaseName())
+              .setCredentials(credentials())
+              .setTargetClass(typeName)
+              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_ERROR)
+              .setTransactionMode(InsertOptions.TransactionMode.PER_BATCH)
+              .build())
+          .addRows(GrpcRecord.newBuilder().setType(typeName).putProperties("name", stringValue("Buffered")).build())
+          .build());
+
+      // Second chunk changes the target class -> contract violation -> transaction-level failure while
+      // the transaction from chunk 0 is still active.
+      req.onNext(InsertChunk.newBuilder()
+          .setSessionId("issue-4806-contract")
+          .setChunkSeq(1)
+          .setLast(true)
+          .setOptions(InsertOptions.newBuilder()
+              .setDatabase(getDatabaseName())
+              .setCredentials(credentials())
+              .setTargetClass(typeName + "_other")
+              .setConflictMode(InsertOptions.ConflictMode.CONFLICT_ERROR)
+              .setTransactionMode(InsertOptions.TransactionMode.PER_BATCH)
+              .build())
+          .addRows(GrpcRecord.newBuilder().setType(typeName).putProperties("name", stringValue("Never")).build())
+          .build());
+
+      req.onCompleted();
+
+      assertThat(done.await(30, TimeUnit.SECONDS)).as("InsertStream should terminate within 30s").isTrue();
+
+      assertThat(summaryRef.get()).as("client must receive an InsertSummary").isNotNull();
+      final InsertSummary summary = summaryRef.get();
+
+      assertThat(summary.getErrorsList())
+          .as("a mid-stream contract violation must be reported as a single transaction-level error")
+          .hasSize(1);
+      final InsertError error = summary.getErrors(0);
+      assertThat(error.getRowIndex()).isEqualTo(-1);
+      assertThat(error.getCode()).isEqualTo("COMMIT_FAILED");
+
+      // The buffered row must have been rolled back with the aborted transaction, not committed by the
+      // deferred onCompleted commit running against a leaked active transaction.
+      final ExecuteQueryResponse queryResp = authenticatedStub.executeQuery(ExecuteQueryRequest.newBuilder()
+          .setDatabase(getDatabaseName())
+          .setCredentials(credentials())
+          .setQuery("SELECT count(*) as cnt FROM " + typeName)
+          .build());
+      final long count = queryResp.getResultsList().get(0).getRecordsList().get(0)
+          .getPropertiesMap().get("cnt").getInt64Value();
+      assertThat(count)
+          .as("rows buffered in a transaction aborted mid-stream must not be committed")
+          .isEqualTo(0);
+    } finally {
+      authenticatedStub.executeCommand(ExecuteCommandRequest.newBuilder()
+          .setDatabase(getDatabaseName()).setCredentials(credentials())
+          .setCommand("DROP TYPE " + typeName + " IF EXISTS UNSAFE").build());
+    }
+  }
 }
