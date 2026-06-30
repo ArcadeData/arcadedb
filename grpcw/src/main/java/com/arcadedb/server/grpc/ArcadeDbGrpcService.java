@@ -199,6 +199,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     this.txMaxAgeMs = txMaxAgeMs;
 
     // Start the reaper only when at least one expiry bound is active and a positive period is configured.
+    // A non-positive maxIdleMs/maxAgeMs disables that individual bound; non-positive for both (or a non-positive
+    // period) disables the reaper entirely.
     if ((txMaxIdleMs > 0 || txMaxAgeMs > 0) && txReaperPeriodMs > 0) {
       this.txReaper = Executors.newSingleThreadScheduledExecutor(r -> {
         final Thread t = new Thread(r, "arcadedb-grpc-tx-reaper");
@@ -217,6 +219,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   int getActiveTransactionCount() {
     return activeTransactions.size();
+  }
+
+  /**
+   * Returns whether the idle-transaction reaper is running. Exposed for testing the configuration wiring.
+   */
+  boolean isIdleReaperActive() {
+    return txReaper != null;
   }
 
   /**
@@ -240,6 +249,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   private void reapIdleTransactions() {
     try {
       final long now = System.currentTimeMillis();
+      int reaped = 0;
       for (final Map.Entry<String, TransactionContext> entry : activeTransactions.entrySet()) {
         final TransactionContext ctx = entry.getValue();
         final long idleMs = now - ctx.lastAccessMs;
@@ -250,13 +260,23 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           continue;
 
         // remove(key, value) ensures only one of the reaper / commit / rollback wins the cleanup.
+        // Residual TOCTOU note: a request could lookupActiveTransaction() (touch + submit work) in the instant
+        // between the staleness read above and this remove. That window only opens for an already-idle
+        // transaction; any command already submitted to the executor still runs to completion before the
+        // asynchronous shutdown() in reapTransaction() lets the thread terminate, so no in-flight work is lost.
         if (activeTransactions.remove(entry.getKey(), ctx)) {
-          LogManager.instance().log(this, Level.WARNING,
-              "Reaping abandoned gRPC transaction txId=%s (idleMs=%s ageMs=%s): rolling back and releasing resources",
-              entry.getKey(), idleMs, ageMs);
+          LogManager.instance().log(this, Level.FINE,
+              "Reaping abandoned gRPC transaction txId=%s (idleMs=%s ageMs=%s)", entry.getKey(), idleMs, ageMs);
           reapTransaction(ctx);
+          reaped++;
         }
       }
+      // A single summary line per sweep instead of one WARNING per transaction avoids flooding the log when a
+      // burst of abandoned transactions is reclaimed at once.
+      if (reaped > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "Reaped %s abandoned gRPC transaction(s): rolled back and released their executor/database resources",
+            reaped);
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "Error while reaping idle gRPC transactions", e);
     }
@@ -264,7 +284,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   /**
    * Rolls back the abandoned transaction on its dedicated thread (where its DatabaseContext lives) and shuts the
-   * executor down.
+   * executor down. The rollback is submitted without blocking the single reaper thread: {@code shutdown()} (not
+   * {@code shutdownNow()}) lets the just-submitted rollback run to completion before the executor terminates, so a
+   * slow rollback never stalls reclamation of the remaining transactions in the same sweep.
    */
   private void reapTransaction(final TransactionContext txCtx) {
     try {
@@ -276,10 +298,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             LogManager.instance().log(this, Level.WARNING, "Failed to rollback abandoned transaction %s during reaping",
                 e, txCtx.txId);
           }
-        }).get(10, TimeUnit.SECONDS);
+        });
       }
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "Error reaping abandoned transaction %s", e, txCtx.txId);
+    } catch (final RejectedExecutionException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not submit rollback for abandoned transaction %s; executor already shutting down", e, txCtx.txId);
     } finally {
       txCtx.shutdown();
     }

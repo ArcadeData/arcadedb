@@ -32,8 +32,11 @@ transaction to liveness.
    `reapIdleTransactions()` on a fixed delay. A transaction is reaped when it has
    been idle longer than `maxIdleMs`, or (optionally) older than `maxAgeMs`.
    Reaping atomically removes it from `activeTransactions` (`remove(key, value)`,
-   so it never races a concurrent commit/rollback), rolls it back on its own
-   dedicated thread, and shuts the executor down. A throttled WARNING is logged.
+   so it never races a concurrent commit/rollback), submits a rollback on its own
+   dedicated thread without blocking the reaper (`shutdown()` lets that rollback
+   finish before the executor terminates), and releases the executor. Each reaped
+   transaction is logged at FINE; one summary WARNING per sweep reports the count
+   reclaimed, so a burst of abandoned transactions cannot flood the log.
 3. `close()` stops the reaper first, then performs the existing drain.
 4. The thresholds are configurable through `GrpcServerPlugin`:
    - `arcadedb.grpc.tx.maxIdleMs`     (default 300000 = 5 min)
