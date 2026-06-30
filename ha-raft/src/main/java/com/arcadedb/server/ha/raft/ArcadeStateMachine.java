@@ -124,6 +124,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // which compares against the inherently global Ratis snapshot index) AND a per-database map (used by
   // the per-database bootstrap replay-skip). The values live in memory so the hot apply path never
   // reads the file back; the file is parsed once lazily on first access and serialised on each write.
+  // globalAppliedIndex mirrors lastAppliedIndex (the AtomicLong above) after each apply: they are
+  // seeded differently (this one from the persisted file on load, lastAppliedIndex in reinitialize())
+  // but both advance to the same value on every applyTransaction and must stay in sync.
   private final    Map<String, Long>         appliedIndexByDb     = new ConcurrentHashMap<>();
   private volatile long                      globalAppliedIndex   = -1;
   private volatile boolean                   appliedIndexLoaded   = false;
@@ -1688,8 +1691,9 @@ public class ArcadeStateMachine extends BaseStateMachine {
    * gone, so its per-database entry must not linger and grow the map/persisted JSON for the node
    * lifetime (issue #4824). Folding the global advance and the eviction into one atomic write avoids
    * a crash window that could leave a stale per-database entry for a database that no longer exists.
+   * Package-private for tests.
    */
-  private void writePersistedAppliedIndexDroppingDatabase(final long index, final String dbName) {
+  void writePersistedAppliedIndexDroppingDatabase(final long index, final String dbName) {
     synchronized (appliedIndexFileLock) {
       ensureAppliedIndexLoaded();
       globalAppliedIndex = index;
@@ -1720,8 +1724,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
   /**
    * Lazily parses the persisted applied-index file once into the in-memory cache. Accepts both the
    * new JSON document ({@code {"global": n, "db": {"name": n, ...}}}) and a legacy plain-number file
-   * (read as the global value with an empty per-database map). Failures leave the cache empty: a
-   * missing/unreadable file simply means "nothing persisted yet" (-1).
+   * (read as the global value with an empty per-database map). A missing/unreadable file simply means
+   * "nothing persisted yet" (-1) and still latches the cache as loaded.
+   * <p>
+   * When the file path cannot yet be resolved (no server wired, so {@code getAppliedIndexFile()} is
+   * {@code null}) the cache is NOT latched, so a later call retries once the server is available and
+   * a persisted file is no longer masked. In the current wiring {@code setServer(...)} always runs
+   * before the first read, so this only guards against a future reordering.
    */
   private void ensureAppliedIndexLoaded() {
     if (appliedIndexLoaded)
@@ -1729,9 +1738,11 @@ public class ArcadeStateMachine extends BaseStateMachine {
     synchronized (appliedIndexFileLock) {
       if (appliedIndexLoaded)
         return;
+      final Path file = getAppliedIndexFile();
+      if (file == null)
+        return; // server not wired yet: do not latch, retry once the path is resolvable
       try {
-        final Path file = getAppliedIndexFile();
-        if (file != null && Files.exists(file)) {
+        if (Files.exists(file)) {
           final String content = Files.readString(file).trim();
           if (!content.isEmpty()) {
             if (content.charAt(0) == '{') {
@@ -1748,6 +1759,8 @@ public class ArcadeStateMachine extends BaseStateMachine {
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.FINE, "Could not read persisted applied index: %s", e.getMessage());
       } finally {
+        // The path was resolvable and we attempted a read: latch even on a parse failure so a corrupt
+        // file is not re-read on every apply (it degrades to -1, re-running the idempotent verification).
         appliedIndexLoaded = true;
       }
     }

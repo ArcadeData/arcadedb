@@ -220,4 +220,30 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
     assertThat(sm.readPersistedAppliedIndex(DB_A)).isEqualTo(500L);
     assertThat(sm.readPersistedAppliedIndex(DB_OTHER)).isEqualTo(500L);
   }
+
+  /**
+   * Dropping a database advances the global position and evicts that database's per-database entry in
+   * a single write, so the map does not retain a stale entry for a database that no longer exists.
+   */
+  @Test
+  void dropDatabaseEvictsPerDatabaseEntryAndAdvancesGlobal() {
+    final ArcadeDBServer server = mockServer();
+    final ArcadeStateMachine sm = newStateMachine(server);
+
+    sm.writePersistedAppliedIndex(40L, DB_A);
+    sm.writePersistedAppliedIndex(41L, DB_OTHER);
+    assertThat(sm.readPersistedAppliedIndex(DB_A)).isEqualTo(40L);
+
+    sm.writePersistedAppliedIndexDroppingDatabase(99L, DB_A);
+
+    assertThat(sm.readPersistedAppliedIndex(DB_A))
+        .as("the dropped database's per-database entry is evicted")
+        .isEqualTo(-1L);
+    assertThat(sm.readPersistedAppliedIndex(DB_OTHER))
+        .as("a co-located database's entry is untouched")
+        .isEqualTo(41L);
+    assertThat(sm.readPersistedAppliedIndex())
+        .as("the global position still advances on the drop entry")
+        .isEqualTo(99L);
+  }
 }

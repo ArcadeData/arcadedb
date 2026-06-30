@@ -1,4 +1,4 @@
-# Issue #4824 — Single global `applied-index` file vs per-database snapshot installs
+# Issue #4824 - Single global `applied-index` file vs per-database snapshot installs
 
 ## Problem
 
@@ -22,7 +22,7 @@ if (persistedApplied >= index) {  // "this DB's baseline already applied" -> ski
 Here `index` is the Raft index of THIS database's `BOOTSTRAP_FINGERPRINT_ENTRY`, but
 `persistedApplied` is the GLOBAL applied index. If a co-located database advanced the global
 index past this entry's index, the bootstrap verification for a database that was never actually
-bootstrapped is silently skipped — the "value that mixes databases" defect described in the issue.
+bootstrapped is silently skipped - the "value that mixes databases" defect described in the issue.
 
 `reinitialize()`'s snapshot-gap decision (`snapshotIndex > persistedApplied + tolerance`) is
 legitimately global: the Ratis snapshot index it compares against is itself global, so it keeps
@@ -49,15 +49,15 @@ Make applied-index tracking per-database-aware (suggested fix option 2):
 ## Tests
 
 `ArcadeStateMachineAppliedIndexPerDatabaseTest`:
-- `bootstrapSkipNotTriggeredByAnotherDatabasesAppliedIndex` — regression: a co-located database's
+- `bootstrapSkipNotTriggeredByAnotherDatabasesAppliedIndex` - regression: a co-located database's
   high applied index must NOT skip another database's bootstrap verification (fails before fix).
-- `bootstrapSkipHonorsPerDatabaseAppliedIndex` — a database's OWN per-database applied index does
+- `bootstrapSkipHonorsPerDatabaseAppliedIndex` - a database's OWN per-database applied index does
   still skip its bootstrap verification (legitimate skip preserved).
-- `legacyPlainNumberFileReadAsGlobalNotPerDatabase` — a legacy plain-number file is honoured as
+- `legacyPlainNumberFileReadAsGlobalNotPerDatabase` - a legacy plain-number file is honoured as
   the global value and yields no per-database evidence.
-- `perDatabaseValuesRoundTripAcrossRestart` — per-database and global values round-trip through the
+- `perDatabaseValuesRoundTripAcrossRestart` - per-database and global values round-trip through the
   file and recover in a fresh state machine.
-- `fullInstallRecordsSnapshotIndexForEveryPresentDatabase` — a full state-machine install records
+- `fullInstallRecordsSnapshotIndexForEveryPresentDatabase` - a full state-machine install records
   the snapshot index for every present database (exercises the `getDatabaseNames()` path).
 
 ## Upgrade behavior (one-time)
@@ -76,6 +76,11 @@ the latest snapshot, mostly recently-formed/low-snapshot clusters) and safe:
 
 From the first post-upgrade apply onwards the per-database map is authoritative and the skew is fixed.
 
+A downgrade degrades gracefully too: an older binary reading the new JSON document fails to parse it
+as a plain number, logs at FINE, and treats the global value as -1, which re-runs the same idempotent
+verification. No external reader of `.raft/applied-index` exists in the tree, so the format change is
+self-contained.
+
 ## PR
 
 https://github.com/ArcadeData/arcadedb/pull/4847
@@ -92,3 +97,8 @@ https://github.com/ArcadeData/arcadedb/pull/4847
   write (`writePersistedAppliedIndexDroppingDatabase`) to remove the two-write crash window;
   document the one-time legacy-upgrade re-verification behavior (bounded and safe) in code and in the
   "Upgrade behavior" section above.
+- cycle 3 (`6422e01`): gemini re-posted the (already-applied) synchronisation suggestion - no-op.
+  Addressed claude: do not latch the load cache when the file path is unresolvable (server not wired)
+  so a later-available file is never masked; add a direct DROP-eviction test; note the graceful
+  downgrade path; comment that `globalAppliedIndex` mirrors `lastAppliedIndex`; replace em dashes in
+  this doc. The "Review cycles" section is retained per the resolve-issue-with-review Phase 6 convention.
