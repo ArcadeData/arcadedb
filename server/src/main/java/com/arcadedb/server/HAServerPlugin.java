@@ -50,11 +50,41 @@ public interface HAServerPlugin extends ServerPlugin {
     ANY, REPLICA
   }
 
+  /**
+   * Consensus-level readiness signal for the readiness probe. {@code READY}: a leader is known, this node
+   * is in the committed configuration and (as a follower) has caught up. {@code NOT_READY}: one of those
+   * conditions does not hold. A {@code null} return from {@link #getReadinessSignal(long)} means the HA
+   * implementation exposes no such signal and the probe applies no additional gating.
+   */
+  enum READINESS_SIGNAL {
+    READY, NOT_READY
+  }
+
   boolean isLeader();
 
   String getLeaderName();
 
   ELECTION_STATUS getElectionStatus();
+
+  /**
+   * Reports the consensus-level readiness of this node for the readiness probe. {@code READY} requires a
+   * known leader (election settled), membership in the committed cluster configuration, and - for a
+   * follower - a local applied index within {@code maxLagEntries} of the commit index. The leader is always
+   * considered caught up with itself.
+   * <p>
+   * Used so a node does not advertise Ready before it has (re)joined the committed configuration and
+   * replayed the committed log. During a Kubernetes StatefulSet rolling restart, a follower that reports
+   * Ready with an empty/lagging log lets the orchestrator terminate the next pod and drop the write quorum.
+   * <p>
+   * Returns {@code null} when this HA implementation provides no consensus readiness signal; callers treat
+   * {@code null} as "no additional gating". The Raft implementation returns a concrete
+   * {@link READINESS_SIGNAL}.
+   *
+   * @param maxLagEntries maximum tolerated {@code commitIndex - lastAppliedIndex} for a follower to be ready
+   */
+  default READINESS_SIGNAL getReadinessSignal(final long maxLagEntries) {
+    return null;
+  }
 
   String getClusterName();
 

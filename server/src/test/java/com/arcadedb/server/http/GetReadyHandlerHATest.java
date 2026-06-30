@@ -28,6 +28,7 @@ import com.arcadedb.server.security.ServerSecurityUser;
 import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -121,5 +122,62 @@ class GetReadyHandlerHATest {
 
     final ExecutionResponse response = newHandler(server).execute(null, (ServerSecurityUser) null, null);
     assertThat(response.getCode()).isEqualTo(503);
+  }
+
+  @Test
+  void flagOnElectionDoneButNotCaughtUpReturns503() throws Exception {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
+    cfg.setValue(GlobalConfiguration.HA_ENABLED, true);
+
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
+    when(server.getConfiguration()).thenReturn(cfg);
+    final HAServerPlugin ha = mock(HAServerPlugin.class);
+    // A leader is known, but this node is not yet in the committed config / not caught up.
+    when(ha.getElectionStatus()).thenReturn(HAServerPlugin.ELECTION_STATUS.DONE);
+    when(ha.getReadinessSignal(anyLong())).thenReturn(HAServerPlugin.READINESS_SIGNAL.NOT_READY);
+    when(server.getHA()).thenReturn(ha);
+
+    final ExecutionResponse response = newHandler(server).execute(null, (ServerSecurityUser) null, null);
+    assertThat(response.getCode()).isEqualTo(503);
+  }
+
+  @Test
+  void flagOnElectionDoneAndCaughtUpReturns204() throws Exception {
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
+    cfg.setValue(GlobalConfiguration.HA_ENABLED, true);
+
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
+    when(server.getConfiguration()).thenReturn(cfg);
+    final HAServerPlugin ha = mock(HAServerPlugin.class);
+    when(ha.getElectionStatus()).thenReturn(HAServerPlugin.ELECTION_STATUS.DONE);
+    when(ha.getReadinessSignal(anyLong())).thenReturn(HAServerPlugin.READINESS_SIGNAL.READY);
+    when(server.getHA()).thenReturn(ha);
+
+    final ExecutionResponse response = newHandler(server).execute(null, (ServerSecurityUser) null, null);
+    assertThat(response.getCode()).isEqualTo(204);
+  }
+
+  @Test
+  void flagOnElectionDoneAndNoConsensusSignalReturns204() throws Exception {
+    // An HA implementation that provides no consensus readiness signal returns null from
+    // getReadinessSignal: the probe applies no additional gating beyond the election status.
+    final ContextConfiguration cfg = new ContextConfiguration();
+    cfg.setValue(GlobalConfiguration.SERVER_READINESS_REQUIRES_HA, true);
+    cfg.setValue(GlobalConfiguration.HA_ENABLED, true);
+
+    final ArcadeDBServer server = mock(ArcadeDBServer.class);
+    when(server.getStatus()).thenReturn(ArcadeDBServer.STATUS.ONLINE);
+    when(server.getConfiguration()).thenReturn(cfg);
+    final HAServerPlugin ha = mock(HAServerPlugin.class);
+    when(ha.getElectionStatus()).thenReturn(HAServerPlugin.ELECTION_STATUS.DONE);
+    when(ha.getReadinessSignal(anyLong())).thenReturn(null);
+    when(server.getHA()).thenReturn(ha);
+
+    final ExecutionResponse response = newHandler(server).execute(null, (ServerSecurityUser) null, null);
+    assertThat(response.getCode()).isEqualTo(204);
   }
 }

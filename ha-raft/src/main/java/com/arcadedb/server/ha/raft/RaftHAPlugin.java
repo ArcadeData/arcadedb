@@ -222,6 +222,14 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
+  public HAServerPlugin.READINESS_SIGNAL getReadinessSignal(final long maxLagEntries) {
+    final RaftHAServer s = raftHAServer;
+    // Raft not started yet means this node has not joined the consensus group, so it is not ready.
+    final boolean ready = s != null && s.isReadyForTraffic(maxLagEntries);
+    return ready ? READINESS_SIGNAL.READY : READINESS_SIGNAL.NOT_READY;
+  }
+
+  @Override
   public String getClusterToken() {
     return raftHAServer != null ? raftHAServer.getClusterToken() : null;
   }
