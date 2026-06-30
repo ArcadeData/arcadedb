@@ -1648,6 +1648,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     call.disableAutoInboundFlowControl();
 
+    // gRPC StreamObserver is not thread-safe. Route every write/terminal call through a single
+    // serialization point so a cancellation racing a terminal call cannot interleave terminal calls.
+    final SynchronizedStreamObserver<InsertSummary> out = new SynchronizedStreamObserver<>(resp);
+
     final long startedAt = System.currentTimeMillis();
 
     final AtomicBoolean cancelled = new AtomicBoolean(false);
@@ -1658,7 +1662,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // cache the first-chunk effective options to validate consistency
     final AtomicReference<InsertOptions> firstOptsRef = new AtomicReference<>();
 
-    call.setOnCancelHandler(() -> cancelled.set(true));
+    call.setOnCancelHandler(() -> {
+      cancelled.set(true);
+      out.markTerminated();
+    });
 
     // Pull the very first inbound message
     call.request(1);
@@ -1737,6 +1744,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       @Override
       public void onError(Throwable t) {
+        out.markTerminated();
         InsertContext ctx = ctxRef.get();
         if (ctx != null)
           ctx.closeQuietly();
@@ -1751,10 +1759,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           if (ctx == null) {
             // Client closed without sending a first chunk → nothing to do
-            resp.onNext(InsertSummary.newBuilder().setReceived(0).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0)
+            out.onNext(InsertSummary.newBuilder().setReceived(0).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0)
                 .setExecutionTimeMs(System.currentTimeMillis() - startedAt).build());
 
-            resp.onCompleted();
+            out.onCompleted();
             return;
           }
 
@@ -1772,11 +1780,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
 
           if (!cancelled.get()) {
-            resp.onNext(ctx.summary(totals, startedAt));
-            resp.onCompleted();
+            out.onNext(ctx.summary(totals, startedAt));
+            out.onCompleted();
           }
         } catch (Exception e) {
-          resp.onError(Status.INTERNAL.withDescription("insertStream: " + e.getMessage()).asException());
+          out.onError(Status.INTERNAL.withDescription("insertStream: " + e.getMessage()).asException());
         } finally {
           InsertContext ctx = ctxRef.get();
           if (ctx != null)
@@ -1816,8 +1824,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final ServerCallStreamObserver<GraphBatchResult> call = (ServerCallStreamObserver<GraphBatchResult>) resp;
     call.disableAutoInboundFlowControl();
 
+    // gRPC StreamObserver is not thread-safe. Route every write/terminal call through a single
+    // serialization point so a cancellation racing a terminal call cannot interleave terminal calls.
+    final SynchronizedStreamObserver<GraphBatchResult> out = new SynchronizedStreamObserver<>(resp);
+
     final long startedAt = System.currentTimeMillis();
     final AtomicBoolean cancelled = new AtomicBoolean(false);
+    // errorSent gates the onCompleted flush and the call.request(1) flow-control pull; the
+    // SynchronizedStreamObserver above independently guarantees terminal-call safety.
     final boolean[] errorSent = { false };
     final AtomicReference<GraphBatch> batchRef = new AtomicReference<>();
     final AtomicReference<Database> dbRef = new AtomicReference<>();
@@ -1830,7 +1844,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final long[] counts = new long[2]; // [0]=vertices, [1]=edges
     final boolean[] inEdgePhase = { false };
 
-    call.setOnCancelHandler(() -> cancelled.set(true));
+    call.setOnCancelHandler(() -> {
+      cancelled.set(true);
+      out.markTerminated();
+    });
     call.request(1);
 
     return new StreamObserver<>() {
@@ -1887,7 +1904,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           // Null batchRef so onCompleted skips processing; skip closeQuietly to avoid blocking the
           // gRPC thread via async.waitCompletion() (buffered edges have no open transaction).
           batchRef.set(null);
-          resp.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
+          out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
           return;
         } finally {
           if (!cancelled.get() && !errorSent[0])
@@ -1897,6 +1914,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
       @Override
       public void onError(final Throwable t) {
+        out.markTerminated();
         closeQuietly(batchRef.getAndSet(null));
       }
 
@@ -1907,8 +1925,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         try {
           final GraphBatch batch = batchRef.get();
           if (batch == null) {
-            resp.onNext(GraphBatchResult.newBuilder().build());
-            resp.onCompleted();
+            out.onNext(GraphBatchResult.newBuilder().build());
+            out.onCompleted();
             return;
           }
 
@@ -1928,11 +1946,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             result.putIdMapping(entry.getKey(), entry.getValue().toString());
 
           if (!cancelled.get()) {
-            resp.onNext(result.build());
-            resp.onCompleted();
+            out.onNext(result.build());
+            out.onCompleted();
           }
         } catch (final Exception e) {
-          resp.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
+          out.onError(Status.INTERNAL.withDescription("graphBatchLoad: " + e.getMessage()).asException());
           closeQuietly(batchRef.get());
         }
       }
@@ -2047,6 +2065,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final ServerCallStreamObserver<InsertResponse> call = (ServerCallStreamObserver<InsertResponse>) resp;
     call.disableAutoInboundFlowControl();
 
+    // gRPC StreamObserver is not thread-safe and the single-threaded executor below dispatches
+    // database work off the gRPC inbound thread. Funnel every write/terminal call through one
+    // serialization point so a cancellation or duplicate terminal can never interleave on the call.
+    final SynchronizedStreamObserver<InsertResponse> out = new SynchronizedStreamObserver<>(resp);
+
     final AtomicReference<InsertContext> ref = new AtomicReference<>();
     final AtomicBoolean cancelled = new AtomicBoolean(false);
     final AtomicBoolean started = new AtomicBoolean(false);
@@ -2063,11 +2086,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // Send responses directly - gRPC handles backpressure internally for server-side.
     // Using a queue with isReady() check doesn't work well when sending from a non-gRPC thread
     // because isReady() may return false, causing responses to be stuck.
-    final Consumer<InsertResponse> sendResponse = resp::onNext;
+    final Consumer<InsertResponse> sendResponse = out::onNext;
 
     // Cleanup helper that can be called multiple times safely
     final Runnable cleanupAndShutdown = () -> {
       cancelled.set(true);
+      out.markTerminated();
       try {
         streamExecutor.submit(() -> {
           final InsertContext ctx = ref.getAndSet(null);
@@ -2103,7 +2127,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
               case START -> {
                 if (!started.compareAndSet(false, true)) {
-                  resp.onError(
+                  out.onError(
                       Status.FAILED_PRECONDITION.withDescription("insertBidirectional: START already received").asException());
                   return;
                 }
@@ -2132,7 +2156,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
                 if (c.getChunkSeq() <= hi) {
 
-                  resp.onNext(InsertResponse.newBuilder().setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId)
+                  out.onNext(InsertResponse.newBuilder().setBatchAck(BatchAck.newBuilder().setSessionId(ctx.sessionId)
                       .setChunkSeq(c.getChunkSeq()).setInserted(0).setUpdated(0).setIgnored(0).setFailed(0).build()).build());
 
                   call.request(1);
@@ -2180,10 +2204,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
                 try {
                   ctx.flushCommit(true); // commit unless validate_only in your InsertContext logic
                   final InsertSummary sum = ctx.summary(ctx.totals, ctx.startedAt);
-                  resp.onNext(InsertResponse.newBuilder().setCommitted(Committed.newBuilder().setSummary(sum).build()).build());
-                  resp.onCompleted();
+                  out.onNext(InsertResponse.newBuilder().setCommitted(Committed.newBuilder().setSummary(sum).build()).build());
+                  out.onCompleted();
                 } catch (Exception e) {
-                  resp.onError(Status.INTERNAL.withDescription("commit: " + e.getMessage()).asException());
+                  out.onError(Status.INTERNAL.withDescription("commit: " + e.getMessage()).asException());
                 } finally {
                   sessionWatermark.remove(ctx.sessionId);
                   ctx.closeQuietly();
@@ -2198,7 +2222,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             }
           } catch (Exception unexpected) {
             // defensive: fail fast on unexpected exceptions
-            resp.onError(Status.INTERNAL.withDescription("insertBidirectional: " + unexpected.getMessage()).asException());
+            out.onError(Status.INTERNAL.withDescription("insertBidirectional: " + unexpected.getMessage()).asException());
             final InsertContext ctx = ref.getAndSet(null);
             if (ctx != null) {
               sessionWatermark.remove(ctx.sessionId);
