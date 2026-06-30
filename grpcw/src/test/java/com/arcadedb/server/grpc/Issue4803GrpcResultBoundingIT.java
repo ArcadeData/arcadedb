@@ -51,8 +51,9 @@ import static org.assertj.core.api.Assertions.catchThrowableOfType;
  *
  * <p>The fix bounds both paths with server-scoped configuration:
  * <ul>
- *   <li>{@code arcadedb.server.grpcQueryMaxResultRows} caps the unary {@code ExecuteQuery} when no positive
- *       limit is given;</li>
+ *   <li>{@code arcadedb.server.grpcQueryMaxResultRows} is a hard ceiling on the unary {@code ExecuteQuery}:
+ *       a result that would exceed it fails with {@code RESOURCE_EXHAUSTED} instead of silently truncating,
+ *       and a client cannot bypass it with an oversized explicit limit;</li>
  *   <li>{@code arcadedb.server.grpcStreamMaxMaterializedRows} caps {@code MATERIALIZE_ALL} buffering and fails
  *       the call with {@code RESOURCE_EXHAUSTED} when exceeded.</li>
  * </ul>
@@ -126,21 +127,44 @@ public class Issue4803GrpcResultBoundingIT extends BaseGraphServerTest {
   }
 
   @Test
-  void unaryExecuteQueryWithoutLimitIsCapped() {
-    final ExecuteQueryResponse response = authenticatedStub.executeQuery(
-        ExecuteQueryRequest.newBuilder()
-            .setDatabase(getDatabaseName())
-            .setCredentials(credentials())
-            .setQuery("SELECT FROM " + VERTEX1_TYPE_NAME) // deliberately no LIMIT
-            .build());
+  void unaryExecuteQueryWithoutLimitExceedingCapFailsWithResourceExhausted() {
+    final StatusRuntimeException ex = catchThrowableOfType(StatusRuntimeException.class,
+        () -> authenticatedStub.executeQuery(
+            ExecuteQueryRequest.newBuilder()
+                .setDatabase(getDatabaseName())
+                .setCredentials(credentials())
+                .setQuery("SELECT FROM " + VERTEX1_TYPE_NAME) // deliberately no LIMIT
+                .build()));
 
-    assertThat(response.getResultsList()).isNotEmpty();
-    final int returned = response.getResults(0).getRecordsCount();
+    // The dataset is larger than the cap. A limitless query must fail loudly rather than silently truncating
+    // and dropping data without telling the caller (issue #4803).
+    assertThat(ex)
+        .as("limitless gRPC executeQuery over a result larger than the cap must fail, not silently truncate")
+        .isNotNull();
+    assertThat(ex.getStatus().getCode())
+        .as("the cap breach must surface as RESOURCE_EXHAUSTED so the client knows the result was not complete")
+        .isEqualTo(Status.Code.RESOURCE_EXHAUSTED);
+  }
 
-    // The dataset is larger than the cap, so a limitless query must be bounded to the configured max.
-    assertThat(returned)
-        .as("limitless gRPC executeQuery must be capped at grpcQueryMaxResultRows (issue #4803)")
-        .isEqualTo(MAX_QUERY_ROWS);
+  @Test
+  void unaryExecuteQueryWithExplicitLimitLargerThanCapFailsWithResourceExhausted() {
+    // A client must not be able to bypass the DoS-protection ceiling by requesting an oversized explicit limit:
+    // the configured cap is a hard ceiling, so a larger limit over a larger result still fails loudly.
+    final StatusRuntimeException ex = catchThrowableOfType(StatusRuntimeException.class,
+        () -> authenticatedStub.executeQuery(
+            ExecuteQueryRequest.newBuilder()
+                .setDatabase(getDatabaseName())
+                .setCredentials(credentials())
+                .setQuery("SELECT FROM " + VERTEX1_TYPE_NAME)
+                .setLimit(MAX_QUERY_ROWS + 10)
+                .build()));
+
+    assertThat(ex)
+        .as("an explicit limit larger than the cap must not bypass the hard ceiling")
+        .isNotNull();
+    assertThat(ex.getStatus().getCode())
+        .as("exceeding the hard ceiling must surface as RESOURCE_EXHAUSTED")
+        .isEqualTo(Status.Code.RESOURCE_EXHAUSTED);
   }
 
   @Test

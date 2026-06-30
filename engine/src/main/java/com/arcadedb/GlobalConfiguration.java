@@ -652,16 +652,18 @@ public enum GlobalConfiguration {
   // SERVER gRPC
   SERVER_GRPC_QUERY_MAX_RESULT_ROWS("arcadedb.server.grpcQueryMaxResultRows", SCOPE.SERVER,
       """
-      Maximum number of rows the gRPC unary ExecuteQuery returns when the request specifies no positive limit. \
-      Bounds heap usage and protects against limitless-query DoS by capping the materialized response. \
-      Set to -1 for unlimited (WARNING: removes DoS protection). Default is 100000.""",
+      Hard ceiling on the number of rows the gRPC unary ExecuteQuery materializes. A request limit at or below \
+      this cap is honored; a result that would exceed it fails the call with RESOURCE_EXHAUSTED (consistent with \
+      the StreamQuery MATERIALIZE_ALL path) rather than silently truncating, and a client cannot bypass it with a \
+      larger limit. Bounds heap usage and protects against limitless-query DoS. Set to -1 or 0 for unlimited \
+      (WARNING: removes DoS protection). Default is 100000.""",
       Integer.class, 100_000),
 
   SERVER_GRPC_STREAM_MAX_MATERIALIZED_ROWS("arcadedb.server.grpcStreamMaxMaterializedRows", SCOPE.SERVER,
       """
       Maximum number of rows the gRPC StreamQuery MATERIALIZE_ALL retrieval mode buffers in memory before \
       emitting. Exceeding the cap fails the call with RESOURCE_EXHAUSTED so clients fall back to CURSOR/PAGED \
-      streaming instead of running the server out of memory. Set to -1 for unlimited (WARNING: removes DoS \
+      streaming instead of running the server out of memory. Set to -1 or 0 for unlimited (WARNING: removes DoS \
       protection). Default is 1000000.""",
       Integer.class, 1_000_000),
 

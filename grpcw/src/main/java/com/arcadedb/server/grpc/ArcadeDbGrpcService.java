@@ -918,9 +918,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responseObserver.onCompleted();
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-        LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
-        responseObserver.onError(Status.INTERNAL
-            .withDescription("Query execution failed: " + cause.getMessage()).asException());
+        if (cause instanceof StatusRuntimeException sre) {
+          // Preserve an explicit gRPC status (e.g. RESOURCE_EXHAUSTED from the result cap, or the
+          // authz/authn status from getDatabase) instead of masking it as INTERNAL.
+          LogManager.instance().log(this, Level.FINE, "Query rejected: %s", sre, sre.getMessage());
+          responseObserver.onError(sre);
+        } else {
+          LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
+          responseObserver.onError(Status.INTERNAL
+              .withDescription("Query execution failed: " + cause.getMessage()).asException());
+        }
       }
       return;
     }
@@ -983,11 +990,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Process results
         int count = 0;
 
-        // Bound the materialized response. An explicit positive limit always wins; otherwise fall back to
-        // the configured cap so a limitless query cannot build an unbounded response and exhaust heap (DoS).
+        // Bound the materialized response. An explicit positive limit at or below the configured cap is the
+        // client's own bound and is honored silently. The configured cap (when > 0) is otherwise a HARD ceiling:
+        // a client cannot bypass DoS protection by requesting a larger limit, and a result that exceeds the cap
+        // fails loudly with RESOURCE_EXHAUSTED - consistent with the MATERIALIZE_ALL stream path - instead of
+        // silently truncating and dropping data without telling the caller.
         final int requestedLimit = request.getLimit();
         final int configuredMax = GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS.getValueAsInteger();
-        final int effectiveLimit = requestedLimit > 0 ? requestedLimit : configuredMax; // <= 0 means unlimited
+        final boolean capEnabled = configuredMax > 0;
+        // The client's explicit limit applies as its own bound only when it does not exceed the hard ceiling.
+        final boolean clientLimitWithinCap = requestedLimit > 0 && (!capEnabled || requestedLimit <= configuredMax);
 
         LogManager.instance().log(this, Level.FINE, "executeQuery(): resultSet.size = %s",
             resultSet.getExactSizeIfKnown());
@@ -1009,10 +1021,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           count++;
 
-          // Apply the effective limit (explicit request limit, or the configured DoS-protection cap).
-          if (effectiveLimit > 0 && count >= effectiveLimit) {
+          // Honor the client's explicit limit (guaranteed not to exceed the hard ceiling).
+          if (clientLimitWithinCap && count >= requestedLimit)
             break;
-          }
+
+          // Hard ceiling reached with more rows still available: fail loudly so the caller is never silently
+          // truncated and cannot bypass the cap with an oversized limit.
+          if (capEnabled && count >= configuredMax && resultSet.hasNext())
+            throw Status.RESOURCE_EXHAUSTED
+                .withDescription("ExecuteQuery result exceeds the maximum of " + configuredMax
+                    + " rows (arcadedb.server.grpcQueryMaxResultRows); add a LIMIT or use StreamQuery with CURSOR/PAGED retrieval mode for large results")
+                .asRuntimeException();
         }
         profile.addEngineNanos(System.nanoTime() - engineStart - serializationAccum);
 
@@ -1649,11 +1668,15 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   static boolean awaitTransportReady(final BooleanSupplier ready, final AtomicBoolean cancelled, final long timeoutMs) {
     if (ready.getAsBoolean())
       return true;
-    final long deadline = timeoutMs > 0 ? System.currentTimeMillis() + timeoutMs : Long.MAX_VALUE;
+    // Use a monotonic clock for the deadline: System.nanoTime() is immune to wall-clock adjustments (NTP/manual)
+    // and the elapsed-since-start comparison avoids the overflow a large System.currentTimeMillis()+timeoutMs sum
+    // could otherwise produce.
+    final long startNanos = System.nanoTime();
+    final long timeoutNanos = timeoutMs > 0 ? TimeUnit.MILLISECONDS.toNanos(timeoutMs) : Long.MAX_VALUE;
     while (!ready.getAsBoolean()) {
       if (cancelled.get())
         return false;
-      if (System.currentTimeMillis() >= deadline)
+      if (timeoutMs > 0 && (System.nanoTime() - startNanos) >= timeoutNanos)
         return false;
       // avoid burning CPU:
       try {
