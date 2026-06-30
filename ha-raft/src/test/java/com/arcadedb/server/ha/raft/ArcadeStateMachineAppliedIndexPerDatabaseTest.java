@@ -23,6 +23,7 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.BootstrapFingerprint;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.LocalDatabase;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.utility.FileUtils;
@@ -232,6 +233,50 @@ class ArcadeStateMachineAppliedIndexPerDatabaseTest {
         .as("global tracks the last applied index across all databases")
         .isEqualTo(20L);
     assertThat(reopened.readPersistedAppliedIndex("never-seen")).isEqualTo(-1L);
+  }
+
+  /**
+   * The on-disk file is the new JSON document ({@code {"global": n, "db": {...}}}), not the legacy
+   * plain number. The round-trip test exercises the same read/write code on both ends, so a format
+   * regression that stayed internally consistent would still pass there; this asserts the actual bytes
+   * so the persisted shape is pinned independently of the reader.
+   */
+  @Test
+  void persistedFileIsJsonDocumentOnDisk() throws Exception {
+    final ArcadeStateMachine sm = newStateMachine();
+    sm.writePersistedAppliedIndex(10L, DB_A);
+    sm.writePersistedAppliedIndex(20L, DB_OTHER);
+
+    final String content = Files.readString(serverDir.resolve(".raft").resolve("applied-index")).trim();
+    assertThat(content).as("the persisted file is a JSON document, not a legacy plain number").startsWith("{");
+
+    final JSONObject json = new JSONObject(content);
+    assertThat(json.getLong("global", -1)).isEqualTo(20L);
+    final JSONObject perDb = json.getJSONObject("db", new JSONObject());
+    assertThat(perDb.getLong(DB_A, -1)).isEqualTo(10L);
+    assertThat(perDb.getLong(DB_OTHER, -1)).isEqualTo(20L);
+  }
+
+  /**
+   * A corrupt/unparseable applied-index file degrades to {@code -1} for both the global and any
+   * per-database read rather than throwing. This coupling is relied upon by {@code reinitialize()},
+   * whose snapshot-gap check ({@code persistedApplied >= 0 && ...}) then evaluates false and suppresses
+   * the "snapshot ahead, download from leader" path - matching the pre-change behaviour.
+   */
+  @Test
+  void corruptFileDegradesToMinusOne() throws Exception {
+    final Path raftDir = serverDir.resolve(".raft");
+    Files.createDirectories(raftDir);
+    // Looks like the new JSON document (leading '{') but is truncated, so JSON parsing fails.
+    Files.writeString(raftDir.resolve("applied-index"), "{\"global\": 42, \"db\": {\"db-a\":");
+
+    final ArcadeStateMachine sm = newStateMachine();
+    assertThat(sm.readPersistedAppliedIndex())
+        .as("a corrupt file degrades the global value to -1 instead of throwing")
+        .isEqualTo(-1L);
+    assertThat(sm.readPersistedAppliedIndex(DB_A))
+        .as("a corrupt file yields no per-database evidence")
+        .isEqualTo(-1L);
   }
 
   /**
