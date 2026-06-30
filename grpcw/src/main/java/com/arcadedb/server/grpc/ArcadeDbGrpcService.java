@@ -98,6 +98,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -132,16 +133,28 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     final Database        db;
     final ExecutorService executor;
     final String          txId;
+    final long            createdAtMs;
+    volatile long         lastAccessMs;
 
     TransactionContext(Database db, String txId) {
       this.db = db;
       this.txId = txId;
+      this.createdAtMs = System.currentTimeMillis();
+      this.lastAccessMs = this.createdAtMs;
       // Single-thread executor ensures all tx operations happen on the same thread
       this.executor = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "arcadedb-tx-" + txId);
         t.setDaemon(true);
         return t;
       });
+    }
+
+    /**
+     * Records that the transaction has just been used so the idle reaper does not reclaim it while a client is
+     * actively working with it.
+     */
+    void touch() {
+      this.lastAccessMs = System.currentTimeMillis();
     }
 
     void shutdown() {
@@ -163,12 +176,143 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
   private static final int DEFAULT_MAX_COMMAND_ROWS = 1000;
 
+  // Idle reaper defaults (milliseconds). A registered transaction idle longer than maxIdle, or older than maxAge
+  // (when > 0), is rolled back and released so an abandoned client cannot leak its executor thread, open
+  // transaction and database reference forever.
+  static final long DEFAULT_TX_MAX_IDLE_MS      = 300_000L; // 5 minutes
+  static final long DEFAULT_TX_MAX_AGE_MS       = 0L;       // disabled by default
+  static final long DEFAULT_TX_REAPER_PERIOD_MS = 30_000L;  // 30 seconds
+
+  private final long                     txMaxIdleMs;
+  private final long                     txMaxAgeMs;
+  private final ScheduledExecutorService txReaper;
+
   public ArcadeDbGrpcService(String databasePath, ArcadeDBServer server) {
+    this(databasePath, server, DEFAULT_TX_MAX_IDLE_MS, DEFAULT_TX_MAX_AGE_MS, DEFAULT_TX_REAPER_PERIOD_MS);
+  }
+
+  public ArcadeDbGrpcService(String databasePath, ArcadeDBServer server, final long txMaxIdleMs, final long txMaxAgeMs,
+      final long txReaperPeriodMs) {
     this.databasePath = databasePath;
     this.arcadeServer = server;
+    this.txMaxIdleMs = txMaxIdleMs;
+    this.txMaxAgeMs = txMaxAgeMs;
+
+    // Start the reaper only when at least one expiry bound is active and a positive period is configured.
+    // A non-positive maxIdleMs/maxAgeMs disables that individual bound; non-positive for both (or a non-positive
+    // period) disables the reaper entirely.
+    if ((txMaxIdleMs > 0 || txMaxAgeMs > 0) && txReaperPeriodMs > 0) {
+      this.txReaper = Executors.newSingleThreadScheduledExecutor(r -> {
+        final Thread t = new Thread(r, "arcadedb-grpc-tx-reaper");
+        t.setDaemon(true);
+        return t;
+      });
+      this.txReaper.scheduleWithFixedDelay(this::reapIdleTransactions, txReaperPeriodMs, txReaperPeriodMs,
+          TimeUnit.MILLISECONDS);
+    } else {
+      this.txReaper = null;
+    }
+  }
+
+  /**
+   * Returns the active transaction count, exposed for testing and monitoring.
+   */
+  int getActiveTransactionCount() {
+    return activeTransactions.size();
+  }
+
+  /**
+   * Returns whether the idle-transaction reaper is running. Exposed for testing the configuration wiring.
+   */
+  boolean isIdleReaperActive() {
+    return txReaper != null;
+  }
+
+  /**
+   * Looks up an active transaction and refreshes its last-access timestamp so that genuine activity keeps it alive.
+   * Returns {@code null} for a blank/unknown id, preserving the previous inline behaviour.
+   */
+  private TransactionContext lookupActiveTransaction(final String txId) {
+    if (txId == null || txId.isBlank())
+      return null;
+    final TransactionContext ctx = activeTransactions.get(txId);
+    if (ctx != null)
+      ctx.touch();
+    return ctx;
+  }
+
+  /**
+   * Scans the registered transactions and reclaims any that have been idle past {@code txMaxIdleMs}, or (when
+   * configured) older than {@code txMaxAgeMs}. Each reaped transaction is removed atomically so the sweep never
+   * races a concurrent commit/rollback, then rolled back on its own dedicated thread and its executor shut down.
+   */
+  private void reapIdleTransactions() {
+    try {
+      final long now = System.currentTimeMillis();
+      int reaped = 0;
+      for (final Map.Entry<String, TransactionContext> entry : activeTransactions.entrySet()) {
+        final TransactionContext ctx = entry.getValue();
+        final long idleMs = now - ctx.lastAccessMs;
+        final long ageMs = now - ctx.createdAtMs;
+        final boolean idleExpired = txMaxIdleMs > 0 && idleMs >= txMaxIdleMs;
+        final boolean ageExpired = txMaxAgeMs > 0 && ageMs >= txMaxAgeMs;
+        if (!idleExpired && !ageExpired)
+          continue;
+
+        // remove(key, value) ensures only one of the reaper / commit / rollback wins the cleanup.
+        // Residual TOCTOU note: a request could lookupActiveTransaction() (touch + submit work) in the instant
+        // between the staleness read above and this remove. That window only opens for an already-idle
+        // transaction; any command already submitted to the executor still runs to completion before the
+        // asynchronous shutdown() in reapTransaction() lets the thread terminate, so no in-flight work is lost.
+        if (activeTransactions.remove(entry.getKey(), ctx)) {
+          LogManager.instance().log(this, Level.FINE,
+              "Reaping abandoned gRPC transaction txId=%s (idleMs=%s ageMs=%s)", entry.getKey(), idleMs, ageMs);
+          reapTransaction(ctx);
+          reaped++;
+        }
+      }
+      // A single summary line per sweep instead of one WARNING per transaction avoids flooding the log when a
+      // burst of abandoned transactions is reclaimed at once.
+      if (reaped > 0)
+        LogManager.instance().log(this, Level.WARNING,
+            "Reaped %s abandoned gRPC transaction(s): rolled back and released their executor/database resources",
+            reaped);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING, "Error while reaping idle gRPC transactions", e);
+    }
+  }
+
+  /**
+   * Rolls back the abandoned transaction on its dedicated thread (where its DatabaseContext lives) and shuts the
+   * executor down. The rollback is submitted without blocking the single reaper thread: {@code shutdown()} (not
+   * {@code shutdownNow()}) lets the just-submitted rollback run to completion before the executor terminates, so a
+   * slow rollback never stalls reclamation of the remaining transactions in the same sweep.
+   */
+  private void reapTransaction(final TransactionContext txCtx) {
+    try {
+      if (txCtx.db != null && txCtx.db.isOpen()) {
+        txCtx.executor.submit(() -> {
+          try {
+            txCtx.db.rollback();
+          } catch (final Exception e) {
+            LogManager.instance().log(this, Level.WARNING, "Failed to rollback abandoned transaction %s during reaping",
+                e, txCtx.txId);
+          }
+        });
+      }
+    } catch (final RejectedExecutionException e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Could not submit rollback for abandoned transaction %s; executor already shutting down", e, txCtx.txId);
+    } finally {
+      txCtx.shutdown();
+    }
   }
 
   public void close() {
+    // Stop the idle reaper first so it does not race the shutdown drain below.
+    if (txReaper != null)
+      txReaper.shutdownNow();
+
     // Close all open databases
     for (Database db : databasePool.values()) {
       try {
@@ -214,8 +358,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final boolean hasTx = req.hasTransaction();
       final var tx = hasTx ? req.getTransaction() : null;
       final String incomingTxId = hasTx && tx != null ? tx.getTransactionId() : null;
-      final TransactionContext txCtx = incomingTxId != null && !incomingTxId.isBlank()
-          ? activeTransactions.get(incomingTxId) : null;
+      final TransactionContext txCtx = lookupActiveTransaction(incomingTxId);
 
       if (txCtx != null) {
         // External transaction - execute command on the transaction's dedicated thread
@@ -483,8 +626,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   public void createRecord(CreateRecordRequest req, StreamObserver<CreateRecordResponse> resp) {
     // Check for external transaction
     final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
-    final TransactionContext txCtx = incomingTxId != null && !incomingTxId.isBlank()
-        ? activeTransactions.get(incomingTxId) : null;
+    final TransactionContext txCtx = lookupActiveTransaction(incomingTxId);
 
     if (txCtx != null) {
       // External transaction — execute on its dedicated thread to maintain thread-local state
@@ -605,8 +747,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     // record version is tracked in that transaction. Under REPEATABLE_READ this is what lets a later write detect a
     // concurrent modification on commit, mirroring the HTTP behavior (issue #4533).
     final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
-    final TransactionContext txCtx = incomingTxId != null && !incomingTxId.isBlank()
-        ? activeTransactions.get(incomingTxId) : null;
+    final TransactionContext txCtx = lookupActiveTransaction(incomingTxId);
 
     if (txCtx != null) {
       try {
@@ -648,8 +789,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   public void updateRecord(final UpdateRecordRequest req, final StreamObserver<UpdateRecordResponse> resp) {
     // Check for external transaction
     final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
-    final TransactionContext txCtx = incomingTxId != null && !incomingTxId.isBlank()
-        ? activeTransactions.get(incomingTxId) : null;
+    final TransactionContext txCtx = lookupActiveTransaction(incomingTxId);
 
     if (txCtx != null) {
       // External transaction — execute on its dedicated thread to maintain thread-local state
@@ -812,8 +952,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   public void deleteRecord(DeleteRecordRequest req, StreamObserver<DeleteRecordResponse> resp) {
     // Check for external transaction
     final String incomingTxId = req.hasTransaction() ? req.getTransaction().getTransactionId() : null;
-    final TransactionContext txCtx = incomingTxId != null && !incomingTxId.isBlank()
-        ? activeTransactions.get(incomingTxId) : null;
+    final TransactionContext txCtx = lookupActiveTransaction(incomingTxId);
 
     if (txCtx != null) {
       // External transaction — execute on its dedicated thread to maintain thread-local state
@@ -900,8 +1039,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       final String incomingTxId = request.getTransaction().getTransactionId();
       LogManager.instance().log(this, Level.FINE, "executeQuery(): has Tx %s", incomingTxId);
 
-      final TransactionContext txCtx = incomingTxId != null && !incomingTxId.isBlank()
-          ? activeTransactions.get(incomingTxId) : null;
+      final TransactionContext txCtx = lookupActiveTransaction(incomingTxId);
       if (txCtx == null) {
         responseObserver.onError(Status.INTERNAL
             .withDescription("Query execution failed: Invalid transaction ID").asException());
