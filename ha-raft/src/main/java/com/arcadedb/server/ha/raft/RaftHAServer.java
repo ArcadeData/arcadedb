@@ -1647,6 +1647,23 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     return samples;
   }
 
+  /**
+   * Returns one map per follower with its {@code peerId}, {@code matchIndex}, {@code nextIndex} and
+   * {@code lastRpcElapsedMs}, as seen by this leader.
+   * <p>
+   * The three Ratis APIs we read - the follower peer-id list ({@code RoleInfoProto.LeaderInfo}), the
+   * match-index array and the next-index array - are each built from an independent snapshot of the
+   * leader's internal {@code CopyOnWriteArrayList} of log appenders. They are positionally aligned
+   * only while cluster membership is stable. A membership change (adding, removing or replacing a
+   * peer) between the calls can shift array positions, so zipping them by index would attribute a
+   * follower's match/next index to the wrong peer id (issue #4842). The old {@code min(...)} guard
+   * protected length, not order.
+   * <p>
+   * We use a seqlock-style read: capture the peer-id ordering before and after reading the two index
+   * arrays and only trust the positional correlation when the ordering is unchanged and the array
+   * lengths line up. On divergence we retry a bounded number of times, then fall back to reporting
+   * the peers with unknown (omitted) indices rather than misattributing them.
+   */
   public List<Map<String, Object>> getFollowerStates() {
     if (raftServer == null || !isLeader())
       return List.of();
@@ -1654,32 +1671,88 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       final var division = raftServer.getDivision(raftGroup.getGroupId());
       final var info = division.getInfo();
 
-      final var roleInfo = info.getRoleInfoProto();
-      if (!roleInfo.hasLeaderInfo())
-        return List.of();
+      for (int attempt = 0; attempt < FOLLOWER_STATES_MAX_ATTEMPTS; attempt++) {
+        final List<RaftProtos.ServerRpcProto> before = leaderFollowerInfos(info);
+        if (before.isEmpty())
+          return List.of();
 
-      final List<RaftProtos.ServerRpcProto> followerInfos = roleInfo.getLeaderInfo().getFollowerInfoList();
-      final long[] matchIndices = info.getFollowerMatchIndices();
-      final long[] nextIndices = info.getFollowerNextIndices();
+        final long[] matchIndices = info.getFollowerMatchIndices();
+        final long[] nextIndices = info.getFollowerNextIndices();
 
-      // If sizes diverge, a membership change happened between calls - correlate what we can safely
-      final int safeSize = Math.min(followerInfos.size(), Math.min(matchIndices.length, nextIndices.length));
+        final List<RaftProtos.ServerRpcProto> after = leaderFollowerInfos(info);
 
-      final List<Map<String, Object>> result = new ArrayList<>(safeSize);
-      for (int i = 0; i < safeSize; i++) {
-        final String peerId = followerInfos.get(i).getId().getId().toStringUtf8();
-        final long lastRpcElapsedMs = followerInfos.get(i).getLastRpcElapsedTimeMs();
-        final Map<String, Object> state = new LinkedHashMap<>();
-        state.put("peerId", peerId);
-        state.put("matchIndex", matchIndices[i]);
-        state.put("nextIndex", nextIndices[i]);
-        state.put("lastRpcElapsedMs", lastRpcElapsedMs);
-        result.add(state);
+        final List<Map<String, Object>> correlated = correlateFollowerStates(before, matchIndices, nextIndices, after);
+        if (correlated != null)
+          return correlated;
+        // Membership changed while we read the index arrays - retry with a fresh, consistent snapshot.
       }
-      return result;
+
+      // Membership kept changing under us across every attempt: report the peers we currently know,
+      // without indices, rather than risk attributing a match/next index to the wrong peer.
+      return degradedFollowerStates(leaderFollowerInfos(info));
     } catch (final IOException e) {
       return List.of();
     }
+  }
+
+  /** Number of seqlock retries in {@link #getFollowerStates()} before degrading to index-less peers. */
+  private static final int FOLLOWER_STATES_MAX_ATTEMPTS = 3;
+
+  /** Returns the leader's follower peer-info list, or an empty list when this node is not a ready leader. */
+  private static List<RaftProtos.ServerRpcProto> leaderFollowerInfos(final org.apache.ratis.server.DivisionInfo info) {
+    final RaftProtos.RoleInfoProto roleInfo = info.getRoleInfoProto();
+    return roleInfo.hasLeaderInfo() ? roleInfo.getLeaderInfo().getFollowerInfoList() : List.of();
+  }
+
+  /**
+   * Correlates the {@code before} follower peer-id snapshot with the match/next index arrays, validating
+   * against the {@code after} snapshot. Returns the per-follower state maps when the snapshots are
+   * consistent (same peer ordering and matching array lengths), or {@code null} when a membership change
+   * raced the reads and positional correlation cannot be trusted.
+   */
+  static List<Map<String, Object>> correlateFollowerStates(final List<RaftProtos.ServerRpcProto> before,
+      final long[] matchIndices, final long[] nextIndices, final List<RaftProtos.ServerRpcProto> after) {
+    if (!samePeerOrder(before, after) || matchIndices.length != before.size() || nextIndices.length != before.size())
+      return null;
+
+    final List<Map<String, Object>> result = new ArrayList<>(before.size());
+    for (int i = 0; i < before.size(); i++) {
+      final Map<String, Object> state = new LinkedHashMap<>();
+      state.put("peerId", before.get(i).getId().getId().toStringUtf8());
+      state.put("matchIndex", matchIndices[i]);
+      state.put("nextIndex", nextIndices[i]);
+      state.put("lastRpcElapsedMs", before.get(i).getLastRpcElapsedTimeMs());
+      result.add(state);
+    }
+    return result;
+  }
+
+  /**
+   * Builds index-less follower states (peer id and last-RPC elapsed only) for the case where membership
+   * churned faster than {@link #getFollowerStates()} could take a consistent snapshot. The match/next
+   * index keys are intentionally omitted so downstream consumers treat the lag as unknown instead of
+   * reading a misattributed value.
+   */
+  static List<Map<String, Object>> degradedFollowerStates(final List<RaftProtos.ServerRpcProto> followerInfos) {
+    final List<Map<String, Object>> result = new ArrayList<>(followerInfos.size());
+    for (final RaftProtos.ServerRpcProto follower : followerInfos) {
+      final Map<String, Object> state = new LinkedHashMap<>();
+      state.put("peerId", follower.getId().getId().toStringUtf8());
+      state.put("lastRpcElapsedMs", follower.getLastRpcElapsedTimeMs());
+      result.add(state);
+    }
+    return result;
+  }
+
+  /** Returns true when both snapshots list the same follower peer ids in the same order. */
+  private static boolean samePeerOrder(final List<RaftProtos.ServerRpcProto> a, final List<RaftProtos.ServerRpcProto> b) {
+    if (a.size() != b.size())
+      return false;
+    for (int i = 0; i < a.size(); i++) {
+      if (!a.get(i).getId().getId().equals(b.get(i).getId().getId()))
+        return false;
+    }
+    return true;
   }
 
   /**
