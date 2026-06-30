@@ -255,7 +255,7 @@ public class GrpcServerPlugin implements ServerPlugin {
     // Add compression interceptor if force compression is enabled
     if (getConfigBoolean(config, CONFIG_COMPRESSION_FORCE, false)) {
       String compressionType = getConfigString(config, CONFIG_COMPRESSION_TYPE, "gzip");
-      serverBuilder.intercept(new GrpcCompressionInterceptor(true, compressionType, 1024));
+      serverBuilder.intercept(new GrpcCompressionInterceptor(true, compressionType));
     }
 
     // Add authentication interceptor if security is configured
