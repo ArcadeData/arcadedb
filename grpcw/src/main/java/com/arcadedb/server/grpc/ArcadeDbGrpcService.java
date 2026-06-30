@@ -1432,6 +1432,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         if (cancelled.get())
           return;
         waitUntilReady(scso, cancelled, serverTimedOut);
+        // The wait may have just flagged a server timeout (or observed a client cancel); bail out before
+        // converting/emitting another row against an aborted stream.
+        if (cancelled.get())
+          return;
 
         Result r = rs.next();
 
@@ -1534,6 +1538,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (cancelled.get())
         return;
       waitUntilReady(scso, cancelled, serverTimedOut);
+      // The wait may have just flagged a server timeout (or observed a client cancel); bail out before
+      // building/emitting another batch against an aborted stream.
+      if (cancelled.get())
+        return;
 
       int end = Math.min(i + batchSize, all.size());
       QueryResult.Builder b = QueryResult.newBuilder();
@@ -1563,6 +1571,10 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       if (cancelled.get())
         return;
       waitUntilReady(scso, cancelled, serverTimedOut);
+      // The wait may have just flagged a server timeout (or observed a client cancel); bail out before
+      // running/emitting another page against an aborted stream.
+      if (cancelled.get())
+        return;
 
       Map<String, Object> params = new HashMap<>(GrpcTypeConverter.convertParameters(request.getParametersMap()));
       params.put("_skip", offset);

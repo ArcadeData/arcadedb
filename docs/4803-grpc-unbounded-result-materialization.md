@@ -185,3 +185,39 @@ the full stream-path regression (no regressions).
 ### Verification (post-cycle-3)
 - `Issue4803GrpcResultBoundingIT` 5/5, `Issue4803WaitUntilReadyTimeoutTest` 3/3.
 - Regression: `GrpcStreamMetricsIT` 1/1, `Issue4197GrpcExecuteQueryResultSetLeakIT` 1/1 - no regressions.
+
+## Review cycle 4 (claude + gemini-code-assist) - final
+
+Claude's re-review verified correctness across the board (unary cap boundary, ResultSet lifecycle,
+single-terminal, status propagation) and concluded "**Nothing here is blocking**". This is the last cycle
+in the `--max-cycles=4` budget.
+
+### Applied
+- **Bail out immediately after a write-timeout (claude #2).** `waitUntilReady` flags
+  `cancelled`/`serverTimedOut` but does not itself return, so `streamCursor`/`streamPaged`/`streamMaterialized`
+  would convert and (no-op) emit one more row/batch before the loop-top `cancelled` check caught it. Added an
+  explicit `if (cancelled.get()) return;` right after each `waitUntilReady` call so an aborted stream stops
+  promptly without the wasted work - the right posture for a DoS-protection path.
+
+### Not actioned (with rationale)
+- **gemini line-1710 `currentTimeMillis` (4th identical post).** Stale - `awaitTransportReady` has used a
+  monotonic `nanoTime` deadline since cycle 1; gemini re-posts its entire original review on every push.
+- **Hoist `getValueAsLong()` out of the per-row `waitUntilReady` call (claude #4, optional).** It is a cached
+  field read (negligible per claude); hoisting would thread `timeoutMs` through three helper signatures for no
+  measurable gain. Skipped deliberately.
+- **Unit test for the `serverTimedOut` flag wiring via a stub `ServerCallStreamObserver` (claude #3, optional).**
+  The deterministic deadline logic already lives in the unit-tested `awaitTransportReady`; the flag flip in
+  `waitUntilReady` is a two-line glue. A full stub observer (many abstract methods) is disproportionate to that
+  glue. Left as the acknowledged e2e gap.
+- **100k unary default / release notes (claude #1).** Default tuning and release-note placement are the
+  maintainer's call; the breaking change is documented in the "BREAKING CHANGE" section above.
+
+### Verification (post-cycle-4)
+- `Issue4803GrpcResultBoundingIT` 5/5, `Issue4803WaitUntilReadyTimeoutTest` 3/3.
+- Regression: `GrpcStreamMetricsIT` 1/1, `Issue4197GrpcExecuteQueryResultSetLeakIT` 1/1 - no regressions.
+
+## Final state
+
+`max-cycles-reached` (4/4) with a clean approval from claude on the final commit and no outstanding blocking
+feedback. Remaining gemini item is stale; remaining claude items are optional/deferred with rationale above.
+Merge remains the developer's responsibility.
