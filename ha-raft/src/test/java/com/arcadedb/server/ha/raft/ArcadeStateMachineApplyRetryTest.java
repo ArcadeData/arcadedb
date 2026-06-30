@@ -164,17 +164,38 @@ class ArcadeStateMachineApplyRetryTest {
   }
 
   @Test
-  void unexpectedErrorOnHealthyDatabaseIsRethrown() {
-    // Regression guard: an unexpected error while applying an entry for a database that is NOT
-    // diverged must still reach applyTransaction's fatal catch (Throwable) handler (server-halt
-    // path) so real bugs are caught. Critically, a gap in one database must not mask a bug in
-    // another: mark only "diverged-db" as diverged, then fail on "healthy-db".
+  void unexpectedErrorOnHealthyDatabaseIsQuarantinedNotNodeHalted() {
+    // Regression guard for issue #4797: a single ArcadeStateMachine multiplexes every database, so an
+    // unexpected error applying an entry for one healthy database must NOT trip the node-wide critical
+    // halt (which would freeze replication for all co-located databases). Instead the database is
+    // quarantined (marked diverged + targeted resync) and the error reported as a recoverable
+    // ReplicationException so the node stays up. server == null here, so the targeted resync is a
+    // no-op, but the quarantine bookkeeping and the recoverable wrapping still apply.
     final ArcadeStateMachine sm = new ArcadeStateMachine();
-    sm.markStateDiverged("diverged-db");
     final NullPointerException npe = new NullPointerException("programming bug on healthy database");
-    // server == null here, so applyWithRetry reads the default GlobalConfiguration.TX_RETRIES; the NPE
-    // is non-retryable so it exits on the first attempt regardless, and must propagate unchanged.
-    assertThatThrownBy(() -> sm.applyWithRetry(11L, "healthy-db", () -> { throw npe; })).isSameAs(npe);
+    assertThatThrownBy(() -> sm.applyWithRetry(11L, "healthy-db", () -> { throw npe; }))
+        .isInstanceOf(ReplicationException.class)
+        .hasMessageContaining("snapshot resync")
+        .hasCause(npe);
+    assertThat(sm.isDatabaseDiverged("healthy-db")).isTrue();
+    // The node-wide halt flag must remain untouched: this is the crux of #4797.
+    assertThat(sm.isHaltedAfterCriticalError()).isFalse();
+    // A different, untouched database is not quarantined: the failure is scoped to "healthy-db".
+    assertThat(sm.isDatabaseDiverged("other-db")).isFalse();
+  }
+
+  @Test
+  void unexpectedErrorOnGlobalEntryWithoutTargetDatabaseIsRethrown() {
+    // Regression guard for issue #4797: an entry that has no single target database (databaseName
+    // null or empty, e.g. a SECURITY_USERS_ENTRY) is not isolable to one database's state, so an
+    // unexpected error must still propagate unchanged to applyTransaction's fatal catch (Throwable)
+    // node-halt path. Verify both the null and the empty-string cases.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final IllegalStateException nullDbBoom = new IllegalStateException("bug applying a global entry");
+    assertThatThrownBy(() -> sm.applyWithRetry(11L, null, () -> { throw nullDbBoom; })).isSameAs(nullDbBoom);
+    final IllegalStateException emptyDbBoom = new IllegalStateException("bug applying a security entry");
+    assertThatThrownBy(() -> sm.applyWithRetry(12L, "", () -> { throw emptyDbBoom; })).isSameAs(emptyDbBoom);
+    assertThat(sm.isDatabaseDiverged("")).isFalse();
   }
 
   @Test
@@ -236,7 +257,37 @@ class ArcadeStateMachineApplyRetryTest {
 
     assertThat(sm.isDatabaseDiverged("db")).isFalse();
     assertThat(sm.divergedSwallowedErrorCount()).isZero();
-    // After the reset the database is healthy again, so an unexpected error must propagate unchanged.
-    assertThatThrownBy(() -> sm.applyWithRetry(201L, "db", () -> { throw npe; })).isSameAs(npe);
+    // After the reset the database is healthy again, so the next unexpected error re-quarantines it
+    // (issue #4797: per-database resync, recoverable) rather than reaching the node-wide halt.
+    assertThatThrownBy(() -> sm.applyWithRetry(201L, "db", () -> { throw npe; }))
+        .isInstanceOf(ReplicationException.class);
+    assertThat(sm.isDatabaseDiverged("db")).isTrue();
+  }
+
+  @Test
+  void clearDivergedDatabaseRemovesOnlyThatDatabaseAndResetsCounterWhenEmpty() {
+    // Regression guard for issue #4797: a targeted single-database resync clears only the resynced
+    // database, leaving other quarantined databases intact. The shared escalation counter is reset
+    // only once no database remains quarantined.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    final NullPointerException npe = new NullPointerException("inconsistent state");
+    assertThatThrownBy(() -> sm.applyWithRetry(300L, "db-a", () -> { throw npe; }))
+        .isInstanceOf(ReplicationException.class);
+    assertThatThrownBy(() -> sm.applyWithRetry(301L, "db-b", () -> { throw npe; }))
+        .isInstanceOf(ReplicationException.class);
+    assertThat(sm.isDatabaseDiverged("db-a")).isTrue();
+    assertThat(sm.isDatabaseDiverged("db-b")).isTrue();
+    assertThat(sm.divergedSwallowedErrorCount()).isEqualTo(2);
+
+    // Resyncing db-a clears only db-a; db-b stays quarantined and the counter is NOT reset yet.
+    sm.clearDivergedDatabase("db-a");
+    assertThat(sm.isDatabaseDiverged("db-a")).isFalse();
+    assertThat(sm.isDatabaseDiverged("db-b")).isTrue();
+    assertThat(sm.divergedSwallowedErrorCount()).isEqualTo(2);
+
+    // Resyncing the last quarantined database resets the shared escalation counter.
+    sm.clearDivergedDatabase("db-b");
+    assertThat(sm.isDatabaseDiverged("db-b")).isFalse();
+    assertThat(sm.divergedSwallowedErrorCount()).isZero();
   }
 }
