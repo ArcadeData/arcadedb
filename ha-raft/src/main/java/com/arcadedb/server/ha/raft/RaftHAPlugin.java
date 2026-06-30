@@ -107,15 +107,10 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   @Override
   public void stopService() {
     if (raftHAServer != null) {
-      // K8s auto-leave: gracefully remove self from cluster on shutdown
-      if (configuration != null && configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
-        try {
-          raftHAServer.leaveCluster();
-        } catch (final Exception e) {
-          LogManager.instance().log(this, Level.WARNING,
-              "K8s auto-leave failed (best-effort): %s", e.getMessage());
-        }
-      }
+      // K8s auto-leave is owned exclusively by RaftHAServer.stop() (see its HA_K8S branch), which is
+      // also reached via disconnectCluster(). Issuing leaveCluster() here as well removed self from the
+      // group and then stop() tried to remove an already-absent peer, doing redundant
+      // leader-transfer/reconfig work and logging a spurious WARNING on every pod shutdown (issue #4837).
       raftHAServer.stop();
       raftHAServer = null;
     }
