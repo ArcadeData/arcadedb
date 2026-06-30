@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.DatabaseContext;
@@ -103,6 +104,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -1054,9 +1056,16 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         responseObserver.onCompleted();
       } catch (Exception e) {
         final Throwable cause = e instanceof ExecutionException && e.getCause() != null ? e.getCause() : e;
-        LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
-        responseObserver.onError(Status.INTERNAL
-            .withDescription("Query execution failed: " + cause.getMessage()).asException());
+        if (cause instanceof StatusRuntimeException sre) {
+          // Preserve an explicit gRPC status (e.g. RESOURCE_EXHAUSTED from the result cap, or the
+          // authz/authn status from getDatabase) instead of masking it as INTERNAL.
+          LogManager.instance().log(this, Level.FINE, "Query rejected: %s", sre, sre.getMessage());
+          responseObserver.onError(sre);
+        } else {
+          LogManager.instance().log(this, Level.SEVERE, "Error executing query: %s", cause, cause.getMessage());
+          responseObserver.onError(Status.INTERNAL
+              .withDescription("Query execution failed: " + cause.getMessage()).asException());
+        }
       }
       return;
     }
@@ -1119,6 +1128,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Process results
         int count = 0;
 
+        // Bound the materialized response. An explicit positive limit at or below the configured cap is the
+        // client's own bound and is honored silently. The configured cap (when > 0) is otherwise a HARD ceiling:
+        // a client cannot bypass DoS protection by requesting a larger limit, and a result that exceeds the cap
+        // fails loudly with RESOURCE_EXHAUSTED - consistent with the MATERIALIZE_ALL stream path - instead of
+        // silently truncating and dropping data without telling the caller.
+        final int requestedLimit = request.getLimit();
+        final int configuredMax = GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS.getValueAsInteger();
+        final boolean capEnabled = configuredMax > 0;
+        // The client's explicit limit applies as its own bound only when it does not exceed the hard ceiling.
+        final boolean clientLimitWithinCap = requestedLimit > 0 && (!capEnabled || requestedLimit <= configuredMax);
+
         LogManager.instance().log(this, Level.FINE, "executeQuery(): resultSet.size = %s",
             resultSet.getExactSizeIfKnown());
 
@@ -1139,10 +1159,17 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           count++;
 
-          // Apply limit if specified
-          if (request.getLimit() > 0 && count >= request.getLimit()) {
+          // Honor the client's explicit limit (guaranteed not to exceed the hard ceiling).
+          if (clientLimitWithinCap && count >= requestedLimit)
             break;
-          }
+
+          // Hard ceiling reached with more rows still available: fail loudly so the caller is never silently
+          // truncated and cannot bypass the cap with an oversized limit.
+          if (capEnabled && count >= configuredMax && resultSet.hasNext())
+            throw Status.RESOURCE_EXHAUSTED
+                .withDescription("ExecuteQuery result exceeds the maximum of " + configuredMax
+                    + " rows (arcadedb.server.grpcQueryMaxResultRows); add a LIMIT or use StreamQuery with CURSOR/PAGED retrieval mode for large results")
+                .asRuntimeException();
         }
         profile.addEngineNanos(System.nanoTime() - engineStart - serializationAccum);
 
@@ -1399,6 +1426,9 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     QueryProfile.pushCurrent(profile);
     final long engineStart = System.nanoTime();
     final AtomicBoolean cancelled = new AtomicBoolean(false);
+    // Distinguishes a server-induced write timeout (we gave up on a healthy-but-slow client) from a genuine
+    // client cancel: only the former should surface an explicit DEADLINE_EXCEEDED terminal to the client.
+    final AtomicBoolean serverTimedOut = new AtomicBoolean(false);
 
     Database db = null;
     boolean beganHere = false;
@@ -1428,20 +1458,35 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       // --- Dispatch on mode (helpers do NOT manage transactions) ---
       // PAGED mode uses SQL-specific SKIP/LIMIT wrapping, so fall back to CURSOR for non-SQL languages
       switch (request.getRetrievalMode()) {
-        case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        case MATERIALIZE_ALL -> streamMaterialized(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
         case PAGED -> {
           if (!"sql".equalsIgnoreCase(language))
-            streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
+            streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
           else
-            streamPaged(db, request, batchSize, scso, cancelled, projectionConfig, language);
+            streamPaged(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
         }
-        case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
-        default -> streamCursor(db, request, batchSize, scso, cancelled, projectionConfig, language);
+        case CURSOR -> streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
+        default -> streamCursor(db, request, batchSize, scso, cancelled, serverTimedOut, projectionConfig, language);
       }
 
       // If the client cancelled mid-stream, choose rollback unless caller explicitly
       // asked to commit/rollback.
       if (cancelled.get()) {
+        // A server-induced write timeout is not a client cancel: the client transport is healthy, we gave up
+        // on it. Surface an explicit DEADLINE_EXCEEDED first (before the best-effort rollback, so the client is
+        // always signaled even if rollback fails) so it fails fast instead of blocking on its own deadline. A
+        // genuine client cancel needs no terminal - its transport is already tearing down.
+        if (serverTimedOut.get()) {
+          final long timeoutMs = GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.getValueAsLong();
+          try {
+            scso.onError(Status.DEADLINE_EXCEEDED
+                .withDescription("gRPC stream aborted: client transport not ready within " + timeoutMs
+                    + " ms (arcadedb.server.grpcStreamWriteTimeoutMs); slow or abandoned consumer")
+                .asRuntimeException());
+          } catch (final StatusRuntimeException ignore) {
+            // transport may have closed concurrently; the terminal is already moot
+          }
+        }
         if (hasTx) {
           if (tx.getRollback()) {
             db.rollback();
@@ -1451,7 +1496,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
             db.rollback(); // safe default on cancellation
           }
         }
-        return; // don't call onCompleted()
+        return; // terminal already sent (DEADLINE_EXCEEDED) or intentionally omitted (client cancel)
       }
 
       // --- TX end (normal path) — precedence: rollback > commit > begin-only ⇒
@@ -1486,7 +1531,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
 
       if (!cancelled.get()) {
-        responseObserver.onError(Status.INTERNAL.withDescription("Stream query failed: " + e.getMessage()).asException());
+        // Preserve an explicit gRPC status (e.g. RESOURCE_EXHAUSTED from the MATERIALIZE_ALL cap) instead of
+        // masking it as INTERNAL; only genuinely unexpected failures are reported as INTERNAL.
+        if (e instanceof StatusRuntimeException sre)
+          responseObserver.onError(sre);
+        else
+          responseObserver.onError(Status.INTERNAL.withDescription("Stream query failed: " + e.getMessage()).asException());
       }
     } finally {
       // Stream endpoints mix engine iteration and row serialization throughout; expose the
@@ -1505,7 +1555,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamCursor(Database db, StreamQueryRequest request, int batchSize,
                             ServerCallStreamObserver<QueryResult> scso,
-                            AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
+                            AtomicBoolean cancelled, AtomicBoolean serverTimedOut, ProjectionConfig projectionConfig, String language) {
 
     long running = 0L;
 
@@ -1519,7 +1569,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
         if (cancelled.get())
           return;
-        waitUntilReady(scso, cancelled);
+        waitUntilReady(scso, cancelled, serverTimedOut);
+        // The wait may have just flagged a server timeout (or observed a client cancel); bail out before
+        // converting/emitting another row against an aborted stream.
+        if (cancelled.get())
+          return;
 
         Result r = rs.next();
 
@@ -1576,9 +1630,14 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamMaterialized(Database db, StreamQueryRequest request, int batchSize,
                                   ServerCallStreamObserver<QueryResult> scso,
-                                  AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
+                                  AtomicBoolean cancelled, AtomicBoolean serverTimedOut, ProjectionConfig projectionConfig, String language) {
 
     final List<GrpcRecord> all = new ArrayList<>();
+
+    // MATERIALIZE_ALL buffers the whole result before emitting, so bound it: a limitless query in this mode
+    // would otherwise build an unbounded list and exhaust heap (DoS). Exceeding the cap fails the call with
+    // RESOURCE_EXHAUSTED so the client can fall back to CURSOR/PAGED streaming.
+    final int maxMaterializedRows = GlobalConfiguration.SERVER_GRPC_STREAM_MAX_MATERIALIZED_ROWS.getValueAsInteger();
 
     try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
@@ -1602,6 +1661,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           all.add(rb.build());
         }
+
+        if (maxMaterializedRows > 0 && all.size() > maxMaterializedRows) {
+          throw Status.RESOURCE_EXHAUSTED
+              .withDescription("MATERIALIZE_ALL result exceeds the maximum of " + maxMaterializedRows
+                  + " buffered rows (arcadedb.server.grpcStreamMaxMaterializedRows); use CURSOR or PAGED retrieval mode for large results")
+              .asRuntimeException();
+        }
       }
     }
 
@@ -1609,7 +1675,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     for (int i = 0; i < all.size(); i += batchSize) {
       if (cancelled.get())
         return;
-      waitUntilReady(scso, cancelled);
+      waitUntilReady(scso, cancelled, serverTimedOut);
+      // The wait may have just flagged a server timeout (or observed a client cancel); bail out before
+      // building/emitting another batch against an aborted stream.
+      if (cancelled.get())
+        return;
 
       int end = Math.min(i + batchSize, all.size());
       QueryResult.Builder b = QueryResult.newBuilder();
@@ -1629,7 +1699,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
    */
   private void streamPaged(Database db, StreamQueryRequest request, int batchSize,
                            ServerCallStreamObserver<QueryResult> scso,
-                           AtomicBoolean cancelled, ProjectionConfig projectionConfig, String language) {
+                           AtomicBoolean cancelled, AtomicBoolean serverTimedOut, ProjectionConfig projectionConfig, String language) {
 
     final String pagedSql = wrapWithSkipLimit(request.getQuery()); // see helper below
     int offset = 0;
@@ -1638,7 +1708,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     while (true) {
       if (cancelled.get())
         return;
-      waitUntilReady(scso, cancelled);
+      waitUntilReady(scso, cancelled, serverTimedOut);
+      // The wait may have just flagged a server timeout (or observed a client cancel); bail out before
+      // running/emitting another page against an aborted stream.
+      if (cancelled.get())
+        return;
 
       Map<String, Object> params = new HashMap<>(GrpcTypeConverter.convertParameters(request.getParametersMap()));
       params.put("_skip", offset);
@@ -1736,22 +1810,53 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     }
   }
 
-  private void waitUntilReady(ServerCallStreamObserver<?> scso, AtomicBoolean cancelled) {
-    // Skip if you're okay with best-effort pushes; otherwise honor transport
-    // readiness
-    if (scso.isReady())
-      return;
-    while (!scso.isReady()) {
+  private void waitUntilReady(ServerCallStreamObserver<?> scso, AtomicBoolean cancelled, AtomicBoolean serverTimedOut) {
+    // Honor transport readiness, but bound the wait: a slow or abandoned client must not pin this worker
+    // thread (and the open ResultSet/transaction) indefinitely.
+    final long timeoutMs = GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.getValueAsLong();
+    if (!awaitTransportReady(scso::isReady, cancelled, timeoutMs)) {
+      // Not ready: either the caller already cancelled, or we hit the deadline / were interrupted. In the
+      // latter case mark the stream cancelled so the surrounding loop stops, rolls back, and releases the
+      // ResultSet/transaction instead of busy-waiting forever, and flag it as a server-induced timeout so the
+      // caller surfaces an explicit DEADLINE_EXCEEDED to the client rather than silently dropping the stream.
+      if (!cancelled.get()) {
+        serverTimedOut.set(true);
+        cancelled.set(true);
+        LogManager.instance().log(this, Level.WARNING,
+            "gRPC stream aborted: client transport not ready within %d ms (slow or abandoned consumer)", timeoutMs);
+      }
+    }
+  }
+
+  /**
+   * Waits for {@code ready} to report {@code true}, bounded by {@code timeoutMs}. Returns {@code true} only if
+   * the transport became ready; returns {@code false} if {@code cancelled} is set, the deadline elapses, or the
+   * thread is interrupted. A non-positive {@code timeoutMs} means wait indefinitely (legacy behavior).
+   *
+   * <p>Extracted from {@link #waitUntilReady} so the deadline can be unit-tested without a live gRPC transport.
+   */
+  static boolean awaitTransportReady(final BooleanSupplier ready, final AtomicBoolean cancelled, final long timeoutMs) {
+    if (ready.getAsBoolean())
+      return true;
+    // Use a monotonic clock for the deadline: System.nanoTime() is immune to wall-clock adjustments (NTP/manual)
+    // and the elapsed-since-start comparison avoids the overflow a large System.currentTimeMillis()+timeoutMs sum
+    // could otherwise produce.
+    final long startNanos = System.nanoTime();
+    final long timeoutNanos = timeoutMs > 0 ? TimeUnit.MILLISECONDS.toNanos(timeoutMs) : Long.MAX_VALUE;
+    while (!ready.getAsBoolean()) {
       if (cancelled.get())
-        return;
+        return false;
+      if (timeoutMs > 0 && (System.nanoTime() - startNanos) >= timeoutNanos)
+        return false;
       // avoid burning CPU:
       try {
         Thread.sleep(1);
-      } catch (InterruptedException ie) {
+      } catch (final InterruptedException ie) {
         Thread.currentThread().interrupt();
-        return;
+        return false;
       }
     }
+    return true;
   }
 
   // --- 1) Unary bulk ---
