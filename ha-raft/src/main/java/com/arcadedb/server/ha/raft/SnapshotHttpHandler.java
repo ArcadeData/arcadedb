@@ -31,6 +31,7 @@ import io.undertow.server.HttpHandler;
 import io.undertow.server.HttpServerExchange;
 import io.undertow.util.HeaderValues;
 import io.undertow.util.Headers;
+import io.undertow.util.HttpString;
 
 import java.io.File;
 import java.io.FileInputStream;
@@ -38,6 +39,7 @@ import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.channels.ClosedChannelException;
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -45,6 +47,7 @@ import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -54,6 +57,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
+import java.util.zip.CRC32;
+import java.util.zip.CheckedInputStream;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -159,6 +164,9 @@ public class SnapshotHttpHandler implements HttpHandler {
       exchange.getResponseHeaders().put(Headers.CONTENT_TYPE, "application/zip");
       exchange.getResponseHeaders().put(Headers.CONTENT_DISPOSITION,
           "attachment; filename=\"" + safeName + "-snapshot.zip\"");
+      // Advertise that this stream ends with a completeness manifest (issue #4831) so the follower
+      // requires it and rejects a download truncated at a ZIP-entry boundary.
+      exchange.getResponseHeaders().put(new HttpString(SnapshotManager.MANIFEST_HEADER), "1");
       exchange.startBlocking();
 
       final DatabaseInternal db = server.getDatabase(databaseName);
@@ -282,18 +290,22 @@ public class SnapshotHttpHandler implements HttpHandler {
         final OutputStream out = new ProgressTrackingOutputStream(rawOut, lastProgressMs);
         final ZipOutputStream zipOut = new ZipOutputStream(out)) {
 
+      // Accumulate one manifest record per file actually streamed (name + size + CRC32), written as the
+      // final ZIP entry so the follower can detect a truncated download (issue #4831).
+      final List<SnapshotManager.ManifestEntry> manifest = new ArrayList<>();
+
       final File configFile = ((LocalDatabase) db.getEmbedded()).getConfigurationFile();
       if (configFile.exists())
-        addFileToZip(zipOut, configFile);
+        addFileToZip(zipOut, configFile, manifest);
 
       final File schemaFile = ((LocalSchema) db.getSchema()).getConfigurationFile();
       if (schemaFile.exists())
-        addFileToZip(zipOut, schemaFile);
+        addFileToZip(zipOut, schemaFile, manifest);
 
       final Collection<ComponentFile> files = db.getFileManager().getFiles();
       for (final ComponentFile file : new ArrayList<>(files))
         if (file != null)
-          addFileToZip(zipOut, file.getOSFile());
+          addFileToZip(zipOut, file.getOSFile(), manifest);
 
       // TimeSeries sealed-store files (.ts.sealed) use raw FileChannel I/O and are NOT registered with
       // the FileManager, so they are absent from getFiles(). Add them explicitly so a snapshot-syncing
@@ -303,7 +315,14 @@ public class SnapshotHttpHandler implements HttpHandler {
       final File[] sealedFiles = dbDir.listFiles((d, name) -> name.endsWith(".ts.sealed"));
       if (sealedFiles != null)
         for (final File sealedFile : sealedFiles)
-          addFileToZip(zipOut, sealedFile);
+          addFileToZip(zipOut, sealedFile, manifest);
+
+      // Final entry: the manifest. Anything truncated upstream drops this entry, so the follower's
+      // "manifest present?" check turns a silently-short archive into a loud, retryable failure.
+      final ZipEntry manifestEntry = new ZipEntry(SnapshotManager.MANIFEST_ENTRY_NAME);
+      zipOut.putNextEntry(manifestEntry);
+      zipOut.write(SnapshotManager.buildManifest(manifest).getBytes(StandardCharsets.UTF_8));
+      zipOut.closeEntry();
 
       zipOut.finish();
       HALog.log(this, HALog.BASIC, "Database snapshot for '%s' sent successfully", databaseName);
@@ -349,7 +368,15 @@ public class SnapshotHttpHandler implements HttpHandler {
     return false;
   }
 
-  private void addFileToZip(final ZipOutputStream zipOut, final File inputFile) throws Exception {
+  /**
+   * Streams a single file into the ZIP and, on success, appends its {@link SnapshotManager.ManifestEntry}
+   * (name + uncompressed size + CRC32) to {@code manifest}. The CRC and size are computed inline from the
+   * exact bytes streamed (via {@link CheckedInputStream}), so they describe what the follower actually
+   * receives rather than a separate re-read of the file. Skipped files (absent or symlink) contribute no
+   * manifest entry, matching what is sent.
+   */
+  private void addFileToZip(final ZipOutputStream zipOut, final File inputFile,
+      final List<SnapshotManager.ManifestEntry> manifest) throws Exception {
     if (!inputFile.exists())
       return;
     final Path filePath = inputFile.toPath();
@@ -359,10 +386,14 @@ public class SnapshotHttpHandler implements HttpHandler {
     }
     final ZipEntry entry = new ZipEntry(inputFile.getName());
     zipOut.putNextEntry(entry);
-    try (final FileInputStream fis = new FileInputStream(inputFile)) {
-      fis.transferTo(zipOut);
+    final CRC32 crc = new CRC32();
+    final long size;
+    try (final FileInputStream fis = new FileInputStream(inputFile);
+        final CheckedInputStream cis = new CheckedInputStream(fis, crc)) {
+      size = cis.transferTo(zipOut);
     }
     zipOut.closeEntry();
+    manifest.add(new SnapshotManager.ManifestEntry(inputFile.getName(), size, crc.getValue()));
   }
 
   /**
