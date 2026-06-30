@@ -24,12 +24,14 @@ import org.apache.ratis.client.RaftClient;
 import org.apache.ratis.protocol.RaftClientReply;
 import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
+import org.apache.ratis.protocol.SetConfigurationRequest;
 
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Supplier;
 import java.util.logging.Level;
 
 /**
@@ -60,10 +62,11 @@ class RaftClusterManager {
         .setAddress(address)
         .build();
 
-    final List<RaftPeer> newPeers = new ArrayList<>(raftHAServer.getLivePeers());
-    newPeers.add(newPeer);
-
-    setConfigurationWithRetry(newPeers, "add peer " + peerId);
+    // Mode.ADD atomically appends this single peer to the CURRENT committed configuration, so two
+    // near-simultaneous adds cannot clobber each other. A full setConfiguration(getLivePeers()+peer)
+    // is read-modify-write last-write-wins and silently drops one of two concurrent adds (issue #4795),
+    // which is exactly why the K8s auto-join path already uses Mode.ADD (see KubernetesAutoJoin).
+    setConfigurationWithRetry(() -> buildAddArgs(peerId, newPeer), "add peer " + peerId);
 
     final int colonIdx = address.lastIndexOf(':');
     if (colonIdx > 0) {
@@ -87,21 +90,69 @@ class RaftClusterManager {
   }
 
   void removePeer(final String peerId, final boolean force) {
+    // Validate up-front so an unknown peer or a quorum breach fails immediately rather than after the
+    // 90s retry budget. The retry loop re-validates on each attempt (see buildRemoveArgs).
     final Collection<RaftPeer> currentPeers = raftHAServer.getLivePeers();
-    final List<RaftPeer> newPeers = new ArrayList<>();
+    boolean found = false;
+    for (final RaftPeer peer : currentPeers)
+      if (peer.getId().toString().equals(peerId)) {
+        found = true;
+        break;
+      }
+    if (!found)
+      throw new ConfigurationException("Peer " + peerId + " not found in cluster");
+
+    ensureQuorumPreserved(peerId, currentPeers.size(), currentPeers.size() - 1, force);
+
+    // Ratis 3.2.2 has no atomic REMOVE delta, so use COMPARE_AND_SET: the change commits only if the
+    // leader's current configuration still matches the snapshot we computed the new list from. A
+    // concurrent membership change invalidates the CAS, and the retry loop re-snapshots and rebuilds,
+    // instead of the read-modify-write last-write-wins of a plain setConfiguration (issue #4795).
+    setConfigurationWithRetry(() -> buildRemoveArgs(peerId, force), "remove peer " + peerId);
+
+    raftHAServer.getHttpAddresses().remove(RaftPeerId.valueOf(peerId));
+    LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
+  }
+
+  /**
+   * Builds the {@link SetConfigurationRequest.Mode#ADD} arguments for adding {@code newPeer}. Returns
+   * {@code null} when the peer is already a member, which the retry loop treats as success - this keeps
+   * a retry after a lost success reply idempotent instead of spinning until the deadline.
+   */
+  private SetConfigurationRequest.Arguments buildAddArgs(final String peerId, final RaftPeer newPeer) {
+    for (final RaftPeer peer : raftHAServer.getLivePeers())
+      if (peer.getId().toString().equals(peerId))
+        return null; // already a member
+
+    return SetConfigurationRequest.Arguments.newBuilder()
+        .setServersInNewConf(List.of(newPeer))
+        .setMode(SetConfigurationRequest.Mode.ADD)
+        .build();
+  }
+
+  /**
+   * Builds the {@link SetConfigurationRequest.Mode#COMPARE_AND_SET} arguments for removing
+   * {@code peerId}, snapshotting the current configuration as the CAS precondition. Returns
+   * {@code null} when the peer is already absent (a concurrent removal won the race), which the
+   * retry loop treats as success - the removal goal is already met.
+   */
+  private SetConfigurationRequest.Arguments buildRemoveArgs(final String peerId, final boolean force) {
+    final List<RaftPeer> currentPeers = new ArrayList<>(raftHAServer.getLivePeers());
+    final List<RaftPeer> newPeers = new ArrayList<>(currentPeers.size());
     for (final RaftPeer peer : currentPeers)
       if (!peer.getId().toString().equals(peerId))
         newPeers.add(peer);
 
     if (newPeers.size() == currentPeers.size())
-      throw new ConfigurationException("Peer " + peerId + " not found in cluster");
+      return null; // peer already gone
 
     ensureQuorumPreserved(peerId, currentPeers.size(), newPeers.size(), force);
 
-    setConfigurationWithRetry(newPeers, "remove peer " + peerId);
-
-    raftHAServer.getHttpAddresses().remove(RaftPeerId.valueOf(peerId));
-    LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
+    return SetConfigurationRequest.Arguments.newBuilder()
+        .setServersInCurrentConf(currentPeers)
+        .setServersInNewConf(newPeers)
+        .setMode(SetConfigurationRequest.Mode.COMPARE_AND_SET)
+        .build();
   }
 
   /**
@@ -291,20 +342,31 @@ class RaftClusterManager {
   }
 
   /**
-   * Calls {@code setConfiguration} with bounded retry on {@link ReconfigurationInProgressException}.
+   * Issues a {@code setConfiguration} call with bounded (90s) retry, re-evaluating {@code argsSupplier}
+   * on every attempt.
    * <p>
-   * On a fresh cluster the newly elected leader must commit an entry from its own term before it
-   * can process configuration changes (Raft protocol requirement). This method sends a no-op
-   * message first to ensure the leader has committed from its current term, then issues the
-   * setConfiguration call with bounded retry.
+   * Rebuilding the arguments each attempt is what makes {@code COMPARE_AND_SET} removals safe: a retry
+   * after a CAS mismatch (a concurrent membership change) re-snapshots the current configuration so the
+   * next attempt's precondition is fresh. It also survives the window on a fresh cluster where a newly
+   * elected leader has not yet committed an entry from its own term and therefore transiently rejects
+   * configuration changes. A {@code null} from the supplier means the goal is already met and the call
+   * returns successfully.
    */
-  private void setConfigurationWithRetry(final List<RaftPeer> peers, final String operationDesc) {
+  private void setConfigurationWithRetry(final Supplier<SetConfigurationRequest.Arguments> argsSupplier,
+      final String operationDesc) {
     final long deadline = System.currentTimeMillis() + 90_000;
     long sleepMs = 200;
 
     while (true) {
       try {
-        final RaftClientReply reply = raftHAServer.getClient().admin().setConfiguration(peers);
+        // Rebuild the arguments on every attempt so COMPARE_AND_SET retries re-snapshot the current
+        // configuration after a concurrent change (issue #4795). A null result means the goal is
+        // already met (e.g. the peer was removed by a concurrent change).
+        final SetConfigurationRequest.Arguments args = argsSupplier.get();
+        if (args == null)
+          return;
+
+        final RaftClientReply reply = raftHAServer.getClient().admin().setConfiguration(args);
         if (reply.isSuccess())
           return;
 
