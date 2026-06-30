@@ -821,8 +821,16 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
       transactionBroker = null;
     }
 
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S))
-      leaveCluster();
+    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)) {
+      // Best-effort graceful leave during shutdown: leaveCluster() now surfaces failures (issue #4796),
+      // but the pod is going down regardless, so a refusal (e.g. would breach quorum) or a transient
+      // error must not abort the shutdown sequence.
+      try {
+        leaveCluster();
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING, "Could not leave cluster gracefully on shutdown: %s", e.getMessage());
+      }
+    }
 
     // Suppress noisy Ratis gRPC warnings during shutdown (AlreadyClosedException, CANCELLED streams).
     // These are harmless - internal replication threads take a moment to notice the server is closed.
@@ -1222,6 +1230,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     clusterManager.removePeer(peerId);
   }
 
+  public void removePeer(final String peerId, final boolean force) {
+    clusterManager.removePeer(peerId, force);
+  }
+
   /**
    * Registers or updates the display name for a peer. The stored value is
    * formatted as {@code name (httpAddress)} when the peer's HTTP address is known.
@@ -1338,6 +1350,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
   public void leaveCluster() {
     clusterManager.leaveCluster();
+  }
+
+  public void leaveCluster(final boolean force) {
+    clusterManager.leaveCluster(force);
   }
 
   public void notifyApplied() {

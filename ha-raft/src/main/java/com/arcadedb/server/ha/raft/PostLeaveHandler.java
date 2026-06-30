@@ -18,12 +18,15 @@
  */
 package com.arcadedb.server.ha.raft;
 
+import com.arcadedb.exception.ConfigurationException;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.http.handler.AbstractServerHttpHandler;
 import com.arcadedb.server.http.handler.ExecutionResponse;
 import com.arcadedb.server.security.ServerSecurityUser;
 import io.undertow.server.HttpServerExchange;
+
+import java.util.Deque;
 
 public class PostLeaveHandler extends AbstractServerHttpHandler {
 
@@ -42,7 +45,14 @@ public class PostLeaveHandler extends AbstractServerHttpHandler {
       return new ExecutionResponse(400, new JSONObject().put("error", "Raft HA is not enabled").toString());
 
     final String localPeerId = raftHAServer.getLocalPeerId().toString();
-    raftHAServer.leaveCluster();
+    final Deque<String> forceParam = exchange.getQueryParameters().get("force");
+    final boolean force = forceParam != null && !forceParam.isEmpty() && Boolean.parseBoolean(forceParam.getFirst());
+    try {
+      raftHAServer.leaveCluster(force);
+    } catch (final ConfigurationException e) {
+      // Quorum guard refusal or a failed configuration change: surface it instead of a misleading 200.
+      return new ExecutionResponse(409, new JSONObject().put("error", e.getMessage()).toString());
+    }
     return new ExecutionResponse(200,
         new JSONObject().put("result", "Server " + localPeerId + " leaving cluster").toString());
   }

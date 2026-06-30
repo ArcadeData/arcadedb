@@ -83,19 +83,51 @@ class RaftClusterManager {
   }
 
   void removePeer(final String peerId) {
-    final Collection<RaftPeer> livePeers = raftHAServer.getLivePeers();
+    removePeer(peerId, false);
+  }
+
+  void removePeer(final String peerId, final boolean force) {
+    final Collection<RaftPeer> currentPeers = raftHAServer.getLivePeers();
     final List<RaftPeer> newPeers = new ArrayList<>();
-    for (final RaftPeer peer : livePeers)
+    for (final RaftPeer peer : currentPeers)
       if (!peer.getId().toString().equals(peerId))
         newPeers.add(peer);
 
-    if (newPeers.size() == livePeers.size())
+    if (newPeers.size() == currentPeers.size())
       throw new ConfigurationException("Peer " + peerId + " not found in cluster");
+
+    ensureQuorumPreserved(peerId, currentPeers.size(), newPeers.size(), force);
 
     setConfigurationWithRetry(newPeers, "remove peer " + peerId);
 
     raftHAServer.getHttpAddresses().remove(RaftPeerId.valueOf(peerId));
     LogManager.instance().log(this, Level.INFO, "Peer %s removed from Raft cluster", peerId);
+  }
+
+  /**
+   * Quorum size (voting majority) for a cluster of {@code total} members: {@code floor(total/2)+1}.
+   */
+  static int quorumOf(final int total) {
+    return total / 2 + 1;
+  }
+
+  /**
+   * Refuses a membership removal that would leave the cluster without a voting majority, unless
+   * {@code force} is set. The resulting configuration must retain at least {@code quorumOf(total)}
+   * voters of the current {@code total}; dropping below that loses fault tolerance or, worse, leaves
+   * the cluster unable to commit the very configuration change (it needs the old majority), so the
+   * node's belief and the committed config diverge or the cluster wedges with no leader (issue #4796).
+   *
+   * @throws ConfigurationException if the removal would breach quorum and {@code force} is false
+   */
+  static void ensureQuorumPreserved(final String peerId, final int total, final int remaining, final boolean force) {
+    if (force)
+      return;
+    final int quorum = quorumOf(total);
+    if (remaining < quorum)
+      throw new ConfigurationException(String.format(
+          "Refusing to remove peer %s: the cluster would drop to %d voter(s), below the quorum of %d required by the current %d-node configuration. Retry with force=true to override.",
+          peerId, remaining, quorum, total));
   }
 
   boolean transferLeadership(final long timeoutMs) {
@@ -193,52 +225,69 @@ class RaftClusterManager {
   }
 
   void leaveCluster() {
+    leaveCluster(false);
+  }
+
+  /**
+   * Gracefully removes this node from the Raft group, transferring leadership first if this node is
+   * the leader.
+   * <p>
+   * Unlike the previous implementation it does NOT swallow failures: a refusal to drop the cluster
+   * below quorum (issue #4796) or a genuine {@code setConfiguration} failure propagates to the caller
+   * so the operator (or the HTTP {@code /leave} endpoint) learns the node is still a committed member
+   * rather than getting a false "left" acknowledgement. The leadership-transfer step stays best-effort:
+   * if it fails the removal is still attempted (and the quorum guard still protects it).
+   *
+   * @param force when true, bypass the quorum guard (use only for an intentional scale-down to a
+   *              cluster that may temporarily lose fault tolerance)
+   */
+  void leaveCluster(final boolean force) {
     if (raftHAServer.getClient() == null)
       return;
 
     final RaftPeerId localPeerId = raftHAServer.getLocalPeerId();
 
-    try {
-      final Collection<RaftPeer> livePeers = raftHAServer.getLivePeers();
-      if (livePeers.size() <= 1) {
-        HALog.log(this, HALog.BASIC, "Single-node cluster, skipping leave");
-        return;
-      }
+    final Collection<RaftPeer> currentPeers = raftHAServer.getLivePeers();
+    if (currentPeers.size() <= 1) {
+      HALog.log(this, HALog.BASIC, "Single-node cluster, skipping leave");
+      return;
+    }
 
-      if (raftHAServer.isLeader()) {
-        final Object leaderChangeNotifier = raftHAServer.getLeaderChangeNotifier();
-        for (final RaftPeer peer : livePeers) {
-          if (!peer.getId().equals(localPeerId)) {
-            HALog.log(this, HALog.BASIC,
-                "Leaving cluster: transferring leadership to %s before removal", peer.getId());
-            try {
-              transferLeadership(peer.getId().toString(), 10_000);
-              final long deadline = System.currentTimeMillis() + 5_000;
-              synchronized (leaderChangeNotifier) {
-                while (raftHAServer.isLeader()) {
-                  final long remaining = deadline - System.currentTimeMillis();
-                  if (remaining <= 0)
-                    break;
-                  leaderChangeNotifier.wait(remaining);
-                }
+    // Fail fast before transferring leadership if leaving would breach quorum, unless forced.
+    ensureQuorumPreserved(localPeerId.toString(), currentPeers.size(), currentPeers.size() - 1, force);
+
+    if (raftHAServer.isLeader()) {
+      final Object leaderChangeNotifier = raftHAServer.getLeaderChangeNotifier();
+      for (final RaftPeer peer : currentPeers) {
+        if (!peer.getId().equals(localPeerId)) {
+          HALog.log(this, HALog.BASIC,
+              "Leaving cluster: transferring leadership to %s before removal", peer.getId());
+          try {
+            transferLeadership(peer.getId().toString(), 10_000);
+            final long deadline = System.currentTimeMillis() + 5_000;
+            synchronized (leaderChangeNotifier) {
+              while (raftHAServer.isLeader()) {
+                final long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0)
+                  break;
+                leaderChangeNotifier.wait(remaining);
               }
-            } catch (final Exception e) {
-              HALog.log(this, HALog.BASIC,
-                  "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
             }
-            break;
+          } catch (final InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            throw new ConfigurationException("Interrupted while leaving cluster", ie);
+          } catch (final Exception e) {
+            HALog.log(this, HALog.BASIC,
+                "Leadership transfer failed (%s), proceeding with removal", e.getMessage());
           }
+          break;
         }
       }
-
-      HALog.log(this, HALog.BASIC, "Leaving cluster: removing self (%s) from Raft group", localPeerId);
-      removePeer(localPeerId.toString());
-      HALog.log(this, HALog.BASIC, "Successfully left the Raft cluster");
-
-    } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING,
-          "Failed to leave cluster gracefully: %s", e.getMessage());
     }
+
+    HALog.log(this, HALog.BASIC, "Leaving cluster: removing self (%s) from Raft group", localPeerId);
+    removePeer(localPeerId.toString(), force);
+    HALog.log(this, HALog.BASIC, "Successfully left the Raft cluster");
   }
 
   /**
