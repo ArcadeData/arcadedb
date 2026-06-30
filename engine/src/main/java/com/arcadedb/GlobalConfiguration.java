@@ -649,6 +649,30 @@ public enum GlobalConfiguration {
       "Maximum size in bytes for HTTP request body content. Set to -1 for unlimited size (WARNING: removes DoS protection). Default is 100MB",
       Long.class, 100L * 1024 * 1024), // 100MB DEFAULT
 
+  // SERVER gRPC
+  SERVER_GRPC_QUERY_MAX_RESULT_ROWS("arcadedb.server.grpcQueryMaxResultRows", SCOPE.SERVER,
+      """
+      Maximum number of rows the gRPC unary ExecuteQuery returns when the request specifies no positive limit. \
+      Bounds heap usage and protects against limitless-query DoS by capping the materialized response. \
+      Set to -1 for unlimited (WARNING: removes DoS protection). Default is 100000.""",
+      Integer.class, 100_000),
+
+  SERVER_GRPC_STREAM_MAX_MATERIALIZED_ROWS("arcadedb.server.grpcStreamMaxMaterializedRows", SCOPE.SERVER,
+      """
+      Maximum number of rows the gRPC StreamQuery MATERIALIZE_ALL retrieval mode buffers in memory before \
+      emitting. Exceeding the cap fails the call with RESOURCE_EXHAUSTED so clients fall back to CURSOR/PAGED \
+      streaming instead of running the server out of memory. Set to -1 for unlimited (WARNING: removes DoS \
+      protection). Default is 1000000.""",
+      Integer.class, 1_000_000),
+
+  SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS("arcadedb.server.grpcStreamWriteTimeoutMs", SCOPE.SERVER,
+      """
+      Maximum time in milliseconds a gRPC StreamQuery worker waits for the client transport to become ready to \
+      accept the next batch before aborting the stream. Prevents a slow or abandoned client from pinning the \
+      worker thread (and the open ResultSet/transaction) indefinitely. Set to -1 to wait forever (WARNING: \
+      removes DoS protection). Default is 60000 (60s).""",
+      Long.class, 60_000L),
+
   // SERVER WS
   SERVER_WS_EVENT_BUS_QUEUE_SIZE("arcadedb.server.eventBusQueueSize", SCOPE.SERVER,
       "Size of the queue used as a buffer for unserviced database change events.", Integer.class, 1000),

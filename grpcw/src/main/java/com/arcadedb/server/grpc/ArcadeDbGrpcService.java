@@ -18,6 +18,7 @@
  */
 package com.arcadedb.server.grpc;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.database.DatabaseContext;
@@ -102,6 +103,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.logging.Level;
 
@@ -981,6 +983,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         // Process results
         int count = 0;
 
+        // Bound the materialized response. An explicit positive limit always wins; otherwise fall back to
+        // the configured cap so a limitless query cannot build an unbounded response and exhaust heap (DoS).
+        final int requestedLimit = request.getLimit();
+        final int configuredMax = GlobalConfiguration.SERVER_GRPC_QUERY_MAX_RESULT_ROWS.getValueAsInteger();
+        final int effectiveLimit = requestedLimit > 0 ? requestedLimit : configuredMax; // <= 0 means unlimited
+
         LogManager.instance().log(this, Level.FINE, "executeQuery(): resultSet.size = %s",
             resultSet.getExactSizeIfKnown());
 
@@ -1001,8 +1009,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
           count++;
 
-          // Apply limit if specified
-          if (request.getLimit() > 0 && count >= request.getLimit()) {
+          // Apply the effective limit (explicit request limit, or the configured DoS-protection cap).
+          if (effectiveLimit > 0 && count >= effectiveLimit) {
             break;
           }
         }
@@ -1348,7 +1356,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       }
 
       if (!cancelled.get()) {
-        responseObserver.onError(Status.INTERNAL.withDescription("Stream query failed: " + e.getMessage()).asException());
+        // Preserve an explicit gRPC status (e.g. RESOURCE_EXHAUSTED from the MATERIALIZE_ALL cap) instead of
+        // masking it as INTERNAL; only genuinely unexpected failures are reported as INTERNAL.
+        if (e instanceof StatusRuntimeException sre)
+          responseObserver.onError(sre);
+        else
+          responseObserver.onError(Status.INTERNAL.withDescription("Stream query failed: " + e.getMessage()).asException());
       }
     } finally {
       // Stream endpoints mix engine iteration and row serialization throughout; expose the
@@ -1442,6 +1455,11 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
 
     final List<GrpcRecord> all = new ArrayList<>();
 
+    // MATERIALIZE_ALL buffers the whole result before emitting, so bound it: a limitless query in this mode
+    // would otherwise build an unbounded list and exhaust heap (DoS). Exceeding the cap fails the call with
+    // RESOURCE_EXHAUSTED so the client can fall back to CURSOR/PAGED streaming.
+    final int maxMaterializedRows = GlobalConfiguration.SERVER_GRPC_STREAM_MAX_MATERIALIZED_ROWS.getValueAsInteger();
+
     try (ResultSet rs = db.query(language, request.getQuery(),
         GrpcTypeConverter.convertParameters(request.getParametersMap()))) {
 
@@ -1463,6 +1481,13 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
           }
 
           all.add(rb.build());
+        }
+
+        if (maxMaterializedRows > 0 && all.size() > maxMaterializedRows) {
+          throw Status.RESOURCE_EXHAUSTED
+              .withDescription("MATERIALIZE_ALL result exceeds the maximum of " + maxMaterializedRows
+                  + " buffered rows (arcadedb.server.grpcStreamMaxMaterializedRows); use CURSOR or PAGED retrieval mode for large results")
+              .asRuntimeException();
         }
       }
     }
@@ -1599,21 +1624,46 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
   }
 
   private void waitUntilReady(ServerCallStreamObserver<?> scso, AtomicBoolean cancelled) {
-    // Skip if you're okay with best-effort pushes; otherwise honor transport
-    // readiness
-    if (scso.isReady())
-      return;
-    while (!scso.isReady()) {
+    // Honor transport readiness, but bound the wait: a slow or abandoned client must not pin this worker
+    // thread (and the open ResultSet/transaction) indefinitely.
+    final long timeoutMs = GlobalConfiguration.SERVER_GRPC_STREAM_WRITE_TIMEOUT_MS.getValueAsLong();
+    if (!awaitTransportReady(scso::isReady, cancelled, timeoutMs)) {
+      // Not ready: either the caller already cancelled, or we hit the deadline / were interrupted. In the
+      // latter case mark the stream cancelled so the surrounding loop stops, rolls back, and releases the
+      // ResultSet/transaction instead of busy-waiting forever.
+      if (!cancelled.get()) {
+        cancelled.set(true);
+        LogManager.instance().log(this, Level.WARNING,
+            "gRPC stream aborted: client transport not ready within %d ms (slow or abandoned consumer)", timeoutMs);
+      }
+    }
+  }
+
+  /**
+   * Waits for {@code ready} to report {@code true}, bounded by {@code timeoutMs}. Returns {@code true} only if
+   * the transport became ready; returns {@code false} if {@code cancelled} is set, the deadline elapses, or the
+   * thread is interrupted. A non-positive {@code timeoutMs} means wait indefinitely (legacy behavior).
+   *
+   * <p>Extracted from {@link #waitUntilReady} so the deadline can be unit-tested without a live gRPC transport.
+   */
+  static boolean awaitTransportReady(final BooleanSupplier ready, final AtomicBoolean cancelled, final long timeoutMs) {
+    if (ready.getAsBoolean())
+      return true;
+    final long deadline = timeoutMs > 0 ? System.currentTimeMillis() + timeoutMs : Long.MAX_VALUE;
+    while (!ready.getAsBoolean()) {
       if (cancelled.get())
-        return;
+        return false;
+      if (System.currentTimeMillis() >= deadline)
+        return false;
       // avoid burning CPU:
       try {
         Thread.sleep(1);
-      } catch (InterruptedException ie) {
+      } catch (final InterruptedException ie) {
         Thread.currentThread().interrupt();
-        return;
+        return false;
       }
     }
+    return true;
   }
 
   // --- 1) Unary bulk ---
