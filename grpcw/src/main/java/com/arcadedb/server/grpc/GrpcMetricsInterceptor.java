@@ -18,7 +18,6 @@
  */
 package com.arcadedb.server.grpc;
 
-import com.arcadedb.server.ArcadeDBServer;
 import io.grpc.ForwardingServerCall;
 import io.grpc.Metadata;
 import io.grpc.ServerCall;
@@ -28,53 +27,51 @@ import io.grpc.Status;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
-import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 /**
- * Metrics interceptor for gRPC requests using Micrometer
+ * Metrics interceptor for gRPC requests using Micrometer.
+ * <p>
+ * Meters are registered into the shared {@link MeterRegistry} handed in by the gRPC plugin (the
+ * server's JVM-wide {@code io.micrometer.core.instrument.Metrics#globalRegistry}), so the same
+ * exporters that scrape the rest of the server (Prometheus, OTLP, JMX, the Studio "Server" tab)
+ * also see gRPC telemetry. Each meter carries a {@code method} tag (and, for errors/latency, a
+ * {@code status} tag) instead of stuffing per-call values into call trailers, so operators can
+ * slice request/error/duration by gRPC method and gRPC status code.
  */
 class GrpcMetricsInterceptor implements ServerInterceptor {
 
+  static final String REQUESTS_METER = "grpc.requests.total";
+  static final String ERRORS_METER   = "grpc.errors.total";
+  static final String DURATION_METER = "grpc.request.duration";
+
   private final MeterRegistry meterRegistry;
-  private final Counter       requestCounter;
-  private final Counter       errorCounter;
-  private final Timer         requestTimer;
 
-  public GrpcMetricsInterceptor(ArcadeDBServer server) {
-    // Try to get existing meter registry from server, or create a simple one
-    this.meterRegistry = new SimpleMeterRegistry(); // In production, integrate with server's meter registry
-
-    this.requestCounter = Counter.builder("grpc.requests.total")
-        .description("Total number of gRPC requests")
-        .register(meterRegistry);
-
-    this.errorCounter = Counter.builder("grpc.errors.total")
-        .description("Total number of gRPC errors")
-        .register(meterRegistry);
-
-    this.requestTimer = Timer.builder("grpc.request.duration")
-        .description("gRPC request duration")
-        .register(meterRegistry);
+  GrpcMetricsInterceptor(final MeterRegistry meterRegistry) {
+    this.meterRegistry = meterRegistry;
   }
 
   @Override
   public <ReqT, RespT> ServerCall.Listener<ReqT> interceptCall(
-      ServerCall<ReqT, RespT> call,
-      Metadata headers,
-      ServerCallHandler<ReqT, RespT> next) {
+      final ServerCall<ReqT, RespT> call,
+      final Metadata headers,
+      final ServerCallHandler<ReqT, RespT> next) {
 
-    String methodName = call.getMethodDescriptor().getFullMethodName();
-    Timer.Sample sample = Timer.start(meterRegistry);
+    final String methodName = call.getMethodDescriptor().getFullMethodName();
+    final Timer.Sample sample = Timer.start(meterRegistry);
 
-    requestCounter.increment();
+    Counter.builder(REQUESTS_METER)
+        .description("Total number of gRPC requests")
+        .tag("method", methodName)
+        .register(meterRegistry)
+        .increment();
 
-    ServerCall<ReqT, RespT> wrappedCall = new ForwardingServerCall.SimpleForwardingServerCall<ReqT, RespT>(call) {
+    final ServerCall<ReqT, RespT> wrappedCall = new ForwardingServerCall.SimpleForwardingServerCall<ReqT, RespT>(call) {
       // gRPC may invoke sendMessage and close on different threads, so publish the flag with
       // volatile to guarantee the value written in sendMessage is visible in close.
       private volatile boolean inBandFailure = false;
 
       @Override
-      public void sendMessage(RespT message) {
+      public void sendMessage(final RespT message) {
         // executeCommand reports execution failures in-band as ExecuteCommandResponse.success=false
         // while still closing the RPC with status OK (unlike executeQuery/createRecord, which call
         // onError). Without this check every command failure would be counted as a success. Detect
@@ -86,16 +83,22 @@ class GrpcMetricsInterceptor implements ServerInterceptor {
       }
 
       @Override
-      public void close(Status status, Metadata trailers) {
-        sample.stop(requestTimer);
+      public void close(final Status status, final Metadata trailers) {
+        final String statusCode = status.getCode().toString();
 
-        if (!status.isOk() || inBandFailure) {
-          errorCounter.increment();
-        }
+        sample.stop(Timer.builder(DURATION_METER)
+            .description("gRPC request duration")
+            .tag("method", methodName)
+            .tag("status", statusCode)
+            .register(meterRegistry));
 
-        // Add metrics as trailers for observability
-        trailers.put(Metadata.Key.of("grpc-metrics-method", Metadata.ASCII_STRING_MARSHALLER), methodName);
-        trailers.put(Metadata.Key.of("grpc-metrics-status", Metadata.ASCII_STRING_MARSHALLER), status.getCode().toString());
+        if (!status.isOk() || inBandFailure)
+          Counter.builder(ERRORS_METER)
+              .description("Total number of gRPC errors")
+              .tag("method", methodName)
+              .tag("status", statusCode)
+              .register(meterRegistry)
+              .increment();
 
         super.close(status, trailers);
       }
@@ -105,18 +108,18 @@ class GrpcMetricsInterceptor implements ServerInterceptor {
   }
 
   /**
-   * Current value of the gRPC error counter. Exposed for testing so that error accounting
-   * (including in-band command failures reported as ExecuteCommandResponse.success=false) can be
-   * verified without reflection.
+   * Current value of the gRPC error counter, summed across all method/status tags. Exposed for
+   * testing so that error accounting (including in-band command failures reported as
+   * ExecuteCommandResponse.success=false) can be verified without reflection.
    */
   double getErrorCount() {
-    return errorCounter.count();
+    return meterRegistry.find(ERRORS_METER).counters().stream().mapToDouble(Counter::count).sum();
   }
 
   /**
-   * Current value of the gRPC request counter. Exposed for testing.
+   * Current value of the gRPC request counter, summed across all method tags. Exposed for testing.
    */
   double getRequestCount() {
-    return requestCounter.count();
+    return meterRegistry.find(REQUESTS_METER).counters().stream().mapToDouble(Counter::count).sum();
   }
 }

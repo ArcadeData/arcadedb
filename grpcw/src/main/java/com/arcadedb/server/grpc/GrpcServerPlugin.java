@@ -39,6 +39,7 @@ import io.grpc.netty.shaded.io.grpc.netty.NettyServerBuilder;
 import io.grpc.protobuf.services.HealthStatusManager;
 import io.grpc.protobuf.services.ProtoReflectionService;
 import io.grpc.xds.XdsServerBuilder;
+import io.micrometer.core.instrument.Metrics;
 
 import java.io.File;
 import java.io.IOException;
@@ -250,7 +251,9 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     // Add interceptors for logging, metrics, auth, etc.
     serverBuilder.intercept(new GrpcLoggingInterceptor());
-    serverBuilder.intercept(new GrpcMetricsInterceptor(arcadeServer));
+    // Publish gRPC metrics into the server's shared JVM-wide registry so the same exporters that
+    // scrape the rest of the server (Prometheus, OTLP, JMX, Studio) also see gRPC telemetry.
+    serverBuilder.intercept(new GrpcMetricsInterceptor(Metrics.globalRegistry));
 
     // Add compression interceptor if force compression is enabled
     if (getConfigBoolean(config, CONFIG_COMPRESSION_FORCE, false)) {
