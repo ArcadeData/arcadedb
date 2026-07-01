@@ -483,4 +483,84 @@ class RaftLogEntryCodecTest {
             () -> RaftLogEntryCodec.decode(ByteString.copyFrom(corrupted)))
         .isInstanceOf(IllegalStateException.class);
   }
+
+  // --- Embedded WAL section truncation/backward-compatibility (issue #4825) ---
+
+  // Wire-format offsets of an encoded SCHEMA_ENTRY with dbName "testdb", schema "{}", empty file maps,
+  // and a single embedded WAL entry. Computed explicitly (rather than via a fraction of the entry size)
+  // so the truncation points stay anchored to the format if the encoder or compression ratio changes.
+  // Layout: type(1) + writeUTF("testdb")=2+6 + schemaLen(4)+"{}"(2) + filesToAdd count(4)
+  //         + filesToRemove count(4) + walCount(4) + walUncompressedLen(4) + walCompressedLen(4) ...
+  private static final int SCHEMA_WAL_COUNT_END     = 1 + (2 + 6) + (4 + 2) + 4 + 4 + 4; // = 27
+  private static final int SCHEMA_WAL_PAYLOAD_START = SCHEMA_WAL_COUNT_END + 4 + 4;       // = 35
+
+  @Test
+  void decodeSchemaEntryWithTruncatedWalPayloadThrows() {
+    // A SCHEMA_ENTRY whose embedded WAL section is present but truncated mid-payload must surface as a
+    // decode failure, not silently decode with empty/partial WAL entries. A silently emptied WAL
+    // section makes a follower apply the schema change with missing index/WAL pages (the
+    // "Cannot find indexes ..." class of failure) with no error surfaced.
+    final byte[] walData = new byte[4096];
+    for (int i = 0; i < walData.length; i++)
+      walData[i] = (byte) ((i * 31 + 7) ^ (i >>> 3));
+    final Map<Integer, Integer> delta = Map.of(1, 5);
+
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{}",
+        Map.of(), Map.of(), List.of(walData), List.of(delta));
+
+    // Cut a few bytes into the compressed WAL payload: the WAL count and both length prefixes are read
+    // in full, then readFully hits EOF inside the payload.
+    final int cut = SCHEMA_WAL_PAYLOAD_START + 4;
+    assertThat(cut).isLessThan(encoded.size());
+    final ByteString truncated = encoded.substring(0, cut);
+
+    Assertions.assertThatThrownBy(() -> RaftLogEntryCodec.decode(truncated))
+        .isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  void decodeSchemaEntryTruncatedInWalLengthPrefixThrows() {
+    // Boundary semantics: once the WAL count has been read, a truncation a couple of bytes into the
+    // first entry's length prefix (before any payload) must still propagate rather than being treated
+    // as an absent section.
+    final byte[] walData = new byte[64];
+    Arrays.fill(walData, (byte) 7);
+
+    final ByteString encoded = RaftLogEntryCodec.encodeSchemaEntry("testdb", "{}",
+        Map.of(), Map.of(), List.of(walData), List.of(Map.of(1, 5)));
+
+    final int cut = SCHEMA_WAL_COUNT_END + 2; // 2 of the 4 bytes of walUncompressedLen present
+    assertThat(cut).isLessThan(encoded.size());
+    final ByteString truncated = encoded.substring(0, cut);
+
+    Assertions.assertThatThrownBy(() -> RaftLogEntryCodec.decode(truncated))
+        .isInstanceOf(IllegalStateException.class);
+  }
+
+  @Test
+  void decodeLegacySchemaEntryWithoutWalSectionDecodesEmpty() throws Exception {
+    // Hand-crafted byte layout matching a pre-embedded-WAL SCHEMA_ENTRY: the stream ends right after
+    // the filesToRemove map, so the WAL-count read hits a clean EOF at the section boundary. This is
+    // the one legitimate "absent section" case and must still decode as an empty WAL section.
+    final ByteArrayOutputStream baos = new ByteArrayOutputStream();
+    try (final DataOutputStream dos = new DataOutputStream(baos)) {
+      dos.writeByte(RaftLogEntryType.SCHEMA_ENTRY.getId());
+      dos.writeUTF("legacydb");
+      final byte[] schemaBytes = "{}".getBytes(StandardCharsets.UTF_8);
+      dos.writeInt(schemaBytes.length);
+      dos.write(schemaBytes);
+      dos.writeInt(0); // filesToAdd: empty
+      dos.writeInt(0); // filesToRemove: empty
+      // no WAL section, no sealed-blob section
+    }
+    final ByteString legacy = ByteString.copyFrom(baos.toByteArray());
+
+    final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(legacy);
+
+    assertThat(decoded.type()).isEqualTo(RaftLogEntryType.SCHEMA_ENTRY);
+    assertThat(decoded.databaseName()).isEqualTo("legacydb");
+    assertThat(decoded.walEntries()).isEmpty();
+    assertThat(decoded.bucketDeltas()).isEmpty();
+    assertThat(decoded.sealedFileBlobs()).isEmpty();
+  }
 }
