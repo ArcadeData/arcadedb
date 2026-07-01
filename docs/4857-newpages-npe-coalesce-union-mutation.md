@@ -75,10 +75,16 @@ in-flight command; the session is re-evaluated on the next tick once the command
 and refreshes `lastUpdate`.
 
 The explicit `cancel()` path (client-initiated `/rollback`, `close()`, and server shutdown)
-now blocks unboundedly on the same lock (`lockInterruptibly()`) instead of giving up after a
-bounded wait: `close()` untracks the session from `HttpSessionManager` before calling
-`cancel()`, so a bounded wait that gave up while a command was still in-flight would leak the
-transaction - nothing else would ever roll it back afterward.
+now blocks unboundedly on the same lock (via a polling `tryLock` loop, functionally
+`lockInterruptibly()`) instead of giving up after a bounded wait: `close()` untracks the
+session from `HttpSessionManager` before calling `cancel()`, so a bounded wait that gave up
+while a command was still in-flight would leak the transaction - nothing else would ever roll
+it back afterward. The wait logs a throttled WARNING past 5s so a stuck server shutdown (which
+calls `cancel()` per session) is diagnosable instead of a silent hang.
+`HttpSessionManager.close()` also now snapshots the session list under the write lock before
+iterating, since `cancel()` can block for a while per session, widening the pre-existing window
+for a concurrent `checkSessionsValidity()` tick to mutate the same map underneath a live
+iterator.
 
 `execute()`'s own catch-block rollback calls a lock-free `rollbackIfActive()` helper directly
 instead of re-entering through `cancel()`: `ReentrantLock.lockInterruptibly()` checks the

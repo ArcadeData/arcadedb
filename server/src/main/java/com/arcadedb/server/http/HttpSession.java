@@ -90,14 +90,20 @@ public class HttpSession implements QuerySession {
    * Rolls back the session's transaction. Waits for any in-flight {@link #execute} to finish before doing so.
    * This wait is unbounded on purpose: callers such as {@link #close()} remove the session from
    * {@link HttpSessionManager} tracking first, so a bounded wait that gave up while a command was still
-   * in-flight would leak the transaction - nothing else would ever roll it back. Residual gap: if the
-   * calling thread is itself interrupted while waiting for the lock, this returns without rolling back and,
-   * since {@link #close()} has already untracked the session, nothing retries it - narrower than the
-   * bounded-timeout leak this method was written to close, but not eliminated for that one case.
+   * in-flight would leak the transaction - nothing else would ever roll it back. Logs a throttled WARNING if
+   * the wait exceeds {@link #DEFAULT_TIMEOUT}, so a stuck server shutdown (which calls this per session) is
+   * diagnosable instead of a silent hang. Residual gap: if the calling thread is itself interrupted while
+   * waiting for the lock, this returns without rolling back and, since {@link #close()} has already
+   * untracked the session, nothing retries it - narrower than the bounded-timeout leak this method was
+   * written to close, but not eliminated for that one case.
    */
   public boolean cancel() {
     try {
-      lock.lockInterruptibly();
+      final long start = System.currentTimeMillis();
+      while (!lock.tryLock(DEFAULT_TIMEOUT, TimeUnit.MILLISECONDS))
+        LogManager.instance().log(this, Level.WARNING,
+            "Session %s cancel() still waiting for an in-flight command to finish (%dms so far)", id,
+            System.currentTimeMillis() - start);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return false;

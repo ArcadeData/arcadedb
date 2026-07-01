@@ -59,11 +59,19 @@ public class HttpSessionManager extends RWLockContext {
   public void close() {
     timer.cancel();
 
-    // CANCEL ALL THE SESSIONS
-    for (Map.Entry<String, HttpSession> stringHttpSessionEntry : sessions.entrySet())
-      stringHttpSessionEntry.getValue().cancel();
+    // SNAPSHOT UNDER THE WRITE LOCK BEFORE ITERATING: session.cancel() BELOW CAN NOW BLOCK FOR A WHILE ON AN
+    // IN-FLIGHT COMMAND, WIDENING THE WINDOW FOR A CONCURRENT checkSessionsValidity() TICK (WHICH MUTATES
+    // `sessions` UNDER THE WRITE LOCK) TO RACE A LIVE ITERATOR OVER THE SAME MAP
+    final List<HttpSession> snapshot = executeInWriteLock(() -> new ArrayList<>(sessions.values()));
 
-    sessions.clear();
+    // CANCEL ALL THE SESSIONS
+    for (final HttpSession session : snapshot)
+      session.cancel();
+
+    executeInWriteLock(() -> {
+      sessions.clear();
+      return null;
+    });
   }
 
   public int checkSessionsValidity() {
