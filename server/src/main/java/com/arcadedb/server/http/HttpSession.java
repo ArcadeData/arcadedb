@@ -86,7 +86,66 @@ public class HttpSession implements QuerySession {
     return System.currentTimeMillis() - lastUpdate;
   }
 
+  /**
+   * Rolls back the session's transaction. Waits for any in-flight {@link #execute} to finish before doing so.
+   * This wait is unbounded on purpose: callers such as {@link #close()} remove the session from
+   * {@link HttpSessionManager} tracking first, so a bounded wait that gave up while a command was still
+   * in-flight would leak the transaction - nothing else would ever roll it back. Logs a throttled WARNING if
+   * the wait exceeds {@link #DEFAULT_TIMEOUT}, so a stuck server shutdown (which calls this per session) is
+   * diagnosable instead of a silent hang. Residual gap: if the calling thread is itself interrupted while
+   * waiting for the lock, this returns without rolling back and, since {@link #close()} has already
+   * untracked the session, nothing retries it - narrower than the bounded-timeout leak this method was
+   * written to close, but not eliminated for that one case.
+   */
   public boolean cancel() {
+    try {
+      final long start = System.currentTimeMillis();
+      while (!lock.tryLock(DEFAULT_TIMEOUT, TimeUnit.MILLISECONDS))
+        LogManager.instance().log(this, Level.WARNING,
+            "Session %s cancel() still waiting for an in-flight command to finish (%dms so far)", id,
+            System.currentTimeMillis() - start);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+
+    try {
+      return rollbackIfActive();
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  /**
+   * Rolls back the session's transaction only if no command is currently executing on it. Used by the
+   * idle-timeout sweep ({@link HttpSessionManager#checkSessionsValidity}), which runs on a background timer
+   * thread and must never tear down a transaction while a worker thread is still inside {@link #execute}
+   * mutating it - doing so raced {@code TransactionContext.rollback()} against in-flight page mutations and
+   * could surface as an NPE on a just-nulled transaction field (issue #4857). If a command is in-flight, this
+   * is a no-op; the session is re-evaluated on the sweep's next tick once the command finishes and refreshes
+   * {@link #lastUpdate}.
+   *
+   * @return {@link IdleCancelOutcome#BUSY} if a command is currently in-flight and the sweep must retry
+   * later, {@link IdleCancelOutcome#ROLLED_BACK} if idle and an active transaction was rolled back, or
+   * {@link IdleCancelOutcome#ALREADY_IDLE} if idle but there was no active transaction to roll back
+   */
+  IdleCancelOutcome cancelIfIdle() {
+    if (!lock.tryLock())
+      return IdleCancelOutcome.BUSY;
+
+    try {
+      return rollbackIfActive() ? IdleCancelOutcome.ROLLED_BACK : IdleCancelOutcome.ALREADY_IDLE;
+    } finally {
+      lock.unlock();
+    }
+  }
+
+  enum IdleCancelOutcome {BUSY, ROLLED_BACK, ALREADY_IDLE}
+
+  /**
+   * Rolls back the transaction if active. Must be called while holding {@code lock}.
+   */
+  private boolean rollbackIfActive() {
     try {
       if (transaction != null && transaction.isActive()) {
         transaction.rollback();
@@ -108,9 +167,16 @@ public class HttpSession implements QuerySession {
       try {
         LogManager.instance().log(this, Level.FINE, "Executing session %s for user %s", id, user.getName());
         callback.call();
+        // REFRESH WHILE STILL HOLDING THE LOCK: OTHERWISE THE IDLE-TIMEOUT SWEEP COULD tryLock() SUCCESSFULLY
+        // IN THE GAP BETWEEN UNLOCK AND THIS ASSIGNMENT, SEE A STALE lastUpdate, AND ROLL BACK A TRANSACTION
+        // WHOSE COMMAND JUST FINISHED
+        lastUpdate = System.currentTimeMillis();
       } catch (Exception e) {
-        // ROLLBACK SERVER-SIDE TRANSACTION
-        cancel();
+        // ROLLBACK SERVER-SIDE TRANSACTION. CALL rollbackIfActive() DIRECTLY (NOT cancel()): THIS THREAD
+        // ALREADY HOLDS `lock` HERE, AND ReentrantLock.lockInterruptibly() CHECKS Thread.interrupted() BEFORE
+        // ITS REENTRANT FAST PATH - IF THIS THREAD'S INTERRUPT FLAG IS SET, cancel() WOULD THROW
+        // InterruptedException AND SILENTLY SKIP THE ROLLBACK
+        rollbackIfActive();
         throw e;
       } finally {
         lock.unlock();
@@ -119,7 +185,6 @@ public class HttpSession implements QuerySession {
       throw new LockTimeoutException("Timeout on locking http session");
     }
 
-    lastUpdate = System.currentTimeMillis();
     return this;
   }
 }
