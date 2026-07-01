@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue4141SessionManagementIT extends BaseGraphServerTest {
+class Issue4141SessionManagementIT extends BaseGraphServerTest {
   @Test
   void sessionParametersFlowAcrossCommandsThenCloseInvalidates() throws Exception {
     testEachServer(serverIndex -> {

@@ -24,6 +24,7 @@ import io.github.jbellis.jvector.vector.VectorizationProvider;
 import io.github.jbellis.jvector.vector.types.VectorFloat;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.logging.Level;
 
@@ -252,7 +253,7 @@ public final class VectorUtils {
    */
   public static StringFormat parseStringFormat(final String name) {
     try {
-      return StringFormat.valueOf(name.toUpperCase(java.util.Locale.ROOT));
+      return StringFormat.valueOf(name.toUpperCase(Locale.ROOT));
     } catch (final IllegalArgumentException e) {
       throw new IllegalArgumentException(
           "Unknown format: " + name + ". Supported: COMPACT, PRETTY, PYTHON, MATLAB, MATLAB_COLUMN, JULIA, NUMPY");

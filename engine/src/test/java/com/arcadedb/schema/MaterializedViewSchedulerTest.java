@@ -34,7 +34,7 @@ class MaterializedViewSchedulerTest {
 
   @Test
   void reschedulingCancelsThePreviousTask() throws Exception {
-    TestHelper.executeInNewDatabase("MaterializedViewSchedulerTest", (database) -> {
+    TestHelper.executeInNewDatabase("MaterializedViewSchedulerTest", database -> {
       final MaterializedViewScheduler scheduler = new MaterializedViewScheduler();
       try {
         final MaterializedViewImpl view = newPeriodicView(database);
@@ -56,7 +56,7 @@ class MaterializedViewSchedulerTest {
 
   @Test
   void cancelStopsTheScheduledTask() throws Exception {
-    TestHelper.executeInNewDatabase("MaterializedViewSchedulerTest", (database) -> {
+    TestHelper.executeInNewDatabase("MaterializedViewSchedulerTest", database -> {
       final MaterializedViewScheduler scheduler = new MaterializedViewScheduler();
       try {
         final MaterializedViewImpl view = newPeriodicView(database);

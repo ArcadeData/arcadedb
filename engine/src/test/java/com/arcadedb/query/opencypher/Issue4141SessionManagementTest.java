@@ -50,7 +50,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue4141SessionManagementTest {
+class Issue4141SessionManagementTest {
   private Database    database;
   private FakeSession session;
 

@@ -26,7 +26,6 @@ import org.apache.ratis.util.LifeCycle;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import java.io.IOException;
 import java.lang.reflect.Proxy;
 import java.nio.file.Path;
 import java.util.UUID;
@@ -51,7 +50,7 @@ class ArcadeStateMachineLifecycleTest {
    * the lifecycle stays {@code NEW} and {@code pause()} silently skips the transition.
    */
   @Test
-  void initializeStartsLifecycleToRunning(@TempDir final Path tempDir) throws IOException {
+  void initializeStartsLifecycleToRunning(@TempDir final Path tempDir) throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     assertThat(sm.getLifeCycleState())
         .as("fresh state machine must start in NEW")
@@ -105,7 +104,7 @@ class ArcadeStateMachineLifecycleTest {
    * separately verifies that {@code initialize()} itself performs this start.
    */
   @Test
-  void pauseThenReinitializeFollowsLifecycleContractRequiredByReload() throws IOException {
+  void pauseThenReinitializeFollowsLifecycleContractRequiredByReload() throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
 
     // Simulate initialize(): start the lifecycle (NEW -> STARTING -> RUNNING)
@@ -132,7 +131,7 @@ class ArcadeStateMachineLifecycleTest {
   }
 
   @Test
-  void pauseIsIdempotentAfterAlreadyPaused() throws IOException {
+  void pauseIsIdempotentAfterAlreadyPaused() throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.getLifeCycle().transition(LifeCycle.State.STARTING);
     sm.getLifeCycle().transition(LifeCycle.State.RUNNING);
@@ -146,7 +145,7 @@ class ArcadeStateMachineLifecycleTest {
   }
 
   @Test
-  void reinitializeWithoutSnapshotLeavesLifecycleRunning() throws IOException {
+  void reinitializeWithoutSnapshotLeavesLifecycleRunning() throws Exception {
     final ArcadeStateMachine sm = new ArcadeStateMachine();
     sm.getLifeCycle().transition(LifeCycle.State.STARTING);
     sm.getLifeCycle().transition(LifeCycle.State.RUNNING);

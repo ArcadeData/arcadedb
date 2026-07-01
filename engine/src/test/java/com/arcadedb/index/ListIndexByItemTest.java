@@ -623,7 +623,7 @@ public class ListIndexByItemTest extends TestHelper {
       // Find the underlying bucket-level index name (not the TypeIndex wrapper)
       final String bucketIndexName = Arrays.stream(database.getSchema().getIndexes())
           .filter(idx -> idx.isAutomatic() && !(idx instanceof TypeIndex))
-          .filter(idx -> idx.getTypeName() != null && idx.getTypeName().equals("Doc"))
+          .filter(idx -> "Doc".equals(idx.getTypeName()))
           .findFirst()
           .map(idx -> idx.getName())
           .orElseThrow(() -> new AssertionError("No bucket-level index found for Doc"));

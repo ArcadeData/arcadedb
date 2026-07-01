@@ -3579,7 +3579,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       throw Status.INVALID_ARGUMENT.withDescription("Invalid database name: name is required").asRuntimeException();
     // A bare "." would resolve to the databases directory itself, so it is rejected alongside the
     // separator and parent-reference checks.
-    if (databaseName.equals(".") || databaseName.contains("/") || databaseName.contains("\\") || databaseName.contains(".."))
+    if (".".equals(databaseName) || databaseName.contains("/") || databaseName.contains("\\") || databaseName.contains(".."))
       throw Status.INVALID_ARGUMENT.withDescription("Invalid database name: " + databaseName).asRuntimeException();
   }
 

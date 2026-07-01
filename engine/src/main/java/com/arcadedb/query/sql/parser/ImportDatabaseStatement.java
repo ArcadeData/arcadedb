@@ -89,7 +89,7 @@ public class ImportDatabaseStatement extends SimpleExecStatement {
         if (cause instanceof SecurityException se)
           throw se;
 
-      if (e.getCause().getClass().getSimpleName().equals("IllegalArgumentException"))
+      if ("IllegalArgumentException".equals(e.getCause().getClass().getSimpleName()))
         result.setProperty("result", "FAIL");
       else
         throw new CommandExecutionException("Error on importing database", e.getTargetException());

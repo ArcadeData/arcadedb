@@ -33,7 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * helper {@link ArcadeDbGrpcService#awaitTransportReady} directly so the deadline behaviour is deterministic
  * without needing a real stalled gRPC channel.
  */
-public class Issue4803WaitUntilReadyTimeoutTest {
+class Issue4803WaitUntilReadyTimeoutTest {
 
   @Test
   void abortsAfterDeadlineWhenNeverReady() {

@@ -19,6 +19,7 @@
 package com.arcadedb.schema;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.serializer.json.JSONObject;
 
 import org.junit.jupiter.api.Test;
 
@@ -81,6 +82,6 @@ class CorruptSchemaRecoveryTest extends TestHelper {
     final String healed = Files.readString(schemaFile.toPath());
     assertThat(healed).contains("Customer").contains("Order");
     // And it must be parseable JSON again (no trailing truncation).
-    assertThat(new com.arcadedb.serializer.json.JSONObject(healed).has("types")).isTrue();
+    assertThat(new JSONObject(healed).has("types")).isTrue();
   }
 }

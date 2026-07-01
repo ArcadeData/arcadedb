@@ -108,7 +108,7 @@ class FullTextBM25CompactionTest extends TestHelper {
       assertThat(after.keySet()).isEqualTo(before.keySet());
       for (final Map.Entry<String, Float> e : after.entrySet()) {
         assertThat(e.getValue()).isCloseTo(before.get(e.getKey()), within(1e-4f));
-        if (!e.getKey().equals("rare"))
+        if (!"rare".equals(e.getKey()))
           assertThat(after.get("rare")).isGreaterThan(e.getValue());
       }
     });

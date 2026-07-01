@@ -93,7 +93,7 @@ public class MongoDBBackend extends AbstractMongoBackend {
 
     // An auth source of "admin" or "$external" maps to a server-wide credential check (database access is verified later).
     final String authDatabase =
-        databaseName == null || databaseName.equals("admin") || databaseName.startsWith("$") ? null : databaseName;
+        databaseName == null || "admin".equals(databaseName) || databaseName.startsWith("$") ? null : databaseName;
 
     try {
       server.getSecurity().authenticate(userName, userPassword, authDatabase);

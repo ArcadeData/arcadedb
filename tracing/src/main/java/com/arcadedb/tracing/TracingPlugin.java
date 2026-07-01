@@ -23,6 +23,8 @@ import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.server.ArcadeDBServer;
 import com.arcadedb.server.ServerPlugin;
+
+import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
 import io.micrometer.tracing.Span;
@@ -184,11 +186,11 @@ public class TracingPlugin implements ServerPlugin {
    * gates every callback to a no-op - preventing the (now closed) tracer provider from being used by
    * later Observations.
    */
-  private static final class DeactivatableObservationHandler implements ObservationHandler<io.micrometer.observation.Observation.Context> {
-    private final ObservationHandler<io.micrometer.observation.Observation.Context> delegate;
+  private static final class DeactivatableObservationHandler implements ObservationHandler<Observation.Context> {
+    private final ObservationHandler<Observation.Context> delegate;
     private final AtomicBoolean                                                     active = new AtomicBoolean(true);
 
-    private DeactivatableObservationHandler(final ObservationHandler<io.micrometer.observation.Observation.Context> delegate) {
+    private DeactivatableObservationHandler(final ObservationHandler<Observation.Context> delegate) {
       this.delegate = delegate;
     }
 
@@ -197,49 +199,49 @@ public class TracingPlugin implements ServerPlugin {
     }
 
     @Override
-    public boolean supportsContext(final io.micrometer.observation.Observation.Context context) {
+    public boolean supportsContext(final Observation.Context context) {
       return active.get() && delegate.supportsContext(context);
     }
 
     @Override
-    public void onStart(final io.micrometer.observation.Observation.Context context) {
+    public void onStart(final Observation.Context context) {
       if (active.get())
         delegate.onStart(context);
     }
 
     @Override
-    public void onError(final io.micrometer.observation.Observation.Context context) {
+    public void onError(final Observation.Context context) {
       if (active.get())
         delegate.onError(context);
     }
 
     @Override
-    public void onEvent(final io.micrometer.observation.Observation.Event event,
-        final io.micrometer.observation.Observation.Context context) {
+    public void onEvent(final Observation.Event event,
+        final Observation.Context context) {
       if (active.get())
         delegate.onEvent(event, context);
     }
 
     @Override
-    public void onScopeOpened(final io.micrometer.observation.Observation.Context context) {
+    public void onScopeOpened(final Observation.Context context) {
       if (active.get())
         delegate.onScopeOpened(context);
     }
 
     @Override
-    public void onScopeClosed(final io.micrometer.observation.Observation.Context context) {
+    public void onScopeClosed(final Observation.Context context) {
       if (active.get())
         delegate.onScopeClosed(context);
     }
 
     @Override
-    public void onScopeReset(final io.micrometer.observation.Observation.Context context) {
+    public void onScopeReset(final Observation.Context context) {
       if (active.get())
         delegate.onScopeReset(context);
     }
 
     @Override
-    public void onStop(final io.micrometer.observation.Observation.Context context) {
+    public void onStop(final Observation.Context context) {
       if (active.get())
         delegate.onStop(context);
     }

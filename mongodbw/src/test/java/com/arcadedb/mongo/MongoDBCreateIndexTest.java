@@ -26,6 +26,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import com.mongodb.MongoClient;
 import com.mongodb.ServerAddress;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.model.IndexOptions;
 import org.bson.Document;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -89,7 +90,7 @@ public class MongoDBCreateIndexTest extends BaseGraphServerTest {
 
   @Test
   void createUniqueIndex() {
-    collection.createIndex(new Document("name", 1), new com.mongodb.client.model.IndexOptions().unique(true));
+    collection.createIndex(new Document("name", 1), new IndexOptions().unique(true));
 
     final Database database = getServerDatabase(0, getDatabaseName());
     final TypeIndex index = database.getSchema().getType("doc").getIndexByProperties("name");

@@ -24,7 +24,6 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.io.OutputStream;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -78,7 +77,7 @@ class SnapshotWriteStallTest {
   }
 
   @Test
-  void progressTrackingStreamPassesBytesThroughAndRecordsProgress() throws IOException {
+  void progressTrackingStreamPassesBytesThroughAndRecordsProgress() throws Exception {
     final ByteArrayOutputStream sink = new ByteArrayOutputStream();
     final AtomicLong lastProgressMs = new AtomicLong(0L);
 

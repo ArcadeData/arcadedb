@@ -23,6 +23,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -122,7 +123,7 @@ class SnapshotManifestVerificationTest {
     final byte[] truncated = buildSnapshotZip(sampleFiles(), false);
 
     assertThatThrownBy(() -> extract(truncated, dir, true))
-        .isInstanceOf(java.io.IOException.class)
+        .isInstanceOf(IOException.class)
         .hasMessageContaining("incomplete");
   }
 
@@ -134,7 +135,7 @@ class SnapshotManifestVerificationTest {
     final byte[] truncated = buildSnapshotZip(partial, false);
 
     assertThatThrownBy(() -> extract(truncated, dir, true))
-        .isInstanceOf(java.io.IOException.class)
+        .isInstanceOf(IOException.class)
         .hasMessageContaining("incomplete");
   }
 
@@ -173,7 +174,7 @@ class SnapshotManifestVerificationTest {
     }
 
     assertThatThrownBy(() -> extract(baos.toByteArray(), dir, true))
-        .isInstanceOf(java.io.IOException.class)
+        .isInstanceOf(IOException.class)
         .hasMessageContaining("missing.bin");
   }
 
@@ -195,7 +196,7 @@ class SnapshotManifestVerificationTest {
     }
 
     assertThatThrownBy(() -> extract(baos.toByteArray(), dir, true))
-        .isInstanceOf(java.io.IOException.class)
+        .isInstanceOf(IOException.class)
         .hasMessageContaining("CRC32 mismatch");
   }
 
@@ -216,7 +217,7 @@ class SnapshotManifestVerificationTest {
   @Test
   void malformedManifestIsRejected() {
     assertThatThrownBy(() -> SnapshotManager.parseManifest("{not json"))
-        .isInstanceOf(java.io.IOException.class)
+        .isInstanceOf(IOException.class)
         .hasMessageContaining("Malformed");
   }
 

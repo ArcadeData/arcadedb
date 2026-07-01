@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -90,7 +91,7 @@ class NullInConditionTest extends TestHelper {
   @Test
   void notInWithNullParameterListExcludesEveryRow() {
     final Map<String, Object> params = new HashMap<>();
-    final List<Object> list = new java.util.ArrayList<>();
+    final List<Object> list = new ArrayList<>();
     list.add(1);
     list.add(2);
     list.add(null);
@@ -102,7 +103,7 @@ class NullInConditionTest extends TestHelper {
   @Test
   void inWithNullParameterListKeepsOnlyMatches() {
     final Map<String, Object> params = new HashMap<>();
-    final List<Object> list = new java.util.ArrayList<>();
+    final List<Object> list = new ArrayList<>();
     list.add(1);
     list.add(2);
     list.add(null);

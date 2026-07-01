@@ -26,6 +26,7 @@ import org.junit.jupiter.api.Test;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -92,7 +93,7 @@ class HttpRedMetricsIT extends BaseGraphServerTest {
     c.setRequestMethod("POST");
     c.setDoOutput(true);
     c.setRequestProperty("Authorization",
-        "Basic " + java.util.Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
+        "Basic " + Base64.getEncoder().encodeToString(("root:" + DEFAULT_PASSWORD_FOR_TESTS).getBytes()));
     c.setRequestProperty("Content-Type", "application/json");
     c.getOutputStream().write("{\"language\":\"sql\",\"command\":\"select 1 as one\"}".getBytes(StandardCharsets.UTF_8));
     c.connect();

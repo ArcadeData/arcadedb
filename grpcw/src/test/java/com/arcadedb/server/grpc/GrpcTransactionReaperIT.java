@@ -117,7 +117,7 @@ public class GrpcTransactionReaperIT extends BaseGraphServerTest {
   }
 
   @Test
-  void abandonedTransactionIsReaped() throws InterruptedException {
+  void abandonedTransactionIsReaped() throws Exception {
     final ArcadeDbGrpcService service = grpcService();
 
     // Begin a transaction the way a client would, then write inside it but never commit/rollback.

@@ -18,6 +18,8 @@
  */
 package com.arcadedb.function;
 
+import java.util.List;
+
 /**
  * Base interface for all ArcadeDB functions.
  * <p>
@@ -106,8 +108,8 @@ public interface Function {
    *
    * @return an unmodifiable list of additional names, or an empty list if none
    */
-  default java.util.List<String> getAliases() {
-    return java.util.List.of();
+  default List<String> getAliases() {
+    return List.of();
   }
 
   /**

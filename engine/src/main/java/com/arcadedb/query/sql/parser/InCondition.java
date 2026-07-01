@@ -180,7 +180,7 @@ public class InCondition extends BooleanExpression {
         if (set.isEmpty())
           return Boolean.FALSE;
         // No match: UNKNOWN if the search value is null or the set holds a null element, else FALSE.
-        return (iLeft == null || set.contains(null)) ? null : Boolean.FALSE;
+        return iLeft == null || set.contains(null) ? null : Boolean.FALSE;
       }
 
       boolean sawNull = false;

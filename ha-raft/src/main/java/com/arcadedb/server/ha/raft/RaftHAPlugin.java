@@ -206,9 +206,9 @@ public class RaftHAPlugin implements HAServerPlugin, HAReplicationStatsProvider 
   }
 
   @Override
-  public java.util.List<FollowerSample> getFollowerSamples() {
+  public List<FollowerSample> getFollowerSamples() {
     final RaftHAServer s = raftHAServer;
-    return s != null ? s.getFollowerSamples() : java.util.List.of();
+    return s != null ? s.getFollowerSamples() : List.of();
   }
 
   @Override
