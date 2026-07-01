@@ -25,6 +25,7 @@ import com.arcadedb.database.TransactionContext;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.io.File;
@@ -137,6 +138,55 @@ class HttpSessionTimeoutRaceTest {
 
     assertThat(worker.isAlive()).as("worker thread finished").isFalse();
     assertThat(workerException.get()).as("no exception surfaced from the in-flight command").isNull();
+  }
+
+  @Test
+  @Tag("slow")
+  void closeWaitsForInFlightCommandThenRollsBackInsteadOfLeaking() throws Exception {
+    database = createDatabase();
+    sessionManager = new HttpSessionManager(TIMEOUT_MS);
+
+    final TransactionContext tx = new TransactionContext(database);
+    tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+
+    final ServerSecurityUser user = mockUser("testuser");
+    final HttpSession session = sessionManager.createSession(user, tx);
+
+    final CountDownLatch commandStarted = new CountDownLatch(1);
+    final CountDownLatch releaseCommand = new CountDownLatch(1);
+
+    // Hold the command past HttpSession.DEFAULT_TIMEOUT (5s): cancel()'s lock acquisition must not give up
+    // after a bounded wait, or close() below would leave the transaction rolled-back-never, since the
+    // session is removed from tracking before cancel() is even attempted.
+    final Thread worker = new Thread(() -> {
+      try {
+        session.execute(user, () -> {
+          commandStarted.countDown();
+          releaseCommand.await(10, TimeUnit.SECONDS);
+          return null;
+        });
+      } catch (final Exception ignored) {
+        // Interrupted by close()'s rollback path on error; irrelevant to this test.
+      }
+    });
+    worker.start();
+    assertThat(commandStarted.await(2, TimeUnit.SECONDS)).as("command started").isTrue();
+
+    // Close the session while the command is still in-flight, simulating a client abandoning mid-command.
+    final Thread closer = new Thread(session::close);
+    closer.start();
+
+    Thread.sleep(200);
+    assertThat(sessionManager.getActiveSessions()).as("session untracked by close() immediately").isEqualTo(0);
+    assertThat(tx.isActive()).as("transaction not yet rolled back while command still in-flight").isTrue();
+
+    // Release well past DEFAULT_TIMEOUT (5s) so the pre-fix bounded cancel() would already have given up.
+    Thread.sleep(5_300);
+    releaseCommand.countDown();
+    worker.join(5_000);
+    closer.join(5_000);
+
+    assertThat(tx.isActive()).as("close() rolled back the transaction once the in-flight command finished").isFalse();
   }
 
   @Test

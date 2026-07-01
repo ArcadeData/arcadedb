@@ -89,19 +89,17 @@ public class HttpSession implements QuerySession {
   /**
    * Rolls back the session's transaction. Waits for any in-flight {@link #execute} to finish before doing so
    * (the lock is reentrant, so this is a no-op wait when called from within {@code execute}'s own callback,
-   * e.g. its error-handling path).
+   * e.g. its error-handling path). This wait is unbounded on purpose: callers such as {@link #close()} remove
+   * the session from {@link HttpSessionManager} tracking first, so a bounded wait that gave up while a command
+   * was still in-flight would leak the transaction - nothing else would ever roll it back.
    */
   public boolean cancel() {
-    final boolean locked;
     try {
-      locked = lock.tryLock(DEFAULT_TIMEOUT, TimeUnit.MILLISECONDS);
+      lock.lockInterruptibly();
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
       return false;
     }
-
-    if (!locked)
-      return false;
 
     try {
       if (transaction != null && transaction.isActive()) {
@@ -158,6 +156,10 @@ public class HttpSession implements QuerySession {
       try {
         LogManager.instance().log(this, Level.FINE, "Executing session %s for user %s", id, user.getName());
         callback.call();
+        // REFRESH WHILE STILL HOLDING THE LOCK: OTHERWISE THE IDLE-TIMEOUT SWEEP COULD tryLock() SUCCESSFULLY
+        // IN THE GAP BETWEEN UNLOCK AND THIS ASSIGNMENT, SEE A STALE lastUpdate, AND ROLL BACK A TRANSACTION
+        // WHOSE COMMAND JUST FINISHED
+        lastUpdate = System.currentTimeMillis();
       } catch (Exception e) {
         // ROLLBACK SERVER-SIDE TRANSACTION
         cancel();
@@ -169,7 +171,6 @@ public class HttpSession implements QuerySession {
       throw new LockTimeoutException("Timeout on locking http session");
     }
 
-    lastUpdate = System.currentTimeMillis();
     return this;
   }
 }

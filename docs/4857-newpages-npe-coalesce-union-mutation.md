@@ -107,6 +107,31 @@ instead of losing its session id mid-command.
   confirming no regression to session lifecycle/timeout behavior.
 - `mvn -pl server -am install -DskipTests`: compiles clean.
 
+## Pull request
+
+https://github.com/ArcadeData/arcadedb/pull/4858
+
+## Review cycles
+
+### Cycle 1 - commit `61455eb6`
+
+Reviewed by `claude[bot]` and `gemini-code-assist`. Both independently converged on the same
+transaction-leak bug in `HttpSession.close()` (bounded 5s `cancel()` timeout + session already
+untracked = leaked transaction if a command runs past 5s), and gemini's inline suggestion matched
+claude's suggested fix exactly (`lock.lockInterruptibly()`). Claude also flagged a residual,
+lower-severity race: `lastUpdate` refreshed after `unlock()` in `execute()`, leaving a narrow
+window for the sweep to prematurely roll back a transaction whose command just finished.
+
+Applied both fixes (see `docs/review-deferred-61455eb6.md` for the full disposition, including
+three items both reviewers explicitly framed as follow-up/out-of-scope and left unaddressed):
+- `HttpSession.cancel()` switched from bounded `tryLock(5s)` to unbounded `lockInterruptibly()`.
+- `HttpSession.execute()`'s post-callback `lastUpdate` refresh moved inside the locked region.
+- New `@Tag("slow")` regression test `closeWaitsForInFlightCommandThenRollsBackInsteadOfLeaking`,
+  confirmed to fail against the pre-fix bounded-timeout code and pass against the fix.
+- Full `HttpSessionTimeoutRaceTest` suite (4 tests) stable across 3 reruns; `HttpAuthSessionManagerTest`
+  (10/10), `AutoCommitParameterTest` (7/7), `Issue4141SessionManagementIT` (4/4), `HTTPTransactionIT`
+  (3/3) all pass unchanged.
+
 ## Status
 
-Done. Fix and regression test verified; ready for PR.
+Cycle 1 fixes pushed; awaiting next round of bot review.
