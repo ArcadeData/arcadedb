@@ -38,7 +38,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * never reaches the service handler. Drives {@link GrpcAuthInterceptor#interceptCall} directly with
  * a real {@link ServerSecurity} and hand-written gRPC test doubles (no mocking framework).
  */
-public class GrpcAdminAuthInterceptorIT extends BaseGraphServerTest {
+class GrpcAdminAuthInterceptorIT extends BaseGraphServerTest {
 
   private GrpcAuthInterceptor interceptor() {
     final ServerSecurity security = getServer(0).getSecurity();

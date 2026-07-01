@@ -41,7 +41,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * non-grouping-key variable/property is an error. This verifies that explicit grouping works as
  * expected and that ambiguous grouping is rejected with {@code AmbiguousAggregationExpression}.
  */
-public class Issue4141GroupingKeysTest {
+class Issue4141GroupingKeysTest {
   private Database database;
 
   @BeforeEach

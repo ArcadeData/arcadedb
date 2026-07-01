@@ -49,7 +49,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * XOR:  bool XOR null = null
  * </pre>
  */
-public class Issue4141TrinaryLogicTest {
+class Issue4141TrinaryLogicTest {
   private Database database;
 
   @BeforeEach

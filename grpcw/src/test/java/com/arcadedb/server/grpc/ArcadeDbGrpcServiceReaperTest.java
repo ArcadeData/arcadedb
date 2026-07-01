@@ -26,7 +26,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * Unit test for the idle-transaction reaper configuration wiring of {@link ArcadeDbGrpcService} (issue #4802).
  * No server is required: the constructor only decides whether to start the reaper thread based on the thresholds.
  */
-public class ArcadeDbGrpcServiceReaperTest {
+class ArcadeDbGrpcServiceReaperTest {
 
   @Test
   void reaperDisabledWhenBothBoundsNonPositive() {

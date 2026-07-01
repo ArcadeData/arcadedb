@@ -51,7 +51,7 @@ class VectorLocationIndexConcurrencyTest {
    * cleanly.
    */
   @Test
-  void concurrentIterationAndAccessDoesNotThrow() throws InterruptedException {
+  void concurrentIterationAndAccessDoesNotThrow() throws Exception {
     final int maxSize = 256;
     final VectorLocationIndex index = new VectorLocationIndex(maxSize, maxSize);
 
@@ -132,7 +132,7 @@ class VectorLocationIndexConcurrencyTest {
    * reads/iteration without throwing.
    */
   @Test
-  void unlimitedModeConcurrentIterationDoesNotThrow() throws InterruptedException {
+  void unlimitedModeConcurrentIterationDoesNotThrow() throws Exception {
     final VectorLocationIndex index = new VectorLocationIndex(); // unlimited (ConcurrentHashMap)
 
     final int seed = 512;
