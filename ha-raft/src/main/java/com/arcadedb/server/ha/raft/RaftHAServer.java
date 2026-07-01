@@ -164,7 +164,14 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     final long lagWarningThreshold = configuration.getValueAsLong(GlobalConfiguration.HA_REPLICATION_LAG_WARNING);
     final int raftPort = configuration.getValueAsInteger(GlobalConfiguration.HA_RAFT_PORT);
 
-    final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList(serverList, raftPort);
+    // Inside Kubernetes the DNS suffix must reach peers too, not only the self-advertised host built in
+    // ArcadeDBServer.assignHostAddress; otherwise short pod names in the server list never resolve.
+    final String k8sDnsSuffix = configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)
+        ? configuration.getValueAsString(GlobalConfiguration.HA_K8S_DNS_SUFFIX)
+        : "";
+
+    final RaftPeerAddressResolver.ParsedPeerList parsed = RaftPeerAddressResolver.parsePeerList(serverList, raftPort,
+        k8sDnsSuffix);
     List<RaftPeer> peers = parsed.peers();
     final Map<RaftPeerId, String> configuredPeerNames = parsed.peerNames();
     final String serverName = arcadeServer.getServerName();

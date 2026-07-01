@@ -88,6 +88,19 @@ final class RaftPeerAddressResolver {
    * This is a soft preference - if the preferred leader is unavailable, another node will take over.
    */
   static ParsedPeerList parsePeerList(final String serverList, final int defaultPort) {
+    return parsePeerList(serverList, defaultPort, "");
+  }
+
+  /**
+   * Same as {@link #parsePeerList(String, int)} but additionally appends a Kubernetes DNS suffix to
+   * every peer host so short pod names (e.g. {@code arcadedb-0}) written in the server list expand to
+   * the cluster-internal FQDN, consistent with the self-advertised host built in
+   * {@code ArcadeDBServer.assignHostAddress}. The suffix is applied to the Raft, HTTP and HTTPS host
+   * components. It is a no-op when {@code k8sDnsSuffix} is empty, when a host is already fully
+   * qualified with that suffix (idempotent), and for raw IP literals or {@code localhost}, which need
+   * no DNS resolution.
+   */
+  static ParsedPeerList parsePeerList(final String serverList, final int defaultPort, final String k8sDnsSuffix) {
     // Split on top-level commas only: the object form {raft:..,http:..} contains commas that must not
     // be treated as entry separators.
     final List<String> entries = splitEntries(serverList);
@@ -124,11 +137,12 @@ final class RaftPeerAddressResolver {
       if (braceIdx >= 0) {
         // Object form: host:{raft:2434,http:2480,https:2490,priority:10}
         final PeerSpec spec = parseObjectForm(entry, braceIdx, defaultPort);
-        raftAddress = spec.host + ":" + spec.raftPort;
+        final String host = applyDnsSuffix(spec.host, k8sDnsSuffix);
+        raftAddress = host + ":" + spec.raftPort;
         if (spec.httpPort != null)
-          httpAddress = spec.host + ":" + spec.httpPort;
+          httpAddress = host + ":" + spec.httpPort;
         if (spec.httpsPort != null)
-          httpsAddress = spec.host + ":" + spec.httpsPort;
+          httpsAddress = host + ":" + spec.httpsPort;
         priority = spec.priority;
       } else {
         final String[] parts = entry.split(":");
@@ -139,27 +153,29 @@ final class RaftPeerAddressResolver {
                   + "'. Expected [name@]host[:raftPort[:httpPort[:priority[:httpsPort]]]] "
                   + "or [name@]host:{raft:..,http:..,https:..,priority:..}");
 
+        final String host = applyDnsSuffix(parts[0], k8sDnsSuffix);
+
         if (parts.length == 5) {
           // host:raftPort:httpPort:priority:httpsPort
-          raftAddress = parts[0] + ":" + parts[1];
-          httpAddress = parts[0] + ":" + parts[2];
+          raftAddress = host + ":" + parts[1];
+          httpAddress = host + ":" + parts[2];
           priority = parseIntField(parts[3], "priority", entry);
-          httpsAddress = parts[0] + ":" + parts[4];
+          httpsAddress = host + ":" + parts[4];
         } else if (parts.length == 4) {
           // host:raftPort:httpPort:priority
-          raftAddress = parts[0] + ":" + parts[1];
-          httpAddress = parts[0] + ":" + parts[2];
+          raftAddress = host + ":" + parts[1];
+          httpAddress = host + ":" + parts[2];
           priority = parseIntField(parts[3], "priority", entry);
         } else if (parts.length == 3) {
           // host:raftPort:httpPort
-          raftAddress = parts[0] + ":" + parts[1];
-          httpAddress = parts[0] + ":" + parts[2];
+          raftAddress = host + ":" + parts[1];
+          httpAddress = host + ":" + parts[2];
         } else if (parts.length == 2) {
           // host:raftPort
-          raftAddress = entry;
+          raftAddress = host + ":" + parts[1];
         } else {
           // host only - use default Raft port
-          raftAddress = entry + ":" + defaultPort;
+          raftAddress = host + ":" + defaultPort;
         }
       }
 
@@ -267,6 +283,41 @@ final class RaftPeerAddressResolver {
       }
     }
     return new PeerSpec(host, raftPort, httpPort, httpsPort, priority);
+  }
+
+  /**
+   * Appends the Kubernetes DNS suffix to a peer host so short pod names in the server list resolve to
+   * the cluster-internal FQDN, consistent with the self-advertised host. Returns the host unchanged
+   * when the suffix is empty, when the host is already fully qualified with that suffix (idempotent),
+   * or when the host is a raw IP literal or {@code localhost} (which need no DNS resolution).
+   */
+  static String applyDnsSuffix(final String host, final String k8sDnsSuffix) {
+    if (k8sDnsSuffix == null || k8sDnsSuffix.isEmpty() || host == null || host.isEmpty())
+      return host;
+    if (host.endsWith(k8sDnsSuffix))
+      return host;
+    if ("localhost".equals(host) || isIpLiteral(host))
+      return host;
+    return host + k8sDnsSuffix;
+  }
+
+  /** Returns true when the host is an IPv4/IPv6 literal, which must never receive a DNS suffix. */
+  private static boolean isIpLiteral(final String host) {
+    // IPv6 literals contain ':' (or are written in bracketed form); they are never DNS names.
+    if (host.indexOf(':') >= 0 || host.charAt(0) == '[')
+      return true;
+    // IPv4 dotted-quad: exactly four numeric octets.
+    final String[] octets = host.split("\\.");
+    if (octets.length != 4)
+      return false;
+    for (final String octet : octets) {
+      if (octet.isEmpty())
+        return false;
+      for (int i = 0; i < octet.length(); i++)
+        if (!Character.isDigit(octet.charAt(i)))
+          return false;
+    }
+    return true;
   }
 
   /** Parses an integer field, throwing a descriptive {@link ServerException} on malformed input. */
