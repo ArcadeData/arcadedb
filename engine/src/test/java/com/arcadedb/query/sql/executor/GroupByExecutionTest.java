@@ -20,8 +20,12 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -89,27 +93,31 @@ public class GroupByExecutionTest extends TestHelper {
     }
   }
 
-  @Test
-  void groupBySqlScriptWithTrailingSemicolonIsNotIgnored() {
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "select tag, count(*) as occurrences from Tags2 group by tag",
+      "select tag, count(*) as occurrences from Tags2 group by tag;" })
+  void groupBySqlScriptWithTrailingSemicolonIsNotIgnored(String sql) {
     database.getSchema().createDocumentType("Tags2");
     database.command("sql", "insert into Tags2 set tag = 'a'");
     database.command("sql", "insert into Tags2 set tag = 'a'");
     database.command("sql", "insert into Tags2 set tag = 'b'");
 
-    // Warm up the execution plan cache with the same statement, as would happen when the query is
-    // run once and then re-run (e.g. via SQL Script) with a trailing semicolon.
-    database.command("sqlscript", "select tag from Tags2 group by tag").close();
-
-    final ResultSet result = database.command("sqlscript", "select tag from Tags2 group by tag;");
+    final ResultSet result = database.command("sqlscript", sql);
     final Set<String> tags = new HashSet<>();
+    final Map<String, Long> occurrencesByTag = new HashMap<>();
     int rowCount = 0;
     while (result.hasNext()) {
-      tags.add(result.next().<String>getProperty("tag"));
+      final Result row = result.next();
+      final String tag = row.getProperty("tag");
+      tags.add(tag);
+      occurrencesByTag.put(tag, row.getProperty("occurrences"));
       rowCount++;
     }
     result.close();
 
     assertThat(rowCount).isEqualTo(2);
     assertThat(tags).containsExactlyInAnyOrder("a", "b");
+    assertThat(occurrencesByTag).containsEntry("a", 2L).containsEntry("b", 1L);
   }
 }
