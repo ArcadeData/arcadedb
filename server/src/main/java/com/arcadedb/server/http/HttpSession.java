@@ -87,11 +87,10 @@ public class HttpSession implements QuerySession {
   }
 
   /**
-   * Rolls back the session's transaction. Waits for any in-flight {@link #execute} to finish before doing so
-   * (the lock is reentrant, so this is a no-op wait when called from within {@code execute}'s own callback,
-   * e.g. its error-handling path). This wait is unbounded on purpose: callers such as {@link #close()} remove
-   * the session from {@link HttpSessionManager} tracking first, so a bounded wait that gave up while a command
-   * was still in-flight would leak the transaction - nothing else would ever roll it back.
+   * Rolls back the session's transaction. Waits for any in-flight {@link #execute} to finish before doing so.
+   * This wait is unbounded on purpose: callers such as {@link #close()} remove the session from
+   * {@link HttpSessionManager} tracking first, so a bounded wait that gave up while a command was still
+   * in-flight would leak the transaction - nothing else would ever roll it back.
    */
   public boolean cancel() {
     try {
@@ -102,16 +101,10 @@ public class HttpSession implements QuerySession {
     }
 
     try {
-      if (transaction != null && transaction.isActive()) {
-        transaction.rollback();
-        return true;
-      }
-    } catch (Exception e) {
-      // IGNORE IT
+      return rollbackIfActive();
     } finally {
       lock.unlock();
     }
-    return false;
   }
 
   /**
@@ -132,19 +125,28 @@ public class HttpSession implements QuerySession {
       return IdleCancelOutcome.BUSY;
 
     try {
-      if (transaction != null && transaction.isActive()) {
-        transaction.rollback();
-        return IdleCancelOutcome.ROLLED_BACK;
-      }
-    } catch (Exception e) {
-      // IGNORE IT
+      return rollbackIfActive() ? IdleCancelOutcome.ROLLED_BACK : IdleCancelOutcome.ALREADY_IDLE;
     } finally {
       lock.unlock();
     }
-    return IdleCancelOutcome.ALREADY_IDLE;
   }
 
   enum IdleCancelOutcome {BUSY, ROLLED_BACK, ALREADY_IDLE}
+
+  /**
+   * Rolls back the transaction if active. Must be called while holding {@code lock}.
+   */
+  private boolean rollbackIfActive() {
+    try {
+      if (transaction != null && transaction.isActive()) {
+        transaction.rollback();
+        return true;
+      }
+    } catch (Exception e) {
+      // IGNORE IT
+    }
+    return false;
+  }
 
   public HttpSession execute(final ServerSecurityUser user, final Callable callback) throws Exception {
     if (!this.user.equals(user))
@@ -161,8 +163,11 @@ public class HttpSession implements QuerySession {
         // WHOSE COMMAND JUST FINISHED
         lastUpdate = System.currentTimeMillis();
       } catch (Exception e) {
-        // ROLLBACK SERVER-SIDE TRANSACTION
-        cancel();
+        // ROLLBACK SERVER-SIDE TRANSACTION. CALL rollbackIfActive() DIRECTLY (NOT cancel()): THIS THREAD
+        // ALREADY HOLDS `lock` HERE, AND ReentrantLock.lockInterruptibly() CHECKS Thread.interrupted() BEFORE
+        // ITS REENTRANT FAST PATH - IF THIS THREAD'S INTERRUPT FLAG IS SET, cancel() WOULD THROW
+        // InterruptedException AND SILENTLY SKIP THE ROLLBACK
+        rollbackIfActive();
         throw e;
       } finally {
         lock.unlock();

@@ -2,7 +2,7 @@
 
 https://github.com/ArcadeData/arcadedb/issues/4857
 
-## Reported symptom
+## Symptom
 
 Under a memory-constrained node (`-Xmx512M`, ZGC generational, `-Darcadedb.profile=low-ram`),
 executing a large batch of Gremlin `addE()`/`property()` mutations nested inside
@@ -72,81 +72,66 @@ This matches every reported symptom:
 `execute()`. If the lock is held (a command is actively executing on this session), the
 sweep leaves the session alone for this tick instead of rolling back underneath the
 in-flight command; the session is re-evaluated on the next tick once the command finishes
-and refreshes `lastUpdate`. The explicit `cancel()` path (client-initiated `/rollback`,
-`close()`, and server shutdown) now also acquires the lock (bounded wait), closing the same
-race for those callers - the lock is reentrant, so it's a no-op when the caller already
-holds it (e.g. `execute()`'s own catch-block cleanup).
+and refreshes `lastUpdate`.
+
+The explicit `cancel()` path (client-initiated `/rollback`, `close()`, and server shutdown)
+now blocks unboundedly on the same lock (`lockInterruptibly()`) instead of giving up after a
+bounded wait: `close()` untracks the session from `HttpSessionManager` before calling
+`cancel()`, so a bounded wait that gave up while a command was still in-flight would leak the
+transaction - nothing else would ever roll it back afterward.
+
+`execute()`'s own catch-block rollback calls a lock-free `rollbackIfActive()` helper directly
+instead of re-entering through `cancel()`: `ReentrantLock.lockInterruptibly()` checks the
+calling thread's interrupt status before its reentrant fast path, so if the worker thread's
+interrupt flag happened to be set when the command failed, going through `cancel()` here would
+throw `InterruptedException` and silently skip the rollback.
 
 `HttpSessionManager.checkSessionsValidity()` only removes a session from the map when the
 lock was actually acquired (i.e. the session was genuinely idle - either its transaction
 was rolled back or was already inactive), so a busy session is retried on a later tick
 instead of losing its session id mid-command.
 
-## Files changed
-
-- `server/src/main/java/com/arcadedb/server/http/HttpSession.java`
-- `server/src/main/java/com/arcadedb/server/http/HttpSessionManager.java`
+Also closed a narrower race: `execute()` previously refreshed `lastUpdate` after releasing
+the lock, leaving a window where the sweep could `tryLock()` successfully and see a stale
+timestamp, prematurely rolling back a transaction whose command had just cleanly finished.
+The refresh now happens inside the locked region.
 
 ## Tests
 
-- `server/src/test/java/com/arcadedb/server/http/HttpSessionTimeoutRaceTest.java` (new) -
-  reproduces the race directly against `HttpSession`/`HttpSessionManager` without needing
-  HTTP/Gremlin: starts a long-running command on a session (holding `execute()`'s lock) and
-  concurrently drives `checkSessionsValidity()` past the timeout, asserting the transaction
-  is not rolled back mid-command and no NPE occurs; also asserts a genuinely idle session is
-  still cancelled and removed by the sweep.
+Added to `server/src/test/java/com/arcadedb/server/http/HttpSessionTimeoutRaceTest.java` (new
+file), constructed against a real embedded `TransactionContext`/`HttpSession` without needing
+HTTP or Gremlin:
 
-## Verification
+- `timeoutSweepDoesNotCancelSessionWithInFlightCommand` - starts a long-running command
+  (holding `execute()`'s lock) and drives `checkSessionsValidity()` past the timeout,
+  asserting the transaction is not rolled back mid-command.
+- `timeoutSweepStillCancelsAGenuinelyIdleSession` / `timeoutSweepRemovesASessionWithAnAlreadyInactiveTransaction` -
+  confirm idle and stale sessions are still correctly reaped by the sweep.
+- `closeWaitsForInFlightCommandThenRollsBackInsteadOfLeaking` (`@Tag("slow")`, holds a command
+  past the 5s bound) - confirms `close()` eventually rolls back instead of leaking.
+- `executeRollsBackOnFailureEvenWhenInterruptFlagIsSet` - confirms the catch-block rollback
+  still runs when the worker thread's interrupt flag is set at failure time.
 
-- `HttpSessionTimeoutRaceTest` (new): confirmed it fails against the pre-fix code
-  (`timeoutSweepDoesNotCancelSessionWithInFlightCommand` - expected 0 sessions expired
-  while a command is in-flight, got 1) and passes against the fix, stable across 5
-  consecutive runs.
+## Test results
+
+- `HttpSessionTimeoutRaceTest` (5 tests): each new test confirmed to fail against the
+  corresponding pre-fix code and pass against the fix; stable across repeated reruns.
 - `HttpAuthSessionManagerTest` (10/10), `AutoCommitParameterTest` (7/7),
   `Issue4141SessionManagementIT` (4/4), `HTTPTransactionIT` (3/3): all pass unchanged,
   confirming no regression to session lifecycle/timeout behavior.
 - `mvn -pl server -am install -DskipTests`: compiles clean.
 
-## Pull request
+## Impact analysis
 
-https://github.com/ArcadeData/arcadedb/pull/4858
-
-## Review cycles
-
-### Cycle 1 - commit `61455eb6`
-
-Reviewed by `claude[bot]` and `gemini-code-assist`. Both independently converged on the same
-transaction-leak bug in `HttpSession.close()` (bounded 5s `cancel()` timeout + session already
-untracked = leaked transaction if a command runs past 5s), and gemini's inline suggestion matched
-claude's suggested fix exactly (`lock.lockInterruptibly()`). Claude also flagged a residual,
-lower-severity race: `lastUpdate` refreshed after `unlock()` in `execute()`, leaving a narrow
-window for the sweep to prematurely roll back a transaction whose command just finished.
-
-Applied both fixes (see `docs/review-deferred-61455eb6.md` for the full disposition, including
-three items both reviewers explicitly framed as follow-up/out-of-scope and left unaddressed):
-- `HttpSession.cancel()` switched from bounded `tryLock(5s)` to unbounded `lockInterruptibly()`.
-- `HttpSession.execute()`'s post-callback `lastUpdate` refresh moved inside the locked region.
-- New `@Tag("slow")` regression test `closeWaitsForInFlightCommandThenRollsBackInsteadOfLeaking`,
-  confirmed to fail against the pre-fix bounded-timeout code and pass against the fix.
-- Full `HttpSessionTimeoutRaceTest` suite (4 tests) stable across 3 reruns; `HttpAuthSessionManagerTest`
-  (10/10), `AutoCommitParameterTest` (7/7), `Issue4141SessionManagementIT` (4/4), `HTTPTransactionIT`
-  (3/3) all pass unchanged.
-
-### Cycle 2 - commit `aa96add5`
-
-Pushed the cycle-1 fixes. Polled for a re-review on this commit for two consecutive windows
-(~15 min then ~10 min). The "Claude Code Review" GitHub Actions workflow triggered on the push
-(`pull_request: synchronize`) but remained `in_progress` for the full polling window without
-posting a new issue comment; `gemini-code-assist` posted no new top-level review either (its one
-visible inline comment on this SHA was GitHub re-pointing the *cycle-1* comment's `commit_id` to
-track the new head - same `id`/`created_at` as before, not a new finding; confirmed the flagged
-line already contains the fix).
-
-No new actionable feedback surfaced in this cycle - stopping the automated review loop here per
-the per-iteration timeout policy rather than waiting indefinitely.
-
-## Status
-
-**Final state: timeout** (cycle 2, waiting on bot re-review). One productive review cycle
-completed with real feedback applied (see Cycle 1). PR left open for the developer to check for
-a delayed cycle-2 review and merge when ready.
+- The race is specific to the HTTP session layer (`HttpSession`/`HttpSessionManager`) and
+  applies to any command - SQL, Cypher, Gremlin, or otherwise - that runs longer than
+  `arcadedb.server.http.sessionExpireTimeout` (default 5s) inside an explicit session; the
+  reported Gremlin coalesce/union shape is just what happened to make one command slow
+  enough to trigger it.
+- Fix is localized to `HttpSession`/`HttpSessionManager`; no engine-layer (`TransactionContext`)
+  changes were needed since the invariant it assumes (`isActive()` implies `newPages != null`)
+  is restored by preventing the concurrent rollback, not by adding a null guard downstream.
+- `HttpSessionManager.close()` (server shutdown) and `HttpSession.close()` now block on an
+  in-flight command until it finishes before rolling back, rather than racing or giving up
+  after 5s - an intentional behavior change (graceful wait instead of a silent leak or a
+  data-corrupting race).

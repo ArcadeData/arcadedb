@@ -36,6 +36,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -138,6 +139,34 @@ class HttpSessionTimeoutRaceTest {
 
     assertThat(worker.isAlive()).as("worker thread finished").isFalse();
     assertThat(workerException.get()).as("no exception surfaced from the in-flight command").isNull();
+  }
+
+  @Test
+  void executeRollsBackOnFailureEvenWhenInterruptFlagIsSet() throws Exception {
+    database = createDatabase();
+    sessionManager = new HttpSessionManager(TIMEOUT_MS);
+
+    final TransactionContext tx = new TransactionContext(database);
+    tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
+
+    final ServerSecurityUser user = mockUser("testuser");
+    final HttpSession session = sessionManager.createSession(user, tx);
+
+    try {
+      // A command whose thread already has its interrupt flag set when it fails (e.g. interrupted by
+      // something unrelated) must still roll back the transaction via execute()'s catch block.
+      // ReentrantLock.lockInterruptibly() throws immediately if the calling thread is interrupted, even on
+      // its own reentrant fast path, so routing this rollback through cancel() (which re-acquires the lock)
+      // would silently swallow it.
+      assertThatThrownBy(() -> session.execute(user, () -> {
+        Thread.currentThread().interrupt();
+        throw new RuntimeException("simulated command failure");
+      })).isInstanceOf(RuntimeException.class).hasMessage("simulated command failure");
+    } finally {
+      Thread.interrupted(); // clear the flag so it doesn't leak into later tests
+    }
+
+    assertThat(tx.isActive()).as("transaction rolled back despite interrupt flag being set").isFalse();
   }
 
   @Test
