@@ -21,6 +21,8 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
+import java.util.HashSet;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -61,5 +63,53 @@ public class GroupByExecutionTest extends TestHelper {
       assertThat(row.<Long>getProperty("occurrences")).isNotNull();
     }
     result.close();
+  }
+
+  // Regression test for issue #4855: GROUP BY was silently ignored on the second execution of the
+  // same statement because the cached execution plan copy dropped the aggregation step.
+  @Test
+  void groupByRepeatedExecutionUsesCachedPlanCorrectly() {
+    database.getSchema().createDocumentType("Tags");
+    database.command("sql", "insert into Tags set tag = 'a'");
+    database.command("sql", "insert into Tags set tag = 'a'");
+    database.command("sql", "insert into Tags set tag = 'b'");
+
+    for (int i = 0; i < 3; i++) {
+      final ResultSet result = database.query("sql", "select tag from Tags group by tag");
+      final Set<String> tags = new HashSet<>();
+      int rowCount = 0;
+      while (result.hasNext()) {
+        tags.add(result.next().<String>getProperty("tag"));
+        rowCount++;
+      }
+      result.close();
+
+      assertThat(rowCount).as("iteration %d", i).isEqualTo(2);
+      assertThat(tags).as("iteration %d", i).containsExactlyInAnyOrder("a", "b");
+    }
+  }
+
+  @Test
+  void groupBySqlScriptWithTrailingSemicolonIsNotIgnored() {
+    database.getSchema().createDocumentType("Tags2");
+    database.command("sql", "insert into Tags2 set tag = 'a'");
+    database.command("sql", "insert into Tags2 set tag = 'a'");
+    database.command("sql", "insert into Tags2 set tag = 'b'");
+
+    // Warm up the execution plan cache with the same statement, as would happen when the query is
+    // run once and then re-run (e.g. via SQL Script) with a trailing semicolon.
+    database.command("sqlscript", "select tag from Tags2 group by tag").close();
+
+    final ResultSet result = database.command("sqlscript", "select tag from Tags2 group by tag;");
+    final Set<String> tags = new HashSet<>();
+    int rowCount = 0;
+    while (result.hasNext()) {
+      tags.add(result.next().<String>getProperty("tag"));
+      rowCount++;
+    }
+    result.close();
+
+    assertThat(rowCount).isEqualTo(2);
+    assertThat(tags).containsExactlyInAnyOrder("a", "b");
   }
 }
