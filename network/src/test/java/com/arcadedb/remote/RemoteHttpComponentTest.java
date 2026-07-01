@@ -744,7 +744,7 @@ class RemoteHttpComponentTest {
     try {
       return (Pair<String, Integer>) m.invoke(c);
     } catch (final InvocationTargetException e) {
-      throw (e.getCause() instanceof Exception ex) ? ex : new RuntimeException(e.getCause());
+      throw e.getCause() instanceof Exception ex ? ex : new RuntimeException(e.getCause());
     }
   }
 

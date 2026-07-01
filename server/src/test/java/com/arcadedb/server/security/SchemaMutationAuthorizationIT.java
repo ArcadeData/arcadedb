@@ -41,7 +41,7 @@ class SchemaMutationAuthorizationIT extends BaseGraphServerTest {
 
   @Test
   void readOnlyTokenCannotMutateSchema() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       // ARRANGE (as admin): a type with a property, a second type, and a subtype candidate
       assertThat(adminCommand(serverIndex, "CREATE DOCUMENT TYPE Memory")).isEqualTo(200);
       assertThat(adminCommand(serverIndex, "CREATE PROPERTY Memory.salience DOUBLE")).isEqualTo(200);
@@ -68,7 +68,7 @@ class SchemaMutationAuthorizationIT extends BaseGraphServerTest {
 
   @Test
   void adminCanStillMutateSchema() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       assertThat(adminCommand(serverIndex, "CREATE DOCUMENT TYPE Doc")).isEqualTo(200);
       assertThat(adminCommand(serverIndex, "CREATE PROPERTY Doc.title STRING")).isEqualTo(200);
       assertThat(adminCommand(serverIndex, "CREATE DOCUMENT TYPE Base")).isEqualTo(200);

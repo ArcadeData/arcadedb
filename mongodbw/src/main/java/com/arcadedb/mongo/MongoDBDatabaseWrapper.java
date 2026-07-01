@@ -642,7 +642,7 @@ public class MongoDBDatabaseWrapper implements MongoDatabase {
       }
       case "$inc" -> {
         for (final Map.Entry<String, Object> f : operand.entrySet())
-          sql.append(" SET `").append(f.getKey()).append("` += ").append(((Number) f.getValue()));
+          sql.append(" SET `").append(f.getKey()).append("` += ").append((Number) f.getValue());
       }
       default -> throw new UnsupportedOperationException("Unsupported update operator '" + op + "'");
       }
