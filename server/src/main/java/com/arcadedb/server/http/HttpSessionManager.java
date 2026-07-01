@@ -77,13 +77,17 @@ public class HttpSessionManager extends RWLockContext {
         final HttpSession session = it.next().getValue();
 
         if (session.elapsedFromLastUpdate() > transactionTimeoutInMs) {
-          // CANCEL AND REMOVE THE SESSION
-          if (session.cancel())
+          // ONLY CANCEL AND REMOVE THE SESSION IF IT'S ACTUALLY IDLE (NO COMMAND CURRENTLY EXECUTING ON IT).
+          // A BUSY SESSION IS LEFT ALONE FOR THIS SWEEP AND RE-EVALUATED ON THE NEXT TICK (SEE HttpSession#cancelIfIdle)
+          final HttpSession.IdleCancelOutcome outcome = session.cancelIfIdle();
+          if (outcome == HttpSession.IdleCancelOutcome.ROLLED_BACK)
             LogManager.instance().log(this, Level.FINE, "Canceling session %s because of timeout (%dms)", session.id,
                 transactionTimeoutInMs);
 
-          it.remove();
-          expired++;
+          if (outcome != HttpSession.IdleCancelOutcome.BUSY) {
+            it.remove();
+            expired++;
+          }
         }
       }
       return expired;

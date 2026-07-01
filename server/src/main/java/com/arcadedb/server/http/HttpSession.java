@@ -86,7 +86,23 @@ public class HttpSession implements QuerySession {
     return System.currentTimeMillis() - lastUpdate;
   }
 
+  /**
+   * Rolls back the session's transaction. Waits for any in-flight {@link #execute} to finish before doing so
+   * (the lock is reentrant, so this is a no-op wait when called from within {@code execute}'s own callback,
+   * e.g. its error-handling path).
+   */
   public boolean cancel() {
+    final boolean locked;
+    try {
+      locked = lock.tryLock(DEFAULT_TIMEOUT, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      return false;
+    }
+
+    if (!locked)
+      return false;
+
     try {
       if (transaction != null && transaction.isActive()) {
         transaction.rollback();
@@ -94,9 +110,43 @@ public class HttpSession implements QuerySession {
       }
     } catch (Exception e) {
       // IGNORE IT
+    } finally {
+      lock.unlock();
     }
     return false;
   }
+
+  /**
+   * Rolls back the session's transaction only if no command is currently executing on it. Used by the
+   * idle-timeout sweep ({@link HttpSessionManager#checkSessionsValidity}), which runs on a background timer
+   * thread and must never tear down a transaction while a worker thread is still inside {@link #execute}
+   * mutating it - doing so raced {@code TransactionContext.rollback()} against in-flight page mutations and
+   * could surface as an NPE on a just-nulled transaction field (issue #4857). If a command is in-flight, this
+   * is a no-op; the session is re-evaluated on the sweep's next tick once the command finishes and refreshes
+   * {@link #lastUpdate}.
+   *
+   * @return {@link IdleCancelOutcome#BUSY} if a command is currently in-flight and the sweep must retry
+   * later, {@link IdleCancelOutcome#ROLLED_BACK} if idle and an active transaction was rolled back, or
+   * {@link IdleCancelOutcome#ALREADY_IDLE} if idle but there was no active transaction to roll back
+   */
+  IdleCancelOutcome cancelIfIdle() {
+    if (!lock.tryLock())
+      return IdleCancelOutcome.BUSY;
+
+    try {
+      if (transaction != null && transaction.isActive()) {
+        transaction.rollback();
+        return IdleCancelOutcome.ROLLED_BACK;
+      }
+    } catch (Exception e) {
+      // IGNORE IT
+    } finally {
+      lock.unlock();
+    }
+    return IdleCancelOutcome.ALREADY_IDLE;
+  }
+
+  enum IdleCancelOutcome {BUSY, ROLLED_BACK, ALREADY_IDLE}
 
   public HttpSession execute(final ServerSecurityUser user, final Callable callback) throws Exception {
     if (!this.user.equals(user))
