@@ -22,6 +22,7 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
+import java.util.Arrays;
 import java.util.Random;
 import java.util.stream.Stream;
 
@@ -64,7 +65,7 @@ class TimeSeriesVectorOpsTest {
     // The whole array (length 13) plus a vector-aligned sub-range are exercised so both the SIMD body
     // and the scalar tail are covered.
     final double[] data = new double[13];
-    java.util.Arrays.fill(data, Double.NaN);
+    Arrays.fill(data, Double.NaN);
     assertThat(ops.min(data, 0, 13)).isNaN();
     assertThat(ops.max(data, 0, 13)).isNaN();
     assertThat(ops.min(data, 2, 8)).isNaN();

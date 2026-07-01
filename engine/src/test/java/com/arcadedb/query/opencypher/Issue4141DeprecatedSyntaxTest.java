@@ -42,7 +42,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * Also guards against false positives: map projections ({@code n{name}}) and brace-block expressions
  * ({@code COUNT { ... }}) must still parse, and the modern {@code $param} form must keep working.
  */
-public class Issue4141DeprecatedSyntaxTest {
+class Issue4141DeprecatedSyntaxTest {
   private Database database;
 
   @BeforeEach

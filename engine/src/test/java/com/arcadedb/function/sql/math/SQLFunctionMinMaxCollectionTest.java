@@ -22,6 +22,7 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.List;
 
@@ -62,9 +63,9 @@ class SQLFunctionMinMaxCollectionTest {
 
     // INTEGER + BIGDECIMAL MIX
     assertThat(((Number) new SQLFunctionMin().execute(null, null, null,
-        new Object[] { Arrays.asList(10, new java.math.BigDecimal("2.5")) }, null)).doubleValue()).isEqualTo(2.5);
+        new Object[] { Arrays.asList(10, new BigDecimal("2.5")) }, null)).doubleValue()).isEqualTo(2.5);
     assertThat(((Number) new SQLFunctionMax().execute(null, null, null,
-        new Object[] { Arrays.asList(10, new java.math.BigDecimal("2.5")) }, null)).doubleValue()).isEqualTo(10.0);
+        new Object[] { Arrays.asList(10, new BigDecimal("2.5")) }, null)).doubleValue()).isEqualTo(10.0);
   }
 
   @Test

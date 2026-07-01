@@ -27,6 +27,8 @@ import com.arcadedb.engine.PageId;
 import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.SerializationException;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
+
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -55,7 +57,7 @@ class Issue4420TolerantDeleteTest extends TestHelper {
   protected void beginTest() {
     database.transaction(() -> {
       database.getSchema().createDocumentType("doc");
-      database.getSchema().getType("doc").createProperty("name", com.arcadedb.schema.Type.STRING);
+      database.getSchema().getType("doc").createProperty("name", Type.STRING);
       database.getSchema().createTypeIndex(Schema.INDEX_TYPE.LSM_TREE, true, "doc", "name");
     });
   }

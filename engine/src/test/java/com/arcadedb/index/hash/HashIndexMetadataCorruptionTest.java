@@ -32,6 +32,8 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
 import com.arcadedb.schema.VertexType;
+import com.arcadedb.serializer.BinaryTypes;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.Collection;
@@ -178,8 +180,8 @@ class HashIndexMetadataCorruptionTest extends TestHelper {
   void isSupportedKeyTypeRejectsCorruptValues() {
     assertThat(HashIndexBucket.isSupportedKeyType((byte) -108)).isFalse();
     assertThat(HashIndexBucket.isSupportedKeyType((byte) 99)).isFalse();
-    assertThat(HashIndexBucket.isSupportedKeyType(com.arcadedb.serializer.BinaryTypes.TYPE_STRING)).isTrue();
-    assertThat(HashIndexBucket.isSupportedKeyType(com.arcadedb.serializer.BinaryTypes.TYPE_LONG)).isTrue();
+    assertThat(HashIndexBucket.isSupportedKeyType(BinaryTypes.TYPE_STRING)).isTrue();
+    assertThat(HashIndexBucket.isSupportedKeyType(BinaryTypes.TYPE_LONG)).isTrue();
   }
 
   /**

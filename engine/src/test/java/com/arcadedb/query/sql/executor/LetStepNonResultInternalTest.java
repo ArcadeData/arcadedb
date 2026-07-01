@@ -20,6 +20,7 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.Record;
 import com.arcadedb.exception.TimeoutException;
@@ -33,6 +34,7 @@ import org.antlr.v4.runtime.CharStreams;
 import org.antlr.v4.runtime.CommonTokenStream;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -94,8 +96,8 @@ class LetStepNonResultInternalTest extends TestHelper {
     assertThat(returned).isInstanceOf(WrapperResult.class);
 
     final Object value = context.getVariable("$a");
-    assertThat(value).isInstanceOf(java.util.List.class);
-    assertThat((java.util.List<?>) value).hasSize(1);
+    assertThat(value).isInstanceOf(List.class);
+    assertThat((List<?>) value).hasSize(1);
     rs.close();
   }
 
@@ -194,12 +196,12 @@ class LetStepNonResultInternalTest extends TestHelper {
     }
 
     @Override
-    public Optional<com.arcadedb.database.Document> getElement() {
+    public Optional<Document> getElement() {
       return delegate.getElement();
     }
 
     @Override
-    public com.arcadedb.database.Document toElement() {
+    public Document toElement() {
       return delegate.toElement();
     }
 

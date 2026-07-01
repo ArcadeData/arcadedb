@@ -23,6 +23,8 @@ import com.arcadedb.TestHelper;
 import com.arcadedb.database.Record;
 import com.arcadedb.event.BeforeRecordDeleteListener;
 import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.Vertex;
+
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.atomic.AtomicInteger;
@@ -70,7 +72,7 @@ class TruncateType4817Test extends TestHelper {
     // The hub vertex's out-edge list must be empty too (bidirectional cleanup ran).
     database.transaction(() -> {
       final var hub = database.query("sql", "SELECT FROM Node WHERE name = 'hub'").next().getVertex().get();
-      assertThat(hub.countEdges(com.arcadedb.graph.Vertex.DIRECTION.OUT, "Link")).isEqualTo(0L);
+      assertThat(hub.countEdges(Vertex.DIRECTION.OUT, "Link")).isEqualTo(0L);
     });
 
     // New edges can still be created after the truncate.

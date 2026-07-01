@@ -41,7 +41,7 @@ class ImportDatabaseSecurityIT extends BaseGraphServerTest {
 
   @Test
   void nonAdminUserCannotImportLocalFile() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String userAuth = createNonAdminUser(serverIndex, "pwn", "pwn123secret");
       try {
         final int status = commandStatus(serverIndex, getDatabaseName(), userAuth,
@@ -55,7 +55,7 @@ class ImportDatabaseSecurityIT extends BaseGraphServerTest {
 
   @Test
   void nonAdminUserCannotImportRemoteSSRF() throws Exception {
-    testEachServer((serverIndex) -> {
+    testEachServer(serverIndex -> {
       final String userAuth = createNonAdminUser(serverIndex, "pwn2", "pwn123secret");
       try {
         final int status = commandStatus(serverIndex, getDatabaseName(), userAuth,

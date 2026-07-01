@@ -48,7 +48,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *
  * @author Luca Garulli (l.garulli@arcadedata.com)
  */
-public class Issue4141TransactionControlTest {
+class Issue4141TransactionControlTest {
   private Database database;
 
   @BeforeEach

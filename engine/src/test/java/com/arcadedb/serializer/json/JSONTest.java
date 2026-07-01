@@ -21,10 +21,7 @@ package com.arcadedb.serializer.json;
 import com.arcadedb.TestHelper;
 import org.junit.jupiter.api.Test;
 
-import java.time.Duration;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
-import java.time.LocalTime;
+import java.time.*;
 import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -300,7 +297,7 @@ class JSONTest extends TestHelper {
   @Test
   void enumAndClassInArrays() {
     // Enum serializes to its name(); the array path must mirror put(String, Object).
-    final JSONArray enums = new JSONArray(List.of(java.time.DayOfWeek.MONDAY, java.time.Month.JUNE));
+    final JSONArray enums = new JSONArray(List.of(DayOfWeek.MONDAY, Month.JUNE));
     assertThat(enums.getString(0)).isEqualTo("MONDAY");
     assertThat(enums.getString(1)).isEqualTo("JUNE");
 

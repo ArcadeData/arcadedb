@@ -118,7 +118,7 @@ public class GrpcTransactionMaxAgeReaperIT extends BaseGraphServerTest {
   }
 
   @Test
-  void busyTransactionIsReapedOnceItExceedsMaxAge() throws InterruptedException {
+  void busyTransactionIsReapedOnceItExceedsMaxAge() throws Exception {
     final ArcadeDbGrpcService service = grpcService();
 
     final BeginTransactionResponse beginResponse = authenticatedStub.beginTransaction(BeginTransactionRequest.newBuilder()

@@ -28,9 +28,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -197,7 +195,7 @@ class RemoteVertexTest {
         .thenReturn(page2)
         .thenReturn(page3);
 
-    final List<Vertex> collected = new java.util.ArrayList<>();
+    final List<Vertex> collected = new ArrayList<>();
     for (final Vertex v : remoteVertex.getVerticesPaged(Vertex.DIRECTION.OUT, 2, "Knows"))
       collected.add(v);
 
@@ -239,7 +237,7 @@ class RemoteVertexTest {
         .thenReturn(page1)
         .thenReturn(page2);
 
-    final List<Edge> collected = new java.util.ArrayList<>();
+    final List<Edge> collected = new ArrayList<>();
     for (final Edge e : remoteVertex.getEdgesPaged(Vertex.DIRECTION.OUT, 2))
       collected.add(e);
 
@@ -280,7 +278,7 @@ class RemoteVertexTest {
 
     if (hasNextBoxed.length > 1) {
       final Boolean first = hasNextBoxed[0];
-      final Boolean[] rest = java.util.Arrays.copyOfRange(hasNextBoxed, 1, hasNextBoxed.length);
+      final Boolean[] rest = Arrays.copyOfRange(hasNextBoxed, 1, hasNextBoxed.length);
       when(rs.hasNext()).thenReturn(first, rest);
     } else {
       when(rs.hasNext()).thenReturn(false);
@@ -288,7 +286,7 @@ class RemoteVertexTest {
 
     if (results.length > 0) {
       final Result first = results[0];
-      final Result[] rest = java.util.Arrays.copyOfRange(results, 1, results.length);
+      final Result[] rest = Arrays.copyOfRange(results, 1, results.length);
       when(rs.next()).thenReturn(first, rest);
     }
     return rs;

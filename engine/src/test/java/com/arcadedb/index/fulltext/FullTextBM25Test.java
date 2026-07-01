@@ -75,7 +75,7 @@ class FullTextBM25Test extends TestHelper {
       assertThat(scores.get("rare")).isNotNull();
       final float rare = scores.get("rare");
       for (final Map.Entry<String, Float> e : scores.entrySet())
-        if (!e.getKey().equals("rare"))
+        if (!"rare".equals(e.getKey()))
           assertThat(rare).isGreaterThan(e.getValue());
     });
   }
@@ -174,7 +174,7 @@ class FullTextBM25Test extends TestHelper {
       // The document with the rare, discriminative term must rank above every common-only document, regardless of which bucket
       // each landed in.
       for (final Map.Entry<String, Float> e : scores.entrySet())
-        if (!e.getKey().equals("rare"))
+        if (!"rare".equals(e.getKey()))
           assertThat(scores.get("rare")).isGreaterThan(e.getValue());
     });
   }
@@ -829,7 +829,7 @@ class FullTextBM25Test extends TestHelper {
       assertThat(after.get("rare")).isNotNull();
       assertThat(after.get("rare")).isCloseTo(before.get("rare"), within(1e-4f));
       for (final Map.Entry<String, Float> e : after.entrySet())
-        if (!e.getKey().equals("rare"))
+        if (!"rare".equals(e.getKey()))
           assertThat(after.get("rare")).isGreaterThan(e.getValue());
     });
   }

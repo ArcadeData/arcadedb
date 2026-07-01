@@ -32,6 +32,10 @@ import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.time.LocalDate;
+import java.time.ZoneOffset;
+import java.util.Date;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 class JsonSerializerTest extends TestHelper {
@@ -235,9 +239,9 @@ class JsonSerializerTest extends TestHelper {
       type.createProperty("d", Type.DATE);
     });
 
-    final java.time.LocalDate localDate = java.time.LocalDate.of(2026, 6, 12);
+    final LocalDate localDate = LocalDate.of(2026, 6, 12);
     final long expectedDays = localDate.toEpochDay();
-    final java.util.Date javaDate = java.util.Date.from(localDate.atStartOfDay(java.time.ZoneOffset.UTC).toInstant());
+    final Date javaDate = Date.from(localDate.atStartOfDay(ZoneOffset.UTC).toInstant());
 
     database.transaction(() -> {
       // A java.util.Date assigned to a DATE property (mirrors the remote client path).
