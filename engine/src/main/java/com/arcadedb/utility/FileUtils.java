@@ -157,7 +157,7 @@ public class FileUtils {
     // Reject both '/' and '\' on every platform (the OS/JVM treat both as separators) and the '.'/'..' directory sentinels.
     // The substring ".." is allowed inside a name (e.g. "a..b"); only a name equal to ".." is a traversal.
     if (iFileName == null || iFileName.isEmpty() || iFileName.indexOf('/') > -1 || iFileName.indexOf('\\') > -1
-        || iFileName.equals(".") || iFileName.equals(".."))
+        || ".".equals(iFileName) || "..".equals(iFileName))
       throw new IOException("Invalid file name '" + iFileName + "'");
   }
 

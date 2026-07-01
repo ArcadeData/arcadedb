@@ -88,7 +88,7 @@ class DatabaseReconcilerTest {
     final var outcome = DatabaseReconciler.executeReconcilePlan(plan,
         db -> {
           acquireCalls.add(db);
-          if (db.equals("bad"))
+          if ("bad".equals(db))
             throw new IOException("corrupt snapshot");
         },
         refreshCalls::add);
@@ -109,7 +109,7 @@ class DatabaseReconcilerTest {
     final List<String> refreshCalls = new ArrayList<>();
     final var outcome = DatabaseReconciler.executeReconcilePlan(plan,
         db -> {
-          if (db.equals("npe"))
+          if ("npe".equals(db))
             throw new RuntimeException("unexpected");
         },
         refreshCalls::add);
