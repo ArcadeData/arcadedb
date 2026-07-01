@@ -45,6 +45,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.text.ParseException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -905,10 +906,10 @@ class RemoteHttpComponentTest {
       try {
         assertThatThrownBy(() -> c.httpCommand("GET", null, "server", null, null, null, false, false,
             (response, json) -> {
-              throw new java.text.ParseException("checked failure", 0);
+              throw new ParseException("checked failure", 0);
             }))
             .isInstanceOf(RemoteException.class)
-            .hasCauseInstanceOf(java.text.ParseException.class);
+            .hasCauseInstanceOf(ParseException.class);
       } finally {
         c.close();
       }

@@ -21,9 +21,7 @@ package com.arcadedb.server.ha.raft;
 import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.Set;
+import java.util.*;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -137,10 +135,10 @@ class DatabaseReconcilerTest {
 
   private static DatabaseReconciler.ReconcileOutcome outcome(final List<String> acquired, final List<String> acquireFailures,
       final List<String> refreshed, final List<String> refreshFailures) {
-    final java.util.Map<String, String> af = new java.util.LinkedHashMap<>();
+    final Map<String, String> af = new LinkedHashMap<>();
     for (final String d : acquireFailures)
       af.put(d, "boom");
-    final java.util.Map<String, String> rf = new java.util.LinkedHashMap<>();
+    final Map<String, String> rf = new LinkedHashMap<>();
     for (final String d : refreshFailures)
       rf.put(d, "boom");
     return new DatabaseReconciler.ReconcileOutcome(acquired, af, refreshed, rf);

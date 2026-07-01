@@ -32,6 +32,7 @@ import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.logging.ConsoleHandler;
+import java.util.logging.Formatter;
 import java.util.logging.Handler;
 import java.util.logging.Level;
 import java.util.logging.LogManager;
@@ -274,7 +275,7 @@ public class DefaultLogger implements Logger {
       // ASSURE TO HAVE THE LOG FORMATTER TO THE CONSOLE EVEN IF NO CONFIGURATION FILE IS TAKEN
       final java.util.logging.Logger log = java.util.logging.Logger.getLogger("");
 
-      final java.util.logging.Formatter desired = selectConsoleFormatter();
+      final Formatter desired = selectConsoleFormatter();
 
       if (log.getHandlers().length == 0) {
         // SET DEFAULT LOG FORMATTER
@@ -299,7 +300,7 @@ public class DefaultLogger implements Logger {
    * class already uses for {@code arcadedb.installCustomFormatter} - because this runs before
    * GlobalConfiguration values are guaranteed initialized.
    */
-  static java.util.logging.Formatter selectConsoleFormatter() {
+  static Formatter selectConsoleFormatter() {
     final String format = SystemVariableResolver.INSTANCE.resolveSystemVariables("${arcadedb.server.logFormat}", "text");
     if ("json".equalsIgnoreCase(format))
       return new JsonLogFormatter();

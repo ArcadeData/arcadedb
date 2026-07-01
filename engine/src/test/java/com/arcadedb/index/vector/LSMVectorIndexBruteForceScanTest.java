@@ -21,6 +21,7 @@ package com.arcadedb.index.vector;
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.Document;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.index.TypeIndex;
@@ -147,14 +148,14 @@ class LSMVectorIndexBruteForceScanTest extends TestHelper {
 
         // No deleted vertex may appear, and every returned RID must be one of the survivors.
         for (final Result r : results) {
-          final RID rid = r.<com.arcadedb.database.Document>getProperty("record").getIdentity();
+          final RID rid = r.<Document>getProperty("record").getIdentity();
           assertThat(keptRids)
               .as("Returned RID %s must be a surviving (non-deleted) vertex", rid)
               .contains(rid);
         }
 
         final Result top = results.getFirst();
-        final RID topRid = top.<com.arcadedb.database.Document>getProperty("record").getIdentity();
+        final RID topRid = top.<Document>getProperty("record").getIdentity();
         final float topDistance = ((Number) top.getProperty("distance")).floatValue();
 
         assertThat(topRid)

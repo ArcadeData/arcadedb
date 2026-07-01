@@ -26,6 +26,7 @@ import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Config;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
+import org.neo4j.driver.Record;
 import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
@@ -92,7 +93,7 @@ public class Issue4141BoltSessionManagementIT extends BaseGraphServerTest {
         final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
 
       // SESSION SET binds a parameter on the connection's session and echoes the operation/name/value.
-      final org.neo4j.driver.Record setRec = session.run("SESSION SET $threshold = 21").single();
+      final Record setRec = session.run("SESSION SET $threshold = 21").single();
       assertThat(setRec.get("operation").asString()).isEqualTo("set");
       assertThat(setRec.get("name").asString()).isEqualTo("threshold");
       assertThat(setRec.get("value").asInt()).isEqualTo(21);

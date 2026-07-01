@@ -38,6 +38,7 @@ import org.apache.ratis.protocol.RaftPeer;
 import org.apache.ratis.protocol.RaftPeerId;
 import org.apache.ratis.protocol.exceptions.NotLeaderException;
 import org.apache.ratis.retry.RetryPolicies;
+import org.apache.ratis.server.DivisionInfo;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
 import org.apache.ratis.server.protocol.TermIndex;
@@ -1853,7 +1854,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private static final int FOLLOWER_STATES_MAX_ATTEMPTS = 3;
 
   /** Returns the leader's follower peer-info list, or an empty list when this node is not a ready leader. */
-  private static List<RaftProtos.ServerRpcProto> leaderFollowerInfos(final org.apache.ratis.server.DivisionInfo info) {
+  private static List<RaftProtos.ServerRpcProto> leaderFollowerInfos(final DivisionInfo info) {
     final RaftProtos.RoleInfoProto roleInfo = info.getRoleInfoProto();
     return roleInfo.hasLeaderInfo() ? roleInfo.getLeaderInfo().getFollowerInfoList() : List.of();
   }
