@@ -740,17 +740,17 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
       // collapsing to the JSONObject default of Integer when the value fits in 32 bits. Matches the
       // behavior of the gRPC client, which already routes the value through a typed channel.
       final Map<String, Object> map = result.toMap();
-      final Map<String, Type> propTypes = parsePropertyTypes((String) map.get(Property.PROPERTY_TYPES_PROPERTY));
+      final Map<String, ColumnTypeHint> propTypes = parsePropertyTypes((String) map.get(Property.PROPERTY_TYPES_PROPERTY));
       if (!propTypes.isEmpty() || map.containsKey(Property.PROPERTY_TYPES_PROPERTY)) {
         final Map<String, Object> converted = new LinkedHashMap<>(map.size());
         for (final Map.Entry<String, Object> entry : map.entrySet()) {
           final String fieldName = entry.getKey();
           if (Property.METADATA_PROPERTIES.contains(fieldName))
             continue;
-          final Type propType = propTypes.get(fieldName);
+          final ColumnTypeHint hint = propTypes.get(fieldName);
           Object value = entry.getValue();
-          if (propType != null && value != null)
-            value = Type.convert(null, value, propType.getDefaultJavaType());
+          if (hint != null && value != null)
+            value = convertWithHint(value, hint);
           converted.put(fieldName, value);
         }
         return new ResultInternal(converted);
@@ -761,22 +761,81 @@ public class RemoteDatabase extends RemoteHttpComponent implements BasicDatabase
     return new ResultInternal(record);
   }
 
-  private static Map<String, Type> parsePropertyTypes(final String propTypesAsString) {
+  /**
+   * Restores a projection column value to its declared Java type using the per-column {@code @props}
+   * hint. Temporal columns honor the configured date/datetime implementation (matching the schema
+   * driven document path), and - issue #4849 - a LIST/MAP column carrying an element-type hint has
+   * every item coerced to that element type, so a projected {@code List}/{@code Map} of temporals
+   * reaches the caller as {@code List<LocalDateTime>}/{@code Map<String,LocalDateTime>} instead of a
+   * raw container of epoch-millis {@code Long} values.
+   */
+  private Object convertWithHint(final Object value, final ColumnTypeHint hint) {
+    if (hint.elementType() != null) {
+      final Class<?> elementImplementation = javaImplementationForType(hint.elementType());
+      if (value instanceof List<?> list) {
+        final List<Object> converted = new ArrayList<>(list.size());
+        for (final Object item : list)
+          converted.add(item == null ? null : Type.convert(null, item, elementImplementation));
+        return converted;
+      }
+      if (value instanceof Map<?, ?> map) {
+        final Map<Object, Object> converted = new LinkedHashMap<>(map.size());
+        for (final Map.Entry<?, ?> mapEntry : map.entrySet())
+          converted.put(mapEntry.getKey(),
+              mapEntry.getValue() == null ? null : Type.convert(null, mapEntry.getValue(), elementImplementation));
+        return converted;
+      }
+    }
+    return Type.convert(null, value, javaImplementationForType(hint.type()));
+  }
+
+  private Class<?> javaImplementationForType(final Type type) {
+    if (type == Type.DATE)
+      return serializer.getDateImplementation();
+    if (type == Type.DATETIME)
+      return serializer.getDateTimeImplementation();
+    return type.getDefaultJavaType();
+  }
+
+  private static Map<String, ColumnTypeHint> parsePropertyTypes(final String propTypesAsString) {
     if (propTypesAsString == null || propTypesAsString.isEmpty())
       return Collections.emptyMap();
 
-    final Map<String, Type> propTypes = new HashMap<>();
+    final Map<String, ColumnTypeHint> propTypes = new HashMap<>();
     for (final String entry : propTypesAsString.split(",")) {
       final int sep = entry.lastIndexOf(':');
       if (sep <= 0 || sep == entry.length() - 1)
         continue;
+      final String fieldName = entry.substring(0, sep);
+      String typePart = entry.substring(sep + 1);
+
+      // Issue #4849: an optional element-type id is encoded in parentheses for collection columns,
+      // e.g. "dates:9(6)" -> LIST(9) of DATETIME(6).
+      Type elementType = null;
+      final int paren = typePart.indexOf('(');
+      if (paren > 0 && typePart.endsWith(")")) {
+        try {
+          elementType = Type.getById((byte) Integer.parseInt(typePart.substring(paren + 1, typePart.length() - 1)));
+        } catch (final NumberFormatException ignored) {
+          // ignore a malformed element-type suffix and fall back to the column type only
+        }
+        typePart = typePart.substring(0, paren);
+      }
+
       try {
-        propTypes.put(entry.substring(0, sep), Type.getById((byte) Integer.parseInt(entry.substring(sep + 1))));
+        propTypes.put(fieldName, new ColumnTypeHint(Type.getById((byte) Integer.parseInt(typePart)), elementType));
       } catch (final NumberFormatException ignored) {
         // skip malformed entries rather than fail the whole result row
       }
     }
     return propTypes;
+  }
+
+  /**
+   * Per-column type metadata parsed from the {@code @props} hint: the column {@link Type} and, for a
+   * collection column, the optional element {@link Type} (issue #4849).
+   */
+  private record ColumnTypeHint(Type type, Type elementType) {
   }
 
   protected Record json2Record(final JSONObject result) {

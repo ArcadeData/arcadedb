@@ -176,6 +176,25 @@ public class JsonSerializer {
         if (!propertyTypes.isEmpty())
           propertyTypes.append(",");
         propertyTypes.append(propertyName).append(":").append(propertyType.getId());
+
+        // Issue #4849: a LIST/MAP column only carries a container hint, so temporal items would reach
+        // the remote client as raw epoch-millis Numbers with no metadata to coerce them back to the
+        // configured Java temporal type (the client returned List<Long>/Map<String,Long> instead of
+        // List<LocalDateTime>/Map<String,LocalDateTime>). When the items share a temporal type, append
+        // the element-type id in parentheses (e.g. "dates:9(6)") so the client can rebuild each item
+        // as the configured temporal implementation.
+        final Collection<?> elements;
+        if (propertyType == Type.LIST && value instanceof Collection<?> collection)
+          elements = collection;
+        else if (propertyType == Type.MAP && value instanceof Map<?, ?> map)
+          elements = map.values();
+        else
+          elements = null;
+        if (elements != null) {
+          final Type elementType = detectHomogeneousTemporalElementType(elements);
+          if (elementType != null)
+            propertyTypes.append('(').append(elementType.getId()).append(')');
+        }
       }
 
       value = serializeObject(database, value);
@@ -514,6 +533,33 @@ public class JsonSerializer {
     value = convertNonNumbers(value);
 
     return value;
+  }
+
+  /**
+   * Issue #4849: returns the temporal {@link Type} shared by every non-null element of {@code
+   * collection} (the items of a LIST column or the values of a MAP column), or {@code null} when the
+   * collection is empty, contains a non-temporal element, or mixes temporal types. Only the {@code
+   * DATETIME} family is reported: {@link
+   * Type#getTypeByClass(Class)} collapses every datetime variant onto {@code DATETIME}, which matches
+   * the millisecond encoding that {@link com.arcadedb.serializer.json.JSONObject#objectToElement} uses
+   * for array items, so the remote client can safely rebuild each item from the epoch-millis Number.
+   */
+  private static Type detectHomogeneousTemporalElementType(final Collection<?> collection) {
+    Type elementType = null;
+    for (final Object element : collection) {
+      if (element == null)
+        continue;
+      if (!(element instanceof Temporal || element instanceof Date || element instanceof Calendar))
+        return null;
+      final Type t = Type.getTypeByClass(element.getClass());
+      if (t != Type.DATETIME)
+        return null;
+      if (elementType == null)
+        elementType = t;
+      else if (elementType != t)
+        return null;
+    }
+    return elementType;
   }
 
   /**
