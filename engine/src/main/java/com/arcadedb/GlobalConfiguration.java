@@ -578,6 +578,10 @@ public enum GlobalConfiguration {
       "When true and HA is active, /api/v1/ready also requires the node to have joined the Raft group and be caught up. Default false preserves current readiness behavior.",
       Boolean.class, false),
 
+  SERVER_READINESS_HA_MAX_LAG("arcadedb.server.readinessHAMaxLag", SCOPE.SERVER,
+      "When SERVER_READINESS_REQUIRES_HA is true, the maximum number of Raft log entries a follower may lag behind the commit index (commitIndex - lastAppliedIndex) and still report Ready. Keeps /api/v1/ready returning 503 until a (re)joined follower has replayed the committed log, so a rolling restart does not drop the write quorum.",
+      Long.class, 100L),
+
   SERVER_LOG_FORMAT("arcadedb.server.logFormat", SCOPE.SERVER,
       "Console log format: 'text' (default, human-readable) or 'json' (one JSON object per line with correlation fields)",
       String.class, "text"),
