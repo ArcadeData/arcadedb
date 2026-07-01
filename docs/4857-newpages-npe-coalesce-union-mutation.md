@@ -106,7 +106,9 @@ The refresh now happens inside the locked region.
 
 Added to `server/src/test/java/com/arcadedb/server/http/HttpSessionTimeoutRaceTest.java` (new
 file), constructed against a real embedded `TransactionContext`/`HttpSession` without needing
-HTTP or Gremlin:
+HTTP, Gremlin, or a running `ArcadeDBServer` - the `ServerSecurityUser` is a real instance too
+(its `equals()`/`getName()` never touch the `ArcadeDBServer` field the constructor takes, so a
+`null` server is passed rather than mocking):
 
 - `timeoutSweepDoesNotCancelSessionWithInFlightCommand` - starts a long-running command
   (holding `execute()`'s lock) and drives `checkSessionsValidity()` past the timeout,

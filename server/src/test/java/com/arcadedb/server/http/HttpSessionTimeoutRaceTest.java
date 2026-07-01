@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
+import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
@@ -37,8 +38,6 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.mockito.Mockito.mock;
-import static org.mockito.Mockito.when;
 
 /**
  * Regression test for GitHub issue #4857: the {@link HttpSessionManager} idle-timeout sweep ran on a
@@ -70,10 +69,10 @@ class HttpSessionTimeoutRaceTest {
     return (DatabaseInternal) new DatabaseFactory(databaseDirectory.getPath()).open();
   }
 
-  private ServerSecurityUser mockUser(final String name) {
-    final ServerSecurityUser user = mock(ServerSecurityUser.class);
-    when(user.getName()).thenReturn(name);
-    return user;
+  // ServerSecurityUser.equals()/getName() (the only members execute()/createSession() touch) never
+  // dereference the ArcadeDBServer field, so a real instance can be built without a running server.
+  private ServerSecurityUser createUser(final String name) {
+    return new ServerSecurityUser(null, new JSONObject().put("name", name));
   }
 
   private static void makeSessionLookExpired(final HttpSession session) throws ReflectiveOperationException {
@@ -100,7 +99,7 @@ class HttpSessionTimeoutRaceTest {
     final TransactionContext tx = new TransactionContext(database);
     tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
 
-    final ServerSecurityUser user = mockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
     final HttpSession session = sessionManager.createSession(user, tx);
 
     final CountDownLatch commandStarted = new CountDownLatch(1);
@@ -149,7 +148,7 @@ class HttpSessionTimeoutRaceTest {
     final TransactionContext tx = new TransactionContext(database);
     tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
 
-    final ServerSecurityUser user = mockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
     final HttpSession session = sessionManager.createSession(user, tx);
 
     try {
@@ -178,7 +177,7 @@ class HttpSessionTimeoutRaceTest {
     final TransactionContext tx = new TransactionContext(database);
     tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
 
-    final ServerSecurityUser user = mockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
     final HttpSession session = sessionManager.createSession(user, tx);
 
     final CountDownLatch commandStarted = new CountDownLatch(1);
@@ -226,7 +225,7 @@ class HttpSessionTimeoutRaceTest {
     final TransactionContext tx = new TransactionContext(database);
     tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
 
-    final ServerSecurityUser user = mockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
     final HttpSession session = sessionManager.createSession(user, tx);
 
     makeSessionLookExpired(session);
@@ -247,7 +246,7 @@ class HttpSessionTimeoutRaceTest {
     tx.begin(Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED);
     tx.commit();
 
-    final ServerSecurityUser user = mockUser("testuser");
+    final ServerSecurityUser user = createUser("testuser");
     final HttpSession session = sessionManager.createSession(user, tx);
 
     makeSessionLookExpired(session);
