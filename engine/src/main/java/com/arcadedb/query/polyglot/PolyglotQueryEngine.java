@@ -29,6 +29,7 @@ import com.arcadedb.query.QueryEngine;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.security.SecurityDatabaseUser;
 import org.graalvm.polyglot.Value;
 
 import java.util.List;
@@ -101,6 +102,17 @@ public class PolyglotQueryEngine implements QueryEngine {
     return language;
   }
 
+  /**
+   * Executing a polyglot script grants the caller arbitrary in-JVM capabilities (host method access and file I/O reachable
+   * through the bound {@code database} object), so it must be gated behind database-administrator privileges. Without this
+   * check any authenticated user - including a read-only one - could escalate through the scripting engine and read host
+   * files outside the database scope (GHSA-48qw-824m-86pr). The check runs on the calling thread (which carries the bound
+   * {@link SecurityDatabaseUser}) and is a no-op in embedded mode and in internal/system contexts where no user is bound.
+   */
+  private void checkScriptingPermissions() {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SECURITY);
+  }
+
   @Override
   public ResultSet command(final String query, ContextConfiguration configuration, final Object... parameters) {
     if (parameters == null || parameters.length == 0)
@@ -111,6 +123,7 @@ public class PolyglotQueryEngine implements QueryEngine {
 
   @Override
   public ResultSet command(final String query, final ContextConfiguration configuration, final Map<String, Object> parameters) {
+    checkScriptingPermissions();
     try {
       return executeUserCode(() -> {
 
@@ -160,6 +173,7 @@ public class PolyglotQueryEngine implements QueryEngine {
 
   @Override
   public QueryEngine registerFunctions(final String function) {
+    checkScriptingPermissions();
     synchronized (polyglotEngine) {
       try {
         polyglotEngine.eval(function);
@@ -181,6 +195,8 @@ public class PolyglotQueryEngine implements QueryEngine {
 
   @Override
   public AnalyzedQuery analyze(final String query) {
+    // analyze() evaluates the script to determine its characteristics, so it is gated identically to command().
+    checkScriptingPermissions();
     try {
       executeUserCode(() -> {
         synchronized (polyglotEngine) {

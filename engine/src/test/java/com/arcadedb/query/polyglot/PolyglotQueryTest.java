@@ -98,6 +98,33 @@ class PolyglotQueryTest extends TestHelper {
   }
 
   @Test
+  void sandboxClassLoaderEscape() {
+    // GHSA-48qw-824m-86pr: a script must not be able to walk from a bound Java object (database) to an arbitrary
+    // class through its class loader, bypassing the allowedPackages whitelist (here java.io.File is never allowed).
+    try {
+      database.command("js",
+          "var cl = database.getClass().getClassLoader(); cl.loadClass('java.io.File');");
+      fail("It should not be able to reach the class loader from a bound object");
+    } catch (final Exception e) {
+      assertThat(e).isInstanceOf(CommandExecutionException.class);
+      assertThat(e.getCause()).isInstanceOf(PolyglotException.class);
+    }
+  }
+
+  @Test
+  void sandboxReflectionEscape() {
+    // The same whitelist bypass must be blocked when reached via Class reflection (forName / getDeclaredConstructor)
+    // instead of the class loader.
+    try {
+      database.command("js", "database.getClass().forName('java.io.File');");
+      fail("It should not be able to use Class.forName from a bound object");
+    } catch (final Exception e) {
+      assertThat(e).isInstanceOf(CommandExecutionException.class);
+      assertThat(e.getCause()).isInstanceOf(PolyglotException.class);
+    }
+  }
+
+  @Test
   void timeout() {
     GlobalConfiguration.POLYGLOT_COMMAND_TIMEOUT.setValue(2000);
     try {

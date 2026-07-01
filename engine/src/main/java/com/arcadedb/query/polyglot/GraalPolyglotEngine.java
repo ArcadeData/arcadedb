@@ -50,6 +50,24 @@ public class GraalPolyglotEngine implements AutoCloseable {
   public final         Context             context;
   private static volatile Set<String>      supportedLanguages;
 
+  /**
+   * Host-access policy for scripts. It starts from {@link HostAccess#ALL} (so the bound {@code database} object's public
+   * API is usable from a script) but denies the reflection surface that would let a script escape the {@code allowedPackages}
+   * whitelist by walking from an already-bound Java object to arbitrary classes - e.g.
+   * {@code database.getClass().getClassLoader().loadClass("java.io.File")} (GHSA-48qw-824m-86pr). Denying
+   * {@link Class}, {@link ClassLoader} and the {@link java.lang.reflect} member types (with their subclasses) closes every
+   * step of that chain - {@code Class.getClassLoader()}, {@code Class.forName()}, {@code Class.getDeclaredConstructor()},
+   * {@code ClassLoader.loadClass()} and {@code Method/Constructor/Field} reflective invocation - while leaving normal host
+   * method calls on bound objects untouched. Explicit {@code Java.type(...)} lookups remain governed by
+   * {@code allowHostClassLookup}/{@code allowedPackages}.
+   */
+  private static final HostAccess SANDBOXED_HOST_ACCESS = HostAccess.newBuilder(HostAccess.ALL)//
+      .denyAccess(Class.class)//
+      .denyAccess(ClassLoader.class)//
+      .denyAccess(java.lang.reflect.AccessibleObject.class)//
+      .denyAccess(java.lang.reflect.Member.class)//
+      .build();
+
   private GraalPolyglotEngine(final Database database, final Engine engine, final String language, final OutputStream output,
       final List<String> allowedPackages, final List<String> restrictedPackages, final long maxExecutionTimeMs) {
     this.database = database;
@@ -64,7 +82,7 @@ public class GraalPolyglotEngine implements AutoCloseable {
 
     final Context.Builder builder = Context.newBuilder().engine(engine).//
         //resourceLimits(limits).//
-            allowHostAccess(HostAccess.ALL).//
+            allowHostAccess(SANDBOXED_HOST_ACCESS).//
             allowIO(IOAccess.ALL).//
             allowNativeAccess(false).//
             allowCreateProcess(false).//
