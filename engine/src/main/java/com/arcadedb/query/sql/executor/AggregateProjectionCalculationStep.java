@@ -225,4 +225,9 @@ public class AggregateProjectionCalculationStep extends ProjectionCalculationSte
     result += "\n" + spaces + "      " + projection.toString() + (groupBy == null ? "" : (spaces + "\n  " + groupBy));
     return result;
   }
+
+  @Override
+  public ExecutionStep copy(final CommandContext context) {
+    return new AggregateProjectionCalculationStep(projection.copy(), groupBy == null ? null : groupBy.copy(), limit, context, timeoutMillis);
+  }
 }
