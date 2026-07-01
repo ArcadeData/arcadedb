@@ -59,11 +59,19 @@ public class HttpSessionManager extends RWLockContext {
   public void close() {
     timer.cancel();
 
-    // CANCEL ALL THE SESSIONS
-    for (Map.Entry<String, HttpSession> stringHttpSessionEntry : sessions.entrySet())
-      stringHttpSessionEntry.getValue().cancel();
+    // SNAPSHOT UNDER THE WRITE LOCK BEFORE ITERATING: session.cancel() BELOW CAN NOW BLOCK FOR A WHILE ON AN
+    // IN-FLIGHT COMMAND, WIDENING THE WINDOW FOR A CONCURRENT checkSessionsValidity() TICK (WHICH MUTATES
+    // `sessions` UNDER THE WRITE LOCK) TO RACE A LIVE ITERATOR OVER THE SAME MAP
+    final List<HttpSession> snapshot = executeInWriteLock(() -> new ArrayList<>(sessions.values()));
 
-    sessions.clear();
+    // CANCEL ALL THE SESSIONS
+    for (final HttpSession session : snapshot)
+      session.cancel();
+
+    executeInWriteLock(() -> {
+      sessions.clear();
+      return null;
+    });
   }
 
   public int checkSessionsValidity() {
@@ -77,13 +85,17 @@ public class HttpSessionManager extends RWLockContext {
         final HttpSession session = it.next().getValue();
 
         if (session.elapsedFromLastUpdate() > transactionTimeoutInMs) {
-          // CANCEL AND REMOVE THE SESSION
-          if (session.cancel())
+          // ONLY CANCEL AND REMOVE THE SESSION IF IT'S ACTUALLY IDLE (NO COMMAND CURRENTLY EXECUTING ON IT).
+          // A BUSY SESSION IS LEFT ALONE FOR THIS SWEEP AND RE-EVALUATED ON THE NEXT TICK (SEE HttpSession#cancelIfIdle)
+          final HttpSession.IdleCancelOutcome outcome = session.cancelIfIdle();
+          if (outcome == HttpSession.IdleCancelOutcome.ROLLED_BACK)
             LogManager.instance().log(this, Level.FINE, "Canceling session %s because of timeout (%dms)", session.id,
                 transactionTimeoutInMs);
 
-          it.remove();
-          expired++;
+          if (outcome != HttpSession.IdleCancelOutcome.BUSY) {
+            it.remove();
+            expired++;
+          }
         }
       }
       return expired;
