@@ -174,13 +174,21 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
       if (type instanceof LocalEdgeType && ("@out".equals(propertyName) || "@in".equals(propertyName))) {
         keyTypes[i++] = Type.LINK;
       } else {
-        // Check if property has " by item" modifier
+        // Check for the "by item" (LIST) / "by key" / "by value" (MAP) modifiers
         String actualPropertyName = propertyName;
         boolean isByItem = false;
+        boolean isByKey = false;
+        boolean isByValue = false;
 
         if (propertyName.endsWith(" by item")) {
           isByItem = true;
           actualPropertyName = propertyName.substring(0, propertyName.length() - 8);
+        } else if (propertyName.endsWith(" by key")) {
+          isByKey = true;
+          actualPropertyName = propertyName.substring(0, propertyName.length() - 7);
+        } else if (propertyName.endsWith(" by value")) {
+          isByValue = true;
+          actualPropertyName = propertyName.substring(0, propertyName.length() - 9);
         }
 
         // First, try to find the property with the exact name (handles properties with dots in their names)
@@ -233,10 +241,25 @@ public class TypeIndexBuilder extends IndexBuilder<TypeIndex> {
               + "' because it is not a LIST type (found: " + property.getType() + ")");
         }
 
-        // For BY ITEM on LIST, the key type should be STRING (since list items are indexed individually)
-        // Lists can contain heterogeneous types, so we use STRING as a generic type for list items
+        // Validate BY KEY / BY VALUE are only used with MAP type
+        if ((isByKey || isByValue) && property.getType() != Type.MAP) {
+          throw new SchemaException(
+              "Cannot create index with BY " + (isByKey ? "KEY" : "VALUE") + " on property '" + metadata.typeName + "."
+                  + actualPropertyName + "' because it is not a MAP type (found: " + property.getType() + ")");
+        }
+
         if (isByItem) {
+          // For BY ITEM on LIST, the key type should be STRING (since list items are indexed individually).
+          // Lists can contain heterogeneous types, so we use STRING as a generic type for list items
           keyTypes[i++] = Type.STRING;
+        } else if (isByKey) {
+          // MAP keys are strings
+          keyTypes[i++] = Type.STRING;
+        } else if (isByValue) {
+          // MAP values use the declared "OF" sub-type when available, otherwise fall back to STRING
+          final String ofType = property.getOfType();
+          final Type valueType = ofType != null ? Type.getTypeByName(ofType) : null;
+          keyTypes[i++] = valueType != null ? valueType : Type.STRING;
         } else {
           keyTypes[i++] = property.getType();
         }

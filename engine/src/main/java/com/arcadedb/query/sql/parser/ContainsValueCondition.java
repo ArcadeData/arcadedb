@@ -161,7 +161,9 @@ public class ContainsValueCondition extends BooleanExpression {
 
   @Override
   public boolean isKeyFromIncluded(final BinaryCondition additional) {
-    if (operator.isGreater()) {
+    // The plain "CONTAINSVALUE <value>" form has no comparison operator: it is an exact-match lookup,
+    // so the bound is inclusive.
+    if (operator != null && operator.isGreater()) {
       return operator.isInclude();
     } else {
       if (additional != null && additional.getOperator() != null) {
@@ -174,7 +176,7 @@ public class ContainsValueCondition extends BooleanExpression {
 
   @Override
   public boolean isKeyToIncluded(final BinaryCondition additional) {
-    if (operator.isLess()) {
+    if (operator != null && operator.isLess()) {
       return operator.isInclude();
     } else {
       if (additional != null && additional.getOperator() != null) {
