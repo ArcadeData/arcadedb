@@ -500,6 +500,16 @@
   }
 
   function renderCodeEditor() {
+    // Dispose any previous CodeMirror instance before creating a new one. initQuery()
+    // (and therefore renderCodeEditor()) runs on every login, so without this a fresh
+    // CodeMirror wrapper div would be stacked on top of the old one at each re-login
+    // (see issue #4893). toTextArea() removes the wrapper and restores the original
+    // hidden <textarea id="inputCommand"> so fromTextArea() below can run cleanly again.
+    if (editor != null) {
+      editor.toTextArea();
+      editor = null;
+    }
+
     editor = CodeMirror.fromTextArea(document.getElementById("inputCommand"), {
       mode: getEditorMode(),
       lineWrapping: true,
