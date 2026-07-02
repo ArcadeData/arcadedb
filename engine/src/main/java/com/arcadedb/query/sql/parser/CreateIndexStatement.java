@@ -40,6 +40,7 @@ import com.arcadedb.schema.TypeLSMVectorIndexBuilder;
 import com.arcadedb.serializer.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -107,11 +108,14 @@ public class CreateIndexStatement extends DDLStatement {
     // both paths agree on the canonical {@code typeName + "[" + propertyNames + "]"} shape.
     final boolean userProvidedName = name != null;
 
-    if (name == null)
-      // GENERATE THE NAME AUTOMATICALLY (used only for the existsIndex shortcut below).
-      name = new Identifier(typeName.getStringValue() + propertyList.toString().replace(", ", ","));
-
     final String[] fields = calculateProperties(context);
+
+    if (name == null)
+      // GENERATE THE NAME AUTOMATICALLY (used only for the existsIndex shortcut below). It must match
+      // the canonical name derived in LocalDocumentType.addIndexInternal, including the BY KEY/VALUE/ITEM
+      // modifier (spaces stripped), otherwise the existsIndex check below never detects a pre-existing
+      // modifier index (issues #4879, #4881).
+      name = new Identifier(typeName.getStringValue() + Arrays.toString(fields).replace(" ", ""));
 
     final Schema.INDEX_TYPE indexType;
     boolean unique = false;
@@ -169,10 +173,8 @@ public class CreateIndexStatement extends DDLStatement {
     TypeIndexBuilder builder = database.getSchema().buildTypeIndex(typeName.getStringValue(), fields);
     builder = builder.withType(indexType);  // This may return LSMVectorIndexBuilder for LSM_VECTOR
 
-    // Only forward the manual TypeIndex name when the user actually wrote one. Forwarding the
-    // auto-derived placeholder above would override the canonical {@code typeName + "[..]"} shape
-    // computed by addIndexInternal (it differs for {@code BY ITEM}/{@code BY KEY} indexes where
-    // the property list rendering does not include the modifier).
+    // Only forward the manual TypeIndex name when the user actually wrote one, letting
+    // addIndexInternal compute the canonical {@code typeName + "[..]"} shape for the auto-derived case.
     if (userProvidedName && name != null)
       builder.withIndexName(name.getValue());
 

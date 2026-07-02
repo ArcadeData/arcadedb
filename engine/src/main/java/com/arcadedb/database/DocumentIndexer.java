@@ -28,12 +28,41 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
 
 public class DocumentIndexer {
   private final LocalDatabase database;
+
+  /**
+   * How a single index property must be expanded at write time: a plain property produces exactly one
+   * index entry, while collection modifiers expand into one entry per element.
+   */
+  private enum KeyExpansion {
+    NONE, LIST_ITEM, MAP_KEY, MAP_VALUE
+  }
+
+  private static KeyExpansion detectExpansion(final String keyName) {
+    if (keyName.endsWith(" by item"))
+      return KeyExpansion.LIST_ITEM;
+    if (keyName.endsWith(" by key"))
+      return KeyExpansion.MAP_KEY;
+    if (keyName.endsWith(" by value"))
+      return KeyExpansion.MAP_VALUE;
+    return KeyExpansion.NONE;
+  }
+
+  private static String stripModifier(final String keyName, final KeyExpansion expansion) {
+    return switch (expansion) {
+      case LIST_ITEM -> keyName.substring(0, keyName.length() - 8);
+      case MAP_KEY -> keyName.substring(0, keyName.length() - 7);
+      case MAP_VALUE -> keyName.substring(0, keyName.length() - 9);
+      case NONE -> keyName;
+    };
+  }
 
   protected DocumentIndexer(final LocalDatabase database) {
     this.database = database;
@@ -67,34 +96,67 @@ public class DocumentIndexer {
   public void addToIndex(final Index entry, final RID rid, final Document record) {
     final List<String> keyNames = entry.getPropertyNames();
 
-    // Check if any property has "by item" modifier
-    boolean hasListIndexing = false;
-    int listPropertyIndex = -1;
-    String[] propertyNamesArray = new String[keyNames.size()];
+    // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP)
+    KeyExpansion expansion = KeyExpansion.NONE;
+    int expansionIndex = -1;
+    final String[] propertyNamesArray = new String[keyNames.size()];
 
     for (int i = 0; i < keyNames.size(); ++i) {
       final String keyName = keyNames.get(i);
-
-      if (keyName.endsWith(" by item")) {
-        hasListIndexing = true;
-        listPropertyIndex = i;
-        // Extract actual property name (remove " by item" suffix)
-        propertyNamesArray[i] = keyName.substring(0, keyName.length() - 8);
+      final KeyExpansion e = detectExpansion(keyName);
+      if (e != KeyExpansion.NONE) {
+        expansion = e;
+        expansionIndex = i;
+        propertyNamesArray[i] = stripModifier(keyName, e);
       } else {
         propertyNamesArray[i] = keyName;
       }
     }
 
-    if (!hasListIndexing) {
+    if (expansion == KeyExpansion.NONE) {
       // Standard indexing - single entry per document
       final Object[] keyValues = new Object[keyNames.size()];
       for (int i = 0; i < keyValues.length; ++i)
         keyValues[i] = getPropertyValue(record, propertyNamesArray[i]);
       entry.put(keyValues, new RID[] { rid });
-    } else {
+    } else if (expansion == KeyExpansion.LIST_ITEM) {
       // List indexing - one entry per list element
-      addListItemsToIndex(entry, rid, record, propertyNamesArray, listPropertyIndex);
+      addListItemsToIndex(entry, rid, record, propertyNamesArray, expansionIndex);
+    } else {
+      // Map indexing - one entry per key or per value
+      addMapEntriesToIndex(entry, rid, record, propertyNamesArray, expansionIndex, expansion);
     }
+  }
+
+  private void addMapEntriesToIndex(final Index entry, final RID rid, final Document record,
+      final String[] propertyNames, final int mapPropertyIndex, final KeyExpansion expansion) {
+    for (final Object element : mapElements(record, propertyNames[mapPropertyIndex], expansion)) {
+      final Object[] keyValues = new Object[propertyNames.length];
+      for (int i = 0; i < keyValues.length; ++i)
+        keyValues[i] = i == mapPropertyIndex ? element : getPropertyValue(record, propertyNames[i]);
+      entry.put(keyValues, new RID[] { rid });
+    }
+  }
+
+  /**
+   * Returns the distinct keys or values of a MAP property to be indexed. Duplicate values (a value
+   * shared by several keys) are collapsed so a record is not indexed more than once for the same key.
+   */
+  private Collection<Object> mapElements(final Document record, final String propertyName, final KeyExpansion expansion) {
+    final Object mapValue = record.get(propertyName);
+    if (mapValue == null)
+      return List.of();
+
+    if (!(mapValue instanceof Map<?, ?> map))
+      throw new IndexException("Property '" + propertyName + "' is indexed with BY "
+          + (expansion == KeyExpansion.MAP_KEY ? "KEY" : "VALUE") + " but is not a MAP type");
+
+    final Collection<?> source = expansion == KeyExpansion.MAP_KEY ? map.keySet() : map.values();
+    final LinkedHashSet<Object> elements = new LinkedHashSet<>(source.size());
+    for (final Object element : source)
+      if (element != null)
+        elements.add(element);
+    return elements;
   }
 
   private void addListItemsToIndex(final Index entry, final RID rid, final Document record,
@@ -189,24 +251,24 @@ public class DocumentIndexer {
     for (final Index index : indexes) {
       final List<String> keyNames = index.getPropertyNames();
 
-      // Check if any property has "by item" modifier
-      boolean hasListIndexing = false;
-      int listPropertyIndex = -1;
-      String[] propertyNamesArray = new String[keyNames.size()];
+      // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP)
+      KeyExpansion expansion = KeyExpansion.NONE;
+      int expansionIndex = -1;
+      final String[] propertyNamesArray = new String[keyNames.size()];
 
       for (int i = 0; i < keyNames.size(); ++i) {
         final String keyName = keyNames.get(i);
-
-        if (keyName.endsWith(" by item")) {
-          hasListIndexing = true;
-          listPropertyIndex = i;
-          propertyNamesArray[i] = keyName.substring(0, keyName.length() - 8);
+        final KeyExpansion e = detectExpansion(keyName);
+        if (e != KeyExpansion.NONE) {
+          expansion = e;
+          expansionIndex = i;
+          propertyNamesArray[i] = stripModifier(keyName, e);
         } else {
           propertyNamesArray[i] = keyName;
         }
       }
 
-      if (!hasListIndexing) {
+      if (expansion == KeyExpansion.NONE) {
         // Standard update logic (existing code)
         final Object[] oldKeyValues = new Object[keyNames.size()];
         final Object[] newKeyValues = new Object[keyNames.size()];
@@ -238,9 +300,38 @@ public class DocumentIndexer {
         // REMOVE THE OLD ENTRY KEYS/VALUE AND INSERT THE NEW ONE
         index.remove(oldKeyValues, rid);
         index.put(newKeyValues, new RID[] { rid });
-      } else {
+      } else if (expansion == KeyExpansion.LIST_ITEM) {
         // List update logic - compute delta
-        updateListItemsInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, listPropertyIndex);
+        updateListItemsInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansionIndex);
+      } else {
+        // Map update logic - compute delta on keys or values
+        updateMapEntriesInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansionIndex, expansion);
+      }
+    }
+  }
+
+  private void updateMapEntriesInIndex(final Index index, final RID rid, final Document originalRecord,
+      final Document modifiedRecord, final String[] propertyNames, final int mapPropertyIndex, final KeyExpansion expansion) {
+    final Collection<Object> oldElements = mapElements(originalRecord, propertyNames[mapPropertyIndex], expansion);
+    final Collection<Object> newElements = mapElements(modifiedRecord, propertyNames[mapPropertyIndex], expansion);
+
+    // Remove entries for elements no longer present
+    for (final Object oldElement : oldElements) {
+      if (!newElements.contains(oldElement)) {
+        final Object[] keyValues = new Object[propertyNames.length];
+        for (int i = 0; i < keyValues.length; ++i)
+          keyValues[i] = i == mapPropertyIndex ? oldElement : getPropertyValue(originalRecord, propertyNames[i]);
+        index.remove(keyValues, rid);
+      }
+    }
+
+    // Add entries for new elements
+    for (final Object newElement : newElements) {
+      if (!oldElements.contains(newElement)) {
+        final Object[] keyValues = new Object[propertyNames.length];
+        for (int i = 0; i < keyValues.length; ++i)
+          keyValues[i] = i == mapPropertyIndex ? newElement : getPropertyValue(modifiedRecord, propertyNames[i]);
+        index.put(keyValues, new RID[] { rid });
       }
     }
   }
@@ -382,33 +473,36 @@ public class DocumentIndexer {
       for (final IndexInternal index : allIndexes) {
         final List<String> keyNames = index.getPropertyNames();
 
-        // Check if any property has "by item" modifier
-        boolean hasListIndexing = false;
-        int listPropertyIndex = -1;
-        String[] propertyNamesArray = new String[keyNames.size()];
+        // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP)
+        KeyExpansion expansion = KeyExpansion.NONE;
+        int expansionIndex = -1;
+        final String[] propertyNamesArray = new String[keyNames.size()];
 
         for (int i = 0; i < keyNames.size(); ++i) {
           final String keyName = keyNames.get(i);
-
-          if (keyName.endsWith(" by item")) {
-            hasListIndexing = true;
-            listPropertyIndex = i;
-            propertyNamesArray[i] = keyName.substring(0, keyName.length() - 8);
+          final KeyExpansion e = detectExpansion(keyName);
+          if (e != KeyExpansion.NONE) {
+            expansion = e;
+            expansionIndex = i;
+            propertyNamesArray[i] = stripModifier(keyName, e);
           } else {
             propertyNamesArray[i] = keyName;
           }
         }
 
-        if (!hasListIndexing) {
+        if (expansion == KeyExpansion.NONE) {
           // Standard deletion
           final Object[] keyValues = new Object[keyNames.size()];
           for (int i = 0; i < keyNames.size(); ++i) {
             keyValues[i] = getPropertyValue(record, propertyNamesArray[i]);
           }
           index.remove(keyValues, record.getIdentity());
-        } else {
+        } else if (expansion == KeyExpansion.LIST_ITEM) {
           // Delete all list item entries
-          deleteListItemsFromIndex(index, record, propertyNamesArray, listPropertyIndex);
+          deleteListItemsFromIndex(index, record, propertyNamesArray, expansionIndex);
+        } else {
+          // Delete all map key/value entries
+          deleteMapEntriesFromIndex(index, record, propertyNamesArray, expansionIndex, expansion);
         }
       }
 
@@ -466,6 +560,16 @@ public class DocumentIndexer {
       if (keyValues[listPropertyIndex] != null) {
         index.remove(keyValues, record.getIdentity());
       }
+    }
+  }
+
+  private void deleteMapEntriesFromIndex(final Index index, final Document record,
+      final String[] propertyNames, final int mapPropertyIndex, final KeyExpansion expansion) {
+    for (final Object element : mapElements(record, propertyNames[mapPropertyIndex], expansion)) {
+      final Object[] keyValues = new Object[propertyNames.length];
+      for (int i = 0; i < keyValues.length; ++i)
+        keyValues[i] = i == mapPropertyIndex ? element : getPropertyValue(record, propertyNames[i]);
+      index.remove(keyValues, record.getIdentity());
     }
   }
 
