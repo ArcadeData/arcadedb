@@ -46,7 +46,7 @@ Expected (as of this plan's authoring - if any line number differs, use the actu
 - `SUPPORTED_VERSIONS` declaration at line 96
 - `handleRoute` at line 903
 - `BoltErrorCodes.java` has exactly 7 `public static final String` constants, all `Neo.ClientError.*`/`Neo.DatabaseError.*`
-- `Handle date/time types` comment at line 115 in `BoltStructureMapper.java`
+- `Handle date/time types` comment at line 118 in `BoltStructureMapper.java`
 
 - [ ] **Step 2: Write `bolt/SERVER_IDENTITY.md`**
 
@@ -131,7 +131,7 @@ tracking issue #4890.
 - **Temporal and spatial type-fidelity gaps** (`TYPE-007` through
   `TYPE-012`) - `LocalDate`, `LocalTime`, `LocalDateTime`,
   `OffsetDateTime`/`ZonedDateTime` serialize as ISO-8601 strings instead of
-  native Bolt structures (`BoltStructureMapper.java`, from line 115).
+  native Bolt structures (`BoltStructureMapper.java`, from line 118).
   `Duration` and spatial `Point` have no handling anywhere in
   `BoltStructureMapper`/`PackStreamWriter` - not even a string fallback.
 - **No `Neo.TransientError.*` codes** (`TX-005`, `ERR-004`) -
