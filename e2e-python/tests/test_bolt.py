@@ -258,11 +258,15 @@ def test_CONN_002_tls_required(bolt_container_tls_required):
 
 @pytest.mark.xfail(
     strict=True,
-    reason="Fixed in BoltMessage.parseRoute by commit 39e4eaedb (PR #4917, "
-    "closing #4916), merged to main - but not yet present in the published "
-    "arcadedata/arcadedb:latest image this suite tests against (image "
-    "predates the fix as of 2026-07-03). Remove this marker once the image "
-    "is rebuilt/released with the fix.",
+    reason="BoltNetworkExecutor.getBoltAddress reports socket.getLocalAddress() "
+    "(the server's own view of its address) in the ROUTE response's WRITE/READ/"
+    "ROUTE entries. Inside a container behind port mapping (as in this "
+    "testcontainers-based suite, and any NAT'd/containerized single-node "
+    "deployment), that is the container-internal address, not the externally "
+    "reachable one the driver connected through - so the driver's routing-aware "
+    "reconnect for the READ role fails. ArcadeDB has no advertised-address "
+    "override to correct this (unlike, e.g., Neo4j's "
+    "server.bolt.advertised_address); see #4890.",
 )
 def test_CONN_003_neo4j_routing_single_node(bolt_container):
     driver = GraphDatabase.driver(bolt_uri(bolt_container, scheme="neo4j"), auth=basic_auth("root", ROOT_PASSWORD))
@@ -320,14 +324,6 @@ def test_AUTH_002_basic_auth_invalid(bolt_container):
         driver.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Fixed in BoltNetworkExecutor.handleHello by commit 93925a474, merged "
-    "to this branch - but not yet present in the published "
-    "arcadedata/arcadedb:latest image this suite tests against as of "
-    "2026-07-03. Remove this marker once the image is rebuilt/released "
-    "with the fix.",
-)
 def test_AUTH_003_auth_none_rejected(bolt_container):
     from neo4j.exceptions import AuthError, ServiceUnavailable
 

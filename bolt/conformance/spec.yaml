@@ -95,13 +95,14 @@ scenarios:
     applicable_driver_versions: all
     current_status: expected-fail
     known_limitation: >
-      Fixed by commit 39e4eaedb (PR #4917, closing #4916) - BoltMessage.parseRoute
-      no longer casts the ROUTE message's third field straight to String under
-      negotiated Bolt 4.4. Merged to main, but not yet present in the published
-      arcadedata/arcadedb:latest Docker image this spec's e2e suites test
-      against as of 2026-07-03 - flip current_status back to passing once a
-      released image includes the fix.
-    tracking_issue: "#4916 (fixed, pending image release)"
+      BoltNetworkExecutor.getBoltAddress reports socket.getLocalAddress() (the
+      server's own view of its address) in the ROUTE response's WRITE/READ/ROUTE
+      entries. Behind port mapping (e.g. containerized/NAT'd single-node
+      deployments), that is not the externally reachable address the driver
+      connected through, so driver-side routing-aware reconnects fail.
+      ArcadeDB has no advertised-address override to correct this - discovered
+      while implementing issue #4885's Python conformance suite.
+    tracking_issue: "#4890"
   - id: CONN-004
     area: connection
     title: "neo4j:// routing reflects actual multi-node HA cluster topology"
