@@ -49,10 +49,6 @@ public class BoltTemporalStructure implements PackStreamStructure {
     return fields.length;
   }
 
-  public Object[] getFields() {
-    return fields.clone();
-  }
-
   @Override
   public void writeTo(final PackStreamWriter writer) throws IOException {
     writer.writeStructureHeader(signature, fields.length);
