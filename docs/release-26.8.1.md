@@ -10,6 +10,14 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **SQL: map string-key indexing `$map["key"]` now works inside `INSERT ... CONTENT`.** `ArraySelector.getValue`
+  had two overloads: the `Result`-based one returned any index value, but the `Identifiable`-based one was typed
+  to return `Integer` and silently dropped non-numeric indexes. `INSERT ... CONTENT { ... }` evaluates its JSON
+  through the `Identifiable` path, so an expression like `$test["name"]` resolved to `null`, while the equivalent
+  `INSERT ... SET` (which goes through the `Result` path) returned the expected value
+  ([#4915](https://github.com/ArcadeData/arcadedb/issues/4915)). The `Identifiable` overload now returns the raw
+  index too, so String map keys resolve correctly. Numeric range selectors are unaffected (they use
+  `ArrayNumberSelector`, not `ArraySelector`).
 - **HASH index: cyclic overflow chain no longer spins a CPU core forever.** A corrupted (cyclic) overflow
   chain in a `HASH` index made the read/scan walkers - `searchBucket` and friends - loop endlessly, because
   they followed the `overflow -> overflow` pointers with no cycle detection (the write paths already guarded
