@@ -67,7 +67,7 @@ public enum Type {
   DOUBLE("Double", 5, BinaryTypes.TYPE_DOUBLE, Double.class, new Class<?>[] { Number.class }),
 
   DATETIME("Datetime", 6, BinaryTypes.TYPE_DATETIME, Date.class,
-      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, Instant.class, Number.class }),
+      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, OffsetDateTime.class, Instant.class, Number.class }),
 
   STRING("String", 7, BinaryTypes.TYPE_STRING, String.class, new Class<?>[] { Enum.class }),
 
@@ -89,13 +89,13 @@ public enum Type {
       new Class<?>[] { EmbeddedDocument.class, ImmutableEmbeddedDocument.class, MutableEmbeddedDocument.class }),
 
   DATETIME_MICROS("Datetime_micros", 16, BinaryTypes.TYPE_DATETIME_MICROS, LocalDateTime.class,
-      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, Instant.class, Number.class }),
+      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, OffsetDateTime.class, Instant.class, Number.class }),
 
   DATETIME_NANOS("Datetime_nanos", 17, BinaryTypes.TYPE_DATETIME_NANOS, LocalDateTime.class,
-      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, Instant.class, Number.class }),
+      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, OffsetDateTime.class, Instant.class, Number.class }),
 
   DATETIME_SECOND("Datetime_second", 18, BinaryTypes.TYPE_DATETIME_SECOND, LocalDateTime.class,
-      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, Instant.class, Number.class }),
+      new Class<?>[] { Date.class, LocalDateTime.class, ZonedDateTime.class, OffsetDateTime.class, Instant.class, Number.class }),
 
   ARRAY_OF_SHORTS("Short[]", 19, BinaryTypes.TYPE_ARRAY_OF_SHORTS, short[].class, new Class<?>[] { short[].class, Short[].class }),
 
@@ -144,6 +144,7 @@ public enum Type {
     TYPES_BY_USERTYPE.put(Calendar.class, DATETIME);
     TYPES_BY_USERTYPE.put(LocalDateTime.class, DATETIME);
     TYPES_BY_USERTYPE.put(ZonedDateTime.class, DATETIME);
+    TYPES_BY_USERTYPE.put(OffsetDateTime.class, DATETIME);
     TYPES_BY_USERTYPE.put(Instant.class, DATETIME);
     TYPES_BY_USERTYPE.put(String.class, STRING);
     TYPES_BY_USERTYPE.put(Enum.class, STRING);
