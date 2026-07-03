@@ -50,7 +50,7 @@ public class ArraySelector extends SimpleNode {
     }
   }
 
-  public Integer getValue(final Identifiable currentRecord, final Object iResult, final CommandContext context) {
+  public Object getValue(final Identifiable currentRecord, final Object iResult, final CommandContext context) {
     Object result = null;
     if (inputParam != null) {
       result = inputParam.getValue(context.getInputParameters());
@@ -66,7 +66,7 @@ public class ArraySelector extends SimpleNode {
     if (result instanceof Number number) {
       return number.intValue();
     }
-    return null;
+    return result;
   }
 
   public Object getValue(final Result currentRecord, final Object iResult, final CommandContext context) {
