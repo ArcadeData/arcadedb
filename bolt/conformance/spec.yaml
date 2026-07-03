@@ -95,12 +95,13 @@ scenarios:
     applicable_driver_versions: all
     current_status: expected-fail
     known_limitation: >
-      BoltMessage.parseRoute (bolt/src/main/java/com/arcadedb/bolt/message/BoltMessage.java:142)
-      casts the ROUTE message's third field straight to String, but under
-      negotiated Bolt 4.4 it is actually a Map, causing a server-side
-      ClassCastException - discovered while implementing issue #4885's
-      Python conformance suite.
-    tracking_issue: "#4916"
+      Fixed by commit 39e4eaedb (PR #4917, closing #4916) - BoltMessage.parseRoute
+      no longer casts the ROUTE message's third field straight to String under
+      negotiated Bolt 4.4. Merged to main, but not yet present in the published
+      arcadedata/arcadedb:latest Docker image this spec's e2e suites test
+      against as of 2026-07-03 - flip current_status back to passing once a
+      released image includes the fix.
+    tracking_issue: "#4916 (fixed, pending image release)"
   - id: CONN-004
     area: connection
     title: "neo4j:// routing reflects actual multi-node HA cluster topology"

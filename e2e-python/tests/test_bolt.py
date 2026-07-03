@@ -258,10 +258,11 @@ def test_CONN_002_tls_required(bolt_container_tls_required):
 
 @pytest.mark.xfail(
     strict=True,
-    reason="BoltMessage.parseRoute (bolt/src/main/java/com/arcadedb/bolt/message/"
-    "BoltMessage.java:142) casts the ROUTE message's third field straight to "
-    "String, but under negotiated Bolt 4.4 it is actually a Map, causing a "
-    "server-side ClassCastException; see #4916",
+    reason="Fixed in BoltMessage.parseRoute by commit 39e4eaedb (PR #4917, "
+    "closing #4916), merged to main - but not yet present in the published "
+    "arcadedata/arcadedb:latest image this suite tests against (image "
+    "predates the fix as of 2026-07-03). Remove this marker once the image "
+    "is rebuilt/released with the fix.",
 )
 def test_CONN_003_neo4j_routing_single_node(bolt_container):
     driver = GraphDatabase.driver(bolt_uri(bolt_container, scheme="neo4j"), auth=basic_auth("root", ROOT_PASSWORD))
