@@ -40,6 +40,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
@@ -208,6 +209,9 @@ public class BoltNetworkExecutor extends Thread {
           }
           break;
         } catch (final Exception e) {
+          // Top-level safety net for unexpected dispatch/protocol failures. NeedRetryException (MVCC)
+          // classification is handled where those conflicts actually arise - the RUN/PULL/COMMIT
+          // query-execution handlers - so this fallback intentionally keeps the generic DATABASE_ERROR.
           LogManager.instance().log(this, Level.WARNING, "BOLT error processing message", e);
           try {
             sendFailure(BoltException.DATABASE_ERROR, e.getMessage());
@@ -624,9 +628,11 @@ public class BoltNetworkExecutor extends Thread {
       sendFailure(BoltException.SYNTAX_ERROR, parseMsg);
       state = State.FAILED;
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "BOLT query error", e);
+      // MVCC conflicts (NeedRetryException) are expected under contention and auto-retried by the driver,
+      // so log them at FINE to avoid flooding WARNING with normal, recoverable flow; genuine errors stay WARNING.
+      LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT query error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
-      sendFailure(BoltException.DATABASE_ERROR, errorMsg);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
       state = State.FAILED;
     }
   }
@@ -723,9 +729,11 @@ public class BoltNetworkExecutor extends Thread {
       sendSuccess(metadata);
 
     } catch (final Exception e) {
-      LogManager.instance().log(this, Level.WARNING, "BOLT PULL error", e);
+      // MVCC conflicts (incl. those raised by an implicit auto-commit here) are expected and auto-retried
+      // by the driver, so log at FINE to avoid flooding WARNING with recoverable flow; real errors stay WARNING.
+      LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT PULL error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
-      sendFailure(BoltException.DATABASE_ERROR, errorMsg);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
       state = State.FAILED;
     }
   }
@@ -851,7 +859,7 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Commit error";
-      sendFailure(BoltException.TRANSACTION_ERROR, message);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), message);
       state = State.FAILED;
     }
   }
@@ -1614,6 +1622,31 @@ public class BoltNetworkExecutor extends Thread {
   private void sendFailure(final String code, final String message) throws IOException {
     final FailureMessage failure = new FailureMessage(code, message);
     sendMessage(failure);
+  }
+
+  /**
+   * Classify a query/transaction execution error into a Bolt status code. ArcadeDB's
+   * optimistic-concurrency conflicts ({@link NeedRetryException}, e.g. a page-version
+   * {@code ConcurrentModificationException} or a {@code LockTimeoutException}) map to a Neo4j
+   * transient status so managed-transaction drivers auto-retry; anything else keeps the given default.
+   */
+  static String classifyExecutionError(final Throwable error, final String defaultCode) {
+    return isRetryableConflict(error) ? BoltErrorCodes.TRANSIENT_CONFLICT_ERROR : defaultCode;
+  }
+
+  /**
+   * Whether the error (or any wrapped cause) is one of ArcadeDB's optimistic-concurrency conflicts
+   * ({@link NeedRetryException}). Such conflicts are expected under contention and auto-retried by the
+   * driver, so callers both classify them as transient and log them at a lower level.
+   */
+  static boolean isRetryableConflict(final Throwable error) {
+    // Bounded walk: the depth cap guards against a self-referential / cyclic cause chain spinning forever.
+    Throwable t = error;
+    for (int depth = 0; t != null && depth < 32; t = t.getCause(), depth++) {
+      if (t instanceof NeedRetryException)
+        return true;
+    }
+    return false;
   }
 
   /**
