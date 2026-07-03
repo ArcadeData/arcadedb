@@ -35,8 +35,11 @@ public class BoltTemporalStructure implements PackStreamStructure {
   private final Object[] fields;
 
   public BoltTemporalStructure(final byte signature, final Object... fields) {
+    // No defensive copy: every call site passes a freshly-allocated varargs array and the array is never
+    // exposed (writeTo reads it directly, there is no getter), so a copy would only add per-value GC churn
+    // on the serialization hot path.
     this.signature = signature;
-    this.fields = fields != null ? fields.clone() : new Object[0];
+    this.fields = fields != null ? fields : new Object[0];
   }
 
   @Override

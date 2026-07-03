@@ -355,8 +355,14 @@ public class BoltStructureMapper {
    * wrappers (from a scalar {@code RETURN e.valid_at}), which are unwrapped to their {@code java.time} value
    * first. Returns {@code null} when the value is not a temporal (so the caller can fall through).
    * <p>
-   * ArcadeDB negotiates Bolt v4.4 max, so the legacy (pre-5.0) DateTime / DateTimeZoneId encoding is emitted:
-   * the seconds field is the LOCAL epoch-second (offset folded in), matching {@link #fromPackStreamValue}.
+   * <b>Encoding is tied to the negotiated protocol version.</b> ArcadeDB advertises Bolt v4.4 max
+   * ({@code BoltNetworkExecutor.SUPPORTED_VERSIONS = { 4.4, 4.0, 3.0 }}), so the legacy (pre-5.0)
+   * DateTime / DateTimeZoneId encoding is always correct here: the seconds field is the LOCAL epoch-second
+   * (offset folded in), matching the legacy branch of {@link #fromPackStreamValue}. The inbound path already
+   * decodes both the legacy and the 5.0 "UTC" signatures, but this outbound path emits legacy only.
+   * TODO: if {@code SUPPORTED_VERSIONS} ever gains Bolt 5.0 (where seconds is the true UTC epoch-second),
+   * branch on the negotiated version here and emit {@code SIG_*_UTC}, otherwise a 5.0 driver would decode
+   * these structs to the wrong instant.
    */
   static BoltTemporalStructure toTemporalStructure(final Object rawValue) {
     final Object value = unwrapCypherTemporal(rawValue);
@@ -411,6 +417,9 @@ public class BoltStructureMapper {
       return ldt.getValue();
     if (value instanceof CypherDateTime dt)
       return dt.getValue();
+    // NOTE: CypherDuration is intentionally not unwrapped - Bolt has a Duration struct but there is no single
+    // java.time value for it (months + days + seconds together), so a returned duration still falls through to
+    // the generic (ISO-8601 string) handling. Tracked as a follow-up if native Duration output is needed.
     return value;
   }
 

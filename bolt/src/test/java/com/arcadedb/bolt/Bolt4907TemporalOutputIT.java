@@ -36,7 +36,10 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
+import java.time.OffsetTime;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -74,20 +77,29 @@ public class Bolt4907TemporalOutputIT extends BaseGraphServerTest {
             CREATE (e:Ev {id: 1,
               ts: datetime('2024-01-15T10:30:45Z'),
               tsOff: datetime('2024-01-15T10:30:45+02:00'),
+              tsZone: datetime('2024-01-15T10:30:45+01:00[Europe/Rome]'),
               day: date('2024-01-15'),
               ldt: localdatetime('2024-01-15T10:30:45'),
+              tOff: time('10:30:45+02:00'),
               t: localtime('10:30:45')})""").consume();
 
         final Record row = session.run(
-            "MATCH (e:Ev {id: 1}) RETURN e.ts AS ts, e.tsOff AS tsOff, e.day AS day, e.ldt AS ldt, e.t AS t").single();
+            "MATCH (e:Ev {id: 1}) RETURN e.ts AS ts, e.tsOff AS tsOff, e.tsZone AS tsZone, e.day AS day, "
+                + "e.ldt AS ldt, e.tOff AS tOff, e.t AS t").single();
 
         // Would throw if any value came back as a string instead of a native temporal struct.
         assertThat(row.get("ts").asZonedDateTime().toInstant()).isEqualTo(Instant.parse("2024-01-15T10:30:45Z"));
         // Non-zero offset: exercises the offset datetime path against the real driver (not just self round-trip).
         assertThat(row.get("tsOff").asOffsetDateTime())
             .isEqualTo(OffsetDateTime.of(2024, 1, 15, 10, 30, 45, 0, ZoneOffset.ofHours(2)));
+        // Named zone: exercises the DateTimeZoneId path against the real driver.
+        final ZonedDateTime tsZone = row.get("tsZone").asZonedDateTime();
+        assertThat(tsZone.getZone()).isEqualTo(ZoneId.of("Europe/Rome"));
+        assertThat(tsZone.toInstant()).isEqualTo(Instant.parse("2024-01-15T09:30:45Z"));
         assertThat(row.get("day").asLocalDate()).isEqualTo(LocalDate.of(2024, 1, 15));
         assertThat(row.get("ldt").asLocalDateTime()).isEqualTo(LocalDateTime.of(2024, 1, 15, 10, 30, 45));
+        // Offset time: exercises the Time path.
+        assertThat(row.get("tOff").asOffsetTime()).isEqualTo(OffsetTime.of(10, 30, 45, 0, ZoneOffset.ofHours(2)));
         assertThat(row.get("t").asLocalTime()).isEqualTo(LocalTime.of(10, 30, 45));
       }
     }
