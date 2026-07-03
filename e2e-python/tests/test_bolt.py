@@ -44,6 +44,15 @@ from testcontainers.core.container import DockerContainer
 ROOT_PASSWORD = "playwithdata"
 TLS_STORE_PASSWORD = "changeit"
 
+# Shared by all three container fixtures below (bolt_container,
+# bolt_container_tls_required, bolt_container_tls_optional) - the TLS variants
+# append their own arcadedb.bolt.ssl/arcadedb.ssl.* sysprops to this.
+BASE_JAVA_OPTS = (
+    "-Darcadedb.server.rootPassword=" + ROOT_PASSWORD + " "
+    "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
+    "-Darcadedb.server.plugins=BoltProtocolPlugin"
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TYPE_MATRIX_FIXTURE = REPO_ROOT / "bolt" / "conformance" / "fixtures" / "type-matrix.cypher"
 
@@ -206,12 +215,7 @@ def bolt_container():
     container = (
         DockerContainer("arcadedata/arcadedb:latest")
         .with_exposed_ports(2480, 7687)
-        .with_env(
-            "JAVA_OPTS",
-            "-Darcadedb.server.rootPassword=" + ROOT_PASSWORD + " "
-            "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
-            "-Darcadedb.server.plugins=BoltProtocolPlugin",
-        )
+        .with_env("JAVA_OPTS", BASE_JAVA_OPTS)
     )
     container.start()
     try:
@@ -247,7 +251,11 @@ def test_CONN_001_connect_bolt(bolt_driver):
 def tls_certs(tmp_path_factory):
     cert_dir = tmp_path_factory.mktemp("bolt-tls-certs")
     generate_tls_certs(cert_dir)
-    return build_tls_image(cert_dir)
+    image_tag = build_tls_image(cert_dir)
+    yield image_tag
+    # Both bolt_container_tls_required/optional depend on this fixture, so
+    # pytest tears them (and their containers) down before this runs.
+    docker.from_env().images.remove(image_tag, force=True)
 
 
 @pytest.fixture(scope="module")
@@ -257,9 +265,7 @@ def bolt_container_tls_required(tls_certs):
         .with_exposed_ports(2480, 7687)
         .with_env(
             "JAVA_OPTS",
-            "-Darcadedb.server.rootPassword=" + ROOT_PASSWORD + " "
-            "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
-            "-Darcadedb.server.plugins=BoltProtocolPlugin "
+            BASE_JAVA_OPTS + " "
             "-Darcadedb.bolt.ssl=REQUIRED "
             "-Darcadedb.ssl.keyStore=/home/arcadedb/tls_certs/keystore.p12 "
             "-Darcadedb.ssl.keyStorePassword=" + TLS_STORE_PASSWORD + " "
@@ -284,9 +290,7 @@ def bolt_container_tls_optional(tls_certs):
         .with_exposed_ports(2480, 7687)
         .with_env(
             "JAVA_OPTS",
-            "-Darcadedb.server.rootPassword=" + ROOT_PASSWORD + " "
-            "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
-            "-Darcadedb.server.plugins=BoltProtocolPlugin "
+            BASE_JAVA_OPTS + " "
             "-Darcadedb.bolt.ssl=OPTIONAL "
             "-Darcadedb.ssl.keyStore=/home/arcadedb/tls_certs/keystore.p12 "
             "-Darcadedb.ssl.keyStorePassword=" + TLS_STORE_PASSWORD + " "
