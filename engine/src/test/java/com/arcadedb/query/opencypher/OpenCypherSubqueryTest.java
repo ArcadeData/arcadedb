@@ -664,6 +664,44 @@ class OpenCypherSubqueryTest {
     assertThat(((Number) count.next().getProperty("c")).longValue()).isEqualTo(1L);
   }
 
+  // Issue #4913: DELETE of a relationship inside a scoped CALL (r) { DELETE r } subquery had no effect.
+  @Test
+  void callSubqueryDeleteRelationshipVariable_issue4913() {
+    database.getSchema().createVertexType("User");
+    database.getSchema().createEdgeType("FRIEND");
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (a:User {active:true}), (b:User {active:false}), (a)-[:FRIEND]->(b)"));
+
+    database.transaction(() -> database.command("opencypher",
+        """
+            MATCH (a:User {active:true})-[r:FRIEND]->(b:User {active:false})
+            CALL (r) { DELETE r }"""));
+
+    final ResultSet verify = database.query("opencypher",
+        "MATCH ()-[r:FRIEND]->() RETURN count(r) AS cnt");
+    assertThat(verify.hasNext()).isTrue();
+    assertThat(((Number) verify.next().getProperty("cnt")).longValue()).isEqualTo(0L);
+  }
+
+  // Issue #4913: implicit-import variant CALL { WITH r DELETE r } must delete the relationship too.
+  @Test
+  void callSubqueryDeleteRelationshipWithImport_issue4913() {
+    database.getSchema().createVertexType("User");
+    database.getSchema().createEdgeType("FRIEND");
+    database.transaction(() -> database.command("opencypher",
+        "CREATE (a:User {active:true}), (b:User {active:false}), (a)-[:FRIEND]->(b)"));
+
+    database.transaction(() -> database.command("opencypher",
+        """
+            MATCH (a:User {active:true})-[r:FRIEND]->(b:User {active:false})
+            CALL { WITH r DELETE r }"""));
+
+    final ResultSet verify = database.query("opencypher",
+        "MATCH ()-[r:FRIEND]->() RETURN count(r) AS cnt");
+    assertThat(verify.hasNext()).isTrue();
+    assertThat(((Number) verify.next().getProperty("cnt")).longValue()).isEqualTo(0L);
+  }
+
   private static List<Result> drainResults(final ResultSet rs) {
     final List<Result> rows = new ArrayList<>();
     while (rs.hasNext())

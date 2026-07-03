@@ -3474,6 +3474,15 @@ public class CypherExecutionPlan {
             return true;
           break;
         }
+        case SUBQUERY: {
+          // A scoped CALL (r) { ... } imports the edge variable, and CALL { WITH r ... } references it in
+          // the inner statement. Missing this dropped the edge binding, so DELETE inside a CALL subquery
+          // silently found no edge (issue #4913).
+          final SubqueryClause sq = entry.getTypedClause();
+          if (subqueryReferencesVariable(sq, variable))
+            return true;
+          break;
+        }
         default:
           break;
         }
@@ -3562,6 +3571,86 @@ public class CypherExecutionPlan {
         default:
           break;
         }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Checks whether a scoped CALL subquery references the given variable, either because the variable is
+   * imported via the explicit scope list {@code CALL (r) { ... }} or because the inner statement references
+   * it (e.g. {@code CALL { WITH r ... DELETE r }}). Used to keep the edge binding alive when a CALL subquery
+   * consumes it (issue #4913).
+   */
+  private boolean subqueryReferencesVariable(final SubqueryClause subqueryClause, final String variable) {
+    if (subqueryClause == null)
+      return false;
+    // Explicit scope: CALL (r) { ... } imports r from the outer row.
+    final List<String> scope = subqueryClause.getScopeVariables();
+    if (scope != null && scope.contains(variable))
+      return true;
+    // Otherwise inspect the inner statement's clauses (e.g. CALL { WITH r ... DELETE r }).
+    final CypherStatement inner = subqueryClause.getInnerStatement();
+    if (inner == null || inner.getClausesInOrder() == null)
+      return false;
+    for (final ClauseEntry entry : inner.getClausesInOrder()) {
+      switch (entry.getType()) {
+      case WITH: {
+        final WithClause wc = entry.getTypedClause();
+        for (final ReturnClause.ReturnItem item : wc.getItems())
+          if (expressionReferencesVariable(item.getExpression().getText(), variable))
+            return true;
+        if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null
+            && expressionReferencesVariable(wc.getWhereClause().getConditionExpression().getText(), variable))
+          return true;
+        break;
+      }
+      case UNWIND:
+        if (expressionReferencesVariable(((UnwindClause) entry.getTypedClause()).getListExpression().getText(), variable))
+          return true;
+        break;
+      case SET: {
+        final SetClause sc = entry.getTypedClause();
+        for (final SetClause.SetItem item : sc.getItems()) {
+          if (variable.equals(item.getVariable()))
+            return true;
+          if (item.getValueExpression() != null
+              && expressionReferencesVariable(item.getValueExpression().getText(), variable))
+            return true;
+          if (item.getTargetExpression() != null
+              && expressionReferencesVariable(item.getTargetExpression().getText(), variable))
+            return true;
+        }
+        break;
+      }
+      case REMOVE: {
+        final RemoveClause rc = entry.getTypedClause();
+        for (final RemoveClause.RemoveItem item : rc.getItems())
+          if (variable.equals(item.getVariable()))
+            return true;
+        break;
+      }
+      case DELETE:
+        if (deleteReferencesVariable(entry.getTypedClause(), variable))
+          return true;
+        break;
+      case RETURN: {
+        final ReturnClause rc = entry.getTypedClause();
+        for (final ReturnClause.ReturnItem item : rc.getReturnItems())
+          if (expressionReferencesVariable(item.getExpression().getText(), variable))
+            return true;
+        break;
+      }
+      case FOREACH:
+        if (foreachReferencesVariable(entry.getTypedClause(), variable))
+          return true;
+        break;
+      case SUBQUERY:
+        if (subqueryReferencesVariable(entry.getTypedClause(), variable))
+          return true;
+        break;
+      default:
+        break;
       }
     }
     return false;
