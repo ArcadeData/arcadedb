@@ -77,4 +77,20 @@ start.
   out explicitly with `arcadedb.ha.raftPersistStorage=false` (config file, server settings, or
   `-Darcadedb.ha.raftPersistStorage=false`). An explicit value is always honored.
 
+### 2. Bolt: temporal values now use native PackStream structures (not ISO-8601 strings)
+
+The Neo4j Bolt wire protocol now carries temporal values (`date`, `time`, `localtime`, `datetime`,
+`localdatetime`) as **native PackStream temporal structures** in both directions, instead of the
+previous ISO-8601 strings. Inbound datetime query parameters are decoded to `java.time` values
+(previously silently dropped), and outbound temporal properties are returned as native structs
+([#4905](https://github.com/ArcadeData/arcadedb/issues/4905),
+[#4907](https://github.com/ArcadeData/arcadedb/issues/4907)).
+
+- **Why:** a Neo4j-compatible driver now sends and receives real temporal values (`ZonedDateTime`,
+  `LocalDate`, ...), matching Neo4j semantics, so temporal query parameters bind and temporal
+  comparisons (`WHERE e.valid_at <= $ts`) work without any client-side conversion.
+- **Impact:** a Bolt client that previously read a temporal property as a `String` (the ISO text) will
+  now receive a native temporal type (e.g. `Value.asZonedDateTime()` / `asLocalDate()`), the same as
+  against Neo4j. Clients relying on the old string form must read the native temporal instead.
+
 **Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.1...26.8.1

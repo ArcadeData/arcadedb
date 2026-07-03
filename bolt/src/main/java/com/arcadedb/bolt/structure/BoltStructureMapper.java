@@ -25,6 +25,11 @@ import com.arcadedb.database.RID;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
+import com.arcadedb.query.opencypher.temporal.CypherDate;
+import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
+import com.arcadedb.query.opencypher.temporal.CypherTime;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.math.BigDecimal;
@@ -115,42 +120,12 @@ public class BoltStructureMapper {
       return bytes;
     }
 
-    // Handle date/time types - convert to ISO strings for compatibility
-    if (value instanceof LocalDate date) {
-      return date.toString();
-    }
-
-    if (value instanceof LocalTime time) {
-      return time.toString();
-    }
-
-    if (value instanceof LocalDateTime dateTime) {
-      return dateTime.toString();
-    }
-
-    if (value instanceof OffsetDateTime dateTime) {
-      return dateTime.toString();
-    }
-
-    if (value instanceof ZonedDateTime dateTime) {
-      return dateTime.toString();
-    }
-
-    if (value instanceof OffsetTime time) {
-      return time.toString();
-    }
-
-    if (value instanceof Instant instant) {
-      return instant.toString();
-    }
-
-    if (value instanceof Date date) {
-      return date.toInstant().toString();
-    }
-
-    if (value instanceof Calendar calendar) {
-      return calendar.toInstant().toString();
-    }
+    // Handle temporal types as native Bolt PackStream structures (issue #4907) so a Neo4j client
+    // receives a real date/time value instead of an ISO-8601 string. Cypher temporal wrappers
+    // (from RETURN e.valid_at) are unwrapped to their java.time value first.
+    final Object temporal = toTemporalStructure(value);
+    if (temporal != null)
+      return temporal;
 
     if (value instanceof UUID uuid) {
       return uuid.toString();
@@ -372,6 +347,84 @@ public class BoltStructureMapper {
   private static final byte SIG_DATE_TIME_ZONEID_LEGACY = 0x66; // 'f'  [secondsLocal, nanos, zoneId]
   private static final byte SIG_DATE_TIME_OFFSET_UTC    = 0x49; // 'I'  [secondsUtc,  nanos, offsetSeconds] (Bolt 5.0+)
   private static final byte SIG_DATE_TIME_ZONEID_UTC    = 0x69; // 'i'  [secondsUtc,  nanos, zoneId]        (Bolt 5.0+)
+
+  /**
+   * Outbound direction (issue #4907): encode a temporal value as its native Bolt PackStream structure so
+   * a Neo4j client receives a real date/time instead of an ISO-8601 string. Accepts both raw
+   * {@code java.time} / {@code java.util.Date} values (from a {@code RETURN e} element) and Cypher temporal
+   * wrappers (from a scalar {@code RETURN e.valid_at}), which are unwrapped to their {@code java.time} value
+   * first. Returns {@code null} when the value is not a temporal (so the caller can fall through).
+   * <p>
+   * <b>Encoding is tied to the negotiated protocol version.</b> ArcadeDB advertises Bolt v4.4 max
+   * ({@code BoltNetworkExecutor.SUPPORTED_VERSIONS = { 4.4, 4.0, 3.0 }}), so the legacy (pre-5.0)
+   * DateTime / DateTimeZoneId encoding is always correct here: the seconds field is the LOCAL epoch-second
+   * (offset folded in), matching the legacy branch of {@link #fromPackStreamValue}. The inbound path already
+   * decodes both the legacy and the 5.0 "UTC" signatures, but this outbound path emits legacy only.
+   * TODO: if {@code SUPPORTED_VERSIONS} ever gains Bolt 5.0 (where seconds is the true UTC epoch-second),
+   * branch on the negotiated version here and emit {@code SIG_*_UTC}, otherwise a 5.0 driver would decode
+   * these structs to the wrong instant.
+   */
+  static BoltTemporalStructure toTemporalStructure(final Object rawValue) {
+    final Object value = unwrapCypherTemporal(rawValue);
+
+    if (value instanceof LocalDate d)
+      return new BoltTemporalStructure(SIG_DATE, d.toEpochDay());
+    if (value instanceof LocalTime t)
+      return new BoltTemporalStructure(SIG_LOCAL_TIME, t.toNanoOfDay());
+    if (value instanceof OffsetTime t)
+      return new BoltTemporalStructure(SIG_TIME, t.toLocalTime().toNanoOfDay(), (long) t.getOffset().getTotalSeconds());
+    if (value instanceof LocalDateTime ldt)
+      return new BoltTemporalStructure(SIG_LOCAL_DATE_TIME, ldt.toEpochSecond(ZoneOffset.UTC), (long) ldt.getNano());
+    if (value instanceof OffsetDateTime odt)
+      return dateTimeWithOffset(odt.toLocalDateTime(), odt.getOffset());
+    if (value instanceof ZonedDateTime zdt) {
+      if (zdt.getZone() instanceof ZoneOffset offset)
+        return dateTimeWithOffset(zdt.toLocalDateTime(), offset);
+      return new BoltTemporalStructure(SIG_DATE_TIME_ZONEID_LEGACY, zdt.toLocalDateTime().toEpochSecond(ZoneOffset.UTC),
+          (long) zdt.getNano(), zdt.getZone().getId());
+    }
+    // A bare instant (Instant / java.util.Date) has no zone; Bolt has no pure-instant type, so it is
+    // deliberately widened to a DateTime struct at UTC. The instant is preserved; the client receives a
+    // zoned/offset datetime at UTC rather than a "naked" instant.
+    if (value instanceof Instant i)
+      return dateTimeWithOffset(LocalDateTime.ofInstant(i, ZoneOffset.UTC), ZoneOffset.UTC);
+    // java.sql.Date / java.sql.Time extend java.util.Date but carry only one component; toInstant()
+    // throws UnsupportedOperationException on them, so map to the date-only / time-only value first.
+    if (value instanceof java.sql.Date sqlDate)
+      return toTemporalStructure(sqlDate.toLocalDate());
+    if (value instanceof java.sql.Time sqlTime)
+      return toTemporalStructure(sqlTime.toLocalTime());
+    if (value instanceof Date date)
+      return dateTimeWithOffset(LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC), ZoneOffset.UTC);
+    if (value instanceof Calendar calendar)
+      // Preserve the calendar's own zone instead of forcing UTC.
+      return toTemporalStructure(ZonedDateTime.ofInstant(calendar.toInstant(), calendar.getTimeZone().toZoneId()));
+
+    return null;
+  }
+
+  private static BoltTemporalStructure dateTimeWithOffset(final LocalDateTime local, final ZoneOffset offset) {
+    // Legacy encoding: seconds is the local epoch-second (the wall clock treated as if UTC).
+    return new BoltTemporalStructure(SIG_DATE_TIME_OFFSET_LEGACY, local.toEpochSecond(ZoneOffset.UTC), (long) local.getNano(),
+        (long) offset.getTotalSeconds());
+  }
+
+  private static Object unwrapCypherTemporal(final Object value) {
+    if (value instanceof CypherDate d)
+      return d.getValue();
+    if (value instanceof CypherLocalTime t)
+      return t.getValue();
+    if (value instanceof CypherTime t)
+      return t.getValue();
+    if (value instanceof CypherLocalDateTime ldt)
+      return ldt.getValue();
+    if (value instanceof CypherDateTime dt)
+      return dt.getValue();
+    // NOTE: CypherDuration is intentionally not unwrapped - Bolt has a Duration struct but there is no single
+    // java.time value for it (months + days + seconds together), so a returned duration still falls through to
+    // the generic (ISO-8601 string) handling. Tracked as a follow-up if native Duration output is needed.
+    return value;
+  }
 
   /**
    * Recursively convert a value read from a Bolt PackStream request into engine-friendly types,
