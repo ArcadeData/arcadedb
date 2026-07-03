@@ -22,10 +22,13 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.time.temporal.Temporal;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -69,6 +72,11 @@ public class ComparisonExpression implements BooleanExpression {
   private final Expression left;
   private final Operator operator;
   private final Expression right;
+
+  // Single-slot memo so an invariant temporal operand (e.g. a bound $parameter re-evaluated on every
+  // scanned row) is wrapped into a CypherTemporalValue once instead of allocating a fresh wrapper per
+  // row. volatile + an immutable {raw, coerced} pair keeps concurrent evaluators from seeing a torn pair.
+  private volatile Object[] temporalCoercionMemo;
 
   public ComparisonExpression(final Expression left, final Operator operator, final Expression right) {
     this.left = left;
@@ -125,10 +133,16 @@ public class ComparisonExpression implements BooleanExpression {
       return numericCompare(leftEncoded, rightEncoded);
     }
 
-    // Temporal comparison
-    if (left instanceof CypherTemporalValue && right instanceof CypherTemporalValue) {
+    // Temporal comparison. Coerce native java.time / java.util.Date operands into Cypher temporal
+    // values first, so a native temporal parameter (e.g. a datetime sent over Bolt, which resolves to
+    // a raw java.time value) compares against a stored temporal instead of silently not matching.
+    // Hot path: coerceTemporal short-circuits on the common numeric/string/boolean operand with a
+    // single instanceof pair, and memoizes an invariant temporal operand to avoid per-row allocation.
+    final Object leftTemporal = coerceTemporal(left);
+    final Object rightTemporal = coerceTemporal(right);
+    if (leftTemporal instanceof CypherTemporalValue && rightTemporal instanceof CypherTemporalValue) {
       try {
-        final int cmp = ((CypherTemporalValue) left).compareTo((CypherTemporalValue) right);
+        final int cmp = ((CypherTemporalValue) leftTemporal).compareTo((CypherTemporalValue) rightTemporal);
         return switch (operator) {
           case EQUALS -> cmp == 0;
           case NOT_EQUALS -> cmp != 0;
@@ -322,6 +336,23 @@ public class ComparisonExpression implements BooleanExpression {
 
   public Expression getRight() {
     return right;
+  }
+
+  /**
+   * Wrap a native {@code java.time} / {@code java.util.Date} operand into its Cypher temporal type,
+   * returning any other value unchanged. Non-temporal operands (the common numeric/string/boolean case)
+   * short-circuit on two instanceof checks; an invariant temporal operand re-evaluated across rows
+   * (typically a bound parameter) is coerced once and served from a single-slot memo thereafter.
+   */
+  private Object coerceTemporal(final Object value) {
+    if (!(value instanceof Temporal || value instanceof Date))
+      return value;
+    final Object[] memo = temporalCoercionMemo;
+    if (memo != null && memo[0] == value)
+      return memo[1];
+    final Object coerced = TemporalUtil.fromCoreJavaType(value);
+    temporalCoercionMemo = new Object[] { value, coerced };
+    return coerced;
   }
 
   private Boolean numericCompare(final long leftNum, final long rightNum) {

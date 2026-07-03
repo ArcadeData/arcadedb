@@ -20,6 +20,7 @@ package com.arcadedb.bolt.message;
 
 import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.bolt.packstream.PackStreamWriter;
+import com.arcadedb.bolt.structure.BoltStructureMapper;
 
 import java.io.IOException;
 import java.util.List;
@@ -101,7 +102,11 @@ public abstract class BoltMessage {
   @SuppressWarnings("unchecked")
   private static RunMessage parseRun(final List<Object> fields) {
     final String query = (String) fields.get(0);
-    final Map<String, Object> parameters = fields.size() > 1 && fields.get(1) != null ? (Map<String, Object>) fields.get(1) : Map.of();
+    // Hydrate temporal PackStream structures (Date/Time/DateTime/...) into java.time values so
+    // native temporal query parameters bind correctly instead of being dropped (issue #4905).
+    final Map<String, Object> parameters = fields.size() > 1 && fields.get(1) != null ?
+        (Map<String, Object>) BoltStructureMapper.fromPackStreamValue(fields.get(1)) :
+        Map.of();
     final Map<String, Object> extra = fields.size() > 2 && fields.get(2) != null ? (Map<String, Object>) fields.get(2) : Map.of();
     return new RunMessage(query, parameters, extra);
   }

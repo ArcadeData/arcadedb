@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bolt.structure;
 
+import com.arcadedb.bolt.packstream.PackStreamReader;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -34,6 +35,8 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.OffsetTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
 import java.util.*;
 
@@ -340,5 +343,137 @@ public class BoltStructureMapper {
 
     // Combine bucket ID (high bits) and position (low bits)
     return ((long) bucketId << 48) | position;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Inbound direction: Bolt PackStream temporal structures -> java.time values.
+  //
+  // The PackStream reader returns every struct as an opaque StructureValue. Temporal
+  // parameters (a Bolt client sending a native date/time as a query parameter) must be
+  // decoded into java.time types, otherwise they reach the query engine as meaningless
+  // objects and are silently dropped (see issue #4905).
+  //
+  // ArcadeDB negotiates Bolt v4.4 max, so clients use the legacy (pre-5.0) DateTime /
+  // DateTimeZoneId encoding where the seconds field is the LOCAL epoch-second (the zone
+  // offset is already folded in). The 5.0 "UTC" signatures ('I'/'i'), where the seconds
+  // field is the true UTC epoch-second, are also handled defensively.
+  //
+  // Decoding must be applied on the parameter path, NOT in the generic reader: the
+  // top-level ROUTE message signature (0x66) collides with the legacy DateTimeZoneId
+  // signature (0x66, 'f'). Inside a parameter map a 0x66 struct is unambiguously a
+  // temporal, so hydrating the parameters map keeps message parsing untouched.
+  // ---------------------------------------------------------------------------
+
+  private static final byte SIG_DATE                    = 0x44; // 'D'  [days]
+  private static final byte SIG_TIME                    = 0x54; // 'T'  [nanoOfDay, offsetSeconds]
+  private static final byte SIG_LOCAL_TIME              = 0x74; // 't'  [nanoOfDay]
+  private static final byte SIG_LOCAL_DATE_TIME         = 0x64; // 'd'  [seconds, nanos]
+  private static final byte SIG_DATE_TIME_OFFSET_LEGACY = 0x46; // 'F'  [secondsLocal, nanos, offsetSeconds]
+  private static final byte SIG_DATE_TIME_ZONEID_LEGACY = 0x66; // 'f'  [secondsLocal, nanos, zoneId]
+  private static final byte SIG_DATE_TIME_OFFSET_UTC    = 0x49; // 'I'  [secondsUtc,  nanos, offsetSeconds] (Bolt 5.0+)
+  private static final byte SIG_DATE_TIME_ZONEID_UTC    = 0x69; // 'i'  [secondsUtc,  nanos, zoneId]        (Bolt 5.0+)
+
+  /**
+   * Recursively convert a value read from a Bolt PackStream request into engine-friendly types,
+   * decoding temporal structures into {@code java.time} values. Maps and lists are walked so nested
+   * parameters are handled too. Non-temporal values are returned unchanged.
+   */
+  @SuppressWarnings("unchecked")
+  public static Object fromPackStreamValue(final Object value) {
+    if (value instanceof PackStreamReader.StructureValue structure)
+      return fromTemporalStructure(structure);
+
+    if (value instanceof Map<?, ?> map) {
+      final Map<String, Object> converted = new LinkedHashMap<>(map.size());
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        converted.put(String.valueOf(entry.getKey()), fromPackStreamValue(entry.getValue()));
+      return converted;
+    }
+
+    if (value instanceof List<?> list) {
+      final List<Object> converted = new ArrayList<>(list.size());
+      for (final Object item : list)
+        converted.add(fromPackStreamValue(item));
+      return converted;
+    }
+
+    return value;
+  }
+
+  /**
+   * Decode a single Bolt temporal PackStream structure into a {@code java.time} value.
+   * Unknown (non-temporal) structures are returned as-is. A structure that carries the wrong field
+   * count or field types for its temporal signature (a misbehaving client) is also returned as-is
+   * rather than propagating a raw {@code IndexOutOfBoundsException} / {@code ClassCastException} out of
+   * RUN parsing - the parameter simply stays opaque instead of crashing the connection.
+   */
+  private static Object fromTemporalStructure(final PackStreamReader.StructureValue structure) {
+    final List<Object> f = structure.getFields();
+    final byte signature = structure.getSignature();
+    if (!hasExpectedArity(signature, f.size()))
+      return structure;
+
+    try {
+      switch (signature) {
+      case SIG_DATE:
+        return LocalDate.ofEpochDay(asLong(f.get(0)));
+
+      case SIG_LOCAL_TIME:
+        return LocalTime.ofNanoOfDay(asLong(f.get(0)));
+
+      case SIG_TIME:
+        return OffsetTime.of(LocalTime.ofNanoOfDay(asLong(f.get(0))), ZoneOffset.ofTotalSeconds((int) asLong(f.get(1))));
+
+      case SIG_LOCAL_DATE_TIME:
+        return LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
+
+      case SIG_DATE_TIME_OFFSET_LEGACY: {
+        // Legacy: seconds is the local epoch-second; reconstruct the wall clock then stamp the offset.
+        final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
+        return OffsetDateTime.of(local, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
+      }
+
+      case SIG_DATE_TIME_ZONEID_LEGACY: {
+        final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
+        return ZonedDateTime.of(local, ZoneId.of(String.valueOf(f.get(2))));
+      }
+
+      case SIG_DATE_TIME_OFFSET_UTC: {
+        // UTC (Bolt 5.0+): seconds is the true UTC epoch-second.
+        final Instant instant = Instant.ofEpochSecond(asLong(f.get(0)), asLong(f.get(1)));
+        return OffsetDateTime.ofInstant(instant, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
+      }
+
+      case SIG_DATE_TIME_ZONEID_UTC: {
+        final Instant instant = Instant.ofEpochSecond(asLong(f.get(0)), asLong(f.get(1)));
+        return ZonedDateTime.ofInstant(instant, ZoneId.of(String.valueOf(f.get(2))));
+      }
+
+      default:
+        // Not a temporal structure (or Duration, which has no single java.time representation): leave as-is.
+        return structure;
+      }
+    } catch (final RuntimeException e) {
+      // Malformed temporal payload (e.g. non-numeric field, unresolvable zone id): leave opaque.
+      return structure;
+    }
+  }
+
+  /**
+   * Number of fields each temporal signature is expected to carry. Non-temporal signatures return
+   * {@code true} so they fall through to the default (opaque) branch unchanged.
+   */
+  private static boolean hasExpectedArity(final byte signature, final int fieldCount) {
+    return switch (signature) {
+      case SIG_DATE, SIG_LOCAL_TIME -> fieldCount == 1;
+      case SIG_TIME, SIG_LOCAL_DATE_TIME -> fieldCount == 2;
+      case SIG_DATE_TIME_OFFSET_LEGACY, SIG_DATE_TIME_ZONEID_LEGACY, SIG_DATE_TIME_OFFSET_UTC, SIG_DATE_TIME_ZONEID_UTC ->
+          fieldCount == 3;
+      default -> true;
+    };
+  }
+
+  private static long asLong(final Object value) {
+    return ((Number) value).longValue();
   }
 }
