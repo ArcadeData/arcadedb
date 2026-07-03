@@ -35,7 +35,7 @@ function renderTable() {
 
   var tableColumns = [];
   var tableRecords = [];
-  var metadataColumns = ["@rid", "@type", "@cat", "@in", "@out"];
+  var metadataColumns = ["@rid", "@type", "@cat", "@props", "@in", "@out"];
 
   if (globalResultset.records.length > 0) {
     let columns = {};
