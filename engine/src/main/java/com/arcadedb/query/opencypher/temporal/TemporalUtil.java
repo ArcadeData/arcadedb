@@ -23,7 +23,6 @@ import java.time.temporal.ChronoUnit;
 import java.time.temporal.IsoFields;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
-import java.util.Calendar;
 import java.util.Collection;
 import java.util.Date;
 import java.util.List;
@@ -460,8 +459,6 @@ public final class TemporalUtil {
       return new CypherDateTime(i.atZone(ZoneOffset.UTC));
     if (value instanceof Date date)
       return new CypherDateTime(date.toInstant().atZone(ZoneOffset.UTC));
-    if (value instanceof Calendar calendar)
-      return new CypherDateTime(calendar.toInstant().atZone(ZoneOffset.UTC));
 
     return value;
   }

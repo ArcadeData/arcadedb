@@ -97,6 +97,28 @@ class OpenCypherTemporalParameterTest {
     });
   }
 
+  @Test
+  void mismatchedTemporalGranularityDoesNotMatch() {
+    withDatabase(database -> {
+      // Store valid_at as a date-only value (reads back as CypherDate).
+      createEpisode(database, "reference", REFERENCE.toLocalDate());
+
+      // Comparing a CypherDate against a full ZonedDateTime is a different-temporal-type comparison:
+      // ordering (<=) yields null -> no match, equality (=) yields false -> no match. Exercises the
+      // IllegalArgumentException branch in compareValuesTernary without throwing.
+      final Set<String> ordered = queryValidAtLE(database, REFERENCE);
+      assertThat(ordered).isEmpty();
+
+      final Set<String> equal = new HashSet<>();
+      final ResultSet rs = database.query("opencypher",
+          "MATCH (e:Episodic) WHERE e.valid_at = $reference_time RETURN e.uuid AS uuid",
+          Map.of("reference_time", REFERENCE));
+      while (rs.hasNext())
+        equal.add(rs.next().getProperty("uuid"));
+      assertThat(equal).isEmpty();
+    });
+  }
+
   private static void createEpisode(final Database database, final String uuid, final Object validAt) {
     database.transaction(() ->
         database.command("opencypher", "CREATE (e:Episodic {uuid: $uuid, valid_at: $valid_at})",
