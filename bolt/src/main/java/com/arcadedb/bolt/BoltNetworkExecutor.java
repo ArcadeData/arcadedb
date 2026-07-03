@@ -20,7 +20,6 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
-import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.bolt.message.BeginMessage;
 import com.arcadedb.bolt.message.BoltMessage;
 import com.arcadedb.bolt.message.DiscardMessage;
@@ -41,6 +40,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
