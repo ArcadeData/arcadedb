@@ -1624,7 +1624,9 @@ public class BoltNetworkExecutor extends Thread {
    * transient status so managed-transaction drivers auto-retry; anything else keeps the given default.
    */
   static String classifyExecutionError(final Throwable error, final String defaultCode) {
-    for (Throwable t = error; t != null; t = t.getCause()) {
+    // Bounded walk: the depth cap guards against a self-referential / cyclic cause chain spinning forever.
+    Throwable t = error;
+    for (int depth = 0; t != null && depth < 32; t = t.getCause(), depth++) {
       if (t instanceof NeedRetryException)
         return BoltErrorCodes.TRANSIENT_CONFLICT_ERROR;
     }

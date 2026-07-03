@@ -65,6 +65,16 @@ class BoltErrorClassificationTest {
   }
 
   @Test
+  void cyclicCauseChainTerminatesAndKeepsDefault() {
+    // A self-referential cause chain must not spin forever; the bounded walk returns the default code.
+    final RuntimeException a = new RuntimeException("a");
+    final RuntimeException b = new RuntimeException("b", a);
+    a.initCause(b); // a -> b -> a -> ...
+    assertThat(BoltNetworkExecutor.classifyExecutionError(a, BoltErrorCodes.DATABASE_ERROR))
+        .isEqualTo(BoltErrorCodes.DATABASE_ERROR);
+  }
+
+  @Test
   void transientCodeIsARetryableClassificationDriversHonor() {
     // Neo4j drivers retry on the TransientError classification, except the two excluded titles.
     assertThat(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR).startsWith("Neo.TransientError.");

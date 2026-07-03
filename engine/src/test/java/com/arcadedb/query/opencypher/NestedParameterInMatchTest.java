@@ -25,6 +25,7 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import org.junit.jupiter.api.Test;
 
 import java.util.Map;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -90,7 +91,7 @@ class NestedParameterInMatchTest {
     });
   }
 
-  private static void withDatabase(final java.util.function.Consumer<Database> test) {
+  private static void withDatabase(final Consumer<Database> test) {
     final String path = "./target/testnestedparam_" + System.nanoTime();
     final Database database = new DatabaseFactory(path).create();
     try {
