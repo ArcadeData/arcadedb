@@ -49,9 +49,19 @@ class Issue4835RaftStoragePersistenceTest {
   }
 
   @Test
-  void nonK8sDefaultsToEphemeral() {
-    // Default behavior outside Kubernetes is unchanged: storage is ephemeral and wiped on restart.
+  void nonK8sDefaultsToPersistent() {
+    // The default is now durable everywhere (not just K8s): wiping the Raft log on restart can turn a
+    // lagging follower into a permanently diverged node on a cold restart, so storage is preserved
+    // unless the operator explicitly opts into ephemeral. Outside Kubernetes, with nothing set, persist.
     final ContextConfiguration config = new ContextConfiguration();
+    assertThat(RaftHAServer.resolvePersistStorage(config)).isTrue();
+  }
+
+  @Test
+  void nonK8sHonorsExplicitEphemeral() {
+    // A throwaway/test cluster can still opt into ephemeral storage explicitly.
+    final ContextConfiguration config = new ContextConfiguration();
+    config.setValue(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE, false);
     assertThat(RaftHAServer.resolvePersistStorage(config)).isFalse();
   }
 

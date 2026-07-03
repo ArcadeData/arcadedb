@@ -833,9 +833,11 @@ public enum GlobalConfiguration {
   HA_RAFT_PERSIST_STORAGE("arcadedb.ha.raftPersistStorage", SCOPE.SERVER,
       """
       If true, the Raft storage directory is preserved across server restarts, enabling node rejoin \
-      without a full snapshot resync. Defaults to false (ephemeral) for testing convenience; \
-      set to true for durable deployments.""",
-      Boolean.class, false),
+      by replaying the persisted log instead of forcing a full snapshot resync. Defaults to true \
+      (durable): wiping the Raft log on every restart turns a follower that was merely lagging into a \
+      permanently diverged node (WAL version gaps) on a full-cluster cold restart. Set to false only \
+      for throwaway/test clusters that intentionally want ephemeral storage.""",
+      Boolean.class, true),
 
   HA_RAFT_STORAGE_DIRECTORY("arcadedb.ha.raftStorageDirectory", SCOPE.SERVER,
       """
