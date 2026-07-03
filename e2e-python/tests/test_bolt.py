@@ -736,3 +736,38 @@ def test_ERR_004_transient_condition_error_code(bolt_driver):
     assert isinstance(errors[0], TransientError), (
         f"expected Neo.TransientError.*, got {type(errors[0]).__name__}: {errors[0]}"
     )
+
+
+# --- protocol ---------------------------------------------------------
+
+
+def test_PROTO_001_version_negotiation_succeeds(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        assert session.run("RETURN 1 AS value").single()["value"] == 1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BoltNetworkExecutor.SUPPORTED_VERSIONS never advertises any "
+    "Bolt 5.x version; drivers that support 5.x only work today by "
+    "silently downgrading to 4.4, which is undocumented and untested as a "
+    "deliberate compatibility stance; see #4890",
+)
+def test_PROTO_002_bolt_5x_negotiation_is_documented(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        summary = session.run("RETURN 1 AS value").consume()
+        negotiated_version = summary.server.protocol_version
+        assert negotiated_version[0] >= 5, (
+            f"driver silently downgraded to Bolt {negotiated_version} "
+            "instead of negotiating a documented Bolt 5.x version"
+        )
+
+
+def test_PROTO_003_reset_mid_stream(bolt_driver):
+    with bolt_driver.session(database="beer", fetch_size=2) as session:
+        result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 10")
+        next(iter(result))
+        result.consume()  # abandon the remaining stream mid-flight
+
+        follow_up = session.run("RETURN 1 AS value")
+        assert follow_up.single()["value"] == 1
