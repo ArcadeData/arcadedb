@@ -337,7 +337,17 @@ scenarios:
       - "When the driver runs 'CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})'"
       - "Then summary.counters().nodesCreated() == 2, relationshipsCreated() == 1, and propertiesSet() matches"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: expected-fail
+    known_limitation: >
+      ResultSummary counters (nodesCreated, relationshipsCreated,
+      propertiesSet, etc.) are never populated for Bolt write queries -
+      BoltNetworkExecutor's handleRun/handlePull/handleDiscard build no
+      'stats' map in the SUCCESS response, and no CRUD-counter tracking
+      exists in the underlying query engine (Cypher's
+      CreateStep/SetStep/DeleteStep don't aggregate counts) to source such
+      values from even if the Bolt layer were fixed - discovered while
+      implementing issue #4885's Python conformance suite.
+    tracking_issue: "#4890"
   - id: TYPE-001
     area: type-roundtrip
     title: "Node round-trips as a native Bolt structure"
