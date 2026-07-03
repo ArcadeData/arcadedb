@@ -420,3 +420,41 @@ def test_TX_005_managed_write_retries_on_transient_error(bolt_driver):
     assert isinstance(errors[0], TransientError), (
         f"expected Neo.TransientError.*, got {type(errors[0]).__name__}: {errors[0]}"
     )
+
+
+# --- causal-consistency ---------------------------------------------------
+
+
+def test_CAUSAL_001_bookmark_read_after_write(bolt_driver):
+    with bolt_driver.session(database="beer") as session_a:
+        session_a.run("CREATE (:CausalProbe {marker: 'causal-001'})").consume()
+        bookmarks = session_a.last_bookmarks()
+
+    with bolt_driver.session(database="beer", bookmarks=bookmarks) as session_b:
+        result = session_b.run("MATCH (n:CausalProbe {marker: 'causal-001'}) RETURN count(n) AS c")
+        assert result.single()["c"] == 1
+
+
+# --- multi-database --------------------------------------------------------
+
+
+def test_MDB_001_session_selects_named_database(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 1")
+        assert result.single()["name"] is not None
+
+
+def test_MDB_002_sessions_across_databases_are_isolated(bolt_driver):
+    with bolt_driver.session(database="boltscratch") as scratch_session:
+        tx = scratch_session.begin_transaction()
+        tx.run("CREATE (:ScratchProbe {marker: 'mdb-002'})")
+
+        with bolt_driver.session(database="beer") as beer_session:
+            result = beer_session.run("MATCH (n:ScratchProbe {marker: 'mdb-002'}) RETURN count(n) AS c")
+            assert result.single()["c"] == 0
+
+        tx.commit()
+
+    with bolt_driver.session(database="boltscratch") as verify_session:
+        result = verify_session.run("MATCH (n:ScratchProbe {marker: 'mdb-002'}) RETURN count(n) AS c")
+        assert result.single()["c"] == 1
