@@ -93,7 +93,14 @@ scenarios:
       - "When the driver connects to neo4j://<host>:7687"
       - "Then the driver receives a routing table listing that one node as reader/writer/router and runs queries successfully"
     applicable_driver_versions: all
-    current_status: passing
+    current_status: expected-fail
+    known_limitation: >
+      BoltMessage.parseRoute (bolt/src/main/java/com/arcadedb/bolt/message/BoltMessage.java:142)
+      casts the ROUTE message's third field straight to String, but under
+      negotiated Bolt 4.4 it is actually a Map, causing a server-side
+      ClassCastException - discovered while implementing issue #4885's
+      Python conformance suite.
+    tracking_issue: "#4916"
   - id: CONN-004
     area: connection
     title: "neo4j:// routing reflects actual multi-node HA cluster topology"

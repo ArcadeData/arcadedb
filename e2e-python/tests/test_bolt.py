@@ -256,6 +256,13 @@ def test_CONN_002_tls_required(bolt_container_tls_required):
         driver.close()
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason="BoltMessage.parseRoute (bolt/src/main/java/com/arcadedb/bolt/message/"
+    "BoltMessage.java:142) casts the ROUTE message's third field straight to "
+    "String, but under negotiated Bolt 4.4 it is actually a Map, causing a "
+    "server-side ClassCastException; see #4916",
+)
 def test_CONN_003_neo4j_routing_single_node(bolt_container):
     driver = GraphDatabase.driver(bolt_uri(bolt_container, scheme="neo4j"), auth=basic_auth("root", ROOT_PASSWORD))
     try:
