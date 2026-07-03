@@ -98,6 +98,26 @@ public class BoltProtocolIT extends BaseGraphServerTest {
     }
   }
 
+  // Reproduces issue #4916: the neo4j:// routing scheme sends a ROUTE message whose third field is
+  // extra::Map{db, imp_user} under the negotiated Bolt 4.4 protocol, not the pre-4.4 db::String shape.
+  @Test
+  void routingConnection() {
+    try (Driver driver = GraphDatabase.driver(
+        "neo4j://localhost:7687",
+        AuthTokens.basic("root", DEFAULT_PASSWORD_FOR_TESTS),
+        Config.builder()
+            .withoutEncryption()
+            .build())) {
+      driver.verifyConnectivity();
+
+      try (Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        final Result result = session.run("RETURN 1 AS value");
+        assertThat(result.hasNext()).isTrue();
+        assertThat(result.next().get("value").asLong()).isEqualTo(1L);
+      }
+    }
+  }
+
   @Test
   void simpleQuery() {
     try (Driver driver = getDriver()) {
