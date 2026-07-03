@@ -417,10 +417,24 @@ class BoltStructureTest {
   }
 
   @Test
+  void mapperSqlDate() throws Exception {
+    // java.sql.Date extends java.util.Date but has no time component (toInstant() throws): must map to a Date struct.
+    final java.sql.Date sqlDate = java.sql.Date.valueOf(LocalDate.of(2024, 1, 15));
+    assertThat(wireRoundTrip(sqlDate)).isEqualTo(sqlDate.toLocalDate());
+  }
+
+  @Test
+  void mapperSqlTime() throws Exception {
+    final java.sql.Time sqlTime = java.sql.Time.valueOf(LocalTime.of(10, 30, 45));
+    assertThat(wireRoundTrip(sqlTime)).isEqualTo(sqlTime.toLocalTime());
+  }
+
+  @Test
   void mapperCalendar() throws Exception {
     final Calendar calendar = Calendar.getInstance(TimeZone.getTimeZone("UTC"));
     calendar.setTimeInMillis(Instant.parse("2024-01-15T10:30:45Z").toEpochMilli());
-    assertThat(((OffsetDateTime) wireRoundTrip(calendar)).toInstant()).isEqualTo(calendar.toInstant());
+    // The calendar's named zone is preserved, so it round-trips as a zoned datetime; assert the instant.
+    assertThat(((ZonedDateTime) wireRoundTrip(calendar)).toInstant()).isEqualTo(calendar.toInstant());
   }
 
   /**

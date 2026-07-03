@@ -379,10 +379,17 @@ public class BoltStructureMapper {
     }
     if (value instanceof Instant i)
       return dateTimeWithOffset(LocalDateTime.ofInstant(i, ZoneOffset.UTC), ZoneOffset.UTC);
+    // java.sql.Date / java.sql.Time extend java.util.Date but carry only one component; toInstant()
+    // throws UnsupportedOperationException on them, so map to the date-only / time-only value first.
+    if (value instanceof java.sql.Date sqlDate)
+      return toTemporalStructure(sqlDate.toLocalDate());
+    if (value instanceof java.sql.Time sqlTime)
+      return toTemporalStructure(sqlTime.toLocalTime());
     if (value instanceof Date date)
       return dateTimeWithOffset(LocalDateTime.ofInstant(date.toInstant(), ZoneOffset.UTC), ZoneOffset.UTC);
     if (value instanceof Calendar calendar)
-      return dateTimeWithOffset(LocalDateTime.ofInstant(calendar.toInstant(), ZoneOffset.UTC), ZoneOffset.UTC);
+      // Preserve the calendar's own zone instead of forcing UTC.
+      return toTemporalStructure(ZonedDateTime.ofInstant(calendar.toInstant(), calendar.getTimeZone().toZoneId()));
 
     return null;
   }

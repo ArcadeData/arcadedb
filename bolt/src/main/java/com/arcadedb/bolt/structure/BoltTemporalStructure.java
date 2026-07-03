@@ -36,7 +36,7 @@ public class BoltTemporalStructure implements PackStreamStructure {
 
   public BoltTemporalStructure(final byte signature, final Object... fields) {
     this.signature = signature;
-    this.fields = fields;
+    this.fields = fields != null ? fields.clone() : new Object[0];
   }
 
   @Override
@@ -50,7 +50,7 @@ public class BoltTemporalStructure implements PackStreamStructure {
   }
 
   public Object[] getFields() {
-    return fields;
+    return fields.clone();
   }
 
   @Override
