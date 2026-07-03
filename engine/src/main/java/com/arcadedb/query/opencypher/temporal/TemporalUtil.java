@@ -24,6 +24,7 @@ import java.time.temporal.IsoFields;
 import java.time.temporal.WeekFields;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
@@ -424,6 +425,40 @@ public final class TemporalUtil {
         converted[i] = toCoreJavaType(array[i]);
       return converted;
     }
+
+    return value;
+  }
+
+  /**
+   * Inverse of {@link #toCoreJavaType(Object)}: wrap a native {@code java.time} / {@code java.util.Date}
+   * value into its Cypher temporal type so it participates in temporal comparison and component access.
+   * <p>
+   * Used on the read side (property fetch) and at comparison time to normalize temporal query
+   * parameters (e.g. a datetime sent over Bolt, which arrives as a {@code java.time} value) against
+   * stored temporals. Values that are already {@link CypherTemporalValue} are returned unchanged, and
+   * non-temporal values are passed through untouched, so this is safe to call on any operand.
+   */
+  public static Object fromCoreJavaType(final Object value) {
+    if (value == null || value instanceof CypherTemporalValue || value instanceof Number || value instanceof String
+        || value instanceof Boolean)
+      return value;
+
+    if (value instanceof LocalDate d)
+      return new CypherDate(d);
+    if (value instanceof LocalTime t)
+      return new CypherLocalTime(t);
+    if (value instanceof OffsetTime t)
+      return new CypherTime(t);
+    if (value instanceof LocalDateTime ldt)
+      return new CypherLocalDateTime(ldt);
+    if (value instanceof ZonedDateTime zdt)
+      return new CypherDateTime(zdt);
+    if (value instanceof OffsetDateTime odt)
+      return new CypherDateTime(odt.toZonedDateTime());
+    if (value instanceof Instant i)
+      return new CypherDateTime(i.atZone(ZoneOffset.UTC));
+    if (value instanceof Date date)
+      return new CypherDateTime(date.toInstant().atZone(ZoneOffset.UTC));
 
     return value;
   }

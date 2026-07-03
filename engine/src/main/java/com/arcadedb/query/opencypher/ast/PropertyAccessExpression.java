@@ -26,8 +26,8 @@ import com.arcadedb.query.opencypher.temporal.*;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 
-import java.time.LocalDate;
-import java.time.LocalDateTime;
+import java.time.temporal.Temporal;
+import java.util.Date;
 import java.util.Map;
 
 /**
@@ -68,12 +68,12 @@ public class PropertyAccessExpression implements Expression {
     } else if (variable instanceof CypherTemporalValue) {
       // Handle temporal value property access (e.g., date.year, time.hour)
       return ((CypherTemporalValue) variable).getTemporalProperty(propertyName);
-    } else if (variable instanceof LocalDate) {
-      // java.time.LocalDate stored in ArcadeDB → wrap in CypherDate for property access
-      return new CypherDate((LocalDate) variable).getTemporalProperty(propertyName);
-    } else if (variable instanceof LocalDateTime) {
-      // java.time.LocalDateTime stored in ArcadeDB → wrap in CypherLocalDateTime for property access
-      return new CypherLocalDateTime((LocalDateTime) variable).getTemporalProperty(propertyName);
+    } else if (variable instanceof Temporal || variable instanceof Date) {
+      // Native java.time / java.util.Date value (e.g. a temporal parameter or a stored
+      // ZonedDateTime/Date) → wrap into its Cypher temporal type for component access (date.year, ...).
+      final Object coerced = TemporalUtil.fromCoreJavaType(variable);
+      if (coerced instanceof CypherTemporalValue temporal)
+        return temporal.getTemporalProperty(propertyName);
     }
 
     // Type validation: property access only works on property-bearing types
@@ -111,11 +111,14 @@ public class PropertyAccessExpression implements Expression {
     if (value == null || value instanceof Number || value instanceof Boolean)
       return value;
 
-    // Handle single values - check temporal types before collections
-    if (value instanceof LocalDate ld)
-      return new CypherDate(ld);
-    if (value instanceof LocalDateTime ldt)
-      return new CypherLocalDateTime(ldt);
+    // Handle single values - check temporal types before collections. Native java.time / java.util.Date
+    // temporals (incl. java.util.Date, the default DATETIME storage type, and ZonedDateTime) are wrapped
+    // into Cypher temporal values so a stored native datetime reads back as a comparable temporal.
+    if (value instanceof Temporal || value instanceof Date) {
+      final Object coerced = TemporalUtil.fromCoreJavaType(value);
+      if (coerced instanceof CypherTemporalValue)
+        return coerced;
+    }
 
     if (value instanceof String str) {
       // Fast path: short strings and common patterns can't be temporal
