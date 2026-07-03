@@ -414,6 +414,12 @@ public class BoltNetworkExecutor extends Thread {
       if (!authenticateUser(principal, credentials)) {
         return;
       }
+    } else {
+      // No recognized scheme and no credentials supplied - reject rather than
+      // treating the connection as implicitly authenticated.
+      if (!authenticateUser(principal, credentials)) {
+        return;
+      }
     }
 
     // Build success response with server info
