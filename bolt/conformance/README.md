@@ -65,6 +65,22 @@ open a new tracking issue (or fold it under `#4890` if related) and update
 verbatim from the epic #4882 feature-matrix table, so spec coverage can be
 checked directly against that table.
 
+Each area has a fixed `id` prefix, enforced by `validate_spec.py` - not
+derivable from the area string, so it's tabulated here rather than
+reverse-engineered:
+
+| Area | id prefix |
+|---|---|
+| `connection` | `CONN` |
+| `auth` | `AUTH` |
+| `transactions` | `TX` |
+| `causal-consistency` | `CAUSAL` |
+| `multi-database` | `MDB` |
+| `result-handling` | `RESULT` |
+| `type-roundtrip` | `TYPE` |
+| `errors` | `ERR` |
+| `protocol` | `PROTO` |
+
 ## Driver version bands
 
 `driver_version_bands` in `spec.yaml` defines symbolic bands per language
@@ -90,13 +106,26 @@ go.mod) at implementation time.
 
 ## Validating the spec
 
+Requires PyYAML (`pip install -r requirements.txt`, or just `pip install
+pyyaml` - it's a dev-tooling dependency for this validator only, not part of
+any shipped ArcadeDB artifact).
+
 ```bash
 cd bolt/conformance
+pip install -r requirements.txt   # once
 python3 validate_spec.py spec.yaml
+python3 -m unittest test_validate_spec.py -v
 ```
 
 Checks structural integrity: unique scenario IDs, valid `area`/
-`current_status` values, every area has at least one scenario, and the 4
-epic-confirmed gaps (single-node-only ROUTE, missing `Neo.TransientError.*`,
-no Bolt 5.x negotiation, type-fidelity gaps) each have a `#4890`-tracked
-`expected-fail` scenario. Run this after any edit to `spec.yaml`.
+`current_status` values matching the declared `id` prefix for that area,
+fixture references that resolve to a declared fixture, driver-version
+references that resolve to a declared language/band, every area has at
+least one scenario, and the 4 epic-confirmed gaps (single-node-only ROUTE,
+missing `Neo.TransientError.*`, no Bolt 5.x negotiation, type-fidelity gaps)
+each have a `#4890`-tracked `expected-fail` scenario. Run this after any
+edit to `spec.yaml`.
+
+`test_validate_spec.py` imports `validate_spec` as a bare module, so it must
+be run from inside `bolt/conformance/` (as shown above) - there's no
+`conftest.py`/package install step for this small dev script.

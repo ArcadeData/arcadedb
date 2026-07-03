@@ -375,7 +375,7 @@ scenarios:
     description: >
       Cypher has no byte-array literal syntax, so this is parameter-only:
       the client sends a byte array as $param and reads it back unchanged.
-    fixture: type_matrix
+      No fixture data is consumed - the byte array is entirely client-supplied.
     preconditions: []
     steps:
       - "When the driver runs 'RETURN $b AS echo' with params={b: byte[]{1,2,3,4}}"

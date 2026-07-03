@@ -5,6 +5,7 @@ This is a reference/authoring aid only - no per-language Bolt e2e suite
 imports or executes this script. See README.md for the consumption model.
 """
 import pathlib
+import re
 import sys
 
 import yaml
@@ -28,31 +29,61 @@ KNOWN_GAP_TRACKING_ISSUE = "#4890"
 # protocol (no Bolt 5.x negotiation), type-roundtrip (temporal-as-string,
 # missing Duration, missing Point).
 REQUIRED_GAP_AREAS = {"connection", "errors", "protocol", "type-roundtrip"}
+# Canonical AREA-NNN id prefix per area - not derivable from the area string
+# (e.g. transactions -> TX, multi-database -> MDB, causal-consistency ->
+# CAUSAL), so scenario ids are checked against this table rather than a
+# generic slugify of the area name.
+AREA_ID_PREFIXES = {
+    "connection": "CONN",
+    "auth": "AUTH",
+    "transactions": "TX",
+    "causal-consistency": "CAUSAL",
+    "multi-database": "MDB",
+    "result-handling": "RESULT",
+    "type-roundtrip": "TYPE",
+    "errors": "ERR",
+    "protocol": "PROTO",
+}
 
 
 def validate(spec: dict) -> list[str]:
+    if not isinstance(spec, dict):
+        return ["spec must be a mapping"]
+
     errors = []
 
     if spec.get("version") != 1:
         errors.append("spec.version must be 1")
 
     bands = spec.get("driver_version_bands", {})
+    if not isinstance(bands, dict):
+        errors.append("driver_version_bands must be a mapping")
+        bands = {}
     missing_langs = REQUIRED_LANGUAGES - bands.keys()
     if missing_langs:
         errors.append(f"driver_version_bands missing languages: {sorted(missing_langs)}")
     for lang, band in bands.items():
+        if not isinstance(band, dict):
+            errors.append(f"driver_version_bands.{lang} must be a mapping")
+            continue
         if not band.get("band_names"):
             errors.append(f"driver_version_bands.{lang} missing band_names")
         if not band.get("driver_artifact"):
             errors.append(f"driver_version_bands.{lang} missing driver_artifact")
 
     fixtures = spec.get("fixtures", {})
+    if not isinstance(fixtures, dict):
+        errors.append("fixtures must be a mapping")
+        fixtures = {}
     for name in ("beer", "type_matrix"):
         if name not in fixtures:
             errors.append(f"fixtures.{name} is missing")
 
     scenarios = spec.get("scenarios", [])
-    if not scenarios:
+    if not isinstance(scenarios, list):
+        errors.append("scenarios must be a list")
+        scenarios = []
+    elif not scenarios:
         errors.append("scenarios list is empty")
 
     seen_ids = set()
@@ -60,6 +91,10 @@ def validate(spec: dict) -> list[str]:
     gap_tracking_areas = set()
 
     for s in scenarios:
+        if not isinstance(s, dict):
+            errors.append(f"scenario must be a mapping, got: {s!r}")
+            continue
+
         sid = s.get("id")
         if not sid:
             errors.append(f"scenario missing id: {s}")
@@ -73,6 +108,9 @@ def validate(spec: dict) -> list[str]:
             errors.append(f"{sid}: invalid area '{area}'")
         else:
             areas_seen.add(area)
+            prefix = AREA_ID_PREFIXES[area]
+            if not re.match(rf"^{re.escape(prefix)}-\d+$", sid):
+                errors.append(f"{sid}: id does not match area '{area}' (expected prefix '{prefix}-NNN')")
 
         status = s.get("current_status")
         if status not in VALID_STATUSES:
@@ -88,10 +126,36 @@ def validate(spec: dict) -> list[str]:
 
         if not s.get("title"):
             errors.append(f"{sid}: missing title")
-        if not s.get("steps"):
+
+        preconditions = s.get("preconditions")
+        if preconditions is not None and not isinstance(preconditions, list):
+            errors.append(f"{sid}: preconditions must be a list")
+
+        steps = s.get("steps")
+        if not steps:
             errors.append(f"{sid}: missing steps")
-        if "applicable_driver_versions" not in s:
+        elif not isinstance(steps, list):
+            errors.append(f"{sid}: steps must be a list")
+
+        fixture = s.get("fixture")
+        if fixture and fixture not in fixtures:
+            errors.append(f"{sid}: unknown fixture reference '{fixture}'")
+
+        adv = s.get("applicable_driver_versions")
+        if adv is None:
             errors.append(f"{sid}: missing applicable_driver_versions")
+        elif adv != "all":
+            if not isinstance(adv, list):
+                errors.append(f"{sid}: applicable_driver_versions must be 'all' or a list")
+            else:
+                for ref in adv:
+                    lang, _, band = ref.partition(":") if isinstance(ref, str) else ("", "", "")
+                    if not lang or not band:
+                        errors.append(f"{sid}: malformed driver version ref '{ref}' (expected 'language:band_name')")
+                    elif lang not in bands:
+                        errors.append(f"{sid}: driver version ref '{ref}' has unknown language '{lang}'")
+                    elif isinstance(bands[lang], dict) and band not in bands[lang].get("band_names", []):
+                        errors.append(f"{sid}: driver version ref '{ref}' has unknown band '{band}' for language '{lang}'")
 
     missing_area_coverage = REQUIRED_AREAS - areas_seen
     if missing_area_coverage:
