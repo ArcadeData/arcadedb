@@ -630,10 +630,9 @@ public class BoltNetworkExecutor extends Thread {
     } catch (final Exception e) {
       // MVCC conflicts (NeedRetryException) are expected under contention and auto-retried by the driver,
       // so log them at FINE to avoid flooding WARNING with normal, recoverable flow; genuine errors stay WARNING.
-      final boolean retryable = isRetryableConflict(e);
-      LogManager.instance().log(this, retryable ? Level.FINE : Level.WARNING, "BOLT query error", e);
+      LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT query error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
-      sendFailure(retryable ? BoltErrorCodes.TRANSIENT_CONFLICT_ERROR : BoltErrorCodes.DATABASE_ERROR, errorMsg);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
       state = State.FAILED;
     }
   }
@@ -732,10 +731,9 @@ public class BoltNetworkExecutor extends Thread {
     } catch (final Exception e) {
       // MVCC conflicts (incl. those raised by an implicit auto-commit here) are expected and auto-retried
       // by the driver, so log at FINE to avoid flooding WARNING with recoverable flow; real errors stay WARNING.
-      final boolean retryable = isRetryableConflict(e);
-      LogManager.instance().log(this, retryable ? Level.FINE : Level.WARNING, "BOLT PULL error", e);
+      LogManager.instance().log(this, isRetryableConflict(e) ? Level.FINE : Level.WARNING, "BOLT PULL error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
-      sendFailure(retryable ? BoltErrorCodes.TRANSIENT_CONFLICT_ERROR : BoltErrorCodes.DATABASE_ERROR, errorMsg);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
       state = State.FAILED;
     }
   }
