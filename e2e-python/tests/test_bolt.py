@@ -444,6 +444,16 @@ def _race_two_writers(driver, database, marker):
         t.start()
     for t in threads:
         t.join(timeout=10)
+
+    # Diagnostic only (printed unconditionally, not just on failure, so it
+    # shows up in captured-stdout even for an unexpected XPASS): this race is
+    # inherently timing-sensitive, and an isolated flip to a genuine
+    # Neo.TransientError.* would be a real, actionable server-behavior
+    # change worth having concrete evidence for rather than a bare XPASS.
+    for i, err in enumerate(errors):
+        code = getattr(err, "code", None)
+        print(f"_race_two_writers[{marker}] errors[{i}]: {type(err).__name__} code={code!r} msg={err}")
+
     return errors
 
 
