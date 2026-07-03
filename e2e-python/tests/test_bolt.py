@@ -512,3 +512,167 @@ def test_RESULT_004_summary_counters_reflect_writes(bolt_driver):
         assert counters.nodes_created == 2
         assert counters.relationships_created == 1
         assert counters.properties_set >= 2
+
+
+# --- type-roundtrip ---------------------------------------------------
+
+
+def test_TYPE_001_node_roundtrip(bolt_driver):
+    from neo4j.graph import Node
+
+    with bolt_driver.session(database="beer") as session:
+        record = session.run("MATCH (b:Beer) RETURN b LIMIT 1").single()
+        node = record["b"]
+        assert isinstance(node, Node)
+        assert "Beer" in node.labels
+        assert node.get("name") is not None
+
+
+def test_TYPE_002_relationship_roundtrip(bolt_driver):
+    from neo4j.graph import Relationship
+
+    with bolt_driver.session(database="beer") as session:
+        record = session.run("MATCH ()-[r]->() RETURN r LIMIT 1").single()
+        rel = record["r"]
+        assert isinstance(rel, Relationship)
+        assert rel.type is not None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="structure/BoltPath.java exists but has zero call sites "
+    "constructing it anywhere in BoltStructureMapper - query results never "
+    "actually produce native Path structures today; see #4890",
+)
+def test_TYPE_003_path_roundtrip(bolt_driver):
+    from neo4j.graph import Path
+
+    with bolt_driver.session(database="beer") as session:
+        record = session.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1").single()
+        path = record["p"]
+        assert isinstance(path, Path)
+        assert len(path.nodes) >= 2
+
+
+def test_TYPE_004_bytearray_param_roundtrip(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        payload = bytearray([1, 2, 3, 4])
+        record = session.run("RETURN $b AS echo", b=payload).single()
+        assert bytes(record["echo"]) == bytes(payload)
+
+
+def test_TYPE_005_nested_list_map_roundtrip(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        record = session.run(
+            "MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l, t.nestedMapProp AS m"
+        ).single()
+        assert record["l"] == [1, 2, [3, 4]]
+        assert record["m"] == {"a": 1, "b": {"c": 2}}
+
+
+def test_TYPE_006_null_roundtrip(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        record = session.run("MATCH (t:TypeMatrix) RETURN t.nullProp AS n").single()
+        assert record["n"] is None
+
+        echo = session.run("RETURN $p AS echo", p=None).single()
+        assert echo["echo"] is None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BoltStructureMapper.toPackStreamValue converts LocalDate via "
+    ".toString()/ISO string fallback instead of the native Bolt Date "
+    "structure (sig 0x44); see #4890",
+)
+def test_TYPE_007_local_date_roundtrip(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        record = session.run("MATCH (t:TypeMatrix) RETURN t.localDateProp AS d").single()
+        assert isinstance(record["d"], datetime.date)
+
+        echo = session.run("RETURN $d AS echo", d=record["d"]).single()
+        assert echo["echo"] == record["d"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Same ISO-string fallback as TYPE-007, for LocalTime (native Bolt "
+    "LocalTime structure sig 0x74 not produced); see #4890",
+)
+def test_TYPE_008_local_time_roundtrip(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        record = session.run("MATCH (t:TypeMatrix) RETURN t.localTimeProp AS t2").single()
+        assert isinstance(record["t2"], datetime.time)
+
+        echo = session.run("RETURN $t AS echo", t=record["t2"]).single()
+        assert echo["echo"] == record["t2"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Same ISO-string fallback as TYPE-007, for LocalDateTime (native "
+    "Bolt LocalDateTime structure sig 0x64 not produced); see #4890",
+)
+def test_TYPE_009_local_datetime_roundtrip(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        record = session.run("MATCH (t:TypeMatrix) RETURN t.localDateTimeProp AS dt").single()
+        assert isinstance(record["dt"], datetime.datetime)
+
+        echo = session.run("RETURN $dt AS echo", dt=record["dt"]).single()
+        assert echo["echo"] == record["dt"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="Same ISO-string fallback as TYPE-007, for OffsetDateTime/"
+    "ZonedDateTime (native Bolt DateTime/DateTimeZoneId structures, sig "
+    "0x49/0x69, not produced); see #4890",
+)
+def test_TYPE_010_offset_datetime_roundtrip(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        record = session.run("MATCH (t:TypeMatrix) RETURN t.offsetDateTimeProp AS dt").single()
+        dt = record["dt"]
+        assert isinstance(dt, datetime.datetime)
+        assert dt.utcoffset() == datetime.timedelta(hours=2)
+
+        echo = session.run("RETURN $dt AS echo", dt=dt).single()
+        assert echo["echo"] == dt
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BoltStructureMapper/PackStreamWriter have no Duration handling "
+    "at all - not even a string fallback branch, falls through to generic "
+    "value.toString(); see #4890",
+)
+def test_TYPE_011_duration_roundtrip(bolt_driver):
+    from neo4j.time import Duration
+
+    with bolt_driver.session(database="beer") as session:
+        record = session.run("MATCH (t:TypeMatrix) RETURN t.durationProp AS d").single()
+        assert isinstance(record["d"], Duration)
+
+        echo = session.run("RETURN $d AS echo", d=record["d"]).single()
+        assert echo["echo"] == record["d"]
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="No Point/spatial type handling exists anywhere in "
+    "BoltStructureMapper or PackStreamWriter (the underlying ArcadeDB "
+    "Cypher engine itself does support point() - the gap is Bolt wire "
+    "serialization only); see #4890",
+)
+def test_TYPE_012_point_roundtrip(bolt_driver):
+    from neo4j.spatial import Point
+
+    with bolt_driver.session(database="beer") as session:
+        record = session.run("MATCH (t:TypeMatrix) RETURN t.pointProp AS p").single()
+        point = record["p"]
+        assert isinstance(point, Point)
+        assert point.x == pytest.approx(12.34)
+        assert point.y == pytest.approx(56.78)
+
+        echo = session.run("RETURN $p AS echo", p=point).single()
+        assert echo["echo"].x == pytest.approx(12.34)
+        assert echo["echo"].y == pytest.approx(56.78)
