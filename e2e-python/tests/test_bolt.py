@@ -20,6 +20,12 @@ Implements every scenario in bolt/conformance/spec.yaml (issue #4883)
 against the official `neo4j` Python driver. Each test function name embeds
 its spec.yaml scenario id (test_<AREA>_<NNN>_<slug>) for traceability, per
 bolt/conformance/README.md's "Traceability convention".
+
+Note: ArcadeDB negotiates Bolt 4.4/4.0/3.0 at most (see PROTO-002 - it
+never advertises 5.x). This entire suite depends on the pinned `neo4j`
+driver continuing to silently downgrade to 4.4 rather than requiring 5.x -
+a future driver major version that drops legacy protocol negotiation would
+break every test here, not just PROTO-002.
 """
 
 import datetime
