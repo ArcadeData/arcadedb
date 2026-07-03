@@ -10,6 +10,16 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Cypher: `DELETE` of a relationship inside `FOREACH` now removes the edge.** A planner optimization drops
+  a named edge variable from the matched row when it thinks the variable is unused downstream, so the match
+  step can take the GAV/CSR fast path (which does not load edge objects). The "is this edge referenced?"
+  analysis (`CypherExecutionPlan.isEdgeVariableReferenced`) walked `RETURN`/`WITH`/`UNWIND`/`SET`/`DELETE`
+  but never looked inside a `FOREACH` clause. So `MATCH (a)-[r]->(b) FOREACH (x IN [r] | DELETE x)` had `r`
+  stripped from the row; the `DELETE` then found `null` and silently no-op'd while the query still reported
+  success ([#4912](https://github.com/ArcadeData/arcadedb/issues/4912)). The analysis now also inspects the
+  `FOREACH` list expression and its inner write clauses (recursively for nested `FOREACH`), keeping the edge
+  binding alive so the deletion runs. Node deletion in `FOREACH` was unaffected because vertex bindings were
+  never dropped.
 - **SQL: map string-key indexing `$map["key"]` now works inside `INSERT ... CONTENT`.** `ArraySelector.getValue`
   had two overloads: the `Result`-based one returned any index value, but the `Identifiable`-based one was typed
   to return `Integer` and silently dropped non-numeric indexes. `INSERT ... CONTENT { ... }` evaluates its JSON
