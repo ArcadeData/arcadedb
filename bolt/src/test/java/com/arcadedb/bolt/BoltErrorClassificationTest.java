@@ -75,6 +75,15 @@ class BoltErrorClassificationTest {
   }
 
   @Test
+  void isRetryableConflictDetectsNeedRetryForLogLevelDemotion() {
+    // Drives both the transient classification and the FINE-vs-WARNING log level in the RUN/PULL handlers.
+    assertThat(BoltNetworkExecutor.isRetryableConflict(new ConcurrentModificationException("retry"))).isTrue();
+    assertThat(BoltNetworkExecutor.isRetryableConflict(new RuntimeException("x", new LockTimeoutException("t")))).isTrue();
+    assertThat(BoltNetworkExecutor.isRetryableConflict(new IllegalStateException("other"))).isFalse();
+    assertThat(BoltNetworkExecutor.isRetryableConflict(null)).isFalse();
+  }
+
+  @Test
   void transientCodeIsARetryableClassificationDriversHonor() {
     // Neo4j drivers retry on the TransientError classification, except the two excluded titles.
     assertThat(BoltErrorCodes.TRANSIENT_CONFLICT_ERROR).startsWith("Neo.TransientError.");
