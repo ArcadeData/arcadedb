@@ -559,7 +559,12 @@ scenarios:
       - "When the driver sends RUN before completing HELLO/LOGON"
       - "Then the driver receives error code Neo.ClientError.Security.Forbidden (BoltErrorCodes.FORBIDDEN_ERROR)"
     applicable_driver_versions: all
-    current_status: passing
+    current_status: not-applicable
+    known_limitation: >
+      Cannot be triggered through any official driver's public API - every
+      official Neo4j driver completes HELLO/LOGON internally before exposing
+      session/query methods to user code. Testable only via a bespoke
+      raw-socket client, which the epic's governing principles exclude.
   - id: ERR-004
     area: errors
     title: "Transient conditions surface Neo.TransientError.* codes"

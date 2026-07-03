@@ -676,3 +676,53 @@ def test_TYPE_012_point_roundtrip(bolt_driver):
         echo = session.run("RETURN $p AS echo", p=point).single()
         assert echo["echo"].x == pytest.approx(12.34)
         assert echo["echo"].y == pytest.approx(56.78)
+
+
+# --- errors ---------------------------------------------------------------
+
+
+def test_ERR_001_syntax_error(bolt_driver):
+    from neo4j.exceptions import ClientError
+
+    with bolt_driver.session(database="beer") as session:
+        with pytest.raises(ClientError) as exc_info:
+            session.run("MATCH (n RETURN n").consume()
+        assert exc_info.value.code == "Neo.ClientError.Statement.SyntaxError"
+
+
+def test_ERR_002_semantic_error(bolt_driver):
+    from neo4j.exceptions import ClientError
+
+    with bolt_driver.session(database="beer") as session:
+        with pytest.raises(ClientError) as exc_info:
+            session.run("MATCH (n:Beer) RETURN undeclaredVariable").consume()
+        assert exc_info.value.code == "Neo.ClientError.Statement.SemanticError"
+
+
+@pytest.mark.skip(
+    reason="ERR-003 requires sending RUN before completing HELLO/LOGON; the "
+    "official neo4j driver's public API always completes the handshake "
+    "internally, so this cannot be triggered without a bespoke raw-socket "
+    "client, which is out of scope per the epic's 'official drivers only' "
+    "principle. spec.yaml's ERR-003 current_status has been updated to "
+    "not-applicable to reflect this."
+)
+def test_ERR_003_unauthenticated_request_rejected():
+    pass
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BoltErrorCodes.java defines only Neo.ClientError.*/"
+    "Neo.DatabaseError.* codes (7 total) - no Neo.TransientError.* code "
+    "exists anywhere in the Bolt module; see #4890",
+)
+def test_ERR_004_transient_condition_error_code(bolt_driver):
+    from neo4j.exceptions import TransientError
+
+    errors = _race_two_writers(bolt_driver, "beer", "err-004")
+
+    assert errors, "expected at least one racing session to fail on the write conflict"
+    assert isinstance(errors[0], TransientError), (
+        f"expected Neo.TransientError.*, got {type(errors[0]).__name__}: {errors[0]}"
+    )
