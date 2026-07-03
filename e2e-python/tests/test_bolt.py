@@ -54,7 +54,12 @@ def wait_for_http_endpoint(container, path, port, expected_status, timeout=60):
         except (requests.exceptions.ConnectionError, requests.exceptions.Timeout):
             pass
         time.sleep(1)
-    raise TimeoutError(f"Container didn't respond with status {expected_status} at {url} within {timeout} seconds")
+    stdout, stderr = container.get_logs()
+    raise TimeoutError(
+        f"Container didn't respond with status {expected_status} at {url} within "
+        f"{timeout} seconds\n--- container stdout ---\n{stdout.decode(errors='replace')}\n"
+        f"--- container stderr ---\n{stderr.decode(errors='replace')}"
+    )
 
 
 def bolt_uri(container, scheme="bolt"):
