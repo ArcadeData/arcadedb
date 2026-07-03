@@ -38,6 +38,12 @@ public final class BoltErrorCodes {
   // Transaction errors
   public static final String TRANSACTION_ERROR = "Neo.ClientError.Transaction.TransactionNotFound";
 
+  // Transient (retryable) errors. ArcadeDB's optimistic-concurrency conflicts (NeedRetryException:
+  // ConcurrentModificationException / LockTimeoutException) map here so Neo4j drivers auto-retry a
+  // managed transaction. The code is a TransientError classification that the drivers retry on; the
+  // two excluded titles (Transaction.Terminated / Transaction.LockClientStopped) are deliberately avoided.
+  public static final String TRANSIENT_CONFLICT_ERROR = "Neo.TransientError.Transaction.DeadlockDetected";
+
   // Request errors
   public static final String PROTOCOL_ERROR = "Neo.ClientError.Request.Invalid";
 

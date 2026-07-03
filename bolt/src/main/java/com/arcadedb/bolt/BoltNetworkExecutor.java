@@ -20,6 +20,7 @@ package com.arcadedb.bolt;
 
 import com.arcadedb.Constants;
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.bolt.message.BeginMessage;
 import com.arcadedb.bolt.message.BoltMessage;
 import com.arcadedb.bolt.message.DiscardMessage;
@@ -626,7 +627,7 @@ public class BoltNetworkExecutor extends Thread {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "BOLT query error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Database error";
-      sendFailure(BoltException.DATABASE_ERROR, errorMsg);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
       state = State.FAILED;
     }
   }
@@ -725,7 +726,7 @@ public class BoltNetworkExecutor extends Thread {
     } catch (final Exception e) {
       LogManager.instance().log(this, Level.WARNING, "BOLT PULL error", e);
       final String errorMsg = e.getMessage() != null ? e.getMessage() : "Error fetching records";
-      sendFailure(BoltException.DATABASE_ERROR, errorMsg);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.DATABASE_ERROR), errorMsg);
       state = State.FAILED;
     }
   }
@@ -851,7 +852,7 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final Exception e) {
       final String message = e.getMessage() != null ? e.getMessage() : "Commit error";
-      sendFailure(BoltException.TRANSACTION_ERROR, message);
+      sendFailure(classifyExecutionError(e, BoltErrorCodes.TRANSACTION_ERROR), message);
       state = State.FAILED;
     }
   }
@@ -1614,6 +1615,20 @@ public class BoltNetworkExecutor extends Thread {
   private void sendFailure(final String code, final String message) throws IOException {
     final FailureMessage failure = new FailureMessage(code, message);
     sendMessage(failure);
+  }
+
+  /**
+   * Classify a query/transaction execution error into a Bolt status code. ArcadeDB's
+   * optimistic-concurrency conflicts ({@link NeedRetryException}, e.g. a page-version
+   * {@code ConcurrentModificationException} or a {@code LockTimeoutException}) map to a Neo4j
+   * transient status so managed-transaction drivers auto-retry; anything else keeps the given default.
+   */
+  static String classifyExecutionError(final Throwable error, final String defaultCode) {
+    for (Throwable t = error; t != null; t = t.getCause()) {
+      if (t instanceof NeedRetryException)
+        return BoltErrorCodes.TRANSIENT_CONFLICT_ERROR;
+    }
+    return defaultCode;
   }
 
   /**
