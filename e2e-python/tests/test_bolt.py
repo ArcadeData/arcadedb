@@ -292,3 +292,39 @@ def test_CONN_005_tls_optional_plaintext_connects(bolt_container_tls_optional):
         driver.verify_connectivity()
     finally:
         driver.close()
+
+
+# --- auth ----------------------------------------------------------------
+
+
+def test_AUTH_001_basic_auth_valid(bolt_container):
+    driver = GraphDatabase.driver(bolt_uri(bolt_container), auth=basic_auth("root", ROOT_PASSWORD))
+    try:
+        driver.verify_connectivity()
+        with driver.session(database="beer") as session:
+            assert session.run("RETURN 1 AS value").single()["value"] == 1
+    finally:
+        driver.close()
+
+
+def test_AUTH_002_basic_auth_invalid(bolt_container):
+    from neo4j.exceptions import AuthError
+
+    driver = GraphDatabase.driver(bolt_uri(bolt_container), auth=basic_auth("root", "wrong-password"))
+    try:
+        with pytest.raises(AuthError) as exc_info:
+            driver.verify_connectivity()
+        assert exc_info.value.code == "Neo.ClientError.Security.Unauthorized"
+    finally:
+        driver.close()
+
+
+def test_AUTH_003_auth_none_rejected(bolt_container):
+    from neo4j.exceptions import AuthError, ServiceUnavailable
+
+    driver = GraphDatabase.driver(bolt_uri(bolt_container), auth=None)
+    try:
+        with pytest.raises((AuthError, ServiceUnavailable)):
+            driver.verify_connectivity()
+    finally:
+        driver.close()
