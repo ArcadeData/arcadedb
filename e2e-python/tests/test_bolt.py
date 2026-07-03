@@ -29,6 +29,7 @@ import threading
 import time
 from pathlib import Path
 
+import docker
 import pytest
 import requests
 from neo4j import GraphDatabase, basic_auth
@@ -165,6 +166,28 @@ def generate_tls_certs(cert_dir):
     return keystore_path, truststore_path
 
 
+def build_tls_image(cert_dir):
+    """Build a throwaway image with the TLS keystore/truststore baked in via COPY.
+
+    Bind-mounting the host cert_dir (testcontainers `with_volume_mapping`)
+    works locally but is unreliable in some CI environments - GitHub Actions
+    runners have been observed to start the container with the mounted
+    directory present but empty, so ArcadeDB's BoltSslHelper fails with
+    "Could not load resource from path" even though the same fixture passes
+    locally. A `docker build` COPY always resolves its own build context
+    correctly regardless of host/CI path-translation quirks, so this bakes
+    the certs into a derived image instead of mounting them at runtime.
+    """
+    dockerfile = cert_dir / "Dockerfile"
+    dockerfile.write_text(
+        "FROM arcadedata/arcadedb:latest\n"
+        "COPY --chown=arcadedb:arcadedb keystore.p12 truststore.jks /home/arcadedb/tls_certs/\n"
+    )
+    client = docker.from_env()
+    image, _logs = client.images.build(path=str(cert_dir), tag="arcadedb-bolt-tls-test:latest", rm=True)
+    return image.tags[0]
+
+
 @pytest.fixture(scope="module")
 def bolt_container():
     # This tag is loaded from the CI-built branch image (build-and-package's
@@ -217,26 +240,24 @@ def test_CONN_001_connect_bolt(bolt_driver):
 @pytest.fixture(scope="module")
 def tls_certs(tmp_path_factory):
     cert_dir = tmp_path_factory.mktemp("bolt-tls-certs")
-    keystore_path, truststore_path = generate_tls_certs(cert_dir)
-    return cert_dir, keystore_path.name, truststore_path.name
+    generate_tls_certs(cert_dir)
+    return build_tls_image(cert_dir)
 
 
 @pytest.fixture(scope="module")
 def bolt_container_tls_required(tls_certs):
-    cert_dir, keystore_name, truststore_name = tls_certs
     container = (
-        DockerContainer("arcadedata/arcadedb:latest")
+        DockerContainer(tls_certs)
         .with_exposed_ports(2480, 7687)
-        .with_volume_mapping(str(cert_dir), "/home/arcadedb/tls_certs", "ro")
         .with_env(
             "JAVA_OPTS",
             "-Darcadedb.server.rootPassword=" + ROOT_PASSWORD + " "
             "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
             "-Darcadedb.server.plugins=BoltProtocolPlugin "
             "-Darcadedb.bolt.ssl=REQUIRED "
-            "-Darcadedb.ssl.keyStore=/home/arcadedb/tls_certs/" + keystore_name + " "
+            "-Darcadedb.ssl.keyStore=/home/arcadedb/tls_certs/keystore.p12 "
             "-Darcadedb.ssl.keyStorePassword=" + TLS_STORE_PASSWORD + " "
-            "-Darcadedb.ssl.trustStore=/home/arcadedb/tls_certs/" + truststore_name + " "
+            "-Darcadedb.ssl.trustStore=/home/arcadedb/tls_certs/truststore.jks "
             "-Darcadedb.ssl.trustStorePassword=" + TLS_STORE_PASSWORD,
         )
     )
@@ -252,20 +273,18 @@ def bolt_container_tls_required(tls_certs):
 
 @pytest.fixture(scope="module")
 def bolt_container_tls_optional(tls_certs):
-    cert_dir, keystore_name, truststore_name = tls_certs
     container = (
-        DockerContainer("arcadedata/arcadedb:latest")
+        DockerContainer(tls_certs)
         .with_exposed_ports(2480, 7687)
-        .with_volume_mapping(str(cert_dir), "/home/arcadedb/tls_certs", "ro")
         .with_env(
             "JAVA_OPTS",
             "-Darcadedb.server.rootPassword=" + ROOT_PASSWORD + " "
             "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
             "-Darcadedb.server.plugins=BoltProtocolPlugin "
             "-Darcadedb.bolt.ssl=OPTIONAL "
-            "-Darcadedb.ssl.keyStore=/home/arcadedb/tls_certs/" + keystore_name + " "
+            "-Darcadedb.ssl.keyStore=/home/arcadedb/tls_certs/keystore.p12 "
             "-Darcadedb.ssl.keyStorePassword=" + TLS_STORE_PASSWORD + " "
-            "-Darcadedb.ssl.trustStore=/home/arcadedb/tls_certs/" + truststore_name + " "
+            "-Darcadedb.ssl.trustStore=/home/arcadedb/tls_certs/truststore.jks "
             "-Darcadedb.ssl.trustStorePassword=" + TLS_STORE_PASSWORD,
         )
     )
