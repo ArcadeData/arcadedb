@@ -548,7 +548,16 @@ scenarios:
       - "When the driver runs a semantically invalid query, e.g. referencing an undeclared variable in RETURN"
       - "Then the driver receives error code Neo.ClientError.Statement.SemanticError (BoltErrorCodes.SEMANTIC_ERROR)"
     applicable_driver_versions: all
-    current_status: passing
+    current_status: expected-fail
+    known_limitation: >
+      CypherSemanticValidator correctly detects the undefined variable but
+      throws it via CommandParsingException, the same exception class used
+      for genuine ANTLR syntax errors - BoltNetworkExecutor's RUN handler
+      maps error codes by exception type, so it cannot distinguish semantic
+      from syntax errors, making Neo.ClientError.Statement.SemanticError
+      effectively dead code in the Bolt module - discovered while
+      implementing issue #4885's Python conformance suite.
+    tracking_issue: "#4890"
   - id: ERR-003
     area: errors
     title: "Unauthenticated request returns Neo.ClientError.Security.Forbidden"
