@@ -14,15 +14,16 @@
 # limitations under the License.
 #
 
-"""
-Bolt protocol conformance suite for issue #4885, implementing every scenario
-in bolt/conformance/spec.yaml (issue #4883) against the official `neo4j`
-Python driver. Each test function name embeds its spec.yaml scenario id
-(test_<AREA>_<NNN>_<slug>) for traceability, per bolt/conformance/README.md's
-"Traceability convention".
+"""Bolt protocol conformance suite for issue #4885.
+
+Implements every scenario in bolt/conformance/spec.yaml (issue #4883)
+against the official `neo4j` Python driver. Each test function name embeds
+its spec.yaml scenario id (test_<AREA>_<NNN>_<slug>) for traceability, per
+bolt/conformance/README.md's "Traceability convention".
 """
 
 import datetime
+import shutil
 import subprocess
 import threading
 import time
@@ -94,21 +95,29 @@ def seed_type_matrix(container):
 
 
 def generate_tls_certs(cert_dir):
-    """Generate a throwaway self-signed PKCS12 keystore + JKS truststore for BOLT TLS
-    fixtures, via the JDK `keytool` binary. ArcadeDB does not ship a default TLS
+    """Generate a throwaway self-signed keystore/truststore pair for BOLT TLS fixtures.
+
+    Uses the JDK `keytool` binary. ArcadeDB does not ship a default TLS
     keystore (arcadedb.ssl.keyStore/.trustStore have no defaults - see
     BoltSslHelper.getRequiredProperty), so enabling arcadedb.bolt.ssl=REQUIRED/OPTIONAL
     without one crashes server startup with a ConfigurationException. This mirrors
     exactly what an operator would set up: a self-signed cert, trusted by the driver
     via bolt+ssc:// instead of a CA-signed one.
     """
+    keytool = shutil.which("keytool")
+    if keytool is None:
+        raise FileNotFoundError(
+            "keytool not found on PATH - a JDK is required to run the TLS scenarios "
+            "(CONN-002/CONN-005); ensure a Java runtime is available in this environment"
+        )
+
     keystore_path = cert_dir / "keystore.p12"
     truststore_path = cert_dir / "truststore.jks"
     cert_path = cert_dir / "bolt.cer"
 
     subprocess.run(
         [
-            "keytool",
+            keytool,
             "-genkeypair",
             "-alias", "bolt",
             "-keyalg", "RSA",
@@ -126,7 +135,7 @@ def generate_tls_certs(cert_dir):
     )
     subprocess.run(
         [
-            "keytool",
+            keytool,
             "-exportcert",
             "-alias", "bolt",
             "-keystore", str(keystore_path),
@@ -140,7 +149,7 @@ def generate_tls_certs(cert_dir):
     )
     subprocess.run(
         [
-            "keytool",
+            keytool,
             "-importcert",
             "-alias", "bolt",
             "-keystore", str(truststore_path),
@@ -158,6 +167,13 @@ def generate_tls_certs(cert_dir):
 
 @pytest.fixture(scope="module")
 def bolt_container():
+    # This tag is loaded from the CI-built branch image (build-and-package's
+    # `mvn -Pdocker` output via docker save/load in mvn-test.yml), not pulled
+    # from Docker Hub - `docker load` populates the local daemon under this
+    # same tag, so testcontainers uses it without a network pull. Running
+    # this suite after an explicit `docker pull arcadedata/arcadedb:latest`
+    # (overwriting the local tag with the published Hub image) will behave
+    # differently, since that image may lag behind this branch's fixes.
     container = (
         DockerContainer("arcadedata/arcadedb:latest")
         .with_exposed_ports(2480, 7687)
@@ -169,15 +185,23 @@ def bolt_container():
         )
     )
     container.start()
-    wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 60)
-    create_database(container, "boltscratch")
-    seed_type_matrix(container)
-    yield container
-    container.stop()
+    try:
+        wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 60)
+        create_database(container, "boltscratch")
+        seed_type_matrix(container)
+        yield container
+    finally:
+        container.stop()
 
 
 @pytest.fixture(scope="module")
 def bolt_driver(bolt_container):
+    # Several tests below (TX-002/004, CAUSAL-001, MDB-002, RESULT-004) write
+    # into this module-scoped "beer" database and rely on unique marker values
+    # rather than isolated databases to avoid cross-test collisions - no test
+    # currently asserts an exact row/node count, so this is intentional, not
+    # an oversight. A count-based assertion added later should target the
+    # dedicated "boltscratch" database instead.
     driver = GraphDatabase.driver(bolt_uri(bolt_container), auth=basic_auth("root", ROOT_PASSWORD))
     yield driver
     driver.close()
@@ -217,11 +241,13 @@ def bolt_container_tls_required(tls_certs):
         )
     )
     container.start()
-    # TLS keystore/truststore loading adds startup latency beyond the default
-    # container's margin, especially on shared CI runners - give it more room.
-    wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 120)
-    yield container
-    container.stop()
+    try:
+        # TLS keystore/truststore loading adds startup latency beyond the default
+        # container's margin, especially on shared CI runners - give it more room.
+        wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 120)
+        yield container
+    finally:
+        container.stop()
 
 
 @pytest.fixture(scope="module")
@@ -244,35 +270,31 @@ def bolt_container_tls_optional(tls_certs):
         )
     )
     container.start()
-    # See bolt_container_tls_required's comment: TLS startup needs extra margin.
-    wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 120)
-    yield container
-    container.stop()
+    try:
+        # See bolt_container_tls_required's comment: TLS startup needs extra margin.
+        wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 120)
+        yield container
+    finally:
+        container.stop()
 
 
 def test_CONN_002_tls_required(bolt_container_tls_required):
-    driver = GraphDatabase.driver(
+    with GraphDatabase.driver(
         bolt_uri(bolt_container_tls_required, scheme="bolt+ssc"),
         auth=basic_auth("root", ROOT_PASSWORD),
-    )
-    try:
+    ) as driver:
         driver.verify_connectivity()
         with driver.session(database="beer") as session:
             result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 1")
             assert result.single()["name"] is not None
-    finally:
-        driver.close()
 
 
 def test_CONN_003_neo4j_routing_single_node(bolt_container):
-    driver = GraphDatabase.driver(bolt_uri(bolt_container, scheme="neo4j"), auth=basic_auth("root", ROOT_PASSWORD))
-    try:
+    with GraphDatabase.driver(bolt_uri(bolt_container, scheme="neo4j"), auth=basic_auth("root", ROOT_PASSWORD)) as driver:
         driver.verify_connectivity()
         with driver.session(database="beer") as session:
             result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 1")
             assert result.single()["name"] is not None
-    finally:
-        driver.close()
 
 
 @pytest.mark.skip(
@@ -285,50 +307,38 @@ def test_CONN_004_neo4j_routing_ha_topology():
 
 
 def test_CONN_005_tls_optional_plaintext_connects(bolt_container_tls_optional):
-    driver = GraphDatabase.driver(
+    with GraphDatabase.driver(
         bolt_uri(bolt_container_tls_optional, scheme="bolt"),
         auth=basic_auth("root", ROOT_PASSWORD),
-    )
-    try:
+    ) as driver:
         driver.verify_connectivity()
-    finally:
-        driver.close()
 
 
 # --- auth ----------------------------------------------------------------
 
 
 def test_AUTH_001_basic_auth_valid(bolt_container):
-    driver = GraphDatabase.driver(bolt_uri(bolt_container), auth=basic_auth("root", ROOT_PASSWORD))
-    try:
+    with GraphDatabase.driver(bolt_uri(bolt_container), auth=basic_auth("root", ROOT_PASSWORD)) as driver:
         driver.verify_connectivity()
         with driver.session(database="beer") as session:
             assert session.run("RETURN 1 AS value").single()["value"] == 1
-    finally:
-        driver.close()
 
 
 def test_AUTH_002_basic_auth_invalid(bolt_container):
     from neo4j.exceptions import AuthError
 
-    driver = GraphDatabase.driver(bolt_uri(bolt_container), auth=basic_auth("root", "wrong-password"))
-    try:
+    with GraphDatabase.driver(bolt_uri(bolt_container), auth=basic_auth("root", "wrong-password")) as driver:
         with pytest.raises(AuthError) as exc_info:
             driver.verify_connectivity()
         assert exc_info.value.code == "Neo.ClientError.Security.Unauthorized"
-    finally:
-        driver.close()
 
 
 def test_AUTH_003_auth_none_rejected(bolt_container):
     from neo4j.exceptions import AuthError, ServiceUnavailable
 
-    driver = GraphDatabase.driver(bolt_uri(bolt_container), auth=None)
-    try:
+    with GraphDatabase.driver(bolt_uri(bolt_container), auth=None) as driver:
         with pytest.raises((AuthError, ServiceUnavailable)):
             driver.verify_connectivity()
-    finally:
-        driver.close()
 
 
 # --- transactions ----------------------------------------------------------
@@ -372,9 +382,12 @@ def test_TX_004_managed_write_commits(bolt_driver):
 
 
 def _race_two_writers(driver, database, marker):
-    """Shared concurrency helper for TX-005 and ERR-004: two sessions race to
-    update the same node inside an explicit transaction, one held open past
-    the other's commit attempt. Returns the list of exceptions raised."""
+    """Shared concurrency helper for TX-005 and ERR-004.
+
+    Two sessions race to update the same node inside an explicit
+    transaction, one held open past the other's commit attempt. Returns the
+    list of exceptions raised.
+    """
     with driver.session(database=database) as setup_session:
         setup_session.run(
             "MERGE (n:RaceProbe {marker: $marker}) SET n.value = 0", marker=marker
