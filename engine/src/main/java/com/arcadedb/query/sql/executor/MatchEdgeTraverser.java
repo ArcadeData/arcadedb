@@ -235,6 +235,13 @@ public class MatchEdgeTraverser {
     } else { // in this case also zero level (starting point) is considered and traversal depth is
       // given by the while condition
       result = new ArrayList<>();
+
+      // A null starting point means a previous optional segment produced no match: there is nothing to traverse from and no
+      // record to evaluate the zero-depth filters against. Return empty (as the non-while branch does) so the optional handling
+      // preserves the base row with null aliases instead of hitting an NPE while resolving filters such as @rid. Issue #4919.
+      if (startingPoint == null)
+        return result;
+
       iCommandContext.setVariable("depth", depth);
       final Object previousMatch = iCommandContext.getVariable("currentMatch");
       iCommandContext.setVariable("currentMatch", startingPoint);

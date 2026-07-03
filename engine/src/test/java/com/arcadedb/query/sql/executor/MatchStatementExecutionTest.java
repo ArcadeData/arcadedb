@@ -1660,6 +1660,58 @@ public class MatchStatementExecutionTest extends TestHelper {
   }
 
   @Test
+  void optionalWhileRidFilterWithMissingPreviousSegment() {
+    // issue #4919: MATCH optional path with `while` and `@rid` filter throws NPE when a previous optional segment is missing
+    database.command("sql", "CREATE VERTEX TYPE IssueOptionalRoot");
+    database.command("sql", "CREATE VERTEX TYPE IssueOptionalMid");
+    database.command("sql", "CREATE VERTEX TYPE IssueOptionalLeaf");
+    database.command("sql", "CREATE VERTEX TYPE IssueOptionalGroup");
+
+    database.command("sql", "CREATE EDGE TYPE IssueRoot_mid");
+    database.command("sql", "CREATE EDGE TYPE IssueMid_leaf");
+    database.command("sql", "CREATE EDGE TYPE IssueGroup_leaf");
+
+    database.command("sql", "CREATE VERTEX IssueOptionalRoot SET name = 'root-without-middle'");
+    database.command("sql", "CREATE VERTEX IssueOptionalRoot SET name = 'root-with-middle'");
+    database.command("sql", "CREATE VERTEX IssueOptionalMid SET name = 'middle'");
+    database.command("sql", "CREATE VERTEX IssueOptionalLeaf SET name = 'leaf'");
+    database.command("sql", "CREATE VERTEX IssueOptionalGroup SET name = 'target-group'");
+
+    database.command("sql", "CREATE EDGE IssueRoot_mid FROM (SELECT FROM IssueOptionalRoot WHERE name = 'root-with-middle') "
+        + "TO (SELECT FROM IssueOptionalMid WHERE name = 'middle')");
+    database.command("sql", "CREATE EDGE IssueMid_leaf FROM (SELECT FROM IssueOptionalMid WHERE name = 'middle') "
+        + "TO (SELECT FROM IssueOptionalLeaf WHERE name = 'leaf')");
+    database.command("sql", "CREATE EDGE IssueGroup_leaf FROM (SELECT FROM IssueOptionalGroup WHERE name = 'target-group') "
+        + "TO (SELECT FROM IssueOptionalLeaf WHERE name = 'leaf')");
+
+    final RID groupRid = database.query("sql", "SELECT @rid AS rid FROM IssueOptionalGroup WHERE name = 'target-group'").next()
+        .getProperty("rid");
+
+    // root 'root-without-middle' has no outgoing IssueRoot_mid edge, so mid/leaf/grp optional segments are all missing.
+    // The final optional segment has a `while` condition and an @rid filter; this used to NPE on the null starting point.
+    final ResultSet result = database.query("sql", """
+        MATCH
+          {type: IssueOptionalRoot, as: root, where: (name = 'root-without-middle')}
+          -IssueRoot_mid->{as: mid, optional: true}
+          -IssueMid_leaf->{as: leaf, optional: true}
+          <-IssueGroup_leaf-{as: grp, optional: true, while: (true), where: (@rid = %s)}
+        RETURN
+          root.name as rootName,
+          mid.name as midName,
+          leaf.name as leafName,
+          grp.name as groupName
+        """.formatted(groupRid.toString()));
+
+    assertThat(result.hasNext()).isTrue();
+    final Result row = result.next();
+    assertThat(row.<String>getProperty("rootName")).isEqualTo("root-without-middle");
+    assertThat(row.<String>getProperty("midName")).isNull();
+    assertThat(row.<String>getProperty("leafName")).isNull();
+    assertThat(row.<String>getProperty("groupName")).isNull();
+    assertThat(result.hasNext()).isFalse();
+  }
+
+  @Test
   void orderByAsc() {
     database.command("sql", "CREATE vertex type testOrderByAsc ");
 
