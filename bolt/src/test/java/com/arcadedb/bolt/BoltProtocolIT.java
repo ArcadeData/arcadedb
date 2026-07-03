@@ -131,6 +131,8 @@ public class BoltProtocolIT extends BaseGraphServerTest {
       final BoltChunkedInput chunkedIn = new BoltChunkedInput(socket.getInputStream());
       final byte[] response = chunkedIn.readMessage();
 
+      // response[0] = TINY_STRUCT|fieldCount marker, response[1] = signature byte
+      // (SuccessMessage/FailureMessage are both single-field structures).
       assertThat(response[1]).as("HELLO with no scheme/principal/credentials must be rejected")
           .isEqualTo(BoltMessage.FAILURE);
     }
