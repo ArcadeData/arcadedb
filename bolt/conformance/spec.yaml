@@ -37,7 +37,7 @@ fixtures:
       already shared by Java (Bolt) and Python (Postgres-wire) e2e today.
     seeded_by: ArcadeContainerTemplate
     source: "https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz"
-    covers_areas: [connection, auth, transactions, causal-consistency, multi-database, result-handling]
+    covers_areas: [connection, auth, transactions, causal-consistency, multi-database, result-handling, type-roundtrip, errors, protocol]
   type_matrix:
     description: >
       Supplementary fixture for type-round-trip scenarios not covered by
