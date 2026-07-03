@@ -22,6 +22,7 @@ import com.arcadedb.database.RID;
 import com.arcadedb.function.graph.IdFunction;
 import com.arcadedb.query.opencypher.query.OpenCypherQueryEngine;
 import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
@@ -125,10 +126,14 @@ public class ComparisonExpression implements BooleanExpression {
       return numericCompare(leftEncoded, rightEncoded);
     }
 
-    // Temporal comparison
-    if (left instanceof CypherTemporalValue && right instanceof CypherTemporalValue) {
+    // Temporal comparison. Coerce native java.time / java.util.Date operands into Cypher temporal
+    // values first, so a native temporal parameter (e.g. a datetime sent over Bolt, which resolves to
+    // a raw java.time value) compares against a stored temporal instead of silently not matching.
+    final Object leftTemporal = TemporalUtil.fromCoreJavaType(left);
+    final Object rightTemporal = TemporalUtil.fromCoreJavaType(right);
+    if (leftTemporal instanceof CypherTemporalValue && rightTemporal instanceof CypherTemporalValue) {
       try {
-        final int cmp = ((CypherTemporalValue) left).compareTo((CypherTemporalValue) right);
+        final int cmp = ((CypherTemporalValue) leftTemporal).compareTo((CypherTemporalValue) rightTemporal);
         return switch (operator) {
           case EQUALS -> cmp == 0;
           case NOT_EQUALS -> cmp != 0;

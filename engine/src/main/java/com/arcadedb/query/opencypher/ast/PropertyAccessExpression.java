@@ -28,6 +28,8 @@ import com.arcadedb.query.sql.executor.Result;
 
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.temporal.Temporal;
+import java.util.Date;
 import java.util.Map;
 
 /**
@@ -111,11 +113,14 @@ public class PropertyAccessExpression implements Expression {
     if (value == null || value instanceof Number || value instanceof Boolean)
       return value;
 
-    // Handle single values - check temporal types before collections
-    if (value instanceof LocalDate ld)
-      return new CypherDate(ld);
-    if (value instanceof LocalDateTime ldt)
-      return new CypherLocalDateTime(ldt);
+    // Handle single values - check temporal types before collections. Native java.time / java.util.Date
+    // temporals (incl. java.util.Date, the default DATETIME storage type, and ZonedDateTime) are wrapped
+    // into Cypher temporal values so a stored native datetime reads back as a comparable temporal.
+    if (value instanceof Temporal || value instanceof Date) {
+      final Object coerced = TemporalUtil.fromCoreJavaType(value);
+      if (coerced instanceof CypherTemporalValue)
+        return coerced;
+    }
 
     if (value instanceof String str) {
       // Fast path: short strings and common patterns can't be temporal
