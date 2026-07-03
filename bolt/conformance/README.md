@@ -6,6 +6,12 @@ protocol implementation, referenced by issue #4883 (part of epic #4882).
 "certified" means across all five official Neo4j driver ecosystems (Java,
 JavaScript, Python, C#, Go).
 
+Every scenario here is only meaningful relative to the server identity
+ArcadeDB advertises to drivers - see
+[`../SERVER_IDENTITY.md`](../SERVER_IDENTITY.md) for the exact advertised
+strings, why `5.26.0` was chosen, and the 4 confirmed gaps behind that
+claim (already reflected in this spec's `expected-fail` scenarios below).
+
 ## Consumption model
 
 **No language's test suite parses `spec.yaml` at runtime.** This file is a
