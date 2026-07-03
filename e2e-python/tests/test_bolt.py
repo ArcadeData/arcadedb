@@ -458,3 +458,57 @@ def test_MDB_002_sessions_across_databases_are_isolated(bolt_driver):
     with bolt_driver.session(database="boltscratch") as verify_session:
         result = verify_session.run("MATCH (n:ScratchProbe {marker: 'mdb-002'}) RETURN count(n) AS c")
         assert result.single()["c"] == 1
+
+
+# --- result-handling ---------------------------------------------------
+
+
+def test_RESULT_001_streaming_pull_incremental(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 10")
+        seen = 0
+        for record in result:
+            assert record["name"] is not None
+            seen += 1
+        assert seen == 10
+
+
+def test_RESULT_002_partial_pull_then_continue(bolt_driver):
+    with bolt_driver.session(database="beer", fetch_size=2) as session:
+        result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 5")
+        iterator = iter(result)
+        first_two = [next(iterator), next(iterator)]
+        assert len(first_two) == 2
+
+        remaining = list(result)
+        assert len(remaining) == 3
+
+
+def test_RESULT_003_discard_abandons_remaining(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 5")
+        next(iter(result))
+        summary = result.consume()
+        assert summary is not None
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BoltNetworkExecutor.handlePull/handleDiscard never populate a "
+    "'stats' key in the SUCCESS message metadata for write queries - the "
+    "engine's Cypher CREATE/SET/DELETE steps do not track node/relationship/"
+    "property counters anywhere that the Bolt layer could surface, so the "
+    "neo4j driver always parses an empty SummaryCounters; see RESULT-004 in "
+    "bolt/conformance/spec.yaml",
+)
+def test_RESULT_004_summary_counters_reflect_writes(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        result = session.run(
+            "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
+            n="RESULT-004-Beer",
+            b="RESULT-004-Brewery",
+        )
+        counters = result.consume().counters
+        assert counters.nodes_created == 2
+        assert counters.relationships_created == 1
+        assert counters.properties_set >= 2
