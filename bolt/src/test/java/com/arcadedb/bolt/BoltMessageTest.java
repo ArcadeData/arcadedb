@@ -648,6 +648,74 @@ class BoltMessageTest {
     assertThat(route.getDatabase()).isNull();
   }
 
+  // Bolt protocol 4.4+ shape: the third ROUTE field is extra::Map{db, imp_user}, not db::String (issue #4916).
+  @Test
+  void parseRouteMessageWithBolt44ExtraMapDatabase() throws Exception {
+    final PackStreamWriter writer = new PackStreamWriter();
+    writer.writeStructureHeader(BoltMessage.ROUTE, 3);
+    writer.writeMap(Map.of("region", "us-east"));
+    writer.writeList(List.of("bm1", "bm2"));
+    writer.writeMap(Map.of("db", "mydb"));
+
+    final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
+    final PackStreamReader.StructureValue struct = (PackStreamReader.StructureValue) reader.readValue();
+    final BoltMessage msg = BoltMessage.parse(struct);
+
+    assertThat(msg).isInstanceOf(RouteMessage.class);
+    final RouteMessage route = (RouteMessage) msg;
+    assertThat(route.getRouting()).containsEntry("region", "us-east");
+    assertThat(route.getBookmarks()).containsExactly("bm1", "bm2");
+    assertThat(route.getDatabase()).isEqualTo("mydb");
+  }
+
+  @Test
+  void parseRouteMessageWithBolt44ExtraMapDatabaseAndImpUser() throws Exception {
+    final PackStreamWriter writer = new PackStreamWriter();
+    writer.writeStructureHeader(BoltMessage.ROUTE, 3);
+    writer.writeMap(Map.of());
+    writer.writeList(List.of());
+    writer.writeMap(Map.of("db", "neo4j", "imp_user", "alice"));
+
+    final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
+    final PackStreamReader.StructureValue struct = (PackStreamReader.StructureValue) reader.readValue();
+    final BoltMessage msg = BoltMessage.parse(struct);
+
+    assertThat(msg).isInstanceOf(RouteMessage.class);
+    assertThat(((RouteMessage) msg).getDatabase()).isEqualTo("neo4j");
+  }
+
+  @Test
+  void parseRouteMessageWithBolt44ExtraMapNoDb() throws Exception {
+    final PackStreamWriter writer = new PackStreamWriter();
+    writer.writeStructureHeader(BoltMessage.ROUTE, 3);
+    writer.writeMap(Map.of());
+    writer.writeList(List.of());
+    writer.writeMap(Map.of("imp_user", "alice"));
+
+    final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
+    final PackStreamReader.StructureValue struct = (PackStreamReader.StructureValue) reader.readValue();
+    final BoltMessage msg = BoltMessage.parse(struct);
+
+    assertThat(msg).isInstanceOf(RouteMessage.class);
+    assertThat(((RouteMessage) msg).getDatabase()).isNull();
+  }
+
+  @Test
+  void parseRouteMessageWithBolt44EmptyExtraMap() throws Exception {
+    final PackStreamWriter writer = new PackStreamWriter();
+    writer.writeStructureHeader(BoltMessage.ROUTE, 3);
+    writer.writeMap(Map.of());
+    writer.writeList(List.of());
+    writer.writeMap(Map.of());
+
+    final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
+    final PackStreamReader.StructureValue struct = (PackStreamReader.StructureValue) reader.readValue();
+    final BoltMessage msg = BoltMessage.parse(struct);
+
+    assertThat(msg).isInstanceOf(RouteMessage.class);
+    assertThat(((RouteMessage) msg).getDatabase()).isNull();
+  }
+
   @Test
   void parseUnknownSignatureThrowsException() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
