@@ -383,6 +383,9 @@ public class BoltStructureMapper {
       return new BoltTemporalStructure(SIG_DATE_TIME_ZONEID_LEGACY, zdt.toLocalDateTime().toEpochSecond(ZoneOffset.UTC),
           (long) zdt.getNano(), zdt.getZone().getId());
     }
+    // A bare instant (Instant / java.util.Date) has no zone; Bolt has no pure-instant type, so it is
+    // deliberately widened to a DateTime struct at UTC. The instant is preserved; the client receives a
+    // zoned/offset datetime at UTC rather than a "naked" instant.
     if (value instanceof Instant i)
       return dateTimeWithOffset(LocalDateTime.ofInstant(i, ZoneOffset.UTC), ZoneOffset.UTC);
     // java.sql.Date / java.sql.Time extend java.util.Date but carry only one component; toInstant()

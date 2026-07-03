@@ -30,6 +30,8 @@ import org.neo4j.driver.GraphDatabase;
 import org.neo4j.driver.Record;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
+import org.neo4j.driver.Values;
+import org.neo4j.driver.types.Node;
 
 import java.time.Instant;
 import java.time.LocalDate;
@@ -101,6 +103,24 @@ public class Bolt4907TemporalOutputIT extends BaseGraphServerTest {
         // Offset time: exercises the Time path.
         assertThat(row.get("tOff").asOffsetTime()).isEqualTo(OffsetTime.of(10, 30, 45, 0, ZoneOffset.ofHours(2)));
         assertThat(row.get("t").asLocalTime()).isEqualTo(LocalTime.of(10, 30, 45));
+      }
+    }
+  }
+
+  @Test
+  void nodeElementTemporalPropertyIsNative() {
+    try (final Driver driver = getDriver()) {
+      try (final Session session = driver.session(SessionConfig.forDatabase(getDatabaseName()))) {
+        // Store natively via a Bolt localdatetime parameter (decoded by #4905) so the value is a real
+        // temporal in storage. Returning the whole node (RETURN e) serializes it through the element
+        // property-map path (BoltNode.writeTo), which is distinct from the scalar projection path above.
+        session.run("CREATE (e:EvNode {id: 1, ts: $ts})",
+            Values.parameters("ts", LocalDateTime.of(2024, 1, 15, 10, 30, 45))).consume();
+
+        final Node node = session.run("MATCH (e:EvNode {id: 1}) RETURN e").single().get("e").asNode();
+
+        // Would throw if the node property came back as a string instead of a native temporal struct.
+        assertThat(node.get("ts").asLocalDateTime()).isEqualTo(LocalDateTime.of(2024, 1, 15, 10, 30, 45));
       }
     }
   }
