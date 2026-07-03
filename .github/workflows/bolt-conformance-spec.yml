@@ -1,0 +1,40 @@
+name: Bolt Conformance Spec Validation
+
+on:
+  push:
+    paths:
+      - 'bolt/conformance/**'
+      - '.github/workflows/bolt-conformance-spec.yml'
+  pull_request:
+    paths:
+      - 'bolt/conformance/**'
+      - '.github/workflows/bolt-conformance-spec.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate spec.yaml structural integrity
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        working-directory: bolt/conformance
+        run: pip install -r requirements.txt
+
+      - name: Run validator unit tests
+        working-directory: bolt/conformance
+        run: python3 -m unittest test_validate_spec.py -v
+
+      - name: Validate spec.yaml
+        working-directory: bolt/conformance
+        run: python3 validate_spec.py spec.yaml
