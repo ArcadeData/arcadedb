@@ -23,6 +23,7 @@ Python driver. Each test function name embeds its spec.yaml scenario id
 """
 
 import datetime
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -33,6 +34,7 @@ from neo4j import GraphDatabase, basic_auth
 from testcontainers.core.container import DockerContainer
 
 ROOT_PASSWORD = "playwithdata"
+TLS_STORE_PASSWORD = "changeit"
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TYPE_MATRIX_FIXTURE = REPO_ROOT / "bolt" / "conformance" / "fixtures" / "type-matrix.cypher"
@@ -86,6 +88,69 @@ def seed_type_matrix(container):
     response.raise_for_status()
 
 
+def generate_tls_certs(cert_dir):
+    """Generate a throwaway self-signed PKCS12 keystore + JKS truststore for BOLT TLS
+    fixtures, via the JDK `keytool` binary. ArcadeDB does not ship a default TLS
+    keystore (arcadedb.ssl.keyStore/.trustStore have no defaults - see
+    BoltSslHelper.getRequiredProperty), so enabling arcadedb.bolt.ssl=REQUIRED/OPTIONAL
+    without one crashes server startup with a ConfigurationException. This mirrors
+    exactly what an operator would set up: a self-signed cert, trusted by the driver
+    via bolt+ssc:// instead of a CA-signed one.
+    """
+    keystore_path = cert_dir / "keystore.p12"
+    truststore_path = cert_dir / "truststore.jks"
+    cert_path = cert_dir / "bolt.cer"
+
+    subprocess.run(
+        [
+            "keytool",
+            "-genkeypair",
+            "-alias", "bolt",
+            "-keyalg", "RSA",
+            "-keysize", "2048",
+            "-validity", "3650",
+            "-keystore", str(keystore_path),
+            "-storetype", "PKCS12",
+            "-storepass", TLS_STORE_PASSWORD,
+            "-keypass", TLS_STORE_PASSWORD,
+            "-dname", "CN=localhost, OU=ArcadeDB, O=ArcadeDB, L=Test, ST=Test, C=US",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "keytool",
+            "-exportcert",
+            "-alias", "bolt",
+            "-keystore", str(keystore_path),
+            "-storetype", "PKCS12",
+            "-storepass", TLS_STORE_PASSWORD,
+            "-file", str(cert_path),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "keytool",
+            "-importcert",
+            "-alias", "bolt",
+            "-keystore", str(truststore_path),
+            "-storetype", "JKS",
+            "-storepass", TLS_STORE_PASSWORD,
+            "-file", str(cert_path),
+            "-noprompt",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return keystore_path, truststore_path
+
+
 @pytest.fixture(scope="module")
 def bolt_container():
     container = (
@@ -118,3 +183,105 @@ def bolt_driver(bolt_container):
 
 def test_CONN_001_connect_bolt(bolt_driver):
     bolt_driver.verify_connectivity()
+
+
+@pytest.fixture(scope="module")
+def tls_certs(tmp_path_factory):
+    cert_dir = tmp_path_factory.mktemp("bolt-tls-certs")
+    keystore_path, truststore_path = generate_tls_certs(cert_dir)
+    return cert_dir, keystore_path.name, truststore_path.name
+
+
+@pytest.fixture(scope="module")
+def bolt_container_tls_required(tls_certs):
+    cert_dir, keystore_name, truststore_name = tls_certs
+    container = (
+        DockerContainer("arcadedata/arcadedb:latest")
+        .with_exposed_ports(2480, 7687)
+        .with_volume_mapping(str(cert_dir), "/home/arcadedb/tls_certs", "ro")
+        .with_env(
+            "JAVA_OPTS",
+            "-Darcadedb.server.rootPassword=" + ROOT_PASSWORD + " "
+            "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
+            "-Darcadedb.server.plugins=BoltProtocolPlugin "
+            "-Darcadedb.bolt.ssl=REQUIRED "
+            "-Darcadedb.ssl.keyStore=/home/arcadedb/tls_certs/" + keystore_name + " "
+            "-Darcadedb.ssl.keyStorePassword=" + TLS_STORE_PASSWORD + " "
+            "-Darcadedb.ssl.trustStore=/home/arcadedb/tls_certs/" + truststore_name + " "
+            "-Darcadedb.ssl.trustStorePassword=" + TLS_STORE_PASSWORD,
+        )
+    )
+    container.start()
+    wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 60)
+    yield container
+    container.stop()
+
+
+@pytest.fixture(scope="module")
+def bolt_container_tls_optional(tls_certs):
+    cert_dir, keystore_name, truststore_name = tls_certs
+    container = (
+        DockerContainer("arcadedata/arcadedb:latest")
+        .with_exposed_ports(2480, 7687)
+        .with_volume_mapping(str(cert_dir), "/home/arcadedb/tls_certs", "ro")
+        .with_env(
+            "JAVA_OPTS",
+            "-Darcadedb.server.rootPassword=" + ROOT_PASSWORD + " "
+            "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} "
+            "-Darcadedb.server.plugins=BoltProtocolPlugin "
+            "-Darcadedb.bolt.ssl=OPTIONAL "
+            "-Darcadedb.ssl.keyStore=/home/arcadedb/tls_certs/" + keystore_name + " "
+            "-Darcadedb.ssl.keyStorePassword=" + TLS_STORE_PASSWORD + " "
+            "-Darcadedb.ssl.trustStore=/home/arcadedb/tls_certs/" + truststore_name + " "
+            "-Darcadedb.ssl.trustStorePassword=" + TLS_STORE_PASSWORD,
+        )
+    )
+    container.start()
+    wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 60)
+    yield container
+    container.stop()
+
+
+def test_CONN_002_tls_required(bolt_container_tls_required):
+    driver = GraphDatabase.driver(
+        bolt_uri(bolt_container_tls_required, scheme="bolt+ssc"),
+        auth=basic_auth("root", ROOT_PASSWORD),
+    )
+    try:
+        driver.verify_connectivity()
+        with driver.session(database="beer") as session:
+            result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 1")
+            assert result.single()["name"] is not None
+    finally:
+        driver.close()
+
+
+def test_CONN_003_neo4j_routing_single_node(bolt_container):
+    driver = GraphDatabase.driver(bolt_uri(bolt_container, scheme="neo4j"), auth=basic_auth("root", ROOT_PASSWORD))
+    try:
+        driver.verify_connectivity()
+        with driver.session(database="beer") as session:
+            result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 1")
+            assert result.single()["name"] is not None
+    finally:
+        driver.close()
+
+
+@pytest.mark.skip(
+    reason="Requires a 3-node HA cluster; e2e-python's single-node harness "
+    "cannot meaningfully exercise this scenario without new multi-node "
+    "orchestration infrastructure - see #4890"
+)
+def test_CONN_004_neo4j_routing_ha_topology():
+    pass
+
+
+def test_CONN_005_tls_optional_plaintext_connects(bolt_container_tls_optional):
+    driver = GraphDatabase.driver(
+        bolt_uri(bolt_container_tls_optional, scheme="bolt"),
+        auth=basic_auth("root", ROOT_PASSWORD),
+    )
+    try:
+        driver.verify_connectivity()
+    finally:
+        driver.close()
