@@ -34,6 +34,7 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
 import java.time.ZonedDateTime;
 import java.util.Calendar;
 import java.util.Date;
@@ -110,6 +111,11 @@ public class BinaryTypes {
       else
         type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
     } else if (value instanceof ZonedDateTime time) {
+      if (propertyType != null)
+        type = propertyType.getType().getBinaryType();
+      else
+        type = DateUtils.getBestBinaryTypeForPrecision(DateUtils.getPrecision(time.getNano()));
+    } else if (value instanceof OffsetDateTime time) {
       if (propertyType != null)
         type = propertyType.getType().getBinaryType();
       else
