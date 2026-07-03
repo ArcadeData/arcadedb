@@ -265,6 +265,49 @@ class ArcadeStateMachineApplyRetryTest {
   }
 
   @Test
+  void divergedResyncLogIsThrottledPerDatabase() {
+    // Log-flood guard: once a WAL version gap quarantines a database, every subsequent committed entry
+    // for it hits the same gap until the snapshot resync lands. The per-entry "resync in progress"
+    // notice must be throttled to at most once per window per database, so a busy database does not
+    // emit tens of log lines per second (which both spams the log and starves the download).
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    // First observation for a database logs; an immediate repeat within the window is suppressed.
+    assertThat(sm.shouldLogDivergedResync("db-a")).isTrue();
+    assertThat(sm.shouldLogDivergedResync("db-a")).isFalse();
+    assertThat(sm.shouldLogDivergedResync("db-a")).isFalse();
+    // The throttle is per-database: a different database logs independently on its first observation.
+    assertThat(sm.shouldLogDivergedResync("db-b")).isTrue();
+    assertThat(sm.shouldLogDivergedResync("db-b")).isFalse();
+  }
+
+  @Test
+  void clearDivergedStateResetsResyncLogThrottle() {
+    // A completed full resync clears the diverged set; the throttle state must reset too so that if the
+    // database diverges again later the first notice is emitted rather than being wrongly suppressed by
+    // a stale timestamp.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    assertThat(sm.shouldLogDivergedResync("db")).isTrue();
+    assertThat(sm.shouldLogDivergedResync("db")).isFalse();
+    sm.clearDivergedState();
+    assertThat(sm.shouldLogDivergedResync("db")).isTrue();
+  }
+
+  @Test
+  void clearDivergedDatabaseResetsResyncLogThrottleForThatDatabaseOnly() {
+    // A targeted single-database resync must reset only that database's throttle; other quarantined
+    // databases keep their throttle state.
+    final ArcadeStateMachine sm = new ArcadeStateMachine();
+    assertThat(sm.shouldLogDivergedResync("db-a")).isTrue();
+    assertThat(sm.shouldLogDivergedResync("db-b")).isTrue();
+    assertThat(sm.shouldLogDivergedResync("db-a")).isFalse();
+    assertThat(sm.shouldLogDivergedResync("db-b")).isFalse();
+
+    sm.clearDivergedDatabase("db-a");
+    assertThat(sm.shouldLogDivergedResync("db-a")).isTrue();  // reset -> logs again
+    assertThat(sm.shouldLogDivergedResync("db-b")).isFalse(); // untouched -> still throttled
+  }
+
+  @Test
   void clearDivergedDatabaseRemovesOnlyThatDatabaseAndResetsCounterWhenEmpty() {
     // Regression guard for issue #4797: a targeted single-database resync clears only the resynced
     // database, leaving other quarantined databases intact. The shared escalation counter is reset
