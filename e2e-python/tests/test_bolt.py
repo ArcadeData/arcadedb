@@ -328,3 +328,95 @@ def test_AUTH_003_auth_none_rejected(bolt_container):
             driver.verify_connectivity()
     finally:
         driver.close()
+
+
+# --- transactions ----------------------------------------------------------
+
+
+def test_TX_001_autocommit_query(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 5")
+        records = list(result)
+        assert len(records) == 5
+
+
+def test_TX_002_explicit_commit_persists(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        tx = session.begin_transaction()
+        tx.run("CREATE (:TxCommitProbe {marker: 'tx-002'})")
+        tx.commit()
+
+        result = session.run("MATCH (n:TxCommitProbe {marker: 'tx-002'}) RETURN count(n) AS c")
+        assert result.single()["c"] == 1
+
+
+def test_TX_003_explicit_rollback_discards(bolt_driver):
+    with bolt_driver.session(database="beer") as session:
+        tx = session.begin_transaction()
+        tx.run("CREATE (:TxRollbackProbe {marker: 'tx-003'})")
+        tx.rollback()
+
+        result = session.run("MATCH (n:TxRollbackProbe {marker: 'tx-003'}) RETURN count(n) AS c")
+        assert result.single()["c"] == 0
+
+
+def test_TX_004_managed_write_commits(bolt_driver):
+    def create_beer(tx):
+        tx.run("CREATE (:Beer {name: $n})", n="TX-004-Beer")
+
+    with bolt_driver.session(database="beer") as session:
+        session.execute_write(create_beer)
+        result = session.run("MATCH (b:Beer {name: $n}) RETURN count(b) AS c", n="TX-004-Beer")
+        assert result.single()["c"] == 1
+
+
+def _race_two_writers(driver, database, marker):
+    """Shared concurrency helper for TX-005 and ERR-004: two sessions race to
+    update the same node inside an explicit transaction, one held open past
+    the other's commit attempt. Returns the list of exceptions raised."""
+    with driver.session(database=database) as setup_session:
+        setup_session.run(
+            "MERGE (n:RaceProbe {marker: $marker}) SET n.value = 0", marker=marker
+        ).consume()
+
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def racing_write():
+        with driver.session(database=database) as session:
+            try:
+                barrier.wait(timeout=5)
+                tx = session.begin_transaction()
+                tx.run(
+                    "MATCH (n:RaceProbe {marker: $marker}) SET n.value = n.value + 1 RETURN n",
+                    marker=marker,
+                ).consume()
+                time.sleep(0.5)
+                tx.commit()
+            except Exception as exc:  # noqa: BLE001 - want to inspect any driver-surfaced error
+                errors.append(exc)
+
+    threads = [threading.Thread(target=racing_write) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    return errors
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="BoltErrorCodes.java defines only 7 codes, all Neo.ClientError.*/ "
+    "Neo.DatabaseError.* - no Neo.TransientError.* code exists, so ArcadeDB "
+    "never signals a retryable condition and driver-side transient-retry "
+    "logic cannot be exercised; see #4890",
+)
+def test_TX_005_managed_write_retries_on_transient_error(bolt_driver):
+    from neo4j.exceptions import TransientError
+
+    errors = _race_two_writers(bolt_driver, "beer", "tx-005")
+
+    assert errors, "expected at least one racing session to fail on the write conflict"
+    assert isinstance(errors[0], TransientError), (
+        f"expected Neo.TransientError.*, got {type(errors[0]).__name__}: {errors[0]}"
+    )
