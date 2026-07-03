@@ -210,7 +210,14 @@ public class HashIndexBucket extends PaginatedComponent {
     final List<RID> result = new ArrayList<>();
     int currentPage = bucketPageNum;
 
+    // Guard against a corrupted (cyclic) overflow chain: without this a chain that loops back on itself spins
+    // this loop forever, pinning a CPU core at 100% inside getPage() and never returning (issue #4743).
+    final int maxChainPages = getTotalPages();
+    int chainSteps = 0;
+
     while (currentPage != NO_OVERFLOW_PAGE) {
+      if (++chainSteps > maxChainPages)
+        throw corruptedOverflowChain(currentPage);
       final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, currentPage), pageSize);
       final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
       final int overflowPage = page.readInt(BUCKET_OVERFLOW_PAGE);
@@ -288,7 +295,11 @@ public class HashIndexBucket extends PaginatedComponent {
     // For non-unique indexes, check if key already exists (on primary page or overflow chain) and append RID
     if (!unique) {
       int currentPageNum = bucketPageNum;
+      final int maxChainPages = getTotalPages();
+      int chainSteps = 0;
       while (currentPageNum != NO_OVERFLOW_PAGE) {
+        if (++chainSteps > maxChainPages)
+          throw corruptedOverflowChain(currentPageNum);
         final MutablePage currentPage = database.getTransaction()
             .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
         final int currentEntryCount = currentPage.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
@@ -362,8 +373,12 @@ public class HashIndexBucket extends PaginatedComponent {
   private void removeFromBucket(final int bucketPageNum, final byte[] serializedKey, final RID specificRID) throws IOException {
     int currentPageNum = bucketPageNum;
     int totalRemoved = 0;
+    final int maxChainPages = getTotalPages();
+    int chainSteps = 0;
 
     while (currentPageNum != NO_OVERFLOW_PAGE) {
+      if (++chainSteps > maxChainPages)
+        throw corruptedOverflowChain(currentPageNum);
       final MutablePage page = database.getTransaction()
           .getPageToModify(new PageId(database, fileId, currentPageNum), pageSize, false);
       int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
@@ -430,7 +445,11 @@ public class HashIndexBucket extends PaginatedComponent {
 
     // Check entries in main page and overflow
     int currentPage = bucketPageNum;
+    final int maxChainPages = getTotalPages();
+    int chainSteps = 0;
     while (currentPage != NO_OVERFLOW_PAGE) {
+      if (++chainSteps > maxChainPages)
+        throw corruptedOverflowChain(currentPage);
       final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, currentPage), pageSize);
       final int count = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
       final int overflowPage = page.readInt(BUCKET_OVERFLOW_PAGE);
@@ -790,6 +809,21 @@ public class HashIndexBucket extends PaginatedComponent {
             + String.format("%02X", type & 0xFF) + ") while parsing entry at content offset " + offset
             + ". Loaded key types=" + formatKeyTypes()
             + ". This means the index metadata or a bucket page is corrupted; rebuild the index (DROP and recreate it).");
+  }
+
+  /**
+   * Builds the exception thrown when an overflow-chain walk exceeds the number of pages in the file, which can only
+   * happen if the chain is cyclic (a page's overflow pointer eventually loops back to an already-visited page).
+   * The read/scan walkers ({@link #searchBucket}, non-unique {@code putInternal}, {@code removeFromBucket},
+   * {@code canSplitHelp}, {@code collectEntriesFromPage}) use this bounded-step guard rather than the allocating
+   * {@code visited} set used by {@link #insertIntoOverflow}/{@link #insertRawEntry}, because {@code searchBucket}
+   * runs on the unique-constraint hot path of every insert and must not allocate per lookup. A valid chain visits
+   * distinct pages, so it can never be longer than {@link #getTotalPages()}. See issue #4743.
+   */
+  private IndexException corruptedOverflowChain(final int page) {
+    return new IndexException(
+        "Detected cycle in hash index '" + getName() + "' (fileId=" + fileId + ") overflow chain at page " + page
+            + ". The index is corrupted, please rebuild it (DROP and recreate it).");
   }
 
   /**
@@ -1609,7 +1643,11 @@ public class HashIndexBucket extends PaginatedComponent {
   }
 
   private void collectEntriesFromPage(int currentPageNum, final List<byte[]> entries) throws IOException {
+    final int maxChainPages = getTotalPages();
+    int chainSteps = 0;
     while (currentPageNum != NO_OVERFLOW_PAGE) {
+      if (++chainSteps > maxChainPages)
+        throw corruptedOverflowChain(currentPageNum);
       final BasePage page = database.getTransaction().getPage(new PageId(database, fileId, currentPageNum), pageSize);
       final int entryCount = page.readShort(BUCKET_ENTRY_COUNT) & 0xFFFF;
 
