@@ -219,6 +219,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
   private final        AtomicInteger divergedSwallowedErrors      = new AtomicInteger(0);
   private static final int           MAX_DIVERGED_SWALLOWED_ERRORS = 100;
 
+  // Log-flood throttle for a diverged database's "snapshot resync in progress" notice. Once a WAL
+  // version gap has quarantined a database, EVERY subsequent committed entry for it hits the same gap
+  // until the snapshot download lands - potentially thousands of entries on a busy database. Logging a
+  // SEVERE (with stack trace) per entry both floods the log and, on small nodes, steals the CPU/IO the
+  // snapshot download needs to heal the node (observed in the field: ~30 SEVERE/s for 20s starving a
+  // ~1 MB/s resync). This map records the last time the throttled notice was emitted per database so it
+  // fires at most once per window. Entries are cleared when the database's divergence clears.
+  private final        Map<String, Long> lastDivergedResyncLogByDb        = new ConcurrentHashMap<>();
+  private static final long              DIVERGED_RESYNC_LOG_THROTTLE_MS   = 5_000L;
+
   // Locally-originated transactions whose leader-side phase 2 was abandoned because replication
   // returned an INDETERMINATE result (the entry was dispatched to Ratis but submitAndWait timed out
   // before quorum was confirmed - see ReplicationDispatchedTimeoutException). Keyed by
@@ -415,8 +425,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return CompletableFuture.failedFuture(new ReplicationException(
           "State machine halted after critical error at earlier index; refusing to apply index " + index));
 
+    // Captured after decode so the catch blocks can tell whether a ReplicationException is the expected
+    // resync-in-progress signal for an already-quarantined database (throttled at the source) or a
+    // genuine replication error that must still be logged loudly. Null until decode succeeds.
+    String targetDatabase = null;
     try {
       final RaftLogEntryCodec.DecodedEntry decoded = RaftLogEntryCodec.decode(data);
+      targetDatabase = decoded.databaseName();
 
       if (decoded.type() == null) {
         // A committed entry whose leading type byte is unrecognised (e.g. written by a newer node
@@ -483,7 +498,13 @@ public class ArcadeStateMachine extends BaseStateMachine {
       return CompletableFuture.completedFuture(Message.valueOf("OK"));
 
     } catch (final ReplicationException e) {
-      LogManager.instance().log(this, Level.SEVERE, "Replication error at index %d: %s", e, index, e.getMessage());
+      // A resync-required signal for an already-quarantined database repeats on every committed entry
+      // until the snapshot download lands, and whoever quarantined the database (applyTxEntry on a WAL
+      // gap, or applyWithRetry's quarantine path) has already logged it loudly at the source. Don't
+      // also dump a full stack trace here per entry (the field-observed flood). Genuine replication
+      // errors on a database that is NOT diverged still log loudly with the cause.
+      if (targetDatabase == null || !isDatabaseDiverged(targetDatabase))
+        LogManager.instance().log(this, Level.SEVERE, "Replication error at index %d: %s", e, index, e.getMessage());
       return CompletableFuture.failedFuture(e);
     } catch (final IllegalArgumentException e) {
       LogManager.instance().log(this, Level.WARNING, "Invalid raft log entry at index %d: %s", index, e.getMessage());
@@ -1071,15 +1092,16 @@ public class ArcadeStateMachine extends BaseStateMachine {
       final AtomicInteger gapCounter = TEST_WAL_GAP_COUNTER;
       if (gapCounter != null)
         gapCounter.incrementAndGet();
-      LogManager.instance().log(this, Level.SEVERE,
-          "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
-          decoded.databaseName(), walTx.txId, e.getMessage());
       // Mark this database as diverged so subsequent unexpected errors don't trigger fatal halt
-      // (issue #4740). Trigger an immediate snapshot download instead of waiting for the
-      // HealthMonitor's periodic check. Set.add() returns true only when the database was not
-      // already in the set, so the immediate-download trigger fires at most once per database
-      // until a resync clears it.
+      // (issue #4740). Set.add() returns true only when the database was not already in the set, so
+      // the FIRST gap logs loudly and triggers an immediate snapshot download (instead of waiting for
+      // the HealthMonitor's periodic check). Every subsequent committed entry for this database will
+      // hit the same gap until the resync lands: those log a throttled one-liner (no per-entry stack
+      // trace) so the log is not flooded and the download is not starved of CPU/IO on small nodes.
       if (divergedDatabases.add(decoded.databaseName())) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "WAL version gap on follower - state divergence detected, triggering snapshot resync (db=%s, txId=%d): %s",
+            decoded.databaseName(), walTx.txId, e.getMessage());
         try {
           lifecycleExecutor.submit(this::triggerSnapshotDownload);
         } catch (final RejectedExecutionException ree) {
@@ -1087,6 +1109,10 @@ public class ArcadeStateMachine extends BaseStateMachine {
               "Cannot schedule immediate snapshot download after WAL gap (db=%s): executor is shut down",
               ree, decoded.databaseName());
         }
+      } else if (shouldLogDivergedResync(decoded.databaseName())) {
+        LogManager.instance().log(this, Level.INFO,
+            "WAL version gap on database '%s' (snapshot resync in progress); skipping apply at index %d until resync completes",
+            decoded.databaseName(), entryIndex);
       }
       throw new ReplicationException(
           "WAL version gap detected - snapshot resync required (db=" + decoded.databaseName() + ")", e);
@@ -1911,8 +1937,25 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // @VisibleForTesting
   void clearDivergedDatabase(final String dbName) {
     divergedDatabases.remove(dbName);
+    lastDivergedResyncLogByDb.remove(dbName);
     if (divergedDatabases.isEmpty())
       divergedSwallowedErrors.set(0);
+  }
+
+  /**
+   * Returns {@code true} at most once per {@link #DIVERGED_RESYNC_LOG_THROTTLE_MS} window per database.
+   * Used to rate-limit the "snapshot resync in progress" notice that would otherwise be emitted once per
+   * committed entry while a database is quarantined after a WAL version gap, flooding the log and
+   * starving the in-flight snapshot download on small nodes. Package-private for unit testing.
+   */
+  // @VisibleForTesting
+  boolean shouldLogDivergedResync(final String dbName) {
+    final long now = System.currentTimeMillis();
+    final Long last = lastDivergedResyncLogByDb.get(dbName);
+    if (last != null && now - last < DIVERGED_RESYNC_LOG_THROTTLE_MS)
+      return false;
+    lastDivergedResyncLogByDb.put(dbName, now);
+    return true;
   }
 
   /**
@@ -1934,6 +1977,7 @@ public class ArcadeStateMachine extends BaseStateMachine {
   // @VisibleForTesting
   void clearDivergedState() {
     divergedDatabases.clear();
+    lastDivergedResyncLogByDb.clear();
     divergedSwallowedErrors.set(0);
   }
 

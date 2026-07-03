@@ -1946,28 +1946,26 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    * Decides whether the Raft storage directory must be preserved across server restarts instead of
    * being wiped and re-FORMATted on every {@link #start()} (issue #4835).
    * <p>
-   * {@link GlobalConfiguration#HA_RAFT_PERSIST_STORAGE} defaults to {@code false} (ephemeral) for
-   * testing convenience, but in Kubernetes the storage normally lives on a PersistentVolume that
-   * outlives the pod. Wiping it on every pod restart forces a full snapshot resync and, on a
-   * single-seed cluster, silently re-forms a fresh empty single-node cluster (data loss / split
-   * brain). So when running under Kubernetes ({@link GlobalConfiguration#HA_K8S}=true) and the
-   * operator has <em>not</em> explicitly opted into ephemeral storage, default to persisting.
-   * An explicit {@code raftPersistStorage=false} is still honored for the rare operator who really
-   * wants ephemeral storage in K8s.
+   * {@link GlobalConfiguration#HA_RAFT_PERSIST_STORAGE} defaults to {@code true} (durable): wiping the
+   * Raft log on restart turns a follower that was merely lagging into a permanently diverged node on a
+   * full-cluster cold restart, and on a single-seed cluster it can silently re-form a fresh empty
+   * single-node cluster (data loss / split brain). Persisting was previously the default only under
+   * Kubernetes (where a PersistentVolume made it essential - issue #4835); it is now the default
+   * everywhere, so the Kubernetes special case has collapsed into the global default.
+   * <p>
+   * An explicit {@code raftPersistStorage=false} is always honored for a throwaway/test cluster that
+   * really wants ephemeral storage. A JVM system property is read directly because a
+   * {@link ContextConfiguration} built after {@link GlobalConfiguration} was initialised does not
+   * necessarily reflect a late {@code System.setProperty}.
    */
   static boolean resolvePersistStorage(final ContextConfiguration configuration) {
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE))
-      return true;
-
-    if (configuration.getValueAsBoolean(GlobalConfiguration.HA_K8S)
-        && !isExplicitlyConfigured(configuration, GlobalConfiguration.HA_RAFT_PERSIST_STORAGE)) {
-      LogManager.instance().log(RaftHAServer.class, Level.INFO,
-          "Kubernetes mode detected: preserving Raft storage across restarts (raftPersistStorage defaulted to true to "
-              + "avoid wiping PersistentVolume-backed storage on pod restart - issue #4835). Set raftPersistStorage=false "
-              + "explicitly to force ephemeral storage.");
-      return true;
+    if (isExplicitlyConfigured(configuration, GlobalConfiguration.HA_RAFT_PERSIST_STORAGE)) {
+      final String sysProp = System.getProperty(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.getKey());
+      return sysProp != null
+          ? Boolean.parseBoolean(sysProp)
+          : configuration.getValueAsBoolean(GlobalConfiguration.HA_RAFT_PERSIST_STORAGE);
     }
-    return false;
+    return GlobalConfiguration.HA_RAFT_PERSIST_STORAGE.getValueAsBoolean();
   }
 
   /**
