@@ -27,6 +27,8 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.MultiValue;
 import com.arcadedb.query.sql.executor.Result;
 
+import java.time.temporal.Temporal;
+import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
@@ -129,8 +131,11 @@ public class ComparisonExpression implements BooleanExpression {
     // Temporal comparison. Coerce native java.time / java.util.Date operands into Cypher temporal
     // values first, so a native temporal parameter (e.g. a datetime sent over Bolt, which resolves to
     // a raw java.time value) compares against a stored temporal instead of silently not matching.
-    final Object leftTemporal = TemporalUtil.fromCoreJavaType(left);
-    final Object rightTemporal = TemporalUtil.fromCoreJavaType(right);
+    // Hot path: only a raw Temporal/Date can need coercion, so the guard keeps the common
+    // numeric/string/boolean comparison at two instanceof checks instead of two method calls
+    // (CypherTemporalValue operands already flow straight into the branch check below).
+    final Object leftTemporal = left instanceof Temporal || left instanceof Date ? TemporalUtil.fromCoreJavaType(left) : left;
+    final Object rightTemporal = right instanceof Temporal || right instanceof Date ? TemporalUtil.fromCoreJavaType(right) : right;
     if (leftTemporal instanceof CypherTemporalValue && rightTemporal instanceof CypherTemporalValue) {
       try {
         final int cmp = ((CypherTemporalValue) leftTemporal).compareTo((CypherTemporalValue) rightTemporal);

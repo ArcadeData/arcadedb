@@ -31,6 +31,7 @@ import java.util.Date;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -114,7 +115,7 @@ class OpenCypherTemporalParameterTest {
     return uuids;
   }
 
-  private static void withDatabase(final java.util.function.Consumer<Database> test) {
+  private static void withDatabase(final Consumer<Database> test) {
     final String path = "./target/testtemporalparam_" + System.nanoTime();
     final Database database = new DatabaseFactory(path).create();
     try {

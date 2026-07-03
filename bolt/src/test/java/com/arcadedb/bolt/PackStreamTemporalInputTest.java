@@ -163,6 +163,18 @@ class PackStreamTemporalInputTest {
     assertThat(BoltStructureMapper.fromPackStreamValue(unknown)).isInstanceOf(PackStreamReader.StructureValue.class);
   }
 
+  @Test
+  void malformedTemporalStructIsLeftOpaqueInsteadOfCrashing() throws Exception {
+    // Wrong field count for the signature (DateTime expects 3 fields, not 1): must degrade to an
+    // opaque StructureValue rather than throwing IndexOutOfBoundsException out of RUN parsing.
+    final Object wrongArity = decode(SIG_DATE_TIME_OFFSET_LEGACY, 123L);
+    assertThat(wrongArity).isInstanceOf(PackStreamReader.StructureValue.class);
+
+    // Right field count but a non-numeric field where a number is required: must not throw ClassCastException.
+    final Object wrongType = decode(SIG_DATE, "not-a-number");
+    assertThat(wrongType).isInstanceOf(PackStreamReader.StructureValue.class);
+  }
+
   /**
    * Write a temporal struct to the wire, read it back as a StructureValue, and decode it.
    */

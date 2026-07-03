@@ -402,49 +402,75 @@ public class BoltStructureMapper {
 
   /**
    * Decode a single Bolt temporal PackStream structure into a {@code java.time} value.
-   * Unknown (non-temporal) structures are returned as-is.
+   * Unknown (non-temporal) structures are returned as-is. A structure that carries the wrong field
+   * count or field types for its temporal signature (a misbehaving client) is also returned as-is
+   * rather than propagating a raw {@code IndexOutOfBoundsException} / {@code ClassCastException} out of
+   * RUN parsing - the parameter simply stays opaque instead of crashing the connection.
    */
   private static Object fromTemporalStructure(final PackStreamReader.StructureValue structure) {
     final List<Object> f = structure.getFields();
-    switch (structure.getSignature()) {
-    case SIG_DATE:
-      return LocalDate.ofEpochDay(asLong(f.get(0)));
+    final byte signature = structure.getSignature();
+    if (!hasExpectedArity(signature, f.size()))
+      return structure;
 
-    case SIG_LOCAL_TIME:
-      return LocalTime.ofNanoOfDay(asLong(f.get(0)));
+    try {
+      switch (signature) {
+      case SIG_DATE:
+        return LocalDate.ofEpochDay(asLong(f.get(0)));
 
-    case SIG_TIME:
-      return OffsetTime.of(LocalTime.ofNanoOfDay(asLong(f.get(0))), ZoneOffset.ofTotalSeconds((int) asLong(f.get(1))));
+      case SIG_LOCAL_TIME:
+        return LocalTime.ofNanoOfDay(asLong(f.get(0)));
 
-    case SIG_LOCAL_DATE_TIME:
-      return LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
+      case SIG_TIME:
+        return OffsetTime.of(LocalTime.ofNanoOfDay(asLong(f.get(0))), ZoneOffset.ofTotalSeconds((int) asLong(f.get(1))));
 
-    case SIG_DATE_TIME_OFFSET_LEGACY: {
-      // Legacy: seconds is the local epoch-second; reconstruct the wall clock then stamp the offset.
-      final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
-      return OffsetDateTime.of(local, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
-    }
+      case SIG_LOCAL_DATE_TIME:
+        return LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
 
-    case SIG_DATE_TIME_ZONEID_LEGACY: {
-      final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
-      return ZonedDateTime.of(local, ZoneId.of(String.valueOf(f.get(2))));
-    }
+      case SIG_DATE_TIME_OFFSET_LEGACY: {
+        // Legacy: seconds is the local epoch-second; reconstruct the wall clock then stamp the offset.
+        final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
+        return OffsetDateTime.of(local, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
+      }
 
-    case SIG_DATE_TIME_OFFSET_UTC: {
-      // UTC (Bolt 5.0+): seconds is the true UTC epoch-second.
-      final Instant instant = Instant.ofEpochSecond(asLong(f.get(0)), asLong(f.get(1)));
-      return OffsetDateTime.ofInstant(instant, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
-    }
+      case SIG_DATE_TIME_ZONEID_LEGACY: {
+        final LocalDateTime local = LocalDateTime.ofEpochSecond(asLong(f.get(0)), (int) asLong(f.get(1)), ZoneOffset.UTC);
+        return ZonedDateTime.of(local, ZoneId.of(String.valueOf(f.get(2))));
+      }
 
-    case SIG_DATE_TIME_ZONEID_UTC: {
-      final Instant instant = Instant.ofEpochSecond(asLong(f.get(0)), asLong(f.get(1)));
-      return ZonedDateTime.ofInstant(instant, ZoneId.of(String.valueOf(f.get(2))));
-    }
+      case SIG_DATE_TIME_OFFSET_UTC: {
+        // UTC (Bolt 5.0+): seconds is the true UTC epoch-second.
+        final Instant instant = Instant.ofEpochSecond(asLong(f.get(0)), asLong(f.get(1)));
+        return OffsetDateTime.ofInstant(instant, ZoneOffset.ofTotalSeconds((int) asLong(f.get(2))));
+      }
 
-    default:
-      // Not a temporal structure (or Duration, which has no single java.time representation): leave as-is.
+      case SIG_DATE_TIME_ZONEID_UTC: {
+        final Instant instant = Instant.ofEpochSecond(asLong(f.get(0)), asLong(f.get(1)));
+        return ZonedDateTime.ofInstant(instant, ZoneId.of(String.valueOf(f.get(2))));
+      }
+
+      default:
+        // Not a temporal structure (or Duration, which has no single java.time representation): leave as-is.
+        return structure;
+      }
+    } catch (final RuntimeException e) {
+      // Malformed temporal payload (e.g. non-numeric field, unresolvable zone id): leave opaque.
       return structure;
     }
+  }
+
+  /**
+   * Number of fields each temporal signature is expected to carry. Non-temporal signatures return
+   * {@code true} so they fall through to the default (opaque) branch unchanged.
+   */
+  private static boolean hasExpectedArity(final byte signature, final int fieldCount) {
+    return switch (signature) {
+      case SIG_DATE, SIG_LOCAL_TIME -> fieldCount == 1;
+      case SIG_TIME, SIG_LOCAL_DATE_TIME -> fieldCount == 2;
+      case SIG_DATE_TIME_OFFSET_LEGACY, SIG_DATE_TIME_ZONEID_LEGACY, SIG_DATE_TIME_OFFSET_UTC, SIG_DATE_TIME_ZONEID_UTC ->
+          fieldCount == 3;
+      default -> true;
+    };
   }
 
   private static long asLong(final Object value) {
