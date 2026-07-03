@@ -8,6 +8,20 @@ This release hardens **High Availability (Raft)** recovery. Raft storage is now 
 full-cluster cold restart - see **Breaking Changes** below. It also removes a diverged-follower log flood
 that could starve the very snapshot resync meant to heal the node.
 
+### Fixes
+
+- **HASH index: cyclic overflow chain no longer spins a CPU core forever.** A corrupted (cyclic) overflow
+  chain in a `HASH` index made the read/scan walkers - `searchBucket` and friends - loop endlessly, because
+  they followed the `overflow -> overflow` pointers with no cycle detection (the write paths already guarded
+  with a `visited` set). In the field this pinned two XNIO worker threads at 100% CPU (200% total) for two
+  days, both stuck in `HashIndexBucket.searchBucket -> PageManager.getImmutablePage`, reached through the
+  unique-constraint check of a batch vertex import; the request never returned and never failed
+  ([#4743](https://github.com/ArcadeData/arcadedb/issues/4743)). The five read/scan chain walkers now bound
+  the walk by the file's page count (a valid chain can never be longer) and throw an actionable
+  `IndexException` naming the index and telling the operator to rebuild it, instead of hanging. The guard is
+  allocation-free so the unique-check hot path is unaffected. Recovery: `DROP` and recreate (or
+  `CHECK DATABASE FIX`) the affected index.
+
 ### Improvements
 
 - **HA: throttled diverged-follower resync logging.** When a follower detects a WAL page-version gap it
