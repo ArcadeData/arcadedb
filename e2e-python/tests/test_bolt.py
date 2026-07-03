@@ -212,7 +212,9 @@ def bolt_container_tls_required(tls_certs):
         )
     )
     container.start()
-    wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 60)
+    # TLS keystore/truststore loading adds startup latency beyond the default
+    # container's margin, especially on shared CI runners - give it more room.
+    wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 120)
     yield container
     container.stop()
 
@@ -237,7 +239,8 @@ def bolt_container_tls_optional(tls_certs):
         )
     )
     container.start()
-    wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 60)
+    # See bolt_container_tls_required's comment: TLS startup needs extra margin.
+    wait_for_http_endpoint(container, "/api/v1/ready", 2480, 204, 120)
     yield container
     container.stop()
 
@@ -256,18 +259,6 @@ def test_CONN_002_tls_required(bolt_container_tls_required):
         driver.close()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BoltNetworkExecutor.getBoltAddress reports socket.getLocalAddress() "
-    "(the server's own view of its address) in the ROUTE response's WRITE/READ/"
-    "ROUTE entries. Inside a container behind port mapping (as in this "
-    "testcontainers-based suite, and any NAT'd/containerized single-node "
-    "deployment), that is the container-internal address, not the externally "
-    "reachable one the driver connected through - so the driver's routing-aware "
-    "reconnect for the READ role fails. ArcadeDB has no advertised-address "
-    "override to correct this (unlike, e.g., Neo4j's "
-    "server.bolt.advertised_address); see #4890.",
-)
 def test_CONN_003_neo4j_routing_single_node(bolt_container):
     driver = GraphDatabase.driver(bolt_uri(bolt_container, scheme="neo4j"), auth=basic_auth("root", ROOT_PASSWORD))
     try:

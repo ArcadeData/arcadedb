@@ -93,16 +93,7 @@ scenarios:
       - "When the driver connects to neo4j://<host>:7687"
       - "Then the driver receives a routing table listing that one node as reader/writer/router and runs queries successfully"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltNetworkExecutor.getBoltAddress reports socket.getLocalAddress() (the
-      server's own view of its address) in the ROUTE response's WRITE/READ/ROUTE
-      entries. Behind port mapping (e.g. containerized/NAT'd single-node
-      deployments), that is not the externally reachable address the driver
-      connected through, so driver-side routing-aware reconnects fail.
-      ArcadeDB has no advertised-address override to correct this - discovered
-      while implementing issue #4885's Python conformance suite.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: CONN-004
     area: connection
     title: "neo4j:// routing reflects actual multi-node HA cluster topology"
