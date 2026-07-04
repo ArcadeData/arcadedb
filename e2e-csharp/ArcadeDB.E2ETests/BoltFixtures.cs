@@ -164,8 +164,14 @@ internal static class BoltTlsImage
                 "-importcert", "-alias", "bolt", "-keystore", truststorePath, "-storetype", "JKS",
                 "-storepass", StorePassword, "-file", certPath, "-noprompt");
 
+            // Honor ARCADEDB_DOCKER_IMAGE like ArcadeDbBoltFixture does - otherwise
+            // a developer running against a custom local build would get the
+            // default/Postgres suites on their image but the TLS suites silently
+            // on arcadedata/arcadedb:latest, a split-suite trap.
+            var imageEnv = Environment.GetEnvironmentVariable("ARCADEDB_DOCKER_IMAGE");
+            var baseImage = string.IsNullOrWhiteSpace(imageEnv) ? "arcadedata/arcadedb:latest" : imageEnv;
             await File.WriteAllTextAsync(Path.Combine(certDir, "Dockerfile"),
-                "FROM arcadedata/arcadedb:latest\n" +
+                $"FROM {baseImage}\n" +
                 "COPY --chown=arcadedb:arcadedb keystore.p12 truststore.jks /home/arcadedb/tls_certs/\n");
 
             // The installed Testcontainers 4.11.0 API only accepts a raw string
