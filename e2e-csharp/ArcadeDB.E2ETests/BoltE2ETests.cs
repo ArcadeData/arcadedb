@@ -195,4 +195,51 @@ public class BoltE2ETests
         await Task.WhenAll(Task.Run(RacingWriteAsync), Task.Run(RacingWriteAsync));
         return errors.ToList();
     }
+
+    [Fact(DisplayName = "CAUSAL-001: Bookmark enforces read-after-write across sessions")]
+    public async Task Causal001_BookmarkReadAfterWrite()
+    {
+        Bookmarks bookmarks;
+        await using (var sessionA = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer")))
+        {
+            var result = await sessionA.RunAsync("CREATE (:CausalProbe {marker: 'causal-001'})");
+            await result.ConsumeAsync();
+            bookmarks = sessionA.LastBookmarks;
+        }
+
+        await using var sessionB = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer").WithBookmarks(bookmarks));
+        var readResult = await sessionB.RunAsync("MATCH (n:CausalProbe {marker: 'causal-001'}) RETURN count(n) AS c");
+        var record = await readResult.SingleAsync();
+        Assert.Equal(1L, record["c"].As<long>());
+    }
+
+    [Fact(DisplayName = "MDB-001: Session selects a specific named database")]
+    public async Task Mdb001_SessionSelectsNamedDatabase()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (b:Beer) RETURN b.name AS name LIMIT 1");
+        var record = await result.SingleAsync();
+        Assert.NotNull(record["name"].As<string>());
+    }
+
+    [Fact(DisplayName = "MDB-002: Sessions against different databases on the same driver are isolated")]
+    public async Task Mdb002_SessionsAcrossDatabasesAreIsolated()
+    {
+        await using var scratchSession = _fixture.Driver.AsyncSession(o => o.WithDatabase("boltscratch"));
+        var tx = await scratchSession.BeginTransactionAsync();
+        await tx.RunAsync("CREATE (:ScratchProbe {marker: 'mdb-002'})");
+
+        await using (var beerSession = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer")))
+        {
+            var checkResult = await beerSession.RunAsync("MATCH (n:ScratchProbe {marker: 'mdb-002'}) RETURN count(n) AS c");
+            var checkRecord = await checkResult.SingleAsync();
+            Assert.Equal(0L, checkRecord["c"].As<long>());
+        }
+
+        await tx.CommitAsync();
+
+        var verifyResult = await scratchSession.RunAsync("MATCH (n:ScratchProbe {marker: 'mdb-002'}) RETURN count(n) AS c");
+        var verifyRecord = await verifyResult.SingleAsync();
+        Assert.Equal(1L, verifyRecord["c"].As<long>());
+    }
 }
