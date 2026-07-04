@@ -146,3 +146,21 @@ updates:
       interval: weekly
       day: "sunday"
     open-pull-requests-limit: 10
+
+  # E2E Go Testing Dependencies
+  - package-ecosystem: "gomod"
+    directory: "/e2e-go"
+    schedule:
+      interval: weekly
+      day: "sunday"
+    open-pull-requests-limit: 10
+    # Go's transitive tree (testcontainers-go pulls docker/containerd/grpc/otel)
+    # is large; group minor/patch bumps into a single PR to keep noise down,
+    # while major updates still open individually.
+    groups:
+      go-modules:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
