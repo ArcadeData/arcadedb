@@ -38,11 +38,13 @@ import org.neo4j.driver.SessionConfig;
 import org.neo4j.driver.Transaction;
 import org.neo4j.driver.exceptions.ClientException;
 import org.neo4j.driver.exceptions.Neo4jException;
+import org.neo4j.driver.exceptions.SecurityException;
 import org.neo4j.driver.summary.ResultSummary;
 import org.neo4j.driver.types.Node;
 import org.neo4j.driver.types.Path;
 import org.neo4j.driver.types.Relationship;
 
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
@@ -53,7 +55,11 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.BrokenBarrierException;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -113,14 +119,20 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     return driver.session(SessionConfig.forDatabase(database));
   }
 
-  // Passes while the known gap reproduces (the ideal assertion throws); fails
-  // loudly the day the gap closes, forcing a flip to a real assertion and a
-  // bolt/conformance/spec.yaml update. Java analogue of the JS suite's it.failing.
+  // Passes only when `ideal` fails the way a documented gap should: an
+  // AssertionError (the ideal assertion did not hold) or a driver-level
+  // Neo4jException (the server rejected or mis-typed the value). Any other
+  // Throwable - NPE, IllegalState, a dropped connection surfacing as something
+  // else - propagates, so a broken test path is never silently green. Fails
+  // loudly the day the gap closes. Java analogue of the JS suite's it.failing.
   static void assertExpectedFailure(final String trackingIssue, final ThrowingCallable ideal) {
     try {
       ideal.call();
-    } catch (final Throwable expected) {
+    } catch (final AssertionError | Neo4jException expectedGap) {
       return;
+    } catch (final Throwable unexpected) {
+      throw new AssertionError("Expected-fail scenario " + trackingIssue
+          + " threw an unexpected error type (not the tracked gap): " + unexpected, unexpected);
     }
     fail("Expected-fail scenario now PASSES - close it: flip the assertion and update "
         + "bolt/conformance/spec.yaml current_status (" + trackingIssue + ")");
@@ -138,25 +150,24 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       setup.run("MERGE (n:RaceProbe {marker: $m}) SET n.value = 0", Map.of("m", marker)).consume();
     }
     final List<Neo4jException> errors = new CopyOnWriteArrayList<>();
+    // A barrier makes both transactions provably hold their uncommitted write
+    // open before either commits, so the write-write conflict is deterministic
+    // rather than dependent on two sleep windows overlapping (avoids a
+    // scheduler-serialized false negative under CI load).
+    final CyclicBarrier bothHaveWritten = new CyclicBarrier(2);
     final Runnable racingWrite = () -> {
-      final Session s = boltSession();
-      final Transaction tx = s.beginTransaction();
-      try {
+      // try-with-resources closes (and thus rolls back an uncommitted) tx and
+      // session before the catch runs, so a losing commit still surfaces here.
+      try (final Session s = boltSession();
+          final Transaction tx = s.beginTransaction()) {
         tx.run("MATCH (n:RaceProbe {marker: $m}) SET n.value = n.value + 1 RETURN n",
             Map.of("m", marker)).consume();
-        Thread.sleep(500);
+        bothHaveWritten.await(15, TimeUnit.SECONDS);
         tx.commit();
       } catch (final Neo4jException e) {
         errors.add(e);
-        try {
-          tx.rollback();
-        } catch (final Exception ignored) {
-          // transaction already broken
-        }
-      } catch (final InterruptedException e) {
+      } catch (final InterruptedException | BrokenBarrierException | TimeoutException e) {
         Thread.currentThread().interrupt();
-      } finally {
-        s.close();
       }
     };
     final Thread a = new Thread(racingWrite);
@@ -193,9 +204,11 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
     }
     final int code = con.getResponseCode();
-    if (code < 200 || code >= 300)
-      throw new IllegalStateException("HTTP " + code + ": " + new String(
-          con.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
+    if (code < 200 || code >= 300) {
+      final InputStream es = con.getErrorStream();
+      final String detail = es != null ? new String(es.readAllBytes(), StandardCharsets.UTF_8) : "no error body";
+      throw new IllegalStateException("HTTP " + code + ": " + detail);
+    }
     con.disconnect();
   }
 
@@ -281,7 +294,7 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       try (final Driver d = GraphDatabase.driver("bolt://" + host + ":" + boltPort,
           AuthTokens.basic("root", "wrong-password"),
           Config.builder().withoutEncryption().build())) {
-        assertThatThrownBy(d::verifyConnectivity).isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(d::verifyConnectivity).isInstanceOf(SecurityException.class);
       }
     }
 
@@ -291,7 +304,7 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       try (final Driver d = GraphDatabase.driver("bolt://" + host + ":" + boltPort,
           AuthTokens.none(),
           Config.builder().withoutEncryption().build())) {
-        assertThatThrownBy(d::verifyConnectivity).isInstanceOf(RuntimeException.class);
+        assertThatThrownBy(d::verifyConnectivity).isInstanceOf(SecurityException.class);
       }
     }
   }
@@ -314,9 +327,10 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @DisplayName("[TX-002] Explicit BEGIN/RUN/COMMIT persists changes")
     void tx002_commit() {
       try (final Session s = boltSession()) {
-        final Transaction tx = s.beginTransaction();
-        tx.run("CREATE (:TxProbe {marker: 'tx-002'})");
-        tx.commit();
+        try (final Transaction tx = s.beginTransaction()) {
+          tx.run("CREATE (:TxProbe {marker: 'tx-002'})");
+          tx.commit();
+        }
         assertThat(s.run("MATCH (n:TxProbe {marker: 'tx-002'}) RETURN count(n) AS c")
             .single().get("c").asLong()).isEqualTo(1L);
       }
@@ -326,9 +340,10 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @DisplayName("[TX-003] Explicit BEGIN/RUN/ROLLBACK discards changes")
     void tx003_rollback() {
       try (final Session s = boltSession()) {
-        final Transaction tx = s.beginTransaction();
-        tx.run("CREATE (:TxProbe {marker: 'tx-003'})");
-        tx.rollback();
+        try (final Transaction tx = s.beginTransaction()) {
+          tx.run("CREATE (:TxProbe {marker: 'tx-003'})");
+          tx.rollback();
+        }
         assertThat(s.run("MATCH (n:TxProbe {marker: 'tx-003'}) RETURN count(n) AS c")
             .single().get("c").asLong()).isEqualTo(0L);
       }
@@ -394,8 +409,8 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[MDB-002] Sessions across databases are isolated")
     void mdb002_isolation() {
-      try (final Session scratch = boltSession("boltscratch")) {
-        final Transaction tx = scratch.beginTransaction();
+      try (final Session scratch = boltSession("boltscratch");
+          final Transaction tx = scratch.beginTransaction()) {
         tx.run("CREATE (:ScratchOnly {marker: 'mdb-002'})");
         try (final Session beer = boltSession("beer")) {
           assertThat(beer.run("MATCH (n:ScratchOnly) RETURN count(n) AS c")
@@ -453,11 +468,16 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[RESULT-004] ResultSummary counters reflect writes")
     void result004_counters() {
+      // Run inside an explicit transaction and roll back: counters are populated
+      // from the RUN/PULL summary regardless of commit, so the gap is still
+      // certified without leaving probe nodes in the shared beer database.
       assertExpectedFailure("#4890", () -> {
-        try (final Session s = boltSession()) {
-          final ResultSummary summary = s.run(
+        try (final Session s = boltSession();
+            final Transaction tx = s.beginTransaction()) {
+          final ResultSummary summary = tx.run(
               "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
               Map.of("n", "RESULT-004-Beer", "b", "RESULT-004-Brewery")).consume();
+          tx.rollback();
           assertThat(summary.counters().nodesCreated()).isEqualTo(2);
           assertThat(summary.counters().relationshipsCreated()).isEqualTo(1);
         }
@@ -496,9 +516,9 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     void type003_path() {
       assertExpectedFailure("#4890", () -> {
         try (final Session s = boltSession()) {
-          final Path p = s.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1")
-              .single().get("p").asPath();
-          assertThat(p.length()).isGreaterThanOrEqualTo(1);
+          final Object v = s.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1")
+              .single().get("p").asObject();
+          assertThat(v).isInstanceOf(Path.class);
         }
       });
     }
@@ -538,25 +558,25 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[TYPE-007] LocalDate round-trips as a native Bolt Date")
     void type007_localDate() {
-      assertNativeTemporalOrGap("localDateProp");
+      assertNativeTemporal("localDateProp");
     }
 
     @Test
     @DisplayName("[TYPE-008] LocalTime round-trips as a native Bolt LocalTime")
     void type008_localTime() {
-      assertNativeTemporalOrGap("localTimeProp");
+      assertNativeTemporal("localTimeProp");
     }
 
     @Test
     @DisplayName("[TYPE-009] LocalDateTime round-trips as a native Bolt LocalDateTime")
     void type009_localDateTime() {
-      assertNativeTemporalOrGap("localDateTimeProp");
+      assertNativeTemporal("localDateTimeProp");
     }
 
     @Test
     @DisplayName("[TYPE-010] Offset DateTime round-trips as a native Bolt DateTime")
     void type010_offsetDateTime() {
-      assertNativeTemporalOrGap("offsetDateTimeProp");
+      assertNativeTemporal("offsetDateTimeProp");
     }
 
     @Test
@@ -583,20 +603,16 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       });
     }
 
-    // Native temporals deserialize to java.time.temporal.Temporal; the legacy
-    // ISO-string fallback yields a String. Assert native, else document the gap.
-    private void assertNativeTemporalOrGap(final String prop) {
-      final ThrowingCallable ideal = () -> {
-        try (final Session s = boltSession()) {
-          final Object v = s.run("MATCH (t:TypeMatrix) RETURN t." + prop + " AS x LIMIT 1")
-              .single().get("x").asObject();
-          assertThat(v).isInstanceOf(Temporal.class);
-        }
-      };
-      try {
-        ideal.call();
-      } catch (final Throwable notNativeYet) {
-        assertExpectedFailure("#4890", ideal);
+    // A native Bolt temporal deserializes to a java.time.temporal.Temporal; the
+    // legacy ISO-string fallback would yield a String. spec.yaml marks
+    // TYPE-007..010 passing/native (pinned at the wire level by
+    // BoltTypeRoundTripTest), so this is a plain assertion that fails loudly if
+    // the server ever regresses to strings - real e2e regression coverage.
+    private void assertNativeTemporal(final String prop) {
+      try (final Session s = boltSession()) {
+        final Object v = s.run("MATCH (t:TypeMatrix) RETURN t." + prop + " AS x LIMIT 1")
+            .single().get("x").asObject();
+        assertThat(v).isInstanceOf(Temporal.class);
       }
     }
   }
@@ -691,7 +707,7 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
   class Parameters {
 
     @Test
-    @DisplayName("[TX-001] Parameterized query binds and returns values")
+    @DisplayName("Parameterized query binds and returns values (preserved original coverage)")
     void parameterizedQuery() {
       try (final Session s = boltSession()) {
         final Record rec = s.run("RETURN $name AS name, $value AS value",
