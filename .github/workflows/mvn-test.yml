@@ -501,6 +501,46 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
 
+  go-e2e-tests:
+    runs-on: ubuntu-latest
+    needs: build-and-package
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          # Track the module's go directive so the toolchain always matches
+          # go.mod instead of a hardcoded version that can drift after dep bumps.
+          go-version-file: "e2e-go/go.mod"
+          cache-dependency-path: "e2e-go/go.sum"
+
+      - name: Restore Docker image
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/arcadedb-image.tar
+          key: docker-image-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Load Docker image
+        run: docker load < /tmp/arcadedb-image.tar
+
+      # The TLS scenarios (CONN-002/005) generate a keystore with keytool. It
+      # ships with the JDK preinstalled on ubuntu-latest; fail loudly here if it
+      # ever leaves the PATH, so those scenarios can't silently skip in CI.
+      - name: Verify keytool is available (required by TLS scenarios)
+        run: command -v keytool
+
+      - name: E2E Go Tests
+        working-directory: e2e-go
+        # 20m timeout: the plain container plus a derived-image build and two
+        # TLS containers (150s startup each) run sequentially and can approach
+        # the default 10m per-package deadline on a shared runner.
+        run: go test -v -timeout 20m ./...
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
+
   coverage-report:
     runs-on: ubuntu-latest
     needs: [ unit-tests, integration-tests, slow-unit-tests ]
