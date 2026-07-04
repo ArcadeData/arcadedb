@@ -95,7 +95,8 @@ both TLS fixtures are done with them.
 - **`BoltE2ETests.cs`** (collection `"ArcadeDB-Bolt"`): all non-TLS,
   non-HA scenarios - connection (bolt://, neo4j:// single-node), auth,
   transactions, causal consistency, multi-database, result-handling,
-  type-roundtrip, errors, protocol. ~27 scenarios.
+  type-roundtrip, errors, protocol. 37 of the spec's 39 scenarios (all but
+  the two TLS ones, `CONN-002`/`CONN-005`).
 - **`BoltTlsE2ETests.cs`**: two small test classes, one per TLS-mode
   collection, for `CONN-002` and `CONN-005`.
 
