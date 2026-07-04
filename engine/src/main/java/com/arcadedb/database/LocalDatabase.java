@@ -1082,11 +1082,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               final RID rid = record.getIdentity();
               final Document previous = tx.getLastIndexedSnapshot(rid);
               final Document originalRecord = previous != null ? previous : getOriginalDocument(record);
-              if (indexer.updateDocument(originalRecord, document, indexes))
-                // Refresh the snapshot ONLY when an index actually changed: otherwise the previous diff source
-                // (committed buffer or an earlier snapshot) still describes the indexed state, and updates that
-                // touch only non-indexed properties pay no snapshot cost at all.
-                tx.setLastIndexedSnapshot(rid, indexer.buildIndexedStateSnapshot(document, indexes));
+              // updateDocument returns a refreshed snapshot (built from the key values it already extracted
+              // for the diff) ONLY when an index actually changed: otherwise the previous diff source
+              // (committed buffer or an earlier snapshot) still describes the indexed state, and updates
+              // that touch only non-indexed properties pay no snapshot cost at all.
+              final Document refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
+              if (refreshedSnapshot != null)
+                tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
             }
           }
         } catch (final IOException e) {

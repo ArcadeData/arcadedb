@@ -238,38 +238,6 @@ public class DocumentIndexer {
   }
 
   /**
-   * Builds a lightweight point-in-time snapshot of ONLY the indexed property values of a document, to be used
-   * as the {@code originalRecord} of a later {@link #updateDocument} call for the same record inside the same
-   * transaction (issue #4935). {@link Document#detach()} would copy every property of the document (recursively
-   * detaching embedded documents) on every indexed update, a real allocation/retention cost for wide documents
-   * and large batches; {@code updateDocument} only ever reads the indexed properties, so nothing else is stored.
-   * <p>
-   * The snapshot is keyed by the same names {@code updateDocument} reads: the stripped key name (which also
-   * answers nested paths like {@code "a.b"}, resolved eagerly here) and, for dotted names, the root property
-   * (read directly by the LIST BY ITEM delta logic). Container values are shallow-copied (embedded documents
-   * detached) so the snapshot cannot alias state the caller later mutates in place.
-   */
-  public Document buildIndexedStateSnapshot(final Document document, final List<IndexInternal> indexes) {
-    final Map<String, Object> values = new LinkedHashMap<>();
-    for (final IndexInternal index : indexes)
-      for (final String keyName : index.getPropertyNames()) {
-        final KeyExpansion expansion = detectExpansion(keyName);
-        final String property = expansion != KeyExpansion.NONE ? stripModifier(keyName, expansion) : keyName;
-
-        if (!values.containsKey(property))
-          values.put(property, copyForSnapshot(getPropertyValue(document, property)));
-
-        final int dot = property.indexOf('.');
-        if (dot > 0) {
-          final String root = property.substring(0, dot);
-          if (!values.containsKey(root))
-            values.put(root, copyForSnapshot(document.get(root)));
-        }
-      }
-    return new DetachedDocument(document, values);
-  }
-
-  /**
    * Defensive copy for a snapshot value: scalar values are immutable and stored as-is; containers are
    * shallow-copied and embedded documents detached, so a later in-place mutation of the live value cannot
    * retroactively change the snapshot and hide an index delta.
@@ -307,15 +275,21 @@ public class DocumentIndexer {
   }
 
   /**
-   * @return {@code true} if at least one index entry was actually removed/added, {@code false} when every
-   *     involved index saw identical key values. The caller uses this to skip refreshing the per-transaction
-   *     indexed-state snapshot (issue #4935): when nothing changed, the previous diff source (committed buffer
-   *     or an earlier snapshot) still describes the indexed state, so bulk updates that only touch non-indexed
-   *     properties pay no snapshot cost at all.
+   * @return a refreshed indexed-state snapshot of {@code modifiedRecord} when at least one index entry was
+   *     actually removed/added, or {@code null} when every involved index saw identical key values. The caller
+   *     stores the snapshot as the diff source for the NEXT update of the same record inside the same
+   *     transaction (issue #4935); on {@code null} the previous diff source (committed buffer or an earlier
+   *     snapshot) still describes the indexed state, so updates that only touch non-indexed properties pay no
+   *     snapshot cost at all. The snapshot is built here, reusing the key values this method already extracted
+   *     for the diff, so the common scalar-index case pays no second property extraction. It stores ONLY the
+   *     indexed property values ({@link Document#detach()} would copy the whole document), keyed by the same
+   *     names this method reads: the stripped key name (nested paths eagerly resolved) and, for LIST BY ITEM,
+   *     the root property read directly by the list delta logic. Container values are shallow-copied (embedded
+   *     documents detached) so the snapshot cannot alias state the caller later mutates in place.
    */
-  public boolean updateDocument(final Document originalRecord, final Document modifiedRecord, final List<IndexInternal> indexes) {
+  public Document updateDocument(final Document originalRecord, final Document modifiedRecord, final List<IndexInternal> indexes) {
     if (indexes == null || indexes.isEmpty())
-      return false;
+      return null;
 
     if (originalRecord == null)
       throw new IllegalArgumentException("Original record is null");
@@ -325,10 +299,18 @@ public class DocumentIndexer {
     final RID rid = modifiedRecord.getIdentity();
     if (rid == null)
       // RECORD IS NOT PERSISTENT
-      return false;
+      return null;
+
+    final int totalIndexes = indexes.size();
+    // Retained per index for the snapshot build below, so the values extracted for the diff are reused.
+    final String[][] indexPropertyNames = new String[totalIndexes][];
+    final Object[][] indexNewKeyValues = new Object[totalIndexes][];
+    final KeyExpansion[] indexExpansions = new KeyExpansion[totalIndexes];
+    final int[] indexExpansionPositions = new int[totalIndexes];
 
     boolean anyIndexModified = false;
-    for (final Index index : indexes) {
+    for (int indexPos = 0; indexPos < totalIndexes; ++indexPos) {
+      final Index index = indexes.get(indexPos);
       final List<String> keyNames = index.getPropertyNames();
 
       // Detect a collection modifier ("by item" for LIST, "by key"/"by value" for MAP)
@@ -348,6 +330,10 @@ public class DocumentIndexer {
         }
       }
 
+      indexPropertyNames[indexPos] = propertyNamesArray;
+      indexExpansions[indexPos] = expansion;
+      indexExpansionPositions[indexPos] = expansionIndex;
+
       if (expansion == KeyExpansion.NONE) {
         // Standard update logic (existing code)
         final Object[] oldKeyValues = new Object[keyNames.size()];
@@ -365,6 +351,8 @@ public class DocumentIndexer {
             keyValuesAreModified = true;
           }
         }
+
+        indexNewKeyValues[indexPos] = newKeyValues;
 
         if (!keyValuesAreModified)
           // SAME VALUES, SKIP INDEX UPDATE
@@ -390,7 +378,37 @@ public class DocumentIndexer {
             expansionIndex, expansion);
       }
     }
-    return anyIndexModified;
+
+    if (!anyIndexModified)
+      return null;
+
+    // Build the refreshed snapshot from the values retained above. The snapshot must cover ALL involved
+    // indexes (the next update diffs every index against it), including the ones that did not change: their
+    // current values equal the previous state, so re-reading them from the modified record is correct.
+    final Map<String, Object> values = new LinkedHashMap<>();
+    for (int indexPos = 0; indexPos < totalIndexes; ++indexPos) {
+      final String[] propertyNames = indexPropertyNames[indexPos];
+      final KeyExpansion expansion = indexExpansions[indexPos];
+      final int expansionIndex = indexExpansionPositions[indexPos];
+      final Object[] newKeyValues = indexNewKeyValues[indexPos];
+
+      for (int i = 0; i < propertyNames.length; ++i) {
+        if (expansion != KeyExpansion.NONE && i == expansionIndex) {
+          if (expansion == KeyExpansion.LIST_ITEM) {
+            // The list delta logic reads the ROOT property directly (nested paths descend per element).
+            final int dot = propertyNames[i].indexOf('.');
+            final String root = dot > 0 ? propertyNames[i].substring(0, dot) : propertyNames[i];
+            if (!values.containsKey(root))
+              values.put(root, copyForSnapshot(modifiedRecord.get(root)));
+          } else if (!values.containsKey(propertyNames[i]))
+            // The map delta logic reads the stripped map property directly.
+            values.put(propertyNames[i], copyForSnapshot(modifiedRecord.get(propertyNames[i])));
+        } else if (!values.containsKey(propertyNames[i]))
+          values.put(propertyNames[i], copyForSnapshot(
+              newKeyValues != null ? newKeyValues[i] : getPropertyValue(modifiedRecord, propertyNames[i])));
+      }
+    }
+    return new DetachedDocument(modifiedRecord, values);
   }
 
   /** @return {@code true} if at least one index entry was removed or added. */
