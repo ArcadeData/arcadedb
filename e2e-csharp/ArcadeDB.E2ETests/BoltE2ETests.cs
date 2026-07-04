@@ -151,7 +151,7 @@ public class BoltE2ETests
             await setup.ConsumeAsync();
         }
 
-        var barrier = new Barrier(2);
+        using var barrier = new Barrier(2);
 
         async Task<int> ManagedIncrementAsync()
         {
@@ -196,7 +196,7 @@ public class BoltE2ETests
             await setup.ConsumeAsync();
         }
 
-        var barrier = new Barrier(2);
+        using var barrier = new Barrier(2);
         var errors = new ConcurrentBag<Exception>();
 
         async Task RacingWriteAsync()
