@@ -37,6 +37,7 @@ import com.arcadedb.index.IndexCursorEntry;
 import com.arcadedb.index.TempIndexCursor;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.schema.Type;
+import com.arcadedb.utility.RidHashSet;
 
 import java.io.File;
 import java.io.IOException;
@@ -230,7 +231,7 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
     final Set<IndexCursorEntry> set = new HashSet<>();
 
     // NON COMPACTED INDEX, SEARCH IN ALL THE PAGES
-    searchInNonCompactedIndex(keys, convertedKeys, limit, set, new HashSet<>());
+    searchInNonCompactedIndex(keys, convertedKeys, limit, set, new HashSet<>(), new RidHashSet());
 
     return new TempIndexCursor(set);
   }
@@ -330,7 +331,8 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
   }
 
   private void searchInNonCompactedIndex(final Object[] originalKeys, final Object[] convertedKeys, final int limit,
-      final Set<IndexCursorEntry> set, final Set<TransactionIndexContext.ComparableKey> removedKeys) throws IOException {
+      final Set<IndexCursorEntry> set, final Set<TransactionIndexContext.ComparableKey> removedKeys,
+      final RidHashSet deletedRIDs) throws IOException {
     // SEARCH FROM THE LAST PAGE BACK
     final int totalPages = getTotalPages();
 
@@ -343,13 +345,13 @@ public class LSMTreeIndexMutable extends LSMTreeIndexAbstract {
         continue;
 
       if (!lookupInPageAndAddInResultset(currentPage, currentPageBuffer, count, originalKeys, convertedKeys, limit, set,
-          removedKeys))
+          removedKeys, deletedRIDs))
         return;
     }
 
     if (subIndex != null)
       // CONTINUE ON THE SUB-INDEX
-      subIndex.searchInCompactedIndex(originalKeys, convertedKeys, limit, set, removedKeys);
+      subIndex.searchInCompactedIndex(originalKeys, convertedKeys, limit, set, removedKeys, deletedRIDs);
   }
 
   protected void internalPut(final Object[] keys, final RID[] rids) {

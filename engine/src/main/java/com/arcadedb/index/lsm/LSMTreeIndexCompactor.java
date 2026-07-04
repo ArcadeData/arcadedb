@@ -215,7 +215,13 @@ public class LSMTreeIndexCompactor {
               for (int r = 0; r < value.length; ++r) {
                 final RID rid = (RID) value[r];
                 // ADD ALSO REMOVED RIDS. ONCE THE COMPACTING OF COMPACTED INDEXES (2nd LEVEL) IS DONE, REMOVED ENTRIES CAN BE REMOVED
-                rids.add(rid);
+                // #4942: pages merge oldest to newest and the reader treats the LAST position as the newest entry,
+                // so a duplicate (a re-added RID after its tombstone, or a repeated tombstone) must move to the end
+                // or the older occurrence keeps its position and the reader resolves the wrong winner, losing the row.
+                if (!rids.add(rid)) {
+                  rids.remove(rid);
+                  rids.add(rid);
+                }
               }
 
               totalMergedValues += value.length;

@@ -202,9 +202,13 @@ public class LSMTreeIndexCursor implements IndexCursor {
             if (pageCursor.hasNext()) {
               pageCursor.next();
               cursorKeys[i] = pageCursor.getKeys();
-            } else
-              // INVALID
-              pageCursors[i] = null;
+              // Re-evaluate the new key from scratch (removedKeys, range and tombstone checks): falling
+              // through would run them against the OLD key still bound above.
+              continue;
+            }
+            // INVALID
+            pageCursors[i] = null;
+            break;
           }
         }
 
@@ -224,36 +228,43 @@ public class LSMTreeIndexCursor implements IndexCursor {
 
         if (pageCursors[i] != null) {
           final RID[] rids = pageCursors[i].getValue();
-          if (rids != null && rids.length > 0) {
-            // For non-unique indexes a key may have a mix of valid RIDs and per-RID tombstones
-            // (encoded as RID(-(bucketId+2), position)). The page still contributes to iteration
-            // as long as it holds anything other than pure REMOVED_ENTRY_RID full-key tombstones;
-            // per-RID filtering happens in next(). validIterators must stay in sync with the
-            // --validIterators decrement done by next() when each pageCursor is advanced.
-            boolean allFullKeyTomb = true;
+
+          // For non-unique indexes a key may have a mix of valid RIDs and per-RID tombstones
+          // (encoded as RID(-(bucketId+2), position)). The page still contributes to iteration
+          // as long as it holds anything other than pure REMOVED_ENTRY_RID full-key tombstones;
+          // per-RID filtering happens in next().
+          boolean allFullKeyTomb = rids != null && rids.length > 0;
+          if (allFullKeyTomb)
             for (final RID r : rids) {
               if (r.getBucketId() != -1 || r.getPosition() != -1) {
                 allFullKeyTomb = false;
                 break;
               }
             }
-            if (allFullKeyTomb)
-              removedKeys.add(keys);
-            else
-              validIterators++;
-          }
-        }
 
-        if (validIterators == 0 && pageCursor != null) {
-          // CHECK FOR THE NEXT ENTRY
-          if (pageCursor.hasNext())
-            pageCursor.next();
-          else
+          if (allFullKeyTomb) {
+            // #4944: never leave a cursor parked on a full-key tombstone. It would stay alive but
+            // uncounted in validIterators, while next() decrements the counter whenever ANY cursor
+            // is exhausted or leaves the range: the counter could reach zero with other cursors
+            // still holding valid rows, silently truncating the scan. Skip past tombstone-only keys
+            // (recording them so older cursors skip their shadowed entries too: a newer re-add of
+            // the same key always lives in an earlier-processed cursor, so this stays temporally
+            // correct) until a countable key is found or the cursor is exhausted. The invariant is:
+            // every cursor left alive by this constructor is counted in validIterators.
+            removedKeys.add(keys);
+            if (pageCursor.hasNext()) {
+              pageCursor.next();
+              cursorKeys[i] = pageCursor.getKeys(); // keep cache in sync with the advanced cursor
+              continue;
+            }
+            pageCursors[i] = null;
+            cursorKeys[i] = null;
             break;
-        } else
-          break;
+          }
 
-        pageCursor = pageCursors[i];
+          validIterators++;
+        }
+        break;
       }
     }
 
