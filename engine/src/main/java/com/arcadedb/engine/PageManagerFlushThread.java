@@ -26,6 +26,7 @@ import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.*;
@@ -226,6 +227,18 @@ public class PageManagerFlushThread extends Thread {
                 }
                 try {
                   pageManager.flushPage(page);
+                } catch (final InterruptedIOException e) {
+                  if (Thread.currentThread() != this)
+                    throw e;
+                  // #4924 follow-up: an interrupt of the flush thread is a shutdown request, never permission to
+                  // drop a dirty page. Its WAL entry was already acked to the committer, so skipping the write
+                  // would silently lose the page for readers once the cache evicts it, and abandoning the batch
+                  // would leak its entries in pageIndex (hanging waitAllPagesOfDatabaseAreFlushed on close).
+                  // Clear the flag (concurrentPageAccess rejects any I/O while it is set), stop accepting new
+                  // work and retry the write: the run() loop then drains the remaining queue before exiting.
+                  Thread.interrupted();
+                  running = false;
+                  pageManager.flushPage(page);
                 } catch (final DatabaseMetadataException e) {
                   // FILE DELETED, CONTINUE WITH THE NEXT PAGES
                   LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
@@ -271,6 +284,18 @@ public class PageManagerFlushThread extends Thread {
             } catch (final DatabaseMetadataException e) {
               // FILE DELETED, CONTINUE WITH THE NEXT PAGES
               LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+            } catch (final InterruptedIOException e) {
+              // The unsuspending thread (e.g. backup/HA) was interrupted: don't drop the deferred dirty page,
+              // its WAL entry was already acked. Retry once with the flag cleared (concurrentPageAccess rejects
+              // any I/O while it is set), then restore it so the caller still observes its own cancellation.
+              Thread.interrupted();
+              try {
+                pageManager.flushPage(page);
+              } catch (final IOException e2) {
+                LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
+              } finally {
+                Thread.currentThread().interrupt();
+              }
             } catch (final IOException e) {
               LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
             } finally {
