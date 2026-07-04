@@ -25,6 +25,7 @@ import com.arcadedb.server.BaseGraphServerTest;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Config;
@@ -134,6 +135,7 @@ public class BoltTlsIT extends BaseGraphServerTest {
   }
 
   @Test
+  @DisplayName("[CONN-002] Connect via bolt+ssc:// with TLS required")
   void tlsConnectionWithSelfSignedCert() {
     // bolt+ssc:// means TLS with self-signed certificate (no verification)
     try (final Driver driver = GraphDatabase.driver(
@@ -159,6 +161,7 @@ public class BoltTlsIT extends BaseGraphServerTest {
   }
 
   @Test
+  @DisplayName("[CONN-005] TLS OPTIONAL mode falls back to plaintext bolt://")
   void plaintextConnectionInOptionalMode() {
     // In OPTIONAL mode, plaintext bolt:// should also work
     try (final Driver driver = GraphDatabase.driver(
