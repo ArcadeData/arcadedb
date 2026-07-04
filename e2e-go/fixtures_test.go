@@ -17,6 +17,7 @@
 package e2e_go
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -49,6 +50,10 @@ const (
 		"-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} " +
 		"-Darcadedb.server.plugins=BoltProtocolPlugin"
 )
+
+// httpClient carries a timeout so a hung server fails the seeding/readiness
+// calls promptly instead of stalling the whole suite until the go test deadline.
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 var (
 	ctx            = context.Background()
@@ -115,14 +120,17 @@ func startArcade(javaOpts, image string, startupTimeout time.Duration) (*arcadeC
 	}
 	host, err := c.Host(ctx)
 	if err != nil {
+		_ = c.Terminate(ctx)
 		return nil, err
 	}
 	hp, err := c.MappedPort(ctx, httpPort)
 	if err != nil {
+		_ = c.Terminate(ctx)
 		return nil, err
 	}
 	bp, err := c.MappedPort(ctx, boltPort)
 	if err != nil {
+		_ = c.Terminate(ctx)
 		return nil, err
 	}
 	return &arcadeContainer{container: c, host: host, httpPort: hp.Port(), boltPort: bp.Port()}, nil
@@ -166,13 +174,13 @@ func repoRoot() string {
 
 // httpCommand POSTs a JSON body to an ArcadeDB HTTP endpoint with root auth.
 func httpCommand(c *arcadeContainer, path string, body []byte) error {
-	req, err := http.NewRequest(http.MethodPost, c.httpBase()+path, strings.NewReader(string(body)))
+	req, err := http.NewRequest(http.MethodPost, c.httpBase()+path, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
 	req.SetBasicAuth("root", rootPassword)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}

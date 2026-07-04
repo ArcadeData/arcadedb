@@ -57,6 +57,14 @@ func buildTLSImage() (string, error) {
 			tlsImageErr = err
 			return
 		}
+		// Remove the temp cert dir if we bail out before the package-level
+		// cleanup (which also removes it) is registered on the success path.
+		cleanupDir := true
+		defer func() {
+			if cleanupDir {
+				_ = os.RemoveAll(dir)
+			}
+		}()
 		ks := filepath.Join(dir, "keystore.p12")
 		ts := filepath.Join(dir, "truststore.jks")
 		cer := filepath.Join(dir, "bolt.cer")
@@ -94,6 +102,7 @@ func buildTLSImage() (string, error) {
 			return
 		}
 		tlsImageTag = tag
+		cleanupDir = false // ownership of dir passes to the package-level cleanup below
 		addTLSCleanup(func() {
 			_ = exec.Command("docker", "image", "rm", "-f", tag).Run()
 			_ = os.RemoveAll(dir)
