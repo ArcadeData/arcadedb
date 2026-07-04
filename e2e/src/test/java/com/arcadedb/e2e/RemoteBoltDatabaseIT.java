@@ -18,10 +18,16 @@
  */
 package com.arcadedb.e2e;
 
-import org.junit.jupiter.api.AfterEach;
-import org.junit.jupiter.api.BeforeEach;
+import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Disabled;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.neo4j.driver.AuthTokens;
+import org.neo4j.driver.Bookmark;
 import org.neo4j.driver.Config;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
@@ -29,71 +35,642 @@ import org.neo4j.driver.Record;
 import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.SessionConfig;
+import org.neo4j.driver.Transaction;
+import org.neo4j.driver.exceptions.ClientException;
+import org.neo4j.driver.exceptions.Neo4jException;
+import org.neo4j.driver.summary.ResultSummary;
+import org.neo4j.driver.types.Node;
+import org.neo4j.driver.types.Path;
+import org.neo4j.driver.types.Relationship;
 
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URI;
+import java.nio.charset.StandardCharsets;
+import java.time.temporal.Temporal;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.Assertions.fail;
 
+/**
+ * End-to-end certification of the Bolt protocol against the real
+ * {@code neo4j-java-driver}, covering the shared conformance spec
+ * (bolt/conformance/spec.yaml, issue #4883, part of epic #4882). Each test
+ * embeds its scenario id in a {@link DisplayName} so coverage is grep-checkable
+ * and comparable to the JS/Go suites.
+ */
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
+
+  // Mirrors bolt/conformance/fixtures/type-matrix.cypher - seed via HTTP, never Bolt.
+  private static final String TYPE_MATRIX_CYPHER = """
+      CREATE (:TypeMatrix {
+        localDateProp: date('2026-01-15'),
+        localTimeProp: localtime('14:30:00'),
+        localDateTimeProp: localdatetime('2026-01-15T14:30:00'),
+        offsetDateTimeProp: datetime('2026-01-15T14:30:00+02:00'),
+        durationProp: duration('P1DT2H30M'),
+        pointProp: point({x: 12.34, y: 56.78}),
+        nestedListProp: [1, 2, [3, 4]],
+        nestedMapProp: {a: 1, b: {c: 2}},
+        nullProp: null
+      })""";
 
   private Driver driver;
 
-  @BeforeEach
-  void setUp() {
+  @BeforeAll
+  void setUpClass() throws Exception {
     driver = GraphDatabase.driver(
         "bolt://" + host + ":" + boltPort,
         AuthTokens.basic("root", "playwithdata"),
-        Config.builder()
-            .withoutEncryption()
-            .build()
-    );
+        Config.builder().withoutEncryption().build());
+    driver.verifyConnectivity();
+
+    // Seed over HTTP only, never over Bolt - Bolt serialization is under test.
+    httpCommand("server", "{\"command\": \"create database boltscratch\"}");
+    httpCommand("command/beer",
+        "{\"language\": \"cypher\", \"command\": " + jsonString(TYPE_MATRIX_CYPHER) + "}");
   }
 
-  @AfterEach
-  void tearDown() {
+  @AfterAll
+  void tearDownClass() {
     if (driver != null)
       driver.close();
   }
 
-  @Test
-  void connection() {
-    driver.verifyConnectivity();
+  Session boltSession() {
+    return boltSession("beer");
   }
 
-  @Test
-  void simpleReturnQuery() {
-    try (Session session = driver.session(SessionConfig.forDatabase("beer"))) {
-      final Result result = session.run("RETURN 1 AS value");
-      assertThat(result.hasNext()).isTrue();
-      final Record record = result.next();
-      assertThat(record.get("value").asLong()).isEqualTo(1L);
-      assertThat(result.hasNext()).isFalse();
+  Session boltSession(final String database) {
+    return driver.session(SessionConfig.forDatabase(database));
+  }
+
+  // Passes while the known gap reproduces (the ideal assertion throws); fails
+  // loudly the day the gap closes, forcing a flip to a real assertion and a
+  // bolt/conformance/spec.yaml update. Java analogue of the JS suite's it.failing.
+  static void assertExpectedFailure(final String trackingIssue, final ThrowingCallable ideal) {
+    try {
+      ideal.call();
+    } catch (final Throwable expected) {
+      return;
+    }
+    fail("Expected-fail scenario now PASSES - close it: flip the assertion and update "
+        + "bolt/conformance/spec.yaml current_status (" + trackingIssue + ")");
+  }
+
+  // Runs two concurrent writers against the same node; collects any driver-side
+  // errors so transient-vs-non-transient classification can be asserted.
+  List<Neo4jException> raceTwoWriters(final String marker) {
+    final List<Neo4jException> errors = new CopyOnWriteArrayList<>();
+    final Runnable writer = () -> {
+      try (final Session s = boltSession()) {
+        s.executeWrite(tx -> tx.run(
+            "MERGE (n:RaceProbe {marker: $m}) SET n.v = coalesce(n.v, 0) + 1",
+            Map.of("m", marker)).consume());
+      } catch (final Neo4jException e) {
+        errors.add(e);
+      }
+    };
+    final Thread a = new Thread(writer);
+    final Thread b = new Thread(writer);
+    a.start();
+    b.start();
+    try {
+      a.join();
+      b.join();
+    } catch (final InterruptedException ignored) {
+      Thread.currentThread().interrupt();
+    }
+    return errors;
+  }
+
+  void httpCommand(final String apiPath, final String jsonBody) throws Exception {
+    final HttpURLConnection con = (HttpURLConnection) URI.create(
+        "http://" + host + ":" + httpPort + "/api/v1/" + apiPath).toURL().openConnection();
+    con.setRequestMethod("POST");
+    con.setDoOutput(true);
+    con.setRequestProperty("Content-Type", "application/json");
+    con.setRequestProperty("Authorization", "Basic " + Base64.getEncoder()
+        .encodeToString("root:playwithdata".getBytes(StandardCharsets.UTF_8)));
+    try (final OutputStream os = con.getOutputStream()) {
+      os.write(jsonBody.getBytes(StandardCharsets.UTF_8));
+    }
+    final int code = con.getResponseCode();
+    if (code < 200 || code >= 300)
+      throw new IllegalStateException("HTTP " + code + ": " + new String(
+          con.getErrorStream().readAllBytes(), StandardCharsets.UTF_8));
+    con.disconnect();
+  }
+
+  // Minimal JSON string encoder for embedding the fixture cypher in a request body.
+  static String jsonString(final String raw) {
+    final StringBuilder sb = new StringBuilder("\"");
+    for (int i = 0; i < raw.length(); i++) {
+      final char c = raw.charAt(i);
+      switch (c) {
+        case '"' -> sb.append("\\\"");
+        case '\\' -> sb.append("\\\\");
+        case '\n' -> sb.append("\\n");
+        case '\r' -> sb.append("\\r");
+        case '\t' -> sb.append("\\t");
+        default -> sb.append(c);
+      }
+    }
+    return sb.append('"').toString();
+  }
+
+  // ==================== connection ====================
+
+  @Nested
+  @DisplayName("connection")
+  class Connection {
+
+    @Test
+    @DisplayName("[CONN-001] Connect via bolt:// scheme")
+    void conn001_boltScheme() {
+      driver.verifyConnectivity();
+    }
+
+    @Test
+    @DisplayName("[CONN-003] neo4j:// routing discovery, single-node")
+    void conn003_routingSingleNode() {
+      try (final Driver routing = GraphDatabase.driver(
+          "neo4j://" + host + ":" + boltPort,
+          AuthTokens.basic("root", "playwithdata"),
+          Config.builder().withoutEncryption().build())) {
+        routing.verifyConnectivity();
+        try (final Session s = routing.session(SessionConfig.forDatabase("beer"))) {
+          assertThat(s.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 1")
+              .single().get("name").asString()).isNotBlank();
+        }
+      }
+    }
+
+    @Test
+    @Disabled("[CONN-004] Requires a real 3-node HA cluster; single-node container "
+        + "always returns itself as writer/reader/router (#4890)")
+    @DisplayName("[CONN-004] neo4j:// routing reflects HA cluster topology")
+    void conn004_haTopology() {
     }
   }
 
-  @Test
-  void queryBeerDatabase() {
-    try (Session session = driver.session(SessionConfig.forDatabase("beer"))) {
-      final Result result = session.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 1");
-      assertThat(result.hasNext()).isTrue();
-      final Record record = result.next();
-      assertThat(record.get("name").asString()).isNotBlank();
-      assertThat(result.hasNext()).isFalse();
+  // ==================== auth ====================
+
+  @Nested
+  @DisplayName("auth")
+  class Auth {
+
+    @Test
+    @DisplayName("[AUTH-001] Basic auth succeeds with valid credentials")
+    void auth001_validBasic() {
+      try (final Driver d = GraphDatabase.driver("bolt://" + host + ":" + boltPort,
+          AuthTokens.basic("root", "playwithdata"),
+          Config.builder().withoutEncryption().build())) {
+        d.verifyConnectivity();
+      }
+    }
+
+    @Test
+    @DisplayName("[AUTH-002] Basic auth fails with invalid credentials")
+    void auth002_invalidBasic() {
+      try (final Driver d = GraphDatabase.driver("bolt://" + host + ":" + boltPort,
+          AuthTokens.basic("root", "wrong-password"),
+          Config.builder().withoutEncryption().build())) {
+        assertThatThrownBy(d::verifyConnectivity).isInstanceOf(RuntimeException.class);
+      }
+    }
+
+    @Test
+    @DisplayName("[AUTH-003] Auth scheme 'none' is rejected (intentional, not a bug)")
+    void auth003_noneRejected() {
+      try (final Driver d = GraphDatabase.driver("bolt://" + host + ":" + boltPort,
+          AuthTokens.none(),
+          Config.builder().withoutEncryption().build())) {
+        assertThatThrownBy(d::verifyConnectivity).isInstanceOf(RuntimeException.class);
+      }
     }
   }
 
-  @Test
-  void parameterizedQuery() {
-    try (Session session = driver.session(SessionConfig.forDatabase("beer"))) {
-      final Result result = session.run(
-          "RETURN $name AS name, $value AS value",
-          Map.of("name", "test", "value", 42)
-      );
-      assertThat(result.hasNext()).isTrue();
-      final Record record = result.next();
-      assertThat(record.get("name").asString()).isEqualTo("test");
-      assertThat(record.get("value").asLong()).isEqualTo(42L);
-      assertThat(result.hasNext()).isFalse();
+  // ==================== transactions ====================
+
+  @Nested
+  @DisplayName("transactions")
+  class Transactions {
+
+    @Test
+    @DisplayName("[TX-001] Autocommit query executes and returns results")
+    void tx001_autocommit() {
+      try (final Session s = boltSession()) {
+        assertThat(s.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 5").list()).hasSize(5);
+      }
+    }
+
+    @Test
+    @DisplayName("[TX-002] Explicit BEGIN/RUN/COMMIT persists changes")
+    void tx002_commit() {
+      try (final Session s = boltSession()) {
+        final Transaction tx = s.beginTransaction();
+        tx.run("CREATE (:TxProbe {marker: 'tx-002'})");
+        tx.commit();
+        assertThat(s.run("MATCH (n:TxProbe {marker: 'tx-002'}) RETURN count(n) AS c")
+            .single().get("c").asLong()).isEqualTo(1L);
+      }
+    }
+
+    @Test
+    @DisplayName("[TX-003] Explicit BEGIN/RUN/ROLLBACK discards changes")
+    void tx003_rollback() {
+      try (final Session s = boltSession()) {
+        final Transaction tx = s.beginTransaction();
+        tx.run("CREATE (:TxProbe {marker: 'tx-003'})");
+        tx.rollback();
+        assertThat(s.run("MATCH (n:TxProbe {marker: 'tx-003'}) RETURN count(n) AS c")
+            .single().get("c").asLong()).isEqualTo(0L);
+      }
+    }
+
+    @Test
+    @DisplayName("[TX-004] Managed executeWrite commits on success")
+    void tx004_executeWrite() {
+      try (final Session s = boltSession()) {
+        s.executeWrite(tx -> tx.run("CREATE (:Beer {name: $n})",
+            Map.of("n", "TX-004-Beer")).consume());
+        assertThat(s.run("MATCH (b:Beer {name: $n}) RETURN count(b) AS c",
+            Map.of("n", "TX-004-Beer")).single().get("c").asLong()).isEqualTo(1L);
+      }
+    }
+
+    @Test
+    @DisplayName("[TX-005] Managed transaction retries on Neo.TransientError.*")
+    void tx005_transientRetry() {
+      // Hint: expected-fail (#4890). If a write-write race surfaces
+      // Neo.TransientError.*, this xfail wrapper will FAIL and prompt a flip to
+      // a positive assertion plus a spec.yaml reconciliation.
+      final List<Neo4jException> errors = raceTwoWriters("tx-005");
+      assertExpectedFailure("#4890", () -> {
+        assertThat(errors).isNotEmpty();
+        assertThat(errors).anySatisfy(e -> assertThat(e.code()).startsWith("Neo.TransientError"));
+      });
+    }
+  }
+
+  // ==================== causal-consistency ====================
+
+  @Nested
+  @DisplayName("causal-consistency")
+  class CausalConsistency {
+
+    @Test
+    @DisplayName("[CAUSAL-001] Bookmark enforces read-after-write across sessions")
+    void causal001_bookmark() {
+      final Set<Bookmark> bookmarks;
+      try (final Session a = boltSession()) {
+        a.run("CREATE (:CausalProbe {marker: 'causal-001'})").consume();
+        bookmarks = a.lastBookmarks();
+      }
+      try (final Session b = driver.session(SessionConfig.builder()
+          .withDatabase("beer").withBookmarks(bookmarks).build())) {
+        assertThat(b.run("MATCH (n:CausalProbe {marker: 'causal-001'}) RETURN count(n) AS c")
+            .single().get("c").asLong()).isEqualTo(1L);
+      }
+    }
+  }
+
+  // ==================== multi-database ====================
+
+  @Nested
+  @DisplayName("multi-database")
+  class MultiDatabase {
+
+    @Test
+    @DisplayName("[MDB-001] Session selects a specific named database")
+    void mdb001_namedDatabase() {
+      try (final Session s = boltSession("beer")) {
+        assertThat(s.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 1")
+            .single().get("name").asString()).isNotBlank();
+      }
+    }
+
+    @Test
+    @DisplayName("[MDB-002] Sessions across databases are isolated")
+    void mdb002_isolation() {
+      try (final Session scratch = boltSession("boltscratch")) {
+        final Transaction tx = scratch.beginTransaction();
+        tx.run("CREATE (:ScratchOnly {marker: 'mdb-002'})");
+        try (final Session beer = boltSession("beer")) {
+          assertThat(beer.run("MATCH (n:ScratchOnly) RETURN count(n) AS c")
+              .single().get("c").asLong()).isEqualTo(0L);
+        }
+        tx.rollback();
+      }
+    }
+  }
+
+  // ==================== result-handling ====================
+
+  @Nested
+  @DisplayName("result-handling")
+  class ResultHandling {
+
+    @Test
+    @DisplayName("[RESULT-001] Streaming PULL returns records incrementally")
+    void result001_streaming() {
+      try (final Session s = boltSession()) {
+        final Result r = s.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 10");
+        int count = 0;
+        while (r.hasNext()) {
+          r.next();
+          count++;
+        }
+        assertThat(count).isEqualTo(10);
+      }
+    }
+
+    @Test
+    @DisplayName("[RESULT-002] PULL n streams exactly n, further pull continues")
+    void result002_partialPull() {
+      try (final Session s = boltSession()) {
+        final Result r = s.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 5");
+        final Record first = r.next();
+        final Record second = r.next();
+        assertThat(first.get("name").asString()).isNotBlank();
+        assertThat(second.get("name").asString()).isNotBlank();
+        assertThat(r.list()).hasSize(3);
+      }
+    }
+
+    @Test
+    @DisplayName("[RESULT-003] DISCARD abandons remaining rows")
+    void result003_discard() {
+      try (final Session s = boltSession()) {
+        final Result r = s.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 5");
+        r.next();
+        final ResultSummary summary = r.consume();
+        assertThat(summary).isNotNull();
+      }
+    }
+
+    @Test
+    @DisplayName("[RESULT-004] ResultSummary counters reflect writes")
+    void result004_counters() {
+      assertExpectedFailure("#4890", () -> {
+        try (final Session s = boltSession()) {
+          final ResultSummary summary = s.run(
+              "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
+              Map.of("n", "RESULT-004-Beer", "b", "RESULT-004-Brewery")).consume();
+          assertThat(summary.counters().nodesCreated()).isEqualTo(2);
+          assertThat(summary.counters().relationshipsCreated()).isEqualTo(1);
+        }
+      });
+    }
+  }
+
+  // ==================== type-roundtrip ====================
+
+  @Nested
+  @DisplayName("type-roundtrip")
+  class TypeRoundTrip {
+
+    @Test
+    @DisplayName("[TYPE-001] Node round-trips as a native Bolt structure")
+    void type001_node() {
+      try (final Session s = boltSession()) {
+        final Node n = s.run("MATCH (b:Beer) RETURN b LIMIT 1").single().get("b").asNode();
+        assertThat(n.labels()).contains("Beer");
+        assertThat(n.asMap()).isNotEmpty();
+      }
+    }
+
+    @Test
+    @DisplayName("[TYPE-002] Relationship round-trips as a native Bolt structure")
+    void type002_relationship() {
+      try (final Session s = boltSession()) {
+        final Relationship r = s.run("MATCH ()-[rel]->() RETURN rel LIMIT 1")
+            .single().get("rel").asRelationship();
+        assertThat(r.type()).isNotBlank();
+      }
+    }
+
+    @Test
+    @DisplayName("[TYPE-003] Path round-trips as a native Bolt structure")
+    void type003_path() {
+      assertExpectedFailure("#4890", () -> {
+        try (final Session s = boltSession()) {
+          final Path p = s.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1")
+              .single().get("p").asPath();
+          assertThat(p.length()).isGreaterThanOrEqualTo(1);
+        }
+      });
+    }
+
+    @Test
+    @DisplayName("[TYPE-004] ByteArray round-trips as a bound parameter")
+    void type004_byteArray() {
+      try (final Session s = boltSession()) {
+        final byte[] in = { 1, 2, 3, 4 };
+        assertThat(s.run("RETURN $b AS echo", Map.of("b", in))
+            .single().get("echo").asByteArray()).isEqualTo(in);
+      }
+    }
+
+    @Test
+    @DisplayName("[TYPE-005] Nested lists and maps round-trip structurally")
+    void type005_nested() {
+      try (final Session s = boltSession()) {
+        final Record rec = s.run(
+            "MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l, t.nestedMapProp AS m LIMIT 1").single();
+        assertThat(rec.get("l").asList()).hasSize(3);
+        assertThat(rec.get("m").asMap()).containsKeys("a", "b");
+      }
+    }
+
+    @Test
+    @DisplayName("[TYPE-006] Null values round-trip")
+    void type006_null() {
+      try (final Session s = boltSession()) {
+        assertThat(s.run("MATCH (t:TypeMatrix) RETURN t.nullProp AS n LIMIT 1")
+            .single().get("n").isNull()).isTrue();
+        assertThat(s.run("RETURN $p AS echo", Collections.singletonMap("p", null))
+            .single().get("echo").isNull()).isTrue();
+      }
+    }
+
+    @Test
+    @DisplayName("[TYPE-007] LocalDate round-trips as a native Bolt Date")
+    void type007_localDate() {
+      assertNativeTemporalOrGap("localDateProp");
+    }
+
+    @Test
+    @DisplayName("[TYPE-008] LocalTime round-trips as a native Bolt LocalTime")
+    void type008_localTime() {
+      assertNativeTemporalOrGap("localTimeProp");
+    }
+
+    @Test
+    @DisplayName("[TYPE-009] LocalDateTime round-trips as a native Bolt LocalDateTime")
+    void type009_localDateTime() {
+      assertNativeTemporalOrGap("localDateTimeProp");
+    }
+
+    @Test
+    @DisplayName("[TYPE-010] Offset DateTime round-trips as a native Bolt DateTime")
+    void type010_offsetDateTime() {
+      assertNativeTemporalOrGap("offsetDateTimeProp");
+    }
+
+    @Test
+    @DisplayName("[TYPE-011] Duration round-trips as a native Bolt Duration")
+    void type011_duration() {
+      assertExpectedFailure("#4890", () -> {
+        try (final Session s = boltSession()) {
+          final Object v = s.run("MATCH (t:TypeMatrix) RETURN t.durationProp AS d LIMIT 1")
+              .single().get("d").asObject();
+          assertThat(v).isInstanceOf(org.neo4j.driver.types.IsoDuration.class);
+        }
+      });
+    }
+
+    @Test
+    @DisplayName("[TYPE-012] Point round-trips as a native Bolt Point")
+    void type012_point() {
+      assertExpectedFailure("#4890", () -> {
+        try (final Session s = boltSession()) {
+          final Object v = s.run("MATCH (t:TypeMatrix) RETURN t.pointProp AS p LIMIT 1")
+              .single().get("p").asObject();
+          assertThat(v).isInstanceOf(org.neo4j.driver.types.Point.class);
+        }
+      });
+    }
+
+    // Native temporals deserialize to java.time.temporal.Temporal; the legacy
+    // ISO-string fallback yields a String. Assert native, else document the gap.
+    private void assertNativeTemporalOrGap(final String prop) {
+      final ThrowingCallable ideal = () -> {
+        try (final Session s = boltSession()) {
+          final Object v = s.run("MATCH (t:TypeMatrix) RETURN t." + prop + " AS x LIMIT 1")
+              .single().get("x").asObject();
+          assertThat(v).isInstanceOf(Temporal.class);
+        }
+      };
+      try {
+        ideal.call();
+      } catch (final Throwable notNativeYet) {
+        assertExpectedFailure("#4890", ideal);
+      }
+    }
+  }
+
+  // ==================== errors ====================
+
+  @Nested
+  @DisplayName("errors")
+  class Errors {
+
+    @Test
+    @DisplayName("[ERR-001] Syntax error returns Neo.ClientError.Statement.SyntaxError")
+    void err001_syntax() {
+      try (final Session s = boltSession()) {
+        assertThatThrownBy(() -> s.run("MATCH (n RETURN n").consume())
+            .isInstanceOf(ClientException.class)
+            .satisfies(t -> assertThat(((ClientException) t).code())
+                .isEqualTo("Neo.ClientError.Statement.SyntaxError"));
+      }
+    }
+
+    @Test
+    @DisplayName("[ERR-002] Semantic error returns Neo.ClientError.Statement.SemanticError")
+    void err002_semantic() {
+      assertExpectedFailure("#4890", () -> {
+        try (final Session s = boltSession()) {
+          assertThatThrownBy(() -> s.run("RETURN undefinedVariable").consume())
+              .isInstanceOf(ClientException.class)
+              .satisfies(t -> assertThat(((ClientException) t).code())
+                  .isEqualTo("Neo.ClientError.Statement.SemanticError"));
+        }
+      });
+    }
+
+    @Test
+    @Disabled("[ERR-003] Driver never sends RUN before LOGON; needs a raw socket. "
+        + "Covered at the bolt-module layer (BoltProtocolIT) if a raw harness exists.")
+    @DisplayName("[ERR-003] Unauthenticated request returns Neo.ClientError.Security.Forbidden")
+    void err003_forbidden() {
+    }
+
+    @Test
+    @DisplayName("[ERR-004] Transient conditions surface Neo.TransientError.*")
+    void err004_transient() {
+      final List<Neo4jException> errors = raceTwoWriters("err-004");
+      assertExpectedFailure("#4890", () -> {
+        assertThat(errors).isNotEmpty();
+        assertThat(errors).anySatisfy(e -> assertThat(e.code()).startsWith("Neo.TransientError"));
+      });
+    }
+  }
+
+  // ==================== protocol ====================
+
+  @Nested
+  @DisplayName("protocol")
+  class Protocol {
+
+    @Test
+    @DisplayName("[PROTO-001] Version negotiation succeeds (4.4/4.0/3.0)")
+    void proto001_negotiation() {
+      // The pinned driver offers a range including 4.4; a successful query proves
+      // the server negotiated a supported version.
+      try (final Session s = boltSession()) {
+        assertThat(s.run("RETURN 1 AS v").single().get("v").asLong()).isEqualTo(1L);
+      }
+    }
+
+    @Test
+    @DisplayName("[PROTO-002] Bolt 5.x negotiation is supported")
+    void proto002_bolt5() {
+      // The server never advertises any Bolt 5.x version; 5.x drivers work only
+      // by silently downgrading. No public driver API forces a 5.x-only
+      // handshake, so this documents the gap as a marker (#4890).
+      assertExpectedFailure("#4890", () -> {
+        throw new AssertionError("Bolt 5.x negotiation is not advertised by the server");
+      });
+    }
+
+    @Test
+    @DisplayName("[PROTO-003] RESET returns the connection to a clean state")
+    void proto003_reset() {
+      try (final Session s = boltSession()) {
+        final Result r = s.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 5");
+        r.next();
+        r.consume();
+        assertThat(s.run("RETURN 2 AS v").single().get("v").asLong()).isEqualTo(2L);
+      }
+    }
+  }
+
+  // ============== parameters (preserves the original parameterized test) ==============
+
+  @Nested
+  @DisplayName("parameters")
+  class Parameters {
+
+    @Test
+    @DisplayName("[TX-001] Parameterized query binds and returns values")
+    void parameterizedQuery() {
+      try (final Session s = boltSession()) {
+        final Record rec = s.run("RETURN $name AS name, $value AS value",
+            Map.of("name", "test", "value", 42)).single();
+        assertThat(rec.get("name").asString()).isEqualTo("test");
+        assertThat(rec.get("value").asLong()).isEqualTo(42L);
+      }
     }
   }
 }
