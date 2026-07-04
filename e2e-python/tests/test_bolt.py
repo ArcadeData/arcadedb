@@ -457,13 +457,6 @@ def _race_two_writers(driver, database, marker):
     return errors
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BoltErrorCodes.java defines only 7 codes, all Neo.ClientError.*/ "
-    "Neo.DatabaseError.* - no Neo.TransientError.* code exists, so ArcadeDB "
-    "never signals a retryable condition and driver-side transient-retry "
-    "logic cannot be exercised; see #4890",
-)
 def test_TX_005_managed_write_retries_on_transient_error(bolt_driver):
     from neo4j.exceptions import TransientError
 
@@ -632,61 +625,49 @@ def test_TYPE_006_null_roundtrip(bolt_driver):
         assert echo["echo"] is None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BoltStructureMapper.toPackStreamValue converts LocalDate via "
-    ".toString()/ISO string fallback instead of the native Bolt Date "
-    "structure (sig 0x44); see #4890",
-)
 def test_TYPE_007_local_date_roundtrip(bolt_driver):
+    from neo4j.time import Date
+
     with bolt_driver.session(database="beer") as session:
         record = session.run("MATCH (t:TypeMatrix) RETURN t.localDateProp AS d").single()
-        assert isinstance(record["d"], datetime.date)
+        assert isinstance(record["d"], Date)
 
         echo = session.run("RETURN $d AS echo", d=record["d"]).single()
         assert echo["echo"] == record["d"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Same ISO-string fallback as TYPE-007, for LocalTime (native Bolt "
-    "LocalTime structure sig 0x74 not produced); see #4890",
-)
 def test_TYPE_008_local_time_roundtrip(bolt_driver):
+    from neo4j.time import Time
+
     with bolt_driver.session(database="beer") as session:
         record = session.run("MATCH (t:TypeMatrix) RETURN t.localTimeProp AS t2").single()
-        assert isinstance(record["t2"], datetime.time)
+        assert isinstance(record["t2"], Time)
 
         echo = session.run("RETURN $t AS echo", t=record["t2"]).single()
         assert echo["echo"] == record["t2"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Same ISO-string fallback as TYPE-007, for LocalDateTime (native "
-    "Bolt LocalDateTime structure sig 0x64 not produced); see #4890",
-)
 def test_TYPE_009_local_datetime_roundtrip(bolt_driver):
+    from neo4j.time import DateTime
+
     with bolt_driver.session(database="beer") as session:
         record = session.run("MATCH (t:TypeMatrix) RETURN t.localDateTimeProp AS dt").single()
-        assert isinstance(record["dt"], datetime.datetime)
+        assert isinstance(record["dt"], DateTime)
 
         echo = session.run("RETURN $dt AS echo", dt=record["dt"]).single()
         assert echo["echo"] == record["dt"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="Same ISO-string fallback as TYPE-007, for OffsetDateTime/"
-    "ZonedDateTime (native Bolt DateTime/DateTimeZoneId structures, sig "
-    "0x49/0x69, not produced); see #4890",
-)
 def test_TYPE_010_offset_datetime_roundtrip(bolt_driver):
+    import datetime as dt_module
+
+    from neo4j.time import DateTime
+
     with bolt_driver.session(database="beer") as session:
         record = session.run("MATCH (t:TypeMatrix) RETURN t.offsetDateTimeProp AS dt").single()
         dt = record["dt"]
-        assert isinstance(dt, datetime.datetime)
-        assert dt.utcoffset() == datetime.timedelta(hours=2)
+        assert isinstance(dt, DateTime)
+        assert dt.utc_offset() == dt_module.timedelta(hours=2)
 
         echo = session.run("RETURN $dt AS echo", dt=dt).single()
         assert echo["echo"] == dt
@@ -774,12 +755,6 @@ def test_ERR_003_unauthenticated_request_rejected():
     pass
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BoltErrorCodes.java defines only Neo.ClientError.*/"
-    "Neo.DatabaseError.* codes (7 total) - no Neo.TransientError.* code "
-    "exists anywhere in the Bolt module; see #4890",
-)
 def test_ERR_004_transient_condition_error_code(bolt_driver):
     from neo4j.exceptions import TransientError
 

@@ -231,13 +231,7 @@ scenarios:
       - "When the failure occurs inside an executeWrite callback"
       - "Then the driver should see a Neo.TransientError.* code and retry automatically per its built-in policy"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltErrorCodes.java defines only 7 codes, all Neo.ClientError.*/
-      Neo.DatabaseError.* - no Neo.TransientError.* code exists, so
-      ArcadeDB never signals a retryable condition and driver-side
-      transient-retry logic cannot be exercised.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: CAUSAL-001
     area: causal-consistency
     title: "Bookmark enforces read-after-write across sessions"
@@ -424,12 +418,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.localDateProp AS d'"
       - "Then d is a native LocalDate/Date driver type, and 'RETURN $d AS echo' with params={d: <that date>} round-trips it unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltStructureMapper.toPackStreamValue (lines 116-150) converts
-      LocalDate via .toString()/ISO string fallback instead of the native
-      Bolt Date structure (sig 0x44).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-008
     area: type-roundtrip
     title: "LocalTime round-trips as a native Bolt LocalTime structure"
@@ -440,11 +429,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.localTimeProp AS t2'"
       - "Then t2 is a native LocalTime driver type, and round-trips via $-parameter unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      Same ISO-string fallback as TYPE-007, for LocalTime (native Bolt
-      LocalTime structure sig 0x74 not produced).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-009
     area: type-roundtrip
     title: "LocalDateTime round-trips as a native Bolt LocalDateTime structure"
@@ -455,11 +440,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.localDateTimeProp AS dt'"
       - "Then dt is a native LocalDateTime driver type, and round-trips via $-parameter unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      Same ISO-string fallback as TYPE-007, for LocalDateTime (native Bolt
-      LocalDateTime structure sig 0x64 not produced).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-010
     area: type-roundtrip
     title: "Offset/zoned DateTime round-trips as a native Bolt DateTime structure"
@@ -470,12 +451,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.offsetDateTimeProp AS dt'"
       - "Then dt is a native OffsetDateTime/ZonedDateTime driver type preserving the +02:00 offset, and round-trips via $-parameter unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      Same ISO-string fallback as TYPE-007, for OffsetDateTime/ZonedDateTime
-      (native Bolt DateTime/DateTimeZoneId structures, sig 0x49/0x69, not
-      produced).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-011
     area: type-roundtrip
     title: "Duration round-trips as a native Bolt Duration structure"
@@ -583,12 +559,7 @@ scenarios:
       - "When the losing session's write fails"
       - "Then it should receive a Neo.TransientError.* code, not a ClientError/DatabaseError code"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltErrorCodes.java defines only Neo.ClientError.*/Neo.DatabaseError.*
-      codes (7 total) - no Neo.TransientError.* code exists anywhere in the
-      Bolt module.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: PROTO-001
     area: protocol
     title: "Version negotiation succeeds for Bolt 4.4, 4.0, and 3.0"
