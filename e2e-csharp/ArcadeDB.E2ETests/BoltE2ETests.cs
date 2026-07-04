@@ -468,4 +468,46 @@ public class BoltE2ETests
             Assert.Equal(56.78, echoPoint.Y, 2);
         }, "TYPE-012: no Point/spatial handling exists in BoltStructureMapper or PackStreamWriter - see #4890");
     }
+
+    [Fact(DisplayName = "ERR-001: Syntax error returns Neo.ClientError.Statement.SyntaxError")]
+    public async Task Err001_SyntaxError()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var ex = await Assert.ThrowsAsync<ClientException>(async () =>
+        {
+            var result = await session.RunAsync("MATCH (n RETURN n");
+            await result.ConsumeAsync();
+        });
+        Assert.Equal("Neo.ClientError.Statement.SyntaxError", ex.Code);
+    }
+
+    [Fact(DisplayName = "ERR-002: Semantic error returns Neo.ClientError.Statement.SemanticError")]
+    public async Task Err002_SemanticError()
+    {
+        await KnownGapAssertions.AssertStillFailsAsync(async () =>
+        {
+            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+            var ex = await Assert.ThrowsAsync<ClientException>(async () =>
+            {
+                var result = await session.RunAsync("MATCH (n:Beer) RETURN undeclaredVariable");
+                await result.ConsumeAsync();
+            });
+            Assert.Equal("Neo.ClientError.Statement.SemanticError", ex.Code);
+        }, "ERR-002: BoltNetworkExecutor's RUN handler maps error codes by exception type and cannot distinguish semantic from syntax errors - SemanticError is dead code - see #4890");
+    }
+
+    [Fact(Skip = "ERR-003 requires sending RUN before completing HELLO/LOGON; no official driver's public API exposes that - current_status is not-applicable in spec.yaml, see #4890")]
+    public void Err003_UnauthenticatedRequestRejected()
+    {
+    }
+
+    [Fact(DisplayName = "ERR-004: Transient conditions surface Neo.TransientError.* codes")]
+    public async Task Err004_TransientConditionErrorCode()
+    {
+        var errors = await RaceTwoWritersAsync(_fixture.Driver, "beer", "err-004");
+
+        Assert.NotEmpty(errors);
+        Assert.Contains(errors, e => e is TransientException);
+        Assert.DoesNotContain(errors, e => e is ClientException || e is DatabaseException);
+    }
 }
