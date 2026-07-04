@@ -40,8 +40,10 @@ import org.neo4j.driver.exceptions.ClientException;
 import org.neo4j.driver.exceptions.Neo4jException;
 import org.neo4j.driver.exceptions.SecurityException;
 import org.neo4j.driver.summary.ResultSummary;
+import org.neo4j.driver.types.IsoDuration;
 import org.neo4j.driver.types.Node;
 import org.neo4j.driver.types.Path;
+import org.neo4j.driver.types.Point;
 import org.neo4j.driver.types.Relationship;
 
 import java.io.InputStream;
@@ -60,6 +62,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -107,8 +110,17 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
 
   @AfterAll
   void tearDownClass() {
-    if (driver != null)
+    if (driver != null) {
+      // Sweep the probe nodes the write scenarios leave in the shared beer
+      // database so a later suite that asserts an unscoped count is not surprised.
+      try (final Session s = boltSession()) {
+        s.run("MATCH (n) WHERE n:TxProbe OR n:RaceProbe OR n:CausalProbe DETACH DELETE n").consume();
+        s.run("MATCH (b:Beer) WHERE b.name IN ['TX-004-Beer', 'RESULT-004-Beer'] DETACH DELETE b").consume();
+      } catch (final RuntimeException ignored) {
+        // best-effort cleanup; never fail the suite on teardown
+      }
       driver.close();
+    }
   }
 
   Session boltSession() {
@@ -155,6 +167,10 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     // rather than dependent on two sleep windows overlapping (avoids a
     // scheduler-serialized false negative under CI load).
     final CyclicBarrier bothHaveWritten = new CyclicBarrier(2);
+    // Records a barrier failure so an inconclusive run (the two writes never
+    // held concurrently) is distinguishable from a genuine "no transient error"
+    // result, rather than both surfacing as an empty errors list.
+    final AtomicReference<Throwable> barrierFailure = new AtomicReference<>();
     final Runnable racingWrite = () -> {
       // try-with-resources closes (and thus rolls back an uncommitted) tx and
       // session before the catch runs, so a losing commit still surfaces here.
@@ -166,7 +182,9 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
         tx.commit();
       } catch (final Neo4jException e) {
         errors.add(e);
-      } catch (final InterruptedException | BrokenBarrierException | TimeoutException e) {
+      } catch (final BrokenBarrierException | TimeoutException e) {
+        barrierFailure.compareAndSet(null, e);
+      } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
       }
     };
@@ -180,6 +198,9 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     } catch (final InterruptedException ignored) {
       Thread.currentThread().interrupt();
     }
+    if (errors.isEmpty() && barrierFailure.get() != null)
+      throw new IllegalStateException("Two-writer race was inconclusive: the writes never held "
+          + "concurrently (barrier did not sync), so no conflict could form", barrierFailure.get());
     return errors;
   }
 
@@ -586,7 +607,7 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
         try (final Session s = boltSession()) {
           final Object v = s.run("MATCH (t:TypeMatrix) RETURN t.durationProp AS d LIMIT 1")
               .single().get("d").asObject();
-          assertThat(v).isInstanceOf(org.neo4j.driver.types.IsoDuration.class);
+          assertThat(v).isInstanceOf(IsoDuration.class);
         }
       });
     }
@@ -598,7 +619,7 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
         try (final Session s = boltSession()) {
           final Object v = s.run("MATCH (t:TypeMatrix) RETURN t.pointProp AS p LIMIT 1")
               .single().get("p").asObject();
-          assertThat(v).isInstanceOf(org.neo4j.driver.types.Point.class);
+          assertThat(v).isInstanceOf(Point.class);
         }
       });
     }
