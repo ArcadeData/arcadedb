@@ -242,4 +242,64 @@ public class BoltE2ETests
         var verifyRecord = await verifyResult.SingleAsync();
         Assert.Equal(1L, verifyRecord["c"].As<long>());
     }
+
+    [Fact(DisplayName = "RESULT-001: Streaming PULL returns records incrementally")]
+    public async Task Result001_StreamingPullIncremental()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (b:Beer) RETURN b.name AS name LIMIT 10");
+
+        var seen = 0;
+        while (await result.FetchAsync())
+        {
+            Assert.NotNull(result.Current["name"].As<string>());
+            seen++;
+        }
+        Assert.Equal(10, seen);
+    }
+
+    [Fact(DisplayName = "RESULT-002: PULL n streams exactly n rows, further PULL continues from where it left off")]
+    public async Task Result002_PartialPullThenContinue()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer").WithFetchSize(2));
+        var result = await session.RunAsync("MATCH (b:Beer) RETURN b.name AS name LIMIT 5");
+
+        var firstTwo = new List<IRecord>();
+        for (var i = 0; i < 2; i++)
+        {
+            Assert.True(await result.FetchAsync());
+            firstTwo.Add(result.Current);
+        }
+        Assert.Equal(2, firstTwo.Count);
+
+        var remaining = await result.ToListAsync();
+        Assert.Equal(3, remaining.Count);
+    }
+
+    [Fact(DisplayName = "RESULT-003: DISCARD abandons remaining rows without materializing them")]
+    public async Task Result003_DiscardAbandonsRemaining()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (b:Beer) RETURN b.name AS name LIMIT 5");
+        await result.FetchAsync();
+        var summary = await result.ConsumeAsync();
+        Assert.NotNull(summary);
+    }
+
+    [Fact(DisplayName = "RESULT-004: ResultSummary counters accurately reflect write operations")]
+    public async Task Result004_SummaryCountersReflectWrites()
+    {
+        await KnownGapAssertions.AssertStillFailsAsync(async () =>
+        {
+            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+            var result = await session.RunAsync(
+                "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
+                new { n = "RESULT-004-Beer", b = "RESULT-004-Brewery" });
+            var summary = await result.ConsumeAsync();
+
+            Assert.Equal(2, summary.Counters.NodesCreated);
+            Assert.Equal(1, summary.Counters.RelationshipsCreated);
+            Assert.True(summary.Counters.PropertiesSet >= 2);
+        }, "RESULT-004: BoltNetworkExecutor never populates SUCCESS 'stats' for write queries - see #4890");
+    }
 }
