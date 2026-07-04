@@ -231,13 +231,7 @@ scenarios:
       - "When the failure occurs inside an executeWrite callback"
       - "Then the driver should see a Neo.TransientError.* code and retry automatically per its built-in policy"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltErrorCodes.java defines only 7 codes, all Neo.ClientError.*/
-      Neo.DatabaseError.* - no Neo.TransientError.* code exists, so
-      ArcadeDB never signals a retryable condition and driver-side
-      transient-retry logic cannot be exercised.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: CAUSAL-001
     area: causal-consistency
     title: "Bookmark enforces read-after-write across sessions"
@@ -330,7 +324,17 @@ scenarios:
       - "When the driver runs 'CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})'"
       - "Then summary.counters().nodesCreated() == 2, relationshipsCreated() == 1, and propertiesSet() matches"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: expected-fail
+    known_limitation: >
+      ResultSummary counters (nodesCreated, relationshipsCreated,
+      propertiesSet, etc.) are never populated for Bolt write queries -
+      BoltNetworkExecutor's handleRun/handlePull/handleDiscard build no
+      'stats' map in the SUCCESS response, and no CRUD-counter tracking
+      exists in the underlying query engine (Cypher's
+      CreateStep/SetStep/DeleteStep don't aggregate counts) to source such
+      values from even if the Bolt layer were fixed - discovered while
+      implementing issue #4885's Python conformance suite.
+    tracking_issue: "#4890"
   - id: TYPE-001
     area: type-roundtrip
     title: "Node round-trips as a native Bolt structure"
@@ -414,12 +418,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.localDateProp AS d'"
       - "Then d is a native LocalDate/Date driver type, and 'RETURN $d AS echo' with params={d: <that date>} round-trips it unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltStructureMapper.toPackStreamValue (lines 116-150) converts
-      LocalDate via .toString()/ISO string fallback instead of the native
-      Bolt Date structure (sig 0x44).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-008
     area: type-roundtrip
     title: "LocalTime round-trips as a native Bolt LocalTime structure"
@@ -430,11 +429,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.localTimeProp AS t2'"
       - "Then t2 is a native LocalTime driver type, and round-trips via $-parameter unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      Same ISO-string fallback as TYPE-007, for LocalTime (native Bolt
-      LocalTime structure sig 0x74 not produced).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-009
     area: type-roundtrip
     title: "LocalDateTime round-trips as a native Bolt LocalDateTime structure"
@@ -445,11 +440,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.localDateTimeProp AS dt'"
       - "Then dt is a native LocalDateTime driver type, and round-trips via $-parameter unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      Same ISO-string fallback as TYPE-007, for LocalDateTime (native Bolt
-      LocalDateTime structure sig 0x64 not produced).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-010
     area: type-roundtrip
     title: "Offset/zoned DateTime round-trips as a native Bolt DateTime structure"
@@ -460,12 +451,7 @@ scenarios:
       - "When the driver runs 'MATCH (t:TypeMatrix) RETURN t.offsetDateTimeProp AS dt'"
       - "Then dt is a native OffsetDateTime/ZonedDateTime driver type preserving the +02:00 offset, and round-trips via $-parameter unchanged"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      Same ISO-string fallback as TYPE-007, for OffsetDateTime/ZonedDateTime
-      (native Bolt DateTime/DateTimeZoneId structures, sig 0x49/0x69, not
-      produced).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-011
     area: type-roundtrip
     title: "Duration round-trips as a native Bolt Duration structure"
@@ -531,7 +517,16 @@ scenarios:
       - "When the driver runs a semantically invalid query, e.g. referencing an undeclared variable in RETURN"
       - "Then the driver receives error code Neo.ClientError.Statement.SemanticError (BoltErrorCodes.SEMANTIC_ERROR)"
     applicable_driver_versions: all
-    current_status: passing
+    current_status: expected-fail
+    known_limitation: >
+      CypherSemanticValidator correctly detects the undefined variable but
+      throws it via CommandParsingException, the same exception class used
+      for genuine ANTLR syntax errors - BoltNetworkExecutor's RUN handler
+      maps error codes by exception type, so it cannot distinguish semantic
+      from syntax errors, making Neo.ClientError.Statement.SemanticError
+      effectively dead code in the Bolt module - discovered while
+      implementing issue #4885's Python conformance suite.
+    tracking_issue: "#4890"
   - id: ERR-003
     area: errors
     title: "Unauthenticated request returns Neo.ClientError.Security.Forbidden"
@@ -542,7 +537,12 @@ scenarios:
       - "When the driver sends RUN before completing HELLO/LOGON"
       - "Then the driver receives error code Neo.ClientError.Security.Forbidden (BoltErrorCodes.FORBIDDEN_ERROR)"
     applicable_driver_versions: all
-    current_status: passing
+    current_status: not-applicable
+    known_limitation: >
+      Cannot be triggered through any official driver's public API - every
+      official Neo4j driver completes HELLO/LOGON internally before exposing
+      session/query methods to user code. Testable only via a bespoke
+      raw-socket client, which the epic's governing principles exclude.
   - id: ERR-004
     area: errors
     title: "Transient conditions surface Neo.TransientError.* codes"
@@ -559,12 +559,7 @@ scenarios:
       - "When the losing session's write fails"
       - "Then it should receive a Neo.TransientError.* code, not a ClientError/DatabaseError code"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltErrorCodes.java defines only Neo.ClientError.*/Neo.DatabaseError.*
-      codes (7 total) - no Neo.TransientError.* code exists anywhere in the
-      Bolt module.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: PROTO-001
     area: protocol
     title: "Version negotiation succeeds for Bolt 4.4, 4.0, and 3.0"

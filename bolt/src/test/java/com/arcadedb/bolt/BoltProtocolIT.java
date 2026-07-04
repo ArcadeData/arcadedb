@@ -19,6 +19,8 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.bolt.message.BoltMessage;
+import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.database.Database;
 import com.arcadedb.schema.Schema;
 import com.arcadedb.schema.Type;
@@ -95,6 +97,44 @@ public class BoltProtocolIT extends BaseGraphServerTest {
   void connection() {
     try (Driver driver = getDriver()) {
       driver.verifyConnectivity();
+    }
+  }
+
+  @Test
+  void helloWithoutAuthSchemeIsRejected() throws Exception {
+    // A HELLO extra map with no "scheme", "principal", or "credentials" key at all - not
+    // even scheme:"none" - must still be rejected rather than treated as authenticated.
+    try (Socket socket = new Socket("localhost", 7687)) {
+      final OutputStream rawOut = socket.getOutputStream();
+
+      final ByteBuffer handshake = ByteBuffer.allocate(20);
+      handshake.put((byte) 0x60).put((byte) 0x60).put((byte) 0xB0).put((byte) 0x17); // magic
+      handshake.putInt(0x00020404); // v4.4 with range 2
+      handshake.putInt(0x00000004); // v4.0
+      handshake.putInt(0x00000003); // v3.0
+      handshake.putInt(0x00000000); // padding
+      handshake.flip();
+      rawOut.write(handshake.array());
+      rawOut.flush();
+
+      final DataInputStream rawIn = new DataInputStream(socket.getInputStream());
+      final byte[] negotiatedVersion = new byte[4];
+      rawIn.readFully(negotiatedVersion);
+
+      final PackStreamWriter writer = new PackStreamWriter();
+      writer.writeStructureHeader(BoltMessage.HELLO, 1);
+      writer.writeMap(Map.of("user_agent", "helloWithoutAuthSchemeIsRejected/1.0"));
+
+      final BoltChunkedOutput chunkedOut = new BoltChunkedOutput(rawOut);
+      chunkedOut.writeMessage(writer.toByteArray());
+
+      final BoltChunkedInput chunkedIn = new BoltChunkedInput(socket.getInputStream());
+      final byte[] response = chunkedIn.readMessage();
+
+      // response[0] = TINY_STRUCT|fieldCount marker, response[1] = signature byte
+      // (SuccessMessage/FailureMessage are both single-field structures).
+      assertThat(response[1]).as("HELLO with no scheme/principal/credentials must be rejected")
+          .isEqualTo(BoltMessage.FAILURE);
     }
   }
 
