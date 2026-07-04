@@ -302,4 +302,170 @@ public class BoltE2ETests
             Assert.True(summary.Counters.PropertiesSet >= 2);
         }, "RESULT-004: BoltNetworkExecutor never populates SUCCESS 'stats' for write queries - see #4890");
     }
+
+    [Fact(DisplayName = "TYPE-001: Node round-trips as a native Bolt structure")]
+    public async Task Type001_NodeRoundtrip()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (b:Beer) RETURN b LIMIT 1");
+        var record = await result.SingleAsync();
+        var node = record["b"].As<INode>();
+        Assert.Contains("Beer", node.Labels);
+        Assert.NotNull(node.Get<string>("name"));
+    }
+
+    [Fact(DisplayName = "TYPE-002: Relationship round-trips as a native Bolt structure")]
+    public async Task Type002_RelationshipRoundtrip()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH ()-[r]->() RETURN r LIMIT 1");
+        var record = await result.SingleAsync();
+        var relationship = record["r"].As<IRelationship>();
+        Assert.NotNull(relationship.Type);
+    }
+
+    [Fact(DisplayName = "TYPE-003: Path round-trips as a native Bolt structure")]
+    public async Task Type003_PathRoundtrip()
+    {
+        await KnownGapAssertions.AssertStillFailsAsync(async () =>
+        {
+            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+            var result = await session.RunAsync("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1");
+            var record = await result.SingleAsync();
+            var path = record["p"].As<IPath>();
+            Assert.True(path.Nodes.Count() >= 2);
+        }, "TYPE-003: structure/BoltPath.java has zero call sites - query results never construct native Path structures - see #4890");
+    }
+
+    [Fact(DisplayName = "TYPE-004: ByteArray round-trips as a bound parameter")]
+    public async Task Type004_ByteArrayParamRoundtrip()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var payload = new byte[] { 1, 2, 3, 4 };
+        var result = await session.RunAsync("RETURN $b AS echo", new { b = payload });
+        var record = await result.SingleAsync();
+        Assert.Equal(payload, record["echo"].As<byte[]>());
+    }
+
+    [Fact(DisplayName = "TYPE-005: Nested lists and maps round-trip structurally")]
+    public async Task Type005_NestedListMapRoundtrip()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.nestedListProp AS l, t.nestedMapProp AS m");
+        var record = await result.SingleAsync();
+
+        var list = record["l"].As<List<object>>();
+        Assert.Equal(1L, list[0].As<long>());
+        Assert.Equal(2L, list[1].As<long>());
+        var nestedList = list[2].As<List<object>>();
+        Assert.Equal(3L, nestedList[0].As<long>());
+        Assert.Equal(4L, nestedList[1].As<long>());
+
+        var map = record["m"].As<Dictionary<string, object>>();
+        Assert.Equal(1L, map["a"].As<long>());
+        var nestedMap = map["b"].As<Dictionary<string, object>>();
+        Assert.Equal(2L, nestedMap["c"].As<long>());
+    }
+
+    [Fact(DisplayName = "TYPE-006: Null values round-trip")]
+    public async Task Type006_NullRoundtrip()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.nullProp AS n");
+        var record = await result.SingleAsync();
+        Assert.Null(record["n"]);
+
+        var echoResult = await session.RunAsync("RETURN $p AS echo", new { p = (object?)null });
+        var echoRecord = await echoResult.SingleAsync();
+        Assert.Null(echoRecord["echo"]);
+    }
+
+    [Fact(DisplayName = "TYPE-007: LocalDate round-trips as a native Bolt Date structure")]
+    public async Task Type007_LocalDateRoundtrip()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.localDateProp AS d");
+        var record = await result.SingleAsync();
+        var date = record["d"].As<LocalDate>();
+
+        var echoResult = await session.RunAsync("RETURN $d AS echo", new { d = date });
+        var echoRecord = await echoResult.SingleAsync();
+        Assert.Equal(date, echoRecord["echo"].As<LocalDate>());
+    }
+
+    [Fact(DisplayName = "TYPE-008: LocalTime round-trips as a native Bolt LocalTime structure")]
+    public async Task Type008_LocalTimeRoundtrip()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.localTimeProp AS t2");
+        var record = await result.SingleAsync();
+        var time = record["t2"].As<LocalTime>();
+
+        var echoResult = await session.RunAsync("RETURN $t AS echo", new { t = time });
+        var echoRecord = await echoResult.SingleAsync();
+        Assert.Equal(time, echoRecord["echo"].As<LocalTime>());
+    }
+
+    [Fact(DisplayName = "TYPE-009: LocalDateTime round-trips as a native Bolt LocalDateTime structure")]
+    public async Task Type009_LocalDateTimeRoundtrip()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.localDateTimeProp AS dt");
+        var record = await result.SingleAsync();
+        var dateTime = record["dt"].As<LocalDateTime>();
+
+        var echoResult = await session.RunAsync("RETURN $dt AS echo", new { dt = dateTime });
+        var echoRecord = await echoResult.SingleAsync();
+        Assert.Equal(dateTime, echoRecord["echo"].As<LocalDateTime>());
+    }
+
+    [Fact(DisplayName = "TYPE-010: Offset/zoned DateTime round-trips as a native Bolt DateTime structure")]
+    public async Task Type010_OffsetDateTimeRoundtrip()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.offsetDateTimeProp AS dt");
+        var record = await result.SingleAsync();
+        var dateTime = record["dt"].As<ZonedDateTime>();
+        Assert.Equal(2 * 3600, dateTime.OffsetSeconds);
+
+        var echoResult = await session.RunAsync("RETURN $dt AS echo", new { dt = dateTime });
+        var echoRecord = await echoResult.SingleAsync();
+        Assert.Equal(dateTime, echoRecord["echo"].As<ZonedDateTime>());
+    }
+
+    [Fact(DisplayName = "TYPE-011: Duration round-trips as a native Bolt Duration structure")]
+    public async Task Type011_DurationRoundtrip()
+    {
+        await KnownGapAssertions.AssertStillFailsAsync(async () =>
+        {
+            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+            var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.durationProp AS d");
+            var record = await result.SingleAsync();
+            var duration = record["d"].As<Duration>();
+
+            var echoResult = await session.RunAsync("RETURN $d AS echo", new { d = duration });
+            var echoRecord = await echoResult.SingleAsync();
+            Assert.Equal(duration, echoRecord["echo"].As<Duration>());
+        }, "TYPE-011: BoltStructureMapper/PackStreamWriter have no Duration handling at all - see #4890");
+    }
+
+    [Fact(DisplayName = "TYPE-012: Point round-trips as a native Bolt Point structure")]
+    public async Task Type012_PointRoundtrip()
+    {
+        await KnownGapAssertions.AssertStillFailsAsync(async () =>
+        {
+            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+            var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.pointProp AS p");
+            var record = await result.SingleAsync();
+            var point = record["p"].As<Point>();
+            Assert.Equal(12.34, point.X, 2);
+            Assert.Equal(56.78, point.Y, 2);
+
+            var echoResult = await session.RunAsync("RETURN $p AS echo", new { p = point });
+            var echoRecord = await echoResult.SingleAsync();
+            var echoPoint = echoRecord["echo"].As<Point>();
+            Assert.Equal(12.34, echoPoint.X, 2);
+            Assert.Equal(56.78, echoPoint.Y, 2);
+        }, "TYPE-012: no Point/spatial handling exists in BoltStructureMapper or PackStreamWriter - see #4890");
+    }
 }
