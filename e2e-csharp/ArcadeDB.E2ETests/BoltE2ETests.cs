@@ -510,4 +510,42 @@ public class BoltE2ETests
         Assert.Contains(errors, e => e is TransientException);
         Assert.DoesNotContain(errors, e => e is ClientException || e is DatabaseException);
     }
+
+    [Fact(DisplayName = "PROTO-001: Version negotiation succeeds for Bolt 4.4, 4.0, and 3.0")]
+    public async Task Proto001_VersionNegotiationSucceeds()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("RETURN 1 AS value");
+        var record = await result.SingleAsync();
+        Assert.Equal(1L, record["value"].As<long>());
+    }
+
+    [Fact(DisplayName = "PROTO-002: Version negotiation with a Bolt 5.x-only driver")]
+    public async Task Proto002_Bolt5xNegotiationIsDocumented()
+    {
+        await KnownGapAssertions.AssertStillFailsAsync(async () =>
+        {
+            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+            var result = await session.RunAsync("RETURN 1 AS value");
+            var summary = await result.ConsumeAsync();
+
+            var protocolVersionString = summary.Server.ProtocolVersion.ToString();
+            var majorVersion = int.Parse(protocolVersionString!.Split('.')[0]);
+            Assert.True(majorVersion >= 5,
+                $"driver negotiated Bolt {protocolVersionString} instead of a documented Bolt 5.x version");
+        }, "PROTO-002: BoltNetworkExecutor.SUPPORTED_VERSIONS never advertises Bolt 5.x - see #4890");
+    }
+
+    [Fact(DisplayName = "PROTO-003: RESET returns the connection to a clean state mid-stream")]
+    public async Task Proto003_ResetMidStream()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer").WithFetchSize(2));
+        var result = await session.RunAsync("MATCH (b:Beer) RETURN b.name AS name LIMIT 10");
+        await result.FetchAsync();
+        await result.ConsumeAsync();
+
+        var followUp = await session.RunAsync("RETURN 1 AS value");
+        var followUpRecord = await followUp.SingleAsync();
+        Assert.Equal(1L, followUpRecord["value"].As<long>());
+    }
 }
