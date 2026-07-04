@@ -865,10 +865,10 @@ describe("Bolt conformance (issue #4888)", () => {
 
     // KNOWN GAP (#4890): the server never advertises any Bolt 5.x version;
     // 5.x-capable drivers only work by silently downgrading to 4.4, which is
-    // undocumented/untested as a deliberate stance. There is no driver knob to
-    // force 5.x-only negotiation through the managed API, so this asserts the
-    // documented-non-support fact: the negotiated protocol is < 5. It flips
-    // red only if the server starts advertising 5.x.
+    // undocumented/untested as a deliberate stance. Under it.failing this body
+    // asserts the Neo4j-correct behavior (negotiated protocol >= 5), so the
+    // test stays green while the gap reproduces (a 4.x version is negotiated)
+    // and flips red (XPASS) the moment the server starts advertising 5.x.
     it.failing("[PROTO-002] Bolt 5.x negotiation is supported", async () => {
       const info = await driver.getServerInfo({ database: "beer" });
       expect(Number(info.protocolVersion)).toBeGreaterThanOrEqual(5);
