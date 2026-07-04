@@ -59,4 +59,32 @@ public class BoltE2ETests
     public void Conn004_NeoRoutingHaTopology()
     {
     }
+
+    [Fact(DisplayName = "AUTH-001: Basic auth succeeds with valid credentials")]
+    public async Task Auth001_BasicAuthValid()
+    {
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("RETURN 1 AS value");
+        var record = await result.SingleAsync();
+        Assert.Equal(1L, record["value"].As<long>());
+    }
+
+    [Fact(DisplayName = "AUTH-002: Basic auth fails with invalid credentials")]
+    public async Task Auth002_BasicAuthInvalid()
+    {
+        await using var driver = GraphDatabase.Driver(
+            _fixture.BoltUri,
+            AuthTokens.Basic(ArcadeDbBoltFixture.RootUser, "wrong-password"));
+
+        var ex = await Assert.ThrowsAsync<AuthenticationException>(() => driver.VerifyConnectivityAsync());
+        Assert.NotNull(ex);
+    }
+
+    [Fact(DisplayName = "AUTH-003: Auth scheme 'none' is rejected (intentional, not a bug)")]
+    public async Task Auth003_AuthNoneRejected()
+    {
+        await using var driver = GraphDatabase.Driver(_fixture.BoltUri, AuthTokens.None);
+
+        await Assert.ThrowsAnyAsync<Neo4jException>(() => driver.VerifyConnectivityAsync());
+    }
 }
