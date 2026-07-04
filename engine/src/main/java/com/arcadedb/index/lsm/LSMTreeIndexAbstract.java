@@ -645,15 +645,15 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
 
   protected boolean lookupInPageAndAddInResultset(final BasePage currentPage, final Binary currentPageBuffer, final int count,
       final Object[] originalKeys, final Object[] convertedKeys, final int limit, final Set<IndexCursorEntry> set,
-      final Set<TransactionIndexContext.ComparableKey> removedKeys) {
+      final Set<TransactionIndexContext.ComparableKey> removedKeys, final RidHashSet deletedRIDs) {
     final LookupResult result = lookupInPage(currentPage.getPageId().getPageNumber(), count, currentPageBuffer, convertedKeys, 1);
     if (result.found) {
       // REAL ALL THE ENTRIES
       final List<RID> allValues = readAllValuesFromResult(currentPageBuffer, result);
 
-      final RidHashSet validRIDs = new RidHashSet();
-      final RidHashSet deletedRIDs = new RidHashSet();
-
+      // #4945: deletedRIDs is threaded from the caller across pages and the compacted sub-index, exactly like
+      // removedKeys. For a non-unique index a per-RID tombstone and its ADD frequently live in different pages,
+      // so a page-local deletedRIDs set resurrected the deleted RID once the walk reached the older page.
       final TransactionIndexContext.ComparableKey keys = new TransactionIndexContext.ComparableKey(convertedKeys);
 
       // START FROM THE LAST ENTRY
@@ -684,7 +684,6 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
           continue;
         }
 
-        validRIDs.add(rid);
         set.add(new IndexCursorEntry(originalKeys, rid, 1));
 
         if (limit > -1 && set.size() >= limit) {
