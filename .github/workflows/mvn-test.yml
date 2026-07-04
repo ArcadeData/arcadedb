@@ -525,6 +525,12 @@ jobs:
       - name: Load Docker image
         run: docker load < /tmp/arcadedb-image.tar
 
+      # The TLS scenarios (CONN-002/005) generate a keystore with keytool. It
+      # ships with the JDK preinstalled on ubuntu-latest; fail loudly here if it
+      # ever leaves the PATH, so those scenarios can't silently skip in CI.
+      - name: Verify keytool is available (required by TLS scenarios)
+        run: command -v keytool
+
       - name: E2E Go Tests
         working-directory: e2e-go
         # 20m timeout: the plain container plus a derived-image build and two

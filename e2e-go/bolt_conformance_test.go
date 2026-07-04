@@ -312,6 +312,12 @@ func raceUntilConflict(t *testing.T, d neo4j.DriverWithContext, database, marker
 func assertConflictTransient(t *testing.T, errs []error) {
 	t.Helper()
 	if len(errs) == 0 {
+		// Make the non-certification loud: a bare SKIP can read as a green,
+		// certified run. This line (visible under -v) states plainly that the
+		// transient-error contract was NOT exercised this run, so a permanent
+		// clean-serialization regression can't hide as an all-green gate.
+		t.Logf("NOT CERTIFIED THIS RUN: the write conflict never reproduced across the bounded retries, " +
+			"so the Neo.TransientError.* contract was not asserted")
 		t.Skip("write conflict did not reproduce within the bounded retries - " +
 			"a scheduling artifact on a loaded runner, not a conformance violation")
 	}
@@ -359,6 +365,9 @@ func Test_MDB_001_SessionSelectsNamedDatabase(t *testing.T) {
 func Test_MDB_002_SessionsAcrossDatabasesAreIsolated(t *testing.T) {
 	d := newDriver(t, boltURI(plainContainer, "bolt"))
 	scratch := d.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "boltscratch"})
+	// Ensure the scratch session (and any still-open tx) is released even if the
+	// isolation assertion below fails between begin and commit.
+	t.Cleanup(func() { _ = scratch.Close(ctx) })
 	tx, err := scratch.BeginTransaction(ctx)
 	require.NoError(t, err)
 	_, err = tx.Run(ctx, "CREATE (:ScratchProbe {marker: 'mdb-002'})", nil)
