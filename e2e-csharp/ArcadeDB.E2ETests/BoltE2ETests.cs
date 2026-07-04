@@ -153,7 +153,7 @@ public class BoltE2ETests
 
         using var barrier = new Barrier(2);
 
-        async Task<int> ManagedIncrementAsync()
+        async Task<long> ManagedIncrementAsync()
         {
             await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
             if (!barrier.SignalAndWait(TimeSpan.FromSeconds(5)))
@@ -170,7 +170,7 @@ public class BoltE2ETests
                 // actually contend rather than serializing cleanly - without this,
                 // ExecuteWriteAsync's automatic retry has nothing to prove.
                 await Task.Delay(500);
-                return record["v"].As<int>();
+                return record["v"].As<long>();
             });
         }
 
@@ -182,7 +182,7 @@ public class BoltE2ETests
         // path).
         var results = await Task.WhenAll(Task.Run(ManagedIncrementAsync), Task.Run(ManagedIncrementAsync));
 
-        Assert.Equal(new[] { 1, 2 }, results.OrderBy(v => v).ToArray());
+        Assert.Equal(new[] { 1L, 2L }, results.OrderBy(v => v).ToArray());
     }
 
     // Used by ERR-004 (explicit-transaction path): two sessions race to update the same node
@@ -564,8 +564,10 @@ public class BoltE2ETests
             var result = await session.RunAsync("RETURN 1 AS value");
             var summary = await result.ConsumeAsync();
 
-            var protocolVersionString = summary.Server.ProtocolVersion.ToString();
-            var majorVersion = int.Parse(protocolVersionString!.Split('.')[0]);
+            var protocolVersionString = summary.Server.ProtocolVersion?.ToString()
+                ?? throw new InvalidCastException("ProtocolVersion was null");
+            if (!int.TryParse(protocolVersionString.Split('.')[0], out var majorVersion))
+                throw new InvalidCastException($"ProtocolVersion '{protocolVersionString}' was not in the expected 'major.minor' shape");
             Assert.True(majorVersion >= 5,
                 $"driver negotiated Bolt {protocolVersionString} instead of a documented Bolt 5.x version");
         }, "PROTO-002: BoltNetworkExecutor.SUPPORTED_VERSIONS never advertises Bolt 5.x - see #4890");
