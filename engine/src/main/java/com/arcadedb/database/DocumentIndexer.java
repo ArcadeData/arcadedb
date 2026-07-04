@@ -28,11 +28,13 @@ import com.arcadedb.index.IndexInternal;
 import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.function.Function;
 
 public class DocumentIndexer {
@@ -287,12 +289,33 @@ public class DocumentIndexer {
     }
     if (value instanceof EmbeddedDocument embedded)
       return embedded.detach();
+    if (value instanceof Set<?> set) {
+      // A Set is not an expected indexed shape (the serializer produces scalar/List/Map), but copy it anyway
+      // rather than store it aliased: an in-place mutation of an aliased snapshot value would hide an index
+      // delta. LinkedHashSet preserves Set.equals semantics for the diff.
+      final Set<Object> copy = new LinkedHashSet<>(set.size());
+      for (final Object element : set)
+        copy.add(element instanceof EmbeddedDocument embedded ? embedded.detach() : element);
+      return copy;
+    }
+    if (value instanceof Object[] array)
+      // Same reasoning for arrays: unexpected as an indexed value, but never stored aliased. (Array equals is
+      // identity-based, so the diff already treats any deserialized array as changed; the copy doesn't worsen that.)
+      return Arrays.copyOf(array, array.length);
+    // Remaining values (String, numbers, dates, RIDs) are immutable: store by reference.
     return value;
   }
 
-  public void updateDocument(final Document originalRecord, final Document modifiedRecord, final List<IndexInternal> indexes) {
+  /**
+   * @return {@code true} if at least one index entry was actually removed/added, {@code false} when every
+   *     involved index saw identical key values. The caller uses this to skip refreshing the per-transaction
+   *     indexed-state snapshot (issue #4935): when nothing changed, the previous diff source (committed buffer
+   *     or an earlier snapshot) still describes the indexed state, so bulk updates that only touch non-indexed
+   *     properties pay no snapshot cost at all.
+   */
+  public boolean updateDocument(final Document originalRecord, final Document modifiedRecord, final List<IndexInternal> indexes) {
     if (indexes == null || indexes.isEmpty())
-      return;
+      return false;
 
     if (originalRecord == null)
       throw new IllegalArgumentException("Original record is null");
@@ -302,8 +325,9 @@ public class DocumentIndexer {
     final RID rid = modifiedRecord.getIdentity();
     if (rid == null)
       // RECORD IS NOT PERSISTENT
-      return;
+      return false;
 
+    boolean anyIndexModified = false;
     for (final Index index : indexes) {
       final List<String> keyNames = index.getPropertyNames();
 
@@ -356,20 +380,26 @@ public class DocumentIndexer {
         // REMOVE THE OLD ENTRY KEYS/VALUE AND INSERT THE NEW ONE
         index.remove(oldKeyValues, rid);
         index.put(newKeyValues, new RID[] { rid });
+        anyIndexModified = true;
       } else if (expansion == KeyExpansion.LIST_ITEM) {
         // List update logic - compute delta
-        updateListItemsInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansionIndex);
+        anyIndexModified |= updateListItemsInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansionIndex);
       } else {
         // Map update logic - compute delta on keys or values
-        updateMapEntriesInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray, expansionIndex, expansion);
+        anyIndexModified |= updateMapEntriesInIndex(index, rid, originalRecord, modifiedRecord, propertyNamesArray,
+            expansionIndex, expansion);
       }
     }
+    return anyIndexModified;
   }
 
-  private void updateMapEntriesInIndex(final Index index, final RID rid, final Document originalRecord,
+  /** @return {@code true} if at least one index entry was removed or added. */
+  private boolean updateMapEntriesInIndex(final Index index, final RID rid, final Document originalRecord,
       final Document modifiedRecord, final String[] propertyNames, final int mapPropertyIndex, final KeyExpansion expansion) {
     final Collection<Object> oldElements = mapElements(originalRecord, propertyNames[mapPropertyIndex], expansion);
     final Collection<Object> newElements = mapElements(modifiedRecord, propertyNames[mapPropertyIndex], expansion);
+
+    boolean changed = false;
 
     // Remove entries for elements no longer present
     for (final Object oldElement : oldElements) {
@@ -378,6 +408,7 @@ public class DocumentIndexer {
         for (int i = 0; i < keyValues.length; ++i)
           keyValues[i] = i == mapPropertyIndex ? oldElement : getPropertyValue(originalRecord, propertyNames[i]);
         index.remove(keyValues, rid);
+        changed = true;
       }
     }
 
@@ -388,13 +419,18 @@ public class DocumentIndexer {
         for (int i = 0; i < keyValues.length; ++i)
           keyValues[i] = i == mapPropertyIndex ? newElement : getPropertyValue(modifiedRecord, propertyNames[i]);
         index.put(keyValues, new RID[] { rid });
+        changed = true;
       }
     }
+
+    return changed;
   }
 
-  private void updateListItemsInIndex(final Index index, final RID rid,
+  /** @return {@code true} if at least one index entry was removed or added. */
+  private boolean updateListItemsInIndex(final Index index, final RID rid,
       final Document originalRecord, final Document modifiedRecord,
       final String[] propertyNames, final int listPropertyIndex) {
+    boolean changed = false;
     final String propertyName = propertyNames[listPropertyIndex];
     final String[] pathParts = propertyName.split("\\.");
     final String listPropertyName = pathParts[0];
@@ -455,6 +491,7 @@ public class DocumentIndexer {
             }
           }
           index.remove(keyValues, rid);
+          changed = true;
         }
       }
 
@@ -470,6 +507,7 @@ public class DocumentIndexer {
             }
           }
           index.put(keyValues, new RID[] { rid });
+          changed = true;
         }
       }
     } else {
@@ -486,6 +524,7 @@ public class DocumentIndexer {
             }
           }
           index.remove(keyValues, rid);
+          changed = true;
         }
       }
 
@@ -501,9 +540,12 @@ public class DocumentIndexer {
             }
           }
           index.put(keyValues, new RID[] { rid });
+          changed = true;
         }
       }
     }
+
+    return changed;
   }
 
   public void deleteDocument(final Document record) {

@@ -199,6 +199,40 @@ class DoubleUpdateInTransactionIndexTest extends TestHelper {
   }
 
   @Test
+  void keyChangeThenNoChangeThenKeyChangeInOneTransaction() {
+    createSchema(true);
+
+    final MutableDocument[] holder = new MutableDocument[1];
+    database.transaction(() -> holder[0] = database.newDocument(TYPE_NAME).set("email", "v0").save());
+    final String rid = holder[0].getIdentity().toString();
+
+    // Save 1 changes the key (snapshot refreshed), save 2 changes only a non-indexed property (snapshot
+    // refresh is SKIPPED because no index changed - the retained snapshot must still be accurate), save 3
+    // changes the key again and must diff against save 1's state.
+    database.transaction(() -> {
+      final MutableDocument doc = holder[0].modify();
+      doc.set("email", "v1");
+      doc.save();
+      doc.set("age", 7);
+      doc.save();
+      doc.set("email", "v2");
+      doc.save();
+    });
+
+    for (final String gone : new String[] { "v0", "v1" })
+      assertThat(database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE email = '" + gone + "'").hasNext())
+          .as("no phantom for '" + gone + "'").isFalse();
+    assertThat(database.query("sql", "SELECT FROM " + TYPE_NAME + " WHERE email = 'v2'").next()
+        .getIdentity().get().toString()).isEqualTo(rid);
+
+    // Unique constraint fully released for both stale values.
+    database.transaction(() -> {
+      database.newDocument(TYPE_NAME).set("email", "v0").save();
+      database.newDocument(TYPE_NAME).set("email", "v1").save();
+    });
+  }
+
+  @Test
   void listByItemIndexDoubleUpdateComputesDeltaAcrossSaves() {
     database.getSchema().createDocumentType(TYPE_NAME).createProperty("tags", java.util.List.class);
     database.command("sql", "CREATE INDEX ON " + TYPE_NAME + " (tags BY ITEM) NOTUNIQUE");

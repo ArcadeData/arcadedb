@@ -96,6 +96,8 @@ public class TransactionContext implements Transaction {
   // same record is updated more than once inside one transaction, the second+ update must diff its index change
   // against the previous in-transaction value, not the committed buffer (which stays frozen until commit because
   // serialization is deferred). Without this, every intermediate value leaks a phantom index entry.
+  // Holds one small entry (indexed values only) per distinct CHANGED-index RID; entries are dropped on
+  // delete and the map is released on reset(), so memory scales with updatedRecords, never beyond it.
   private       Map<RID, Document>                   updatedRecordsIndexSnapshot = null;
   private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel              = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
