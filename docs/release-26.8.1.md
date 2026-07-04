@@ -47,6 +47,31 @@ that could starve the very snapshot resync meant to heal the node.
   `IndexException` naming the index and telling the operator to rebuild it, instead of hanging. The guard is
   allocation-free so the unique-check hot path is unaffected. Recovery: `DROP` and recreate (or
   `CHECK DATABASE FIX`) the affected index.
+- **LSM index: compaction no longer loses a key that was deleted and re-inserted.** The compactor merges
+  pages oldest to newest, accumulating each key's RIDs in an insertion-ordered set, while the reader treats
+  the LAST position of an entry as the newest operation. A RID that was added, deleted, and added again
+  (e.g. a record whose indexed property was changed away and back, across enough writes for the three
+  operations to land in different sealed pages) kept its original pre-tombstone position in the set, so the
+  tombstone ended up "newest" and the row silently vanished from the index after compaction: a query by that
+  key returned nothing while the record still existed
+  ([#4942](https://github.com/ArcadeData/arcadedb/issues/4942)). Duplicates now move to the end of the set so
+  last-write-wins is preserved for both re-added RIDs and repeated tombstones.
+- **LSM index: range scans are no longer truncated by a fully-deleted key on an older page.** The cursor
+  constructor left a cursor positioned on a full-key tombstone (written by `Index.remove(keys)` without a
+  RID, as the geospatial index does internally) alive but not counted in its active-iterator counter, while
+  `next()` decrements that counter whenever ANY cursor is exhausted or leaves the range. The counter could
+  hit zero with other cursors still holding valid rows, silently ending the scan: a range query could return
+  0 rows when the surviving rows all sorted after the tombstoned key
+  ([#4944](https://github.com/ArcadeData/arcadedb/issues/4944)). The constructor now skips past
+  tombstone-only keys at initialization so every cursor left alive is counted, and it releases exhausted
+  cursors instead of letting their stale keys take part in the merge.
+- **LSM index: point lookup on a non-unique index no longer resurrects a deleted RID.** During a `get()` the
+  per-RID tombstone set was local to each page lookup, while the whole-key removed set was already threaded
+  across pages. On a non-unique index a per-RID tombstone and the original ADD routinely live in different
+  pages, so when the walk reached the older page the deletion was forgotten and the deleted row reappeared
+  in equality lookups, disagreeing with the range/cursor path
+  ([#4945](https://github.com/ArcadeData/arcadedb/issues/4945)). The tombstone set is now threaded across
+  pages and the compacted sub-index, exactly like the removed-keys set.
 
 ### Improvements
 
