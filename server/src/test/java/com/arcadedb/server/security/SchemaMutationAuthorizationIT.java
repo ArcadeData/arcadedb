@@ -65,6 +65,9 @@ class SchemaMutationAuthorizationIT extends BaseGraphServerTest {
             .as("read-only token must not write type CUSTOM metadata").isEqualTo(403);
         assertThat(command(serverIndex, token, "ALTER TYPE Memory BUCKETSELECTIONSTRATEGY `round-robin`"))
             .as("read-only token must not change the bucket-selection strategy").isEqualTo(403);
+        // GHSA-8vr5-263f-x5r3 defense-in-depth: index rebuild is UPDATE_SCHEMA-gated (statsOnly path used to bypass it)
+        assertThat(command(serverIndex, token, "REBUILD INDEX *"))
+            .as("read-only token must not REBUILD INDEX").isEqualTo(403);
       } finally {
         deleteToken(serverIndex, "schema-probe-token");
       }
@@ -85,6 +88,7 @@ class SchemaMutationAuthorizationIT extends BaseGraphServerTest {
       // GHSA-8vr5-263f-x5r3 positive controls: the new guards must not block an administrator
       assertThat(adminCommand(serverIndex, "ALTER TYPE Doc CUSTOM description = 'authorized'")).isEqualTo(200);
       assertThat(adminCommand(serverIndex, "ALTER TYPE Doc BUCKETSELECTIONSTRATEGY `round-robin`")).isEqualTo(200);
+      assertThat(adminCommand(serverIndex, "REBUILD INDEX *")).isEqualTo(200);
     });
   }
 

@@ -263,6 +263,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public void setDateFormat(final String dateFormat) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
     this.dateFormat = dateFormat;
   }
 
@@ -273,6 +274,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public void setDateTimeFormat(final String dateTimeFormat) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_DATABASE_SETTINGS);
     this.dateTimeFormat = dateTimeFormat;
   }
 
@@ -284,6 +286,7 @@ public class LocalSchema implements Schema {
 
   @Override
   public void setExtension(final String name, final JSONObject value) {
+    database.checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
     if (value == null)
       extensions.remove(name);
     else

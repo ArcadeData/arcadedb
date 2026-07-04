@@ -43,6 +43,7 @@ import com.arcadedb.schema.IndexBuilder;
 import com.arcadedb.schema.IndexMetadata;
 import com.arcadedb.schema.LocalDocumentType;
 import com.arcadedb.schema.Schema;
+import com.arcadedb.security.SecurityDatabaseUser;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -63,6 +64,11 @@ public class RebuildIndexStatement extends DDLStatement {
 
   @Override
   public ResultSet executeDDL(final CommandContext context) {
+    // Index (re)build is a schema-maintenance operation, gated by UPDATE_SCHEMA like DROP INDEX. The full-rebuild path
+    // reaches the guard transitively via schema.dropIndex, but the statsOnly path (recomputeStatistics) does not, so
+    // enforce it up front to cover both uniformly. No-op with no bound user (embedded, schema load, HA replication apply).
+    context.getDatabase().checkPermissionsOnDatabase(SecurityDatabaseUser.DATABASE_ACCESS.UPDATE_SCHEMA);
+
     final ResultInternal result = new ResultInternal(context.getDatabase());
     result.setProperty("operation", "rebuild index");
 
