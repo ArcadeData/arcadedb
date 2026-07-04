@@ -110,36 +110,50 @@ function generateTlsCerts() {
   const keystore = path.join(dir, "keystore.p12");
   const truststore = path.join(dir, "truststore.jks");
   const cert = path.join(dir, "bolt.cer");
-  execFileSync(keytool, [
-    "-genkeypair", "-alias", "bolt", "-keyalg", "RSA", "-keysize", "2048",
-    "-validity", "3650", "-keystore", keystore, "-storetype", "PKCS12",
-    "-storepass", TLS_STORE_PASSWORD, "-keypass", TLS_STORE_PASSWORD,
-    "-dname", "CN=localhost, OU=ArcadeDB, O=ArcadeDB, L=Test, ST=Test, C=US",
-  ]);
-  execFileSync(keytool, [
-    "-exportcert", "-alias", "bolt", "-keystore", keystore,
-    "-storetype", "PKCS12", "-storepass", TLS_STORE_PASSWORD, "-file", cert,
-  ]);
-  execFileSync(keytool, [
-    "-importcert", "-alias", "bolt", "-keystore", truststore,
-    "-storetype", "JKS", "-storepass", TLS_STORE_PASSWORD, "-file", cert,
-    "-noprompt",
-  ]);
-  return dir;
+  try {
+    execFileSync(keytool, [
+      "-genkeypair", "-alias", "bolt", "-keyalg", "RSA", "-keysize", "2048",
+      "-validity", "3650", "-keystore", keystore, "-storetype", "PKCS12",
+      "-storepass", TLS_STORE_PASSWORD, "-keypass", TLS_STORE_PASSWORD,
+      "-dname", "CN=localhost, OU=ArcadeDB, O=ArcadeDB, L=Test, ST=Test, C=US",
+    ]);
+    execFileSync(keytool, [
+      "-exportcert", "-alias", "bolt", "-keystore", keystore,
+      "-storetype", "PKCS12", "-storepass", TLS_STORE_PASSWORD, "-file", cert,
+    ]);
+    execFileSync(keytool, [
+      "-importcert", "-alias", "bolt", "-keystore", truststore,
+      "-storetype", "JKS", "-storepass", TLS_STORE_PASSWORD, "-file", cert,
+      "-noprompt",
+    ]);
+    return dir;
+  } catch (_) {
+    // keytool present but failed (permissions, policy, JDK quirk): clean up and
+    // skip the TLS scenarios rather than crashing the whole suite.
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch (__) {
+      /* ignore cleanup failure */
+    }
+    return null;
+  }
 }
+
+const TLS_IMAGE_TAG = "arcadedb-bolt-tls-test:latest";
 
 // Build a derived image with the certs COPYied in (bind-mounts are unreliable
 // on some CI runners - the Python fixture documents empty mounted dirs). Uses
 // testcontainers' Dockerfile build so the COPY resolves its own context.
+// Returns the image tag; callers instantiate a fresh GenericContainer per test
+// rather than reusing (and mutating) one shared builder instance.
 async function buildTlsImage(certDir) {
   fs.writeFileSync(
     path.join(certDir, "Dockerfile"),
     `FROM ${IMAGE}\n` +
       "COPY --chown=arcadedb:arcadedb keystore.p12 truststore.jks /home/arcadedb/tls_certs/\n"
   );
-  return GenericContainer.fromDockerfile(certDir).build(
-    "arcadedb-bolt-tls-test:latest"
-  );
+  await GenericContainer.fromDockerfile(certDir).build(TLS_IMAGE_TAG);
+  return TLS_IMAGE_TAG;
 }
 
 function tlsJavaOpts(mode) {
@@ -252,7 +266,7 @@ describe("Bolt conformance (issue #4888)", () => {
 
   // --- connection: TLS ---------------------------------------------------
   describe("connection-tls", () => {
-    let builtImage; // testcontainers-built derived image (or null if skipped)
+    let tlsImageTag; // tag of the testcontainers-built derived image
     let certDir;
     let tlsRequired;
     let tlsOptional;
@@ -260,17 +274,24 @@ describe("Bolt conformance (issue #4888)", () => {
     beforeAll(async () => {
       certDir = generateTlsCerts();
       if (!certDir) return; // keytool absent -> tests below self-skip
-      builtImage = await buildTlsImage(certDir);
+      tlsImageTag = await buildTlsImage(certDir);
     });
 
     afterAll(async () => {
       if (tlsRequired) await tlsRequired.stop();
       if (tlsOptional) await tlsOptional.stop();
+      if (certDir) {
+        try {
+          fs.rmSync(certDir, { recursive: true, force: true });
+        } catch (_) {
+          /* ignore cleanup failure */
+        }
+      }
     });
 
     it("[CONN-002] connect via bolt+ssc:// with TLS required", async () => {
       if (!certDir) return console.warn("keytool absent - skipping CONN-002");
-      tlsRequired = await builtImage
+      tlsRequired = await new GenericContainer(tlsImageTag)
         .withExposedPorts(2480, 7687)
         .withEnvironment({ JAVA_OPTS: tlsJavaOpts("REQUIRED") })
         .withStartupTimeout(120000)
@@ -300,7 +321,7 @@ describe("Bolt conformance (issue #4888)", () => {
 
     it("[CONN-005] TLS OPTIONAL falls back to plaintext bolt://", async () => {
       if (!certDir) return console.warn("keytool absent - skipping CONN-005");
-      tlsOptional = await builtImage
+      tlsOptional = await new GenericContainer(tlsImageTag)
         .withExposedPorts(2480, 7687)
         .withEnvironment({ JAVA_OPTS: tlsJavaOpts("OPTIONAL") })
         .withStartupTimeout(120000)
@@ -532,12 +553,13 @@ describe("Bolt conformance (issue #4888)", () => {
     it("[RESULT-003] DISCARD abandons remaining rows", async () => {
       const s = session("beer", { fetchSize: 1 });
       try {
-        // In neo4j-driver v6, result.summary() is the consume/DISCARD path: it
-        // ends the stream and returns a ResultSummary WITHOUT materializing the
-        // records into a user-facing array (unlike `await result`). Driving the
-        // async iterator first and then calling summary() deadlocks, so this
-        // consumes via summary() directly.
+        // Pull exactly 1 row of a 5-row result, then DISCARD the remainder.
+        // `for await ... break` closes the async iterator cleanly (its return()
+        // discards the pending rows); result.summary() then returns the
+        // ResultSummary WITHOUT materializing the remaining records into a
+        // user-facing array (unlike `await result`).
         const result = s.run("MATCH (b:Beer) RETURN b.name AS name LIMIT 5");
+        for await (const _record of result) break; // eslint-disable-line no-unused-vars
         const summary = await result.summary();
         expect(summary).toBeDefined();
         expect(summary.query).toBeDefined();
