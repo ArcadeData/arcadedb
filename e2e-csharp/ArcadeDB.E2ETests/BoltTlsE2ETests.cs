@@ -29,7 +29,7 @@ public class BoltTlsRequiredE2ETests
         _fixture = fixture;
     }
 
-    [Fact(DisplayName = "CONN-002: Connect via bolt+s:// with TLS required")]
+    [Fact(DisplayName = "CONN-002: Connect via bolt+ssc:// with TLS required")]
     public async Task Conn002_TlsRequired()
     {
         await using var driver = GraphDatabase.Driver(

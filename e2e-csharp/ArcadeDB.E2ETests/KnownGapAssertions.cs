@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+using Neo4j.Driver;
 using Xunit.Sdk;
 
 namespace ArcadeDB.E2ETests;
@@ -32,7 +33,7 @@ public static class KnownGapAssertions
         {
             await action();
         }
-        catch
+        catch (Exception ex) when (ex is XunitException or Neo4jException or InvalidCastException)
         {
             return;
         }

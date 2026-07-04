@@ -174,23 +174,27 @@ internal static class BoltTlsImage
         // collections, so both can call BuildAsync concurrently. A shared
         // hardcoded tag would race on which build "wins" the name and would
         // register two Ryuk cleanups against the same image.
-        var image = new ImageFromDockerfileBuilder()
-            .WithDockerfileDirectory(certDir)
-            .WithDockerfile("Dockerfile")
-            .WithName($"arcadedb-bolt-tls-test-{tagSuffix}:latest")
-            .WithCleanUp(true)
-            .Build();
-        await image.CreateAsync();
-
-        Directory.Delete(certDir, recursive: true);
-        return image.FullName;
+        try
+        {
+            var image = new ImageFromDockerfileBuilder()
+                .WithDockerfileDirectory(certDir)
+                .WithDockerfile("Dockerfile")
+                .WithName($"arcadedb-bolt-tls-test-{tagSuffix}:latest")
+                .WithCleanUp(true)
+                .Build();
+            await image.CreateAsync();
+            return image.FullName;
+        }
+        finally
+        {
+            Directory.Delete(certDir, recursive: true);
+        }
     }
 
     private static void RunKeytool(params string[] arguments)
     {
         var startInfo = new ProcessStartInfo(FindKeytool())
         {
-            RedirectStandardOutput = true,
             RedirectStandardError = true,
         };
         foreach (var arg in arguments)
