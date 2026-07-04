@@ -404,20 +404,23 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     // Try to authenticate
-    if ("basic".equals(scheme) && principal != null && credentials != null) {
-      if (!authenticateUser(principal, credentials)) {
-        return;
-      }
-    } else if ("none".equals(scheme)) {
-      // No authentication - reject (authentication is always required)
+    if ("none".equals(scheme)) {
+      // Explicit no-auth is always rejected.
       sendFailure(BoltException.AUTHENTICATION_ERROR, "Authentication required");
       state = State.FAILED;
       return;
-    } else if (principal != null && credentials != null) {
-      // Try basic auth even without explicit scheme
-      if (!authenticateUser(principal, credentials)) {
-        return;
-      }
+    }
+    // Covers "basic" with credentials, any other/missing scheme with credentials, and
+    // the missing-scheme/missing-credentials case (authenticateUser null-checks and
+    // rejects with "Missing credentials" rather than treating it as implicitly
+    // authenticated).
+    // NOTE (Bolt 5.1+): a legitimate 5.1+ HELLO carries no auth at all - it moves to the
+    // separate LOGON message (see handleLogon) - so this call would incorrectly reject
+    // that valid handshake. Safe today because SUPPORTED_VERSIONS never advertises 5.x,
+    // so no compliant driver reaches here without a scheme/principal/credentials; guard
+    // on negotiated protocol version before 5.x negotiation is enabled.
+    if (!authenticateUser(principal, credentials)) {
+      return;
     }
 
     // Build success response with server info
