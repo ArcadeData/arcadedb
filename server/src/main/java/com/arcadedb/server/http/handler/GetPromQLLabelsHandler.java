@@ -53,6 +53,10 @@ public class GetPromQLLabelsHandler extends AbstractServerHttpHandler {
     if (databaseParam == null || databaseParam.isEmpty())
       return new ExecutionResponse(400, PromQLResponseFormatter.formatError("bad_data", "Database parameter is required"));
 
+    // Enforce database-level authorization (GHSA-x8mg-6r4p-87pf): this handler does not extend DatabaseAbstractHandler.
+    // Checked before any payload/parameter validation so an unauthorized caller cannot probe the target database.
+    checkAuthorizationOnDatabase(user, databaseParam.getFirst());
+
     final DatabaseInternal database = httpServer.getServer().getDatabase(databaseParam.getFirst(), false, false);
     final Set<String> labelNames = new LinkedHashSet<>();
     labelNames.add("__name__");
