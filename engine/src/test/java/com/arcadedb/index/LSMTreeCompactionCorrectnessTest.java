@@ -34,12 +34,24 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Correctness tests for the LSM read/merge/compaction paths. The primary regression target is issue #4945:
- * {@code get()} on a non-unique index resurrected a deleted RID when a per-RID tombstone and the original ADD
- * lived in different pages, because the {@code deletedRIDs} set was local to each page lookup instead of being
- * threaded across pages and the compacted sub-index (like {@code removedKeys}). The remaining tests are general
- * correctness guards over compaction and multi-page/2-series layouts (descending scans, cross-page deletes,
- * deleted boundary keys).
+ * Correctness tests for the LSM read/merge/compaction paths. Auto compaction is disabled (on the database's own
+ * context configuration, which snapshots the global at creation time) so that every compaction here is explicit
+ * and verified to have actually run; otherwise a background compaction steals the COMPACTION_SCHEDULED status and
+ * silently turns the explicit calls into no-ops, voiding the tests. Regression targets:
+ * <ul>
+ * <li>#4942: the compactor merged pages oldest-to-newest into an insertion-ordered set, so a re-inserted RID
+ * (ADD, REMOVE, ADD of the same key+RID across pages) kept its pre-tombstone position and the reader, which
+ * treats the LAST position as the newest entry, resolved the tombstone as the winner: the row vanished from the
+ * index after compaction.</li>
+ * <li>#4944: the cursor constructor left a cursor parked on a full-key tombstone alive but uncounted in
+ * {@code validIterators}, while {@code next()} decrements the counter when any cursor is exhausted: a range scan
+ * could stop with valid cursors still holding rows.</li>
+ * <li>#4945: {@code get()} on a non-unique index resurrected a deleted RID when a per-RID tombstone and the
+ * original ADD lived in different pages, because the {@code deletedRIDs} set was page-local instead of threaded
+ * across pages and the compacted sub-index (like {@code removedKeys}).</li>
+ * </ul>
+ * The remaining tests are guards over multi-page/multi-series layouts (descending scans, cross-page deletes,
+ * deleted boundary keys), covering the #4943 audit finding which does not reproduce on the current code.
  */
 class LSMTreeCompactionCorrectnessTest extends TestHelper {
 
@@ -47,11 +59,18 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
 
   @Override
   public void beforeTest() {
-    // Force real compaction with tiny inputs.
+    // Disable AUTO compaction: the database snapshots this into its own context configuration, so it must be set
+    // on the database instance too (see createType). With the default (10) an async background compaction races
+    // the test and steals the COMPACTION_SCHEDULED status, silently turning every explicit compactAll() into a
+    // no-op and making all these tests false negatives.
     GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE.setValue(0);
   }
 
   private void createType(final boolean unique) {
+    // The database was created before beforeTest() ran, so its context configuration snapshot still holds the
+    // default: override it on the instance before the index reads it at creation time.
+    database.getConfiguration().setValue(GlobalConfiguration.INDEX_COMPACTION_MIN_PAGES_SCHEDULE, 0);
+
     final DocumentType type = database.getSchema().buildDocumentType().withName(TYPE_NAME).withTotalBuckets(1).create();
     type.createProperty("email", String.class);
     // Small pages so a handful of entries already seals immutable pages the compactor will merge.
@@ -70,8 +89,9 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
     for (final Index index : database.getSchema().getIndexes()) {
       if (index instanceof TypeIndex) {
         try {
-          ((IndexInternal) index).scheduleCompaction();
-          ((IndexInternal) index).compact();
+          // Both must succeed: a false return means the compaction silently did not run and the test is void.
+          assertThat(((IndexInternal) index).scheduleCompaction()).as("compaction scheduled").isTrue();
+          assertThat(((IndexInternal) index).compact()).as("compaction executed").isTrue();
         } catch (final Exception e) {
           throw new RuntimeException(e);
         }
@@ -186,7 +206,59 @@ class LSMTreeCompactionCorrectnessTest extends TestHelper {
     assertThat(lookup("SHARED")).as("all deleted entries must be gone, none resurrected").isEmpty();
   }
 
-  // ---- #4944: range/full scan must not lose rows or resurrect deletes when a boundary key is a tombstone ----
+  // ---- #4944: a range scan must not be truncated when an older page's only in-range key is a full-key tombstone.
+  // The cursor constructor left a cursor parked on a full-key tombstone alive but NOT counted in validIterators,
+  // while next() decrements validIterators when ANY cursor is exhausted: the counter hit zero with valid cursors
+  // still holding rows, silently truncating the scan. Full-key tombstones come from Index.remove(keys) without a
+  // RID (public API, also used internally by the geospatial index). ----
+
+  @Test
+  void rangeScanNotTruncatedByFullKeyTombstoneInOlderPage() {
+    createType(false);
+
+    // ADD k0000: lands in the current mutable page, sealed by the following filler.
+    database.transaction(() -> database.newDocument(TYPE_NAME).set("email", "k0000").save());
+    filler(0, 300);
+
+    // Full-key tombstone for k0000: lands in a newer page where it is the highest in-range key, then seal it.
+    database.transaction(() -> {
+      for (final Index idx : database.getSchema().getIndexes())
+        if (idx instanceof TypeIndex ti)
+          ti.remove(new Object[] { "k0000" });
+    });
+    filler(300, 300);
+
+    // Newest page holds the surviving keys of the range.
+    database.transaction(() -> {
+      for (int i = 1; i <= 9; i++)
+        database.newDocument(TYPE_NAME).set("email", "k000" + i).save();
+    });
+
+    database.transaction(() -> {
+      for (final Index idx : database.getSchema().getIndexes())
+        if (idx instanceof TypeIndex ti) {
+          final IndexCursor cursor = ti.range(true, new Object[] { "k0000" }, true, new Object[] { "k0009" }, true);
+          final List<RID> seen = new ArrayList<>();
+          while (cursor.hasNext()) {
+            final RID rid = (RID) cursor.next();
+            if (rid != null)
+              seen.add(rid);
+          }
+          assertThat(seen).as("rows after a tombstoned boundary key must not be lost").hasSize(9);
+        }
+    });
+
+    // Same range through SQL: the 9 surviving rows must all be visible.
+    final ResultSet rs = database.query("sql",
+        "SELECT email FROM " + TYPE_NAME + " WHERE email >= 'k0000' AND email <= 'k0009' ORDER BY email ASC");
+    final List<String> seenEmails = new ArrayList<>();
+    while (rs.hasNext())
+      seenEmails.add(rs.next().getProperty("email"));
+    assertThat(seenEmails).containsExactly("k0001", "k0002", "k0003", "k0004", "k0005", "k0006", "k0007", "k0008",
+        "k0009");
+  }
+
+  // ---- range/full scan must not lose rows or resurrect deletes when a boundary key is a tombstone ----
 
   @Test
   void rangeScanWithDeletedBoundaryKeyLosesNoRows() {
