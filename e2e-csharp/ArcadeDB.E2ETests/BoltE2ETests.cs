@@ -77,7 +77,7 @@ public class BoltE2ETests
             AuthTokens.Basic(ArcadeDbBoltFixture.RootUser, "wrong-password"));
 
         var ex = await Assert.ThrowsAsync<AuthenticationException>(() => driver.VerifyConnectivityAsync());
-        Assert.NotNull(ex);
+        Assert.Equal("Neo.ClientError.Security.Unauthorized", ex.Code);
     }
 
     [Fact(DisplayName = "AUTH-003: Auth scheme 'none' is rejected (intentional, not a bug)")]
