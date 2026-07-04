@@ -92,6 +92,11 @@ public class TransactionContext implements Transaction {
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
   private       Map<RID, Record>                     updatedRecords        = null;
+  // #4935: snapshot of the last in-transaction indexed state per RID. When the same record is updated more
+  // than once inside one transaction, the second+ update must diff its index change against the previous
+  // in-transaction value, not the committed buffer (which stays frozen until commit because serialization is
+  // deferred). Without this, every intermediate value leaks a phantom index entry.
+  private       Map<RID, Document>                   updatedRecordsIndexSnapshot = null;
   private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
   private       Object                               requester;
@@ -350,6 +355,22 @@ public class TransactionContext implements Transaction {
       ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).fetchPageInTransaction(rid);
     updateRecordInCache(record);
     removeImmutableRecordsOfSamePage(record.getIdentity());
+  }
+
+  /**
+   * Returns the snapshot of the last in-transaction indexed state for the given record, or {@code null} if the
+   * record has not yet been updated in this transaction. Used by {@code updateRecord} so that a second (or later)
+   * update of the same record diffs its index change against the previous in-transaction value rather than the
+   * committed buffer (issue #4935).
+   */
+  public Document getLastIndexedSnapshot(final RID rid) {
+    return updatedRecordsIndexSnapshot == null ? null : updatedRecordsIndexSnapshot.get(rid);
+  }
+
+  public void setLastIndexedSnapshot(final RID rid, final Document snapshot) {
+    if (updatedRecordsIndexSnapshot == null)
+      updatedRecordsIndexSnapshot = new HashMap<>();
+    updatedRecordsIndexSnapshot.put(rid, snapshot);
   }
 
   /**
@@ -845,6 +866,7 @@ public class TransactionContext implements Transaction {
     modifiedPages = null;
     newPages = null;
     updatedRecords = null;
+    updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
     modifiedRecordsCache.clear();
     immutableRecordsCache.clear();

@@ -1071,9 +1071,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
             final List<IndexInternal> indexes = indexer.getInvolvedIndexes(document);
             if (!indexes.isEmpty()) {
-              // UPDATE THE INDEXES TOO
-              final Document originalRecord = getOriginalDocument(record);
+              // UPDATE THE INDEXES TOO.
+              // #4935: when the same record is updated more than once in this tx, diff against the previous
+              // in-tx indexed state (snapshot below), not the committed buffer returned by
+              // getOriginalDocument() - the buffer stays frozen until commit because serialization is
+              // deferred, so diffing against it leaks a phantom index entry for every intermediate value.
+              final TransactionContext tx = getTransaction();
+              final RID rid = record.getIdentity();
+              final Document previous = tx.getLastIndexedSnapshot(rid);
+              final Document originalRecord = previous != null ? previous : getOriginalDocument(record);
               indexer.updateDocument(originalRecord, document, indexes);
+              tx.setLastIndexedSnapshot(rid, document.detach());
             }
           }
         } catch (final IOException e) {
