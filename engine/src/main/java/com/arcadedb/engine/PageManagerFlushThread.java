@@ -236,9 +236,28 @@ public class PageManagerFlushThread extends Thread {
                   // would leak its entries in pageIndex (hanging waitAllPagesOfDatabaseAreFlushed on close).
                   // Clear the flag (concurrentPageAccess rejects any I/O while it is set), stop accepting new
                   // work and retry the write: the run() loop then drains the remaining queue before exiting.
+                  // The retry is NOT unbreakable: concurrentPageAccess re-checks the interrupt flag on every
+                  // iteration of its I/O-slot spin, so a fresh interrupt surfaces as a second
+                  // InterruptedIOException, contained below. A slot held forever by hung I/O would still spin,
+                  // but that risk is pre-existing and shared by every flush path, interrupted or not.
                   Thread.interrupted();
                   running = false;
-                  pageManager.flushPage(page);
+                  try {
+                    pageManager.flushPage(page);
+                  } catch (final DatabaseMetadataException e2) {
+                    // FILE DELETED, CONTINUE WITH THE NEXT PAGES (same handling as the primary attempt)
+                    LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e2, page);
+                  } catch (final IOException e2) {
+                    // Double fault: the retry failed too (a fresh interrupt broke the I/O-slot spin, or the disk
+                    // genuinely errored). Do NOT let it escape and abort the batch: the remaining pages must
+                    // still be flushed and released from pageIndex or the database close would hang. This page's
+                    // WAL entry was never acked (notifyPageFlushed not reached), so it is recovered from the WAL.
+                    LogManager.instance().log(this, Level.SEVERE,
+                        "Error on flushing page '%s' to disk after interrupt, the page will be recovered from the WAL on restart",
+                        e2, page);
+                    // A re-interrupt set the flag again: clear it so the rest of the batch can reach the disk.
+                    Thread.interrupted();
+                  }
                 } catch (final DatabaseMetadataException e) {
                   // FILE DELETED, CONTINUE WITH THE NEXT PAGES
                   LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
@@ -291,7 +310,10 @@ public class PageManagerFlushThread extends Thread {
               Thread.interrupted();
               try {
                 pageManager.flushPage(page);
-              } catch (final IOException e2) {
+              } catch (final DatabaseMetadataException | IOException e2) {
+                // Contain every retry failure (file dropped, re-interrupt, real I/O error): letting it escape
+                // would skip the unsuspend phases below, leaving the database suspended with batches stranded
+                // in the deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
                 LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
               } finally {
                 Thread.currentThread().interrupt();

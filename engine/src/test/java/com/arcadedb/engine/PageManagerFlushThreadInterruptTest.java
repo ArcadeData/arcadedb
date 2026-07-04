@@ -96,6 +96,62 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
   }
 
   @Test
+  void doubleInterruptDoesNotAbortTheBatch() throws Exception {
+    final DatabaseInternal db = (DatabaseInternal) database;
+
+    db.getSchema().createDocumentType("FlushDoc");
+    db.transaction(() -> db.newDocument("FlushDoc").set("v", 1).save());
+    db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
+
+    final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("FlushDoc").getBuckets(false).getFirst();
+    final int fileId = bucket.getFileId();
+    final int pageSize = bucket.getPageSize();
+    final int pageNum = bucket.getTotalPages();
+
+    final PageManagerFlushThread flush = new PageManagerFlushThread(PageManager.INSTANCE, db.getConfiguration());
+
+    // Batch of two pages. The FIRST page's I/O slot is held busy so its flush (and the interrupt-policy retry)
+    // spins; a SECOND interrupt during the retry breaks the spin and double-faults the page. The batch must NOT
+    // be aborted: the second page must still reach the disk and no page may leak in pageIndex (a leak hangs the
+    // database close in waitAllPagesOfDatabaseAreFlushed).
+    final PageId blockedPageId = new PageId(db, fileId, pageNum + 1);
+    final MutablePage blockedPage = new MutablePage(blockedPageId, pageSize, new byte[pageSize], 0, 0);
+    final PageId freePageId = new PageId(db, fileId, pageNum);
+    final MutablePage freePage = new MutablePage(freePageId, pageSize, new byte[pageSize], 0, 0);
+    flush.pageIndex.put(blockedPageId, blockedPage);
+    flush.pageIndex.put(freePageId, freePage);
+    flush.queue.offer(new PagesToFlush(List.of(blockedPage, freePage)));
+
+    final Field pendingField = PageManager.class.getDeclaredField("pendingFlushPages");
+    pendingField.setAccessible(true);
+    @SuppressWarnings("unchecked")
+    final ConcurrentMap<PageId, Boolean> pending = (ConcurrentMap<PageId, Boolean>) pendingField.get(PageManager.INSTANCE);
+    pending.put(blockedPageId, true);
+    try {
+      flush.start();
+
+      while (!flush.queue.isEmpty())
+        Thread.sleep(1);
+      Thread.sleep(100);
+      flush.interrupt(); // 1st: InterruptedIOException -> policy clears the flag and retries (spins on the busy slot)
+      Thread.sleep(100);
+      flush.interrupt(); // 2nd: re-detected by the spin -> second InterruptedIOException, must be contained per-page
+      Thread.sleep(100);
+    } finally {
+      pending.remove(blockedPageId);
+    }
+
+    flush.join(10_000);
+    assertThat(flush.isAlive()).as("flush thread must shut down after draining").isFalse();
+
+    // The second page of the batch must have been flushed regardless of the first page's double fault.
+    final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(fileId);
+    assertThat(file.getSize()).as("the rest of the batch must still be flushed after a double fault")
+        .isGreaterThanOrEqualTo((long) (pageNum + 1) * pageSize);
+    assertThat(flush.pageIndex).as("no page may leak in the flush index (a leak hangs the database close)").isEmpty();
+  }
+
+  @Test
   void unsuspendFlushOfDeferredPagesSurvivesCallerInterrupt() throws Exception {
     final DatabaseInternal db = (DatabaseInternal) database;
 
