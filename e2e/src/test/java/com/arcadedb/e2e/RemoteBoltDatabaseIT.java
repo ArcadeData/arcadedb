@@ -79,6 +79,12 @@ import static org.assertj.core.api.Assertions.fail;
  * (bolt/conformance/spec.yaml, issue #4883, part of epic #4882). Each test
  * embeds its scenario id in a {@link DisplayName} so coverage is grep-checkable
  * and comparable to the JS/Go suites.
+ * <p>
+ * These ITs run against the published {@code arcadedata/arcadedb:latest} image
+ * (see {@link ArcadeContainerTemplate}), so their verdicts reflect the last
+ * released server and lag this branch by one release. Branch-local Bolt wire
+ * behavior is guarded by the embedded-server tests in the {@code bolt} module
+ * (e.g. {@code BoltTypeRoundTripTest}, {@code BoltTlsIT}).
  */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
@@ -529,13 +535,15 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[TYPE-003] Path round-trips as a native Bolt structure")
     void type003_path() {
-      assertExpectedFailure("#4890", () -> {
-        try (final Session s = boltSession()) {
-          final Object v = s.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1")
-              .single().get("p").asObject();
-          assertThat(v).isInstanceOf(Path.class);
-        }
-      });
+      // Read (and its .single()) is a hard precondition OUTSIDE the xfail: a
+      // missing row would be a fixture problem, not the tracked gap, and must
+      // fail loudly rather than be swallowed as "gap still present". Only the
+      // type check is the documented gap.
+      final Object v;
+      try (final Session s = boltSession()) {
+        v = s.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1").single().get("p").asObject();
+      }
+      assertExpectedFailure("#4890", () -> assertThat(v).isInstanceOf(Path.class));
     }
 
     @Test
@@ -597,25 +605,21 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[TYPE-011] Duration round-trips as a native Bolt Duration")
     void type011_duration() {
-      assertExpectedFailure("#4890", () -> {
-        try (final Session s = boltSession()) {
-          final Object v = s.run("MATCH (t:TypeMatrix) RETURN t.durationProp AS d LIMIT 1")
-              .single().get("d").asObject();
-          assertThat(v).isInstanceOf(IsoDuration.class);
-        }
-      });
+      final Object v;
+      try (final Session s = boltSession()) {
+        v = s.run("MATCH (t:TypeMatrix) RETURN t.durationProp AS d LIMIT 1").single().get("d").asObject();
+      }
+      assertExpectedFailure("#4890", () -> assertThat(v).isInstanceOf(IsoDuration.class));
     }
 
     @Test
     @DisplayName("[TYPE-012] Point round-trips as a native Bolt Point")
     void type012_point() {
-      assertExpectedFailure("#4890", () -> {
-        try (final Session s = boltSession()) {
-          final Object v = s.run("MATCH (t:TypeMatrix) RETURN t.pointProp AS p LIMIT 1")
-              .single().get("p").asObject();
-          assertThat(v).isInstanceOf(Point.class);
-        }
-      });
+      final Object v;
+      try (final Session s = boltSession()) {
+        v = s.run("MATCH (t:TypeMatrix) RETURN t.pointProp AS p LIMIT 1").single().get("p").asObject();
+      }
+      assertExpectedFailure("#4890", () -> assertThat(v).isInstanceOf(Point.class));
     }
 
     // A native Bolt temporal deserializes to a java.time.temporal.Temporal; the
@@ -701,12 +705,15 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       // 5.x support is added, the negotiated version rises to 5.x, the assertion
       // passes, and assertExpectedFailure fails loudly - so this xfail actually
       // self-closes rather than being a hardcoded marker.
-      assertExpectedFailure("#4890", () -> {
-        try (final Session s = boltSession()) {
-          final String negotiated = s.run("RETURN 1").consume().server().protocolVersion();
-          assertThat(Double.parseDouble(negotiated)).isGreaterThanOrEqualTo(5.0);
-        }
-      });
+      final String negotiated;
+      try (final Session s = boltSession()) {
+        negotiated = s.run("RETURN 1").consume().server().protocolVersion();
+      }
+      // Compare on the integer major so 5.10 is not mis-parsed (Double would
+      // read it as 5.1); parsing happens outside the xfail so a null/non-numeric
+      // value surfaces as a real error rather than a false "gap present".
+      final int major = Integer.parseInt(negotiated.split("\\.")[0]);
+      assertExpectedFailure("#4890", () -> assertThat(major).isGreaterThanOrEqualTo(5));
     }
 
     @Test
