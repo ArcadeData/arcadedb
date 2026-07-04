@@ -141,41 +141,46 @@ internal static class BoltTlsImage
     public static async Task<string> BuildAsync(string tagSuffix)
     {
         var certDir = Directory.CreateTempSubdirectory("bolt-tls-certs-").FullName;
-        var keystorePath = Path.Combine(certDir, "keystore.p12");
-        var truststorePath = Path.Combine(certDir, "truststore.jks");
-        var certPath = Path.Combine(certDir, "bolt.cer");
 
-        RunKeytool(
-            "-genkeypair", "-alias", "bolt", "-keyalg", "RSA", "-keysize", "2048",
-            "-validity", "3650", "-keystore", keystorePath, "-storetype", "PKCS12",
-            "-storepass", StorePassword, "-keypass", StorePassword,
-            "-dname", "CN=localhost, OU=ArcadeDB, O=ArcadeDB, L=Test, ST=Test, C=US");
-        RunKeytool(
-            "-exportcert", "-alias", "bolt", "-keystore", keystorePath, "-storetype", "PKCS12",
-            "-storepass", StorePassword, "-file", certPath);
-        RunKeytool(
-            "-importcert", "-alias", "bolt", "-keystore", truststorePath, "-storetype", "JKS",
-            "-storepass", StorePassword, "-file", certPath, "-noprompt");
-
-        await File.WriteAllTextAsync(Path.Combine(certDir, "Dockerfile"),
-            "FROM arcadedata/arcadedb:latest\n" +
-            "COPY --chown=arcadedb:arcadedb keystore.p12 truststore.jks /home/arcadedb/tls_certs/\n");
-
-        // The installed Testcontainers 4.11.0 API only accepts a raw string
-        // directory (which doubles as the Docker build context when no
-        // separate WithContextDirectory is set) or a (CommonDirectoryPath,
-        // relativeSubDirectory) pair meant for paths relative to the repo's
-        // solution/git root. certDir is already an absolute throwaway temp
-        // directory, so the single-string overload is the correct one here.
-        //
-        // tagSuffix keeps this tag distinct per caller: xUnit v2 parallelizes
-        // distinct collections by default (no DisableTestParallelization here),
-        // and the TLS-required/TLS-optional fixtures live in separate
-        // collections, so both can call BuildAsync concurrently. A shared
-        // hardcoded tag would race on which build "wins" the name and would
-        // register two Ryuk cleanups against the same image.
+        // The whole body is wrapped so certDir is cleaned up on ANY failure
+        // path, not just a docker build failure - keytool itself can throw
+        // (missing/misconfigured JDK, bad cert params) before a build is ever
+        // attempted.
         try
         {
+            var keystorePath = Path.Combine(certDir, "keystore.p12");
+            var truststorePath = Path.Combine(certDir, "truststore.jks");
+            var certPath = Path.Combine(certDir, "bolt.cer");
+
+            RunKeytool(
+                "-genkeypair", "-alias", "bolt", "-keyalg", "RSA", "-keysize", "2048",
+                "-validity", "3650", "-keystore", keystorePath, "-storetype", "PKCS12",
+                "-storepass", StorePassword, "-keypass", StorePassword,
+                "-dname", "CN=localhost, OU=ArcadeDB, O=ArcadeDB, L=Test, ST=Test, C=US");
+            RunKeytool(
+                "-exportcert", "-alias", "bolt", "-keystore", keystorePath, "-storetype", "PKCS12",
+                "-storepass", StorePassword, "-file", certPath);
+            RunKeytool(
+                "-importcert", "-alias", "bolt", "-keystore", truststorePath, "-storetype", "JKS",
+                "-storepass", StorePassword, "-file", certPath, "-noprompt");
+
+            await File.WriteAllTextAsync(Path.Combine(certDir, "Dockerfile"),
+                "FROM arcadedata/arcadedb:latest\n" +
+                "COPY --chown=arcadedb:arcadedb keystore.p12 truststore.jks /home/arcadedb/tls_certs/\n");
+
+            // The installed Testcontainers 4.11.0 API only accepts a raw string
+            // directory (which doubles as the Docker build context when no
+            // separate WithContextDirectory is set) or a (CommonDirectoryPath,
+            // relativeSubDirectory) pair meant for paths relative to the repo's
+            // solution/git root. certDir is already an absolute throwaway temp
+            // directory, so the single-string overload is the correct one here.
+            //
+            // tagSuffix keeps this tag distinct per caller: xUnit v2 parallelizes
+            // distinct collections by default (no DisableTestParallelization here),
+            // and the TLS-required/TLS-optional fixtures live in separate
+            // collections, so both can call BuildAsync concurrently. A shared
+            // hardcoded tag would race on which build "wins" the name and would
+            // register two Ryuk cleanups against the same image.
             var image = new ImageFromDockerfileBuilder()
                 .WithDockerfileDirectory(certDir)
                 .WithDockerfile("Dockerfile")

@@ -185,7 +185,7 @@ public class BoltE2ETests
         Assert.Equal(new[] { 1, 2 }, results.OrderBy(v => v).ToArray());
     }
 
-    // Shared by TX-005 and ERR-004: two sessions race to update the same node
+    // Used by ERR-004 (explicit-transaction path): two sessions race to update the same node
     // inside an explicit transaction, one held open past the other's commit
     // attempt. Returns every exception the racing writes raised.
     private static async Task<List<Exception>> RaceTwoWritersAsync(IDriver driver, string database, string marker)
