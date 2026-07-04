@@ -18,6 +18,7 @@
  */
 package com.arcadedb.e2e;
 
+import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Config;
@@ -51,6 +52,7 @@ class RemoteBoltLegacyDriverIT extends ArcadeContainerTemplate {
   }
 
   @Test
+  @DisplayName("[CONN-001] Connect and read on the 4.4 driver band")
   void legacy_connectAndRead() {
     try (final Driver d = newDriver()) {
       d.verifyConnectivity();
@@ -62,6 +64,7 @@ class RemoteBoltLegacyDriverIT extends ArcadeContainerTemplate {
   }
 
   @Test
+  @DisplayName("[PROTO-001] Parameterized read negotiates on the 4.4 driver band")
   void legacy_parameterized() {
     try (final Driver d = newDriver();
         final Session s = d.session(SessionConfig.forDatabase("beer"))) {
@@ -70,6 +73,7 @@ class RemoteBoltLegacyDriverIT extends ArcadeContainerTemplate {
   }
 
   @Test
+  @DisplayName("[ERR-001] Syntax error code on the 4.4 driver band")
   void legacy_syntaxErrorCode() {
     try (final Driver d = newDriver();
         final Session s = d.session(SessionConfig.forDatabase("beer"))) {

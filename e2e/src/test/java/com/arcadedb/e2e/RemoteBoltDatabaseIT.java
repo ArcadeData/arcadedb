@@ -18,6 +18,8 @@
  */
 package com.arcadedb.e2e;
 
+import com.arcadedb.serializer.json.JSONObject;
+
 import org.assertj.core.api.ThrowableAssert.ThrowingCallable;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -39,6 +41,9 @@ import org.neo4j.driver.Transaction;
 import org.neo4j.driver.exceptions.ClientException;
 import org.neo4j.driver.exceptions.Neo4jException;
 import org.neo4j.driver.exceptions.SecurityException;
+import org.neo4j.driver.exceptions.ServiceUnavailableException;
+import org.neo4j.driver.exceptions.SessionExpiredException;
+import org.neo4j.driver.exceptions.TransientException;
 import org.neo4j.driver.summary.ResultSummary;
 import org.neo4j.driver.types.IsoDuration;
 import org.neo4j.driver.types.Node;
@@ -103,9 +108,9 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     driver.verifyConnectivity();
 
     // Seed over HTTP only, never over Bolt - Bolt serialization is under test.
-    httpCommand("server", "{\"command\": \"create database boltscratch\"}");
-    httpCommand("command/beer",
-        "{\"language\": \"cypher\", \"command\": " + jsonString(TYPE_MATRIX_CYPHER) + "}");
+    httpCommand("server", new JSONObject().put("command", "create database boltscratch").toString());
+    httpCommand("command/beer", new JSONObject()
+        .put("language", "cypher").put("command", TYPE_MATRIX_CYPHER).toString());
   }
 
   @AfterAll
@@ -132,15 +137,21 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
   }
 
   // Passes only when `ideal` fails the way a documented gap should: an
-  // AssertionError (the ideal assertion did not hold) or a driver-level
-  // Neo4jException (the server rejected or mis-typed the value). Any other
-  // Throwable - NPE, IllegalState, a dropped connection surfacing as something
-  // else - propagates, so a broken test path is never silently green. Fails
-  // loudly the day the gap closes. Java analogue of the JS suite's it.failing.
+  // AssertionError (the ideal assertion did not hold) or a server-side
+  // Neo4jException that is NOT an infra/transient failure (the server rejected
+  // or mis-typed the value). Connectivity and transient exceptions - which also
+  // extend Neo4jException - are re-thrown so a flaky hiccup can never mask a
+  // real regression as "gap still present". Fails loudly the day the gap
+  // closes. Java analogue of the JS suite's it.failing.
   static void assertExpectedFailure(final String trackingIssue, final ThrowingCallable ideal) {
     try {
       ideal.call();
-    } catch (final AssertionError | Neo4jException expectedGap) {
+    } catch (final AssertionError expectedGap) {
+      return;
+    } catch (final ServiceUnavailableException | SessionExpiredException | TransientException infra) {
+      throw new AssertionError("Expected-fail scenario " + trackingIssue
+          + " hit an infra/transient error, not the tracked gap: " + infra, infra);
+    } catch (final Neo4jException serverRejection) {
       return;
     } catch (final Throwable unexpected) {
       throw new AssertionError("Expected-fail scenario " + trackingIssue
@@ -231,23 +242,6 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       throw new IllegalStateException("HTTP " + code + ": " + detail);
     }
     con.disconnect();
-  }
-
-  // Minimal JSON string encoder for embedding the fixture cypher in a request body.
-  static String jsonString(final String raw) {
-    final StringBuilder sb = new StringBuilder("\"");
-    for (int i = 0; i < raw.length(); i++) {
-      final char c = raw.charAt(i);
-      switch (c) {
-        case '"' -> sb.append("\\\"");
-        case '\\' -> sb.append("\\\\");
-        case '\n' -> sb.append("\\n");
-        case '\r' -> sb.append("\\r");
-        case '\t' -> sb.append("\\t");
-        default -> sb.append(c);
-      }
-    }
-    return sb.append('"').toString();
   }
 
   // ==================== connection ====================
@@ -701,11 +695,17 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[PROTO-002] Bolt 5.x negotiation is supported")
     void proto002_bolt5() {
-      // The server never advertises any Bolt 5.x version; 5.x drivers work only
-      // by silently downgrading. No public driver API forces a 5.x-only
-      // handshake, so this documents the gap as a marker (#4890).
+      // Assert on the version actually negotiated with the pinned (5.x-capable)
+      // driver. The server advertises only 3.0/4.0/4.4, so it negotiates 4.4
+      // today and the >= 5.0 assertion fails (documenting the gap). When Bolt
+      // 5.x support is added, the negotiated version rises to 5.x, the assertion
+      // passes, and assertExpectedFailure fails loudly - so this xfail actually
+      // self-closes rather than being a hardcoded marker.
       assertExpectedFailure("#4890", () -> {
-        throw new AssertionError("Bolt 5.x negotiation is not advertised by the server");
+        try (final Session s = boltSession()) {
+          final String negotiated = s.run("RETURN 1").consume().server().protocolVersion();
+          assertThat(Double.parseDouble(negotiated)).isGreaterThanOrEqualTo(5.0);
+        }
       });
     }
 
