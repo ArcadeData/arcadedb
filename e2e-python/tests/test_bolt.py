@@ -458,13 +458,20 @@ def _race_two_writers(driver, database, marker):
 
 
 def test_TX_005_managed_write_retries_on_transient_error(bolt_driver):
-    from neo4j.exceptions import TransientError
+    from neo4j.exceptions import ClientError, DatabaseError, TransientError
 
     errors = _race_two_writers(bolt_driver, "beer", "tx-005")
 
     assert errors, "expected at least one racing session to fail on the write conflict"
-    assert isinstance(errors[0], TransientError), (
-        f"expected Neo.TransientError.*, got {type(errors[0]).__name__}: {errors[0]}"
+    # Check the whole collection, not just errors[0] - which of the two racing
+    # threads appends first is nondeterministic, and this matches the scenario's
+    # actual intent: the conflict must be retryable, not merely present.
+    assert any(isinstance(e, TransientError) for e in errors), (
+        f"expected at least one Neo.TransientError.*, got {[type(e).__name__ for e in errors]}"
+    )
+    assert not any(isinstance(e, (ClientError, DatabaseError)) for e in errors), (
+        f"expected no non-retryable ClientError/DatabaseError among the racing "
+        f"errors, got {[type(e).__name__ for e in errors]}"
     )
 
 
@@ -756,13 +763,20 @@ def test_ERR_003_unauthenticated_request_rejected():
 
 
 def test_ERR_004_transient_condition_error_code(bolt_driver):
-    from neo4j.exceptions import TransientError
+    from neo4j.exceptions import ClientError, DatabaseError, TransientError
 
     errors = _race_two_writers(bolt_driver, "beer", "err-004")
 
     assert errors, "expected at least one racing session to fail on the write conflict"
-    assert isinstance(errors[0], TransientError), (
-        f"expected Neo.TransientError.*, got {type(errors[0]).__name__}: {errors[0]}"
+    # Check the whole collection, not just errors[0] - which of the two racing
+    # threads appends first is nondeterministic, and this matches the scenario's
+    # actual intent: the conflict must be retryable, not merely present.
+    assert any(isinstance(e, TransientError) for e in errors), (
+        f"expected at least one Neo.TransientError.*, got {[type(e).__name__ for e in errors]}"
+    )
+    assert not any(isinstance(e, (ClientError, DatabaseError)) for e in errors), (
+        f"expected no non-retryable ClientError/DatabaseError among the racing "
+        f"errors, got {[type(e).__name__ for e in errors]}"
     )
 
 
