@@ -57,7 +57,7 @@ public class BoltE2ETests
         Assert.NotNull(record["name"].As<string>());
     }
 
-    [Fact(Skip = "Requires a 3-node HA cluster; e2e-csharp's single-node harness cannot exercise this without new multi-node orchestration infrastructure - see #4890")]
+    [Fact(Skip = "CONN-004 requires a 3-node HA cluster; e2e-csharp's single-node harness cannot exercise this without new multi-node orchestration infrastructure - see #4890")]
     public void Conn004_NeoRoutingHaTopology()
     {
     }
