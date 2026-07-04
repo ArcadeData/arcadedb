@@ -167,6 +167,28 @@ function tlsJavaOpts(mode) {
   );
 }
 
+// keytool availability decided at load time so the TLS scenarios report as a
+// real skip (not a misleading pass) on hosts without a JDK. CI runners have
+// one; local runs without keytool skip CONN-002/CONN-005 honestly.
+const KEYTOOL_AVAILABLE = (() => {
+  try {
+    execFileSync("which", ["keytool"]);
+    return true;
+  } catch (_) {
+    return false;
+  }
+})();
+const tlsIt = KEYTOOL_AVAILABLE ? it : it.skip;
+
+// True if the collected racing errors contain no non-retryable code: a
+// write-write conflict must surface as Neo.TransientError.* (retryable), never
+// as a ClientError/DatabaseError (mirrors the Python suite's negative check).
+function noNonRetryableErrors(errors) {
+  return errors.every(
+    (e) => !/^Neo\.(ClientError|DatabaseError)\./.test(String(e.code))
+  );
+}
+
 describe("Bolt conformance (issue #4888)", () => {
   jest.setTimeout(180000);
 
@@ -272,14 +294,24 @@ describe("Bolt conformance (issue #4888)", () => {
     let tlsOptional;
 
     beforeAll(async () => {
+      if (!KEYTOOL_AVAILABLE) return; // CONN-002/005 are it.skip in this case
       certDir = generateTlsCerts();
-      if (!certDir) return; // keytool absent -> tests below self-skip
+      if (!certDir) return;
       tlsImageTag = await buildTlsImage(certDir);
     });
 
     afterAll(async () => {
       if (tlsRequired) await tlsRequired.stop();
       if (tlsOptional) await tlsOptional.stop();
+      // Remove the throwaway derived image so it does not accumulate on
+      // developer machines (parity with the Python suite's teardown).
+      if (tlsImageTag) {
+        try {
+          execFileSync("docker", ["rmi", "-f", tlsImageTag]);
+        } catch (_) {
+          /* image may be in use or already gone; ignore */
+        }
+      }
       if (certDir) {
         try {
           fs.rmSync(certDir, { recursive: true, force: true });
@@ -289,8 +321,8 @@ describe("Bolt conformance (issue #4888)", () => {
       }
     });
 
-    it("[CONN-002] connect via bolt+ssc:// with TLS required", async () => {
-      if (!certDir) return console.warn("keytool absent - skipping CONN-002");
+    tlsIt("[CONN-002] connect via bolt+ssc:// with TLS required", async () => {
+      if (!certDir) return console.warn("keytool cert generation failed - skipping CONN-002");
       tlsRequired = await new GenericContainer(tlsImageTag)
         .withExposedPorts(2480, 7687)
         .withEnvironment({ JAVA_OPTS: tlsJavaOpts("REQUIRED") })
@@ -319,8 +351,8 @@ describe("Bolt conformance (issue #4888)", () => {
       }
     });
 
-    it("[CONN-005] TLS OPTIONAL falls back to plaintext bolt://", async () => {
-      if (!certDir) return console.warn("keytool absent - skipping CONN-005");
+    tlsIt("[CONN-005] TLS OPTIONAL falls back to plaintext bolt://", async () => {
+      if (!certDir) return console.warn("keytool cert generation failed - skipping CONN-005");
       tlsOptional = await new GenericContainer(tlsImageTag)
         .withExposedPorts(2480, 7687)
         .withEnvironment({ JAVA_OPTS: tlsJavaOpts("OPTIONAL") })
@@ -446,6 +478,9 @@ describe("Bolt conformance (issue #4888)", () => {
       expect(
         errors.some((e) => String(e.code).startsWith("Neo.TransientError"))
       ).toBe(true);
+      // The conflict must be retryable: no racing error is a non-retryable
+      // ClientError/DatabaseError (this is the part that proves retryability).
+      expect(noNonRetryableErrors(errors)).toBe(true);
     });
   });
 
@@ -808,6 +843,9 @@ describe("Bolt conformance (issue #4888)", () => {
       expect(
         errors.some((e) => String(e.code).startsWith("Neo.TransientError"))
       ).toBe(true);
+      // A transient conflict must not be misclassified as a non-retryable
+      // ClientError/DatabaseError.
+      expect(noNonRetryableErrors(errors)).toBe(true);
     });
   });
 
