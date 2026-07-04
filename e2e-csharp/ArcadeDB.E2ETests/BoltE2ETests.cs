@@ -40,4 +40,23 @@ public class BoltE2ETests
     {
         await _fixture.Driver.VerifyConnectivityAsync();
     }
+
+    [Fact(DisplayName = "CONN-003: Connect via neo4j:// routing discovery, single-node deployment")]
+    public async Task Conn003_NeoRoutingSingleNode()
+    {
+        await using var driver = GraphDatabase.Driver(
+            _fixture.NeoRoutingUri,
+            AuthTokens.Basic(ArcadeDbBoltFixture.RootUser, ArcadeDbBoltFixture.RootPassword));
+        await driver.VerifyConnectivityAsync();
+
+        await using var session = driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (b:Beer) RETURN b.name AS name LIMIT 1");
+        var record = await result.SingleAsync();
+        Assert.NotNull(record["name"].As<string>());
+    }
+
+    [Fact(Skip = "Requires a 3-node HA cluster; e2e-csharp's single-node harness cannot exercise this without new multi-node orchestration infrastructure - see #4890")]
+    public void Conn004_NeoRoutingHaTopology()
+    {
+    }
 }
