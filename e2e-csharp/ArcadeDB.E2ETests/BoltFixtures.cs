@@ -227,6 +227,7 @@ public class ArcadeDbBoltTlsRequiredFixture : IAsyncLifetime
             .WithPortBinding(7687, true)
             .WithEnvironment("JAVA_OPTS",
                 $"-Darcadedb.server.rootPassword={ArcadeDbBoltFixture.RootPassword} " +
+                "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} " +
                 "-Darcadedb.server.plugins=BoltProtocolPlugin " +
                 "-Darcadedb.bolt.ssl=REQUIRED " +
                 "-Darcadedb.ssl.keyStore=/home/arcadedb/tls_certs/keystore.p12 " +
@@ -270,6 +271,7 @@ public class ArcadeDbBoltTlsOptionalFixture : IAsyncLifetime
             .WithPortBinding(7687, true)
             .WithEnvironment("JAVA_OPTS",
                 $"-Darcadedb.server.rootPassword={ArcadeDbBoltFixture.RootPassword} " +
+                "-Darcadedb.server.defaultDatabases=beer[root]{import:https://github.com/ArcadeData/arcadedb-datasets/raw/main/orientdb/OpenBeer.gz} " +
                 "-Darcadedb.server.plugins=BoltProtocolPlugin " +
                 "-Darcadedb.bolt.ssl=OPTIONAL " +
                 "-Darcadedb.ssl.keyStore=/home/arcadedb/tls_certs/keystore.p12 " +
