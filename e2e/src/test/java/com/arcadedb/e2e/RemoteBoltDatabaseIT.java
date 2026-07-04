@@ -126,21 +126,41 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
         + "bolt/conformance/spec.yaml current_status (" + trackingIssue + ")");
   }
 
-  // Runs two concurrent writers against the same node; collects any driver-side
-  // errors so transient-vs-non-transient classification can be asserted.
+  // Shared concurrency helper for TX-005 and ERR-004. Two sessions race to
+  // update the same node inside explicit transactions, each held open past the
+  // other's write, so the losing commit hits ArcadeDB's optimistic concurrency
+  // check. Returns the collected driver-side errors; callers assert on the
+  // whole set (timing-sensitive by nature), not a single index. Deliberately
+  // does NOT use managed executeWrite - that would auto-retry and swallow the
+  // transient error this helper exists to surface.
   List<Neo4jException> raceTwoWriters(final String marker) {
+    try (final Session setup = boltSession()) {
+      setup.run("MERGE (n:RaceProbe {marker: $m}) SET n.value = 0", Map.of("m", marker)).consume();
+    }
     final List<Neo4jException> errors = new CopyOnWriteArrayList<>();
-    final Runnable writer = () -> {
-      try (final Session s = boltSession()) {
-        s.executeWrite(tx -> tx.run(
-            "MERGE (n:RaceProbe {marker: $m}) SET n.v = coalesce(n.v, 0) + 1",
-            Map.of("m", marker)).consume());
+    final Runnable racingWrite = () -> {
+      final Session s = boltSession();
+      final Transaction tx = s.beginTransaction();
+      try {
+        tx.run("MATCH (n:RaceProbe {marker: $m}) SET n.value = n.value + 1 RETURN n",
+            Map.of("m", marker)).consume();
+        Thread.sleep(500);
+        tx.commit();
       } catch (final Neo4jException e) {
         errors.add(e);
+        try {
+          tx.rollback();
+        } catch (final Exception ignored) {
+          // transaction already broken
+        }
+      } catch (final InterruptedException e) {
+        Thread.currentThread().interrupt();
+      } finally {
+        s.close();
       }
     };
-    final Thread a = new Thread(writer);
-    final Thread b = new Thread(writer);
+    final Thread a = new Thread(racingWrite);
+    final Thread b = new Thread(racingWrite);
     a.start();
     b.start();
     try {
@@ -150,6 +170,15 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       Thread.currentThread().interrupt();
     }
     return errors;
+  }
+
+  // A racing write-write conflict must surface a retryable Neo.TransientError.*,
+  // never a non-retryable ClientError/DatabaseError - the precondition for
+  // driver-side managed-transaction retry.
+  static void assertTransientRace(final List<Neo4jException> errors) {
+    assertThat(errors).isNotEmpty();
+    assertThat(errors).anySatisfy(e -> assertThat(e.code()).startsWith("Neo.TransientError"));
+    assertThat(errors).allSatisfy(e -> assertThat(e.code()).doesNotMatch("Neo\\.(ClientError|DatabaseError)\\..*"));
   }
 
   void httpCommand(final String apiPath, final String jsonBody) throws Exception {
@@ -202,6 +231,14 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[CONN-003] neo4j:// routing discovery, single-node")
     void conn003_routingSingleNode() {
+      // handleRoute advertises the server's own bound address
+      // (socket.getLocalAddress(), i.e. the container bridge IP such as
+      // 172.17.0.x). On the Linux CI runner the Docker bridge subnet is routable
+      // from the host, so the driver reaches that address and the scenario passes
+      // - identical to the e2e-js/e2e-go/e2e-python suites. On Docker Desktop
+      // (macOS/Windows) container IPs are not host-routable, so this scenario can
+      // only be fully verified in CI; bolt:// scenarios are unaffected because
+      // they use the mapped host port.
       try (final Driver routing = GraphDatabase.driver(
           "neo4j://" + host + ":" + boltPort,
           AuthTokens.basic("root", "playwithdata"),
@@ -311,14 +348,9 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[TX-005] Managed transaction retries on Neo.TransientError.*")
     void tx005_transientRetry() {
-      // Hint: expected-fail (#4890). If a write-write race surfaces
-      // Neo.TransientError.*, this xfail wrapper will FAIL and prompt a flip to
-      // a positive assertion plus a spec.yaml reconciliation.
-      final List<Neo4jException> errors = raceTwoWriters("tx-005");
-      assertExpectedFailure("#4890", () -> {
-        assertThat(errors).isNotEmpty();
-        assertThat(errors).anySatisfy(e -> assertThat(e.code()).startsWith("Neo.TransientError"));
-      });
+      // The write-write conflict must be classified retryable (Neo.TransientError.*)
+      // so the driver's managed-transaction retry policy can act on it.
+      assertTransientRace(raceTwoWriters("tx-005"));
     }
   }
 
@@ -609,11 +641,7 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[ERR-004] Transient conditions surface Neo.TransientError.*")
     void err004_transient() {
-      final List<Neo4jException> errors = raceTwoWriters("err-004");
-      assertExpectedFailure("#4890", () -> {
-        assertThat(errors).isNotEmpty();
-        assertThat(errors).anySatisfy(e -> assertThat(e.code()).startsWith("Neo.TransientError"));
-      });
+      assertTransientRace(raceTwoWriters("err-004"));
     }
   }
 
