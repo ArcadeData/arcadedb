@@ -3461,7 +3461,25 @@ public class CypherExecutionPlan {
         }
         case DELETE: {
           final DeleteClause dc = entry.getTypedClause();
-          if (dc.getVariables().contains(variable))
+          if (deleteReferencesVariable(dc, variable))
+            return true;
+          break;
+        }
+        case FOREACH: {
+          // FOREACH can reference the edge variable in its list expression (e.g. FOREACH (x IN [r] | ...))
+          // or inside any of its inner write clauses. Missing this dropped the edge binding, so DELETE
+          // inside FOREACH silently found no edge (issue #4912).
+          final ForeachClause fc = entry.getTypedClause();
+          if (foreachReferencesVariable(fc, variable))
+            return true;
+          break;
+        }
+        case SUBQUERY: {
+          // A scoped CALL (r) { ... } imports the edge variable, and CALL { WITH r ... } references it in
+          // the inner statement. Missing this dropped the edge binding, so DELETE inside a CALL subquery
+          // silently found no edge (issue #4913).
+          final SubqueryClause sq = entry.getTypedClause();
+          if (subqueryReferencesVariable(sq, variable))
             return true;
           break;
         }
@@ -3497,6 +3515,156 @@ public class CypherExecutionPlan {
       if (expressionReferencesVariable(uc.getListExpression().getText(), variable))
         return true;
 
+    return false;
+  }
+
+  /**
+   * Checks whether a FOREACH clause references the given variable, either in its list expression
+   * or inside any of its inner write clauses (recursively for nested FOREACH). Used to keep the
+   * edge binding alive when a FOREACH consumes it (issue #4912).
+   */
+  private boolean foreachReferencesVariable(final ForeachClause foreachClause, final String variable) {
+    if (foreachClause == null)
+      return false;
+    if (foreachClause.getListExpression() != null
+        && expressionReferencesVariable(foreachClause.getListExpression().getText(), variable))
+      return true;
+    if (foreachClause.getInnerClauses() != null) {
+      for (final ClauseEntry inner : foreachClause.getInnerClauses()) {
+        switch (inner.getType()) {
+        case DELETE:
+          if (deleteReferencesVariable(inner.getTypedClause(), variable))
+            return true;
+          break;
+        case SET: {
+          final SetClause sc = inner.getTypedClause();
+          for (final SetClause.SetItem item : sc.getItems()) {
+            if (variable.equals(item.getVariable()))
+              return true;
+            if (item.getValueExpression() != null
+                && expressionReferencesVariable(item.getValueExpression().getText(), variable))
+              return true;
+            if (item.getTargetExpression() != null
+                && expressionReferencesVariable(item.getTargetExpression().getText(), variable))
+              return true;
+          }
+          break;
+        }
+        case REMOVE: {
+          final RemoveClause rc = inner.getTypedClause();
+          for (final RemoveClause.RemoveItem item : rc.getItems())
+            if (variable.equals(item.getVariable()))
+              return true;
+          break;
+        }
+        case FOREACH:
+          if (foreachReferencesVariable(inner.getTypedClause(), variable))
+            return true;
+          break;
+        case CREATE:
+        case MERGE:
+          // Inline property expressions inside CREATE/MERGE patterns may reference the variable.
+          // Enumerating them cheaply is awkward, so stay conservative: keep the edge binding.
+          // A false positive only forgoes the GAV/CSR fast path; a false negative would silently
+          // drop a still-referenced edge (the class of bug this method exists to prevent).
+          return true;
+        default:
+          break;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Checks whether a scoped CALL subquery references the given variable, either because the variable is
+   * imported via the explicit scope list {@code CALL (r) { ... }} or because the inner statement references
+   * it (e.g. {@code CALL { WITH r ... DELETE r }}). Used to keep the edge binding alive when a CALL subquery
+   * consumes it (issue #4913).
+   */
+  private boolean subqueryReferencesVariable(final SubqueryClause subqueryClause, final String variable) {
+    if (subqueryClause == null)
+      return false;
+    // Explicit scope: CALL (r) { ... } imports r from the outer row.
+    final List<String> scope = subqueryClause.getScopeVariables();
+    if (scope != null && scope.contains(variable))
+      return true;
+    // Otherwise inspect the inner statement's clauses (e.g. CALL { WITH r ... DELETE r }).
+    final CypherStatement inner = subqueryClause.getInnerStatement();
+    if (inner == null || inner.getClausesInOrder() == null)
+      return false;
+    for (final ClauseEntry entry : inner.getClausesInOrder()) {
+      switch (entry.getType()) {
+      case WITH: {
+        final WithClause wc = entry.getTypedClause();
+        for (final ReturnClause.ReturnItem item : wc.getItems())
+          if (expressionReferencesVariable(item.getExpression().getText(), variable))
+            return true;
+        if (wc.getWhereClause() != null && wc.getWhereClause().getConditionExpression() != null
+            && expressionReferencesVariable(wc.getWhereClause().getConditionExpression().getText(), variable))
+          return true;
+        break;
+      }
+      case UNWIND:
+        if (expressionReferencesVariable(((UnwindClause) entry.getTypedClause()).getListExpression().getText(), variable))
+          return true;
+        break;
+      case SET: {
+        final SetClause sc = entry.getTypedClause();
+        for (final SetClause.SetItem item : sc.getItems()) {
+          if (variable.equals(item.getVariable()))
+            return true;
+          if (item.getValueExpression() != null
+              && expressionReferencesVariable(item.getValueExpression().getText(), variable))
+            return true;
+          if (item.getTargetExpression() != null
+              && expressionReferencesVariable(item.getTargetExpression().getText(), variable))
+            return true;
+        }
+        break;
+      }
+      case REMOVE: {
+        final RemoveClause rc = entry.getTypedClause();
+        for (final RemoveClause.RemoveItem item : rc.getItems())
+          if (variable.equals(item.getVariable()))
+            return true;
+        break;
+      }
+      case DELETE:
+        if (deleteReferencesVariable(entry.getTypedClause(), variable))
+          return true;
+        break;
+      case RETURN: {
+        final ReturnClause rc = entry.getTypedClause();
+        for (final ReturnClause.ReturnItem item : rc.getReturnItems())
+          if (expressionReferencesVariable(item.getExpression().getText(), variable))
+            return true;
+        break;
+      }
+      case FOREACH:
+        if (foreachReferencesVariable(entry.getTypedClause(), variable))
+          return true;
+        break;
+      case SUBQUERY:
+        if (subqueryReferencesVariable(entry.getTypedClause(), variable))
+          return true;
+        break;
+      default:
+        break;
+      }
+    }
+    return false;
+  }
+
+  /** Checks whether a DELETE clause references the given variable, by name or within a target expression. */
+  private boolean deleteReferencesVariable(final DeleteClause deleteClause, final String variable) {
+    if (deleteClause.getVariables().contains(variable))
+      return true;
+    final List<Expression> expressions = deleteClause.getExpressions();
+    if (expressions != null)
+      for (final Expression expression : expressions)
+        if (expression != null && expressionReferencesVariable(expression.getText(), variable))
+          return true;
     return false;
   }
 

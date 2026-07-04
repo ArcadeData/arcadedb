@@ -301,4 +301,25 @@ class OpenCypherForeachTest {
     }
     assertThat(names).containsExactly("A");
   }
+
+  // Issue #4912: DELETE of a relationship bound to the FOREACH variable must actually remove the edge
+  @Test
+  void foreachDeleteRelationshipVariable_issue4912() {
+    database.getSchema().createVertexType("User");
+    database.getSchema().createEdgeType("FRIEND");
+    database.transaction(() ->
+      database.command("opencypher",
+          "CREATE (a:User {name:'Alice'})-[:FRIEND]->(b:User {name:'Bob'})"));
+
+    database.transaction(() ->
+      database.command("opencypher",
+          """
+              MATCH (a:User {name:'Alice'})-[r:FRIEND]->(b:User {name:'Bob'})
+              FOREACH (x IN [r] | DELETE x)"""));
+
+    final ResultSet verify = database.query("opencypher",
+        "MATCH (:User)-[r:FRIEND]->(:User) RETURN count(r) AS total");
+    assertThat(verify.hasNext()).isTrue();
+    assertThat(((Number) verify.next().getProperty("total")).longValue()).isEqualTo(0L);
+  }
 }

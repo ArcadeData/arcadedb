@@ -74,6 +74,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
   private final String              idFilter;    // Optional ID filter to apply (e.g., "#1:0")
   private final BooleanExpression   whereFilter; // Optional inline WHERE predicate (pushdown)
   private final ExpressionEvaluator evaluator;   // Shared evaluator for WHERE/ID expression resolution
+  // Read-only empty result used to evaluate context-only pattern property expressions (e.g. a parameter
+  // map field like $edge_data.uuid) when the pattern has no input row. Row-variable lookups against it
+  // return null gracefully. Shared static because it is only ever read; the immutable backing map makes
+  // any accidental write fail fast (UnsupportedOperationException) instead of racing shared state across
+  // concurrent queries (issue #4909).
+  private static final Result       EMPTY_RESULT = new ResultInternal(Collections.emptyMap());
   private final Expression          dynamicIdExpression; // Pre-analyzed expression for runtime RID resolution (issue #3864)
   // Display-only diagnostic fields surfaced through {@link #prettyPrint}. Mirrors the
   // {@code usedIndexName} pattern: written once during the first iterator setup and read by the
@@ -602,12 +608,18 @@ public class MatchNodeStep extends AbstractExecutionStep {
             propertyValue = paramValue;
         }
       }
-      // Resolve dynamic expressions (e.g., e.src_id from UNWIND) against the current input result
+      // Resolve dynamic expressions (e.g., e.src_id from UNWIND) against the current input result.
       else if (propertyValue instanceof Expression) {
         if (currentInputResult != null)
           propertyValue = evaluator.evaluate((Expression) propertyValue, currentInputResult, context);
-        else
-          return null; // Cannot resolve expression without input row — skip index
+        else {
+          // No input row: a parameter map field like $edge_data.uuid still resolves from the context.
+          // If it can't resolve (a genuinely row-dependent expression), skip the index and fall back to
+          // scan, preserving the previous no-row behavior. Issue #4909.
+          propertyValue = evaluator.evaluate((Expression) propertyValue, EMPTY_RESULT, context);
+          if (propertyValue == null)
+            return null;
+        }
       }
 
       properties.put(propertyName, propertyValue);
@@ -919,9 +931,12 @@ public class MatchNodeStep extends AbstractExecutionStep {
       final String key = entry.getKey();
       Object expectedValue = entry.getValue();
 
-      // Evaluate Expression-based property values (e.g., event.year)
-      if (expectedValue instanceof Expression && currentResult != null)
-        expectedValue = evaluator.evaluate((Expression) expectedValue, currentResult, context);
+      // Evaluate Expression-based property values (e.g., event.year, or a parameter map field like
+      // $edge_data.uuid). Parameter-based expressions resolve from the context alone, so a bare MATCH
+      // with no input row still binds; an empty result makes row-dependent lookups return null
+      // gracefully, which is no worse than the previous no-match behavior. Issue #4909.
+      if (expectedValue instanceof Expression)
+        expectedValue = evaluator.evaluate((Expression) expectedValue, currentResult != null ? currentResult : EMPTY_RESULT, context);
 
       // Resolve parameter references (e.g., $username -> actual value from context)
       if (expectedValue instanceof CypherASTBuilder.ParameterReference) {
