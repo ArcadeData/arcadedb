@@ -1065,7 +1065,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED
         // RECORD
         try {
-          getTransaction().addUpdatedRecord(record);
+          final TransactionContext tx = getTransaction();
+          tx.addUpdatedRecord(record);
 
           if (record instanceof Document document) {
             // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
@@ -1076,12 +1077,13 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
               // in-tx indexed state (snapshot below), not the committed buffer returned by
               // getOriginalDocument() - the buffer stays frozen until commit because serialization is
               // deferred, so diffing against it leaks a phantom index entry for every intermediate value.
-              final TransactionContext tx = getTransaction();
+              // The snapshot holds ONLY the indexed property values (not a full detach of the document) to
+              // stay light on allocations for wide documents and bulk updates.
               final RID rid = record.getIdentity();
               final Document previous = tx.getLastIndexedSnapshot(rid);
               final Document originalRecord = previous != null ? previous : getOriginalDocument(record);
               indexer.updateDocument(originalRecord, document, indexes);
-              tx.setLastIndexedSnapshot(rid, document.detach());
+              tx.setLastIndexedSnapshot(rid, indexer.buildIndexedStateSnapshot(document, indexes));
             }
           }
         } catch (final IOException e) {

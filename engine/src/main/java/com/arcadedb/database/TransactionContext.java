@@ -91,17 +91,17 @@ public class TransactionContext implements Transaction {
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
-  private       Map<RID, Record>                     updatedRecords        = null;
-  // #4935: snapshot of the last in-transaction indexed state per RID. When the same record is updated more
-  // than once inside one transaction, the second+ update must diff its index change against the previous
-  // in-transaction value, not the committed buffer (which stays frozen until commit because serialization is
-  // deferred). Without this, every intermediate value leaks a phantom index entry.
+  private       Map<RID, Record>                     updatedRecords              = null;
+  // #4935: snapshot of the last in-transaction indexed state per RID (indexed property values only). When the
+  // same record is updated more than once inside one transaction, the second+ update must diff its index change
+  // against the previous in-transaction value, not the committed buffer (which stays frozen until commit because
+  // serialization is deferred). Without this, every intermediate value leaks a phantom index entry.
   private       Map<RID, Document>                   updatedRecordsIndexSnapshot = null;
-  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel              = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
   private       Object                               requester;
-  private       List<Runnable>                       afterCommitCallbacks  = null;
-  private       Set<String>                          registeredCallbackKeys = null;
+  private       List<Runnable>                       afterCommitCallbacks        = null;
+  private       Set<String>                          registeredCallbackKeys      = null;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -1068,6 +1068,10 @@ public class TransactionContext implements Transaction {
    */
   public void addDeletedRecord(final RID rid) {
     deletedRecordsInTx.add(rid);
+    // A record deleted after an in-tx update no longer needs its indexed-state snapshot (#4935): the delete
+    // removes the index entries through its own path, so drop the retained memory right away.
+    if (updatedRecordsIndexSnapshot != null)
+      updatedRecordsIndexSnapshot.remove(rid);
   }
 
   /**

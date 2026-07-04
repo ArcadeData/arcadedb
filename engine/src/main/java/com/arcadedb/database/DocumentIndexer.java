@@ -29,6 +29,7 @@ import com.arcadedb.schema.DocumentType;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -232,6 +233,61 @@ public class DocumentIndexer {
         entry.put(keyValues, new RID[] { rid });
       }
     }
+  }
+
+  /**
+   * Builds a lightweight point-in-time snapshot of ONLY the indexed property values of a document, to be used
+   * as the {@code originalRecord} of a later {@link #updateDocument} call for the same record inside the same
+   * transaction (issue #4935). {@link Document#detach()} would copy every property of the document (recursively
+   * detaching embedded documents) on every indexed update, a real allocation/retention cost for wide documents
+   * and large batches; {@code updateDocument} only ever reads the indexed properties, so nothing else is stored.
+   * <p>
+   * The snapshot is keyed by the same names {@code updateDocument} reads: the stripped key name (which also
+   * answers nested paths like {@code "a.b"}, resolved eagerly here) and, for dotted names, the root property
+   * (read directly by the LIST BY ITEM delta logic). Container values are shallow-copied (embedded documents
+   * detached) so the snapshot cannot alias state the caller later mutates in place.
+   */
+  public Document buildIndexedStateSnapshot(final Document document, final List<IndexInternal> indexes) {
+    final Map<String, Object> values = new LinkedHashMap<>();
+    for (final IndexInternal index : indexes)
+      for (final String keyName : index.getPropertyNames()) {
+        final KeyExpansion expansion = detectExpansion(keyName);
+        final String property = expansion != KeyExpansion.NONE ? stripModifier(keyName, expansion) : keyName;
+
+        if (!values.containsKey(property))
+          values.put(property, copyForSnapshot(getPropertyValue(document, property)));
+
+        final int dot = property.indexOf('.');
+        if (dot > 0) {
+          final String root = property.substring(0, dot);
+          if (!values.containsKey(root))
+            values.put(root, copyForSnapshot(document.get(root)));
+        }
+      }
+    return new DetachedDocument(document, values);
+  }
+
+  /**
+   * Defensive copy for a snapshot value: scalar values are immutable and stored as-is; containers are
+   * shallow-copied and embedded documents detached, so a later in-place mutation of the live value cannot
+   * retroactively change the snapshot and hide an index delta.
+   */
+  private static Object copyForSnapshot(final Object value) {
+    if (value instanceof List<?> list) {
+      final List<Object> copy = new ArrayList<>(list.size());
+      for (final Object element : list)
+        copy.add(element instanceof EmbeddedDocument embedded ? embedded.detach() : element);
+      return copy;
+    }
+    if (value instanceof Map<?, ?> map) {
+      final Map<Object, Object> copy = new LinkedHashMap<>(map.size());
+      for (final Map.Entry<?, ?> entry : map.entrySet())
+        copy.put(entry.getKey(), entry.getValue() instanceof EmbeddedDocument embedded ? embedded.detach() : entry.getValue());
+      return copy;
+    }
+    if (value instanceof EmbeddedDocument embedded)
+      return embedded.detach();
+    return value;
   }
 
   public void updateDocument(final Document originalRecord, final Document modifiedRecord, final List<IndexInternal> indexes) {
