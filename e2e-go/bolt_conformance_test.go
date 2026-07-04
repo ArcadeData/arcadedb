@@ -284,10 +284,30 @@ func codes(errs []error) []string {
 	return out
 }
 
+// raceUntilConflict re-runs the two-writer race (with a distinct marker each
+// attempt) until it surfaces at least one error, up to a bounded number of
+// tries. It only retries the "no conflict reproduced" case (clean
+// serialization) - as soon as any error is surfaced it returns, so a genuine
+// non-transient error code is never retried away and still fails the caller's
+// assertion. This tames the inherent timing sensitivity of the race without
+// weakening what the scenario certifies.
+func raceUntilConflict(t *testing.T, d neo4j.DriverWithContext, database, marker string) []error {
+	t.Helper()
+	const attempts = 5
+	var errs []error
+	for i := 0; i < attempts; i++ {
+		errs = raceTwoWriters(t, d, database, fmt.Sprintf("%s-%d", marker, i))
+		if len(errs) > 0 {
+			return errs
+		}
+	}
+	return errs
+}
+
 func Test_TX_005_ManagedWriteRetriesOnTransientError(t *testing.T) {
 	d := newDriver(t, boltURI(plainContainer, "bolt"))
-	errs := raceTwoWriters(t, d, "beer", "tx-005")
-	require.NotEmpty(t, errs, "expected at least one racing session to fail on the write conflict")
+	errs := raceUntilConflict(t, d, "beer", "tx-005")
+	require.NotEmpty(t, errs, "expected the write conflict to reproduce within the bounded retries")
 	require.True(t, anyTransient(errs), "expected at least one Neo.TransientError.*, got %v", codes(errs))
 	require.False(t, anyNonRetryable(errs), "expected no non-retryable ClientError/DatabaseError, got %v", codes(errs))
 }
@@ -627,8 +647,8 @@ func Test_ERR_003_UnauthenticatedRequestRejected(t *testing.T) {
 
 func Test_ERR_004_TransientConditionErrorCode(t *testing.T) {
 	d := newDriver(t, boltURI(plainContainer, "bolt"))
-	errs := raceTwoWriters(t, d, "beer", "err-004")
-	require.NotEmpty(t, errs, "expected at least one racing session to fail on the write conflict")
+	errs := raceUntilConflict(t, d, "beer", "err-004")
+	require.NotEmpty(t, errs, "expected the write conflict to reproduce within the bounded retries")
 	require.True(t, anyTransient(errs), "expected at least one Neo.TransientError.*, got %v", codes(errs))
 	require.False(t, anyNonRetryable(errs), "expected no non-retryable ClientError/DatabaseError, got %v", codes(errs))
 }

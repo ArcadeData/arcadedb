@@ -55,6 +55,11 @@ const (
 // calls promptly instead of stalling the whole suite until the go test deadline.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
+// plainContainer is shared by all non-TLS scenarios. Several tests write into
+// its "beer"/"boltscratch" databases (TX-002/004, RESULT-004, MDB-002, the
+// race probes); isolation rests on unique per-test marker values and on the
+// tests running sequentially (no t.Parallel), not on separate databases. A
+// future count-based assertion must target a fresh database instead.
 var (
 	ctx            = context.Background()
 	plainContainer *arcadeContainer

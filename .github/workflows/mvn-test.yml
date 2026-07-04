@@ -524,7 +524,10 @@ jobs:
 
       - name: E2E Go Tests
         working-directory: e2e-go
-        run: go test -v ./...
+        # 20m timeout: the plain container plus a derived-image build and two
+        # TLS containers (150s startup each) run sequentially and can approach
+        # the default 10m per-package deadline on a shared runner.
+        run: go test -v -timeout 20m ./...
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ARCADEDB_DOCKER_IMAGE: ${{ needs.build-and-package.outputs.image-tag }}
