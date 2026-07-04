@@ -138,7 +138,7 @@ internal static class BoltTlsImage
 {
     public const string StorePassword = "changeit";
 
-    public static async Task<string> BuildAsync()
+    public static async Task<string> BuildAsync(string tagSuffix)
     {
         var certDir = Directory.CreateTempSubdirectory("bolt-tls-certs-").FullName;
         var keystorePath = Path.Combine(certDir, "keystore.p12");
@@ -167,10 +167,17 @@ internal static class BoltTlsImage
         // relativeSubDirectory) pair meant for paths relative to the repo's
         // solution/git root. certDir is already an absolute throwaway temp
         // directory, so the single-string overload is the correct one here.
+        //
+        // tagSuffix keeps this tag distinct per caller: xUnit v2 parallelizes
+        // distinct collections by default (no DisableTestParallelization here),
+        // and the TLS-required/TLS-optional fixtures live in separate
+        // collections, so both can call BuildAsync concurrently. A shared
+        // hardcoded tag would race on which build "wins" the name and would
+        // register two Ryuk cleanups against the same image.
         var image = new ImageFromDockerfileBuilder()
             .WithDockerfileDirectory(certDir)
             .WithDockerfile("Dockerfile")
-            .WithName("arcadedb-bolt-tls-test:latest")
+            .WithName($"arcadedb-bolt-tls-test-{tagSuffix}:latest")
             .WithCleanUp(true)
             .Build();
         await image.CreateAsync();
@@ -220,7 +227,7 @@ public class ArcadeDbBoltTlsRequiredFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var imageTag = await BoltTlsImage.BuildAsync();
+        var imageTag = await BoltTlsImage.BuildAsync("required");
 
         _container = new ContainerBuilder(imageTag)
             .WithPortBinding(2480, true)
@@ -264,7 +271,7 @@ public class ArcadeDbBoltTlsOptionalFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var imageTag = await BoltTlsImage.BuildAsync();
+        var imageTag = await BoltTlsImage.BuildAsync("optional");
 
         _container = new ContainerBuilder(imageTag)
             .WithPortBinding(2480, true)
