@@ -322,4 +322,51 @@ class OpenCypherForeachTest {
     assertThat(verify.hasNext()).isTrue();
     assertThat(((Number) verify.next().getProperty("total")).longValue()).isEqualTo(0L);
   }
+
+  @Test
+  void foreachMergeThenSet_issue4994() {
+    // Regression test for issue #4994: FOREACH body with MERGE followed by SET executed the MERGE
+    // but silently dropped the SET, because each inner clause ran against the raw iteration row and
+    // the relationship variable bound by MERGE never reached the following SET.
+    database.transaction(() ->
+      database.command("opencypher", "CREATE (a:BugA {id: 2}), (b:BugB {id: 3})"));
+
+    database.transaction(() ->
+      database.command("opencypher",
+          """
+              MATCH (a:BugA {id: 2})
+              MATCH (b:BugB {id: 3})
+              FOREACH (ignore IN [1] |
+                MERGE (a)-[r:MON]->(b)
+                SET r.readback = true
+              )"""));
+
+    final ResultSet total = database.query("opencypher",
+        "MATCH ()-[r:MON]->() RETURN count(r) AS total_mon");
+    assertThat(total.hasNext()).isTrue();
+    assertThat(((Number) total.next().getProperty("total_mon")).longValue()).isEqualTo(1L);
+
+    final ResultSet readback = database.query("opencypher",
+        "MATCH ()-[r:MON]->() WHERE r.readback = true RETURN count(r) AS readback");
+    assertThat(readback.hasNext()).isTrue();
+    assertThat(((Number) readback.next().getProperty("readback")).longValue()).isEqualTo(1L);
+  }
+
+  @Test
+  void foreachCreateNodeThenSet() {
+    // Sibling scenario: a node variable bound by CREATE inside FOREACH must be visible to a
+    // following SET in the same body.
+    database.transaction(() ->
+      database.command("opencypher",
+          """
+              FOREACH (i IN [1] |
+                CREATE (n:BugNode {id: i})
+                SET n.readback = true
+              )"""));
+
+    final ResultSet readback = database.query("opencypher",
+        "MATCH (n:BugNode) WHERE n.readback = true RETURN count(n) AS readback");
+    assertThat(readback.hasNext()).isTrue();
+    assertThat(((Number) readback.next().getProperty("readback")).longValue()).isEqualTo(1L);
+  }
 }
