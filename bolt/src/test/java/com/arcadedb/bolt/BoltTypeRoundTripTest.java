@@ -18,6 +18,8 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.bolt.packstream.PackStreamReader;
+import com.arcadedb.bolt.packstream.PackStreamWriter;
 import com.arcadedb.bolt.structure.BoltPointStructure;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.bolt.structure.BoltTemporalStructure;
@@ -26,6 +28,7 @@ import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
+import java.io.IOException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -77,7 +80,7 @@ class BoltTypeRoundTripTest {
 
   @Test
   @DisplayName("[TYPE-011] CypherDuration serializes as a native Bolt Duration structure")
-  void type011_durationNative() {
+  void type011_durationNative() throws IOException {
     // duration('P1DT2H30M') -> months=0, days=1, seconds=9000, nanos=0
     final CypherDuration d = new CypherDuration(0, 1, 9000, 0);
     final Object out = BoltStructureMapper.toPackStreamValue(d);
@@ -85,6 +88,14 @@ class BoltTypeRoundTripTest {
     final BoltTemporalStructure s = (BoltTemporalStructure) out;
     assertThat(s.getSignature()).isEqualTo((byte) 0x45);
     assertThat(s.getFieldCount()).isEqualTo(4);
+
+    // BoltTemporalStructure has no field getter by design; round-trip through the wire to pin the
+    // field ORDER and VALUES, not just the structure shape.
+    final PackStreamWriter writer = new PackStreamWriter();
+    writer.writeValue(s);
+    final PackStreamReader.StructureValue wire = (PackStreamReader.StructureValue) new PackStreamReader(writer.toByteArray()).readValue();
+    assertThat(wire.getSignature()).isEqualTo((byte) 0x45);
+    assertThat(wire.getFields()).containsExactly(0L, 1L, 9000L, 0L);
   }
 
   @Test
@@ -127,6 +138,16 @@ class BoltTypeRoundTripTest {
     final Map<String, Object> m = new LinkedHashMap<>();
     m.put("a", 1);
     m.put("b", 2);
+    assertThat(BoltStructureMapper.toPackStreamValue(m)).isInstanceOf(Map.class);
+  }
+
+  @Test
+  @DisplayName("A map with an unrecognized crs value and no srid is not misdetected as a Point")
+  void unrecognizedCrsIsNotPoint() {
+    final Map<String, Object> m = new LinkedHashMap<>();
+    m.put("crs", "epsg:1234");
+    m.put("x", 1.0);
+    m.put("y", 2.0);
     assertThat(BoltStructureMapper.toPackStreamValue(m)).isInstanceOf(Map.class);
   }
 }

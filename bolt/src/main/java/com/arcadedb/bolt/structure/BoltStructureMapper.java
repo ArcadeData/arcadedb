@@ -213,6 +213,11 @@ public class BoltStructureMapper {
     final List<Vertex> vertices = path.getVertices();
     final List<Edge> edges = path.getEdges();
 
+    // A MATCH path always has a start vertex, but TraversalPath's default constructor allows an
+    // empty path; guard it explicitly rather than let vertices.get(0) throw below.
+    if (vertices.isEmpty())
+      return new BoltPath(List.of(), List.of(), List.of());
+
     final List<BoltNode> nodes = new ArrayList<>();
     final Map<RID, Integer> nodeIndex = new HashMap<>();
     final List<BoltUnboundRelationship> rels = new ArrayList<>();
@@ -413,13 +418,20 @@ public class BoltStructureMapper {
 
   private static final byte SIG_DURATION = 0x45; // 'E' [months, days, seconds, nanoseconds]
 
+  private static final Set<String> RECOGNIZED_CRS = Set.of("cartesian", "cartesian-3D", "WGS-84", "WGS-84-3D");
+
   /**
-   * Recognize a Cypher spatial point (a Map carrying a crs key plus numeric x/y or longitude/latitude)
-   * and encode it as a native Bolt Point structure. Returns null when the value is not a point so the
-   * caller falls through to generic Map handling.
+   * Recognize a Cypher spatial point (a Map carrying numeric x/y or longitude/latitude, plus either a
+   * recognized crs value - {@code cartesian}, {@code cartesian-3D}, {@code WGS-84}, {@code WGS-84-3D} -
+   * or a numeric srid key) and encode it as a native Bolt Point structure. This is deliberately tighter
+   * than "any map with a crs key": an ordinary user map that happens to carry an unrelated crs value must
+   * not be misencoded as a Point on the wire. Returns null when the value is not a point so the caller
+   * falls through to generic Map handling.
    */
   static BoltPointStructure toPointStructure(final Object value) {
     if (!(value instanceof Map<?, ?> map) || !map.containsKey("crs"))
+      return null;
+    if (!RECOGNIZED_CRS.contains(map.get("crs")) && !(map.get("srid") instanceof Number))
       return null;
     final Double x = pointCoord(map, "x", "longitude");
     final Double y = pointCoord(map, "y", "latitude");

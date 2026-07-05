@@ -107,19 +107,6 @@ func neo4jCode(err error) string {
 	return ""
 }
 
-// runSingleErr is the error-returning sibling of runSingle, for use inside
-// assertStillFails bodies (which must surface failures as errors rather than
-// calling t.Fatal). It returns the single record and any driver error.
-func runSingleErr(d neo4j.DriverWithContext, database, cypher string, params map[string]any) (*neo4j.Record, error) {
-	sess := d.NewSession(ctx, neo4j.SessionConfig{DatabaseName: database})
-	defer sess.Close(ctx)
-	res, err := sess.Run(ctx, cypher, params)
-	if err != nil {
-		return nil, err
-	}
-	return res.Single(ctx)
-}
-
 // --- auth ----------------------------------------------------------------
 
 func Test_AUTH_001_BasicAuthValid(t *testing.T) {
