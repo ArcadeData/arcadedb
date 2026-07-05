@@ -277,6 +277,9 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         final CommandContext workerContext = context.copy();
         if (workerContext instanceof BasicCommandContext basicWorkerContext)
           basicWorkerContext.setDatabase(db);
+        // NOTE: the input-parameters MAP is deliberately shared (aliased) across the N worker contexts: it
+        // is read-only during execution and this setup loop runs sequentially on the caller thread. Stays
+        // correct only as long as sub-steps never write to it.
         workerContext.setInputParameters(context.getInputParameters());
 
         final Future<?> future = scanExecutor.submit(() -> {
@@ -385,8 +388,12 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         if (parallelScanFailure != null)
           throw new CommandExecutionException("Parallel scan failed", parallelScanFailure);
 
-        if (totDispatched >= nRecords)
+        if (totDispatched >= nRecords) {
+          // Page boundary: the consumer is alive (it just asked), refresh the liveness clock so producers
+          // don't count a normal between-pages pause of the upstream steps as abandonment.
+          parallelLastConsumed = System.currentTimeMillis();
           return false;
+        }
         if (nextItem != null)
           return true;
 

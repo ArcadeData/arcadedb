@@ -126,7 +126,12 @@ public final class GraphAlgorithms {
           if (futures[j] != null)
             futures[j].cancel(true);
         Thread.currentThread().interrupt();
-        throw new CommandExecutionException("Parallel graph computation interrupted, partial results discarded");
+        final CommandExecutionException interrupted = new CommandExecutionException(
+            "Parallel graph computation interrupted, partial results discarded");
+        if (firstError != null)
+          // A chunk had already failed before the interrupt: keep its cause for diagnostics.
+          interrupted.addSuppressed(firstError);
+        throw interrupted;
       }
     }
     if (firstError != null) {

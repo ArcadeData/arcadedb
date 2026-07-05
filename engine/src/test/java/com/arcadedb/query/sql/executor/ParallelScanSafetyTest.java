@@ -65,6 +65,9 @@ class ParallelScanSafetyTest extends TestHelper {
   void parallelScanCompletesWhileQueryPoolIsSaturated() throws Exception {
     createAndPopulate();
 
+    // ISOLATION: this saturates the JVM-WIDE QueryEngineManager pool for the duration of the test (released
+    // in finally). Safe because Surefire runs test classes sequentially in this project (forkCount=1, no
+    // parallel mode configured); revisit if JUnit/Surefire parallel execution is ever enabled.
     // Saturate the shared QueryEngineManager pool: occupy every worker thread AND fill the whole task queue
     // with latch-gated tasks. Any further submission to that pool would trigger its caller-runs rejection -
     // which is exactly the condition that used to self-deadlock the parallel scan (#4948).

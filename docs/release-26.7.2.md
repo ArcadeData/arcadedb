@@ -92,7 +92,12 @@ that could starve the very snapshot resync meant to heal the node.
   producer pool that never runs tasks on the caller (visible as `pool=parallel_scan` in the Executor Pools
   metrics), which also stops blocked producers from pinning the shared compute pool's workers and coupling
   the latency of unrelated graph queries to the slowest scan consumer in the JVM
-  ([#4950](https://github.com/ArcadeData/arcadedb/issues/4950)).
+  ([#4950](https://github.com/ArcadeData/arcadedb/issues/4950)). Two behavior changes ride along: a scan
+  producer that fails now FAILS the query instead of silently returning fewer rows, and a parallel-scan
+  result set left neither consumed nor closed is abandoned after 10 minutes of consumer inactivity on a full
+  buffer (its query then fails on the next access). Workloads that hold cursors open with long idle pauses
+  (e.g. Postgres/Bolt wire portals) can raise `arcadedb.parallelScanAbandonedTimeout` or set it to 0 to
+  restore the previous park-until-closed behavior.
 - **Query: parallel scan workers no longer race on the caller's command context.** Every scan worker shared
   the caller's `CommandContext` and concurrently wrote `$current` into its non-thread-safe variables map on
   every row - corrupting `$current` semantics for downstream expressions and risking `HashMap` corruption

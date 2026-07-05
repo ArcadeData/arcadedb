@@ -66,7 +66,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * every consumer drains independently of this pool. Producers of an abandoned (never drained nor
  * closed) ResultSet release their thread after an inactivity timeout. Size the pool with
  * {@code arcadedb.parallelScanProducerPoolThreads} if scan-heavy concurrency needs more headroom;
- * the {@code pool=parallel_scan} queue-depth gauge is the saturation signal to watch.
+ * the setting is read ONCE at the pool's lazy initialization (first parallel scan in the JVM), so
+ * changing it later has no effect until restart. The {@code pool=parallel_scan} queue-depth gauge
+ * is the saturation signal to watch.
  * <p>
  * <b>"No JDK common ForkJoinPool" rule.</b> See the {@link QueryEngineManager} class javadoc;
  * blocking producer work belongs on its own dedicated pool, never on the common pool.
