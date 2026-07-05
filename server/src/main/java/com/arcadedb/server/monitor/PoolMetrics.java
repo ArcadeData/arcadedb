@@ -81,7 +81,7 @@ public final class PoolMetrics implements MeterBinder {
 
     // Dedicated pool for the BLOCKING parallel-scan producers (issues #4948/#4950): unbounded task queue by
     // design (backpressure comes from each query's bounded result queue), so callerRunFallbacks is always 0
-    // and queueCapacityRemaining is Integer.MAX_VALUE-based; queue_depth is the signal to watch.
+    // and queueCapacityRemaining reports -1 (not applicable); queue_depth is the signal to watch.
     final ParallelScanProducerPool pspp = ParallelScanProducerPool.getInstance();
     bindPool(registry, "parallel_scan", "ParallelScanProducerPool bucket-scan producer pool",
         () -> pspp.getPoolStats().poolSize(),

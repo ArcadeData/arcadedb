@@ -66,9 +66,6 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   // into the (blocking) result queue. Small enough to keep DDL/close wait bounded, large enough to amortize
   // the uncontended read-lock cost to noise.
   private static final int SCAN_BATCH_SIZE = 256;
-  // How long producers keep waiting on a full result queue with NO consumer activity before declaring the
-  // ResultSet abandoned. Package-private and non-final so the regression test can shrink it.
-  static long PARALLEL_SCAN_ABANDONED_TIMEOUT_MS = 10 * 60_000L;
 
   static {
     WARNINGS_EVERY = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
@@ -256,10 +253,15 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       parallelQueue = new LinkedBlockingQueue<>(4096);
       parallelScanComplete = false;
       parallelScanFailure = null;
+      // NOTE: the consumer-liveness clock starts HERE, at scan submission, not at the first hasNext():
+      // under a saturated producer pool a consumer that is slow to reach its first poll is already on the
+      // clock. Harmless at the default 10 minutes; keep it in mind before configuring the timeout very low.
       parallelLastConsumed = System.currentTimeMillis();
       scanFutures = new ArrayList<>(getSubSteps().size());
 
       final DatabaseInternal db = context.getDatabase();
+      final long abandonedTimeoutMs = db.getConfiguration()
+          .getValueAsLong(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT);
       // #4948/#4950: producers BLOCK on the bounded result queue, so they must never run on the shared
       // QueryEngineManager pool: its caller-runs rejection executed the whole bucket scan synchronously on
       // the CONSUMER thread (which then blocked forever on its own full queue - self-deadlock), and blocked
@@ -325,10 +327,11 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
                     Thread.currentThread().interrupt();
                     return;
                   }
-                  if (System.currentTimeMillis() - parallelLastConsumed > PARALLEL_SCAN_ABANDONED_TIMEOUT_MS) {
+                  if (abandonedTimeoutMs > 0 && System.currentTimeMillis() - parallelLastConsumed > abandonedTimeoutMs) {
                     final Throwable abandoned = new CommandExecutionException(
                         "Parallel scan abandoned: the result set was not consumed nor closed for more than "
-                            + PARALLEL_SCAN_ABANDONED_TIMEOUT_MS + " ms");
+                            + abandonedTimeoutMs + " ms (see " + GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT.getKey()
+                            + ", 0 disables the timeout)");
                     if (parallelScanFailure == null)
                       parallelScanFailure = abandoned;
                     LogManager.instance().log(this, Level.WARNING,

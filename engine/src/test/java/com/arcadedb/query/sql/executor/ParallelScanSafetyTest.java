@@ -175,9 +175,10 @@ class ParallelScanSafetyTest extends TestHelper {
   void abandonedResultSetReleasesProducersAndSurfacesFailure() throws Exception {
     createAndPopulate();
 
-    // Shrink the abandonment timeout for the test; restored in finally.
-    final long originalTimeout = FetchFromTypeExecutionStep.PARALLEL_SCAN_ABANDONED_TIMEOUT_MS;
-    FetchFromTypeExecutionStep.PARALLEL_SCAN_ABANDONED_TIMEOUT_MS = 200;
+    // Shrink the abandonment timeout for the test on the DATABASE's own configuration: the step reads it
+    // through db.getConfiguration() at scan start (setting only the global would be too late, the database
+    // snapshotted its context configuration at creation - same lesson as the LSM compaction harness).
+    database.getConfiguration().setValue(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT, 200L);
     try {
       final BasicCommandContext context = new BasicCommandContext();
       context.setDatabase(database);
@@ -206,7 +207,7 @@ class ParallelScanSafetyTest extends TestHelper {
         step.close();
       }
     } finally {
-      FetchFromTypeExecutionStep.PARALLEL_SCAN_ABANDONED_TIMEOUT_MS = originalTimeout;
+      database.getConfiguration().setValue(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT, 600_000L);
     }
   }
 }

@@ -116,14 +116,18 @@ public final class ParallelScanProducerPool {
     return executor;
   }
 
-  /** Live pool statistics for the metrics binder (Studio "Executor Pools" card). */
+  /**
+   * Live pool statistics for the metrics binder (Studio "Executor Pools" card).
+   * {@code queueCapacityRemaining} is reported as {@code -1} (not applicable): the task queue is
+   * unbounded by design, and a near-2^31 constant would read oddly next to the bounded pools.
+   * {@code queueDepth} is the saturation signal for this pool.
+   */
   public PoolStats getPoolStats() {
-    final int queueDepth = executor.getQueue().size();
     return new PoolStats(
         executor.getPoolSize(),
         executor.getActiveCount(),
-        queueDepth,
-        executor.getQueue().remainingCapacity(),
+        executor.getQueue().size(),
+        -1,
         executor.getCompletedTaskCount(),
         0L); // no caller-runs policy on this pool by design (see class javadoc)
   }

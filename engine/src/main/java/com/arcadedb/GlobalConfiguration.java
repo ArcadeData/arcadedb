@@ -260,6 +260,15 @@ public enum GlobalConfiguration {
       0 = available cores (min 2); consider capping explicitly on very high core-count machines""",
       Integer.class, 0),
 
+  PARALLEL_SCAN_ABANDONED_TIMEOUT("arcadedb.parallelScanAbandonedTimeout", SCOPE.DATABASE,
+      """
+      Milliseconds a parallel-scan producer keeps waiting on a full result queue with NO consumer \
+      activity before declaring the ResultSet abandoned: it then frees its pool thread and the query \
+      fails on the next access instead of silently returning fewer rows. Raise it for workloads that \
+      hold cursors open with long idle pauses (e.g. Postgres/Bolt wire portals); 0 disables the \
+      timeout entirely (producers park until the ResultSet is closed)""",
+      Long.class, 600_000L),
+
   QUERY_PARALLELISM_QUEUE_SIZE("arcadedb.queryParallelismQueueSize", SCOPE.JVM,
       """
       Maximum number of tasks that can wait in the QueryEngineManager pool's queue before the \
