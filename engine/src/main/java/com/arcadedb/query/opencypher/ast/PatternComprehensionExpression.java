@@ -68,16 +68,23 @@ public class PatternComprehensionExpression implements Expression {
   public Object evaluate(final Result result, final CommandContext context) {
     final List<Object> resultList = new ArrayList<>();
     final List<Object> pathElements = new ArrayList<>();
-    traversePattern(result, context, 0, result, resultList, pathElements);
+    traversePattern(result, context, 0, result, resultList, pathElements, null);
     return resultList;
   }
 
   /**
    * Recursively traverse pattern hops, collecting results at each complete match.
+   *
+   * @param knownStartVertex the vertex that starts this hop when it is already known (the end
+   *                         vertex of the previous hop). This is required for hops whose start
+   *                         node is anonymous (e.g. {@code (:Person)} in a 2-hop pattern), because
+   *                         such nodes carry no variable to resolve from {@code currentResult}
+   *                         (issue #5007). Null at the first hop, where the start is resolved from
+   *                         the outer-bound variable instead.
    */
   private void traversePattern(final Result baseResult, final CommandContext context,
       final int hopIndex, final Result currentResult, final List<Object> resultList,
-      final List<Object> pathElements) {
+      final List<Object> pathElements, final Vertex knownStartVertex) {
     if (hopIndex >= pathPattern.getRelationshipCount()) {
       // All hops matched - apply WHERE filter and map expression
       if (whereExpression != null) {
@@ -99,7 +106,10 @@ public class PatternComprehensionExpression implements Expression {
     }
 
     final NodePattern startNodePattern = pathPattern.getNode(hopIndex);
-    final Vertex startVertex = resolveVertex(startNodePattern, currentResult);
+    // For hops after the first, the start vertex is the end vertex of the previous hop and is
+    // passed in directly. This keeps anonymous intermediate nodes working, since they have no
+    // variable to resolve from currentResult (issue #5007).
+    final Vertex startVertex = knownStartVertex != null ? knownStartVertex : resolveVertex(startNodePattern, currentResult);
 
     // First-hop start node is uncorrelated (no outer-bound variable, or the variable
     // is not bound to a vertex): iterate over candidate vertices in the graph
@@ -131,7 +141,7 @@ public class PatternComprehensionExpression implements Expression {
       // Zero-length path: start and end are the same vertex (only valid if matches end pattern)
       if (minHops == 0 && matchesEndPattern(startVertex, endNodePattern, baseResult)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, startVertex, relPattern, null);
-        traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements);
+        traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, startVertex);
       }
 
       if (maxHops >= 1) {
@@ -193,8 +203,10 @@ public class PatternComprehensionExpression implements Expression {
       if (startNodePattern.getVariable() != null && !startNodePattern.getVariable().isEmpty())
         candidateResult.setProperty(startNodePattern.getVariable(), candidate);
 
-      // Re-enter traversal: now the start variable is bound to this candidate.
-      traversePattern(baseResult, context, 0, candidateResult, resultList, pathElements);
+      // Re-enter traversal with this candidate as the known start vertex. Passing it directly
+      // (rather than re-resolving) also handles an anonymous uncorrelated start node, which has
+      // no variable to bind and would otherwise re-trigger this iteration endlessly (issue #5007).
+      traversePattern(baseResult, context, 0, candidateResult, resultList, pathElements, candidate);
     }
   }
 
@@ -275,7 +287,7 @@ public class PatternComprehensionExpression implements Expression {
 
       if (nextHop >= minHops && matchesEndPattern(nextVertex, endNodePattern, baseResult)) {
         final ResultInternal hopResult = buildHopResult(currentResult, endNodePattern, nextVertex, relPattern, edge);
-        traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements);
+        traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, nextVertex);
       }
 
       if (nextHop < maxHops)
@@ -373,8 +385,9 @@ public class PatternComprehensionExpression implements Expression {
         pathElements.add(targetVertex);
       }
 
-      // Continue to next hop or collect result
-      traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements);
+      // Continue to next hop or collect result. The matched target is the start of the next hop,
+      // which is required when the next hop's start node is anonymous (issue #5007).
+      traversePattern(baseResult, context, hopIndex + 1, hopResult, resultList, pathElements, targetVertex);
 
       // Remove edge and target from path when backtracking
       if (pathVariable != null) {
