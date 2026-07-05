@@ -31,6 +31,7 @@ import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
+import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.Result;
 
 import java.math.BigDecimal;
@@ -76,6 +77,9 @@ public class BoltStructureMapper {
     if (value instanceof Result result) {
       return resultToValue(result);
     }
+
+    if (value instanceof TraversalPath path)
+      return toPath(path);
 
     if (value instanceof RID rid) {
       return rid.toString();
@@ -196,6 +200,55 @@ public class BoltStructureMapper {
     final Map<String, Object> properties = toProperties(edge);
 
     return new BoltUnboundRelationship(id, type, properties, elementId);
+  }
+
+  /**
+   * Convert a Cypher path result into a native Bolt Path structure. nodes and relationships are
+   * deduplicated (Bolt requires unique lists); indices is a flat [relIndex, nodeIndex, ...] sequence
+   * where relIndex is 1-based and signed by traversal direction (positive = the edge's OUT side is the
+   * previous path node, negative = traversed backward) and nodeIndex is the 0-based index of the node
+   * reached at that hop. The start node is index 0 and implicit.
+   */
+  public static BoltPath toPath(final TraversalPath path) {
+    final List<Vertex> vertices = path.getVertices();
+    final List<Edge> edges = path.getEdges();
+
+    final List<BoltNode> nodes = new ArrayList<>();
+    final Map<RID, Integer> nodeIndex = new HashMap<>();
+    final List<BoltUnboundRelationship> rels = new ArrayList<>();
+    final Map<RID, Integer> relIndex = new HashMap<>();
+    final List<Long> indices = new ArrayList<>(edges.size() * 2);
+
+    addPathNode(vertices.get(0), nodes, nodeIndex);
+
+    for (int i = 0; i < edges.size(); i++) {
+      final Edge edge = edges.get(i);
+      final Vertex from = vertices.get(i);
+      final Vertex to = vertices.get(i + 1);
+
+      final RID relRid = edge.getIdentity();
+      Integer ri = relIndex.get(relRid);
+      if (ri == null) {
+        rels.add(toUnboundRelationship(edge));
+        ri = rels.size(); // 1-based
+        relIndex.put(relRid, ri);
+      }
+      final boolean forward = edge.getOut().equals(from.getIdentity());
+      indices.add((long) (forward ? ri : -ri));
+      indices.add((long) addPathNode(to, nodes, nodeIndex));
+    }
+    return new BoltPath(nodes, rels, indices);
+  }
+
+  private static int addPathNode(final Vertex vertex, final List<BoltNode> nodes, final Map<RID, Integer> nodeIndex) {
+    final RID rid = vertex.getIdentity();
+    Integer i = nodeIndex.get(rid);
+    if (i == null) {
+      nodes.add(toNode(vertex));
+      i = nodes.size() - 1; // 0-based
+      nodeIndex.put(rid, i);
+    }
+    return i;
   }
 
   /**
