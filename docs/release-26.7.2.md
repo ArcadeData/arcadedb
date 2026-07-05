@@ -1,7 +1,7 @@
-# ArcadeDB v.26.8.1 Release Highlights
+# ArcadeDB v.26.7.2 Release Highlights
 
 This is a living document: fixes, improvements, new features, and breaking changes are collected here as
-they land during the 26.8.1 development cycle, so the release notes are ready at tag time.
+they land during the 26.7.2 development cycle, so the release notes are ready at tag time.
 
 This release hardens **High Availability (Raft)** recovery. Raft storage is now **durable by default**
 (previously ephemeral outside Kubernetes), which removes a class of permanent follower divergence after a
@@ -135,4 +135,4 @@ previous ISO-8601 strings. Inbound datetime query parameters are decoded to `jav
   now receive a native temporal type (e.g. `Value.asZonedDateTime()` / `asLocalDate()`), the same as
   against Neo4j. Clients relying on the old string form must read the native temporal instead.
 
-**Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.1...26.8.1
+**Full Changelog**: https://github.com/ArcadeData/arcadedb/compare/26.7.1...26.7.2
