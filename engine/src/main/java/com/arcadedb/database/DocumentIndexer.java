@@ -241,6 +241,10 @@ public class DocumentIndexer {
    * Defensive copy for a snapshot value: scalar values are immutable and stored as-is; containers are
    * shallow-copied and embedded documents detached, so a later in-place mutation of the live value cannot
    * retroactively change the snapshot and hide an index delta.
+   * <p>
+   * The copy is intentionally ONE level deep: a nested container element (e.g. a Map inside a List) is stored
+   * by reference, because indexed values are scalars or flat lists/maps - a nested container cannot be an
+   * index key. Deep-copying would tax every snapshot for a shape the diff never compares.
    */
   private static Object copyForSnapshot(final Object value) {
     if (value instanceof List<?> list) {

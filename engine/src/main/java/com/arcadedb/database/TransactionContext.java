@@ -276,6 +276,7 @@ public class TransactionContext implements Transaction {
     modifiedPages = null;
     newPages = null;
     updatedRecords = null;
+    updatedRecordsIndexSnapshot = null;
 
     // RECORDS CREATED IN THIS TX HAVE NO COMMITTED VERSION TO RELOAD TO: PULL THEM OUT OF THE MODIFIED-RECORDS CACHE SO
     // THE RELOAD LOOP BELOW LEAVES THEIR IN-MEMORY CONTENT INTACT (reload() WOULD WIPE map/buffer), THEN RESET THEIR
@@ -548,6 +549,7 @@ public class TransactionContext implements Transaction {
     modifiedPages = null;
     newPages = null;
     updatedRecords = null;
+    updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
     immutablePages.clear();
   }
@@ -694,6 +696,10 @@ public class TransactionContext implements Transaction {
                 .log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
           }
         updatedRecords = null;
+        // The indexed-state snapshots (#4935) share updatedRecords' lifecycle: no further updateRecord can
+        // happen for this tx past the 1st phase, so release them here instead of waiting for reset() and
+        // free the memory one phase earlier for large batches.
+        updatedRecordsIndexSnapshot = null;
       }
 
       if (!isLeader || !hasChanges()) {
