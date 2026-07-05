@@ -167,8 +167,7 @@ public class ForeachStep extends AbstractExecutionStep {
         final List<DeleteStep.DeferredDeleteTarget> deleteBatch = new ArrayList<>();
         context.setVariable(DeleteStep.DEFERRED_DELETE_BATCH_VAR, deleteBatch);
         try {
-          for (final ClauseEntry clauseEntry : foreachClause.getInnerClauses())
-            executeInnerClause(clauseEntry, iterationRow, context);
+          executeInnerClauses(iterationRow, context);
 
           DeleteStep.flushDeferredDeletes(context, deleteBatch);
         } finally {
@@ -188,12 +187,21 @@ public class ForeachStep extends AbstractExecutionStep {
   }
 
   /**
-   * Executes a single inner clause (CREATE, SET, DELETE, MERGE, REMOVE, nested FOREACH).
+   * Executes the inner clauses of the FOREACH body for a single iteration row.
+   * <p>
+   * The clauses are wired into a chained pipeline (each step's input is the previous step's output)
+   * instead of being run independently against the raw iteration row. This mirrors the main query
+   * pipeline and is required so that variables bound by one write clause are visible to the following
+   * clauses in the same body - e.g. {@code MERGE (a)-[r:MON]->(b) SET r.readback = true}, where SET
+   * must see the relationship {@code r} bound by MERGE (issue #4994).
    */
-  private void executeInnerClause(final ClauseEntry clauseEntry, final ResultInternal iterationRow,
-                                  final CommandContext context) {
-    // Create a step that provides the iteration row as input
-    final AbstractExecutionStep inputStep = new AbstractExecutionStep(context) {
+  private void executeInnerClauses(final ResultInternal iterationRow, final CommandContext context) {
+    final List<ClauseEntry> clauses = foreachClause.getInnerClauses();
+    if (clauses.isEmpty())
+      return;
+
+    // Source step that provides the iteration row as the single input to the chain.
+    AbstractExecutionStep tail = new AbstractExecutionStep(context) {
       private boolean consumed = false;
 
       @Override
@@ -210,42 +218,47 @@ public class ForeachStep extends AbstractExecutionStep {
       }
     };
 
-    AbstractExecutionStep step = null;
+    for (final ClauseEntry clauseEntry : clauses) {
+      final AbstractExecutionStep step = createStepForClause(clauseEntry, context);
+      if (step == null)
+        continue;
+      step.setPrevious(tail);
+      tail = step;
+    }
+
+    // Drain the chain to trigger the write side effects; bindings propagate through the pipeline.
+    final ResultSet resultSet = tail.syncPull(context, 100);
+    while (resultSet.hasNext())
+      resultSet.next();
+  }
+
+  /**
+   * Builds the execution step for a single inner clause (CREATE, SET, DELETE, MERGE, REMOVE, nested
+   * FOREACH). Returns {@code null} for unsupported clause types.
+   */
+  private AbstractExecutionStep createStepForClause(final ClauseEntry clauseEntry, final CommandContext context) {
     switch (clauseEntry.getType()) {
       case CREATE:
         final CreateClause createClause = clauseEntry.getTypedClause();
-        step = new CreateStep(createClause, context, functionFactory);
-        break;
+        return new CreateStep(createClause, context, functionFactory);
       case SET:
         final SetClause setClause = clauseEntry.getTypedClause();
-        step = new SetStep(setClause, context, functionFactory);
-        break;
+        return new SetStep(setClause, context, functionFactory);
       case DELETE:
         final DeleteClause deleteClause = clauseEntry.getTypedClause();
-        step = new DeleteStep(deleteClause, context);
-        break;
+        return new DeleteStep(deleteClause, context);
       case MERGE:
         final MergeClause mergeClause = clauseEntry.getTypedClause();
-        step = new MergeStep(mergeClause, context, functionFactory);
-        break;
+        return new MergeStep(mergeClause, context, functionFactory);
       case REMOVE:
         final RemoveClause removeClause = clauseEntry.getTypedClause();
-        step = new RemoveStep(removeClause, context);
-        break;
+        return new RemoveStep(removeClause, context);
       case FOREACH:
         final ForeachClause nestedForeach = clauseEntry.getTypedClause();
-        step = new ForeachStep(nestedForeach, context, functionFactory);
-        break;
+        return new ForeachStep(nestedForeach, context, functionFactory);
       default:
-        return;
+        return null;
     }
-
-    step.setPrevious(inputStep);
-
-    // Execute the step and consume results to trigger side effects
-    final ResultSet resultSet = step.syncPull(context, 100);
-    while (resultSet.hasNext())
-      resultSet.next();
   }
 
   @Override
