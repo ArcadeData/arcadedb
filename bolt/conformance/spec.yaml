@@ -369,12 +369,7 @@ scenarios:
       - "When the driver runs 'MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1'"
       - "Then the client receives a native Path value (sig 0x50) with correctly ordered nodes/relationships"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      structure/BoltPath.java exists but has zero call sites constructing
-      it anywhere in BoltStructureMapper - query results never actually
-      produce native Path structures today.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-004
     area: type-roundtrip
     title: "ByteArray round-trips as a bound parameter"
@@ -469,12 +464,7 @@ scenarios:
       - "When the driver runs 'RETURN $d AS echo' with params={d: <that duration>}"
       - "Then echo round-trips without precision loss"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      BoltStructureMapper/PackStreamWriter have no Duration handling at
-      all - not even a string fallback branch, falls through to generic
-      value.toString().
-    tracking_issue: "#4890"
+    current_status: passing
   - id: TYPE-012
     area: type-roundtrip
     title: "Point round-trips as a native Bolt Point structure"
@@ -490,14 +480,7 @@ scenarios:
       - "When the driver runs 'RETURN $p AS echo' with params={p: <that point>}"
       - "Then echo round-trips without precision loss"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      No Point/spatial type handling exists anywhere in
-      BoltStructureMapper or PackStreamWriter (confirmed even though the
-      underlying ArcadeDB Cypher engine itself does support point() -
-      verified point({x:12.34,y:56.78}) creates/stores correctly via
-      HTTP/embedded execution; the gap is Bolt wire serialization only).
-    tracking_issue: "#4890"
+    current_status: passing
   - id: ERR-001
     area: errors
     title: "Syntax error returns Neo.ClientError.Statement.SyntaxError"
@@ -519,16 +502,7 @@ scenarios:
       - "When the driver runs a semantically invalid query, e.g. referencing an undeclared variable in RETURN"
       - "Then the driver receives error code Neo.ClientError.Statement.SemanticError (BoltErrorCodes.SEMANTIC_ERROR)"
     applicable_driver_versions: all
-    current_status: expected-fail
-    known_limitation: >
-      CypherSemanticValidator correctly detects the undefined variable but
-      throws it via CommandParsingException, the same exception class used
-      for genuine ANTLR syntax errors - BoltNetworkExecutor's RUN handler
-      maps error codes by exception type, so it cannot distinguish semantic
-      from syntax errors, making Neo.ClientError.Statement.SemanticError
-      effectively dead code in the Bolt module - discovered while
-      implementing issue #4885's Python conformance suite.
-    tracking_issue: "#4890"
+    current_status: passing
   - id: ERR-003
     area: errors
     title: "Unauthenticated request returns Neo.ClientError.Security.Forbidden"

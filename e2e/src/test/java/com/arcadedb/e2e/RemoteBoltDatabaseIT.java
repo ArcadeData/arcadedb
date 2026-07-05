@@ -538,15 +538,10 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[TYPE-003] Path round-trips as a native Bolt structure")
     void type003_path() {
-      // Read (and its .single()) is a hard precondition OUTSIDE the xfail: a
-      // missing row would be a fixture problem, not the tracked gap, and must
-      // fail loudly rather than be swallowed as "gap still present". Only the
-      // type check is the documented gap.
-      final Object v;
       try (final Session s = boltSession()) {
-        v = s.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1").single().get("p").asObject();
+        final Object v = s.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1").single().get("p").asObject();
+        assertThat(v).isInstanceOf(Path.class);
       }
-      assertExpectedFailure("#4890", () -> assertThat(v).isInstanceOf(Path.class));
     }
 
     @Test
@@ -608,21 +603,19 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[TYPE-011] Duration round-trips as a native Bolt Duration")
     void type011_duration() {
-      final Object v;
       try (final Session s = boltSession()) {
-        v = s.run("MATCH (t:TypeMatrix) RETURN t.durationProp AS d LIMIT 1").single().get("d").asObject();
+        final Object v = s.run("MATCH (t:TypeMatrix) RETURN t.durationProp AS d LIMIT 1").single().get("d").asObject();
+        assertThat(v).isInstanceOf(IsoDuration.class);
       }
-      assertExpectedFailure("#4890", () -> assertThat(v).isInstanceOf(IsoDuration.class));
     }
 
     @Test
     @DisplayName("[TYPE-012] Point round-trips as a native Bolt Point")
     void type012_point() {
-      final Object v;
       try (final Session s = boltSession()) {
-        v = s.run("MATCH (t:TypeMatrix) RETURN t.pointProp AS p LIMIT 1").single().get("p").asObject();
+        final Object v = s.run("MATCH (t:TypeMatrix) RETURN t.pointProp AS p LIMIT 1").single().get("p").asObject();
+        assertThat(v).isInstanceOf(Point.class);
       }
-      assertExpectedFailure("#4890", () -> assertThat(v).isInstanceOf(Point.class));
     }
 
     // A native Bolt temporal deserializes to a java.time.temporal.Temporal; the
@@ -659,14 +652,12 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[ERR-002] Semantic error returns Neo.ClientError.Statement.SemanticError")
     void err002_semantic() {
-      assertExpectedFailure("#4890", () -> {
-        try (final Session s = boltSession()) {
-          assertThatThrownBy(() -> s.run("RETURN undefinedVariable").consume())
-              .isInstanceOf(ClientException.class)
-              .satisfies(t -> assertThat(((ClientException) t).code())
-                  .isEqualTo("Neo.ClientError.Statement.SemanticError"));
-        }
-      });
+      try (final Session s = boltSession()) {
+        assertThatThrownBy(() -> s.run("RETURN undefinedVariable").consume())
+            .isInstanceOf(ClientException.class)
+            .satisfies(t -> assertThat(((ClientException) t).code())
+                .isEqualTo("Neo.ClientError.Statement.SemanticError"));
+      }
     }
 
     @Test

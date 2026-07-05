@@ -362,14 +362,11 @@ public class BoltE2ETests
     [Fact(DisplayName = "TYPE-003: Path round-trips as a native Bolt structure")]
     public async Task Type003_PathRoundtrip()
     {
-        await KnownGapAssertions.AssertStillFailsAsync(async () =>
-        {
-            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
-            var result = await session.RunAsync("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1");
-            var record = await result.SingleAsync();
-            var path = record["p"].As<IPath>();
-            Assert.True(path.Nodes.Count() >= 2);
-        }, "TYPE-003: structure/BoltPath.java has zero call sites - query results never construct native Path structures - see #4890");
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1");
+        var record = await result.SingleAsync();
+        var path = record["p"].As<IPath>();
+        Assert.True(path.Nodes.Count() >= 2);
     }
 
     [Fact(DisplayName = "TYPE-004: ByteArray round-trips as a bound parameter")]
@@ -471,37 +468,31 @@ public class BoltE2ETests
     [Fact(DisplayName = "TYPE-011: Duration round-trips as a native Bolt Duration structure")]
     public async Task Type011_DurationRoundtrip()
     {
-        await KnownGapAssertions.AssertStillFailsAsync(async () =>
-        {
-            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
-            var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.durationProp AS d");
-            var record = await result.SingleAsync();
-            var duration = record["d"].As<Duration>();
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.durationProp AS d");
+        var record = await result.SingleAsync();
+        var duration = record["d"].As<Duration>();
 
-            var echoResult = await session.RunAsync("RETURN $d AS echo", new { d = duration });
-            var echoRecord = await echoResult.SingleAsync();
-            Assert.Equal(duration, echoRecord["echo"].As<Duration>());
-        }, "TYPE-011: BoltStructureMapper/PackStreamWriter have no Duration handling at all - see #4890");
+        var echoResult = await session.RunAsync("RETURN $d AS echo", new { d = duration });
+        var echoRecord = await echoResult.SingleAsync();
+        Assert.Equal(duration, echoRecord["echo"].As<Duration>());
     }
 
     [Fact(DisplayName = "TYPE-012: Point round-trips as a native Bolt Point structure")]
     public async Task Type012_PointRoundtrip()
     {
-        await KnownGapAssertions.AssertStillFailsAsync(async () =>
-        {
-            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
-            var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.pointProp AS p");
-            var record = await result.SingleAsync();
-            var point = record["p"].As<Point>();
-            Assert.Equal(12.34, point.X, 2);
-            Assert.Equal(56.78, point.Y, 2);
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync("MATCH (t:TypeMatrix) RETURN t.pointProp AS p");
+        var record = await result.SingleAsync();
+        var point = record["p"].As<Point>();
+        Assert.Equal(12.34, point.X, 2);
+        Assert.Equal(56.78, point.Y, 2);
 
-            var echoResult = await session.RunAsync("RETURN $p AS echo", new { p = point });
-            var echoRecord = await echoResult.SingleAsync();
-            var echoPoint = echoRecord["echo"].As<Point>();
-            Assert.Equal(12.34, echoPoint.X, 2);
-            Assert.Equal(56.78, echoPoint.Y, 2);
-        }, "TYPE-012: no Point/spatial handling exists in BoltStructureMapper or PackStreamWriter - see #4890");
+        var echoResult = await session.RunAsync("RETURN $p AS echo", new { p = point });
+        var echoRecord = await echoResult.SingleAsync();
+        var echoPoint = echoRecord["echo"].As<Point>();
+        Assert.Equal(12.34, echoPoint.X, 2);
+        Assert.Equal(56.78, echoPoint.Y, 2);
     }
 
     [Fact(DisplayName = "ERR-001: Syntax error returns Neo.ClientError.Statement.SyntaxError")]
@@ -519,16 +510,13 @@ public class BoltE2ETests
     [Fact(DisplayName = "ERR-002: Semantic error returns Neo.ClientError.Statement.SemanticError")]
     public async Task Err002_SemanticError()
     {
-        await KnownGapAssertions.AssertStillFailsAsync(async () =>
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var ex = await Assert.ThrowsAsync<ClientException>(async () =>
         {
-            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
-            var ex = await Assert.ThrowsAsync<ClientException>(async () =>
-            {
-                var result = await session.RunAsync("MATCH (n:Beer) RETURN undeclaredVariable");
-                await result.ConsumeAsync();
-            });
-            Assert.Equal("Neo.ClientError.Statement.SemanticError", ex.Code);
-        }, "ERR-002: BoltNetworkExecutor's RUN handler maps error codes by exception type and cannot distinguish semantic from syntax errors - SemanticError is dead code - see #4890");
+            var result = await session.RunAsync("MATCH (n:Beer) RETURN undeclaredVariable");
+            await result.ConsumeAsync();
+        });
+        Assert.Equal("Neo.ClientError.Statement.SemanticError", ex.Code);
     }
 
     [Fact(Skip = "ERR-003 requires sending RUN before completing HELLO/LOGON; no official driver's public API exposes that - current_status is not-applicable in spec.yaml, see #4890")]
