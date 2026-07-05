@@ -33,6 +33,7 @@ import com.google.gson.stream.JsonReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.StringReader;
+import java.lang.reflect.Array;
 import java.math.BigDecimal;
 import java.time.Duration;
 import java.time.LocalDate;
@@ -190,6 +191,20 @@ public class JSONObject implements Map<String, Object> {
       object.add(name, new JSONObject(map).getInternal());
     } else if (value instanceof Class<?> clazz) {
       object.addProperty(name, clazz.getName());
+    } else if (value.getClass().isArray()) {
+      // PRIMITIVE ARRAYS (float[], double[], int[], long[], short[], byte[], ...): the typed
+      // String[]/Object[] cases above don't match them, so serialize element-by-element via reflection
+      // instead of falling through to the generic toString() (which would emit "[F@...").
+      final JSONArray array = new JSONArray();
+      final int length = Array.getLength(value);
+      for (int i = 0; i < length; i++) {
+        final Object element = Array.get(value, i);
+        if (element instanceof Number num)
+          array.put(num); // ROUTE THROUGH put(Number) FOR CONSISTENT NaN/INF HANDLING
+        else
+          array.put(element);
+      }
+      object.add(name, array.getInternal());
     } else {
       // GENERIC CASE: TRANSFORM IT TO STRING
       object.addProperty(name, value.toString());
