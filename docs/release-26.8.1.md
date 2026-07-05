@@ -72,6 +72,15 @@ that could starve the very snapshot resync meant to heal the node.
   in equality lookups, disagreeing with the range/cursor path
   ([#4945](https://github.com/ArcadeData/arcadedb/issues/4945)). The tombstone set is now threaded across
   pages and the compacted sub-index, exactly like the removed-keys set.
+- **Index: updating the same record twice in one transaction no longer leaves a phantom index entry.** The
+  eager in-transaction index update diffed every save against the record's committed buffer, which stays
+  frozen until commit because serialization is deferred, so the intermediate ADD was never cancelled: after
+  `orig -> mid -> final` in one transaction, a lookup of `mid` still resolved (to the wrong record) and, on a
+  unique index, blocked a later legitimate insert of that value
+  ([#4935](https://github.com/ArcadeData/arcadedb/issues/4935)). The second and subsequent updates now diff
+  against a per-record snapshot of the previous in-transaction indexed state. The snapshot stores ONLY the
+  indexed property values (not a full copy of the document), so the cost per update is independent of the
+  document width and negligible for bulk updates.
 
 ### Improvements
 

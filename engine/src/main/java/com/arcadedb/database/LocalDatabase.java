@@ -1065,15 +1065,30 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
         // THE PAGE IS EARLY LOADED IN TX CACHE TO USE THE PAGE MVCC IN CASE OF CONCURRENT OPERATIONS ON THE MODIFIED
         // RECORD
         try {
-          getTransaction().addUpdatedRecord(record);
+          final TransactionContext tx = getTransaction();
+          tx.addUpdatedRecord(record);
 
           if (record instanceof Document document) {
             // UPDATE THE INDEX IN MEMORY BEFORE UPDATING THE PAGE
             final List<IndexInternal> indexes = indexer.getInvolvedIndexes(document);
             if (!indexes.isEmpty()) {
-              // UPDATE THE INDEXES TOO
-              final Document originalRecord = getOriginalDocument(record);
-              indexer.updateDocument(originalRecord, document, indexes);
+              // UPDATE THE INDEXES TOO.
+              // #4935: when the same record is updated more than once in this tx, diff against the previous
+              // in-tx indexed state (snapshot below), not the committed buffer returned by
+              // getOriginalDocument() - the buffer stays frozen until commit because serialization is
+              // deferred, so diffing against it leaks a phantom index entry for every intermediate value.
+              // The snapshot holds ONLY the indexed property values (not a full detach of the document) to
+              // stay light on allocations for wide documents and bulk updates.
+              final RID rid = record.getIdentity();
+              final Document previous = tx.getLastIndexedSnapshot(rid);
+              final Document originalRecord = previous != null ? previous : getOriginalDocument(record);
+              // updateDocument returns a refreshed snapshot (built from the key values it already extracted
+              // for the diff) ONLY when an index actually changed: otherwise the previous diff source
+              // (committed buffer or an earlier snapshot) still describes the indexed state, and updates
+              // that touch only non-indexed properties pay no snapshot cost at all.
+              final Document refreshedSnapshot = indexer.updateDocument(originalRecord, document, indexes);
+              if (refreshedSnapshot != null)
+                tx.setLastIndexedSnapshot(rid, refreshedSnapshot);
             }
           }
         } catch (final IOException e) {

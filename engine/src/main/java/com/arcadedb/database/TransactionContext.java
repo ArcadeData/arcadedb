@@ -91,12 +91,19 @@ public class TransactionContext implements Transaction {
   // KEEPS TRACK OF MODIFIED RECORD IN TX. AT 1ST PHASE COMMIT TIME THE RECORD ARE SERIALIZED AND INDEXES UPDATED. THIS DEFERRING IMPROVES SPEED ESPECIALLY
   // WITH GRAPHS WHERE EDGES ARE CREATED AND CHUNKS ARE UPDATED MULTIPLE TIMES IN THE SAME TX
   // TODO: OPTIMIZE modifiedRecordsCache STRUCTURE, MAYBE JOIN IT WITH UPDATED RECORDS?
-  private       Map<RID, Record>                     updatedRecords        = null;
-  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel        = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
+  private       Map<RID, Record>                     updatedRecords              = null;
+  // #4935: snapshot of the last in-transaction indexed state per RID (indexed property values only). When the
+  // same record is updated more than once inside one transaction, the second+ update must diff its index change
+  // against the previous in-transaction value, not the committed buffer (which stays frozen until commit because
+  // serialization is deferred). Without this, every intermediate value leaks a phantom index entry.
+  // Holds one small entry (indexed values only) per distinct CHANGED-index RID; entries are dropped on
+  // delete and the map is released on reset(), so memory scales with updatedRecords, never beyond it.
+  private       Map<RID, Document>                   updatedRecordsIndexSnapshot = null;
+  private       Database.TRANSACTION_ISOLATION_LEVEL isolationLevel              = Database.TRANSACTION_ISOLATION_LEVEL.READ_COMMITTED;
   private       LocalTransactionExplicitLock         explicitLock;
   private       Object                               requester;
-  private       List<Runnable>                       afterCommitCallbacks  = null;
-  private       Set<String>                          registeredCallbackKeys = null;
+  private       List<Runnable>                       afterCommitCallbacks        = null;
+  private       Set<String>                          registeredCallbackKeys      = null;
 
   public enum STATUS {INACTIVE, BEGUN, COMMIT_1ST_PHASE, COMMIT_2ND_PHASE}
 
@@ -269,6 +276,7 @@ public class TransactionContext implements Transaction {
     modifiedPages = null;
     newPages = null;
     updatedRecords = null;
+    updatedRecordsIndexSnapshot = null;
 
     // RECORDS CREATED IN THIS TX HAVE NO COMMITTED VERSION TO RELOAD TO: PULL THEM OUT OF THE MODIFIED-RECORDS CACHE SO
     // THE RELOAD LOOP BELOW LEAVES THEIR IN-MEMORY CONTENT INTACT (reload() WOULD WIPE map/buffer), THEN RESET THEIR
@@ -350,6 +358,22 @@ public class TransactionContext implements Transaction {
       ((LocalBucket) database.getSchema().getBucketById(rid.getBucketId())).fetchPageInTransaction(rid);
     updateRecordInCache(record);
     removeImmutableRecordsOfSamePage(record.getIdentity());
+  }
+
+  /**
+   * Returns the snapshot of the last in-transaction indexed state for the given record, or {@code null} if the
+   * record has not yet been updated in this transaction. Used by {@code updateRecord} so that a second (or later)
+   * update of the same record diffs its index change against the previous in-transaction value rather than the
+   * committed buffer (issue #4935).
+   */
+  public Document getLastIndexedSnapshot(final RID rid) {
+    return updatedRecordsIndexSnapshot == null ? null : updatedRecordsIndexSnapshot.get(rid);
+  }
+
+  public void setLastIndexedSnapshot(final RID rid, final Document snapshot) {
+    if (updatedRecordsIndexSnapshot == null)
+      updatedRecordsIndexSnapshot = new HashMap<>();
+    updatedRecordsIndexSnapshot.put(rid, snapshot);
   }
 
   /**
@@ -525,6 +549,7 @@ public class TransactionContext implements Transaction {
     modifiedPages = null;
     newPages = null;
     updatedRecords = null;
+    updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
     immutablePages.clear();
   }
@@ -671,6 +696,10 @@ public class TransactionContext implements Transaction {
                 .log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
           }
         updatedRecords = null;
+        // The indexed-state snapshots (#4935) share updatedRecords' lifecycle: no further updateRecord can
+        // happen for this tx past the 1st phase, so release them here instead of waiting for reset() and
+        // free the memory one phase earlier for large batches.
+        updatedRecordsIndexSnapshot = null;
       }
 
       if (!isLeader || !hasChanges()) {
@@ -845,6 +874,7 @@ public class TransactionContext implements Transaction {
     modifiedPages = null;
     newPages = null;
     updatedRecords = null;
+    updatedRecordsIndexSnapshot = null;
     newPageCounters.clear();
     modifiedRecordsCache.clear();
     immutableRecordsCache.clear();
@@ -1046,6 +1076,10 @@ public class TransactionContext implements Transaction {
    */
   public void addDeletedRecord(final RID rid) {
     deletedRecordsInTx.add(rid);
+    // A record deleted after an in-tx update no longer needs its indexed-state snapshot (#4935): the delete
+    // removes the index entries through its own path, so drop the retained memory right away.
+    if (updatedRecordsIndexSnapshot != null)
+      updatedRecordsIndexSnapshot.remove(rid);
   }
 
   /**
