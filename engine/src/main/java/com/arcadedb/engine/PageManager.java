@@ -40,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
+import java.util.function.BiFunction;
 
 /**
  * Manages pages from disk to RAM. Each page can have different size.
@@ -538,8 +539,10 @@ public class PageManager extends LockContext {
     for (final CachedPage page : pagesOrderedByAge) {
       final CachedPage removedPage = readCache.remove(page.getPageId());
       if (removedPage != null) {
-        freedRAM += page.getPhysicalSize();
-        totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
+        // Account the entry ACTUALLY removed, not the TreeSet snapshot: the version-monotonic put can swap
+        // a same-PageId entry for a different instance between the snapshot and this remove (#4925/#4933).
+        freedRAM += removedPage.getPhysicalSize();
+        totalReadCacheRAM.addAndGet(-1L * removedPage.getPhysicalSize());
         pagesEvicted.incrementAndGet();
 
         if (freedRAM > ramToFree)
@@ -560,28 +563,34 @@ public class PageManager extends LockContext {
     lastCheckForRAM = System.currentTimeMillis();
   }
 
+  // Reused per-thread slot for the RAM delta decided inside VERSION_MONOTONIC_MERGE: keeps the put hot
+  // path allocation-free (a capturing lambda + holder array per call would rely on escape analysis that is
+  // not guaranteed under a megamorphic merge call site).
+  private static final ThreadLocal<long[]> PUT_RAM_DELTA = ThreadLocal.withInitial(() -> new long[1]);
+
+  // #4925: version-monotonic merge. Keeps whichever version is newer; an EQUAL version replaces on purpose
+  // (identical content, freshest instance, zero RAM delta). Static and non-capturing: merge() hands the new
+  // page in as the second argument, so this function allocates nothing per call.
+  private static final BiFunction<CachedPage, CachedPage, CachedPage> VERSION_MONOTONIC_MERGE = (prev, cur) -> {
+    if (cur.getVersion() >= prev.getVersion()) {
+      PUT_RAM_DELTA.get()[0] = cur.getPhysicalSize() - prev.getPhysicalSize();
+      return cur;
+    }
+    // STALE WRITE ATTEMPT: KEEP THE NEWER CACHED VERSION, NO ACCOUNTING CHANGE
+    PUT_RAM_DELTA.get()[0] = 0;
+    return prev;
+  };
+
   void putPageInReadCache(final CachedPage page) {
     // #4925: version-monotonic put. A reader that started a disk read of version N before a committer
     // cached version N+1 must not overwrite the newer committed page with its stale image: the poisoned
     // cache would serve vN to every subsequent reader AND to the commit-time version probe, letting a later
-    // transaction pass its MVCC check and silently overwrite the lost committed update. The compute keeps
-    // whichever version is newer; the RAM delta is computed inside the same atomic operation so the
-    // accounting always matches the actual cache content. The one-slot holder does not escape compute(),
-    // so escape analysis is expected to scalar-replace it on this hot path; if profiling ever shows it
-    // surviving, switch to a ThreadLocal holder.
-    final long[] ramDelta = new long[1];
-    readCache.compute(page.getPageId(), (id, prev) -> {
-      if (prev == null) {
-        ramDelta[0] = page.getPhysicalSize();
-        return page;
-      }
-      if (page.getVersion() >= prev.getVersion()) {
-        ramDelta[0] = page.getPhysicalSize() - prev.getPhysicalSize();
-        return page;
-      }
-      // STALE WRITE ATTEMPT: KEEP THE NEWER CACHED VERSION
-      return prev;
-    });
+    // transaction pass its MVCC check and silently overwrite the lost committed update. The RAM delta is
+    // decided inside the same atomic merge so the accounting always matches the actual cache content.
+    final long[] ramDelta = PUT_RAM_DELTA.get();
+    // Default covers the absent-key case: merge() inserts the page WITHOUT invoking the remapping function.
+    ramDelta[0] = page.getPhysicalSize();
+    readCache.merge(page.getPageId(), page, VERSION_MONOTONIC_MERGE);
     if (ramDelta[0] != 0)
       totalReadCacheRAM.addAndGet(ramDelta[0]);
 

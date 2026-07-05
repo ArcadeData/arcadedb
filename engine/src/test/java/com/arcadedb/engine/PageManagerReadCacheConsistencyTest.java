@@ -41,6 +41,13 @@ import static org.assertj.core.api.Assertions.assertThat;
  * (the {@code totalRAM < maxRAM} check never fires again): unbounded cache growth. All accounting is now
  * driven by the value actually removed.</li>
  * </ul>
+ * <p>
+ * ISOLATION NOTE: {@code totalReadCacheRAM} lives on the JVM-wide {@code PageManager.INSTANCE} and is shared
+ * by every open database in the process. The exact-equality assertions therefore assume the suite runs these
+ * tests single-threaded (the project does not enable JUnit parallel execution) and that no other actor
+ * touches the cache inside the measured window: the test database is idle during it (no commits, so no async
+ * flush re-caches pages) and the synthetic page ids belong to no real component. If parallel execution is
+ * ever enabled, scope the assertions to the page ids the test owns instead.
  */
 class PageManagerReadCacheConsistencyTest extends TestHelper {
 
