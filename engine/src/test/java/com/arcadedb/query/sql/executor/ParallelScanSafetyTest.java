@@ -170,4 +170,43 @@ class ParallelScanSafetyTest extends TestHelper {
       step.close();
     }
   }
+
+  @Test
+  void abandonedResultSetReleasesProducersAndSurfacesFailure() throws Exception {
+    createAndPopulate();
+
+    // Shrink the abandonment timeout for the test; restored in finally.
+    final long originalTimeout = FetchFromTypeExecutionStep.PARALLEL_SCAN_ABANDONED_TIMEOUT_MS;
+    FetchFromTypeExecutionStep.PARALLEL_SCAN_ABANDONED_TIMEOUT_MS = 200;
+    try {
+      final BasicCommandContext context = new BasicCommandContext();
+      context.setDatabase(database);
+      final FetchFromTypeExecutionStep step = new FetchFromTypeExecutionStep(TYPE_NAME, null, context, null);
+      try {
+        // Open the parallel ResultSet and then NEVER drain nor close it: the producers fill the bounded
+        // result queue, then must give up after the abandonment timeout instead of parking on the full
+        // queue forever (leaking their pool threads).
+        final ResultSet rs = step.syncPull(context, RECORDS + 1);
+
+        final java.lang.reflect.Field failureField = FetchFromTypeExecutionStep.class.getDeclaredField("parallelScanFailure");
+        failureField.setAccessible(true);
+        final long deadline = System.currentTimeMillis() + 20_000;
+        while (failureField.get(step) == null && System.currentTimeMillis() < deadline)
+          Thread.sleep(20);
+
+        assertThat(failureField.get(step))
+            .as("producers must abandon a never-consumed, never-closed ResultSet instead of parking forever")
+            .isNotNull();
+
+        // If the consumer ever comes back, it must FAIL loudly, not silently receive a truncated result.
+        org.assertj.core.api.Assertions.assertThatThrownBy(rs::hasNext)
+            .isInstanceOf(com.arcadedb.exception.CommandExecutionException.class)
+            .hasMessageContaining("Parallel scan");
+      } finally {
+        step.close();
+      }
+    } finally {
+      FetchFromTypeExecutionStep.PARALLEL_SCAN_ABANDONED_TIMEOUT_MS = originalTimeout;
+    }
+  }
 }

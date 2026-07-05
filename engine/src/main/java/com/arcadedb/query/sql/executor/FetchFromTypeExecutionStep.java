@@ -55,10 +55,20 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   private BlockingQueue<Result> parallelQueue;
   private volatile boolean     parallelScanComplete = false;
   private List<Future<?>>      scanFutures;
+  // First producer failure: surfaced to the consumer as an exception instead of silently returning fewer
+  // rows (partial results reported as success - the same anti-pattern #4951 fixes for graph algorithms).
+  private volatile Throwable   parallelScanFailure;
+  // Timestamp of the consumer's last sign of life (poll on the result queue). Producers use it to detect an
+  // abandoned (opened but never drained nor closed) ResultSet and free their pool thread instead of parking
+  // on the full queue forever.
+  private volatile long        parallelLastConsumed;
   // How many rows a producer fetches under one database read-lock acquisition before releasing it to emit
   // into the (blocking) result queue. Small enough to keep DDL/close wait bounded, large enough to amortize
   // the uncontended read-lock cost to noise.
   private static final int SCAN_BATCH_SIZE = 256;
+  // How long producers keep waiting on a full result queue with NO consumer activity before declaring the
+  // ResultSet abandoned. Package-private and non-final so the regression test can shrink it.
+  static long PARALLEL_SCAN_ABANDONED_TIMEOUT_MS = 10 * 60_000L;
 
   static {
     WARNINGS_EVERY = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
@@ -245,6 +255,8 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       // Bounded queue: prevents memory explosion while allowing parallelism
       parallelQueue = new LinkedBlockingQueue<>(4096);
       parallelScanComplete = false;
+      parallelScanFailure = null;
+      parallelLastConsumed = System.currentTimeMillis();
       scanFutures = new ArrayList<>(getSubSteps().size());
 
       final DatabaseInternal db = context.getDatabase();
@@ -299,15 +311,38 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
               });
 
               for (final Result r : batch) {
-                try {
-                  parallelQueue.put(r);
-                } catch (final InterruptedException e) {
-                  Thread.currentThread().interrupt();
-                  return;
+                // Bounded offer instead of a forever-blocking put(): a ResultSet that is opened but never
+                // drained NOR closed would otherwise park this producer (and its pool thread) permanently.
+                // As long as the consumer shows signs of life (polls the queue) the producer keeps waiting;
+                // once the consumer has been silent past the abandonment timeout, the producer gives up,
+                // records the failure (surfaced if the consumer ever comes back) and frees its thread.
+                while (true) {
+                  try {
+                    if (parallelQueue.offer(r, 1, TimeUnit.SECONDS))
+                      break;
+                  } catch (final InterruptedException e) {
+                    // Cancellation via ResultSet.close()/step close(): expected, exit silently.
+                    Thread.currentThread().interrupt();
+                    return;
+                  }
+                  if (System.currentTimeMillis() - parallelLastConsumed > PARALLEL_SCAN_ABANDONED_TIMEOUT_MS) {
+                    final Throwable abandoned = new CommandExecutionException(
+                        "Parallel scan abandoned: the result set was not consumed nor closed for more than "
+                            + PARALLEL_SCAN_ABANDONED_TIMEOUT_MS + " ms");
+                    if (parallelScanFailure == null)
+                      parallelScanFailure = abandoned;
+                    LogManager.instance().log(this, Level.WARNING,
+                        "Parallel scan of type '%s' abandoned by its consumer: releasing the producer thread", null, typeName);
+                    return;
+                  }
                 }
               }
             }
           } catch (final Exception e) {
+            // Record the first failure so the consumer FAILS instead of silently receiving fewer rows
+            // (partial results reported as success - the same anti-pattern #4951 fixes for graph algorithms).
+            if (parallelScanFailure == null)
+              parallelScanFailure = e;
             LogManager.instance().log(this, Level.WARNING, "Error during parallel bucket scan", e);
           } finally {
             DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
@@ -323,6 +358,9 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         for (final Future<?> f : scanFutures) {
           try {
             f.get();
+          } catch (final CancellationException e) {
+            // Expected on ResultSet.close()/step close(): not an error, don't alarm the operator.
+            LogManager.instance().log(this, Level.FINE, "Parallel scan cancelled by close()");
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING, "Error waiting for parallel scan", e);
           }
@@ -339,6 +377,11 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
+        // A failed producer must FAIL the query, not shrink its result set: fewer-rows-as-success is the
+        // same partial-results anti-pattern #4951 fixes for the graph algorithms.
+        if (parallelScanFailure != null)
+          throw new CommandExecutionException("Parallel scan failed", parallelScanFailure);
+
         if (totDispatched >= nRecords)
           return false;
         if (nextItem != null)
@@ -346,12 +389,15 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
 
         // Poll from the queue, waiting briefly for results
         while (nextItem == null) {
+          parallelLastConsumed = System.currentTimeMillis();
           try {
             nextItem = parallelQueue.poll(10, TimeUnit.MILLISECONDS);
           } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
           }
+          if (parallelScanFailure != null)
+            throw new CommandExecutionException("Parallel scan failed", parallelScanFailure);
           if (nextItem == null && parallelScanComplete && parallelQueue.isEmpty())
             return false;
         }

@@ -59,6 +59,15 @@ import java.util.concurrent.atomic.AtomicInteger;
  * the consumer drains. A queued task simply starts later; progress is guaranteed because every
  * consumer drains its own queue independently of this pool.
  * <p>
+ * <b>Operator note: concurrency ceiling.</b> Each producer occupies its thread for the whole
+ * bucket scan whenever its consumer is slower (the common case), so the number of concurrently
+ * PROGRESSING parallel scans is roughly (pool threads / buckets per query); further queries'
+ * producers wait in the queue until threads free up - they are delayed, never deadlocked, since
+ * every consumer drains independently of this pool. Producers of an abandoned (never drained nor
+ * closed) ResultSet release their thread after an inactivity timeout. Size the pool with
+ * {@code arcadedb.parallelScanProducerPoolThreads} if scan-heavy concurrency needs more headroom;
+ * the {@code pool=parallel_scan} queue-depth gauge is the saturation signal to watch.
+ * <p>
  * <b>"No JDK common ForkJoinPool" rule.</b> See the {@link QueryEngineManager} class javadoc;
  * blocking producer work belongs on its own dedicated pool, never on the common pool.
  *
