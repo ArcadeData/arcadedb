@@ -113,6 +113,9 @@ public final class GraphAlgorithms {
   public static void awaitFutures(final Future<?>[] futures, final int count) {
     Throwable firstError = null;
     for (int i = 0; i < count; i++) {
+      if (futures[i] == null)
+        // Defensive: a caller that partially populated the array must not NPE the whole await.
+        continue;
       try {
         futures[i].get();
       } catch (final ExecutionException e) {
@@ -120,7 +123,8 @@ public final class GraphAlgorithms {
           firstError = e.getCause();
       } catch (final InterruptedException e) {
         for (int j = i; j < count; j++)
-          futures[j].cancel(true);
+          if (futures[j] != null)
+            futures[j].cancel(true);
         Thread.currentThread().interrupt();
         throw new CommandExecutionException("Parallel graph computation interrupted, partial results discarded");
       }

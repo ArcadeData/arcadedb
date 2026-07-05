@@ -18,6 +18,8 @@
  */
 package com.arcadedb.query;
 
+import com.arcadedb.GlobalConfiguration;
+
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -50,8 +52,9 @@ import java.util.concurrent.atomic.AtomicInteger;
  * <b>Why the task queue is UNBOUNDED with no caller-runs policy</b> (a deliberate deviation from
  * the "bounded queue + caller-runs" rule documented on {@link QueryEngineManager}): caller-runs
  * on a BLOCKING producer is exactly the #4948 self-deadlock, and aborting would fail queries
- * spuriously under load. The queued items are tiny task objects, one per bucket per in-flight
- * query, so the queue cannot grow past (concurrent queries x buckets); the actual memory
+ * spuriously under load. The queued items are small task objects - one per bucket per in-flight
+ * query, each also holding its per-worker context copy (a shallow copy of the caller's variables
+ * map) - so the queue cannot grow past (concurrent queries x buckets); the actual memory
  * backpressure is enforced by each query's bounded RESULT queue, which stalls producers until
  * the consumer drains. A queued task simply starts later; progress is guaranteed because every
  * consumer drains its own queue independently of this pool.
@@ -73,7 +76,13 @@ public final class ParallelScanProducerPool {
   private final ThreadPoolExecutor executor;
 
   private ParallelScanProducerPool() {
-    final int threads = Math.max(DEFAULT_THREADS_FLOOR, Runtime.getRuntime().availableProcessors());
+    // 0 = auto-size to available cores (with a floor of DEFAULT_THREADS_FLOOR). An explicit positive value
+    // wins, so an operator can cap the pool on very high core-count machines where (cores) blocking
+    // producers would be excessive. Negative values are coerced to auto for safety.
+    final int configuredThreads = GlobalConfiguration.PARALLEL_SCAN_PRODUCER_POOL_THREADS.getValueAsInteger();
+    final int threads = configuredThreads > 0
+        ? configuredThreads
+        : Math.max(DEFAULT_THREADS_FLOOR, Runtime.getRuntime().availableProcessors());
     final AtomicInteger workerSeq = new AtomicInteger();
 
     final ThreadPoolExecutor pool = new ThreadPoolExecutor(

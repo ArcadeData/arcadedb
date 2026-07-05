@@ -55,6 +55,10 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   private BlockingQueue<Result> parallelQueue;
   private volatile boolean     parallelScanComplete = false;
   private List<Future<?>>      scanFutures;
+  // How many rows a producer fetches under one database read-lock acquisition before releasing it to emit
+  // into the (blocking) result queue. Small enough to keep DDL/close wait bounded, large enough to amortize
+  // the uncontended read-lock cost to noise.
+  private static final int SCAN_BATCH_SIZE = 256;
 
   static {
     WARNINGS_EVERY = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
@@ -268,22 +272,41 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
           // a stale or missing context).
           DatabaseContext.INSTANCE.init(db);
           try {
-            db.executeInReadLock(() -> {
-              final AbstractExecutionStep execStep = (AbstractExecutionStep) step;
-              ResultSet rs = execStep.syncPull(workerContext, nRecords);
-              while (rs.hasNext()) {
-                final Result r = rs.next();
+            // The database read lock is held per BATCH, never across the blocking put(): a slow (or
+            // abandoned) consumer would otherwise park this producer inside the read lock indefinitely,
+            // starving every writer of the database lock (schema changes, close, drop). Fetching under the
+            // lock and emitting outside also matches the sequential scan path, which holds no database-level
+            // lock across iteration at all.
+            final AbstractExecutionStep execStep = (AbstractExecutionStep) step;
+            final List<Result> batch = new ArrayList<>(SCAN_BATCH_SIZE);
+            final ResultSet[] rsHolder = new ResultSet[1];
+            boolean more = true;
+            while (more) {
+              batch.clear();
+              more = db.executeInReadLock(() -> {
+                ResultSet rs = rsHolder[0];
+                if (rs == null)
+                  rs = rsHolder[0] = execStep.syncPull(workerContext, nRecords);
+                while (batch.size() < SCAN_BATCH_SIZE) {
+                  if (!rs.hasNext()) {
+                    rs = rsHolder[0] = execStep.syncPull(workerContext, nRecords);
+                    if (!rs.hasNext())
+                      return false;
+                  }
+                  batch.add(rs.next());
+                }
+                return true;
+              });
+
+              for (final Result r : batch) {
                 try {
                   parallelQueue.put(r);
                 } catch (final InterruptedException e) {
                   Thread.currentThread().interrupt();
-                  return null;
+                  return;
                 }
-                if (!rs.hasNext())
-                  rs = execStep.syncPull(workerContext, nRecords);
               }
-              return null;
-            });
+            }
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING, "Error during parallel bucket scan", e);
           } finally {

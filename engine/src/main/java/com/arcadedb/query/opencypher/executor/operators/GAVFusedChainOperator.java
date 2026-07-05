@@ -19,11 +19,11 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Database;
-import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
 import com.arcadedb.graph.NeighborView;
+import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.ast.BooleanExpression;
 import com.arcadedb.query.sql.executor.CommandContext;
@@ -39,7 +39,6 @@ import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 

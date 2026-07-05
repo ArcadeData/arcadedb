@@ -132,7 +132,13 @@ class ParallelScanSafetyTest extends TestHelper {
     assertThat(count).isEqualTo(RECORDS);
 
     // One producer task per bucket must have run on the dedicated pool (#4950): blocking producers must
-    // never colonize the shared QueryEngineManager compute pool.
+    // never colonize the shared QueryEngineManager compute pool. Poll briefly: the executor bumps its
+    // completed-task count AFTER the FutureTask outcome is published, so the consumer can finish draining a
+    // moment before the bookkeeping lands.
+    final long deadline = System.currentTimeMillis() + 5_000;
+    while (ParallelScanProducerPool.getInstance().getPoolStats().completedTasks() < before + 2
+        && System.currentTimeMillis() < deadline)
+      Thread.onSpinWait();
     assertThat(ParallelScanProducerPool.getInstance().getPoolStats().completedTasks())
         .as("scan producer tasks must run on the dedicated pool").isGreaterThanOrEqualTo(before + 2);
   }
