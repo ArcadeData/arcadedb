@@ -24,13 +24,17 @@ import com.arcadedb.index.IndexCursor;
 import com.arcadedb.index.RangeIndex;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.opencypher.optimizer.RangePredicate;
+import com.arcadedb.query.opencypher.temporal.CypherTemporalValue;
+import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
 
+import java.time.temporal.Temporal;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 import java.util.NoSuchElementException;
@@ -277,8 +281,12 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
   }
 
   /**
-   * Compares two values, handling numeric type coercion.
-   * Converts both values to comparable numbers to avoid ClassCastException.
+   * Compares two values, handling numeric and temporal type coercion.
+   * Converts both values to comparable forms to avoid ClassCastException.
+   * <p>
+   * This is only a coarse "when to stop the ascending index scan" probe: the precise WHERE predicate is
+   * re-evaluated by the enclosing FilterOperator (the #4906-fixed {@code ComparisonExpression} path), so
+   * an inexact answer here never affects the result set, only how early the scan can stop.
    */
   @SuppressWarnings("unchecked")
   private static int compareValues(final Object value1, final Object value2) {
@@ -289,6 +297,23 @@ public class NodeIndexRangeScan extends AbstractPhysicalOperator {
 
       // Compare as doubles to handle mixed types (Integer, Long, Float, Double)
       return Double.compare(n1.doubleValue(), n2.doubleValue());
+    }
+
+    // Temporal comparison. The stored value is a native java.time value while the resolved bound may be
+    // another native temporal (e.g. a datetime sent over Bolt). Coerce both into Cypher temporal values
+    // and compare through CypherTemporalValue, reusing the normalization added in #4906, instead of a raw
+    // Comparable.compareTo() that throws ClassCastException across java.time types (issue #5008).
+    if (value1 instanceof Temporal || value1 instanceof Date || value2 instanceof Temporal || value2 instanceof Date) {
+      final Object t1 = TemporalUtil.fromCoreJavaType(value1);
+      final Object t2 = TemporalUtil.fromCoreJavaType(value2);
+      if (t1 instanceof CypherTemporalValue && t2 instanceof CypherTemporalValue) {
+        try {
+          return ((CypherTemporalValue) t1).compareTo((CypherTemporalValue) t2);
+        } catch (final IllegalArgumentException e) {
+          // Different temporal granularities are not orderable: keep scanning and let FilterOperator decide.
+          return -1;
+        }
+      }
     }
 
     // For non-numeric types, use standard comparison
