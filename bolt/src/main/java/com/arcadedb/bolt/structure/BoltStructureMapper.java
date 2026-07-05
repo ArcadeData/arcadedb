@@ -103,6 +103,12 @@ public class BoltStructureMapper {
       return toList(Arrays.asList(array));
     }
 
+    // Spatial Point: Cypher point() returns a plain Map (there is no Point class), so detect
+    // structurally (a crs key plus numeric x/y or longitude/latitude) before the generic Map branch.
+    final BoltPointStructure point = toPointStructure(value);
+    if (point != null)
+      return point;
+
     if (value instanceof Map<?, ?> map) {
       return toMap(map);
     }
@@ -347,6 +353,42 @@ public class BoltStructureMapper {
   private static final byte SIG_DATE_TIME_ZONEID_LEGACY = 0x66; // 'f'  [secondsLocal, nanos, zoneId]
   private static final byte SIG_DATE_TIME_OFFSET_UTC    = 0x49; // 'I'  [secondsUtc,  nanos, offsetSeconds] (Bolt 5.0+)
   private static final byte SIG_DATE_TIME_ZONEID_UTC    = 0x69; // 'i'  [secondsUtc,  nanos, zoneId]        (Bolt 5.0+)
+
+  private static final byte SIG_POINT_2D = 0x58; // 'X' [srid, x, y]
+  private static final byte SIG_POINT_3D = 0x59; // 'Y' [srid, x, y, z]
+
+  /**
+   * Recognize a Cypher spatial point (a Map carrying a crs key plus numeric x/y or longitude/latitude)
+   * and encode it as a native Bolt Point structure. Returns null when the value is not a point so the
+   * caller falls through to generic Map handling.
+   */
+  static BoltPointStructure toPointStructure(final Object value) {
+    if (!(value instanceof Map<?, ?> map) || !map.containsKey("crs"))
+      return null;
+    final Double x = pointCoord(map, "x", "longitude");
+    final Double y = pointCoord(map, "y", "latitude");
+    if (x == null || y == null)
+      return null;
+    final Double z = pointCoord(map, "z", "height");
+    final int srid = pointSrid(map, z != null);
+    return z == null ? new BoltPointStructure(srid, x, y) : new BoltPointStructure(srid, x, y, z);
+  }
+
+  private static Double pointCoord(final Map<?, ?> map, final String primary, final String alt) {
+    Object v = map.get(primary);
+    if (!(v instanceof Number))
+      v = map.get(alt);
+    return v instanceof Number n ? n.doubleValue() : null;
+  }
+
+  private static int pointSrid(final Map<?, ?> map, final boolean is3d) {
+    if (map.get("srid") instanceof Number n)
+      return n.intValue();
+    final String crs = map.get("crs") != null ? map.get("crs").toString() : "";
+    if (crs.startsWith("WGS-84"))
+      return is3d ? 4979 : 4326;
+    return is3d ? 9157 : 7203; // cartesian
+  }
 
   /**
    * Outbound direction (issue #4907): encode a temporal value as its native Bolt PackStream structure so

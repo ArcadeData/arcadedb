@@ -18,6 +18,7 @@
  */
 package com.arcadedb.bolt;
 
+import com.arcadedb.bolt.structure.BoltPointStructure;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.bolt.structure.BoltTemporalStructure;
 
@@ -30,6 +31,8 @@ import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -82,5 +85,48 @@ class BoltTypeRoundTripTest {
     final Object out = BoltStructureMapper.toPackStreamValue(Duration.ofHours(2));
     assertThat(out).isNotInstanceOf(BoltTemporalStructure.class);
     assertThat(out).isInstanceOf(String.class);
+  }
+
+  @Test
+  @DisplayName("[TYPE-012] cartesian Point serializes as a native Bolt Point2D structure")
+  void type012_cartesianPointNative() {
+    final Map<String, Object> point = new LinkedHashMap<>();
+    point.put("x", 12.34);
+    point.put("y", 56.78);
+    point.put("crs", "cartesian");
+    final Object out = BoltStructureMapper.toPackStreamValue(point);
+    assertThat(out).isInstanceOf(BoltPointStructure.class);
+    final BoltPointStructure p = (BoltPointStructure) out;
+    assertThat(p.getSignature()).isEqualTo((byte) 0x58);
+    assertThat(p.getSrid()).isEqualTo(7203);
+    assertThat(p.getX()).isEqualTo(12.34);
+    assertThat(p.getY()).isEqualTo(56.78);
+    assertThat(p.getZ()).isNull();
+  }
+
+  @Test
+  @DisplayName("[TYPE-012] WGS-84 3D Point serializes as a native Bolt Point3D structure")
+  void type012_wgs84Point3DNative() {
+    final Map<String, Object> point = new LinkedHashMap<>();
+    point.put("longitude", 12.34);
+    point.put("latitude", 56.78);
+    point.put("height", 100.0);
+    point.put("crs", "WGS-84-3D");
+    point.put("srid", 4979);
+    final BoltPointStructure p = (BoltPointStructure) BoltStructureMapper.toPackStreamValue(point);
+    assertThat(p.getSignature()).isEqualTo((byte) 0x59);
+    assertThat(p.getSrid()).isEqualTo(4979);
+    assertThat(p.getX()).isEqualTo(12.34);
+    assertThat(p.getY()).isEqualTo(56.78);
+    assertThat(p.getZ()).isEqualTo(100.0);
+  }
+
+  @Test
+  @DisplayName("A plain map without crs is not misdetected as a Point")
+  void plainMapIsNotPoint() {
+    final Map<String, Object> m = new LinkedHashMap<>();
+    m.put("a", 1);
+    m.put("b", 2);
+    assertThat(BoltStructureMapper.toPackStreamValue(m)).isInstanceOf(Map.class);
   }
 }
