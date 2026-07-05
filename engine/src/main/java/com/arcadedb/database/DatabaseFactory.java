@@ -75,32 +75,54 @@ public class DatabaseFactory implements AutoCloseable {
   public synchronized Database open(final ComponentFile.MODE mode) {
     checkForActiveInstance(databasePath);
 
-    if (ACTIVE_INSTANCES.isEmpty())
+    final boolean pageManagerStarted = ACTIVE_INSTANCES.isEmpty();
+    if (pageManagerStarted)
       PageManager.INSTANCE.configure();
 
-    final LocalDatabase database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
-    database.setAutoTransaction(autoTransaction);
-    database.open();
+    try {
+      final LocalDatabase database = new LocalDatabase(databasePath, mode, contextConfiguration, security, callbacks);
+      database.setAutoTransaction(autoTransaction);
+      database.open();
 
-    registerActiveInstance(database);
+      registerActiveInstance(database);
 
-    return database;
+      return database;
+    } catch (final Throwable e) {
+      stopPageManagerIfNoActiveInstance(pageManagerStarted);
+      throw e;
+    }
   }
 
   public synchronized Database create() {
     checkForActiveInstance(databasePath);
 
-    if (ACTIVE_INSTANCES.isEmpty())
+    final boolean pageManagerStarted = ACTIVE_INSTANCES.isEmpty();
+    if (pageManagerStarted)
       PageManager.INSTANCE.configure();
 
-    final LocalDatabase database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security,
-        callbacks);
-    database.setAutoTransaction(autoTransaction);
-    database.create();
+    try {
+      final LocalDatabase database = new LocalDatabase(databasePath, ComponentFile.MODE.READ_WRITE, contextConfiguration, security,
+          callbacks);
+      database.setAutoTransaction(autoTransaction);
+      database.create();
 
-    registerActiveInstance(database);
+      registerActiveInstance(database);
 
-    return database;
+      return database;
+    } catch (final Throwable e) {
+      stopPageManagerIfNoActiveInstance(pageManagerStarted);
+      throw e;
+    }
+  }
+
+  /**
+   * Stops the global {@link PageManager} (and its non-daemon "ArcadeDB AsyncFlush" flush thread) if this
+   * factory started it during a failed open/create and no other database instance is active. Without this,
+   * a failed open leaks the flush thread and the JVM can never exit (issue #4991).
+   */
+  private static void stopPageManagerIfNoActiveInstance(final boolean pageManagerStarted) {
+    if (pageManagerStarted && ACTIVE_INSTANCES.isEmpty())
+      PageManager.INSTANCE.close();
   }
 
   public synchronized DatabaseFactory setAutoTransaction(final boolean enabled) {
