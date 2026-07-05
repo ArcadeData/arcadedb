@@ -47,11 +47,13 @@ import java.util.logging.Level;
 public class PageManager extends LockContext {
   public static final PageManager INSTANCE = new PageManager();
 
-  private          ConcurrentMap<PageId, CachedPage> readCache;
+  // Package-private (instead of private) so the white-box regression test for #4925/#4933 can assert on
+  // the cache content and RAM accounting directly, without reflection.
+  ConcurrentMap<PageId, CachedPage> readCache;
   // MANAGE CONCURRENT ACCESS TO THE PAGES. THE VALUE IS TRUE FOR WRITE OPERATION AND FALSE FOR READ
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
   private          long                              maxRAM;
-  private final    AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
+  final            AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
   private final    AtomicLong                        totalPagesRead                        = new AtomicLong();
   private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
   private final    AtomicLong                        totalPagesWritten                     = new AtomicLong();
@@ -558,13 +560,15 @@ public class PageManager extends LockContext {
     lastCheckForRAM = System.currentTimeMillis();
   }
 
-  private void putPageInReadCache(final CachedPage page) {
+  void putPageInReadCache(final CachedPage page) {
     // #4925: version-monotonic put. A reader that started a disk read of version N before a committer
     // cached version N+1 must not overwrite the newer committed page with its stale image: the poisoned
     // cache would serve vN to every subsequent reader AND to the commit-time version probe, letting a later
     // transaction pass its MVCC check and silently overwrite the lost committed update. The compute keeps
     // whichever version is newer; the RAM delta is computed inside the same atomic operation so the
-    // accounting always matches the actual cache content.
+    // accounting always matches the actual cache content. The one-slot holder does not escape compute(),
+    // so escape analysis is expected to scalar-replace it on this hot path; if profiling ever shows it
+    // surviving, switch to a ThreadLocal holder.
     final long[] ramDelta = new long[1];
     readCache.compute(page.getPageId(), (id, prev) -> {
       if (prev == null) {
