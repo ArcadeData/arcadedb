@@ -22,6 +22,7 @@ import com.arcadedb.database.Database;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GraphTraversalProvider;
+import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.graph.GraphTraversalProviderRegistry;
 import com.arcadedb.graph.NeighborView;
 import com.arcadedb.graph.Vertex;
@@ -95,16 +96,10 @@ public final class PartitionedTriangleOp implements CountOp {
         futures[t] = executor.submit(() ->
             partialCounts[threadIdx] = countRange(knowsView, nbrs, personPartition, start, end));
       }
-      for (final Future<?> future : futures) {
-        try {
-          future.get();
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          break;
-        } catch (final ExecutionException e) {
-          throw new RuntimeException("Parallel triangle counting failed", e.getCause());
-        }
-      }
+      // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
+      // so a killed/timed-out query can never sum partial (and still-being-written) partialCounts as a
+      // complete answer.
+      GraphAlgorithms.awaitFutures(futures, futures.length);
     }
 
     long total = 0;

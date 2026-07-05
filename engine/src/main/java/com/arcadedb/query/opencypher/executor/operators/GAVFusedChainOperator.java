@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.operators;
 
 import com.arcadedb.database.Database;
+import com.arcadedb.graph.olap.GraphAlgorithms;
 import com.arcadedb.database.RID;
 import com.arcadedb.graph.GAVVertex;
 import com.arcadedb.graph.GraphTraversalProvider;
@@ -202,17 +203,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
             traverseChunk(sourceNodeIds, start, end, hopViews, chainLength, outputNames, db, context, threadResults[threadIdx]));
         launched++;
       }
-      // Wait for all tasks
-      for (int t = 0; t < launched; t++) {
-        try {
-          futures[t].get();
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          break;
-        } catch (final ExecutionException e) {
-          throw new RuntimeException("Parallel GAV traversal failed", e.getCause());
-        }
-      }
+      // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
+      // so a killed/timed-out query can never merge partial per-thread results as a complete answer.
+      GraphAlgorithms.awaitFutures(futures, launched);
       threadCount = launched;
     }
 
@@ -289,16 +282,9 @@ public class GAVFusedChainOperator extends AbstractPhysicalOperator {
             aggregateChunk(sourceNodeIds, start, end, hopViews, chainLength, groupKeySlots, db, context, threadMaps[threadIdx]));
         launched++;
       }
-      for (int t = 0; t < launched; t++) {
-        try {
-          futures[t].get();
-        } catch (final InterruptedException e) {
-          Thread.currentThread().interrupt();
-          break;
-        } catch (final ExecutionException e) {
-          throw new RuntimeException("Parallel GAV aggregation failed", e.getCause());
-        }
-      }
+      // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
+      // so a killed/timed-out query can never merge partial per-thread maps as a complete answer.
+      GraphAlgorithms.awaitFutures(futures, launched);
     }
 
     // Merge thread-local maps (zero boxing — primitive long operations)

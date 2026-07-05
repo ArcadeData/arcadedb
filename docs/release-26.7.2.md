@@ -81,6 +81,29 @@ that could starve the very snapshot resync meant to heal the node.
   against a per-record snapshot of the previous in-transaction indexed state. The snapshot stores ONLY the
   indexed property values (not a full copy of the document), so the cost per update is independent of the
   document width and negligible for bulk updates.
+- **Query: parallel bucket scans can no longer self-deadlock under load.** The blocking scan producers ran
+  on the shared query-parallelism pool, whose caller-runs saturation policy executed a whole bucket scan
+  synchronously on the CONSUMER thread, before the result set was even returned. For any bucket larger than
+  the bounded result queue the scan then blocked forever on its own full queue - the only thread that could
+  drain it was the one doing the blocking - permanently wedging the HTTP worker; under sustained load the
+  wedged workers accumulated until the server stopped answering. Parallel scanning is enabled by default
+  (`arcadedb.queryParallelScan=true`), so any multi-bucket full scan could hit this
+  ([#4948](https://github.com/ArcadeData/arcadedb/issues/4948)). Scan producers now run on a dedicated
+  producer pool that never runs tasks on the caller (visible as `pool=parallel_scan` in the Executor Pools
+  metrics), which also stops blocked producers from pinning the shared compute pool's workers and coupling
+  the latency of unrelated graph queries to the slowest scan consumer in the JVM
+  ([#4950](https://github.com/ArcadeData/arcadedb/issues/4950)).
+- **Query: parallel scan workers no longer race on the caller's command context.** Every scan worker shared
+  the caller's `CommandContext` and concurrently wrote `$current` into its non-thread-safe variables map on
+  every row - corrupting `$current` semantics for downstream expressions and risking `HashMap` corruption
+  under load ([#4949](https://github.com/ArcadeData/arcadedb/issues/4949)). Each worker now gets its own
+  context copy, and `$current` on the caller's context is written only by the consumer.
+- **Graph: interrupted parallel graph algorithms now fail instead of returning partial results as success.**
+  PageRank/BFS chunk fan-outs, the Cypher fused-chain traversal and the partitioned triangle count all
+  swallowed an interrupt during their fork/join wait and merged whatever chunks had completed, so a query
+  killed by a timeout or cancel returned an incomplete answer as a successful one
+  ([#4951](https://github.com/ArcadeData/arcadedb/issues/4951)). The shared await now cancels the
+  outstanding chunks and throws, preserving the interrupt flag for the caller.
 
 ### Improvements
 

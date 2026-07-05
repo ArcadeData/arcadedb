@@ -26,7 +26,7 @@ import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
 
@@ -244,9 +244,23 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       scanFutures = new ArrayList<>(getSubSteps().size());
 
       final DatabaseInternal db = context.getDatabase();
-      final ExecutorService scanExecutor = QueryEngineManager.getInstance().getExecutorService();
+      // #4948/#4950: producers BLOCK on the bounded result queue, so they must never run on the shared
+      // QueryEngineManager pool: its caller-runs rejection executed the whole bucket scan synchronously on
+      // the CONSUMER thread (which then blocked forever on its own full queue - self-deadlock), and blocked
+      // producers pinned the shared workers, starving every non-blocking compute user in the JVM.
+      final ExecutorService scanExecutor = ParallelScanProducerPool.getInstance().getExecutorService();
 
       for (final ExecutionStep step : getSubSteps()) {
+        // #4949: each worker gets its own child context. Workers previously shared the caller's
+        // BasicCommandContext and raced on its non-thread-safe variables HashMap (every rs.next() writes
+        // $current), corrupting $current semantics for downstream expressions and risking HashMap
+        // corruption. The copy shares the database and input parameters but owns its variables map; the
+        // consumer-facing $current is set only by the consumer (see the ResultSet below).
+        final CommandContext workerContext = context.copy();
+        if (workerContext instanceof BasicCommandContext basicWorkerContext)
+          basicWorkerContext.setDatabase(db);
+        workerContext.setInputParameters(context.getInputParameters());
+
         final Future<?> future = scanExecutor.submit(() -> {
           // Initialize DatabaseContext for this worker thread so that
           // BucketIterator and other components find the correct database
@@ -256,7 +270,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
           try {
             db.executeInReadLock(() -> {
               final AbstractExecutionStep execStep = (AbstractExecutionStep) step;
-              ResultSet rs = execStep.syncPull(context, nRecords);
+              ResultSet rs = execStep.syncPull(workerContext, nRecords);
               while (rs.hasNext()) {
                 final Result r = rs.next();
                 try {
@@ -266,7 +280,7 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
                   return null;
                 }
                 if (!rs.hasNext())
-                  rs = execStep.syncPull(context, nRecords);
+                  rs = execStep.syncPull(workerContext, nRecords);
               }
               return null;
             });
