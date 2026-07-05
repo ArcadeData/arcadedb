@@ -21,11 +21,11 @@ package com.arcadedb.bolt;
 import com.arcadedb.bolt.structure.BoltPointStructure;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.bolt.structure.BoltTemporalStructure;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 
-import java.time.Duration;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -76,15 +76,15 @@ class BoltTypeRoundTripTest {
   }
 
   @Test
-  @DisplayName("[TYPE-011] Duration falls back to a String (wire-level gap #4890)")
-  void type011_durationGap() {
-    // KNOWN GAP (#4890): BoltStructureMapper has no Duration branch, so a
-    // java.time.Duration falls through to value.toString(). This characterization
-    // pins the current contract - when #4890 adds a native Bolt Duration
-    // structure, this assertion FAILS and must be flipped to assert the structure.
-    final Object out = BoltStructureMapper.toPackStreamValue(Duration.ofHours(2));
-    assertThat(out).isNotInstanceOf(BoltTemporalStructure.class);
-    assertThat(out).isInstanceOf(String.class);
+  @DisplayName("[TYPE-011] CypherDuration serializes as a native Bolt Duration structure")
+  void type011_durationNative() {
+    // duration('P1DT2H30M') -> months=0, days=1, seconds=9000, nanos=0
+    final CypherDuration d = new CypherDuration(0, 1, 9000, 0);
+    final Object out = BoltStructureMapper.toPackStreamValue(d);
+    assertThat(out).isInstanceOf(BoltTemporalStructure.class);
+    final BoltTemporalStructure s = (BoltTemporalStructure) out;
+    assertThat(s.getSignature()).isEqualTo((byte) 0x45);
+    assertThat(s.getFieldCount()).isEqualTo(4);
   }
 
   @Test

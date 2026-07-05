@@ -27,6 +27,7 @@ import com.arcadedb.graph.Vertex;
 import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.temporal.CypherDate;
 import com.arcadedb.query.opencypher.temporal.CypherDateTime;
+import com.arcadedb.query.opencypher.temporal.CypherDuration;
 import com.arcadedb.query.opencypher.temporal.CypherLocalDateTime;
 import com.arcadedb.query.opencypher.temporal.CypherLocalTime;
 import com.arcadedb.query.opencypher.temporal.CypherTime;
@@ -357,6 +358,8 @@ public class BoltStructureMapper {
   private static final byte SIG_POINT_2D = 0x58; // 'X' [srid, x, y]
   private static final byte SIG_POINT_3D = 0x59; // 'Y' [srid, x, y, z]
 
+  private static final byte SIG_DURATION = 0x45; // 'E' [months, days, seconds, nanoseconds]
+
   /**
    * Recognize a Cypher spatial point (a Map carrying a crs key plus numeric x/y or longitude/latitude)
    * and encode it as a native Bolt Point structure. Returns null when the value is not a point so the
@@ -441,6 +444,8 @@ public class BoltStructureMapper {
     if (value instanceof Calendar calendar)
       // Preserve the calendar's own zone instead of forcing UTC.
       return toTemporalStructure(ZonedDateTime.ofInstant(calendar.toInstant(), calendar.getTimeZone().toZoneId()));
+    if (value instanceof CypherDuration d)
+      return new BoltTemporalStructure(SIG_DURATION, d.getMonths(), d.getDays(), d.getSeconds(), (long) d.getNanosAdjustment());
 
     return null;
   }
@@ -462,9 +467,9 @@ public class BoltStructureMapper {
       return ldt.getValue();
     if (value instanceof CypherDateTime dt)
       return dt.getValue();
-    // NOTE: CypherDuration is intentionally not unwrapped - Bolt has a Duration struct but there is no single
-    // java.time value for it (months + days + seconds together), so a returned duration still falls through to
-    // the generic (ISO-8601 string) handling. Tracked as a follow-up if native Duration output is needed.
+    // NOTE: CypherDuration is intentionally not unwrapped to a java.time value - Bolt has a native Duration
+    // struct but there is no single java.time type for it (months + days + seconds together). It is matched
+    // directly as CypherDuration in toTemporalStructure below and emitted as a SIG_DURATION struct.
     return value;
   }
 
