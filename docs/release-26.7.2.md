@@ -81,6 +81,21 @@ that could starve the very snapshot resync meant to heal the node.
   against a per-record snapshot of the previous in-transaction indexed state. The snapshot stores ONLY the
   indexed property values (not a full copy of the document), so the cost per update is independent of the
   document width and negligible for bulk updates.
+- **Storage: a slow reader can no longer poison the page cache with a stale version (lost update).** A
+  reader that started a disk read of page version N before a committer cached version N+1 overwrote the
+  newer committed page when its read completed, because the cache put was unconditional. Every subsequent
+  reader then saw vN, and the commit-time version probe read the poisoned cache too, so a later transaction
+  could pass its MVCC check and silently overwrite the lost committed update
+  ([#4925](https://github.com/ArcadeData/arcadedb/issues/4925)). The cache put is now version-monotonic: an
+  older page version never replaces a newer one, with the RAM accounting computed inside the same atomic
+  operation.
+- **Storage: page-cache RAM accounting can no longer go negative and disable eviction.** The bulk removal
+  loops (database close/kill, file drop) subtracted a page's size from the cache accounting before removing
+  it, unconditionally, while the eviction path subtracts only when its removal actually won. Racing the two
+  subtracted the same page twice; once the counter drifted negative the `totalRAM < maxRAM` eviction check
+  never fired again and the read cache grew without bound (real RSS growth, invisible in the stats)
+  ([#4933](https://github.com/ArcadeData/arcadedb/issues/4933)). All accounting is now driven by the entry
+  actually removed, so every page is subtracted exactly once.
 
 ### Improvements
 

@@ -120,13 +120,13 @@ public class PageManager extends LockContext {
   }
 
   public void removeAllReadPagesOfDatabase(final Database database) {
-    for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
-      final CachedPage p = it.next();
+    for (final CachedPage p : readCache.values()) {
       final PageId pageId = p.getPageId();
-      if (pageId.getDatabase().equals(database)) {
-        totalReadCacheRAM.addAndGet(-1L * p.getPhysicalSize());
-        it.remove();
-      }
+      if (pageId.getDatabase().equals(database))
+        // #4933: drive the accounting from the value ACTUALLY removed. Subtracting before it.remove()
+        // double-subtracted a page that a concurrent evictOldestPages/removePageFromCache removed first,
+        // driving totalReadCacheRAM negative and permanently disabling eviction (unbounded cache growth).
+        removePageFromCache(pageId);
     }
   }
 
@@ -170,13 +170,11 @@ public class PageManager extends LockContext {
     if (flushThread != null)
       flushThread.removeAllPagesOfFile(database, fileId);
 
-    for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
-      final CachedPage p = it.next();
+    for (final CachedPage p : readCache.values()) {
       final PageId pageId = p.getPageId();
-      if (pageId.getDatabase().equals(database) && pageId.getFileId() == fileId) {
-        totalReadCacheRAM.addAndGet(-1L * p.getPhysicalSize());
-        it.remove();
-      }
+      if (pageId.getDatabase().equals(database) && pageId.getFileId() == fileId)
+        // #4933: accounting driven by the value actually removed (see removeAllReadPagesOfDatabase).
+        removePageFromCache(pageId);
     }
   }
 
@@ -561,14 +559,27 @@ public class PageManager extends LockContext {
   }
 
   private void putPageInReadCache(final CachedPage page) {
-    final CachedPage prev = readCache.put(page.getPageId(), page);
-    if (prev == null)
-      totalReadCacheRAM.addAndGet(page.getPhysicalSize());
-    else {
-      final long delta = page.getPhysicalSize() - prev.getPhysicalSize();
-      if (delta != 0)
-        totalReadCacheRAM.addAndGet(delta);
-    }
+    // #4925: version-monotonic put. A reader that started a disk read of version N before a committer
+    // cached version N+1 must not overwrite the newer committed page with its stale image: the poisoned
+    // cache would serve vN to every subsequent reader AND to the commit-time version probe, letting a later
+    // transaction pass its MVCC check and silently overwrite the lost committed update. The compute keeps
+    // whichever version is newer; the RAM delta is computed inside the same atomic operation so the
+    // accounting always matches the actual cache content.
+    final long[] ramDelta = new long[1];
+    readCache.compute(page.getPageId(), (id, prev) -> {
+      if (prev == null) {
+        ramDelta[0] = page.getPhysicalSize();
+        return page;
+      }
+      if (page.getVersion() >= prev.getVersion()) {
+        ramDelta[0] = page.getPhysicalSize() - prev.getPhysicalSize();
+        return page;
+      }
+      // STALE WRITE ATTEMPT: KEEP THE NEWER CACHED VERSION
+      return prev;
+    });
+    if (ramDelta[0] != 0)
+      totalReadCacheRAM.addAndGet(ramDelta[0]);
 
     checkForPageDisposal();
   }
