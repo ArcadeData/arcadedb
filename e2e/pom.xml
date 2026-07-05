@@ -110,7 +110,7 @@
         <profile>
             <id>bolt-driver-legacy</id>
             <properties>
-                <neo4j-driver.version>4.4.20</neo4j-driver.version>
+                <neo4j-driver.version>6.2.0</neo4j-driver.version>
             </properties>
             <build>
                 <plugins>
