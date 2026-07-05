@@ -549,19 +549,29 @@ public class BoltStructureMapper {
         return ZonedDateTime.ofInstant(instant, ZoneId.of(String.valueOf(f.get(2))));
       }
 
+      case SIG_DURATION:
+        return new CypherDuration(asLong(f.get(0)), asLong(f.get(1)), asLong(f.get(2)), (int) asLong(f.get(3)));
+
+      case SIG_POINT_2D:
+        return pointMap((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), null);
+
+      case SIG_POINT_3D:
+        return pointMap((int) asLong(f.get(0)), asDouble(f.get(1)), asDouble(f.get(2)), asDouble(f.get(3)));
+
       default:
-        // Not a temporal structure (or Duration, which has no single java.time representation): leave as-is.
+        // Not a recognized temporal, Duration or Point signature: leave as-is.
         return structure;
       }
     } catch (final RuntimeException e) {
-      // Malformed temporal payload (e.g. non-numeric field, unresolvable zone id): leave opaque.
+      // Malformed payload (e.g. non-numeric field, unresolvable zone id): leave opaque.
       return structure;
     }
   }
 
   /**
-   * Number of fields each temporal signature is expected to carry. Non-temporal signatures return
-   * {@code true} so they fall through to the default (opaque) branch unchanged.
+   * Number of fields each recognized signature (temporal, Duration, Point) is expected to carry.
+   * Unrecognized signatures return {@code true} so they fall through to the default (opaque)
+   * branch unchanged.
    */
   private static boolean hasExpectedArity(final byte signature, final int fieldCount) {
     return switch (signature) {
@@ -569,11 +579,48 @@ public class BoltStructureMapper {
       case SIG_TIME, SIG_LOCAL_DATE_TIME -> fieldCount == 2;
       case SIG_DATE_TIME_OFFSET_LEGACY, SIG_DATE_TIME_ZONEID_LEGACY, SIG_DATE_TIME_OFFSET_UTC, SIG_DATE_TIME_ZONEID_UTC ->
           fieldCount == 3;
+      case SIG_DURATION, SIG_POINT_3D -> fieldCount == 4;
+      case SIG_POINT_2D -> fieldCount == 3;
       default -> true;
     };
   }
 
   private static long asLong(final Object value) {
     return ((Number) value).longValue();
+  }
+
+  private static double asDouble(final Object value) {
+    return ((Number) value).doubleValue();
+  }
+
+  /**
+   * Build the inbound decoded representation of a Point: a map carrying x, y, an optional z,
+   * the srid and a derived crs key. The crs key is required so an echoed Point (e.g.
+   * {@code RETURN $p AS echo}) is recognized by {@link #toPointStructure} and re-encoded as a
+   * native Bolt Point rather than a generic map.
+   */
+  private static Map<String, Object> pointMap(final int srid, final double x, final double y, final Double z) {
+    final Map<String, Object> m = new LinkedHashMap<>();
+    m.put("srid", srid);
+    m.put("x", x);
+    m.put("y", y);
+    if (z != null)
+      m.put("z", z);
+    m.put("crs", crsForSrid(srid, z != null));
+    return m;
+  }
+
+  /**
+   * Map an SRID to its Neo4j-compatible crs name. Known SRIDs (4326 WGS-84, 4979 WGS-84-3D,
+   * 9157 cartesian-3D) map explicitly; any other SRID falls back to cartesian(-3D) based on
+   * dimensionality.
+   */
+  private static String crsForSrid(final int srid, final boolean is3d) {
+    return switch (srid) {
+      case 4326 -> "WGS-84";
+      case 4979 -> "WGS-84-3D";
+      case 9157 -> "cartesian-3D";
+      default -> is3d ? "cartesian-3D" : "cartesian";
+    };
   }
 }
