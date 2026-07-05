@@ -35,6 +35,13 @@ import java.util.*;
  * - Boolean operand types (reject non-boolean literals)
  * - Nested aggregations and aggregation in WHERE
  * - CREATE/MERGE/DELETE structural constraints
+ * <p>
+ * <b>Semantic vs syntax boundary:</b> only an undefined-variable violation throws
+ * {@link CommandSemanticException}, which Bolt surfaces as {@code Neo.ClientError.Statement.SemanticError}
+ * (certified by conformance scenario ERR-002). Every other validation failure in this class throws
+ * {@link CommandParsingException}, surfaced over Bolt as {@code SyntaxError}. This split is deliberate but
+ * not yet verified case-by-case against real Neo4j error classification; other violations here may turn
+ * out to be genuine semantic errors on further scrutiny.
  *
  * @author Luca Garulli (l.garulli--(at)--arcadedata.com)
  */

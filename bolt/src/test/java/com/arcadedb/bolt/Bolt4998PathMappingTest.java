@@ -19,6 +19,7 @@
 package com.arcadedb.bolt;
 
 import com.arcadedb.bolt.structure.BoltPath;
+import com.arcadedb.bolt.structure.BoltPointStructure;
 import com.arcadedb.bolt.structure.BoltStructureMapper;
 import com.arcadedb.database.Database;
 import com.arcadedb.database.DatabaseFactory;
@@ -83,5 +84,19 @@ class Bolt4998PathMappingTest {
     assertThat(bp.getRelationships()).hasSize(1);
     assertThat(bp.getIndices().get(0)).isEqualTo(-1L); // backward, negative
     assertThat(bp.getIndices().get(1)).isEqualTo(1L);  // reached node index (a) = 1
+  }
+
+  @Test
+  @DisplayName("[TYPE-012] RETURN point({...}) maps to a native BoltPointStructure")
+  void type012_enginePointOutbound() {
+    final ResultSet rs = db.query("opencypher", "RETURN point({x: 12.34, y: 56.78}) AS p");
+    final Object p = rs.next().getProperty("p");
+    final Object out = BoltStructureMapper.toPackStreamValue(p);
+    assertThat(out).isInstanceOf(BoltPointStructure.class);
+    final BoltPointStructure pt = (BoltPointStructure) out;
+    assertThat(pt.getSignature()).isEqualTo((byte) 0x58);
+    assertThat(pt.getSrid()).isEqualTo(7203);
+    assertThat(pt.getX()).isEqualTo(12.34);
+    assertThat(pt.getY()).isEqualTo(56.78);
   }
 }

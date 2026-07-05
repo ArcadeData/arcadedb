@@ -226,6 +226,8 @@ public class BoltStructureMapper {
 
     addPathNode(vertices.get(0), nodes, nodeIndex);
 
+    // Invariant: vertices.size() == edges.size() + 1, guaranteed by TraversalPath construction, so
+    // vertices.get(i + 1) below is always in range for i < edges.size().
     for (int i = 0; i < edges.size(); i++) {
       final Edge edge = edges.get(i);
       final Vertex from = vertices.get(i);
@@ -431,7 +433,8 @@ public class BoltStructureMapper {
   static BoltPointStructure toPointStructure(final Object value) {
     if (!(value instanceof Map<?, ?> map) || !map.containsKey("crs"))
       return null;
-    if (!RECOGNIZED_CRS.contains(map.get("crs")) && !(map.get("srid") instanceof Number))
+    final Object crs = map.get("crs");
+    if ((crs == null || !RECOGNIZED_CRS.contains(crs)) && !(map.get("srid") instanceof Number))
       return null;
     final Double x = pointCoord(map, "x", "longitude");
     final Double y = pointCoord(map, "y", "latitude");
@@ -546,7 +549,7 @@ public class BoltStructureMapper {
   @SuppressWarnings("unchecked")
   public static Object fromPackStreamValue(final Object value) {
     if (value instanceof PackStreamReader.StructureValue structure)
-      return fromTemporalStructure(structure);
+      return fromInboundStructure(structure);
 
     if (value instanceof Map<?, ?> map) {
       final Map<String, Object> converted = new LinkedHashMap<>(map.size());
@@ -566,13 +569,14 @@ public class BoltStructureMapper {
   }
 
   /**
-   * Decode a single Bolt temporal PackStream structure into a {@code java.time} value.
-   * Unknown (non-temporal) structures are returned as-is. A structure that carries the wrong field
-   * count or field types for its temporal signature (a misbehaving client) is also returned as-is
+   * Decode a single inbound Bolt PackStream structure - temporal, Duration, or Point - into its
+   * engine-friendly value ({@code java.time} value, {@link CypherDuration}, or a Point map).
+   * Unknown (unrecognized) structures are returned as-is. A structure that carries the wrong field
+   * count or field types for its signature (a misbehaving client) is also returned as-is
    * rather than propagating a raw {@code IndexOutOfBoundsException} / {@code ClassCastException} out of
    * RUN parsing - the parameter simply stays opaque instead of crashing the connection.
    */
-  private static Object fromTemporalStructure(final PackStreamReader.StructureValue structure) {
+  private static Object fromInboundStructure(final PackStreamReader.StructureValue structure) {
     final List<Object> f = structure.getFields();
     final byte signature = structure.getSignature();
     if (!hasExpectedArity(signature, f.size()))

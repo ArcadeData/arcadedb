@@ -150,4 +150,14 @@ class BoltTypeRoundTripTest {
     m.put("y", 2.0);
     assertThat(BoltStructureMapper.toPackStreamValue(m)).isInstanceOf(Map.class);
   }
+
+  @Test
+  @DisplayName("A map with a null crs value and no srid is not misdetected as a Point and does not throw")
+  void nullCrsIsNotPoint() {
+    final Map<String, Object> m = new LinkedHashMap<>();
+    m.put("crs", null);
+    m.put("x", 1.0);
+    m.put("y", 2.0);
+    assertThat(BoltStructureMapper.toPackStreamValue(m)).isInstanceOf(Map.class);
+  }
 }
