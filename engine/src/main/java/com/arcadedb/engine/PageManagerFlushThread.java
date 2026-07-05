@@ -288,7 +288,12 @@ public class PageManagerFlushThread extends Thread {
     if (value)
       return suspended.putIfAbsent(database, true) == null;
 
-    // Phase 1: synchronously flush all deferred batches accumulated while suspended
+    // Phase 1: synchronously flush all deferred batches accumulated while suspended. If the unsuspending
+    // thread (e.g. backup/HA) is interrupted, the flag is consumed ONCE for the whole flush (a set flag makes
+    // concurrentPageAccess reject every subsequent write, one throw+retry cycle per page) and restored at the
+    // end of the method, so the caller still observes its own cancellation and the re-enqueue phase below runs
+    // interrupt-free.
+    boolean restoreCallerInterrupt = false;
     final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
     if (deferred != null) {
       for (final PagesToFlush batch : deferred) {
@@ -304,9 +309,9 @@ public class PageManagerFlushThread extends Thread {
               // FILE DELETED, CONTINUE WITH THE NEXT PAGES
               LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
             } catch (final InterruptedIOException e) {
-              // The unsuspending thread (e.g. backup/HA) was interrupted: don't drop the deferred dirty page,
-              // its WAL entry was already acked. Retry once with the flag cleared (concurrentPageAccess rejects
-              // any I/O while it is set), then restore it so the caller still observes its own cancellation.
+              // Don't drop the deferred dirty page, its WAL entry was already acked: consume the flag and
+              // retry the write once.
+              restoreCallerInterrupt = true;
               Thread.interrupted();
               try {
                 pageManager.flushPage(page);
@@ -314,9 +319,9 @@ public class PageManagerFlushThread extends Thread {
                 // Contain every retry failure (file dropped, re-interrupt, real I/O error): letting it escape
                 // would skip the unsuspend phases below, leaving the database suspended with batches stranded
                 // in the deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
+                // A fresh re-interrupt set the flag again: clear it so the remaining pages flush cleanly.
                 LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
-              } finally {
-                Thread.currentThread().interrupt();
+                Thread.interrupted();
               }
             } catch (final IOException e) {
               LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
@@ -369,6 +374,10 @@ public class PageManagerFlushThread extends Thread {
     // to absorb any drift from edge cases above (a batch skipped because its database closed mid-unsuspend).
     if (deferredByDatabase.isEmpty())
       deferredRAMBytes.set(0);
+
+    if (restoreCallerInterrupt)
+      // Consumed once during Phase 1: restore it so the caller still observes its own cancellation.
+      Thread.currentThread().interrupt();
 
     return true;
   }

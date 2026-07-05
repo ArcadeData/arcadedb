@@ -64,7 +64,9 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
     flush.queue.offer(new PagesToFlush(List.of(page)));
 
     // Occupy the page's I/O slot so the flush thread spins inside concurrentPageAccess (where the interrupt
-    // check lives) until the slot is released, making the interrupt timing deterministic.
+    // check lives) until the slot is released, making the interrupt timing deterministic. NOTE: pendingFlushPages
+    // lives on the shared PageManager.INSTANCE singleton; isolation relies on the page number being beyond any
+    // page the database's real flush thread could touch.
     final Field pendingField = PageManager.class.getDeclaredField("pendingFlushPages");
     pendingField.setAccessible(true);
     @SuppressWarnings("unchecked")
@@ -73,12 +75,13 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
     try {
       flush.start();
 
-      // Wait until the batch has been polled, then interrupt the flush thread while it spins on the busy slot.
+      // Wait until the batch has been polled, then interrupt the flush thread. Wherever the interrupt lands
+      // (before flushPage or inside the slot spin), concurrentPageAccess detects it and the policy consumes it.
       while (!flush.queue.isEmpty())
         Thread.sleep(1);
-      Thread.sleep(50);
       flush.interrupt();
-      Thread.sleep(50);
+      // Wait on observable state instead of a fixed sleep: the policy CLEARS the flag when it handles the fault.
+      awaitInterruptConsumed(flush);
     } finally {
       // Release the I/O slot: the retried write can now reach the disk.
       pending.remove(pageId);
@@ -132,11 +135,12 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
 
       while (!flush.queue.isEmpty())
         Thread.sleep(1);
-      Thread.sleep(100);
       flush.interrupt(); // 1st: InterruptedIOException -> policy clears the flag and retries (spins on the busy slot)
-      Thread.sleep(100);
-      flush.interrupt(); // 2nd: re-detected by the spin -> second InterruptedIOException, must be contained per-page
-      Thread.sleep(100);
+      // Wait on observable state instead of fixed sleeps: the policy CLEARS the flag when it handles each fault,
+      // so a consumed flag proves the previous interrupt was processed and the next one cannot merge with it.
+      awaitInterruptConsumed(flush);
+      flush.interrupt(); // 2nd: re-detected by the retry's slot spin -> second InterruptedIOException, contained per-page
+      awaitInterruptConsumed(flush);
     } finally {
       pending.remove(blockedPageId);
     }
@@ -149,6 +153,17 @@ class PageManagerFlushThreadInterruptTest extends TestHelper {
     assertThat(file.getSize()).as("the rest of the batch must still be flushed after a double fault")
         .isGreaterThanOrEqualTo((long) (pageNum + 1) * pageSize);
     assertThat(flush.pageIndex).as("no page may leak in the flush index (a leak hangs the database close)").isEmpty();
+  }
+
+  /**
+   * Waits (bounded) until the thread's interrupt flag has been consumed by the interrupt policy, the
+   * observable proof that the fault was handled. On timeout the test proceeds and its assertions fail with
+   * a meaningful message instead of hanging here.
+   */
+  private static void awaitInterruptConsumed(final Thread thread) throws InterruptedException {
+    final long deadline = System.currentTimeMillis() + 5_000;
+    while (thread.isInterrupted() && System.currentTimeMillis() < deadline)
+      Thread.sleep(1);
   }
 
   @Test
