@@ -87,6 +87,29 @@ class Bolt4998PathMappingTest {
   }
 
   @Test
+  @DisplayName("[TYPE-003] a cycle path (a->b->a) dedups the revisited start node")
+  void type003_revisitedNodeCyclePath() {
+    db.getSchema().createVertexType("CV");
+    db.getSchema().createEdgeType("CE");
+    db.transaction(() -> {
+      final MutableVertex ca = db.newVertex("CV").set("k", "a").save();
+      final MutableVertex cb = db.newVertex("CV").set("k", "b").save();
+      ca.newEdge("CE", cb).save();
+      cb.newEdge("CE", ca).save();
+    });
+
+    final ResultSet rs = db.query("opencypher",
+        "MATCH p=(x:CV {k:'a'})-[:CE]->(:CV {k:'b'})-[:CE]->(:CV {k:'a'}) RETURN p LIMIT 1");
+    final TraversalPath tp = (TraversalPath) rs.next().getProperty("p");
+    final BoltPath bp = BoltStructureMapper.toPath(tp);
+    // the revisited start node (a) is deduplicated: nodes holds only {a, b}, not {a, b, a}
+    assertThat(bp.getNodes()).hasSize(2);
+    assertThat(bp.getRelationships()).hasSize(2);
+    // rel1 fwd to node index 1 (b), rel2 fwd to node index 0 (a, revisited/reused)
+    assertThat(bp.getIndices()).containsExactly(1L, 1L, 2L, 0L);
+  }
+
+  @Test
   @DisplayName("[TYPE-012] RETURN point({...}) maps to a native BoltPointStructure")
   void type012_enginePointOutbound() {
     final ResultSet rs = db.query("opencypher", "RETURN point({x: 12.34, y: 56.78}) AS p");
