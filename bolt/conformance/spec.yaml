@@ -9,8 +9,10 @@ driver_version_bands:
     band_names: [oldest-supported-4.x, latest-5.x, latest-6.x]
     driver_artifact: "org.neo4j.driver:neo4j-java-driver"
     resolution_note: >
-      Resolved to concrete versions by #4889 at implementation time; current
-      repo baseline is 6.2.0 (root pom.xml neo4j-driver.version).
+      Resolved by #4889: latest-6.x = 6.2.0 (root pom.xml neo4j-driver.version,
+      default e2e RemoteBoltDatabaseIT); oldest-supported-4.x = 4.4.20 via the
+      e2e `bolt-driver-legacy` Maven profile running RemoteBoltLegacyDriverIT.
+      latest-5.x is exercised in CI's driver-version matrix (#4891).
   javascript:
     band_names: [oldest-supported-4.x, latest-5.x, latest-6.x]
     driver_artifact: "neo4j-driver (npm)"
@@ -214,7 +216,7 @@ scenarios:
       - "When the driver calls session.executeWrite(tx -> tx.run('CREATE (:Beer {name: $n})', params))"
       - "Then the write is committed and visible afterward"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing
   - id: TX-005
     area: transactions
     title: "Managed transaction function retries on Neo.TransientError.*"
@@ -246,7 +248,7 @@ scenarios:
       - "When session B is opened with bookmarks=[that bookmark] and immediately reads the written data"
       - "Then session B's read reflects session A's write, even against a follower"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing
   - id: MDB-001
     area: multi-database
     title: "Session selects a specific named database"
@@ -274,7 +276,7 @@ scenarios:
       - "When one session writes to the scratch database inside an open transaction"
       - "Then a concurrent session against beer is unaffected and unaware of that transaction"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing
   - id: RESULT-001
     area: result-handling
     title: "Streaming PULL returns records incrementally"
@@ -299,7 +301,7 @@ scenarios:
       - "When the driver issues PULL {n: 2} against a query with 5 results"
       - "Then exactly 2 records are returned, and a follow-up PULL {n: -1} (or DISCARD) returns/discards the remaining 3 without gaps or duplicates"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing
   - id: RESULT-003
     area: result-handling
     title: "DISCARD abandons remaining rows without materializing them"
@@ -602,4 +604,4 @@ scenarios:
       - "When the driver sends RESET"
       - "Then the server discards the pending stream and the connection accepts a new RUN immediately"
     applicable_driver_versions: all
-    current_status: unverified
+    current_status: passing
