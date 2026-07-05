@@ -34,6 +34,7 @@ import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -472,11 +473,19 @@ public class PageManager extends LockContext {
   private void concurrentPageAccess(final PageId pageId, final Boolean writeAccess, final ConcurrentPageAccessCallback callback)
       throws IOException {
     // ACQUIRE A LOCK ON THE I/O OPERATION TO AVOID PARTIAL READS/WRITES
-    while (!Thread.currentThread().isInterrupted()) {
+    while (true) {
+      // Fail loud on interrupt instead of silently skipping the I/O (#4924). The interrupt is only checked
+      // BEFORE acquiring the per-page slot, so an in-flight read/write is never torn. Returning here without
+      // running the callback would let a caller cache a zero-filled page (loadPage) or ack a flush that never
+      // reached disk via notifyPageFlushed (flushPage) - both silently lose committed data. The interrupt flag
+      // is left set so upper layers still observe the cancellation.
+      if (Thread.currentThread().isInterrupted())
+        throw new InterruptedIOException("Interrupted while acquiring I/O lock for page " + pageId);
+
       if (pendingFlushPages.putIfAbsent(pageId, writeAccess) == null)
         try {
           callback.access();
-          break;
+          return;
         } finally {
           pendingFlushPages.remove(pageId);
         }
