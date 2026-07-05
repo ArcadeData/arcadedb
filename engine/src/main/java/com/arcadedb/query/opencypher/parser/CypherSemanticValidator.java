@@ -18,7 +18,7 @@
  */
 package com.arcadedb.query.opencypher.parser;
 
-import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.query.opencypher.ast.*;
 
 import java.util.*;
@@ -80,7 +80,7 @@ public class CypherSemanticValidator {
       final boolean firstIsAll = flags.get(0);
       for (int i = 1; i < flags.size(); i++) {
         if (flags.get(i) != firstIsAll)
-          throw new CommandParsingException("InvalidClauseComposition: Cannot mix UNION and UNION ALL");
+          throw new CommandSemanticException("InvalidClauseComposition: Cannot mix UNION and UNION ALL");
       }
     }
 
@@ -94,7 +94,7 @@ public class CypherSemanticValidator {
       if (firstColumns == null) {
         firstColumns = columns;
       } else if (!firstColumns.equals(columns)) {
-        throw new CommandParsingException("DifferentColumnsInUnion: All sub queries in a UNION must have the same column names");
+        throw new CommandSemanticException("DifferentColumnsInUnion: All sub queries in a UNION must have the same column names");
       }
       // Validate each subquery
       validate(query);
@@ -204,7 +204,7 @@ public class CypherSemanticValidator {
   private void registerVar(final String name, final VarType type, final Map<String, VarType> varTypes) {
     final VarType existing = varTypes.get(name);
     if (existing != null && existing != type)
-      throw new CommandParsingException("VariableTypeConflict: Variable '" + name + "' already defined as " + existing + ", cannot redefine as " + type);
+      throw new CommandSemanticException("VariableTypeConflict: Variable '" + name + "' already defined as " + existing + ", cannot redefine as " + type);
     varTypes.put(name, type);
   }
 
@@ -294,7 +294,7 @@ public class CypherSemanticValidator {
         // 2. Node has explicit properties even if empty (e.g., n {})
         // 3. Node is standalone (single node in path, no relationships) - tries to create new node
         if (node.hasLabels() || node.hasProperties() || node.hasExplicitProperties() || path.isSingleNode())
-          throw new CommandParsingException("VariableAlreadyBound: Variable '" + var + "' already defined, cannot " +
+          throw new CommandSemanticException("VariableAlreadyBound: Variable '" + var + "' already defined, cannot " +
               "rebind in CREATE");
       }
     }
@@ -307,7 +307,7 @@ public class CypherSemanticValidator {
     for (final NodePattern node : path.getNodes()) {
       final String var = node.getVariable();
       if (var != null && boundVars.contains(var) && (node.hasLabels() || node.hasProperties() || path.isSingleNode()))
-        throw new CommandParsingException(
+        throw new CommandSemanticException(
             "VariableAlreadyBound: Variable '" + var + "' already defined, cannot rebind in MERGE");
     }
     // MERGE binds variables similarly to CREATE — add them
@@ -451,7 +451,7 @@ public class CypherSemanticValidator {
           if (setClause != null && !setClause.isEmpty())
             for (final SetClause.SetItem item : setClause.getItems()) {
               if (isValidVariableName(item.getVariable()) && !scope.contains(item.getVariable()))
-                throw new CommandParsingException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
+                throw new CommandSemanticException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
               if (item.getValueExpression() != null)
                 checkExpressionScope(item.getValueExpression(), scope);
             }
@@ -464,7 +464,7 @@ public class CypherSemanticValidator {
           if (deleteClause2 != null && !deleteClause2.isEmpty())
             for (final String var : deleteClause2.getVariables())
               if (isValidVariableName(var) && !scope.contains(var))
-                throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
+                throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
           break;
         case RETURN:
           // Validate RETURN references — only check top-level variable references
@@ -560,11 +560,11 @@ public class CypherSemanticValidator {
       if (!isValidVariableName(varName))
         return;
       if (!scope.contains(varName))
-        throw new CommandParsingException("UndefinedVariable: Variable '" + varName + "' not defined");
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
     } else if (expr instanceof PropertyAccessExpression) {
       final String varName = ((PropertyAccessExpression) expr).getVariableName();
       if (isValidVariableName(varName) && !scope.contains(varName))
-        throw new CommandParsingException("UndefinedVariable: Variable '" + varName + "' not defined");
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + varName + "' not defined");
     } else if (expr instanceof FunctionCallExpression) {
       for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
         checkExpressionScope(arg, scope);
@@ -647,7 +647,7 @@ public class CypherSemanticValidator {
       if (path != null) {
         // A single-node pattern in WHERE is invalid: WHERE (n) is not a valid predicate
         if (path.isSingleNode())
-          throw new CommandParsingException("InvalidArgumentType: Single node pattern is not a valid predicate in WHERE");
+          throw new CommandSemanticException("InvalidArgumentType: Single node pattern is not a valid predicate in WHERE");
         checkPatternPredicateVariables(path, scope);
       }
     } else if (boolExpr instanceof IsNullExpression) {
@@ -661,12 +661,12 @@ public class CypherSemanticValidator {
     for (final NodePattern node : path.getNodes()) {
       final String var = node.getVariable();
       if (var != null && !var.isEmpty() && isValidVariableName(var) && !scope.contains(var))
-        throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
     }
     for (final RelationshipPattern rel : path.getRelationships()) {
       final String var = rel.getVariable();
       if (var != null && !var.isEmpty() && isValidVariableName(var) && !scope.contains(var))
-        throw new CommandParsingException("UndefinedVariable: Variable '" + var + "' not defined");
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + var + "' not defined");
     }
   }
 
@@ -724,7 +724,7 @@ public class CypherSemanticValidator {
       return;
     for (final SetClause.SetItem item : setClause.getItems()) {
       if (isValidVariableName(item.getVariable()) && !scope.contains(item.getVariable()))
-        throw new CommandParsingException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
+        throw new CommandSemanticException("UndefinedVariable: Variable '" + item.getVariable() + "' not defined");
       if (item.getValueExpression() != null)
         checkExpressionScope(item.getValueExpression(), scope);
     }
@@ -836,17 +836,17 @@ public class CypherSemanticValidator {
     if (operand instanceof LiteralExpression) {
       final Object value = ((LiteralExpression) operand).getValue();
       if (value != null && !(value instanceof Boolean))
-        throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got " + value.getClass().getSimpleName());
+        throw new CommandSemanticException("InvalidArgumentType: Expected Boolean but got " + value.getClass().getSimpleName());
     }
     // Reject list expressions as boolean operands (e.g., [1,2] AND true)
     else if (operand instanceof ListExpression)
-      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got List");
+      throw new CommandSemanticException("InvalidArgumentType: Expected Boolean but got List");
       // Reject map expressions as boolean operands (e.g., {a: 1} AND true)
     else if (operand instanceof MapExpression)
-      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got Map");
+      throw new CommandSemanticException("InvalidArgumentType: Expected Boolean but got Map");
       // Reject arithmetic expressions (always return numbers)
     else if (operand instanceof ArithmeticExpression)
-      throw new CommandParsingException("InvalidArgumentType: Expected Boolean but got Number");
+      throw new CommandSemanticException("InvalidArgumentType: Expected Boolean but got Number");
   }
 
   private void checkBooleanExprOperandValidity(final BooleanExpression operand) {
@@ -948,7 +948,7 @@ public class CypherSemanticValidator {
           if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation()) {
             final String exprText = expr.getText();
             if (exprText != null && !projectedNames.contains(exprText))
-              throw new CommandParsingException("UndefinedVariable: Aggregation in ORDER BY is not projected");
+              throw new CommandSemanticException("UndefinedVariable: Aggregation in ORDER BY is not projected");
           }
           if (expr.containsAggregation())
             checkMixedAggregation(expr, groupingVars);
@@ -965,7 +965,7 @@ public class CypherSemanticValidator {
       final FunctionCallExpression func = (FunctionCallExpression) expr;
       if (func.isAggregation()) {
         if (insideAggregation)
-          throw new CommandParsingException("NestedAggregation: Nested aggregation functions are not allowed");
+          throw new CommandSemanticException("NestedAggregation: Nested aggregation functions are not allowed");
         // Check for non-deterministic functions inside aggregation (e.g., count(rand()))
         for (final Expression arg : func.getArguments())
           checkNonConstantInAggregation(arg);
@@ -1023,7 +1023,7 @@ public class CypherSemanticValidator {
     if (expr instanceof FunctionCallExpression) {
       final FunctionCallExpression func = (FunctionCallExpression) expr;
       if (NON_DETERMINISTIC_FUNCTIONS.contains(func.getFunctionName().toLowerCase(Locale.ROOT)))
-        throw new CommandParsingException("NonConstantExpression: Non-constant expression is not allowed inside aggregation: " + func.getFunctionName());
+        throw new CommandSemanticException("NonConstantExpression: Non-constant expression is not allowed inside aggregation: " + func.getFunctionName());
     }
   }
 
@@ -1031,7 +1031,7 @@ public class CypherSemanticValidator {
     if (expr == null)
       return;
     if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation())
-      throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in list comprehensions");
+      throw new CommandSemanticException("InvalidAggregation: Aggregation functions are not allowed in list comprehensions");
     if (expr instanceof ArithmeticExpression) {
       checkAggregationInListComprehension(((ArithmeticExpression) expr).getLeft());
       checkAggregationInListComprehension(((ArithmeticExpression) expr).getRight());
@@ -1071,7 +1071,7 @@ public class CypherSemanticValidator {
 
     if (expr instanceof FunctionCallExpression) {
       if (((FunctionCallExpression) expr).isAggregation())
-        throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in ORDER BY after RETURN");
+        throw new CommandSemanticException("InvalidAggregation: Aggregation functions are not allowed in ORDER BY after RETURN");
       for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
         checkAggregationInOrderBy(arg);
     } else if (expr instanceof ArithmeticExpression) {
@@ -1159,13 +1159,13 @@ public class CypherSemanticValidator {
     // Simple variable reference — OK if it's a grouping key
     if (expr instanceof VariableExpression) {
       if (!groupingVars.contains(((VariableExpression) expr).getVariableName()))
-        throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
+        throw new CommandSemanticException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
       return;
     }
     // Simple property access — OK if the variable is a grouping key
     if (expr instanceof PropertyAccessExpression) {
       if (!groupingVars.contains(((PropertyAccessExpression) expr).getVariableName()))
-        throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
+        throw new CommandSemanticException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
       return;
     }
     // Literals and stars are always OK
@@ -1173,7 +1173,7 @@ public class CypherSemanticValidator {
       return;
     // Complex expressions containing variables are ambiguous
     if (hasVariableRefOutsideAggregation(expr))
-      throw new CommandParsingException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
+      throw new CommandSemanticException("AmbiguousAggregationExpression: Ambiguous aggregation expression");
   }
 
   private static boolean hasVariableRefOutsideAggregation(final Expression expr) {
@@ -1270,7 +1270,7 @@ public class CypherSemanticValidator {
 
     if (expr instanceof FunctionCallExpression) {
       if (((FunctionCallExpression) expr).isAggregation())
-        throw new CommandParsingException("InvalidAggregation: Aggregation functions are not allowed in WHERE");
+        throw new CommandSemanticException("InvalidAggregation: Aggregation functions are not allowed in WHERE");
       for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
         checkAggregationInExpression(arg);
     } else if (expr instanceof ArithmeticExpression) {
@@ -1320,16 +1320,16 @@ public class CypherSemanticValidator {
     for (final RelationshipPattern rel : path.getRelationships()) {
       // CREATE relationships must specify exactly one type
       if (!rel.hasTypes())
-        throw new CommandParsingException("NoSingleRelationshipType: Relationships must have a type in CREATE");
+        throw new CommandSemanticException("NoSingleRelationshipType: Relationships must have a type in CREATE");
       // CREATE relationships must not have multiple types
       if (rel.getTypes().size() > 1)
-        throw new CommandParsingException("NoSingleRelationshipType: Relationships must have exactly one type in CREATE, got: " + rel.getTypes());
+        throw new CommandSemanticException("NoSingleRelationshipType: Relationships must have exactly one type in CREATE, got: " + rel.getTypes());
       // CREATE relationships must be directed
       if (rel.getDirection() == Direction.BOTH)
-        throw new CommandParsingException("RequiresDirectedRelationship: Relationships must be directed in CREATE");
+        throw new CommandSemanticException("RequiresDirectedRelationship: Relationships must be directed in CREATE");
       // CREATE cannot use variable-length patterns
       if (rel.isVariableLength())
-        throw new CommandParsingException("CreatingVarLength: Variable-length relationships are not allowed in CREATE");
+        throw new CommandSemanticException("CreatingVarLength: Variable-length relationships are not allowed in CREATE");
     }
   }
 
@@ -1337,13 +1337,13 @@ public class CypherSemanticValidator {
     for (final RelationshipPattern rel : path.getRelationships()) {
       // MERGE relationships must specify exactly one type
       if (!rel.hasTypes())
-        throw new CommandParsingException("NoSingleRelationshipType: Relationships must have a type in MERGE");
+        throw new CommandSemanticException("NoSingleRelationshipType: Relationships must have a type in MERGE");
       // MERGE relationships must not have multiple types
       if (rel.getTypes().size() > 1)
-        throw new CommandParsingException("NoSingleRelationshipType: Relationships must have exactly one type in MERGE, got: " + rel.getTypes());
+        throw new CommandSemanticException("NoSingleRelationshipType: Relationships must have exactly one type in MERGE, got: " + rel.getTypes());
       // MERGE cannot use variable-length patterns
       if (rel.isVariableLength())
-        throw new CommandParsingException("CreatingVarLength: Variable-length relationships are not allowed in MERGE");
+        throw new CommandSemanticException("CreatingVarLength: Variable-length relationships are not allowed in MERGE");
     }
     // MERGE cannot have null property values
     checkMergeNullProperties(path);
@@ -1362,9 +1362,9 @@ public class CypherSemanticValidator {
 
   private void checkMergePropertyNotNull(final Object value) {
     if (value == null)
-      throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values");
+      throw new CommandSemanticException("MergeReadOwnWrites: MERGE does not support null property values");
     if (value instanceof LiteralExpression && ((LiteralExpression) value).getValue() == null)
-      throw new CommandParsingException("MergeReadOwnWrites: MERGE does not support null property values");
+      throw new CommandSemanticException("MergeReadOwnWrites: MERGE does not support null property values");
   }
 
   private void validateDeleteTargets(final DeleteClause deleteClause) {
@@ -1373,10 +1373,10 @@ public class CypherSemanticValidator {
         continue;
       // DELETE n:Label or DELETE r:TYPE is invalid (InvalidDelete)
       if (target.contains(":"))
-        throw new CommandParsingException("InvalidDelete: Cannot delete a label or relationship type: " + target);
+        throw new CommandSemanticException("InvalidDelete: Cannot delete a label or relationship type: " + target);
       // DELETE <arithmetic expression> like DELETE 1+1 is invalid (InvalidArgumentType)
       if (!isValidVariableName(target) && !target.contains(".") && !target.contains("["))
-        throw new CommandParsingException("InvalidArgumentType: DELETE requires a node, relationship, or path variable, got: " + target);
+        throw new CommandSemanticException("InvalidArgumentType: DELETE requires a node, relationship, or path variable, got: " + target);
     }
   }
 
@@ -1393,7 +1393,7 @@ public class CypherSemanticValidator {
         for (final RelationshipPattern rel : path.getRelationships()) {
           final String var = rel.getVariable();
           if (var != null && !var.isEmpty() && !relVars.add(var))
-            throw new CommandParsingException("RelationshipUniquenessViolation: Relationship variable '" + var + "' is used more than once in the same pattern");
+            throw new CommandSemanticException("RelationshipUniquenessViolation: Relationship variable '" + var + "' is used more than once in the same pattern");
         }
       }
     }
@@ -1447,7 +1447,7 @@ public class CypherSemanticValidator {
           }
         }
         if (!hasNamedVars)
-          throw new CommandParsingException("NoVariablesInScope: RETURN * is not allowed when there are no variables in scope");
+          throw new CommandSemanticException("NoVariablesInScope: RETURN * is not allowed when there are no variables in scope");
       }
     }
   }
@@ -1477,15 +1477,15 @@ public class CypherSemanticValidator {
         if (val instanceof Float || val instanceof Double) {
           final double d = ((Number) val).doubleValue();
           if (d != Math.floor(d) || Double.isInfinite(d))
-            throw new CommandParsingException("InvalidArgumentType: " + clauseName + " value must be an integer, got: Float(" + d + ")");
+            throw new CommandSemanticException("InvalidArgumentType: " + clauseName + " value must be an integer, got: Float(" + d + ")");
         }
         if (((Number) val).intValue() < 0)
-          throw new CommandParsingException("NegativeIntegerArgument: " + clauseName + " value cannot be negative: " + val);
+          throw new CommandSemanticException("NegativeIntegerArgument: " + clauseName + " value cannot be negative: " + val);
       }
     }
     // Check that SKIP/LIMIT expressions don't reference query variables (NonConstantExpression)
     if (containsVariableReference(expr))
-      throw new CommandParsingException("NonConstantExpression: " + clauseName + " expression must not reference variables");
+      throw new CommandSemanticException("NonConstantExpression: " + clauseName + " expression must not reference variables");
   }
 
   private static boolean containsVariableReference(final Expression expr) {
@@ -1527,7 +1527,7 @@ public class CypherSemanticValidator {
         name = ((VariableExpression) item.getExpression()).getVariableName();
       if (name != null && !"*".equals(name)) {
         if (!seen.add(name))
-          throw new CommandParsingException("ColumnNameConflict: Column name '" + name + "' is defined more than once");
+          throw new CommandSemanticException("ColumnNameConflict: Column name '" + name + "' is defined more than once");
       }
     }
   }
@@ -1546,7 +1546,7 @@ public class CypherSemanticValidator {
           final Expression expr = item.getExpression();
           if (expr instanceof FunctionCallExpression && ((FunctionCallExpression) expr).isAggregation()) {
             if (item.getAlias() == null)
-              throw new CommandParsingException("NoExpressionAlias: Expression in WITH must be aliased (use AS)");
+              throw new CommandSemanticException("NoExpressionAlias: Expression in WITH must be aliased (use AS)");
           }
         }
       }
@@ -1590,7 +1590,7 @@ public class CypherSemanticValidator {
       final String name = func.getFunctionName().toLowerCase();
       // Check for unknown functions (skip namespaced functions like date.truncate, they're handled by CypherFunctionRegistry)
       if (!name.contains(".") && !FunctionValidator.isKnownFunction(name))
-        throw new CommandParsingException("UnknownFunction: Unknown function '" + func.getFunctionName() + "'");
+        throw new CommandSemanticException("UnknownFunction: Unknown function '" + func.getFunctionName() + "'");
       final List<Expression> args = func.getArguments();
       if (args.size() == 1) {
         final Expression arg = args.get(0);
@@ -1600,24 +1600,24 @@ public class CypherSemanticValidator {
             case "length":
               // length() only works on paths and strings, not nodes or relationships
               if (argType == VarType.NODE)
-                throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a node");
+                throw new CommandSemanticException("InvalidArgumentType: length() cannot be applied to a node");
               if (argType == VarType.RELATIONSHIP)
-                throw new CommandParsingException("InvalidArgumentType: length() cannot be applied to a relationship");
+                throw new CommandSemanticException("InvalidArgumentType: length() cannot be applied to a relationship");
               break;
             case "type":
               // type() only works on relationships
               if (argType == VarType.NODE)
-                throw new CommandParsingException("InvalidArgumentType: type() requires a relationship argument, got node");
+                throw new CommandSemanticException("InvalidArgumentType: type() requires a relationship argument, got node");
               break;
             case "labels":
               // labels() only works on nodes
               if (argType == VarType.PATH)
-                throw new CommandParsingException("InvalidArgumentType: labels() requires a node argument, got path");
+                throw new CommandSemanticException("InvalidArgumentType: labels() requires a node argument, got path");
               break;
             case "size":
               // size() works on strings and lists, not paths
               if (argType == VarType.PATH)
-                throw new CommandParsingException("InvalidArgumentType: size() cannot be applied to a path");
+                throw new CommandSemanticException("InvalidArgumentType: size() cannot be applied to a path");
               break;
           }
         }
@@ -1651,7 +1651,7 @@ public class CypherSemanticValidator {
       final String varName = ((PropertyAccessExpression) expr).getVariableName();
       final VarType type = varTypes.get(varName);
       if (type == VarType.PATH)
-        throw new CommandParsingException("InvalidArgumentType: Property access on a path variable is not allowed");
+        throw new CommandSemanticException("InvalidArgumentType: Property access on a path variable is not allowed");
     } else if (expr instanceof FunctionCallExpression) {
       for (final Expression arg : ((FunctionCallExpression) expr).getArguments())
         checkPropertyAccessOnPath(arg);
