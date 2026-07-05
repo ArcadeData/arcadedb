@@ -133,6 +133,37 @@ class BoltTypeRoundTripTest {
   }
 
   @Test
+  @DisplayName("[TYPE-012] cartesian Point survives a full encode -> wire -> decode -> re-encode round trip")
+  void type012_cartesianPointFullRoundTrip() throws Exception {
+    // 1. Build a cartesian point param and encode it.
+    final Map<String, Object> point = new LinkedHashMap<>();
+    point.put("x", 12.34);
+    point.put("y", 56.78);
+    point.put("crs", "cartesian");
+    final Object encoded = BoltStructureMapper.toPackStreamValue(point);
+    assertThat(encoded).isInstanceOf(BoltPointStructure.class);
+
+    // 2. Serialize to the wire and read it back as an inbound structure, then decode it the way
+    // an incoming RUN message's parameters are decoded.
+    final PackStreamWriter writer = new PackStreamWriter();
+    writer.writeValue(encoded);
+    final Object wireValue = new PackStreamReader(writer.toByteArray()).readValue();
+    final Object decoded = BoltStructureMapper.fromPackStreamValue(wireValue);
+    assertThat(decoded).isInstanceOf(Map.class);
+
+    // 3. Re-encode the decoded param, as happens when a query echoes it back (e.g. RETURN $p).
+    // The decoded map must carry a derived crs key so this is recognized as a Point again,
+    // not degraded to a generic map.
+    final Object reEncoded = BoltStructureMapper.toPackStreamValue(decoded);
+    assertThat(reEncoded).isInstanceOf(BoltPointStructure.class);
+    final BoltPointStructure reEncodedPoint = (BoltPointStructure) reEncoded;
+    assertThat(reEncodedPoint.getSrid()).isEqualTo(7203);
+    assertThat(reEncodedPoint.getX()).isEqualTo(12.34);
+    assertThat(reEncodedPoint.getY()).isEqualTo(56.78);
+    assertThat(reEncodedPoint.getZ()).isNull();
+  }
+
+  @Test
   @DisplayName("A plain map without crs is not misdetected as a Point")
   void plainMapIsNotPoint() {
     final Map<String, Object> m = new LinkedHashMap<>();
