@@ -26,6 +26,7 @@ import com.arcadedb.exception.DatabaseMetadataException;
 import com.arcadedb.log.LogManager;
 
 import java.io.IOException;
+import java.io.InterruptedIOException;
 import java.util.Iterator;
 import java.util.List;
 import java.util.concurrent.*;
@@ -226,6 +227,37 @@ public class PageManagerFlushThread extends Thread {
                 }
                 try {
                   pageManager.flushPage(page);
+                } catch (final InterruptedIOException e) {
+                  if (Thread.currentThread() != this)
+                    throw e;
+                  // #4924 follow-up: an interrupt of the flush thread is a shutdown request, never permission to
+                  // drop a dirty page. Its WAL entry was already acked to the committer, so skipping the write
+                  // would silently lose the page for readers once the cache evicts it, and abandoning the batch
+                  // would leak its entries in pageIndex (hanging waitAllPagesOfDatabaseAreFlushed on close).
+                  // Clear the flag (concurrentPageAccess rejects any I/O while it is set), stop accepting new
+                  // work and retry the write: the run() loop then drains the remaining queue before exiting.
+                  // The retry is NOT unbreakable: concurrentPageAccess re-checks the interrupt flag on every
+                  // iteration of its I/O-slot spin, so a fresh interrupt surfaces as a second
+                  // InterruptedIOException, contained below. A slot held forever by hung I/O would still spin,
+                  // but that risk is pre-existing and shared by every flush path, interrupted or not.
+                  Thread.interrupted();
+                  running = false;
+                  try {
+                    pageManager.flushPage(page);
+                  } catch (final DatabaseMetadataException e2) {
+                    // FILE DELETED, CONTINUE WITH THE NEXT PAGES (same handling as the primary attempt)
+                    LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e2, page);
+                  } catch (final IOException e2) {
+                    // Double fault: the retry failed too (a fresh interrupt broke the I/O-slot spin, or the disk
+                    // genuinely errored). Do NOT let it escape and abort the batch: the remaining pages must
+                    // still be flushed and released from pageIndex or the database close would hang. This page's
+                    // WAL entry was never acked (notifyPageFlushed not reached), so it is recovered from the WAL.
+                    LogManager.instance().log(this, Level.SEVERE,
+                        "Error on flushing page '%s' to disk after interrupt, the page will be recovered from the WAL on restart",
+                        e2, page);
+                    // A re-interrupt set the flag again: clear it so the rest of the batch can reach the disk.
+                    Thread.interrupted();
+                  }
                 } catch (final DatabaseMetadataException e) {
                   // FILE DELETED, CONTINUE WITH THE NEXT PAGES
                   LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
@@ -256,7 +288,12 @@ public class PageManagerFlushThread extends Thread {
     if (value)
       return suspended.putIfAbsent(database, true) == null;
 
-    // Phase 1: synchronously flush all deferred batches accumulated while suspended
+    // Phase 1: synchronously flush all deferred batches accumulated while suspended. If the unsuspending
+    // thread (e.g. backup/HA) is interrupted, the flag is consumed ONCE for the whole flush (a set flag makes
+    // concurrentPageAccess reject every subsequent write, one throw+retry cycle per page) and restored at the
+    // end of the method, so the caller still observes its own cancellation and the re-enqueue phase below runs
+    // interrupt-free.
+    boolean restoreCallerInterrupt = false;
     final ConcurrentLinkedQueue<PagesToFlush> deferred = deferredByDatabase.remove(database);
     if (deferred != null) {
       for (final PagesToFlush batch : deferred) {
@@ -271,6 +308,21 @@ public class PageManagerFlushThread extends Thread {
             } catch (final DatabaseMetadataException e) {
               // FILE DELETED, CONTINUE WITH THE NEXT PAGES
               LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
+            } catch (final InterruptedIOException e) {
+              // Don't drop the deferred dirty page, its WAL entry was already acked: consume the flag and
+              // retry the write once.
+              restoreCallerInterrupt = true;
+              Thread.interrupted();
+              try {
+                pageManager.flushPage(page);
+              } catch (final DatabaseMetadataException | IOException e2) {
+                // Contain every retry failure (file dropped, re-interrupt, real I/O error): letting it escape
+                // would skip the unsuspend phases below, leaving the database suspended with batches stranded
+                // in the deferred map. An unflushed page is recovered from the WAL (its entry was never acked).
+                // A fresh re-interrupt set the flag again: clear it so the remaining pages flush cleanly.
+                LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e2, page);
+                Thread.interrupted();
+              }
             } catch (final IOException e) {
               LogManager.instance().log(this, Level.WARNING, "Error on flushing deferred page '%s' to disk", e, page);
             } finally {
@@ -322,6 +374,10 @@ public class PageManagerFlushThread extends Thread {
     // to absorb any drift from edge cases above (a batch skipped because its database closed mid-unsuspend).
     if (deferredByDatabase.isEmpty())
       deferredRAMBytes.set(0);
+
+    if (restoreCallerInterrupt)
+      // Consumed once during Phase 1: restore it so the caller still observes its own cancellation.
+      Thread.currentThread().interrupt();
 
     return true;
   }

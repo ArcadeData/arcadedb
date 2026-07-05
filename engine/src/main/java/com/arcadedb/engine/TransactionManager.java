@@ -202,7 +202,11 @@ public class TransactionManager {
         Thread.sleep(10);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
-        break;
+        // Fail loud instead of returning as if the WAL write succeeded (#4938). Breaking out here let
+        // commit2ndPhase publish the transaction's pages with NO WAL record: unrecoverable on crash, and later
+        // transactions on the same pages would raise WALVersionGap during recovery. The interrupt flag is
+        // restored above so the cancellation is still observable to the caller.
+        throw new TransactionException("Interrupted while writing transaction " + txId + " to the WAL", e);
       }
     }
   }
