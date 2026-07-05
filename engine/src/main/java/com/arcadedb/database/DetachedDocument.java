@@ -43,6 +43,16 @@ public class DetachedDocument extends BaseDocument {
     init(source);
   }
 
+  /**
+   * Internal partial detach: wraps an already-built property map WITHOUT copying the whole source document.
+   * Used by {@link DocumentIndexer} to snapshot only the indexed property values of a record updated inside a
+   * transaction (issue #4935), avoiding the full-document copy of {@link Document#detach()} on every update.
+   */
+  protected DetachedDocument(final Document source, final Map<String, Object> properties) {
+    super(null, source.getType(), source.getIdentity(), null);
+    this.map = properties;
+  }
+
   private void init(final Document sourceDocument) {
     this.map = new LinkedHashMap<>();
     final Map<String, Object> sourceMap = sourceDocument.propertiesAsMap();
