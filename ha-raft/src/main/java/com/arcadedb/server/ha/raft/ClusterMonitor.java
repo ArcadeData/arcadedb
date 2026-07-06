@@ -52,6 +52,15 @@ public class ClusterMonitor {
   static final long LAG_LOG_THROTTLE_MS = 30_000;
 
   /**
+   * Maximum number of replication-channel resets attempted for a single continuous unreachable streak
+   * (issue #4696). One reset fires per {@code peerChannelResetDurationMs} the follower stays unreachable,
+   * so a first attempt that does not stick (e.g. the rebuilt channel still resolves stale DNS inside the
+   * JVM positive-cache TTL) is retried instead of stranding the follower; after this many attempts the
+   * monitor gives up and logs once for operator intervention. Re-armed when the follower reconnects.
+   */
+  static final int CHANNEL_RESET_MAX_ATTEMPTS = 5;
+
+  /**
    * Per-replica replication status reported in the cluster status table and the lag warning.
    * Order matches severity: {@link #HEALTHY} → {@link #STALLED}.
    */
@@ -125,6 +134,15 @@ public class ClusterMonitor {
     if (peerChannelResetDurationMs > 0 && unreachablePeerChannelHandler == null)
       throw new IllegalArgumentException(
           "unreachablePeerChannelHandler must be non-null when peerChannelResetDurationMs > 0 (channel-reset recovery enabled)");
+    // The channel-reset recovery derives its "unreachable" signal from peerUnreachableThresholdMs, so a
+    // disabled threshold silently prevents the reset from ever firing. Surface that misconfiguration
+    // instead of letting the recovery look enabled while it can never trigger (issue #4696 review).
+    if (peerChannelResetDurationMs > 0 && peerUnreachableThresholdMs <= 0)
+      LogManager.instance().log(this, Level.WARNING,
+          "Channel-reset recovery is enabled (arcadedb.ha.peerChannelResetDuration=%d) but the peer-unreachable threshold "
+              + "(arcadedb.ha.peerUnreachableThreshold=%d) is disabled; the channel reset can never trigger. Set "
+              + "arcadedb.ha.peerUnreachableThreshold > 0 to activate it.",
+          peerChannelResetDurationMs, peerUnreachableThresholdMs);
     this.lagWarningThreshold = lagWarningThreshold;
     this.stalledResyncDurationMs = stalledResyncDurationMs;
     this.stalledReplicaHandler = stalledReplicaHandler;
@@ -327,10 +345,18 @@ public class ClusterMonitor {
    * re-resolution; unlike a leadership transfer this touches only the unreachable peer, so it cannot
    * flap the cluster.
    * <p>
-   * The streak mirrors {@link #trackStallForRecovery}: it starts on the first unreachable tick, fires
-   * at most once per streak, and re-arms the moment the follower is reachable again. It is decoupled
-   * from the resync narrative ({@link #resyncNarrativeEnabled}) so the recovery works even when the
-   * narrative logging is turned off. State is mutated only from the single lag-monitor thread.
+   * The streak starts on the first unreachable tick and re-arms the moment the follower is reachable
+   * again. Unlike a strict one-shot, it fires again every {@link #peerChannelResetDurationMs} the
+   * follower stays unreachable, up to {@link #CHANNEL_RESET_MAX_ATTEMPTS} attempts, so a first reset
+   * that does not stick (e.g. the rebuilt channel re-resolves stale DNS while the JVM positive-cache
+   * TTL has not expired) does not leave the follower stranded - the exact failure mode this recovery
+   * targets. After the cap it gives up and logs once (SEVERE) for operator intervention. Decoupled from
+   * the resync narrative ({@link #resyncNarrativeEnabled}) so it works even with narrative logging off.
+   * State is mutated only from the single lag-monitor thread.
+   * <p>
+   * The log announces the reset as <i>triggering</i> (intent), not as a completed action: the handler
+   * ({@link RaftHAServer#resetPeerReplicationChannel}) owns and logs the concrete outcome, so a rare
+   * no-op (e.g. a non-proxy RPC layer) is not over-reported here.
    */
   private void trackUnreachableForChannelReset(final String replicaId, final ReplicaState state,
       final long lastRpcElapsedMs, final long now) {
@@ -340,28 +366,49 @@ public class ClusterMonitor {
     final boolean unreachable = lastRpcElapsedMs >= peerUnreachableThresholdMs;
 
     if (!unreachable) {
-      // Reachable again: end the streak and re-arm so a later stall can trigger another reset.
+      // Reachable again: end the streak and re-arm so a later stall can trigger a fresh reset cycle.
       state.channelUnreachableSinceMs = -1;
-      state.channelResetTriggered = false;
+      state.channelLastResetAtMs = -1;
+      state.channelResetCount = 0;
+      state.channelResetGaveUp = false;
       return;
     }
 
     if (state.channelUnreachableSinceMs == -1) {
-      state.channelUnreachableSinceMs = now; // first unreachable tick; require persistence before acting
+      // First unreachable tick: start the streak and measure the first reset interval from here.
+      state.channelUnreachableSinceMs = now;
+      state.channelLastResetAtMs = now;
       return;
     }
 
-    if (!state.channelResetTriggered && now - state.channelUnreachableSinceMs >= peerChannelResetDurationMs) {
-      state.channelResetTriggered = true;
-      LogManager.instance().log(this, Level.WARNING,
-          "Follower '%s' unreachable for %dms: resetting its replication channel to force a fresh DNS re-resolution and reconnect.",
-          replicaId, now - state.channelUnreachableSinceMs);
-      try {
-        unreachablePeerChannelHandler.accept(replicaId);
-      } catch (final Exception e) {
-        LogManager.instance().log(this, Level.WARNING,
-            "Channel-reset recovery for follower '%s' failed: %s", replicaId, e.getMessage());
+    // Only act once a full interval has elapsed since the streak start (first attempt) or the last reset
+    // (subsequent attempts). A follower that reconnects within an interval clears the streak above and is
+    // never reset, so an in-progress reconnection is not disrupted.
+    if (now - state.channelLastResetAtMs < peerChannelResetDurationMs)
+      return;
+
+    if (state.channelResetCount >= CHANNEL_RESET_MAX_ATTEMPTS) {
+      if (!state.channelResetGaveUp) {
+        state.channelResetGaveUp = true;
+        LogManager.instance().log(this, Level.SEVERE,
+            "Follower '%s' still unreachable after %d replication-channel resets over %dms; giving up automatic channel "
+                + "recovery - operator intervention (e.g. a leadership transfer) is required.",
+            replicaId, state.channelResetCount, now - state.channelUnreachableSinceMs);
       }
+      return;
+    }
+
+    state.channelResetCount++;
+    state.channelLastResetAtMs = now;
+    LogManager.instance().log(this, Level.WARNING,
+        "Follower '%s' unreachable for %dms; triggering a replication-channel reset (attempt %d/%d) to force a fresh "
+            + "DNS re-resolution and reconnect.",
+        replicaId, now - state.channelUnreachableSinceMs, state.channelResetCount, CHANNEL_RESET_MAX_ATTEMPTS);
+    try {
+      unreachablePeerChannelHandler.accept(replicaId);
+    } catch (final Exception e) {
+      LogManager.instance().log(this, Level.WARNING,
+          "Channel-reset recovery for follower '%s' failed: %s", replicaId, e.getMessage());
     }
   }
 
@@ -463,9 +510,12 @@ public class ClusterMonitor {
     long          unreachableSinceMs      = -1;
     long          lastUnreachableWarnAtMs = 0;
     // Channel-reset streak state (#4696), mutated only from the single lag-monitor thread. Tracks how
-    // long the follower has been continuously unreachable; the reset fires once per streak.
+    // long the follower has been continuously unreachable, when the last reset fired, how many resets
+    // this streak has attempted, and whether the bounded budget has been exhausted (logged once).
     long          channelUnreachableSinceMs = -1;
-    boolean       channelResetTriggered     = false;
+    long          channelLastResetAtMs      = -1;
+    int           channelResetCount         = 0;
+    boolean       channelResetGaveUp        = false;
 
     ReplicaState(final long initialMatchIndex, final long initialLeaderCommitIndex) {
       this.lastMatchIndex = initialMatchIndex;
