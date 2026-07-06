@@ -1294,6 +1294,8 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     final int retryDelay = GlobalConfiguration.TX_RETRY_DELAY.getValueAsInteger();
 
+    boolean duplicatedKeyRetried = false;
+
     for (int retry = 0; retry < attempts; ++retry) {
       boolean createdNewTx = true;
 
@@ -1322,6 +1324,15 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
         if (error != null)
           error.call(e);
+
+        if (e instanceof DuplicatedKeyException) {
+          // #4959: a genuine duplicate is deterministic and fails identically on every attempt. Only a
+          // concurrency-induced duplicate can succeed on retry, and one retry is enough to disambiguate:
+          // fail fast instead of burning all the remaining attempts plus their retry delays.
+          if (duplicatedKeyRetried)
+            throw e;
+          duplicatedKeyRetried = true;
+        }
 
         if (retry < attempts - 1)
           delayBetweenRetries(retryDelay);
@@ -1788,9 +1799,16 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
   @Override
   public <RET> RET executeLockingFiles(final Collection<Integer> fileIds, Callable<RET> callable) {
+    // #4959: file locks are keyed by requester (thread or session). Lock on behalf of the current
+    // transaction's requester when one exists, so a thread acting for a session does not time out on locks
+    // its own session already holds (a re-acquisition by the same requester is ALREADY_ACQUIRED and is not
+    // released below, only the locks actually acquired here are).
+    final TransactionContext tx = getTransactionIfExists();
+    final Object requester = tx != null ? tx.getRequester() : Thread.currentThread();
+
     List<Integer> lockedFiles = null;
     try {
-      lockedFiles = transactionManager.tryLockFiles(fileIds, 5_000, Thread.currentThread());
+      lockedFiles = transactionManager.tryLockFiles(fileIds, 5_000, requester);
 
       return callable.call();
 
@@ -1802,7 +1820,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
     } finally {
       if (lockedFiles != null)
-        transactionManager.unlockFilesInOrder(lockedFiles, Thread.currentThread());
+        transactionManager.unlockFilesInOrder(lockedFiles, requester);
     }
   }
 

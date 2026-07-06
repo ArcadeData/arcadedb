@@ -554,7 +554,11 @@ public class TransactionContext implements Transaction {
     immutablePages.clear();
   }
 
-  private Object getRequester() {
+  /**
+   * Returns the identity file locks are keyed by for this transaction: the explicit requester (e.g. a server-side
+   * session) when one was set via {@link #setRequester(Object)}, the current thread otherwise (#4959).
+   */
+  public Object getRequester() {
     return requester != null ? requester : Thread.currentThread();
   }
 
@@ -692,8 +696,13 @@ public class TransactionContext implements Transaction {
           try {
             database.updateRecordNoLock(rec, false);
           } catch (final RecordNotFoundException e) {
-            LogManager.instance()
-                .log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
+            // #4959: the record vanished between the in-tx update and the commit (deleted by a concurrent
+            // transaction whose effect this tx's page was loaded after, so the MVCC page-version check cannot
+            // see the conflict; an in-tx delete removes the entry from updatedRecords and never gets here).
+            // Silently skipping would commit the rest of the transaction without this update (a silent
+            // partial commit): fail the whole transaction with a retryable conflict instead.
+            throw new ConcurrentModificationException(
+                "Record " + rec.getIdentity() + " updated in transaction was deleted by a concurrent transaction");
           }
         updatedRecords = null;
         // The indexed-state snapshots (#4935) share updatedRecords' lifecycle: no further updateRecord can
@@ -779,6 +788,7 @@ public class TransactionContext implements Transaction {
 
   public void commit2ndPhase(final TransactionPhase1 changes) {
     boolean committed = false;
+    boolean walAppended = false;
     try {
       if (changes == null)
         return;
@@ -794,6 +804,7 @@ public class TransactionContext implements Transaction {
       if (changes.result != null)
         // WRITE TO THE WAL FIRST
         database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
+      walAppended = true;
 
       // AT THIS POINT, LOCK + VERSION CHECK, THERE IS NO NEED TO MANAGE ROLLBACK BECAUSE THERE CANNOT BE CONCURRENT TX THAT UPDATE THE SAME PAGE CONCURRENTLY
       // UPDATE PAGE COUNTER FIRST
@@ -836,8 +847,17 @@ public class TransactionContext implements Transaction {
     } finally {
       if (committed)
         resetAndFireCallbacks();
-      else
+      else if (walAppended)
+        // The transaction reached the WAL: it is (or may be) durable and recovery replays it, so the RIDs
+        // optimistically assigned to records created in this transaction remain valid. Release resources
+        // without touching user-held record state.
         reset();
+      else
+        // #4940: the failure happened BEFORE anything durable exists. Restore user-held records exactly like
+        // a phase-1 failure does: reload the modified records to their committed content and reset the
+        // identity of records created in this transaction to provisional, so a retry re-inserts them instead
+        // of updating a record that was never persisted (#4562).
+        rollback();
     }
   }
 
