@@ -607,25 +607,67 @@ public abstract class AbstractServerHttpHandler implements HttpHandler {
             Level.FINE;
   }
 
+  /**
+   * Returns true when the server runs in {@code production} mode. In production the error responses must not
+   * leak internal exception details (class names, cause-chain messages, file paths); {@code development} and
+   * {@code test} keep the verbose body to aid debugging.
+   */
+  private boolean isProductionMode() {
+    return "production".equals(httpServer.getServer().getConfiguration().getValueAsString(GlobalConfiguration.SERVER_MODE));
+  }
+
   private void sendErrorResponse(final HttpServerExchange exchange, final int code, final String errorMessage, final Throwable e,
                                  final String exceptionArgs) {
     if (!exchange.isResponseStarted())
       exchange.setStatusCode(code);
 
-    String detail = "";
-    if (e != null) {
-      final StringBuilder buffer = new StringBuilder();
-      buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
+    // Reuse the correlation id already echoed in the response header so operators can cross-reference a
+    // concealed production error with the detailed server log entry.
+    final String correlationId = exchange.getResponseHeaders().getFirst(REQUEST_ID_HEADER);
 
-      Throwable current = e.getCause();
-      while (current != null && current != current.getCause() && current != e) {
-        buffer.append(" -> ");
-        buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
-        current = current.getCause();
+    exchange.getResponseSender().send(buildErrorBody(!isProductionMode(), errorMessage, e, exceptionArgs, correlationId));
+  }
+
+  /**
+   * Builds the JSON error body sent to the client. When {@code verbose} is true (non-production modes) the full
+   * cause chain ({@code detail}), the exception class name ({@code exception}) and {@code exceptionArgs} are
+   * included to aid debugging. In production mode the body is limited to the generic {@code error} message plus a
+   * {@code requestId} correlation id, so internal class names, file paths and engine errors are never leaked to a
+   * client probing endpoints. Package-private for direct unit testing.
+   */
+  String buildErrorBody(final boolean verbose, final String errorMessage, final Throwable e, final String exceptionArgs,
+                        final String correlationId) {
+    final JSONObject json = new JSONObject();
+    json.put("error", errorMessage);
+    if (correlationId != null && !correlationId.isEmpty())
+      json.put("requestId", correlationId);
+
+    if (verbose) {
+      if (e != null) {
+        json.put("detail", encodeError(buildDetailChain(e)));
+        json.put("exception", e.getClass().getName());
       }
-      detail = buffer.toString();
+      if (exceptionArgs != null)
+        json.put("exceptionArgs", exceptionArgs);
     }
 
-    exchange.getResponseSender().send(error2json(errorMessage, detail, e, exceptionArgs, null));
+    return json.toString();
+  }
+
+  /**
+   * Renders an exception and its cause chain as a single line ({@code msg -> cause -> cause...}), stopping on a
+   * self-referential or repeated cause to avoid an infinite loop. Package-private for direct unit testing.
+   */
+  static String buildDetailChain(final Throwable e) {
+    final StringBuilder buffer = new StringBuilder();
+    buffer.append(e.getMessage() != null ? e.getMessage() : e.toString());
+
+    Throwable current = e.getCause();
+    while (current != null && current != current.getCause() && current != e) {
+      buffer.append(" -> ");
+      buffer.append(current.getMessage() != null ? current.getMessage() : current.getClass().getSimpleName());
+      current = current.getCause();
+    }
+    return buffer.toString();
   }
 }

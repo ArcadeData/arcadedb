@@ -908,7 +908,11 @@ public enum GlobalConfiguration {
       """
       Shared secret for inter-node request forwarding authentication. \
       Must be identical on all cluster nodes. \
-      If empty, a random token is auto-generated and stored in raft-storage at startup.""",
+      If empty, a random token is auto-generated and stored in raft-storage at startup. \
+      SECURITY: set an explicit high-entropy value in production. When left empty the effective token may be \
+      derived from the cluster name and root password with a fixed public salt, so a weak root password plus a \
+      reachable replication HTTP port could let an attacker forge the token and impersonate the root user via \
+      forwarded-user authentication. The replication HTTP port must never be exposed to untrusted networks.""",
       String.class, ""),
 
   HA_CLUSTER_TOKEN_PATH("arcadedb.ha.clusterTokenPath", SCOPE.SERVER,

@@ -133,8 +133,14 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
             ? readConsistencyHeader.getFirst()
             : database.getConfiguration().getValueAsString(GlobalConfiguration.HA_READ_CONSISTENCY);
 
-        final long bookmarkIndex = bookmarkHeader != null && !bookmarkHeader.isEmpty()
-            ? Long.parseLong(bookmarkHeader.getFirst()) : -1;
+        final long bookmarkIndex;
+        try {
+          bookmarkIndex = parseReadBookmark(bookmarkHeader != null && !bookmarkHeader.isEmpty() ? bookmarkHeader.getFirst() : null);
+        } catch (final IllegalArgumentException e) {
+          // Malformed client-supplied bookmark header: surface as HTTP 400 instead of a 500. The raw value is
+          // not echoed back to avoid reflecting hostile input.
+          return new ExecutionResponse(400, "{ \"error\" : \"Invalid read-consistency bookmark header\" }");
+        }
 
         try {
           final Database.READ_CONSISTENCY consistency = Database.READ_CONSISTENCY.valueOf(consistencyStr.toUpperCase(Locale.ROOT));
@@ -204,6 +210,22 @@ public abstract class DatabaseAbstractHandler extends AbstractServerHttpHandler 
     }
 
     return response.get();
+  }
+
+  /**
+   * Parses a client-supplied HA read-consistency bookmark header (X-ArcadeDB-Read-After or the legacy
+   * X-ArcadeDB-Commit-Index). Returns {@code -1} when the header is absent/blank, and throws
+   * {@link IllegalArgumentException} on a non-numeric value so the caller can answer HTTP 400 rather than
+   * letting a raw {@link NumberFormatException} bubble up to a 500. Package-private for direct unit testing.
+   */
+  static long parseReadBookmark(final String raw) {
+    if (raw == null || raw.isBlank())
+      return -1;
+    try {
+      return Long.parseLong(raw.trim());
+    } catch (final NumberFormatException e) {
+      throw new IllegalArgumentException("Invalid read-consistency bookmark header value");
+    }
   }
 
   private void cleanTL(final Database database, DatabaseContext.DatabaseContextTL current) {
