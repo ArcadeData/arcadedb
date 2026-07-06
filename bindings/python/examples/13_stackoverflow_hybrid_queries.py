@@ -39,7 +39,7 @@ try:
     from lxml import etree
 except ImportError:
     print("Missing dependency: lxml")
-    print("Install with: uv pip install lxml")
+    print("Install with: pip install lxml")
     sys.exit(1)
 
 EXPECTED_DATASETS = {
@@ -660,7 +660,7 @@ def build_rid_lookup(db, vertex_type: str) -> Dict[int, str]:
     rows = db.query(
         "sql",
         f"SELECT Id AS id, @rid AS rid FROM {vertex_type} WHERE Id IS NOT NULL",
-    ).to_list()
+    ).to_json_list()
     lookup: Dict[int, str] = {}
     for row in rows:
         entity_id = row.get("id")
@@ -687,6 +687,9 @@ def insert_edges(
         commit_every=max(1, len(rows)),
         use_wal=False,
     ) as batch:
+        sources = []
+        destinations = []
+        payloads = []
         for row in rows:
             from_type = row["from_type"]
             to_type = row["to_type"]
@@ -698,13 +701,18 @@ def insert_edges(
             if from_rid is None or to_rid is None:
                 continue
 
-            props = {
-                key: value
-                for key, value in row.items()
-                if key not in ("from_type", "from_id", "to_type", "to_id")
-                and value is not None
-            }
-            batch.new_edge(from_rid, edge_type, to_rid, **props)
+            sources.append(from_rid)
+            destinations.append(to_rid)
+            payloads.append(
+                {
+                    key: value
+                    for key, value in row.items()
+                    if key not in ("from_type", "from_id", "to_type", "to_id")
+                    and value is not None
+                }
+            )
+        if sources:
+            batch.new_edges(sources, edge_type, destinations, properties=payloads)
 
 
 def load_graph(db, data_dir: Path, batch_size: int) -> Dict[str, Any]:
@@ -2257,13 +2265,13 @@ def main() -> None:
     arcadedb = get_arcadedb_module()
     if arcadedb is None:
         print("Missing dependency: arcadedb-embedded")
-        print("Install with: uv pip install arcadedb-embedded")
+        print("Install with: pip install arcadedb-embedded")
         sys.exit(1)
 
     SentenceTransformer = get_sentence_transformer_class()
     if SentenceTransformer is None:
         print("Missing dependency: sentence-transformers")
-        print("Install with: uv pip install sentence-transformers")
+        print("Install with: pip install sentence-transformers")
         sys.exit(1)
 
     data_dir = Path(__file__).parent / "data" / args.dataset

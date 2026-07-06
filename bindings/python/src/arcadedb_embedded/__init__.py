@@ -48,9 +48,6 @@ from .results import Result, ResultSet
 # Import schema classes
 from .schema import IndexType, PropertyType, Schema
 
-# Import server classes
-from .server import ArcadeDBServer, create_server
-
 # Import transaction management
 from .transactions import TransactionContext
 
@@ -75,9 +72,6 @@ __all__ = [
     "create_database",
     "open_database",
     "database_exists",
-    # Server classes
-    "ArcadeDBServer",
-    "create_server",
     # Result classes
     "ResultSet",
     "Result",
