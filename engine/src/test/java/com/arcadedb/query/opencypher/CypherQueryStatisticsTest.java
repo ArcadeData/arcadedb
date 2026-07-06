@@ -61,6 +61,16 @@ class CypherQueryStatisticsTest extends TestHelper {
   }
 
   @Test
+  void createWithInlineNullPropertyDoesNotCountIt() {
+    database.transaction(() -> {
+      // Neo4j does not store a null-valued property, so it is not counted: only 'a' is set.
+      final QueryStatistics s = statsOf(database, "CREATE (:Foo {a: 1, b: null})");
+      assertThat(s.getNodesCreated()).isEqualTo(1);
+      assertThat(s.getPropertiesSet()).isEqualTo(1);
+    });
+  }
+
+  @Test
   void setPropertyAndLabel() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (:Person {name:'a'})");
