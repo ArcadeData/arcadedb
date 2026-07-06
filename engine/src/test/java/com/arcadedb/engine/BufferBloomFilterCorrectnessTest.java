@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for the {@link BufferBloomFilter} findings grouped in issue #4960. The class is not
@@ -96,5 +97,25 @@ class BufferBloomFilterCorrectnessTest {
       assertThat(bf.mightContain(v))
           .as("concurrently added value %d must never be a false negative", v)
           .isTrue();
+  }
+
+  /**
+   * #5063 review round 2: the constructor must reject a buffer that cannot address the
+   * {@code ceil(slots / 8)} bytes the filter spans, otherwise the highest slots read/write past the
+   * region at runtime.
+   */
+  @Test
+  void undersizedBufferIsRejectedAtConstruction() {
+    final int slots = 1 << 16;
+    assertThatThrownBy(() -> new BufferBloomFilter(new Binary(slots / 8 - 1), slots, 23))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("Buffer too small");
+
+    // EXACTLY-SIZED BUFFER IS ACCEPTED AND FULLY USABLE ON THE HIGHEST SLOTS TOO
+    final BufferBloomFilter bf = new BufferBloomFilter(new Binary(slots / 8), slots, 23);
+    for (int i = 0; i < 1_000; i++)
+      bf.add(i);
+    for (int i = 0; i < 1_000; i++)
+      assertThat(bf.mightContain(i)).isTrue();
   }
 }

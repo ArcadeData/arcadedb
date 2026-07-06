@@ -35,18 +35,36 @@ import com.arcadedb.database.Binary;
  *   32-bit probe, roughly halving the false-positive exponent at the same size.</li>
  * </ul>
  * <p>
- * Invariant: the backing {@code buffer} must be at least {@code ceil(slots / 8)} bytes. The
- * {@code floorMod} reduction can address bit {@code slots - 1}, i.e. the top byte of the region, so an
- * undersized buffer would read/write past the region on the highest slots.
+ * Invariant: the backing {@code buffer} must be at least {@code ceil(slots / 8)} bytes (validated by
+ * the constructor). The {@code floorMod} reduction can address bit {@code slots - 1}, i.e. the top byte
+ * of the region, so an undersized buffer would read/write past the region on the highest slots.
  */
 public class BufferBloomFilter {
   private final Binary buffer;
   private final int    hashSeed;
   private final int    capacity;
 
+  /**
+   * Builds a filter over the first {@code ceil(slots / 8)} bytes of {@code buffer}.
+   * <p>
+   * Publication requirement: {@link #mightContain} is lock-free, so once the build phase is over the
+   * filter instance MUST be handed to readers through a safe-publication edge - a {@code final} or
+   * {@code volatile} field, or a happens-before established by a lock or a concurrent collection.
+   * Publishing it through a plain field lets a reader observe stale buffer bytes and return a FALSE
+   * NEGATIVE, the one failure a bloom filter must never have.
+   *
+   * @throws IllegalArgumentException if {@code slots} is not a multiple of 8, or if {@code buffer}
+   *                                  cannot address the {@code ceil(slots / 8)} bytes the filter spans
+   */
   public BufferBloomFilter(final Binary buffer, final int slots, final int hashSeed) {
     if (slots % 8 > 0)
       throw new IllegalArgumentException("Slots must be a multiplier of 8");
+
+    final int requiredBytes = (slots + 7) / 8;
+    if (buffer.limit() < requiredBytes)
+      throw new IllegalArgumentException(
+          "Buffer too small for " + slots + " slots: addressable bytes " + buffer.limit() + ", required " + requiredBytes);
+
     this.buffer = buffer;
     this.hashSeed = hashSeed;
     this.capacity = slots;
