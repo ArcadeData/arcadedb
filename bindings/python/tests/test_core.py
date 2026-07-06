@@ -966,9 +966,9 @@ def test_to_json_list_bulk_materialization(temp_db_path):
                 )
 
         # batch_size smaller than the result forces multiple Java batches
-        rows = db.query("sql", "SELECT n, name, active, emb FROM Item ORDER BY n").to_json_list(
-            batch_size=10
-        )
+        rows = db.query(
+            "sql", "SELECT n, name, active, emb FROM Item ORDER BY n"
+        ).to_json_list(batch_size=10)
         assert len(rows) == 25
         assert rows[3]["n"] == 3
         assert rows[3]["name"] == "item-3"

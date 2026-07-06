@@ -274,8 +274,7 @@ _conv_offset_datetime = _conv_zoned_datetime
 
 def _conv_map(value):
     return {
-        convert_java_to_python(k): convert_java_to_python(v)
-        for k, v in value.items()
+        convert_java_to_python(k): convert_java_to_python(v) for k, v in value.items()
     }
 
 

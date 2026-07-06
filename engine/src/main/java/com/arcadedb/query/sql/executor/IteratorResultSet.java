@@ -21,15 +21,21 @@ package com.arcadedb.query.sql.executor;
 import com.arcadedb.database.Document;
 
 import java.util.Iterator;
+import java.util.Optional;
 
 /**
  * Created by luigidellaquila on 07/07/16.
  */
 public class IteratorResultSet implements ResultSet {
   protected final Iterator iterator;
+  protected QueryStatistics statistics;
 
   public IteratorResultSet(final Iterator iter) {
     this.iterator = iter;
+  }
+
+  public void setStatistics(final QueryStatistics statistics) {
+    this.statistics = statistics;
   }
 
   @Override
@@ -46,5 +52,10 @@ public class IteratorResultSet implements ResultSet {
     return val instanceof Document d ?
         new ResultInternal(d) :
         new ResultInternal().setProperty("value", val);
+  }
+
+  @Override
+  public Optional<QueryStatistics> getStatistics() {
+    return Optional.ofNullable(statistics);
   }
 }

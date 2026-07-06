@@ -225,9 +225,7 @@ class ResultSet:
             for col in header["cols"]:
                 name, ctype = col["name"], col["type"]
                 nulls_len = col["nulls"]
-                null_bits = np.frombuffer(
-                    buf[pos : pos + nulls_len], dtype=np.uint8
-                )
+                null_bits = np.frombuffer(buf[pos : pos + nulls_len], dtype=np.uint8)
                 has_nulls = bool(null_bits.any())
                 if has_nulls:
                     mask = np.unpackbits(null_bits, bitorder="little")[:count].astype(
@@ -268,9 +266,11 @@ class ResultSet:
                     chars = bytes(data[(count + 1) * 4 :])
                     if has_nulls:
                         values = [
-                            None
-                            if mask[i]
-                            else chars[offs[i] : offs[i + 1]].decode("utf-8")
+                            (
+                                None
+                                if mask[i]
+                                else chars[offs[i] : offs[i + 1]].decode("utf-8")
+                            )
                             for i in range(count)
                         ]
                     else:
@@ -311,9 +311,7 @@ class ResultSet:
             np_parts = [p for p in parts if not isinstance(p, list)]
             if parts and len(np_parts) == len(parts):
                 try:
-                    out[name] = (
-                        np.concatenate(parts) if len(parts) > 1 else parts[0]
-                    )
+                    out[name] = np.concatenate(parts) if len(parts) > 1 else parts[0]
                     continue
                 except Exception:  # nosec B110 - fall through to generic merge
                     pass

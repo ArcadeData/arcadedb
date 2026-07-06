@@ -7,10 +7,9 @@ Tests cover:
 
 import math
 
+import arcadedb_embedded as arcadedb
 import jpype.types as jtypes
 import pytest
-
-import arcadedb_embedded as arcadedb
 from arcadedb_embedded import create_database
 
 

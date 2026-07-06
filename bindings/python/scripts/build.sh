@@ -413,9 +413,9 @@ if [ -z "${CI:-}" ] && command -v uv > /dev/null 2>&1; then
     if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/pyproject.toml" ]; then
         echo -e "${CYAN}🔄 Refreshing uv dev environment at repo root...${NC}"
         (
-            cd "$REPO_ROOT" \
-                && uv lock --upgrade-package arcadedb-embedded \
-                && uv sync --reinstall-package arcadedb-embedded
+            cd "$REPO_ROOT" &&
+                uv lock --upgrade-package arcadedb-embedded &&
+                uv sync --reinstall-package arcadedb-embedded
         )
     fi
 fi

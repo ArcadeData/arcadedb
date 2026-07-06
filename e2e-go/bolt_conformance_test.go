@@ -423,35 +423,31 @@ func Test_RESULT_003_DiscardAbandonsRemaining(t *testing.T) {
 
 func Test_RESULT_004_SummaryCountersReflectWrites(t *testing.T) {
 	d := newDriver(t, boltURI(plainContainer, "bolt"))
-	assertStillFails(t,
-		"BoltNetworkExecutor.handlePull/handleDiscard never populate a 'stats' "+
-			"key in SUCCESS metadata for writes, so SummaryCounters is always "+
-			"empty; see RESULT-004 in spec.yaml (#4890)",
-		func() error {
-			sess := d.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "beer"})
-			defer sess.Close(ctx)
-			res, err := sess.Run(ctx,
-				"CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
-				map[string]any{"n": "RESULT-004-Beer", "b": "RESULT-004-Brewery"})
-			if err != nil {
-				return err
-			}
-			summary, err := res.Consume(ctx)
-			if err != nil {
-				return err
-			}
-			cnt := summary.Counters()
-			if cnt.NodesCreated() != 2 {
-				return fmt.Errorf("nodes_created=%d, want 2", cnt.NodesCreated())
-			}
-			if cnt.RelationshipsCreated() != 1 {
-				return fmt.Errorf("relationships_created=%d, want 1", cnt.RelationshipsCreated())
-			}
-			if cnt.PropertiesSet() < 2 {
-				return fmt.Errorf("properties_set=%d, want >=2", cnt.PropertiesSet())
-			}
-			return nil
-		})
+	require.NoError(t, func() error {
+		sess := d.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "beer"})
+		defer sess.Close(ctx)
+		res, err := sess.Run(ctx,
+			"CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
+			map[string]any{"n": "RESULT-004-Beer", "b": "RESULT-004-Brewery"})
+		if err != nil {
+			return err
+		}
+		summary, err := res.Consume(ctx)
+		if err != nil {
+			return err
+		}
+		cnt := summary.Counters()
+		if cnt.NodesCreated() != 2 {
+			return fmt.Errorf("nodes_created=%d, want 2", cnt.NodesCreated())
+		}
+		if cnt.RelationshipsCreated() != 1 {
+			return fmt.Errorf("relationships_created=%d, want 1", cnt.RelationshipsCreated())
+		}
+		if cnt.PropertiesSet() < 2 {
+			return fmt.Errorf("properties_set=%d, want >=2", cnt.PropertiesSet())
+		}
+		return nil
+	}())
 }
 
 // --- type-roundtrip ---------------------------------------------------

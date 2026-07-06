@@ -324,18 +324,15 @@ public class BoltE2ETests
     [Fact(DisplayName = "RESULT-004: ResultSummary counters accurately reflect write operations")]
     public async Task Result004_SummaryCountersReflectWrites()
     {
-        await KnownGapAssertions.AssertStillFailsAsync(async () =>
-        {
-            await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
-            var result = await session.RunAsync(
-                "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
-                new { n = "RESULT-004-Beer", b = "RESULT-004-Brewery" });
-            var summary = await result.ConsumeAsync();
+        await using var session = _fixture.Driver.AsyncSession(o => o.WithDatabase("beer"));
+        var result = await session.RunAsync(
+            "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
+            new { n = "RESULT-004-Beer", b = "RESULT-004-Brewery" });
+        var summary = await result.ConsumeAsync();
 
-            Assert.Equal(2, summary.Counters.NodesCreated);
-            Assert.Equal(1, summary.Counters.RelationshipsCreated);
-            Assert.True(summary.Counters.PropertiesSet >= 2);
-        }, "RESULT-004: BoltNetworkExecutor never populates SUCCESS 'stats' for write queries - see #4890");
+        Assert.Equal(2, summary.Counters.NodesCreated);
+        Assert.Equal(1, summary.Counters.RelationshipsCreated);
+        Assert.True(summary.Counters.PropertiesSet >= 2);
     }
 
     [Fact(DisplayName = "TYPE-001: Node round-trips as a native Bolt structure")]

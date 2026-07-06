@@ -545,15 +545,6 @@ def test_RESULT_003_discard_abandons_remaining(bolt_driver):
         assert summary is not None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BoltNetworkExecutor.handlePull/handleDiscard never populate a "
-    "'stats' key in the SUCCESS message metadata for write queries - the "
-    "engine's Cypher CREATE/SET/DELETE steps do not track node/relationship/"
-    "property counters anywhere that the Bolt layer could surface, so the "
-    "neo4j driver always parses an empty SummaryCounters; see RESULT-004 in "
-    "bolt/conformance/spec.yaml",
-)
 def test_RESULT_004_summary_counters_reflect_writes(bolt_driver):
     with bolt_driver.session(database="beer") as session:
         result = session.run(

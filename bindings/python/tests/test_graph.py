@@ -1,5 +1,3 @@
-
-
 def test_graph_batch_new_edges_bulk(tmp_path):
     """new_edges buffers many property-less edges in one crossing."""
     import arcadedb_embedded as arcadedb
