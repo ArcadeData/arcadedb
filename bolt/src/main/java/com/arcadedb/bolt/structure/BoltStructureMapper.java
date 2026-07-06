@@ -19,6 +19,7 @@
 package com.arcadedb.bolt.structure;
 
 import com.arcadedb.bolt.packstream.PackStreamReader;
+import com.arcadedb.bolt.packstream.PackStreamStructure;
 import com.arcadedb.database.Document;
 import com.arcadedb.database.Identifiable;
 import com.arcadedb.database.RID;
@@ -468,16 +469,13 @@ public class BoltStructureMapper {
    * wrappers (from a scalar {@code RETURN e.valid_at}), which are unwrapped to their {@code java.time} value
    * first. Returns {@code null} when the value is not a temporal (so the caller can fall through).
    * <p>
-   * <b>Encoding is tied to the negotiated protocol version.</b> ArcadeDB advertises Bolt v4.4 max
-   * ({@code BoltNetworkExecutor.SUPPORTED_VERSIONS = { 4.4, 4.0, 3.0 }}), so the legacy (pre-5.0)
-   * DateTime / DateTimeZoneId encoding is always correct here: the seconds field is the LOCAL epoch-second
-   * (offset folded in), matching the legacy branch of {@link #fromPackStreamValue}. The inbound path already
-   * decodes both the legacy and the 5.0 "UTC" signatures, but this outbound path emits legacy only.
-   * TODO: if {@code SUPPORTED_VERSIONS} ever gains Bolt 5.0 (where seconds is the true UTC epoch-second),
-   * branch on the negotiated version here and emit {@code SIG_*_UTC}, otherwise a 5.0 driver would decode
-   * these structs to the wrong instant.
+   * <b>Encoding is tied to the negotiated protocol version.</b> DateTime / DateTimeZoneId values carry both
+   * epoch bases (local and true UTC) computed here at build time; {@link BoltDateTimeStructure#writeTo} then
+   * picks the legacy 'F'/'f' signature and local epoch-second for Bolt 4.x, or the 'I'/'i' signature and true
+   * UTC epoch-second for Bolt 5.0+, based on the writer's negotiated major version. All other temporal kinds
+   * (Date, Time, LocalTime, LocalDateTime, Duration) are version-invariant and stay on {@link BoltTemporalStructure}.
    */
-  static BoltTemporalStructure toTemporalStructure(final Object rawValue) {
+  static PackStreamStructure toTemporalStructure(final Object rawValue) {
     final Object value = unwrapCypherTemporal(rawValue);
 
     if (value instanceof LocalDate d)
@@ -493,8 +491,8 @@ public class BoltStructureMapper {
     if (value instanceof ZonedDateTime zdt) {
       if (zdt.getZone() instanceof ZoneOffset offset)
         return dateTimeWithOffset(zdt.toLocalDateTime(), offset);
-      return new BoltTemporalStructure(SIG_DATE_TIME_ZONEID_LEGACY, zdt.toLocalDateTime().toEpochSecond(ZoneOffset.UTC),
-          (long) zdt.getNano(), zdt.getZone().getId());
+      return BoltDateTimeStructure.zoneId(zdt.toLocalDateTime().toEpochSecond(ZoneOffset.UTC), zdt.toEpochSecond(),
+          zdt.getNano(), zdt.getZone().getId());
     }
     // A bare instant (Instant / java.util.Date) has no zone; Bolt has no pure-instant type, so it is
     // deliberately widened to a DateTime struct at UTC. The instant is preserved; the client receives a
@@ -518,10 +516,10 @@ public class BoltStructureMapper {
     return null;
   }
 
-  private static BoltTemporalStructure dateTimeWithOffset(final LocalDateTime local, final ZoneOffset offset) {
-    // Legacy encoding: seconds is the local epoch-second (the wall clock treated as if UTC).
-    return new BoltTemporalStructure(SIG_DATE_TIME_OFFSET_LEGACY, local.toEpochSecond(ZoneOffset.UTC), (long) local.getNano(),
-        (long) offset.getTotalSeconds());
+  private static BoltDateTimeStructure dateTimeWithOffset(final LocalDateTime local, final ZoneOffset offset) {
+    // localEpoch: wall clock treated as UTC (legacy basis). utcEpoch: the true instant (5.0+ basis).
+    return BoltDateTimeStructure.offset(local.toEpochSecond(ZoneOffset.UTC), local.toEpochSecond(offset),
+        local.getNano(), offset.getTotalSeconds());
   }
 
   private static Object unwrapCypherTemporal(final Object value) {
