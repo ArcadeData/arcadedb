@@ -57,6 +57,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.Set;
 
 /**
  * Execution step for MERGE clause.
@@ -1164,7 +1165,9 @@ public class MergeStep extends AbstractExecutionStep {
     final QueryStatistics stats = context.getStatistics();
     stats.incNodesCreated();
     if (nodePattern.hasLabels())
-      stats.addLabelsAdded(nodePattern.getLabels().size());
+      // ArcadeDB dedups labels (Labels.ensureCompositeType), so count distinct labels only,
+      // matching the actual number of labels added to the vertex.
+      stats.addLabelsAdded((int) nodePattern.getLabels().stream().distinct().count());
     stats.addPropertiesSet(vertex.getPropertyNames().size());
 
     return vertex;
@@ -1342,7 +1345,8 @@ public class MergeStep extends AbstractExecutionStep {
           else
             break;
           final MutableDocument mutableDoc = doc.modify();
-          for (final String prop : new HashSet<>(mutableDoc.getPropertyNames()))
+          final Set<String> existingProps = new HashSet<>(mutableDoc.getPropertyNames());
+          for (final String prop : existingProps)
             if (!prop.startsWith("@"))
               mutableDoc.remove(prop);
           int propertiesSet = 0;
@@ -1351,6 +1355,12 @@ public class MergeStep extends AbstractExecutionStep {
               mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
               propertiesSet++;
             }
+          // Neo4j counts both the properties written and the pre-existing properties removed by
+          // the replace (i.e. not re-set with a non-null value), matching the PROPERTY/MERGE_MAP
+          // branches above.
+          for (final String prop : existingProps)
+            if (!prop.startsWith("@") && map.get(prop) == null)
+              propertiesSet++;
           mutableDoc.save();
           context.getStatistics().addPropertiesSet(propertiesSet);
           ((ResultInternal) result).setProperty(variable, mutableDoc);

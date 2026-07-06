@@ -105,4 +105,49 @@ class CypherQueryStatisticsTest extends TestHelper {
       assertThat(rs.getStatistics()).isEmpty();
     });
   }
+
+  @Test
+  void createVertexWithDuplicateLabelCountsDistinctLabels() {
+    // ArcadeDB dedups labels (Labels.ensureCompositeType), so CREATE (n:Dup:Dup) creates a
+    // single-label vertex. Neo4j-compatible statistics must report 1 label added, not 2.
+    database.transaction(() -> {
+      final QueryStatistics s = statsOf(database, "CREATE (n:Dup:Dup) RETURN n");
+      assertThat(s.getNodesCreated()).isEqualTo(1);
+      assertThat(s.getLabelsAdded()).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void mergeCreateWithDuplicateLabelCountsDistinctLabels() {
+    database.transaction(() -> {
+      final QueryStatistics s = statsOf(database, "MERGE (n:Twin:Twin {id:1}) RETURN n");
+      assertThat(s.getNodesCreated()).isEqualTo(1);
+      assertThat(s.getLabelsAdded()).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void setReplaceMapCountsRemovedPreexistingProperties() {
+    // n originally has 3 properties (a, b, c). SET n = {a:10, d:4} keeps/updates "a", adds "d",
+    // and removes "b" and "c" since they are absent from the new map. Neo4j-compatible
+    // "properties set" counts both the 2 written entries (a, d) and the 2 removed ones (b, c) = 4.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Item {a:1, b:2, c:3})");
+      final QueryStatistics s = statsOf(database, "MATCH (n:Item) SET n = {a:10, d:4}");
+      assertThat(s.getPropertiesSet()).isEqualTo(4);
+    });
+  }
+
+  @Test
+  void mergeOnMatchSetReplaceMapCountsRemovedPreexistingProperties() {
+    // Same replace-map semantics as above (a kept/updated, d added, b and c removed = 4), but
+    // exercised through MERGE ... ON MATCH SET, which duplicates the REPLACE_MAP branch in
+    // MergeStep.applySetClause.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Widget {a:1, b:2, c:3})");
+      final QueryStatistics s = statsOf(database,
+          "MERGE (n:Widget {a:1}) ON MATCH SET n = {a:10, d:4}");
+      assertThat(s.getPropertiesSet()).isEqualTo(4);
+    });
+  }
 }
