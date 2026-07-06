@@ -28,6 +28,8 @@ import org.junit.jupiter.api.Test;
 
 import java.io.File;
 import java.io.RandomAccessFile;
+import java.lang.reflect.Field;
+import java.nio.channels.FileChannel;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -78,7 +80,8 @@ class WalRecoveryCorrectnessTest {
       // 2. Commit the update to 'B' (bumping the page to v2, WAL entry written) but make sure the DATA page
       // never reaches the disk: flushing is suspended, then the database is killed (crash simulation that
       // preserves the WAL and the lock file, purging the pending flush).
-      PageManager.INSTANCE.getFlushThread().setSuspended(db, true);
+      assertThat(PageManager.INSTANCE.getFlushThread().setSuspended(db, true))
+          .as("flush suspension must engage or the page could reach disk, invalidating the test").isTrue();
       db.transaction(() -> db.query("sql", "SELECT FROM Doc").next().getRecord().get().asDocument().modify()
           .set("v", "B").save());
       ((LocalDatabase) db).kill();
@@ -129,9 +132,9 @@ class WalRecoveryCorrectnessTest {
     final PaginatedComponent bucket = (PaginatedComponent) db.getSchema().getType("Doc").getBuckets(false).getFirst();
     final PaginatedComponentFile file = (PaginatedComponentFile) db.getFileManager().getFile(bucket.getFileId());
     db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
-    final java.lang.reflect.Field channelField = PaginatedComponentFile.class.getDeclaredField("channel");
+    final Field channelField = PaginatedComponentFile.class.getDeclaredField("channel");
     channelField.setAccessible(true);
-    ((java.nio.channels.FileChannel) channelField.get(file)).close();
+    ((FileChannel) channelField.get(file)).close();
     assertThat(new File(file.getFilePath()).delete()).isTrue();
 
     db.close();
@@ -142,6 +145,4 @@ class WalRecoveryCorrectnessTest {
     assertThat(new File(dbDir, "database.lck"))
         .as("the lock file must be preserved so the next open runs recovery (#4934)").exists();
   }
-
-
 }
