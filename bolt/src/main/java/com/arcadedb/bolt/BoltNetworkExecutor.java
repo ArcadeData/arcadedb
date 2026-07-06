@@ -1889,12 +1889,6 @@ public class BoltNetworkExecutor extends Thread {
   }
 
   /**
-   * A Bolt 5.1+ HELLO carries no authentication - the driver authenticates with a separate LOGON.
-   * Returns true only when the negotiated version is >= 5.1 and the HELLO omits all auth fields, so
-   * such a HELLO is accepted (awaiting LOGON) instead of being rejected as "missing credentials".
-   * Pre-5.1 keeps HELLO-embedded auth; an explicit scheme (incl. "none") is never a deferral.
-   */
-  /**
    * Select the highest-preference server version compatible with the client's proposals, or 0 if none match.
    * Client proposals are tried in order; for each, the range means the client supports minor versions from
    * (minor - range) up to minor inclusive for that major. A zero entry is trailing padding and stops the scan.
@@ -1920,6 +1914,12 @@ public class BoltNetworkExecutor extends Thread {
     return 0;
   }
 
+  /**
+   * A Bolt 5.1+ HELLO carries no authentication - the driver authenticates with a separate LOGON.
+   * Returns true only when the negotiated version is >= 5.1 and the HELLO omits all auth fields, so
+   * such a HELLO is accepted (awaiting LOGON) instead of being rejected as "missing credentials".
+   * Pre-5.1 keeps HELLO-embedded auth; an explicit scheme (incl. "none") is never a deferral.
+   */
   static boolean deferAuthToLogon(final int protocolVersion, final String scheme, final String principal,
       final String credentials) {
     final int major = getMajorVersion(protocolVersion);
