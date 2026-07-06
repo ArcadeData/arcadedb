@@ -3478,6 +3478,16 @@ public class CypherExecutionPlan {
               return true;
           break;
         }
+        case REMOVE: {
+          // REMOVE r.prop / REMOVE r:Label keeps the edge binding alive. Missing this dropped the
+          // edge binding, so a top-level REMOVE on a relationship property silently found no edge
+          // and became a no-op unless the edge was also projected through WITH (issue #5013).
+          final RemoveClause rc = entry.getTypedClause();
+          for (final RemoveClause.RemoveItem item : rc.getItems())
+            if (variable.equals(item.getVariable()))
+              return true;
+          break;
+        }
         case DELETE: {
           final DeleteClause dc = entry.getTypedClause();
           if (deleteReferencesVariable(dc, variable))

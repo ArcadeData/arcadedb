@@ -36,6 +36,14 @@ that could starve the very snapshot resync meant to heal the node.
   explicit scope list (`CALL (r) { ... }`) and, for the implicit-import form (`CALL { WITH r ... DELETE r }`),
   the inner statement's clauses (recursively for nested `FOREACH`/`CALL`), keeping the edge binding alive so
   the deletion runs. Node deletion in `CALL` subqueries was unaffected because vertex bindings were never dropped.
+- **Cypher: `REMOVE` of a relationship property now takes effect without a `WITH` projection.** Same root cause
+  as the `FOREACH`/`CALL` fixes above: the edge-reference analysis (`CypherExecutionPlan.isEdgeVariableReferenced`)
+  had no case for a top-level `REMOVE` clause, so `MATCH (a)-[r:T]->(b) REMOVE r.marked` had `r` stripped from the
+  matched row; `RemoveStep` then found `null` and silently no-op'd while the query still reported success
+  ([#5013](https://github.com/ArcadeData/arcadedb/issues/5013)). Projecting the edge first (`WITH r REMOVE r.marked`,
+  `FOREACH (x IN [r] | REMOVE x.marked)`, or a `CALL` subquery) forced materialization, which is why those forms
+  worked. The top-level clause scan now includes `REMOVE`, mirroring `SET`, so the edge binding survives and the
+  property is removed. Removing node properties was unaffected because vertex bindings were never dropped.
 - **SQL: map string-key indexing `$map["key"]` now works inside `INSERT ... CONTENT`.** `ArraySelector.getValue`
   had two overloads: the `Result`-based one returned any index value, but the `Identifiable`-based one was typed
   to return `Integer` and silently dropped non-numeric indexes. `INSERT ... CONTENT { ... }` evaluates its JSON
