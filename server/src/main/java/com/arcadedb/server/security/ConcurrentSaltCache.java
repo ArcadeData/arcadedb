@@ -43,7 +43,13 @@ public class ConcurrentSaltCache {
     if (maxSize <= 0)
       throw new IllegalArgumentException("Cache size must be greater than 0");
     this.maxSize = maxSize;
-    this.map = new ConcurrentHashMap<>(Math.max(16, (int) (maxSize / 0.75f) + 1));
+
+    // Guard against integer overflow for very large cache sizes: (int) (maxSize / 0.75f) + 1 can
+    // wrap to a negative value, which ConcurrentHashMap rejects. Cap at the map's max capacity.
+    int initialCapacity = (int) (maxSize / 0.75f) + 1;
+    if (initialCapacity < 0)
+      initialCapacity = 1 << 30;
+    this.map = new ConcurrentHashMap<>(Math.max(16, initialCapacity));
   }
 
   public String get(final String key) {

@@ -57,6 +57,16 @@ class ConcurrentSaltCacheTest {
   }
 
   @Test
+  void shouldNotOverflowInitialCapacityForVeryLargeMaxSize() {
+    // (int) (maxSize / 0.75f) + 1 would wrap negative and crash ConcurrentHashMap without the guard
+    final ConcurrentSaltCache cache = new ConcurrentSaltCache(Integer.MAX_VALUE);
+
+    cache.put("k1", "v1");
+    assertThat(cache.get("k1")).isEqualTo("v1");
+    assertThat(cache.size()).isEqualTo(1);
+  }
+
+  @Test
   void shouldBoundSizeByEvictingOldEntries() {
     final int max = 16;
     final ConcurrentSaltCache cache = new ConcurrentSaltCache(max);
