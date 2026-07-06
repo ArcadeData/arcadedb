@@ -25,9 +25,13 @@ import com.arcadedb.graph.Vertex;
 
 import org.junit.jupiter.api.Test;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression test for issue #4952: {@link PartitionedTriangleOp} submitted ALL chunks (including chunk 0)
@@ -195,5 +199,69 @@ class PartitionedTriangleOpCallerRunsTest {
     assertThat(node0Thread.get())
         .as("chunk 0 must be processed by the calling thread, not a pool thread")
         .isSameAs(Thread.currentThread());
+  }
+
+  /**
+   * #5063 review round 3: if chunk 0 (run on the calling thread) throws, the already-submitted chunks
+   * 1..N-1 must still be awaited before the exception unwinds {@code execute()}, otherwise they keep
+   * writing into {@code partialCounts} (and holding pool threads) after the caller has returned.
+   * <p>
+   * The KNOWS view throws on every {@code offset()} call made by the calling thread (chunk 0 fails
+   * immediately) while background chunks sleep once before touching the view, so any background call
+   * observed after {@code execute()} has unwound proves the leak.
+   */
+  @Test
+  void chunkZeroFailureStillAwaitsBackgroundChunks() throws Exception {
+    // Empty adjacency: countRange still calls offset()/offsetEnd() for every node of every chunk.
+    final int[] offsets = new int[NODE_COUNT + 1];
+    final int[] neighbors = new int[0];
+
+    final Thread caller = Thread.currentThread();
+    final AtomicLong lastBackgroundCall = new AtomicLong();
+    final Set<Thread> sleptThreads = ConcurrentHashMap.newKeySet();
+
+    final NeighborView knowsView = new NeighborView(NODE_COUNT, offsets, neighbors) {
+      @Override
+      public int offset(final int nodeId) {
+        if (Thread.currentThread() == caller)
+          // Only countRange touches the KNOWS view, so this fails chunk 0 on its very first node.
+          throw new IllegalStateException("simulated chunk-0 failure");
+        if (sleptThreads.add(Thread.currentThread()))
+          // Keep the background chunks provably in flight while chunk 0 fails.
+          try {
+            Thread.sleep(150);
+          } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+          }
+        lastBackgroundCall.set(System.nanoTime());
+        return super.offset(nodeId);
+      }
+    };
+
+    // Partition chain of length 1: every node points to node 1, so all nodes share partition 1.
+    final int[] partitionOffsets = new int[NODE_COUNT + 1];
+    final int[] partitionNeighbors = new int[NODE_COUNT];
+    for (int i = 0; i < NODE_COUNT; i++) {
+      partitionOffsets[i] = i;
+      partitionNeighbors[i] = 1;
+    }
+    partitionOffsets[NODE_COUNT] = NODE_COUNT;
+    final NeighborView partitionView = new NeighborView(NODE_COUNT, partitionOffsets, partitionNeighbors);
+
+    final PartitionedTriangleOp op = new PartitionedTriangleOp(new String[] { "IN_CITY" },
+        new Vertex.DIRECTION[] { Vertex.DIRECTION.OUT }, "KNOWS");
+
+    assertThatThrownBy(() -> op.execute(new StubProvider(knowsView, partitionView), null))
+        .isInstanceOf(IllegalStateException.class)
+        .hasMessage("simulated chunk-0 failure");
+
+    final long unwoundAt = System.nanoTime();
+
+    // Give leaked chunks (pre-fix behavior) time to wake from their sleep and touch the view.
+    Thread.sleep(300);
+
+    assertThat(lastBackgroundCall.get())
+        .as("no background chunk may still be running after execute() has unwound")
+        .isLessThan(unwoundAt);
   }
 }
