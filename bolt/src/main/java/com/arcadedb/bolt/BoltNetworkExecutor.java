@@ -95,9 +95,13 @@ public class BoltNetworkExecutor extends Thread {
   // BOLT magic bytes
   private static final byte[] BOLT_MAGIC = { 0x60, 0x60, (byte) 0xB0, 0x17 };
 
-  // Supported protocol versions (in order of preference)
+  // Supported protocol versions (in order of preference). Package-private so the negotiation unit
+  // test asserts against the real advertised set rather than a drifting copy.
   // Encoding: [unused(8)][range(8)][minor(8)][major(8)] — major = value & 0xFF, minor = (value >> 8) & 0xFF
-  private static final int[] SUPPORTED_VERSIONS = { 0x00000404, 0x00000004, 0x00000003 }; // v4.4, v4.0, v3.0
+  static final int[] SUPPORTED_VERSIONS = {
+      0x00000405, 0x00000305, 0x00000205, 0x00000105, 0x00000005, // v5.4, v5.3, v5.2, v5.1, v5.0
+      0x00000404, 0x00000004, 0x00000003                          // v4.4, v4.0, v3.0
+  };
 
   // Server states
   private enum State {
@@ -1709,7 +1713,7 @@ public class BoltNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.FINE, "BOLT >> %s", message);
     }
 
-    final PackStreamWriter writer = new PackStreamWriter();
+    final PackStreamWriter writer = new PackStreamWriter().boltMajorVersion(getMajorVersion(protocolVersion));
     message.writeTo(writer);
     output.writeMessage(writer.toByteArray());
   }
