@@ -787,12 +787,16 @@ public class TransactionContext implements Transaction {
   }
 
   public void commit2ndPhase(final TransactionPhase1 changes) {
+    if (changes == null) {
+      // Nothing to apply: release resources without touching user-held record state (the pre-#4940 behavior for
+      // this no-op call; entering the try would route it to the rollback() branch below).
+      reset();
+      return;
+    }
+
     boolean committed = false;
     boolean walAppended = false;
     try {
-      if (changes == null)
-        return;
-
       if (database.getMode() == ComponentFile.MODE.READ_ONLY)
         throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
 
@@ -801,10 +805,15 @@ public class TransactionContext implements Transaction {
 
       status = STATUS.COMMIT_2ND_PHASE;
 
-      if (changes.result != null)
+      if (changes.result != null) {
         // WRITE TO THE WAL FIRST
         database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
-      walAppended = true;
+        // Only a REAL append is a durability point: with useWAL=false changes.result is null, nothing is durable
+        // and there is no WAL record for recovery to replay, so a publish failure below must still roll the
+        // transaction back like any other pre-durability failure (#4940). This also keeps the flag's meaning
+        // aligned with the point-of-no-return boundary #4936 formalizes.
+        walAppended = true;
+      }
 
       // AT THIS POINT, LOCK + VERSION CHECK, THERE IS NO NEED TO MANAGE ROLLBACK BECAUSE THERE CANNOT BE CONCURRENT TX THAT UPDATE THE SAME PAGE CONCURRENTLY
       // UPDATE PAGE COUNTER FIRST
@@ -848,9 +857,9 @@ public class TransactionContext implements Transaction {
       if (committed)
         resetAndFireCallbacks();
       else if (walAppended)
-        // The transaction reached the WAL: it is (or may be) durable and recovery replays it, so the RIDs
-        // optimistically assigned to records created in this transaction remain valid. Release resources
-        // without touching user-held record state.
+        // The transaction reached the WAL: it is durable and recovery replays it, so the RIDs optimistically
+        // assigned to records created in this transaction remain valid. Release resources without touching
+        // user-held record state.
         reset();
       else
         // #4940: the failure happened BEFORE anything durable exists. Restore user-held records exactly like
