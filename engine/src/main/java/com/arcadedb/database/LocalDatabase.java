@@ -2311,6 +2311,10 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
    * Fencing turns the divergence into the same crash-equivalent close/reopen cycle used elsewhere (#4928):
    * the orphaned record's pages were never flush-acked, so the ack-gated close preserves the WAL and the
    * lock file, and the next open replays it.
+   * <p>
+   * HA note: on a replica this fences the wrapped LocalDatabase too, halting replication apply until the
+   * node restarts - intended: the fence surfaces exactly like a crash, and the standard restart
+   * reconciliation (recovery replay, or snapshot re-install via the DatabaseReconciler) repairs the node.
    */
   private volatile String fenceReason = null;
 

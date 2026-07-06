@@ -862,15 +862,16 @@ public class TransactionContext implements Transaction {
       // data never committed. The bump below mutates only this transaction's private MutablePage instances,
       // so a WAL-append failure still aborts cleanly with nothing observable. The in-between window is safe
       // because every modified file's lock is held (#4937 guarantees coverage) until reset().
-      final List<MutablePage> pagesToPublish = database.getPageManager().validateAndBumpVersions(newPages, modifiedPages);
-
-      // #5053 review: refuse to cross the point of no return on a fenced database. This check runs AFTER
-      // this transaction acquired its file locks, so for any transaction sharing a page with the failed one
-      // the fence write below happens-before this read - it cannot append a WAL record targeting the same
-      // page version the orphaned record already claims.
+      // #5053 review: refuse to commit on a fenced database, before doing any work. The file locks this
+      // transaction acquired in phase 1 give the happens-before edge: for any transaction sharing a page
+      // with the failed one, the fence write (made before the failed commit's reset() released those locks)
+      // is visible here - it cannot append a WAL record targeting the same page version the orphaned record
+      // already claims.
       if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
         throw new TransactionException(
             "Cannot commit: the database is fenced after a failure past the WAL commit point, close and reopen it to run recovery");
+
+      final List<MutablePage> pagesToPublish = database.getPageManager().validateAndBumpVersions(newPages, modifiedPages);
 
       if (changes.result != null) {
         // WRITE TO THE WAL: THE POINT OF NO RETURN
@@ -929,11 +930,18 @@ public class TransactionContext implements Transaction {
       else {
         if (walAppended && database.getEmbedded() instanceof LocalDatabase localDatabase)
           // #5053 review: the transaction IS durable (its WAL record survives and recovery will replay it)
-          // but its pages were never published - the live state and the WAL now diverge. Fence BEFORE
+          // but its pages may not all be published - the live state and the WAL may diverge. Fence BEFORE
           // reset() releases the file locks: the volatile write is then visible to any transaction that was
           // blocked on these locks, so no conflicting WAL record for the same page versions can follow. The
           // orphaned record's pages were never flush-acked, so the ack-gated close (#4928) preserves the
           // WAL and the lock file, and reopening the database replays it.
+          //
+          // DELIBERATELY WIDE (covers every failure from the append to the end of the try, not just
+          // publishPages): a mid-publish failure can leave SOME pages visible and others not - a partial
+          // publication no boolean flag can distinguish from a complete one - and post-publish failures
+          // (page counters, onAfterCommit) leave component metadata that recovery replay also repairs.
+          // Under-fencing risks exactly the divergence this exists to prevent; the cost (a restart after an
+          // exceptional post-append failure) is the acceptable side.
           localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append");
         reset();
       }

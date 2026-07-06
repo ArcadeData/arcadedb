@@ -188,7 +188,12 @@ that could starve the very snapshot resync meant to heal the node.
   ([#4936](https://github.com/ArcadeData/arcadedb/issues/4936)). Enabling that guarantee, the commit lock
   set is verified AFTER all page-set mutation and extended when files joined late (EXTERNAL-property
   buckets, indexes created inside the transaction, and the vector index's companion graph file, which now
-  counts in the lock set; [#4937](https://github.com/ArcadeData/arcadedb/issues/4937)). Note the commit
+  counts in the lock set; [#4937](https://github.com/ArcadeData/arcadedb/issues/4937)). **Behavioral
+  change for explicit locking:** a transaction using explicit locks that writes a file absent from its lock
+  list - including files it could not have locked up front, such as an index created inside the same
+  transaction or an EXTERNAL property's paired bucket - now fails with the "not all the modified resources
+  were locked" error instead of committing without the lock (which was unsafe). Lock the type after
+  creating its indexes, or create indexes outside explicit-lock transactions. Note the commit
   boundary this makes explicit: a failure AFTER the WAL append (e.g. while publishing pages) is resolved by
   recovery replay, never by abort - the caller may see an error for a transaction that becomes durable on
   restart. If that post-append failure ever happens, the database is FENCED: every further operation fails
