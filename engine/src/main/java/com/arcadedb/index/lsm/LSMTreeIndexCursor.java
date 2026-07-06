@@ -486,20 +486,25 @@ public class LSMTreeIndexCursor implements IndexCursor {
           .getTransaction().getIndexChanges().getIndexKeys(index.getName());
       if (indexChanges != null) {
         final Map.Entry<TransactionIndexContext.ComparableKey, Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey>> entry;
+        // #4947: biased navigation keys, never plain ComparableKeys. A PARTIAL key compares equal to every
+        // entry sharing its prefix, so plain ceiling/floor/higher/lower land in the MIDDLE of the prefix run
+        // (wherever the tree walk first hits equality) and silently skip the run's other entries. The biased
+        // keys sort strictly before (low) or after (high) the whole run, making the navigation exact; for
+        // full-length keys they degenerate to the plain behavior.
         if (ascendingOrder) {
           if (keys == null)
             entry = indexChanges.firstEntry();
           else if (inclusive)
-            entry = indexChanges.ceilingEntry(new TransactionIndexContext.ComparableKey(keys));
+            entry = indexChanges.ceilingEntry(TransactionIndexContext.lowNavigationKey(keys));
           else
-            entry = indexChanges.higherEntry(new TransactionIndexContext.ComparableKey(keys));
+            entry = indexChanges.higherEntry(TransactionIndexContext.highNavigationKey(keys));
         } else {
           if (keys == null)
             entry = indexChanges.lastEntry();
           else if (inclusive)
-            entry = indexChanges.floorEntry(new TransactionIndexContext.ComparableKey(keys));
+            entry = indexChanges.floorEntry(TransactionIndexContext.highNavigationKey(keys));
           else
-            entry = indexChanges.lowerEntry(new TransactionIndexContext.ComparableKey(keys));
+            entry = indexChanges.lowerEntry(TransactionIndexContext.lowNavigationKey(keys));
         }
 
         final Map<TransactionIndexContext.IndexKey, TransactionIndexContext.IndexKey> values =
