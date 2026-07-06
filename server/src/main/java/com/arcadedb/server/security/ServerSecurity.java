@@ -34,7 +34,6 @@ import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import com.arcadedb.server.security.credential.DefaultCredentialsValidator;
 import com.arcadedb.utility.AnsiCode;
-import com.arcadedb.utility.LRUCache;
 
 import javax.crypto.SecretKey;
 import javax.crypto.SecretKeyFactory;
@@ -43,6 +42,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.security.spec.InvalidKeySpecException;
@@ -64,7 +64,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private final        SecurityGroupFileRepository     groupRepository;
   private final        String                          algorithm;
   private final        SecretKeyFactory                secretKeyFactory;
-  private final        Map<String, String>             saltCache;
+  private final        ConcurrentSaltCache             saltCache;
   private final        int                             saltIteration;
   private final        Map<String, ServerSecurityUser> users                = new HashMap<>();
   private final        int                             checkConfigReloadEveryMs;
@@ -85,10 +85,7 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
     final int cacheSize = configuration.getValueAsInteger(SERVER_SECURITY_SALT_CACHE_SIZE);
 
-    if (cacheSize > 0)
-      saltCache = Collections.synchronizedMap(new LRUCache<>(cacheSize));
-    else
-      saltCache = Collections.emptyMap();
+    saltCache = cacheSize > 0 ? new ConcurrentSaltCache(cacheSize) : null;
 
     saltIteration = configuration.getValueAsInteger(SERVER_SECURITY_SALT_ITERATIONS);
 
@@ -346,8 +343,12 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   }
 
   protected String encodePassword(final String password, final String salt, final int iterations) {
-    if (!saltCache.isEmpty()) {
-      final String encoded = saltCache.get(password + "$" + salt + "$" + iterations);
+    // Key the cache on a SHA-256 digest of the plaintext+salt+iterations rather than the raw
+    // password, so cleartext credentials are never retained as reachable map keys in the heap.
+    final String cacheKey = saltCache != null ? saltCacheKey(password, salt, iterations) : null;
+
+    if (cacheKey != null) {
+      final String encoded = saltCache.get(cacheKey);
       if (encoded != null)
         // FOUND CACHED
         return encoded;
@@ -357,9 +358,33 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
     final String encoded = "%s$%d$%s$%s".formatted(algorithm, iterations, salt, hash);
 
     // CACHE IT
-    saltCache.put(password + "$" + salt + "$" + iterations, encoded);
+    if (cacheKey != null)
+      saltCache.put(cacheKey, encoded);
 
     return encoded;
+  }
+
+  /**
+   * Builds the salt-cache key as a SHA-256 hex digest of {@code password$salt$iterations}. The raw
+   * password is never used as a key, so a heap/core dump or swap cannot recover plaintext
+   * credentials from the cache.
+   */
+  private static String saltCacheKey(final String password, final String salt, final int iterations) {
+    try {
+      final MessageDigest digest = MessageDigest.getInstance("SHA-256");
+      final byte[] hash = digest.digest((password + "$" + salt + "$" + iterations).getBytes(StandardCharsets.UTF_8));
+      return HexFormat.of().formatHex(hash);
+    } catch (final NoSuchAlgorithmException e) {
+      throw new ServerSecurityException("SHA-256 not available for salt cache key", e);
+    }
+  }
+
+  /**
+   * Returns a snapshot of the current salt-cache keys, or an empty set when the cache is disabled.
+   * Package-private: intended for tests that assert plaintext passwords are never retained as keys.
+   */
+  Set<String> getSaltCacheKeysSnapshot() {
+    return saltCache != null ? saltCache.keys() : Set.of();
   }
 
   public List<JSONObject> usersToJSON() {
