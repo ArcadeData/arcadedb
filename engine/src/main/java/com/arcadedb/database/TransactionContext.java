@@ -554,13 +554,17 @@ public class TransactionContext implements Transaction {
     immutablePages.clear();
   }
 
-  private Object getRequester() {
-    // CAPTURE THE REQUESTER LAZILY AT FIRST USE, WHICH IS ALWAYS LOCK-ACQUISITION TIME ON THE OWNING THREAD.
-    // RESOLVING Thread.currentThread() ON EVERY CALL RETURNED THE WRONG REQUESTER WHEN THE LOCKS WERE RELEASED
-    // BY ANOTHER THREAD (DATABASE CLOSE ROLLING BACK FOREIGN CONTEXTS, OR THE DEAD-THREAD SWEEP ROLLING BACK AN
-    // ABANDONED TRANSACTION): THE UNLOCK FAILED WITH LockException AND THE FILE LOCKS LEAKED FOREVER (#4941).
-    // THE LockManager EXPLICITLY SUPPORTS ACQUIRE-ON-ONE-THREAD/RELEASE-ON-ANOTHER AS LONG AS THE REQUESTER
-    // OBJECT IS THE SAME
+  /**
+   * Returns the identity file locks are keyed by for this transaction: the explicit requester (e.g. a server-side
+   * session) when one was set via {@link #setRequester(Object)}, the current thread otherwise (#4959). Captured
+   * lazily at first use, which is always lock-acquisition time on the owning thread: resolving
+   * Thread.currentThread() on every call returned the wrong requester when the locks were released by another
+   * thread (database close rolling back foreign contexts, or the dead-thread sweep rolling back an abandoned
+   * transaction), so the unlock failed with LockException and the file locks leaked forever (#4941). The
+   * LockManager explicitly supports acquire-on-one-thread/release-on-another as long as the requester object is
+   * the same.
+   */
+  public Object getRequester() {
     if (requester == null)
       requester = Thread.currentThread();
     return requester;
@@ -708,8 +712,13 @@ public class TransactionContext implements Transaction {
           try {
             database.updateRecordNoLock(rec, false);
           } catch (final RecordNotFoundException e) {
-            LogManager.instance()
-                .log(this, Level.WARNING, "Attempt to update the delete record %s in transaction", rec.getIdentity());
+            // #4959: the record vanished between the in-tx update and the commit (deleted by a concurrent
+            // transaction whose effect this tx's page was loaded after, so the MVCC page-version check cannot
+            // see the conflict; an in-tx delete removes the entry from updatedRecords and never gets here).
+            // Silently skipping would commit the rest of the transaction without this update (a silent
+            // partial commit): fail the whole transaction with a retryable conflict instead.
+            throw new ConcurrentModificationException(
+                "Record " + rec.getIdentity() + " updated in transaction was deleted by a concurrent transaction");
           }
         updatedRecords = null;
         // The indexed-state snapshots (#4935) share updatedRecords' lifecycle: no further updateRecord can
@@ -934,8 +943,8 @@ public class TransactionContext implements Transaction {
     } finally {
       if (committed)
         resetAndFireCallbacks();
-      else {
-        if (walAppended && database.getEmbedded() instanceof LocalDatabase localDatabase)
+      else if (walAppended) {
+        if (database.getEmbedded() instanceof LocalDatabase localDatabase)
           // #5053 review: the transaction IS durable (its WAL record survives and recovery will replay it)
           // but its pages were never published - the live state and the WAL now diverge. Fence BEFORE
           // reset() releases the file locks: the volatile write is then visible to any transaction that was
@@ -943,8 +952,16 @@ public class TransactionContext implements Transaction {
           // orphaned record's pages were never flush-acked, so the ack-gated close (#4928) preserves the
           // WAL and the lock file, and reopening the database replays it.
           localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append");
+        // The transaction reached the WAL: it is (or may be) durable and recovery replays it, so the RIDs
+        // optimistically assigned to records created in this transaction remain valid. Release resources
+        // without touching user-held record state.
         reset();
-      }
+      } else
+        // #4940: the failure happened BEFORE anything durable exists. Restore user-held records exactly like
+        // a phase-1 failure does: reload the modified records to their committed content and reset the
+        // identity of records created in this transaction to provisional, so a retry re-inserts them instead
+        // of updating a record that was never persisted (#4562).
+        rollback();
     }
   }
 

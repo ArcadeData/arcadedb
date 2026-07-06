@@ -240,6 +240,23 @@ that could starve the very snapshot resync meant to heal the node.
   `HashMap` or unregister a live context ([#4939](https://github.com/ArcadeData/arcadedb/issues/4939); the
   reported mid-commit cross-thread rollback interleaving is already excluded by the database RW lock - commit
   holds the read lock for its whole duration while close's rollbacks run under the write lock).
+- **Transaction commit cleanups (2026-07 audit).** A phase-2 commit failure that happens BEFORE the
+  transaction reaches the WAL now restores user-held record state like a phase-1 failure does (rollback):
+  records created in the failed transaction get their optimistically-assigned RID reset to provisional and
+  modified records are reloaded to their committed content, so retrying with the same in-memory objects
+  re-inserts them instead of updating a record that was never persisted; a failure after the WAL append
+  still keeps the assigned RIDs, since the transaction is durable and recovery replays it
+  ([#4940](https://github.com/ArcadeData/arcadedb/issues/4940)). From the low-severity group
+  ([#4959](https://github.com/ArcadeData/arcadedb/issues/4959)): a deferred update whose record was deleted
+  by a concurrent transaction now fails the commit with a retryable `ConcurrentModificationException`
+  instead of being silently skipped while the rest of the transaction commits (silent partial commit);
+  `transaction()` no longer burns every retry attempt (plus retry delays) on a deterministic
+  `DuplicatedKeyException` - one retry disambiguates it from a concurrency-induced duplicate;
+  `executeLockingFiles` now locks on behalf of the current transaction's requester (thread or session), so
+  a thread acting for a session no longer times out on locks its own session already holds; and the
+  page-level MVCC isolation contract (no read-set validation: write skew and phantoms possible under both
+  levels, unbounded per-transaction page cache under `REPEATABLE_READ`) is now documented on
+  `Database.TRANSACTION_ISOLATION_LEVEL` and pinned by tests.
 
 ### Improvements
 

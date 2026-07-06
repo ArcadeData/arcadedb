@@ -39,6 +39,22 @@ import java.util.concurrent.Callable;
 
 @ExcludeFromJacocoGeneratedReport
 public interface Database extends BasicDatabase {
+  /**
+   * Transaction isolation levels. ArcadeDB implements isolation with page-level MVCC (optimistic locking on the
+   * page version): only WRITE-WRITE conflicts on the same page are detected, surfacing at commit as a retryable
+   * {@link com.arcadedb.exception.ConcurrentModificationException}. There is NO read-set validation at commit, so
+   * under BOTH levels write skew and phantom reads are possible (see {@code TransactionIsolationContractTest},
+   * which pins this contract).
+   * <ul>
+   * <li>{@code READ_COMMITTED} (default): every read fetches the most recently committed version of the page. A
+   * reader can observe pages published by transactions that committed after this one began, and a concurrent
+   * multi-page commit being published may be observed partially (some of its pages already visible, others not
+   * yet).</li>
+   * <li>{@code REPEATABLE_READ}: pages read by the transaction are cached in the transaction context and re-read
+   * from there, giving repeatable reads at the page level. The cache is unbounded: a transaction that scans a
+   * large portion of the database retains every visited page in RAM until commit or rollback.</li>
+   * </ul>
+   */
   enum TRANSACTION_ISOLATION_LEVEL {
     READ_COMMITTED, REPEATABLE_READ
   }
