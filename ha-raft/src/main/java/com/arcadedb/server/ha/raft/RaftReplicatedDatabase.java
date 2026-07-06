@@ -98,7 +98,6 @@ import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.ConcurrentModificationException;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -168,8 +167,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * response. {@link Map#ofEntries} is used (rather than {@link Map#of}) because the latter caps at
    * ten pairs.
    * <p>
-   * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name
-   * because this file imports {@link java.util.ConcurrentModificationException}.
+   * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name, and
+   * {@link java.util.ConcurrentModificationException} is intentionally NOT imported, so that a bare
+   * {@code ConcurrentModificationException} anywhere in this file cannot silently bind to the JDK type
+   * (which the engine never throws) - the root cause of issue #5018.
    */
   private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.ofEntries(
       Map.entry(NeedRetryException.class.getName(), NeedRetryException::new),
@@ -432,21 +433,7 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         if (getSchema().getEmbedded().isDirty())
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
-        if (e instanceof ConcurrentModificationException)
-          LogManager.instance().log(this, Level.SEVERE,
-              """
-              Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). \
-              A page was concurrently modified under file lock - this may indicate a locking bug. \
-              Followers have applied this transaction but the leader has not. \
-              Stepping down to prevent stale reads. Error: %s""",
-              getName(), payload.tx(), e.getMessage());
-        else
-          LogManager.instance().log(this, Level.SEVERE,
-              """
-              Phase 2 commit failed AFTER successful Raft replication (db=%s, txId=%s). \
-              Followers have applied this transaction but the leader has not. \
-              Stepping down to prevent stale reads. Error: %s""",
-              getName(), payload.tx(), e.getMessage());
+        LogManager.instance().log(this, Level.SEVERE, phase2CommitFailureMessage(e), getName(), payload.tx(), e.getMessage());
         reconcileLeaderPagesAfterPhase2Failure(payload);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
         throw e;
@@ -514,6 +501,33 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   private static final int  STEP_DOWN_MAX_RETRIES    = 3;
   private static final long STEP_DOWN_RETRY_DELAY_MS = 500;
+
+  /**
+   * Selects the SEVERE log template for a phase-2 commit failure that happened AFTER Raft had already
+   * replicated the entry (followers applied it, the leader did not). A page-version conflict - the
+   * engine's {@link com.arcadedb.exception.ConcurrentModificationException}, NOT
+   * {@link java.util.ConcurrentModificationException} - gets the more specific wording because it
+   * points at a locking bug rather than an arbitrary failure. Both templates take
+   * {@code (db, txId, errorMessage)} as their three arguments.
+   * <p>
+   * The type test is written against the fully qualified engine exception on purpose: before issue
+   * #5018 the check bound to the JDK {@code java.util.ConcurrentModificationException} (an unrelated
+   * type the engine never throws), so the page-conflict branch was dead and every phase-2 conflict
+   * was logged with the generic wording.
+   */
+  static String phase2CommitFailureMessage(final Throwable e) {
+    if (e instanceof com.arcadedb.exception.ConcurrentModificationException)
+      return """
+          Phase 2 commit failed AFTER successful Raft replication with a page version conflict (db=%s, txId=%s). \
+          A page was concurrently modified under file lock - this may indicate a locking bug. \
+          Followers have applied this transaction but the leader has not. \
+          Stepping down to prevent stale reads. Error: %s""";
+
+    return """
+        Phase 2 commit failed AFTER successful Raft replication (db=%s, txId=%s). \
+        Followers have applied this transaction but the leader has not. \
+        Stepping down to prevent stale reads. Error: %s""";
+  }
 
   /**
    * Attempts to bring the leader's pages into sync with the committed Raft entry after
