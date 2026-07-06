@@ -20,10 +20,14 @@ package com.arcadedb.query.opencypher;
 
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.Database;
+import com.arcadedb.index.TypeIndex;
 import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.ResultSet;
+import com.arcadedb.schema.Schema;
+import com.arcadedb.schema.Type;
 import org.junit.jupiter.api.Test;
 
+import java.util.Collection;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -149,5 +153,72 @@ class CypherQueryStatisticsTest extends TestHelper {
           "MERGE (n:Widget {a:1}) ON MATCH SET n = {a:10, d:4}");
       assertThat(s.getPropertiesSet()).isEqualTo(4);
     });
+  }
+
+  @Test
+  void createIndexCounts() {
+    database.command("opencypher", "CREATE (:Product {sku:'a'})"); // ensure type exists
+    final ResultSet rs = database.command("opencypher", "CREATE INDEX FOR (p:Product) ON (p.sku)");
+    while (rs.hasNext())
+      rs.next();
+    assertThat(rs.getStatistics()).isPresent();
+    assertThat(rs.getStatistics().get().getIndexesAdded()).isEqualTo(1);
+    assertThat(rs.getStatistics().get().containsUpdates()).isTrue();
+  }
+
+  @Test
+  void createIndexIfNotExistsAlreadyPresentCountsZero() {
+    database.command("opencypher", "CREATE (:Widget2 {code:'a'})");
+    database.command("opencypher", "CREATE INDEX IF NOT EXISTS FOR (w:Widget2) ON (w.code)");
+    // Second run is a genuine no-op: the index already exists, so nothing changed.
+    final QueryStatistics s = statsOf(database, "CREATE INDEX IF NOT EXISTS FOR (w:Widget2) ON (w.code)");
+    assertThat(s.getIndexesAdded()).isZero();
+  }
+
+  @Test
+  void dropIndexCounts() {
+    database.command("opencypher", "CREATE (:Gadget {code:'a'})");
+    database.command("opencypher", "CREATE INDEX FOR (g:Gadget) ON (g.code)");
+
+    final Collection<TypeIndex> indexes = database.getSchema().getType("Gadget").getAllIndexes(false);
+    assertThat(indexes).isNotEmpty();
+    final String indexName = indexes.iterator().next().getName();
+
+    final QueryStatistics s = statsOf(database, "DROP INDEX `" + indexName + "`");
+    assertThat(s.getIndexesRemoved()).isEqualTo(1);
+    assertThat(s.containsUpdates()).isTrue();
+  }
+
+  @Test
+  void createConstraintCounts() {
+    final QueryStatistics s = statsOf(database, "CREATE CONSTRAINT FOR (p:Employee) REQUIRE p.id IS UNIQUE");
+    assertThat(s.getConstraintsAdded()).isEqualTo(1);
+    assertThat(s.containsUpdates()).isTrue();
+  }
+
+  @Test
+  void createConstraintIfNotExistsAlreadyPresentCountsZero() {
+    database.command("opencypher", "CREATE CONSTRAINT IF NOT EXISTS FOR (p:Employee2) REQUIRE p.id IS UNIQUE");
+    // Second run is a genuine no-op: the constraint already exists, so nothing changed.
+    final QueryStatistics s = statsOf(database, "CREATE CONSTRAINT IF NOT EXISTS FOR (p:Employee2) REQUIRE p.id IS UNIQUE");
+    assertThat(s.getConstraintsAdded()).isZero();
+  }
+
+  @Test
+  void dropConstraintCounts() {
+    database.getSchema().createVertexType("Manager");
+    database.getSchema().getType("Manager").createProperty("id", Type.STRING);
+    database.getSchema().buildTypeIndex("Manager", new String[] { "id" })
+        .withType(Schema.INDEX_TYPE.LSM_TREE)
+        .withUnique(true)
+        .create();
+
+    final Collection<TypeIndex> indexes = database.getSchema().getType("Manager").getAllIndexes(false);
+    assertThat(indexes).isNotEmpty();
+    final String constraintName = indexes.iterator().next().getName();
+
+    final QueryStatistics s = statsOf(database, "DROP CONSTRAINT `" + constraintName + "`");
+    assertThat(s.getConstraintsRemoved()).isEqualTo(1);
+    assertThat(s.containsUpdates()).isTrue();
   }
 }
