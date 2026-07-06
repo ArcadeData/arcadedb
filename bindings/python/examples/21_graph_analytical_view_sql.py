@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Example 22: Graph Analytical View SQL Workflow.
+"""Example 21: Graph Analytical View SQL Workflow.
 
 This example mirrors the Java-side Graph Analytical View (GAV) lifecycle, but it
 does so at a more realistic scale and still uses only SQL from Python.
@@ -70,7 +70,7 @@ def _validated_limit(value: int) -> int:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Example 22: graph analytical view SQL workflow at larger scale"
+        description="Example 21: graph analytical view SQL workflow at larger scale"
     )
     parser.add_argument(
         "--db-path",
@@ -627,7 +627,7 @@ def main() -> int:
     total_cities_after_sync = total_cities_after_stale + args.sync_growth_cities
 
     print("=" * 72)
-    print("ArcadeDB Python - Example 22: Graph Analytical View SQL Workflow")
+    print("ArcadeDB Python - Example 21: Graph Analytical View SQL Workflow")
     print("=" * 72)
     print()
     print(
@@ -885,7 +885,7 @@ def main() -> int:
         )
 
     print(f"Database remains on disk for inspection: {db_path}")
-    print("Example 22 completed.")
+    print("Example 21 completed.")
     return 0
 
 

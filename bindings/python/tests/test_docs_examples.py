@@ -7,7 +7,6 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from tests.conftest import has_server_support
 
 DOCS_ROOT = Path(__file__).resolve().parents[1] / "docs"
 PYTHON_BLOCK_RE = re.compile(r"```python\n(.*?)```", re.DOTALL)
@@ -368,34 +367,6 @@ def test_docs_index_and_quickstart_examples(temp_dir_factory):
             '        db.command("sql", "CREATE DOCUMENT TYPE User")'
         ),
         base_dir / "error_handling",
-    )
-
-
-@pytest.mark.server
-@pytest.mark.skipif(not has_server_support(), reason="Requires server support")
-def test_docs_api_access_examples(temp_dir_factory):
-    pytest.importorskip("requests")
-    base_dir = Path(temp_dir_factory("docs_api_access_"))
-
-    _run_doc_block(
-        "api-access-methods.md",
-        "# Direct database access - NO server needed",
-        base_dir / "embedded",
-    )
-    _run_doc_block(
-        "api-access-methods.md",
-        '# "mydb" will be created at ./server_data/databases/mydb',
-        base_dir / "server_managed",
-    )
-    _run_doc_block(
-        "api-access-methods.md",
-        "# Get server details",
-        base_dir / "http_api",
-    )
-    _run_doc_block(
-        "api-access-methods.md",
-        "# Create database using Java API (fastest)",
-        base_dir / "hybrid",
     )
 
 

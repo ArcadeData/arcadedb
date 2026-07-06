@@ -433,6 +433,15 @@ class AsyncExecutor:
             callback: Optional result callback
             **params: Command parameters
 
+        Performance note:
+            Submitting commands without callbacks runs at Java-native speed
+            (~8us/op measured). A Python ``callback`` costs ~100us per
+            operation, because every completion crosses Java->Python through
+            a JPype proxy under the GIL and throttles the executor's
+            parallelism. For bulk ingest, submit without callbacks and use
+            ``wait_completion()`` (or one callback on the final command)
+            instead of per-record callbacks.
+
         Example:
             >>> async_exec.command("sql", "DELETE FROM User WHERE id = ?",
             ...                    id=123)

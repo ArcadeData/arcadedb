@@ -689,3 +689,23 @@ def test_opencypher_named_params_on_traversal_count(temp_db_path):
         row = result.one()
 
         assert row.get("c") == 2
+
+
+def test_opencypher_nested_parameter_in_match(temp_db_path):
+    """Nested $param.field access inside a MATCH pattern binds correctly (#4909)."""
+    with arcadedb.create_database(temp_db_path) as db:
+        _ensure_opencypher(db)
+        db.command("sql", "CREATE VERTEX TYPE Entity")
+
+        with db.transaction():
+            db.command("opencypher", "CREATE (:Entity {uuid: 'u1', name: 'First'})")
+            db.command("opencypher", "CREATE (:Entity {uuid: 'u2', name: 'Second'})")
+
+        result = db.query(
+            "opencypher",
+            "MATCH (n:Entity {uuid: $data.uuid}) RETURN n.name AS name",
+            {"data": {"uuid": "u1"}},
+        )
+        names = [record.get("name") for record in result]
+
+        assert names == ["First"]

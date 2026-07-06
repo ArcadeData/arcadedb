@@ -49,3 +49,6 @@ local-jars/
 
 # test databases
 my_test_databases/
+
+# auto-created by scripts/extract_version.py on every run
+scripts/.dev_version_tracker.json

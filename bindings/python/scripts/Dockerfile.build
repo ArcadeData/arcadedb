@@ -80,6 +80,16 @@ RUN echo "🗑️  Removing excluded JARs..." && \
     done < /build/jar_exclusions.txt && \
     echo "📋 JAR count after exclusion: $(ls -1 /build/jars/*.jar | wc -l)"
 
+# Build the Python-bindings bridge jar (batched row transport; see
+# bindings/python/src/java/com/arcadedb/python/RowBatcher.java)
+COPY bindings/python/src/java /build/bridge-src
+RUN echo "🔨 Building arcadedb-python-bridge.jar..." && \
+    mkdir -p /build/bridge-classes && \
+    javac -cp "/build/jars/*" -d /build/bridge-classes \
+        $(find /build/bridge-src -name "*.java") && \
+    jar cf /build/jars/arcadedb-python-bridge.jar -C /build/bridge-classes . && \
+    echo "✅ Bridge jar built: $(ls -la /build/jars/arcadedb-python-bridge.jar)"
+
 # Build minimal JRE with jlink
 # Automatically detect modules with jdeps, plus ensure jdk.zipfs (for JPype) and jdk.unsupported are included
 # We exclude jboss/wildfly JARs because they have broken module descriptors that fail analysis.
@@ -87,7 +97,7 @@ RUN echo "🗑️  Removing excluded JARs..." && \
 RUN echo "🔍 Analyzing JARs with jdeps..." && \
     JMODS_DIR="${JAVA_HOME}/jmods" && \
     if [ ! -d "$JMODS_DIR" ]; then JMODS_DIR="${JAVA_HOME}/lib/jmods"; fi && \
-    DETECTED_MODULES=$(find /build/jars -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 2>&1 | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -E '^[a-zA-Z0-9_.]+$' | sort -u | paste -sd "," -) && \
+    DETECTED_MODULES=$(find /build/jars -name "*.jar" | grep -v "jboss" | grep -v "wildfly" | grep -v "smallrye" | grep -v "spatial-extras" | xargs jdeps --print-module-deps --ignore-missing-deps --multi-release 25 2>&1 | tr ',' '\n' | sed 's/^ *//;s/ *$//' | grep -E '^[a-zA-Z0-9_.]+$' | sort -u | paste -sd "," -) && \
     if [ -d "$JMODS_DIR" ]; then \
         AVAILABLE_MODULES=$(find "$JMODS_DIR" -name "*.jmod" -printf "%f\n" | sed 's/\.jmod$//' | sort -u | paste -sd "|" -) ; \
         FILTERED_MODULES=$(echo "${DETECTED_MODULES}" | tr ',' '\n' | sed '/^$/d' | grep -E "^(${AVAILABLE_MODULES})$" | sort -u | paste -sd "," -) ; \
@@ -95,7 +105,7 @@ RUN echo "🔍 Analyzing JARs with jdeps..." && \
         FILTERED_MODULES="${DETECTED_MODULES}" ; \
     fi && \
     if [ -n "${FILTERED_MODULES}" ]; then \
-        REQUIRED_MODULES="${FILTERED_MODULES},java.se,jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector" ; \
+        REQUIRED_MODULES="${FILTERED_MODULES},jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector" ; \
     else \
         REQUIRED_MODULES="java.se,jdk.management,jdk.zipfs,jdk.unsupported,jdk.incubator.vector" ; \
     fi && \
@@ -178,7 +188,7 @@ COPY bindings/python/pyproject.toml ./
 COPY bindings/python/README.md ./
 
 # Also copy repository pom.xml so scripts/extract_version.py can read it
-COPY ../../pom.xml /arcadedb/pom.xml
+COPY pom.xml /arcadedb/pom.xml
 
 # Install Python build dependencies
 RUN uv pip install --system build wheel setuptools jpype1
