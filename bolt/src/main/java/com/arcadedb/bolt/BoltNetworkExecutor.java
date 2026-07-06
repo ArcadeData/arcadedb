@@ -1916,6 +1916,9 @@ public class BoltNetworkExecutor extends Thread {
       final String credentials) {
     final int major = getMajorVersion(protocolVersion);
     final int minor = getMinorVersion(protocolVersion);
-    return major >= 5 && minor >= 1 && scheme == null && principal == null && credentials == null;
+    // Lexicographic >= 5.1 so a higher major with minor 0 (e.g. a hypothetical 6.0) still defers,
+    // rather than being excluded by an independent minor >= 1 test.
+    final boolean atLeast51 = major > 5 || (major == 5 && minor >= 1);
+    return atLeast51 && scheme == null && principal == null && credentials == null;
   }
 }

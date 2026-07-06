@@ -229,6 +229,9 @@ class BoltVersionNegotiationTest {
     assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000005, null, null, null)).isFalse();
     // 4.4 never defers.
     assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000404, null, null, null)).isFalse();
+    // A higher major with minor 0 (hypothetical 6.0) still defers - the >= 5.1 check is lexicographic,
+    // not an independent major >= 5 && minor >= 1 test.
+    assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000006, null, null, null)).isTrue();
     // Any auth field present means it is a real HELLO auth (or explicit none) - do not defer.
     assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000405, "basic", "root", "pw")).isFalse();
     assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000405, "none", null, null)).isFalse();
