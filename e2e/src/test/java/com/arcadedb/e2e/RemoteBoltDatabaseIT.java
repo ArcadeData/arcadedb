@@ -129,6 +129,7 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       try (final Session s = boltSession()) {
         s.run("MATCH (n) WHERE n:TxProbe OR n:RaceProbe OR n:CausalProbe DETACH DELETE n").consume();
         s.run("MATCH (b:Beer) WHERE b.name IN ['TX-004-Beer', 'RESULT-004-Beer'] DETACH DELETE b").consume();
+        s.run("MATCH (b:Brewery) WHERE b.name = 'RESULT-004-Brewery' DETACH DELETE b").consume();
       } catch (final RuntimeException ignored) {
         // best-effort cleanup; never fail the suite on teardown
       }
@@ -493,15 +494,14 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[RESULT-004] ResultSummary counters reflect writes")
     void result004_counters() {
-      // Run inside an explicit transaction and roll back: counters are populated
-      // from the RUN/PULL summary regardless of commit, so this stays certified
-      // working without leaving probe nodes in the shared beer database.
-      try (final Session s = boltSession();
-          final Transaction tx = s.beginTransaction()) {
-        final ResultSummary summary = tx.run(
+      // Autocommit CREATE, matching the python/go/js/csharp suites: the RUN/PULL summary carries the
+      // write counters regardless of commit. The probe nodes are removed by the per-test cleanup.
+      // An explicit transaction is intentionally not used - auto-creating the BREWED_BY edge type
+      // (schema DDL) inside an explicit transaction is a separate concern this scenario does not test.
+      try (final Session s = boltSession()) {
+        final ResultSummary summary = s.run(
             "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
             Map.of("n", "RESULT-004-Beer", "b", "RESULT-004-Brewery")).consume();
-        tx.rollback();
         assertThat(summary.counters().nodesCreated()).isEqualTo(2);
         assertThat(summary.counters().relationshipsCreated()).isEqualTo(1);
       }
