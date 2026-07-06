@@ -23,6 +23,7 @@ import com.arcadedb.log.LogManager;
 
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RunnableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -141,6 +142,10 @@ public final class SparseVectorScoringPool {
           }
           if (!exec.isShutdown())
             task.run();
+          else if (task instanceof RunnableFuture<?> future)
+            // #4961: a task rejected because the pool is shut down would otherwise be neither run
+            // nor completed, leaving any caller blocked in an untimed Future.get() hanging forever.
+            future.cancel(false);
         });
     pool.allowCoreThreadTimeOut(true);
     this.executor = pool;

@@ -29,6 +29,7 @@ import com.arcadedb.query.sql.SQLScriptQueryEngine;
 import java.util.*;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.RunnableFuture;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -58,7 +59,10 @@ import java.util.logging.Level;
  */
 public class QueryEngineManager {
   private static final QueryEngineManager                         INSTANCE        = new QueryEngineManager();
-  private final        Map<String, QueryEngine.QueryEngineFactory> implementations = new LinkedHashMap<>();
+  // #4961: register() is public and may be called after construction while getEngine()/
+  // getAvailableLanguages() read the map without locks: registration publishes a new copy
+  // (copy-on-write) instead of mutating in place. Registration is rare, reads are hot.
+  private volatile     Map<String, QueryEngine.QueryEngineFactory> implementations = new LinkedHashMap<>();
   private final        ThreadPoolExecutor                          executorService;
   // Per-pool counter the {@link RejectedExecutionHandler} below increments every time the queue
   // saturates and the task falls back to the caller. ThreadPoolExecutor itself doesn't expose
@@ -113,6 +117,10 @@ public class QueryEngineManager {
       }
       if (!executor.isShutdown())
         task.run();
+      else if (task instanceof RunnableFuture<?> future)
+        // #4961: a task rejected because the pool is shut down would otherwise be neither run nor
+        // completed, leaving any caller blocked in an untimed Future.get() hanging forever.
+        future.cancel(false);
     });
     pool.allowCoreThreadTimeOut(true);
     executorService = pool;
@@ -158,8 +166,10 @@ public class QueryEngineManager {
     }
   }
 
-  public void register(final QueryEngine.QueryEngineFactory impl) {
-    implementations.put(impl.getLanguage().toLowerCase(Locale.ENGLISH), impl);
+  public synchronized void register(final QueryEngine.QueryEngineFactory impl) {
+    final Map<String, QueryEngine.QueryEngineFactory> copy = new LinkedHashMap<>(implementations);
+    copy.put(impl.getLanguage().toLowerCase(Locale.ENGLISH), impl);
+    implementations = copy;
   }
 
   public QueryEngine getEngine(final String language, final DatabaseInternal database) {
