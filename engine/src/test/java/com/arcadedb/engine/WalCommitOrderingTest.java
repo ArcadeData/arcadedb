@@ -22,6 +22,7 @@ import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
+import com.arcadedb.exception.TransactionException;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -29,6 +30,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.fail;
 
 /**
@@ -75,7 +77,7 @@ class WalCommitOrderingTest {
       // Phase 1 of a new update: locks taken, WAL buffer built, versions checked.
       db.begin();
       db.query("sql", "SELECT FROM Doc").next().getRecord().get().asDocument().modify().set("v", "doomed").save();
-      final TransactionContext tx = (com.arcadedb.database.TransactionContext) db.getTransaction();
+      final TransactionContext tx = (TransactionContext) db.getTransaction();
       final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
       assertThat(phase1).isNotNull();
 
@@ -84,9 +86,10 @@ class WalCommitOrderingTest {
       final MutablePage victim = phase1.modifiedPages.getFirst();
       final MutablePage conflicting = new MutablePage(victim.getPageId(), (int) victim.getPhysicalSize(),
           victim.getContent().array().clone(), (int) (victim.getVersion() + 1), victim.getContentSize());
-      final java.lang.reflect.Method put = PageManager.class.getDeclaredMethod("putPageInReadCache", CachedPage.class);
-      put.setAccessible(true);
-      put.invoke(PageManager.INSTANCE, new CachedPage(conflicting, false));
+      // putPageInReadCache is package-private (this test is in the same package): a conflicting cached
+      // version makes the phase-2 version check (getMostRecentVersionOfPage) fail deterministically, exactly
+      // as a racing committer through the closed lock-coverage hole would have.
+      PageManager.INSTANCE.putPageInReadCache(new CachedPage(conflicting, false));
 
       final long walBytesBefore = totalWalBytes();
       try {
@@ -100,6 +103,46 @@ class WalCommitOrderingTest {
           .as("a transaction that failed validation must leave NO record in the WAL (#4936)")
           .isEqualTo(walBytesBefore);
     } finally {
+      db.close();
+      factory.close();
+    }
+  }
+
+  @Test
+  void explicitLockTransactionWithLateJoiningFileIsRejectedNotSilentlyRelocked() {
+    // #4937 review: an explicit-lock transaction that touches a file it did NOT lock must fail with the
+    // contract violation, not have its lock set silently expanded. An EXTERNAL property's paired bucket is
+    // a genuine LATE joiner: an explicit type-lock does not cover it (collectTypeFileIds omits external
+    // buckets), yet updating the property writes it during phase-1 serialization (updateRecordNoLock, AFTER
+    // the initial explicit-lock check) - so only the late-joiner block added by #4937 can catch it.
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    final DatabaseInternal db = (DatabaseInternal) factory.create();
+    try {
+      final com.arcadedb.schema.DocumentType type = db.getSchema().createDocumentType("Doc");
+      type.createProperty("name", com.arcadedb.schema.Type.STRING);
+      type.createProperty("blob", com.arcadedb.schema.Type.STRING).setExternal(true);
+
+      final com.arcadedb.database.RID[] rid = new com.arcadedb.database.RID[1];
+      db.transaction(() -> rid[0] = db.newDocument("Doc").set("name", "a")
+          .set("blob", "the quick brown fox jumps over the lazy dog").save().getIdentity());
+
+      db.begin();
+      // Lock ONLY the Doc type (primary + index buckets); the EXTERNAL 'blob' bucket is NOT covered.
+      db.getTransaction().lock().type("Doc").lock();
+
+      // Update the external property: the write to its paired bucket joins the page set late.
+      db.lookupByRID(rid[0], true).asDocument().modify().set("blob", "a different, also externally-stored value").save();
+
+      assertThatThrownBy(db::commit)
+          .as("an explicit-lock tx touching an unlocked late-joining external bucket must be rejected (#4937 review)")
+          .isInstanceOf(TransactionException.class)
+          .hasRootCauseMessage("Cannot commit transaction because not all the modified resources were locked: [Doc_0_ext]");
+    } finally {
+      if (db.getTransaction().isActive())
+        db.rollback();
       db.close();
       factory.close();
     }
