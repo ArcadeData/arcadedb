@@ -68,27 +68,11 @@ class BoltVersionNegotiationTest {
   // with various client version proposals against the server's SUPPORTED_VERSIONS.
 
   /**
-   * Simulates the version negotiation logic from BoltNetworkExecutor.performHandshake().
+   * Exercises the real negotiation matching used by BoltNetworkExecutor.negotiateVersion(), so the test
+   * cannot drift from production behavior.
    */
   private static int negotiate(final int[] clientVersions) {
-    for (final int clientVersion : clientVersions) {
-      if (clientVersion == 0)
-        break;
-
-      final int clientMajor = BoltNetworkExecutor.getMajorVersion(clientVersion);
-      final int clientMinor = BoltNetworkExecutor.getMinorVersion(clientVersion);
-      final int clientRange = BoltNetworkExecutor.getVersionRange(clientVersion);
-
-      for (final int supportedVersion : BoltNetworkExecutor.SUPPORTED_VERSIONS) {
-        final int serverMajor = BoltNetworkExecutor.getMajorVersion(supportedVersion);
-        final int serverMinor = BoltNetworkExecutor.getMinorVersion(supportedVersion);
-
-        if (clientMajor == serverMajor && serverMinor <= clientMinor && serverMinor >= clientMinor - clientRange) {
-          return supportedVersion;
-        }
-      }
-    }
-    return 0;
+    return BoltNetworkExecutor.selectVersion(clientVersions);
   }
 
   @Test

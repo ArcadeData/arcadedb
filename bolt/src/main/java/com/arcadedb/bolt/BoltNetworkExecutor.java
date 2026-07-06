@@ -301,30 +301,7 @@ public class BoltNetworkExecutor extends Thread {
       LogManager.instance().log(this, Level.FINE, "BOLT client versions: %s",
           Arrays.toString(Arrays.stream(clientVersions).mapToObj(v -> String.format("0x%08X", v)).toArray()));
 
-    // Select best matching version using Bolt version negotiation with range support.
-    // The range means the client supports minor versions from (minor - range) up to minor
-    // (inclusive) for the given major version. Zero entries are trailing padding per the Bolt spec.
-    protocolVersion = 0;
-    for (final int clientVersion : clientVersions) {
-      if (clientVersion == 0)
-        break;
-
-      final int clientMajor = getMajorVersion(clientVersion);
-      final int clientMinor = getMinorVersion(clientVersion);
-      final int clientRange = getVersionRange(clientVersion);
-
-      for (final int supportedVersion : SUPPORTED_VERSIONS) {
-        final int serverMajor = getMajorVersion(supportedVersion);
-        final int serverMinor = getMinorVersion(supportedVersion);
-
-        if (clientMajor == serverMajor && serverMinor <= clientMinor && serverMinor >= clientMinor - clientRange) {
-          protocolVersion = supportedVersion;
-          break;
-        }
-      }
-      if (protocolVersion != 0)
-        break;
-    }
+    protocolVersion = selectVersion(clientVersions);
 
     // Send selected version
     output.writeRawInt(protocolVersion);
@@ -383,7 +360,12 @@ public class BoltNetworkExecutor extends Thread {
       handleRoute((RouteMessage) message);
       break;
     case BoltMessage.TELEMETRY:
-      sendSuccess(Map.of());
+      // A FAILED connection must respond IGNORED to every request except RESET (Bolt state machine),
+      // consistent with the other request handlers; otherwise acknowledge with SUCCESS.
+      if (state == State.FAILED)
+        sendIgnored();
+      else
+        sendSuccess(Map.of());
       break;
     default:
       sendFailure(BoltException.PROTOCOL_ERROR, "Unknown message: " + BoltMessage.signatureName(message.getSignature()));
@@ -1912,6 +1894,32 @@ public class BoltNetworkExecutor extends Thread {
    * such a HELLO is accepted (awaiting LOGON) instead of being rejected as "missing credentials".
    * Pre-5.1 keeps HELLO-embedded auth; an explicit scheme (incl. "none") is never a deferral.
    */
+  /**
+   * Select the highest-preference server version compatible with the client's proposals, or 0 if none match.
+   * Client proposals are tried in order; for each, the range means the client supports minor versions from
+   * (minor - range) up to minor inclusive for that major. A zero entry is trailing padding and stops the scan.
+   * Pure function over {@link #SUPPORTED_VERSIONS} so the negotiation logic is exercised directly by tests.
+   */
+  static int selectVersion(final int[] clientVersions) {
+    for (final int clientVersion : clientVersions) {
+      if (clientVersion == 0)
+        break;
+
+      final int clientMajor = getMajorVersion(clientVersion);
+      final int clientMinor = getMinorVersion(clientVersion);
+      final int clientRange = getVersionRange(clientVersion);
+
+      for (final int supportedVersion : SUPPORTED_VERSIONS) {
+        final int serverMajor = getMajorVersion(supportedVersion);
+        final int serverMinor = getMinorVersion(supportedVersion);
+
+        if (clientMajor == serverMajor && serverMinor <= clientMinor && serverMinor >= clientMinor - clientRange)
+          return supportedVersion;
+      }
+    }
+    return 0;
+  }
+
   static boolean deferAuthToLogon(final int protocolVersion, final String scheme, final String principal,
       final String credentials) {
     final int major = getMajorVersion(protocolVersion);
