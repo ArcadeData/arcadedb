@@ -103,11 +103,26 @@ public final class PartitionedTriangleOp implements CountOp {
       // was reached from a pool thread (or with the pool full of blocked producers), the caller waited on
       // tasks queued behind threads that were themselves waiting: a pool-starvation deadlock only mitigated
       // by the bounded queue's caller-runs rejection.
-      partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, Math.min(chunkSize, nodeCount));
-      // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
-      // so a killed/timed-out query can never sum partial (and still-being-written) partialCounts as a
-      // complete answer.
-      GraphAlgorithms.awaitFutures(futures, launched);
+      // #5063 review round 3: chunk 0 runs inside try/finally so the submitted chunks are ALWAYS awaited.
+      // Without it, a chunk-0 exception unwound this frame while chunks 1..N-1 kept running and writing
+      // into partialCounts (and holding pool threads) behind the caller's back.
+      boolean chunk0Completed = false;
+      try {
+        partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, Math.min(chunkSize, nodeCount));
+        chunk0Completed = true;
+      } finally {
+        // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
+        // so a killed/timed-out query can never sum partial (and still-being-written) partialCounts as a
+        // complete answer.
+        try {
+          GraphAlgorithms.awaitFutures(futures, launched);
+        } catch (final RuntimeException awaitError) {
+          if (chunk0Completed)
+            throw awaitError;
+          // Chunk 0's own exception is already propagating and stays primary; the await above only had to
+          // guarantee that no background chunk outlives this frame.
+        }
+      }
     }
 
     long total = 0;
