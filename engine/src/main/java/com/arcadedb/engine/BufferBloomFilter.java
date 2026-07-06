@@ -34,6 +34,10 @@ import com.arcadedb.database.Binary;
  *   <li>two probes (k=2) are derived from the two halves of the 64-bit Murmur hash instead of a single
  *   32-bit probe, roughly halving the false-positive exponent at the same size.</li>
  * </ul>
+ * <p>
+ * Invariant: the backing {@code buffer} must be at least {@code ceil(slots / 8)} bytes. The
+ * {@code floorMod} reduction can address bit {@code slots - 1}, i.e. the top byte of the region, so an
+ * undersized buffer would read/write past the region on the highest slots.
  */
 public class BufferBloomFilter {
   private final Binary buffer;
@@ -54,6 +58,11 @@ public class BufferBloomFilter {
     setBit(Math.floorMod((int) hash, capacity));
   }
 
+  /**
+   * Lock-free read: only safe after the filter has been fully built and safely published (no concurrent
+   * {@link #add}s). Without a happens-before edge between a concurrent add and this read, a stale byte
+   * could be observed and produce a false negative.
+   */
   public boolean mightContain(final int value) {
     final long hash = hash64(value);
     return testBit(Math.floorMod((int) (hash >>> 32), capacity)) && testBit(Math.floorMod((int) hash, capacity));
