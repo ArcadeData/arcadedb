@@ -260,6 +260,15 @@ public enum GlobalConfiguration {
       0 = available cores (min 2); consider capping explicitly on very high core-count machines""",
       Integer.class, 0),
 
+  FLUSH_ALL_PAGES_TIMEOUT("arcadedb.flushAllPagesTimeout", SCOPE.DATABASE,
+      """
+      Milliseconds of NO FLUSH PROGRESS after which waiting for all of a database's pages to reach the \
+      disk (on close, rename, backup-suspend) gives up with a SEVERE log instead of hanging forever on a \
+      wedged flush. The window resets whenever the pending-page count decreases, so a healthy but slow \
+      backlog never trips it. A close that gives up preserves the WAL files and the lock file, so the \
+      next open runs recovery and replays the unflushed pages. 0 waits forever (pre-26.7.2 behavior)""",
+      Long.class, 60_000L),
+
   PARALLEL_SCAN_ABANDONED_TIMEOUT("arcadedb.parallelScanAbandonedTimeout", SCOPE.DATABASE,
       """
       Milliseconds a parallel-scan producer keeps waiting on a full result queue with NO consumer \

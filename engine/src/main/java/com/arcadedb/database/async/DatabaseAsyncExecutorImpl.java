@@ -283,7 +283,7 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
   // Package-private (instead of private) so the shutdown-race regression test for #4955 can call it directly.
   int getBestSlot() {
     final AsyncThread[] threads = executorThreads;
-    if (threads == null)
+    if (threads == null || threads.length == 0)
       // #4955: close()/kill() nulls the array under the lifecycle lock; a caller racing shutdown must get
       // the same intended error as scheduleTask, not an NPE on the snapshot below.
       throw new DatabaseOperationException("Async executor has been shut down");
@@ -310,8 +310,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    */
   int getRandomSlot() {
     final AsyncThread[] threads = executorThreads;
-    if (threads == null)
-      // #4955: same shutdown race as getBestSlot.
+    if (threads == null || threads.length == 0)
+      // #4955: same shutdown race as getBestSlot. The length check also covers a zero-length array
+      // (nextInt(0) would throw IllegalArgumentException), unreachable today but cheap to guard.
       throw new DatabaseOperationException("Async executor has been shut down");
     return ThreadLocalRandom.current().nextInt(threads.length);
   }

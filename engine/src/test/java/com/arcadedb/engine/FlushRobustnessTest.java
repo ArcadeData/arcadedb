@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.engine.PageManagerFlushThread.PagesToFlush;
@@ -106,22 +107,73 @@ class FlushRobustnessTest extends TestHelper {
     final DatabaseInternal db = (DatabaseInternal) database;
 
     final PageManagerFlushThread flush = new PageManagerFlushThread(PageManager.INSTANCE, db.getConfiguration());
-    // A pending entry that nothing will ever flush (the thread is never started).
+    // A pending entry that nothing will ever flush (the thread is never started): zero progress by design.
     final PageId stuckPageId = new PageId(db, 0, 3_000_000);
     flush.pageIndex.put(stuckPageId, new MutablePage(stuckPageId, 1024, new byte[1024], 0, 0));
 
-    final long originalTimeout = PageManagerFlushThread.WAIT_FLUSH_TIMEOUT_MS;
-    PageManagerFlushThread.WAIT_FLUSH_TIMEOUT_MS = 500;
+    // The no-progress window is read per call from the database's own configuration.
+    db.getConfiguration().setValue(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT, 300L);
     try {
       final long start = System.currentTimeMillis();
-      flush.waitAllPagesOfDatabaseAreFlushed(db);
+      final boolean flushed = flush.waitAllPagesOfDatabaseAreFlushed(db);
       final long elapsed = System.currentTimeMillis() - start;
+      assertThat(flushed).as("the wait must report that it gave up (#4928)").isFalse();
       assertThat(elapsed)
-          .as("the wait must give up loudly after the deadline instead of spinning forever (#4928)")
-          .isBetween(400L, 10_000L);
+          .as("the wait must give up loudly after the no-progress window instead of spinning forever (#4928)")
+          .isBetween(250L, 10_000L);
     } finally {
-      PageManagerFlushThread.WAIT_FLUSH_TIMEOUT_MS = originalTimeout;
+      db.getConfiguration().setValue(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT, 60_000L);
       flush.pageIndex.remove(stuckPageId);
+    }
+  }
+
+  @Test
+  void closeWithUnflushablePagesPreservesWalAndRecoversOnNextOpen() throws Exception {
+    // Dedicated throwaway database: this test wedges ITS close, which must not disturb the shared test db.
+    final String dbPath = database.getDatabasePath() + "_walpreserve";
+    final com.arcadedb.database.DatabaseFactory factory = new com.arcadedb.database.DatabaseFactory(dbPath);
+    if (factory.exists())
+      factory.open().drop();
+
+    PageId stuckPageId = null;
+    try {
+      final DatabaseInternal db = (DatabaseInternal) factory.create();
+      db.getSchema().createDocumentType("Doc");
+      db.transaction(() -> db.newDocument("Doc").set("v", 42).save());
+
+      // Wedge the close: a pending page nothing will ever flush, and a short no-progress window.
+      db.getConfiguration().setValue(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT, 300L);
+      stuckPageId = new PageId(db, 0, 3_000_000);
+      PageManager.INSTANCE.getFlushThread().pageIndex
+          .put(stuckPageId, new MutablePage(stuckPageId, 1024, new byte[1024], 0, 0));
+
+      // #4928: the close must COMPLETE (bounded wait), and because pages could not be flushed it must be
+      // crash-equivalent: WAL files and lock file preserved so the next open recovers.
+      db.close();
+
+      final File dbDir = new File(dbPath);
+      assertThat(dbDir.listFiles((d, n) -> n.endsWith(".wal")))
+          .as("the WAL protecting the unflushed pages must NOT be deleted by a give-up close (#4928)")
+          .isNotEmpty();
+      assertThat(new File(dbDir, "database.lck"))
+          .as("the lock file must be preserved as the unclean-shutdown marker (#4928)").exists();
+
+      // Clean up the synthetic entry so the reopen's own close is not wedged too.
+      PageManager.INSTANCE.getFlushThread().pageIndex.remove(stuckPageId);
+      stuckPageId = null;
+
+      // The next open must run recovery and the data must be there; its clean close then drops the WAL.
+      final DatabaseInternal reopened = (DatabaseInternal) factory.open();
+      assertThat(reopened.query("sql", "SELECT v FROM Doc").next().<Integer>getProperty("v")).isEqualTo(42);
+      reopened.close();
+      assertThat(new File(dbPath).listFiles((d, n) -> n.endsWith(".wal")))
+          .as("a healthy close must delete the WAL as before").isNullOrEmpty();
+    } finally {
+      if (stuckPageId != null)
+        PageManager.INSTANCE.getFlushThread().pageIndex.remove(stuckPageId);
+      if (factory.exists())
+        factory.open().drop();
+      factory.close();
     }
   }
 }

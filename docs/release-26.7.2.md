@@ -143,9 +143,11 @@ that could starve the very snapshot resync meant to heal the node.
 
 - **Storage/engine robustness bundle.** Five defects from the 2026-07 engine audit: a plain I/O error while
   flushing one page no longer aborts the rest of the batch nor leaks its pages in the flush index (which
-  hung `close()`/backup forever; the failed page is WAL-recovered, and the wait-for-flush on close is now
-  bounded with a SEVERE escalation instead of an infinite spin,
-  [#4928](https://github.com/ArcadeData/arcadedb/issues/4928)); the channel-reopen path no longer re-creates
+  hung `close()`/backup forever). The wait-for-flush is now bounded by a NO-PROGRESS window
+  (`arcadedb.flushAllPagesTimeout`, default 60s, 0 = wait forever; a healthy slow backlog never trips it),
+  and a close that gives up becomes CRASH-EQUIVALENT: the WAL files and the lock file are preserved so the
+  next open runs recovery and replays the unflushed pages, instead of the close silently deleting the only
+  durable copy of them ([#4928](https://github.com/ArcadeData/arcadedb/issues/4928)); the channel-reopen path no longer re-creates
   a file that DDL deleted while one of its pages was mid-flight in the flush thread (a one-page ghost file
   that got re-registered on the next open, [#4930](https://github.com/ArcadeData/arcadedb/issues/4930));
   `check()` on buckets beyond 2^31 positions no longer overflows its RID arithmetic (under `fix=true` it

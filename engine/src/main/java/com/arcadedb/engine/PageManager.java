@@ -133,9 +133,11 @@ public class PageManager extends LockContext {
     }
   }
 
-  public void waitAllPagesOfDatabaseAreFlushed(final Database database) {
+  /** @return true when everything reached the disk; false when the bounded wait gave up (see #4928). */
+  public boolean waitAllPagesOfDatabaseAreFlushed(final Database database) {
     if (flushThread != null)
-      flushThread.waitAllPagesOfDatabaseAreFlushed(database);
+      return flushThread.waitAllPagesOfDatabaseAreFlushed(database);
+    return true;
   }
 
   public void removeModifiedPagesOfDatabase(final Database database) {

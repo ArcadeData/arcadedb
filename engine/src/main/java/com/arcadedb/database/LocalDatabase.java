@@ -2059,7 +2059,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (drop)
         PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
 
-      PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(this);
+      // #4928: bounded wait. When it gives up (wedged flush / unwritable disk), this close becomes
+      // CRASH-EQUIVALENT: the WAL files and the lock file are preserved below, so the next open runs
+      // recovery and replays the pages that never reached the disk, instead of this close silently
+      // deleting the only durable copy of them.
+      final boolean allPagesFlushed = PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(this);
+      final boolean preserveWalForRecovery = !allPagesFlushed && !drop;
 
       if (!drop)
         fileManager.syncFiles();
@@ -2096,7 +2101,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       try {
         schema.close();
         fileManager.close();
-        transactionManager.close(drop);
+        transactionManager.close(drop, preserveWalForRecovery);
         statementCache.clear();
         reusableQueryEngines.clear();
 
@@ -2120,12 +2125,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             lockFileIOChannel.close();
           if (lockFileIO != null)
             lockFileIO.close();
-          if (lockFile.exists())
-            Files.delete(Path.of(lockFile.getAbsolutePath()));
 
-          if (lockFile.exists() && !lockFile.delete())
-            LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", lockFile);
+          if (preserveWalForRecovery)
+            // #4928: leave the lock file as the unclean-shutdown marker - together with the preserved WAL it
+            // makes the next open run recovery and replay the pages this close could not flush.
+            LogManager.instance().log(this, Level.SEVERE,
+                "Database '%s' closed with unflushed pages: the lock file and the WAL were preserved so the next open will recover them",
+                null, name);
+          else {
+            if (lockFile.exists())
+              Files.delete(Path.of(lockFile.getAbsolutePath()));
 
+            if (lockFile.exists() && !lockFile.delete())
+              LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", lockFile);
+          }
         } catch (final IOException e) {
           // IGNORE IT
           LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", e, lockFile);
