@@ -32,6 +32,7 @@ import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 class ClusterMonitorTest {
 
@@ -464,6 +465,128 @@ class ClusterMonitorTest {
     captured.clear();
     monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
     assertThat(captured.linesContaining("unreachable")).isEmpty();
+  }
+
+  /**
+   * Channel-reset recovery (issue #4696): a follower that stays continuously unreachable fires the first
+   * reset after the reset duration, then retries once per interval while it stays unreachable, and the
+   * counter re-arms after it reconnects. The narrative is disabled here to prove the recovery is
+   * decoupled from it.
+   */
+  @Test
+  void resetsPeerChannelAfterSustainedUnreachability() {
+    final AtomicLong now = new AtomicLong(100_000L);
+    final List<String> resets = new ArrayList<>();
+    // narrative disabled, unreachableThreshold=10s, channelResetDuration=30s.
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, false, 10_000L, 30_000L, resets::add);
+    monitor.setClock(now::get);
+    monitor.updateLeaderCommitIndex(1000L);
+
+    // Reachable: no streak.
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 200L);
+    assertThat(resets).isEmpty();
+
+    // Goes unreachable: streak starts, but the reset must not fire yet.
+    now.addAndGet(5_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+    assertThat(resets).isEmpty();
+
+    // Still unreachable, but only 20s into the streak (< 30s): no reset yet.
+    now.addAndGet(20_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 32_000L);
+    assertThat(resets).isEmpty();
+
+    // Crosses the 30s reset duration: the first reset fires.
+    now.addAndGet(11_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 43_000L);
+    assertThat(resets).containsExactly("replica-2");
+
+    // Still unreachable a full interval later: the reset is retried (a first attempt that did not stick
+    // must not strand the follower).
+    now.addAndGet(31_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 74_000L);
+    assertThat(resets).containsExactly("replica-2", "replica-2");
+
+    // Reconnects: the streak (and its attempt counter) clears.
+    now.addAndGet(1_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1005L, 150L);
+
+    // Goes unreachable again and crosses the interval: it re-arms and fires a fresh reset.
+    now.addAndGet(1_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1005L, 12_000L);   // streak restarts
+    now.addAndGet(31_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1005L, 43_000L);   // crosses 30s again
+    assertThat(resets).containsExactly("replica-2", "replica-2", "replica-2");
+  }
+
+  /**
+   * The periodic retry is bounded: after {@link ClusterMonitor#CHANNEL_RESET_MAX_ATTEMPTS} resets that
+   * do not restore the follower, the monitor gives up (SEVERE, once) instead of resetting forever.
+   */
+  @Test
+  void boundsChannelResetAttemptsThenGivesUp() {
+    final AtomicLong now = new AtomicLong(100_000L);
+    final List<String> resets = new ArrayList<>();
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, false, 10_000L, 30_000L, resets::add);
+    monitor.setClock(now::get);
+    monitor.updateLeaderCommitIndex(1000L);
+
+    // Start the unreachable streak.
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+
+    // Drive many intervals while the follower stays unreachable; the reset must fire at most CAP times.
+    for (int i = 0; i < ClusterMonitor.CHANNEL_RESET_MAX_ATTEMPTS + 3; i++) {
+      now.addAndGet(31_000L);
+      monitor.updateReplicaMatchIndex("replica-2", 1000L, 40_000L + i * 31_000L);
+    }
+
+    assertThat(resets).hasSize(ClusterMonitor.CHANNEL_RESET_MAX_ATTEMPTS);
+    final List<CapturedLine> gaveUp = captured.linesAtLevel(Level.SEVERE);
+    assertThat(gaveUp).hasSize(1);
+    assertThat(gaveUp.get(0).message).contains("giving up").contains("replica-2");
+  }
+
+  @Test
+  void noChannelResetWhenDisabled() {
+    final AtomicLong now = new AtomicLong(100_000L);
+    final List<String> resets = new ArrayList<>();
+    // channelResetDuration=0 disables the recovery even though the peer is unreachable.
+    final ClusterMonitor monitor = new ClusterMonitor(10L, 0L, null, true, 10_000L, 0L, resets::add);
+    monitor.setClock(now::get);
+    monitor.updateLeaderCommitIndex(1000L);
+
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 12_000L);
+    now.addAndGet(120_000L);
+    monitor.updateReplicaMatchIndex("replica-2", 1000L, 132_000L);
+    assertThat(resets).isEmpty();
+  }
+
+  @Test
+  void channelResetHandlerRequiredWhenEnabled() {
+    assertThatThrownBy(() -> new ClusterMonitor(10L, 0L, null, true, 10_000L, 30_000L, null))
+        .isInstanceOf(IllegalArgumentException.class)
+        .hasMessageContaining("unreachablePeerChannelHandler");
+  }
+
+  /**
+   * Misconfiguration guard (issue #4696 review): enabling the channel reset while the unreachable
+   * threshold - the signal it depends on - is disabled logs a WARNING at construction, since the reset
+   * could otherwise look enabled while never triggering.
+   */
+  @Test
+  void warnsWhenChannelResetEnabledButUnreachableThresholdDisabled() {
+    captured.clear();
+    new ClusterMonitor(10L, 0L, null, false, 0L, 30_000L, s -> { });
+    final List<CapturedLine> warnings = captured.linesAtLevel(Level.WARNING);
+    assertThat(warnings).hasSize(1);
+    assertThat(warnings.get(0).message).contains("peerChannelResetDuration").contains("peerUnreachableThreshold");
+  }
+
+  @Test
+  void noWarningWhenChannelResetAndThresholdBothEnabled() {
+    captured.clear();
+    new ClusterMonitor(10L, 0L, null, false, 10_000L, 30_000L, s -> { });
+    assertThat(captured.linesContaining("peerUnreachableThreshold")).isEmpty();
   }
 
   /** ArcadeDB Logger that captures everything in memory for test assertions. */

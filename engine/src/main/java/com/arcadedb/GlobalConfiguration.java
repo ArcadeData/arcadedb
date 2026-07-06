@@ -951,6 +951,10 @@ public enum GlobalConfiguration {
       "Time in milliseconds since the last successful RPC to a follower before the leader reports it as unreachable in the resync narrative. Does not change Raft membership or quorum.",
       Long.class, 10000L),
 
+  HA_PEER_CHANNEL_RESET_DURATION("arcadedb.ha.peerChannelResetDuration", SCOPE.SERVER,
+      "Time in milliseconds a follower must stay continuously unreachable (no successful RPC, beyond HA_PEER_UNREACHABLE_THRESHOLD) before the leader resets that one follower's replication gRPC channel, closing the wedged channel so the next send re-resolves DNS and reconnects. Recovers a leader appender channel stuck on a stale DNS result after a follower restarts with a new address (e.g. a Kubernetes pod-IP change, issue #4696) without a leadership transfer, so there is no flapping risk. Only the unreachable peer's channel is touched. While the follower stays unreachable the reset is retried once per interval, up to a small bounded number of attempts, after which the leader gives up and logs for operator intervention; the counter re-arms when the follower reconnects. Requires HA_PEER_UNREACHABLE_THRESHOLD > 0 (its 'unreachable' signal). Set to 0 to disable the automatic channel reset (the manual leadership transfer remains available).",
+      Long.class, 60000L),
+
   HA_RESYNC_CATCHUP_LAG_THRESHOLD("arcadedb.ha.resyncCatchupLagThreshold", SCOPE.SERVER,
       "Minimum apply backlog (Raft log entries a follower has committed/received but not yet applied to its state machine) before the catch-up resync narrative is logged. This is a locally observable signal, not the distance from the leader's commit index. Keeps the small steady-state apply backlog under write load from being narrated; only a genuine post-restart burst crosses this threshold. The narrative finishes once the backlog drains to within a tenth of it.",
       Long.class, 1000L),
