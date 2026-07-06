@@ -189,6 +189,18 @@ that could starve the very snapshot resync meant to heal the node.
   set is verified AFTER all page-set mutation and extended when files joined late (EXTERNAL-property
   buckets, indexes created inside the transaction, and the vector index's companion graph file, which now
   counts in the lock set; [#4937](https://github.com/ArcadeData/arcadedb/issues/4937)).
+- **WAL/recovery correctness (2026-07 audit).** Recovery now RE-APPLIES a WAL delta whose version equals
+  the on-disk page version, repairing a torn page write (a 64KB flush spans many sectors; a power loss can
+  persist the new version header while the delta sectors still hold the previous content - the old `<=`
+  skip declared such a page "already applied" and left it silently corrupt despite an intact WAL,
+  [#4926](https://github.com/ArcadeData/arcadedb/issues/4926); known limitation: async flush can coalesce
+  several committed versions into one physical write, and only the newest version's region is repaired -
+  fully closing the multi-version case needs per-page checksums to detect which pages are torn, tracked in
+  [#5054](https://github.com/ArcadeData/arcadedb/issues/5054)). A clean close whose data fsync failed now
+  preserves the WAL and the lock file for recovery instead of deleting them (after a failed fsync the OS
+  may have dropped the dirty pages, so the WAL held the only durable copy;
+  [#4934](https://github.com/ArcadeData/arcadedb/issues/4934) - the runtime WAL rotation also skips its
+  drop pass when the pre-drop fsync fails).
 
 ### Improvements
 
