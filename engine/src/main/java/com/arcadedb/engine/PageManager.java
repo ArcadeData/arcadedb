@@ -296,7 +296,10 @@ public class PageManager extends LockContext {
   /**
    * Second half of {@link #updatePages}: publishes the validated pages (read cache + flush scheduling).
    * Runs AFTER the WAL append (#4936): from the caller's perspective the transaction is committed once the
-   * WAL is durable, and a failure here leaves the WAL to replay the pages on recovery.
+   * WAL is durable, and a failure here leaves the WAL to replay the pages on recovery. Releasing the global
+   * PageManager lock between the two halves is safe ONLY because the caller holds the per-file commit locks
+   * (until reset()), which serialize committers per file - no other transaction can validate, bump or
+   * publish these pages in the gap.
    */
   public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
       final boolean asyncFlush) throws IOException, InterruptedException {

@@ -734,22 +734,32 @@ public class TransactionContext implements Transaction {
       // place). The version checks below run after this block, so anything that changed while unlocked
       // fails validation with the standard retriable ConcurrentModificationException.
       if (isLeader && lockedFiles != null) {
-        // Single pass: seed the union with the locked files, then a file in the page set that add() reports
-        // as NEW (return true) is one that was not locked - a late joiner.
-        final IntHashSet union = new IntHashSet(lockedFiles.size() + modifiedPages.size());
-        for (final int fileId : lockedFiles)
-          union.add(fileId);
-
+        // Fast path first: in the overwhelmingly common case every touched file is already locked, and this
+        // is one of the hottest paths in the engine - detect late joiners with a plain scan (no allocation,
+        // no boxing) and only build the union set when one is actually found.
         boolean lateJoiners = false;
         for (final PageId pid : modifiedPages.keySet())
-          if (union.add(pid.getFileId()))
+          if (!containsFileId(lockedFiles, pid.getFileId())) {
             lateJoiners = true;
-        if (newPages != null)
+            break;
+          }
+        if (!lateJoiners && newPages != null)
           for (final PageId pid : newPages.keySet())
-            if (union.add(pid.getFileId()))
+            if (!containsFileId(lockedFiles, pid.getFileId())) {
               lateJoiners = true;
+              break;
+            }
 
         if (lateJoiners) {
+          final IntHashSet union = new IntHashSet(lockedFiles.size() + modifiedPages.size());
+          for (final int fileId : lockedFiles)
+            union.add(fileId);
+          for (final PageId pid : modifiedPages.keySet())
+            union.add(pid.getFileId());
+          if (newPages != null)
+            for (final PageId pid : newPages.keySet())
+              union.add(pid.getFileId());
+
           if (explicitLockMode)
             // The user's explicit lock list does not cover files this transaction actually modified:
             // re-locking on their behalf would defeat the explicit-locking contract - surface it as the
@@ -996,6 +1006,14 @@ public class TransactionContext implements Transaction {
     explicitLockedFiles = lockFilesInOrder(filesToLock);
   }
 
+  /** Boxing-free containment scan for the late-joiner fast path: lockedFiles is small (typically < 10). */
+  private static boolean containsFileId(final List<Integer> lockedFiles, final int fileId) {
+    for (int i = 0; i < lockedFiles.size(); i++)
+      if (lockedFiles.get(i) == fileId)
+        return true;
+    return false;
+  }
+
   private IntHashSet lockFilesFromChanges() {
     final IntHashSet modifiedFiles = new IntHashSet(modifiedPages.size() + 16);
 
@@ -1080,6 +1098,12 @@ public class TransactionContext implements Transaction {
    * {@code explicitLockedFiles}), so a file in the transaction's page set that is NOT in {@code lockedFiles}
    * is one the user did not lock. Surface it as the same contract violation a direct modification of an
    * unlocked file raises, rather than silently expanding their lock set.
+   * <p>
+   * Unlike {@link #checkExplicitLocks}, no migrated-file (index compaction) translation is needed here: that
+   * race lives in the window between snapshotting the file ids and acquiring the locks, and by this point
+   * the locks have been held continuously since the user's {@code lock()} call. Compaction's splitIndex must
+   * {@code tryLockFile} the file it migrates, so no file in {@code lockedFiles} can have been migrated while
+   * this transaction runs - a missing file here is genuinely unlocked, never a stale id of a locked one.
    */
   private void checkExplicitLocksForUnion(final IntHashSet union) {
     final Set<Integer> locked = new HashSet<>(lockedFiles);
