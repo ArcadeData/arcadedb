@@ -591,12 +591,6 @@ def test_TYPE_002_relationship_roundtrip(bolt_driver):
         assert rel.type is not None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="structure/BoltPath.java exists but has zero call sites "
-    "constructing it anywhere in BoltStructureMapper - query results never "
-    "actually produce native Path structures today; see #4890",
-)
 def test_TYPE_003_path_roundtrip(bolt_driver):
     from neo4j.graph import Path
 
@@ -680,12 +674,6 @@ def test_TYPE_010_offset_datetime_roundtrip(bolt_driver):
         assert echo["echo"] == dt
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="BoltStructureMapper/PackStreamWriter have no Duration handling "
-    "at all - not even a string fallback branch, falls through to generic "
-    "value.toString(); see #4890",
-)
 def test_TYPE_011_duration_roundtrip(bolt_driver):
     from neo4j.time import Duration
 
@@ -697,13 +685,6 @@ def test_TYPE_011_duration_roundtrip(bolt_driver):
         assert echo["echo"] == record["d"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="No Point/spatial type handling exists anywhere in "
-    "BoltStructureMapper or PackStreamWriter (the underlying ArcadeDB "
-    "Cypher engine itself does support point() - the gap is Bolt wire "
-    "serialization only); see #4890",
-)
 def test_TYPE_012_point_roundtrip(bolt_driver):
     from neo4j.spatial import Point
 
@@ -731,16 +712,6 @@ def test_ERR_001_syntax_error(bolt_driver):
         assert exc_info.value.code == "Neo.ClientError.Statement.SyntaxError"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="CypherSemanticValidator correctly detects the undefined "
-    "variable but throws it via CommandParsingException, the same "
-    "exception class used for genuine ANTLR syntax errors - "
-    "BoltNetworkExecutor's RUN handler maps error codes by exception "
-    "type, so it cannot distinguish semantic from syntax errors, "
-    "making Neo.ClientError.Statement.SemanticError effectively "
-    "dead code in the Bolt module; see #4890",
-)
 def test_ERR_002_semantic_error(bolt_driver):
     from neo4j.exceptions import ClientError
 

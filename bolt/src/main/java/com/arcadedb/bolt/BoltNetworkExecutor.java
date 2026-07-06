@@ -40,6 +40,7 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
@@ -628,7 +629,7 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       final String parseMsg = e.getMessage() != null ? e.getMessage() : "Query parsing error";
-      sendFailure(BoltException.SYNTAX_ERROR, parseMsg);
+      sendFailure(classifyParsingError(e), parseMsg);
       state = State.FAILED;
     } catch (final Exception e) {
       // MVCC conflicts (NeedRetryException) are expected under contention and auto-retried by the driver,
@@ -1635,6 +1636,15 @@ public class BoltNetworkExecutor extends Thread {
    */
   static String classifyExecutionError(final Throwable error, final String defaultCode) {
     return isRetryableConflict(error) ? BoltErrorCodes.TRANSIENT_CONFLICT_ERROR : defaultCode;
+  }
+
+  /**
+   * Classify a query-parsing error into a Bolt status code. {@link CommandSemanticException} marks a
+   * statement that parsed correctly but violates a semantic rule (e.g. an undefined variable), so it maps
+   * to Neo4j's SemanticError; every other {@link CommandParsingException} is a genuine syntax error.
+   */
+  static String classifyParsingError(final CommandParsingException error) {
+    return error instanceof CommandSemanticException ? BoltErrorCodes.SEMANTIC_ERROR : BoltErrorCodes.SYNTAX_ERROR;
   }
 
   /**

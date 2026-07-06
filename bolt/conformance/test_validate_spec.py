@@ -85,10 +85,10 @@ class ValidateSpecTest(unittest.TestCase):
 
     def test_missing_gap_tracking_area_is_flagged(self):
         spec = minimal_valid_spec()
-        spec["scenarios"] = [s for s in spec["scenarios"] if s["id"] != "TYPE-900"]
+        spec["scenarios"] = [s for s in spec["scenarios"] if s["id"] != "CONN-900"]
         errors = validate(spec)
         self.assertTrue(
-            any("type-roundtrip" in e for e in errors), errors
+            any("connection" in e for e in errors), errors
         )
 
     def test_missing_driver_language_is_flagged(self):
