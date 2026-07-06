@@ -52,9 +52,12 @@ import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ArcadeDBException;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryNotIdempotentException;
 import com.arcadedb.exception.SchemaException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
@@ -156,24 +159,31 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * while a non-retryable {@link TimeoutException} stays distinct instead of being mistaken for a
    * retryable one. It also lets callers catch the specific type directly.
    * <p>
-   * Only exceptions with a single {@code (String)} constructor belong here; types that need
-   * structured arguments (e.g. {@link DuplicatedKeyException}) are reconstructed explicitly in
-   * {@link #reconstructLeaderException}. New entries are safe to add as one line each; extending
-   * this map is preferred over reflectively instantiating an arbitrary class name from the response.
+   * Only {@link ArcadeDBException} subtypes with a single {@code (String)} constructor belong here:
+   * non-{@code ArcadeDBException} types (e.g. {@code SecurityException}) would not be caught by the
+   * {@code catch (ArcadeDBException)} on the forwarding path and would be re-wrapped anyway, and
+   * types that need structured arguments (e.g. {@link DuplicatedKeyException}) are reconstructed
+   * explicitly in {@link #reconstructLeaderException}. New entries are safe to add as one line each;
+   * extending this map is preferred over reflectively instantiating an arbitrary class name from the
+   * response. {@link Map#ofEntries} is used (rather than {@link Map#of}) because the latter caps at
+   * ten pairs.
    * <p>
    * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name
    * because this file imports {@link java.util.ConcurrentModificationException}.
    */
-  private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.of(
-      NeedRetryException.class.getName(), NeedRetryException::new,
-      com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new,
-      LockTimeoutException.class.getName(), LockTimeoutException::new,
-      TimeoutException.class.getName(), TimeoutException::new,
-      TransactionException.class.getName(), TransactionException::new,
-      CommandExecutionException.class.getName(), CommandExecutionException::new,
-      CommandParsingException.class.getName(), CommandParsingException::new,
-      ValidationException.class.getName(), ValidationException::new,
-      SchemaException.class.getName(), SchemaException::new);
+  private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.ofEntries(
+      Map.entry(NeedRetryException.class.getName(), NeedRetryException::new),
+      Map.entry(com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new),
+      Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
+      Map.entry(TimeoutException.class.getName(), TimeoutException::new),
+      Map.entry(TransactionException.class.getName(), TransactionException::new),
+      Map.entry(CommandExecutionException.class.getName(), CommandExecutionException::new),
+      Map.entry(CommandParsingException.class.getName(), CommandParsingException::new),
+      Map.entry(CommandSQLParsingException.class.getName(), CommandSQLParsingException::new),
+      Map.entry(CommandSemanticException.class.getName(), CommandSemanticException::new),
+      Map.entry(QueryNotIdempotentException.class.getName(), QueryNotIdempotentException::new),
+      Map.entry(ValidationException.class.getName(), ValidationException::new),
+      Map.entry(SchemaException.class.getName(), SchemaException::new));
 
   /** Poll cadence while waiting for a leader to be (re)elected before forwarding a write (issue #4728 follow-up). */
   private static final long LEADER_WAIT_POLL_INTERVAL_MS = 100;
