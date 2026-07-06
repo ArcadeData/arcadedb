@@ -127,9 +127,8 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       // Sweep the probe nodes the write scenarios leave in the shared beer
       // database so a later suite that asserts an unscoped count is not surprised.
       try (final Session s = boltSession()) {
-        s.run("MATCH (n) WHERE n:TxProbe OR n:RaceProbe OR n:CausalProbe DETACH DELETE n").consume();
-        s.run("MATCH (b:Beer) WHERE b.name IN ['TX-004-Beer', 'RESULT-004-Beer'] DETACH DELETE b").consume();
-        s.run("MATCH (b:Brewery) WHERE b.name = 'RESULT-004-Brewery' DETACH DELETE b").consume();
+        s.run("MATCH (n) WHERE n:TxProbe OR n:RaceProbe OR n:CausalProbe OR n:R004Src OR n:R004Dst DETACH DELETE n").consume();
+        s.run("MATCH (b:Beer) WHERE b.name = 'TX-004-Beer' DETACH DELETE b").consume();
       } catch (final RuntimeException ignored) {
         // best-effort cleanup; never fail the suite on teardown
       }
@@ -494,14 +493,14 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[RESULT-004] ResultSummary counters reflect writes")
     void result004_counters() {
-      // Autocommit CREATE, matching the python/go/js/csharp suites: the RUN/PULL summary carries the
-      // write counters regardless of commit. The probe nodes are removed by the per-test cleanup.
-      // An explicit transaction is intentionally not used - auto-creating the BREWED_BY edge type
-      // (schema DDL) inside an explicit transaction is a separate concern this scenario does not test.
+      // Certifies that the RUN summary carries write counters. Uses dedicated types rather than the
+      // fixture's Beer/Brewery: the ArcadeDB container is shared across all e2e IT classes, and
+      // RemoteDatabaseJavaApiIT renames the Beer type (ALTER TYPE ... NAME), which corrupts Beer's
+      // edge buckets for any later suite. Dedicated types keep this scenario order-independent.
       try (final Session s = boltSession()) {
         final ResultSummary summary = s.run(
-            "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
-            Map.of("n", "RESULT-004-Beer", "b", "RESULT-004-Brewery")).consume();
+            "CREATE (:R004Src {name: $n})-[:R004_MADE]->(:R004Dst {name: $b})",
+            Map.of("n", "R004-Src", "b", "R004-Dst")).consume();
         assertThat(summary.counters().nodesCreated()).isEqualTo(2);
         assertThat(summary.counters().relationshipsCreated()).isEqualTo(1);
       }
