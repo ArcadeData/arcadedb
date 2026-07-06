@@ -315,4 +315,18 @@ class CypherQueryStatisticsTest extends TestHelper {
       assertThat(s.getPropertiesSet()).isEqualTo(1);
     });
   }
+
+  @Test
+  void detachDeleteSelfLoopCountsRelationshipOnce() {
+    // A self-loop relationship is returned by both vertex.getEdges(OUT) and vertex.getEdges(IN),
+    // so the immediate (non-FOREACH) DETACH DELETE path must de-dup it: exactly 1 relationship
+    // deleted, not 2, and no RecordNotFoundException from deleting the same edge twice.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (a:SL {id:1})");
+      database.command("opencypher", "MATCH (a:SL {id:1}) CREATE (a)-[:LOOP]->(a)");
+      final QueryStatistics s = statsOf(database, "MATCH (a:SL {id:1}) DETACH DELETE a");
+      assertThat(s.getNodesDeleted()).isEqualTo(1);
+      assertThat(s.getRelationshipsDeleted()).isEqualTo(1);
+    });
+  }
 }

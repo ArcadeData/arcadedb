@@ -19,6 +19,7 @@
 package com.arcadedb.query.opencypher.executor.steps;
 
 import com.arcadedb.database.Document;
+import com.arcadedb.database.RID;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.RecordNotFoundException;
 import com.arcadedb.exception.TimeoutException;
@@ -38,7 +39,6 @@ import com.arcadedb.query.sql.executor.ResultSet;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -498,27 +498,25 @@ public class DeleteStep extends AbstractExecutionStep {
    * @param vertex vertex whose edges should be deleted
    */
   private void deleteAllEdges(final Vertex vertex) {
-    // Collect all edges to delete (both incoming and outgoing)
-    // We collect first to avoid concurrent modification
+    // Collect connected edges in both directions, de-duplicating self-loops (which appear in both
+    // OUT and IN) so a self-loop relationship is deleted and counted exactly once.
     final List<Edge> edgesToDelete = new ArrayList<>();
+    final Set<RID> seen = new HashSet<>();
+    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
+      if (seen.add(edge.getIdentity()))
+        edgesToDelete.add(edge);
+    for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))
+      if (seen.add(edge.getIdentity()))
+        edgesToDelete.add(edge);
 
-    // Collect outgoing edges
-    final Iterator<Edge> outgoing = vertex.getEdges(Vertex.DIRECTION.OUT).iterator();
-    while (outgoing.hasNext()) {
-      edgesToDelete.add(outgoing.next());
-    }
-
-    // Collect incoming edges
-    final Iterator<Edge> incoming = vertex.getEdges(Vertex.DIRECTION.IN).iterator();
-    while (incoming.hasNext()) {
-      edgesToDelete.add(incoming.next());
-    }
-
-    // Delete all collected edges
     final QueryStatistics stats = context.getStatistics();
     for (final Edge edge : edgesToDelete) {
-      edge.delete();
-      stats.incRelationshipsDeleted();
+      try {
+        edge.delete();
+        stats.incRelationshipsDeleted();
+      } catch (final RecordNotFoundException ignored) {
+        // already removed (e.g. a shared edge deleted when the other endpoint was detached) - do not count again
+      }
     }
   }
 

@@ -44,6 +44,8 @@ final class BoltResultStats {
     putIfNonZero(stats, "indexes-removed", s.getIndexesRemoved());
     putIfNonZero(stats, "constraints-added", s.getConstraintsAdded());
     putIfNonZero(stats, "constraints-removed", s.getConstraintsRemoved());
+    // contains-updates is emitted unconditionally as true, so callers must only invoke this when
+    // the source statistics report containsUpdates().
     stats.put("contains-updates", true);
     return stats;
   }
