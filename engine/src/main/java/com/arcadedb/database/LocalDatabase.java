@@ -2303,6 +2303,29 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
     }
   }
 
+  /**
+   * #5053 review: set when a commit fails AFTER its transaction was appended to the WAL (the point of no
+   * return) but BEFORE its pages were published. From that moment the WAL and the live state diverge: the
+   * transaction is durable (recovery will replay it) but invisible, and letting new transactions run would
+   * let them bump the same page versions and append conflicting WAL records for the same target versions.
+   * Fencing turns the divergence into the same crash-equivalent close/reopen cycle used elsewhere (#4928):
+   * the orphaned record's pages were never flush-acked, so the ack-gated close preserves the WAL and the
+   * lock file, and the next open replays it.
+   */
+  private volatile String fenceReason = null;
+
+  public void fenceForRecovery(final String reason) {
+    if (fenceReason == null) {
+      fenceReason = reason;
+      LogManager.instance().log(this, Level.SEVERE,
+          "Database '%s' fenced for recovery: %s. Close and reopen the database to replay the WAL", null, name, reason);
+    }
+  }
+
+  public boolean isFencedForRecovery() {
+    return fenceReason != null;
+  }
+
   protected void checkDatabaseIsOpen() {
     checkDatabaseIsOpen(false, null);
   }
@@ -2310,6 +2333,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
   protected void checkDatabaseIsOpen(final boolean updateIntent, final String databaseReadOnlyErrorMessage) {
     if (!open)
       throw new DatabaseIsClosedException(name);
+    if (fenceReason != null)
+      // #5053 review: a commit failed AFTER its WAL append - the WAL holds a record whose pages were never
+      // published, so the live in-memory state diverges from what recovery will reconstruct. Every further
+      // operation is fenced until the database is closed (the close-time ack gate preserves the WAL, since
+      // the orphaned record's pages were never flush-acked) and reopened, which replays the record.
+      throw new DatabaseOperationException(
+          "Database '" + name + "' is fenced after a failure past the WAL commit point: close and reopen the database to run recovery ("
+              + fenceReason + ")");
     if (DatabaseContext.INSTANCE.getContextIfExists(databasePath) == null)
       DatabaseContext.INSTANCE.init(this);
 
