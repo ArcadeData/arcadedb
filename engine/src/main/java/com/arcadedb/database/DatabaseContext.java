@@ -32,10 +32,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Thread local to store transaction data.
  */
 public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.DatabaseContextTL>> {
-  public static final  DatabaseContext                          INSTANCE          = new DatabaseContext();
-  private static final ConcurrentHashMap<Long, ThreadContexts>  CONTEXTS          = new ConcurrentHashMap<>();
-  private static final AtomicInteger                            INIT_CALL_COUNTER = new AtomicInteger();
-  private static final int                                      CLEANUP_INTERVAL  = 1000;
+  public static final  DatabaseContext                         INSTANCE          = new DatabaseContext();
+  private static final ConcurrentHashMap<Long, ThreadContexts> CONTEXTS          = new ConcurrentHashMap<>();
+  private static final AtomicInteger                           INIT_CALL_COUNTER = new AtomicInteger();
+  private static final int                                     CLEANUP_INTERVAL  = 1000;
 
   /**
    * One CONTEXTS entry: the per-thread contexts map plus a weak reference to the owning thread, used for the
@@ -100,7 +100,7 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       }
     }
 
-    // ALWAYS ENSURE THE MAP IS REGISTERED IN CONTEXTS (the dead-thread sweep may have pruned a reused thread id).
+    // ALWAYS ENSURE THE MAP IS REGISTERED IN CONTEXTS (the dead-thread sweep may have pruned this entry).
     // AVOID THE PUT (AND THE WeakReference ALLOCATION) WHEN THE SAME MAP IS ALREADY REGISTERED: THE MAP IS
     // PER-THREAD, SO IDENTITY IMPLIES THE ENTRY BELONGS TO THIS THREAD
     final Thread currentThread = Thread.currentThread();
@@ -244,7 +244,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
   private static void rollbackAbandonedTransactions(final DatabaseContextTL tl) {
     for (int i = tl.transactions.size() - 1; i > -1; --i) {
       try {
-        tl.transactions.get(i).rollback();
+        final TransactionContext tx = tl.transactions.get(i);
+        if (tx.isActive())
+          tx.rollback();
       } catch (final Throwable e) {
         // IGNORE ERRORS: BEST-EFFORT CLEANUP OF TRANSACTIONS ABANDONED BY A DEAD THREAD
       }
