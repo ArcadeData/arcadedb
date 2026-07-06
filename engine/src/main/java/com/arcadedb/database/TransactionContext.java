@@ -825,6 +825,11 @@ public class TransactionContext implements Transaction {
     } catch (final DuplicatedKeyException | ConcurrentModificationException e) {
       rollback();
       throw e;
+    } catch (final TransactionException e) {
+      // Already a first-class transaction error (e.g. the explicit-lock contract violation): rethrow as-is
+      // instead of double-wrapping it in a generic "Transaction error on commit" (#5053 review).
+      rollback();
+      throw e;
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
@@ -1006,7 +1011,10 @@ public class TransactionContext implements Transaction {
     explicitLockedFiles = lockFilesInOrder(filesToLock);
   }
 
-  /** Boxing-free containment scan for the late-joiner fast path: lockedFiles is small (typically < 10). */
+  /**
+   * Allocation-free containment scan for the late-joiner fast path (lockedFiles is small, typically < 10):
+   * get(i) == fileId unboxes the stored Integer but allocates nothing new.
+   */
   private static boolean containsFileId(final List<Integer> lockedFiles, final int fileId) {
     for (int i = 0; i < lockedFiles.size(); i++)
       if (lockedFiles.get(i) == fileId)
