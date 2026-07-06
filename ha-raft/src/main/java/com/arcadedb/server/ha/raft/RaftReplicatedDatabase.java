@@ -147,6 +147,34 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
 
+  /**
+   * Registry of leader-side exception class names to a factory that rebuilds the same type from its
+   * message, used by {@link #reconstructLeaderException} on forwarded-command errors. Reconstructing
+   * the exact type (rather than collapsing to a common supertype) preserves retry semantics for
+   * callers: a {@link com.arcadedb.exception.ConcurrentModificationException} or
+   * {@link LockTimeoutException} stays a {@link NeedRetryException} subtype and therefore retryable,
+   * while a non-retryable {@link TimeoutException} stays distinct instead of being mistaken for a
+   * retryable one. It also lets callers catch the specific type directly.
+   * <p>
+   * Only exceptions with a single {@code (String)} constructor belong here; types that need
+   * structured arguments (e.g. {@link DuplicatedKeyException}) are reconstructed explicitly in
+   * {@link #reconstructLeaderException}. New entries are safe to add as one line each; extending
+   * this map is preferred over reflectively instantiating an arbitrary class name from the response.
+   * <p>
+   * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name
+   * because this file imports {@link java.util.ConcurrentModificationException}.
+   */
+  private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.of(
+      NeedRetryException.class.getName(), NeedRetryException::new,
+      com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new,
+      LockTimeoutException.class.getName(), LockTimeoutException::new,
+      TimeoutException.class.getName(), TimeoutException::new,
+      TransactionException.class.getName(), TransactionException::new,
+      CommandExecutionException.class.getName(), CommandExecutionException::new,
+      CommandParsingException.class.getName(), CommandParsingException::new,
+      ValidationException.class.getName(), ValidationException::new,
+      SchemaException.class.getName(), SchemaException::new);
+
   /** Poll cadence while waiting for a leader to be (re)elected before forwarding a write (issue #4728 follow-up). */
   private static final long LEADER_WAIT_POLL_INTERVAL_MS = 100;
 
@@ -1765,33 +1793,6 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
 
     return resultSet;
   }
-
-  /**
-   * Registry of leader-side exception class names to a factory that rebuilds the same type from its
-   * message. Reconstructing the exact type (rather than collapsing to a common supertype) preserves
-   * retry semantics for callers: a {@link com.arcadedb.exception.ConcurrentModificationException} or
-   * {@link LockTimeoutException} stays a {@link NeedRetryException} subtype and therefore retryable,
-   * while a non-retryable {@link TimeoutException} stays distinct instead of being mistaken for a
-   * retryable one. It also lets callers catch the specific type directly.
-   * <p>
-   * Only exceptions with a single {@code (String)} constructor belong here; types that need
-   * structured arguments (e.g. {@link DuplicatedKeyException}) are reconstructed explicitly in
-   * {@link #reconstructLeaderException}. New entries are safe to add as one line each; extending
-   * this map is preferred over reflectively instantiating an arbitrary class name from the response.
-   * <p>
-   * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name
-   * because this file imports {@link java.util.ConcurrentModificationException}.
-   */
-  private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.of(
-      NeedRetryException.class.getName(), NeedRetryException::new,
-      com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new,
-      LockTimeoutException.class.getName(), LockTimeoutException::new,
-      TimeoutException.class.getName(), TimeoutException::new,
-      TransactionException.class.getName(), TransactionException::new,
-      CommandExecutionException.class.getName(), CommandExecutionException::new,
-      CommandParsingException.class.getName(), CommandParsingException::new,
-      ValidationException.class.getName(), ValidationException::new,
-      SchemaException.class.getName(), SchemaException::new);
 
   /**
    * Parses the JSON error body returned by the leader and reconstructs the original exception so
