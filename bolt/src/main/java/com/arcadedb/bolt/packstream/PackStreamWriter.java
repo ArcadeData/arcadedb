@@ -81,6 +81,21 @@ public class PackStreamWriter {
     this.out = new DataOutputStream(buffer);
   }
 
+  private int boltMajorVersion = 4;
+
+  /**
+   * Sets the negotiated Bolt major version driving version-dependent structure encoding
+   * (element_id fields on graph elements, UTC vs legacy datetime signatures). Defaults to 4.
+   */
+  public PackStreamWriter boltMajorVersion(final int boltMajorVersion) {
+    this.boltMajorVersion = boltMajorVersion;
+    return this;
+  }
+
+  public int getBoltMajorVersion() {
+    return boltMajorVersion;
+  }
+
   /**
    * Write null value.
    */

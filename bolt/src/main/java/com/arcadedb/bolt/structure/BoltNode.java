@@ -58,12 +58,18 @@ public class BoltNode implements PackStreamStructure {
 
   @Override
   public void writeTo(final PackStreamWriter writer) throws IOException {
-    // Use BOLT v4.x format with 3 fields for compatibility
-    writer.writeStructureHeader(SIGNATURE, 3);
-    writer.writeInteger(id);
-    writer.writeList(labels);
-    writer.writeMap(properties);
-    // Note: element_id is omitted for v4.x compatibility
+    if (writer.getBoltMajorVersion() >= 5) {
+      writer.writeStructureHeader(SIGNATURE, 4);
+      writer.writeInteger(id);
+      writer.writeList(labels);
+      writer.writeMap(properties);
+      writer.writeString(elementId);
+    } else {
+      writer.writeStructureHeader(SIGNATURE, 3);
+      writer.writeInteger(id);
+      writer.writeList(labels);
+      writer.writeMap(properties);
+    }
   }
 
   public long getId() {
