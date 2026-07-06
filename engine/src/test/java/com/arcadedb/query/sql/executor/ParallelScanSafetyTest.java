@@ -20,9 +20,12 @@ package com.arcadedb.query.sql.executor;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.query.QueryEngineManager;
 import org.junit.jupiter.api.Test;
+
+import java.lang.reflect.Field;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -30,6 +33,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Regression tests for the parallel bucket scan safety fixes:
@@ -175,6 +179,40 @@ class ParallelScanSafetyTest extends TestHelper {
   }
 
   @Test
+  void failingProducerFailsTheQueryInsteadOfTruncatingIt() {
+    createAndPopulate();
+
+    final BasicCommandContext context = new BasicCommandContext();
+    context.setDatabase(database);
+    final FetchFromTypeExecutionStep step = new FetchFromTypeExecutionStep(TYPE_NAME, null, context, null);
+    try {
+      // Inject a poisoned sub-step: its producer dies mid-scan. The two healthy bucket producers keep
+      // feeding rows, but the consumer must FAIL, never report the (possibly truncated) scan as success.
+      // NOTE: an Error thrown here reaches the producer's recovery WRAPPED in DatabaseOperationException
+      // (executeInReadLock converts every non-RuntimeException Throwable), so this test locks in the general
+      // failure-surfacing guarantee; the producer's catch is still Throwable because an Error raised OUTSIDE
+      // the read-lock section (emit loop, context init) would otherwise slip past it and report the
+      // truncation as success.
+      step.getSubSteps().add(new AbstractExecutionStep(context) {
+        @Override
+        public ResultSet syncPull(final CommandContext ctx, final int nRecords) {
+          throw new AssertionError("injected producer failure");
+        }
+      });
+
+      final ResultSet rs = step.syncPull(context, RECORDS + 1);
+      assertThatThrownBy(() -> {
+        while (rs.hasNext())
+          rs.next();
+      }).as("a failed producer must fail the query, not shrink its result set")
+          .isInstanceOf(CommandExecutionException.class)
+          .hasMessageContaining("Parallel scan failed");
+    } finally {
+      step.close();
+    }
+  }
+
+  @Test
   void abandonedResultSetReleasesProducersAndSurfacesFailure() throws Exception {
     createAndPopulate();
 
@@ -192,7 +230,7 @@ class ParallelScanSafetyTest extends TestHelper {
         // queue forever (leaking their pool threads).
         final ResultSet rs = step.syncPull(context, RECORDS + 1);
 
-        final java.lang.reflect.Field failureField = FetchFromTypeExecutionStep.class.getDeclaredField("parallelScanFailure");
+        final Field failureField = FetchFromTypeExecutionStep.class.getDeclaredField("parallelScanFailure");
         failureField.setAccessible(true);
         final long deadline = System.currentTimeMillis() + 20_000;
         while (failureField.get(step) == null && System.currentTimeMillis() < deadline)
@@ -203,8 +241,8 @@ class ParallelScanSafetyTest extends TestHelper {
             .isNotNull();
 
         // If the consumer ever comes back, it must FAIL loudly, not silently receive a truncated result.
-        org.assertj.core.api.Assertions.assertThatThrownBy(rs::hasNext)
-            .isInstanceOf(com.arcadedb.exception.CommandExecutionException.class)
+        assertThatThrownBy(rs::hasNext)
+            .isInstanceOf(CommandExecutionException.class)
             .hasMessageContaining("Parallel scan");
       } finally {
         step.close();

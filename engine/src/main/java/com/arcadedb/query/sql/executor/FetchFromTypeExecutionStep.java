@@ -344,12 +344,18 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
                 }
               }
             }
-          } catch (final Exception e) {
+          } catch (final Throwable e) {
             // Record the first failure so the consumer FAILS instead of silently receiving fewer rows
             // (partial results reported as success - the same anti-pattern #4951 fixes for graph algorithms).
+            // Throwable, not Exception, on purpose: an Error (OOM, StackOverflowError, AssertionError) that
+            // killed this producer would otherwise leave parallelScanFailure null, the completion thread
+            // would mark the scan complete, and the consumer would report the truncated scan as success -
+            // the exact failure mode this catch exists to prevent. Recording a field cannot fail, so
+            // swallowing the Error here is safe for the pool thread.
             if (parallelScanFailure == null)
               parallelScanFailure = e;
-            LogManager.instance().log(this, Level.WARNING, "Error during parallel bucket scan", e);
+            LogManager.instance().log(this, e instanceof Error ? Level.SEVERE : Level.WARNING,
+                "Error during parallel bucket scan", e);
           } finally {
             DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
           }

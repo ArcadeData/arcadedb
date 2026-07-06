@@ -103,9 +103,17 @@ that could starve the very snapshot resync meant to heal the node.
   ([#4950](https://github.com/ArcadeData/arcadedb/issues/4950)). Two behavior changes ride along: a scan
   producer that fails now FAILS the query instead of silently returning fewer rows, and a parallel-scan
   result set left neither consumed nor closed is abandoned after 10 minutes of consumer inactivity on a full
-  buffer (its query then fails on the next access). Workloads that hold cursors open with long idle pauses
-  (e.g. Postgres/Bolt wire portals) can raise `arcadedb.parallelScanAbandonedTimeout` or set it to 0 to
-  restore the previous park-until-closed behavior.
+  buffer (its query then fails on the next access).
+
+  **Upgrade guidance for the abandonment timeout** (parallel scan is enabled by default, so this applies to
+  every multi-bucket full scan): a consumer that is alive but pauses BETWEEN reads for longer than the
+  timeout - a stalled streaming client, a wire-protocol portal (Postgres `FETCH`, Bolt `PULL`) held open
+  across a long idle gap, or very heavy per-row downstream processing - now receives a
+  `CommandExecutionException` mentioning "Parallel scan abandoned", where it previously just blocked the
+  scan's producers. If your deployment holds cursors open across idle pauses approaching 10 minutes, raise
+  `arcadedb.parallelScanAbandonedTimeout` (milliseconds) or set it to `0` to disable the timeout and restore
+  the previous park-until-closed behavior. Plain HTTP API and console clients are unaffected (they drain
+  results synchronously).
 - **Query: parallel scan workers no longer race on the caller's command context.** Every scan worker shared
   the caller's `CommandContext` and concurrently wrote `$current` into its non-thread-safe variables map on
   every row - corrupting `$current` semantics for downstream expressions and risking `HashMap` corruption
