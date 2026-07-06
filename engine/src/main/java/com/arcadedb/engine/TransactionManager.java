@@ -461,17 +461,34 @@ public class TransactionManager {
             .log(this, Level.FINE, "-- checking page %s versionInLog=%d versionInDB=%d", null, pageId, txPage.currentPageVersion,
                 page.getVersion());
 
-        if (txPage.currentPageVersion <= page.getVersion()) {
-          // Always skip already-applied pages instead of aborting the entire transaction.
-          // During Raft state machine replay or crash recovery, a partial apply may have
-          // written some pages but not others. Skipping only the already-applied pages
-          // (instead of throwing ConcurrentModificationException and aborting the loop)
-          // ensures the remaining un-applied pages in the same transaction are still processed.
-          // This prevents version-gap cascades where skipping a multi-page transaction leaves
-          // some pages behind, causing WALVersionGapException on all subsequent transactions
-          // that touch those pages.
+        if (txPage.currentPageVersion < page.getVersion()) {
+          // Always skip OLDER pages instead of aborting the entire transaction. During Raft state machine
+          // replay or crash recovery, a partial apply may have written some pages but not others. Skipping
+          // only the superseded pages (instead of throwing ConcurrentModificationException and aborting the
+          // loop) ensures the remaining un-applied pages in the same transaction are still processed. This
+          // prevents version-gap cascades where skipping a multi-page transaction leaves some pages behind,
+          // causing WALVersionGapException on all subsequent transactions that touch those pages.
+          //
+          // #4926: STRICTLY older only - the equal-version case falls through and RE-APPLIES the delta. A
+          // 64KB page flush is many disk sectors and the version header lives in sector 0: a torn write at
+          // power loss can persist the new version header while the delta sectors still hold the previous
+          // content. The old `<=` skip declared such a page "already applied" and left it silently corrupt
+          // (new version, old bytes) despite an intact WAL. Re-applying at equal version is idempotent (the
+          // WAL delta carries absolute bytes for exactly this version) and repairs the torn state; skipping
+          // a STRICTLY older entry remains required, because its delta would overwrite newer content.
+          //
+          // KNOWN LIMITATION (multi-version accumulation): async flush coalesces several committed versions
+          // into a single physical page write, so a page can jump v1(on-disk) -> v2 -> v3 -> v4 with only the
+          // v4 flush hitting the platter. If THAT flush tears, only v4's delta region is repaired here; the
+          // regions changed by v2/v3 (skipped as strictly-older) can stay torn. The version header alone
+          // cannot tell a torn page from an intact one, so detecting which pages need the older deltas
+          // re-applied needs a per-page checksum (the longer-term fix noted in #4926, tracked in #5054); an
+          // unconditional
+          // in-order replay of every entry <= disk version would repair it but changes the recovery
+          // semantics that also govern the version-gap/forceApply paths, out of scope here. This fix still
+          // strictly improves on `<=` (which repaired nothing) and fully covers the single-flush case.
           LogManager.instance().log(this, Level.FINE,
-              "Skipping already-applied page %s (log v.%d <= db v.%d)", null,
+              "Skipping superseded page %s (log v.%d < db v.%d)", null,
               pageId, txPage.currentPageVersion, page.getVersion());
           continue;
         }
@@ -866,7 +883,11 @@ public class TransactionManager {
             // Make the data pages durable before the WAL that protects them is deleted. fsync once, lazily,
             // right before the first WAL file is actually dropped in this pass (issue #4509).
             if (syncDataOnDrop && !dataSynced) {
-              database.getFileManager().syncFiles();
+              if (!database.getFileManager().syncFiles()) {
+                // #4934: the fsync failed - the data this WAL protects may never reach the disk. Dropping
+                // the WAL now would make it unrecoverable; abort this pass, the rotation retries later.
+                return false;
+              }
               dataSynced = true;
             }
             file.drop();

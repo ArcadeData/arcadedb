@@ -2063,11 +2063,17 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       // CRASH-EQUIVALENT: the WAL files and the lock file are preserved below, so the next open runs
       // recovery and replays the pages that never reached the disk, instead of this close silently
       // deleting the only durable copy of them.
-      final boolean allPagesFlushed = PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(this);
-      final boolean preserveWalForRecovery = !allPagesFlushed && !drop;
+      boolean dataSafeOnDisk = PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(this);
 
-      if (!drop)
-        fileManager.syncFiles();
+      if (!drop && !fileManager.syncFiles()) {
+        // #4934: the fsync failed, so the OS may have dropped the dirty pages (fsyncgate semantics) - the
+        // pages the wait above considered flushed may never reach the platter. Deleting the WAL below would
+        // then make the committed data unrecoverable after a power loss, with only a log line as evidence.
+        // Treat the close as crash-equivalent instead: preserve WAL + lock file, recover on next open.
+        dataSafeOnDisk = false;
+      }
+
+      final boolean preserveWalForRecovery = !dataSafeOnDisk && !drop;
 
       open = false;
 
