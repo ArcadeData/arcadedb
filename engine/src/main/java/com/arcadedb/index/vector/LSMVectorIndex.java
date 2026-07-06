@@ -3730,6 +3730,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
 
   @Override
   public List<Integer> getFileIds() {
+    // #4937: the companion graph file receives page writes during the transaction too - it must be part of
+    // the commit lock set, or its pages pass the version checks without their file lock held.
+    if (graphFile != null)
+      return List.of(mutable.getFileId(), graphFile.getFileId());
     return Collections.singletonList(mutable.getFileId());
   }
 
