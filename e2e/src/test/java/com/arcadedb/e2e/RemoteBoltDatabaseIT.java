@@ -28,6 +28,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Bookmark;
 import org.neo4j.driver.Config;
@@ -263,6 +265,8 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     }
 
     @Test
+    @DisabledOnOs(value = { OS.MAC, OS.WINDOWS }, disabledReason = "neo4j:// single-node routing advertises the container bridge IP, "
+        + "which is not host-routable on Docker Desktop (macOS/Windows); verified in Linux CI only")
     @DisplayName("[CONN-003] neo4j:// routing discovery, single-node")
     void conn003_routingSingleNode() {
       // handleRoute advertises the server's own bound address
