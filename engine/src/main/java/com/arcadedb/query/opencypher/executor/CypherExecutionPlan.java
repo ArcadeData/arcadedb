@@ -309,6 +309,10 @@ public class CypherExecutionPlan {
    * @return result set from the inner query execution
    */
   public ResultSet executeWithSeedRow(final Result seedRow) {
+    // Limitation: each branch/inner plan runs with its own BasicCommandContext, so QueryStatistics
+    // from writes performed inside this CALL subquery are not aggregated into the outer plan's
+    // statistics. The ResultSet returned to the caller only reflects top-level mutation steps.
+
     // Handle UNION inside CALL subqueries: execute each branch with the seed row
     if (statement instanceof UnionStatement unionStmt) {
       final List<CypherExecutionPlan> branchPlans = new ArrayList<>();
@@ -400,6 +404,10 @@ public class CypherExecutionPlan {
    * @return combined result set
    */
   private ResultSet executeUnion() {
+    // Limitation: each UNION branch executes as its own sub-plan with its own QueryStatistics, so
+    // write statistics from inside a branch are not aggregated into the combined ResultSet's
+    // statistics; only top-level mutation steps outside the UNION are reflected there.
+
     // Use UnionStep to combine results from all subqueries
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);

@@ -81,6 +81,38 @@ class CypherQueryStatisticsTest extends TestHelper {
   }
 
   @Test
+  void removeAbsentPropertyCountsZero() {
+    // Neo4j reports properties-set: 0 when REMOVE targets a property that isn't present.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Widget3 {name:'x'})");
+      final QueryStatistics s = statsOf(database, "MATCH (n:Widget3 {name:'x'}) REMOVE n.doesNotExist");
+      assertThat(s.getPropertiesSet()).isZero();
+      assertThat(s.containsUpdates()).isFalse();
+    });
+  }
+
+  @Test
+  void setAbsentPropertyToNullCountsZero() {
+    // SET n.absent = null on a property that was never set is a no-op removal: Neo4j counts 0.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Widget4 {name:'x'})");
+      final QueryStatistics s = statsOf(database, "MATCH (n:Widget4 {name:'x'}) SET n.absent = null");
+      assertThat(s.getPropertiesSet()).isZero();
+    });
+  }
+
+  @Test
+  void removeExistingPropertyStillCountsOne() {
+    // Control: removing a property that genuinely exists must still count 1 (guards against
+    // regressing the existing-property removal path while fixing the absent-property case above).
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Widget5 {name:'x'})");
+      final QueryStatistics s = statsOf(database, "MATCH (n:Widget5 {name:'x'}) REMOVE n.name");
+      assertThat(s.getPropertiesSet()).isEqualTo(1);
+    });
+  }
+
+  @Test
   void deleteNode() {
     database.transaction(() -> {
       database.command("opencypher", "CREATE (:Doomed {id:1})");

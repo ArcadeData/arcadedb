@@ -191,6 +191,10 @@ public class RemoveStep extends AbstractExecutionStep {
 
     final Document doc = (Document) obj;
 
+    // Removing a property that isn't there is a no-op for Neo4j-compatible statistics: only
+    // count it when the property actually existed before the removal.
+    final boolean propertyExisted = doc.has(property);
+
     // Make document mutable
     final MutableDocument mutableDoc = doc.modify();
 
@@ -200,8 +204,8 @@ public class RemoveStep extends AbstractExecutionStep {
     // Save the modified document
     mutableDoc.save();
 
-    // Neo4j-compatible statistics: property removals are counted under "properties set".
-    context.getStatistics().addPropertiesSet(1);
+    if (propertyExisted)
+      context.getStatistics().addPropertiesSet(1);
 
     // Update the result with the modified document
     ((ResultInternal) result).setProperty(variable, mutableDoc);

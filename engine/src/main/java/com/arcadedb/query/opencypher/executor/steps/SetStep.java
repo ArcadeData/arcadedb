@@ -214,17 +214,24 @@ public class SetStep extends AbstractExecutionStep {
       ((ResultInternal) result).setProperty(variableToUpdate, mutableDoc);
 
     Object value = evaluator.evaluate(item.getValueExpression(), result, context);
-    if (value == null)
+    final boolean propertyExisted;
+    if (value == null) {
+      // Removing an absent property is a no-op for Neo4j-compatible statistics: only count it
+      // when the property actually existed before the removal.
+      propertyExisted = mutableDoc.has(item.getProperty());
       mutableDoc.remove(item.getProperty());
-    else {
+    } else {
       value = TemporalUtil.toCoreJavaType(value);
       validatePropertyValue(value);
       mutableDoc.set(item.getProperty(), value);
+      propertyExisted = true;
     }
     mutableDoc.save();
-    // Neo4j counts both a property assignment and a null-valued removal under "properties set".
+    // Neo4j counts both a property assignment and a genuine (existing-property) null-valued
+    // removal under "properties set".
     final QueryStatistics stats = context.getStatistics();
-    stats.addPropertiesSet(1);
+    if (propertyExisted)
+      stats.addPropertiesSet(1);
 
     // Record the latest written state so subsequent rows can read through it.
     final RID savedRid = mutableDoc.getIdentity();
