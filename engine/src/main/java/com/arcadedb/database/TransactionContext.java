@@ -666,6 +666,9 @@ public class TransactionContext implements Transaction {
     status = STATUS.COMMIT_1ST_PHASE;
 
     try {
+      // #4937 review: explicit-lock mode captured before checkExplicitLocks nulls explicitLockedFiles, so the
+      // late-joiner block below can still tell an explicit-lock transaction from an auto-locked one.
+      boolean explicitLockMode = false;
       if (isLeader) {
         // Determine files to lock — must include files from updatedRecords
         if (updatedRecords != null)
@@ -675,6 +678,11 @@ public class TransactionContext implements Transaction {
           }
 
         final IntHashSet modifiedFiles = lockFilesFromChanges();
+
+        // checkExplicitLocks nulls explicitLockedFiles on success, so remember the mode now for the
+        // late-joiner check further down (#4937 review): otherwise that check always sees null and would
+        // silently expand an explicit-lock transaction's lock set, defeating the explicit-locking contract.
+        explicitLockMode = explicitLockedFiles != null;
 
         if (explicitLockedFiles != null)
           checkExplicitLocks(modifiedFiles);
@@ -726,31 +734,28 @@ public class TransactionContext implements Transaction {
       // place). The version checks below run after this block, so anything that changed while unlocked
       // fails validation with the standard retriable ConcurrentModificationException.
       if (isLeader && lockedFiles != null) {
-        final IntHashSet lockedSet = new IntHashSet();
-        for (final int fileId : lockedFiles)
-          lockedSet.add(fileId);
-
-        final IntHashSet union = new IntHashSet();
-        boolean lateJoiners = false;
+        // Single pass: seed the union with the locked files, then a file in the page set that add() reports
+        // as NEW (return true) is one that was not locked - a late joiner.
+        final IntHashSet union = new IntHashSet(lockedFiles.size() + modifiedPages.size());
         for (final int fileId : lockedFiles)
           union.add(fileId);
-        for (final PageId pid : modifiedPages.keySet()) {
-          union.add(pid.getFileId());
-          if (!lockedSet.contains(pid.getFileId()))
+
+        boolean lateJoiners = false;
+        for (final PageId pid : modifiedPages.keySet())
+          if (union.add(pid.getFileId()))
             lateJoiners = true;
-        }
         if (newPages != null)
-          for (final PageId pid : newPages.keySet()) {
-            union.add(pid.getFileId());
-            if (!lockedSet.contains(pid.getFileId()))
+          for (final PageId pid : newPages.keySet())
+            if (union.add(pid.getFileId()))
               lateJoiners = true;
-          }
 
         if (lateJoiners) {
-          if (explicitLockedFiles != null)
+          if (explicitLockMode)
             // The user's explicit lock list does not cover files this transaction actually modified:
-            // re-locking on their behalf would defeat the explicit-locking contract - surface it instead.
-            checkExplicitLocks(union);
+            // re-locking on their behalf would defeat the explicit-locking contract - surface it as the
+            // "not all the modified resources were locked" violation instead. (explicitLockedFiles was
+            // already nulled by the earlier checkExplicitLocks, so we branch on the captured mode.)
+            checkExplicitLocksForUnion(union);
           else {
             database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
             lockedFiles = lockFilesInOrder(union);
@@ -1066,6 +1071,28 @@ public class TransactionContext implements Transaction {
       });
       next.add(migrated);
       filesToLock = next;
+    }
+  }
+
+  /**
+   * #4937 review: late-joiner coverage check for an EXPLICIT-lock transaction. By this point the earlier
+   * {@link #checkExplicitLocks} has moved the user's explicit lock set into {@code lockedFiles} (and nulled
+   * {@code explicitLockedFiles}), so a file in the transaction's page set that is NOT in {@code lockedFiles}
+   * is one the user did not lock. Surface it as the same contract violation a direct modification of an
+   * unlocked file raises, rather than silently expanding their lock set.
+   */
+  private void checkExplicitLocksForUnion(final IntHashSet union) {
+    final Set<Integer> locked = new HashSet<>(lockedFiles);
+    final HashSet<Integer> left = new HashSet<>();
+    union.forEach(fid -> {
+      if (!locked.contains(fid))
+        left.add(fid);
+    });
+    if (!left.isEmpty()) {
+      final Set<String> resourceNames = left.stream().map(fileId -> database.getSchema().getFileById(fileId).getName())
+          .collect(Collectors.toSet());
+      throw new TransactionException(
+          "Cannot commit transaction because not all the modified resources were locked: " + resourceNames);
     }
   }
 
