@@ -40,6 +40,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.logging.Level;
+import java.util.function.BiFunction;
 
 /**
  * Manages pages from disk to RAM. Each page can have different size.
@@ -47,11 +48,13 @@ import java.util.logging.Level;
 public class PageManager extends LockContext {
   public static final PageManager INSTANCE = new PageManager();
 
-  private          ConcurrentMap<PageId, CachedPage> readCache;
+  // Package-private (instead of private) so the white-box regression test for #4925/#4933 can assert on
+  // the cache content and RAM accounting directly, without reflection.
+  ConcurrentMap<PageId, CachedPage> readCache;
   // MANAGE CONCURRENT ACCESS TO THE PAGES. THE VALUE IS TRUE FOR WRITE OPERATION AND FALSE FOR READ
   private final    ConcurrentMap<PageId, Boolean>    pendingFlushPages                     = new ConcurrentHashMap<>();
   private          long                              maxRAM;
-  private final    AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
+  final            AtomicLong                        totalReadCacheRAM                     = new AtomicLong();
   private final    AtomicLong                        totalPagesRead                        = new AtomicLong();
   private final    AtomicLong                        totalPagesReadSize                    = new AtomicLong();
   private final    AtomicLong                        totalPagesWritten                     = new AtomicLong();
@@ -120,13 +123,13 @@ public class PageManager extends LockContext {
   }
 
   public void removeAllReadPagesOfDatabase(final Database database) {
-    for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
-      final CachedPage p = it.next();
+    for (final CachedPage p : readCache.values()) {
       final PageId pageId = p.getPageId();
-      if (pageId.getDatabase().equals(database)) {
-        totalReadCacheRAM.addAndGet(-1L * p.getPhysicalSize());
-        it.remove();
-      }
+      if (pageId.getDatabase().equals(database))
+        // #4933: drive the accounting from the value ACTUALLY removed. Subtracting before it.remove()
+        // double-subtracted a page that a concurrent evictOldestPages/removePageFromCache removed first,
+        // driving totalReadCacheRAM negative and permanently disabling eviction (unbounded cache growth).
+        removePageFromCache(pageId);
     }
   }
 
@@ -170,13 +173,11 @@ public class PageManager extends LockContext {
     if (flushThread != null)
       flushThread.removeAllPagesOfFile(database, fileId);
 
-    for (final Iterator<CachedPage> it = readCache.values().iterator(); it.hasNext(); ) {
-      final CachedPage p = it.next();
+    for (final CachedPage p : readCache.values()) {
       final PageId pageId = p.getPageId();
-      if (pageId.getDatabase().equals(database) && pageId.getFileId() == fileId) {
-        totalReadCacheRAM.addAndGet(-1L * p.getPhysicalSize());
-        it.remove();
-      }
+      if (pageId.getDatabase().equals(database) && pageId.getFileId() == fileId)
+        // #4933: accounting driven by the value actually removed (see removeAllReadPagesOfDatabase).
+        removePageFromCache(pageId);
     }
   }
 
@@ -538,8 +539,10 @@ public class PageManager extends LockContext {
     for (final CachedPage page : pagesOrderedByAge) {
       final CachedPage removedPage = readCache.remove(page.getPageId());
       if (removedPage != null) {
-        freedRAM += page.getPhysicalSize();
-        totalReadCacheRAM.addAndGet(-1L * page.getPhysicalSize());
+        // Account the entry ACTUALLY removed, not the TreeSet snapshot: the version-monotonic put can swap
+        // a same-PageId entry for a different instance between the snapshot and this remove (#4925/#4933).
+        freedRAM += removedPage.getPhysicalSize();
+        totalReadCacheRAM.addAndGet(-1L * removedPage.getPhysicalSize());
         pagesEvicted.incrementAndGet();
 
         if (freedRAM > ramToFree)
@@ -560,15 +563,36 @@ public class PageManager extends LockContext {
     lastCheckForRAM = System.currentTimeMillis();
   }
 
-  private void putPageInReadCache(final CachedPage page) {
-    final CachedPage prev = readCache.put(page.getPageId(), page);
-    if (prev == null)
-      totalReadCacheRAM.addAndGet(page.getPhysicalSize());
-    else {
-      final long delta = page.getPhysicalSize() - prev.getPhysicalSize();
-      if (delta != 0)
-        totalReadCacheRAM.addAndGet(delta);
+  // Reused per-thread slot for the RAM delta decided inside VERSION_MONOTONIC_MERGE: keeps the put hot
+  // path allocation-free (a capturing lambda + holder array per call would rely on escape analysis that is
+  // not guaranteed under a megamorphic merge call site).
+  private static final ThreadLocal<long[]> PUT_RAM_DELTA = ThreadLocal.withInitial(() -> new long[1]);
+
+  // #4925: version-monotonic merge. Keeps whichever version is newer; an EQUAL version replaces on purpose
+  // (identical content, freshest instance, zero RAM delta). Static and non-capturing: merge() hands the new
+  // page in as the second argument, so this function allocates nothing per call.
+  private static final BiFunction<CachedPage, CachedPage, CachedPage> VERSION_MONOTONIC_MERGE = (prev, cur) -> {
+    if (cur.getVersion() >= prev.getVersion()) {
+      PUT_RAM_DELTA.get()[0] = cur.getPhysicalSize() - prev.getPhysicalSize();
+      return cur;
     }
+    // STALE WRITE ATTEMPT: KEEP THE NEWER CACHED VERSION, NO ACCOUNTING CHANGE
+    PUT_RAM_DELTA.get()[0] = 0;
+    return prev;
+  };
+
+  void putPageInReadCache(final CachedPage page) {
+    // #4925: version-monotonic put. A reader that started a disk read of version N before a committer
+    // cached version N+1 must not overwrite the newer committed page with its stale image: the poisoned
+    // cache would serve vN to every subsequent reader AND to the commit-time version probe, letting a later
+    // transaction pass its MVCC check and silently overwrite the lost committed update. The RAM delta is
+    // decided inside the same atomic merge so the accounting always matches the actual cache content.
+    final long[] ramDelta = PUT_RAM_DELTA.get();
+    // Default covers the absent-key case: merge() inserts the page WITHOUT invoking the remapping function.
+    ramDelta[0] = page.getPhysicalSize();
+    readCache.merge(page.getPageId(), page, VERSION_MONOTONIC_MERGE);
+    if (ramDelta[0] != 0)
+      totalReadCacheRAM.addAndGet(ramDelta[0]);
 
     checkForPageDisposal();
   }

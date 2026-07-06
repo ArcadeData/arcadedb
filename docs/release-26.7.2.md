@@ -10,6 +10,14 @@ that could starve the very snapshot resync meant to heal the node.
 
 ### Fixes
 
+- **Cypher: 2-hop pattern comprehension with an anonymous middle node now returns matches.** A pattern
+  comprehension such as `RETURN [(p)-[:KNOWS]->(:Person)-[:KNOWS]->(t:Person) | t]` silently returned an
+  empty list, while the equivalent explicit `MATCH` and the single-hop pattern comprehension both worked
+  ([#5007](https://github.com/ArcadeData/arcadedb/issues/5007)). The traversal resolved each hop's start
+  node from its variable binding, but an anonymous intermediate node `(:Person)` carries no variable, so
+  the second hop found `null` and stopped. `PatternComprehensionExpression` now carries the end vertex of
+  each hop forward as the start of the next hop, so anonymous intermediate nodes match (and an anonymous
+  uncorrelated start node no longer risks re-iterating). Named intermediate nodes were unaffected.
 - **Cypher: `DELETE` of a relationship inside `FOREACH` now removes the edge.** A planner optimization drops
   a named edge variable from the matched row when it thinks the variable is unused downstream, so the match
   step can take the GAV/CSR fast path (which does not load edge objects). The "is this edge referenced?"
@@ -109,6 +117,21 @@ that could starve the very snapshot resync meant to heal the node.
   killed by a timeout or cancel returned an incomplete answer as a successful one
   ([#4951](https://github.com/ArcadeData/arcadedb/issues/4951)). The shared await now cancels the
   outstanding chunks and throws, preserving the interrupt flag for the caller.
+- **Storage: a slow reader can no longer poison the page cache with a stale version (lost update).** A
+  reader that started a disk read of page version N before a committer cached version N+1 overwrote the
+  newer committed page when its read completed, because the cache put was unconditional. Every subsequent
+  reader then saw vN, and the commit-time version probe read the poisoned cache too, so a later transaction
+  could pass its MVCC check and silently overwrite the lost committed update
+  ([#4925](https://github.com/ArcadeData/arcadedb/issues/4925)). The cache put is now version-monotonic: an
+  older page version never replaces a newer one, with the RAM accounting computed inside the same atomic
+  operation.
+- **Storage: page-cache RAM accounting can no longer go negative and disable eviction.** The bulk removal
+  loops (database close/kill, file drop) subtracted a page's size from the cache accounting before removing
+  it, unconditionally, while the eviction path subtracts only when its removal actually won. Racing the two
+  subtracted the same page twice; once the counter drifted negative the `totalRAM < maxRAM` eviction check
+  never fired again and the read cache grew without bound (real RSS growth, invisible in the stats)
+  ([#4933](https://github.com/ArcadeData/arcadedb/issues/4933)). All accounting is now driven by the entry
+  actually removed, so every page is subtracted exactly once.
 
 ### Improvements
 
