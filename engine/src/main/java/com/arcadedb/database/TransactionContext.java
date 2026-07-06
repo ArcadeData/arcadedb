@@ -1121,8 +1121,9 @@ public class TransactionContext implements Transaction {
         left.add(fid);
     });
     if (!left.isEmpty()) {
+      // TreeSet: deterministic name ordering, so a multi-file violation always reads the same.
       final Set<String> resourceNames = left.stream().map(fileId -> database.getSchema().getFileById(fileId).getName())
-          .collect(Collectors.toSet());
+          .collect(Collectors.toCollection(java.util.TreeSet::new));
       throw new TransactionException(
           "Cannot commit transaction because not all the modified resources were locked: " + resourceNames);
     }

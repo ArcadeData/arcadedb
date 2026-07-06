@@ -200,7 +200,10 @@ that could starve the very snapshot resync meant to heal the node.
   ([#4936](https://github.com/ArcadeData/arcadedb/issues/4936)). Enabling that guarantee, the commit lock
   set is verified AFTER all page-set mutation and extended when files joined late (EXTERNAL-property
   buckets, indexes created inside the transaction, and the vector index's companion graph file, which now
-  counts in the lock set; [#4937](https://github.com/ArcadeData/arcadedb/issues/4937)).
+  counts in the lock set; [#4937](https://github.com/ArcadeData/arcadedb/issues/4937)). Note the commit
+  boundary this makes explicit: a failure AFTER the WAL append (e.g. while publishing pages) is resolved by
+  recovery replay, never by abort - the caller may see an error for a transaction that becomes durable on
+  restart.
 
 ### Improvements
 
