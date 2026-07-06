@@ -183,7 +183,7 @@ def start_jvm(
             if candidate_args != _JVM_CONFIG:
                 raise ArcadeDBError(
                     "JVM is already started. Configure JVM args/heap before the "
-                    "first database or server creation."
+                    "first database creation."
                 )
             return
 
@@ -196,7 +196,7 @@ def start_jvm(
         if has_overrides:
             raise ArcadeDBError(
                 "JVM is already started. Configure JVM args/heap before the "
-                "first database or server creation."
+                "first database creation."
             )
 
         _JVM_CONFIG = candidate_args
@@ -229,6 +229,12 @@ def start_jvm(
         _JVM_CONFIG = tuple(jvm_args)
     except Exception as e:
         raise ArcadeDBError(f"Failed to start JVM: {e}") from e
+
+    # NOTE: an atexit hook used to close the engine's PageManager here as a
+    # workaround for ArcadeData/arcadedb#4991 (failed open() leaked a
+    # non-daemon AsyncFlush thread and the process could never exit). The
+    # engine fixed the root cause in 26.7.2; the exit-hang regression test in
+    # tests/test_core.py still guards the behavior.
 
 
 def _normalize_jvm_args(jvm_args: Optional[Union[Iterable[str], str]]) -> list[str]:

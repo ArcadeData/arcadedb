@@ -99,7 +99,7 @@ def check_dependencies():
     if not HAS_TRANSFORMERS:
         print("ERROR: sentence-transformers not installed.")
         print("Please install it to run this example:")
-        print("  uv pip install sentence-transformers")
+        print("  pip install sentence-transformers")
         sys.exit(1)
 
 
