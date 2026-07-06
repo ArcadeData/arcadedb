@@ -73,6 +73,7 @@ class WalCommitOrderingTest {
       factory.open().drop();
 
     final DatabaseInternal db = (DatabaseInternal) factory.create();
+    final PageId[] victimPageId = new PageId[1];
     try {
       db.getSchema().createDocumentType("Doc");
       db.transaction(() -> db.newDocument("Doc").set("v", "committed").save());
@@ -87,6 +88,7 @@ class WalCommitOrderingTest {
       // Inject a conflicting committed version for one of the transaction's pages, as a racing transaction
       // through the (now closed) lock-coverage hole would have: phase-2 validation MUST fail.
       final MutablePage victim = phase1.modifiedPages.getFirst();
+      victimPageId[0] = victim.getPageId();
       final MutablePage conflicting = new MutablePage(victim.getPageId(), (int) victim.getPhysicalSize(),
           victim.getContent().array().clone(), (int) (victim.getVersion() + 1), victim.getContentSize());
       // putPageInReadCache is package-private (this test is in the same package): a conflicting cached
@@ -105,11 +107,11 @@ class WalCommitOrderingTest {
       assertThat(totalWalBytes())
           .as("a transaction that failed validation must leave NO record in the WAL (#4936)")
           .isEqualTo(walBytesBefore);
-
-      // Evict the injected conflicting page: PageManager.INSTANCE is JVM-global, and a foreign cache entry
-      // must not bleed into other tests sharing this JVM.
-      PageManager.INSTANCE.removePageFromCache(victim.getPageId());
     } finally {
+      // Evict the injected conflicting page even when an assertion failed: PageManager.INSTANCE is
+      // JVM-global, and a foreign cache entry must not bleed into other tests sharing this JVM.
+      if (victimPageId[0] != null)
+        PageManager.INSTANCE.removePageFromCache(victimPageId[0]);
       db.close();
       factory.close();
     }
