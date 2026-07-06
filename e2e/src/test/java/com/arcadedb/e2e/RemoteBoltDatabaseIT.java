@@ -28,6 +28,8 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.condition.DisabledOnOs;
+import org.junit.jupiter.api.condition.OS;
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Bookmark;
 import org.neo4j.driver.Config;
@@ -125,8 +127,8 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
       // Sweep the probe nodes the write scenarios leave in the shared beer
       // database so a later suite that asserts an unscoped count is not surprised.
       try (final Session s = boltSession()) {
-        s.run("MATCH (n) WHERE n:TxProbe OR n:RaceProbe OR n:CausalProbe DETACH DELETE n").consume();
-        s.run("MATCH (b:Beer) WHERE b.name IN ['TX-004-Beer', 'RESULT-004-Beer'] DETACH DELETE b").consume();
+        s.run("MATCH (n) WHERE n:TxProbe OR n:RaceProbe OR n:CausalProbe OR n:R004Src OR n:R004Dst DETACH DELETE n").consume();
+        s.run("MATCH (b:Beer) WHERE b.name = 'TX-004-Beer' DETACH DELETE b").consume();
       } catch (final RuntimeException ignored) {
         // best-effort cleanup; never fail the suite on teardown
       }
@@ -263,6 +265,8 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     }
 
     @Test
+    @DisabledOnOs(value = { OS.MAC, OS.WINDOWS }, disabledReason = "neo4j:// single-node routing advertises the container bridge IP, "
+        + "which is not host-routable on Docker Desktop (macOS/Windows); verified in Linux CI only")
     @DisplayName("[CONN-003] neo4j:// routing discovery, single-node")
     void conn003_routingSingleNode() {
       // handleRoute advertises the server's own bound address
@@ -489,20 +493,17 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[RESULT-004] ResultSummary counters reflect writes")
     void result004_counters() {
-      // Run inside an explicit transaction and roll back: counters are populated
-      // from the RUN/PULL summary regardless of commit, so the gap is still
-      // certified without leaving probe nodes in the shared beer database.
-      assertExpectedFailure("#4890", () -> {
-        try (final Session s = boltSession();
-            final Transaction tx = s.beginTransaction()) {
-          final ResultSummary summary = tx.run(
-              "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
-              Map.of("n", "RESULT-004-Beer", "b", "RESULT-004-Brewery")).consume();
-          tx.rollback();
-          assertThat(summary.counters().nodesCreated()).isEqualTo(2);
-          assertThat(summary.counters().relationshipsCreated()).isEqualTo(1);
-        }
-      });
+      // Certifies that the RUN summary carries write counters. Uses dedicated types rather than the
+      // fixture's Beer/Brewery: the ArcadeDB container is shared across all e2e IT classes, and
+      // RemoteDatabaseJavaApiIT renames the Beer type (ALTER TYPE ... NAME), which corrupts Beer's
+      // edge buckets for any later suite. Dedicated types keep this scenario order-independent.
+      try (final Session s = boltSession()) {
+        final ResultSummary summary = s.run(
+            "CREATE (:R004Src {name: $n})-[:R004_MADE]->(:R004Dst {name: $b})",
+            Map.of("n", "R004-Src", "b", "R004-Dst")).consume();
+        assertThat(summary.counters().nodesCreated()).isEqualTo(2);
+        assertThat(summary.counters().relationshipsCreated()).isEqualTo(1);
+      }
     }
   }
 
@@ -538,15 +539,10 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[TYPE-003] Path round-trips as a native Bolt structure")
     void type003_path() {
-      // Read (and its .single()) is a hard precondition OUTSIDE the xfail: a
-      // missing row would be a fixture problem, not the tracked gap, and must
-      // fail loudly rather than be swallowed as "gap still present". Only the
-      // type check is the documented gap.
-      final Object v;
       try (final Session s = boltSession()) {
-        v = s.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1").single().get("p").asObject();
+        final Object v = s.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1").single().get("p").asObject();
+        assertThat(v).isInstanceOf(Path.class);
       }
-      assertExpectedFailure("#4890", () -> assertThat(v).isInstanceOf(Path.class));
     }
 
     @Test
@@ -608,21 +604,19 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[TYPE-011] Duration round-trips as a native Bolt Duration")
     void type011_duration() {
-      final Object v;
       try (final Session s = boltSession()) {
-        v = s.run("MATCH (t:TypeMatrix) RETURN t.durationProp AS d LIMIT 1").single().get("d").asObject();
+        final Object v = s.run("MATCH (t:TypeMatrix) RETURN t.durationProp AS d LIMIT 1").single().get("d").asObject();
+        assertThat(v).isInstanceOf(IsoDuration.class);
       }
-      assertExpectedFailure("#4890", () -> assertThat(v).isInstanceOf(IsoDuration.class));
     }
 
     @Test
     @DisplayName("[TYPE-012] Point round-trips as a native Bolt Point")
     void type012_point() {
-      final Object v;
       try (final Session s = boltSession()) {
-        v = s.run("MATCH (t:TypeMatrix) RETURN t.pointProp AS p LIMIT 1").single().get("p").asObject();
+        final Object v = s.run("MATCH (t:TypeMatrix) RETURN t.pointProp AS p LIMIT 1").single().get("p").asObject();
+        assertThat(v).isInstanceOf(Point.class);
       }
-      assertExpectedFailure("#4890", () -> assertThat(v).isInstanceOf(Point.class));
     }
 
     // A native Bolt temporal deserializes to a java.time.temporal.Temporal; the
@@ -659,14 +653,12 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @Test
     @DisplayName("[ERR-002] Semantic error returns Neo.ClientError.Statement.SemanticError")
     void err002_semantic() {
-      assertExpectedFailure("#4890", () -> {
-        try (final Session s = boltSession()) {
-          assertThatThrownBy(() -> s.run("RETURN undefinedVariable").consume())
-              .isInstanceOf(ClientException.class)
-              .satisfies(t -> assertThat(((ClientException) t).code())
-                  .isEqualTo("Neo.ClientError.Statement.SemanticError"));
-        }
-      });
+      try (final Session s = boltSession()) {
+        assertThatThrownBy(() -> s.run("RETURN undefinedVariable").consume())
+            .isInstanceOf(ClientException.class)
+            .satisfies(t -> assertThat(((ClientException) t).code())
+                .isEqualTo("Neo.ClientError.Statement.SemanticError"));
+      }
     }
 
     @Test

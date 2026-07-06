@@ -15,3 +15,20 @@ regex-*.jar
 arcadedb-ha-raft-*.jar
 arcadedb-metrics-*.jar
 arcadedb-mongodbw-*.jar
+# Embedded-unused (verified 2026-07-05 by quarantine + full suite/examples gate):
+commons-math3-*.jar
+jackson-*.jar
+snappy-java-*.jar
+arcadedb-tracing-*.jar
+jline-*.jar
+# Server mode removed 2026-07-05 (embedded-only package; use the official
+# ArcadeDB server distribution/Docker image for client-server deployments).
+# micrometer was only kept for server startup, so it goes with the stack:
+arcadedb-server-*.jar
+arcadedb-studio-*.jar
+undertow-*.jar
+xnio-*.jar
+wildfly-*.jar
+jboss-logging-*.jar
+jboss-threads-*.jar
+micrometer-*.jar

@@ -34,11 +34,20 @@ dependencies = [
     "jpype1>=1.5.0",
 ]
 
+[tool.uv]
+# This pyproject is the *package definition* consumed by the wheel build
+# (scripts/build.sh via Docker). It is not a uv project: the dev/test
+# environment lives in the repo-root pyproject.toml, which installs the built
+# wheel from dist/. `managed = false` makes uv skip this directory during
+# project discovery, so `uv run` from here resolves to the repo-root project.
+managed = false
+
 [project.optional-dependencies]
 test = [
     "pytest>=7.0.0",
     "pytest-cov",
     "numpy>=1.20.0",
+    "requests>=2.0.0",  # HTTP API / docs-example tests
 ]
 dev = [
     "black",
@@ -47,6 +56,7 @@ dev = [
     "pytest>=7.0.0",
     "pytest-cov",
     "numpy>=1.20.0",
+    "requests>=2.0.0",  # HTTP API / docs-example tests
     "bandit>=1.9.0",
 ]
 vector = [
@@ -81,7 +91,6 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 markers = [
-    "server: tests that require server/studio support",
     "integration: tests that require external components",
 ]
 

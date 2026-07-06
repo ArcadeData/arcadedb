@@ -2,7 +2,7 @@
 Tests for type conversion between Java and Python types.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import arcadedb_embedded as arcadedb
@@ -109,6 +109,46 @@ def test_date_conversion(temp_db_path):
         created_datetime = record.get("created_datetime")
         assert created_datetime is not None
         assert isinstance(created_datetime, datetime)
+
+
+def test_offset_datetime_conversion(temp_db_path):
+    """OffsetDateTime is a storable DATETIME since engine 26.7.2 (#4922).
+
+    Storing one no longer silently drops the property (the original bug, hit
+    by every Bolt/Neo4j client write). The engine normalizes it to UTC and
+    hands reads back as LocalDateTime -> naive Python datetime; a raw
+    OffsetDateTime (e.g. from an expression, not storage) converts directly.
+    """
+    import jpype
+    from arcadedb_embedded import convert_java_to_python
+
+    with arcadedb.create_database(temp_db_path) as db:  # starts the JVM
+        db.command("sql", "CREATE DOCUMENT TYPE OffsetTest")
+
+        OffsetDateTime = jpype.JClass("java.time.OffsetDateTime")
+        odt = OffsetDateTime.parse("2026-07-05T10:30:00.250+02:00")
+
+        # direct converter path: offset applied, tz-aware UTC result
+        converted = convert_java_to_python(odt)
+        assert isinstance(converted, datetime)
+        assert converted == datetime(2026, 7, 5, 8, 30, 0, 250000, tzinfo=timezone.utc)
+
+        with db.transaction():
+            doc = db.new_document("OffsetTest")
+            doc.set("stamp", odt)
+            doc.save()
+
+        # storage round-trip: engine normalizes to UTC wall-clock (naive)
+        record = db.query("sql", "SELECT FROM OffsetTest").first()
+        stamp = record.get("stamp")
+        assert isinstance(stamp, datetime)
+        assert stamp.replace(tzinfo=None) == datetime(2026, 7, 5, 8, 30, 0, 250000)
+
+        # columnar bulk path (ColumnBatcher datetime lane)
+        cols = db.query("sql", "SELECT stamp FROM OffsetTest").to_columns()
+        if cols is not None:  # numpy + bridge jar available
+            value = cols["stamp"][0]
+            assert str(value.astype("datetime64[ms]")) == "2026-07-05T08:30:00.250"
 
 
 def test_collection_conversion(temp_db_path):

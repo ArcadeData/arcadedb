@@ -40,12 +40,14 @@ import com.arcadedb.database.DatabaseContext;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.ProtocolContext;
 import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.index.Index;
 import com.arcadedb.index.TypeIndex;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.query.sql.executor.ExecutionPlan;
 import com.arcadedb.query.sql.executor.ExecutionStep;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.schema.DocumentType;
@@ -78,6 +80,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.logging.Level;
@@ -628,7 +631,7 @@ public class BoltNetworkExecutor extends Thread {
 
     } catch (final CommandParsingException e) {
       final String parseMsg = e.getMessage() != null ? e.getMessage() : "Query parsing error";
-      sendFailure(BoltException.SYNTAX_ERROR, parseMsg);
+      sendFailure(classifyParsingError(e), parseMsg);
       state = State.FAILED;
     } catch (final Exception e) {
       // MVCC conflicts (NeedRetryException) are expected under contention and auto-retried by the driver,
@@ -713,6 +716,10 @@ public class BoltNetworkExecutor extends Thread {
           metadata.put(currentPlanMetadataKey, currentPlanMetadata);
 
         if (currentResultSet != null) {
+          final Optional<QueryStatistics> stats = currentResultSet.getStatistics();
+          if (stats.isPresent() && stats.get().containsUpdates())
+            metadata.put("stats", BoltResultStats.toStatsMap(stats.get()));
+
           try {
             currentResultSet.close();
           } catch (final Exception e) {
@@ -757,7 +764,11 @@ public class BoltNetworkExecutor extends Thread {
     }
 
     // Discard all remaining records
+    Optional<QueryStatistics> stats = Optional.empty();
     if (currentResultSet != null) {
+      // Statistics are computed eagerly when the write is materialized in the query plan, so they
+      // are valid to read before draining/closing the result set.
+      stats = currentResultSet.getStatistics();
       while (currentResultSet.hasNext()) {
         currentResultSet.next();
       }
@@ -780,6 +791,8 @@ public class BoltNetworkExecutor extends Thread {
       metadata.put(currentPlanMetadataKey, currentPlanMetadata);
     currentPlanMetadata = null;
     currentPlanMetadataKey = null;
+    if (stats.isPresent() && stats.get().containsUpdates())
+      metadata.put("stats", BoltResultStats.toStatsMap(stats.get()));
     metadata.put("has_more", false);
 
     sendSuccess(metadata);
@@ -1635,6 +1648,15 @@ public class BoltNetworkExecutor extends Thread {
    */
   static String classifyExecutionError(final Throwable error, final String defaultCode) {
     return isRetryableConflict(error) ? BoltErrorCodes.TRANSIENT_CONFLICT_ERROR : defaultCode;
+  }
+
+  /**
+   * Classify a query-parsing error into a Bolt status code. {@link CommandSemanticException} marks a
+   * statement that parsed correctly but violates a semantic rule (e.g. an undefined variable), so it maps
+   * to Neo4j's SemanticError; every other {@link CommandParsingException} is a genuine syntax error.
+   */
+  static String classifyParsingError(final CommandParsingException error) {
+    return error instanceof CommandSemanticException ? BoltErrorCodes.SEMANTIC_ERROR : BoltErrorCodes.SYNTAX_ERROR;
   }
 
   /**

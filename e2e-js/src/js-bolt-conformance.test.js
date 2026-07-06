@@ -603,11 +603,7 @@ describe("Bolt conformance (issue #4888)", () => {
       }
     });
 
-    // KNOWN GAP (#4890): the Bolt layer never populates a 'stats' key in
-    // SUCCESS metadata for write queries, so counters are always empty. This
-    // it.failing asserts the Neo4j-correct behavior and flips red when fixed -
-    // convert to it() and update current_status in spec.yaml in the same PR.
-    it.failing("[RESULT-004] ResultSummary counters reflect writes", async () => {
+    it("[RESULT-004] ResultSummary counters reflect writes", async () => {
       const s = session();
       try {
         const result = await s.run(
@@ -651,10 +647,7 @@ describe("Bolt conformance (issue #4888)", () => {
       }
     });
 
-    // KNOWN GAP (#4890): BoltPath.java has zero call sites - query results
-    // never produce native Path structures. Asserts the correct behavior;
-    // flips red when fixed. Convert + update spec.yaml TYPE-003 then.
-    it.failing("[TYPE-003] path round-trips as a native Bolt structure", async () => {
+    it("[TYPE-003] path round-trips as a native Bolt structure", async () => {
       const s = session();
       try {
         const r = await s.run("MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1");
@@ -769,9 +762,7 @@ describe("Bolt conformance (issue #4888)", () => {
       }
     });
 
-    // KNOWN GAP (#4890): no Duration handling in BoltStructureMapper/
-    // PackStreamWriter - falls through to value.toString().
-    it.failing("[TYPE-011] Duration round-trips as a native Bolt Duration", async () => {
+    it("[TYPE-011] Duration round-trips as a native Bolt Duration", async () => {
       const s = session();
       try {
         const r = await s.run("MATCH (t:TypeMatrix) RETURN t.durationProp AS d");
@@ -784,9 +775,7 @@ describe("Bolt conformance (issue #4888)", () => {
       }
     });
 
-    // KNOWN GAP (#4890): no Point/spatial handling anywhere in the Bolt
-    // serialization path (the Cypher engine itself supports point()).
-    it.failing("[TYPE-012] Point round-trips as a native Bolt Point", async () => {
+    it("[TYPE-012] Point round-trips as a native Bolt Point", async () => {
       const s = session();
       try {
         const r = await s.run("MATCH (t:TypeMatrix) RETURN t.pointProp AS p");
@@ -815,10 +804,7 @@ describe("Bolt conformance (issue #4888)", () => {
       }
     });
 
-    // KNOWN GAP (#4890): semantic errors are surfaced as SyntaxError, not
-    // Neo.ClientError.Statement.SemanticError. Asserts the correct code;
-    // flips red when the mapping is fixed.
-    it.failing("[ERR-002] semantic error returns SemanticError code", async () => {
+    it("[ERR-002] semantic error returns SemanticError code", async () => {
       const s = session();
       try {
         await expect(

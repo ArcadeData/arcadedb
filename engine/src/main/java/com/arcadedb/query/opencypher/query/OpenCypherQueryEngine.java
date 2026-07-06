@@ -42,6 +42,7 @@ import com.arcadedb.query.opencypher.optimizer.plan.PhysicalPlan;
 import com.arcadedb.query.opencypher.planner.CypherExecutionPlanner;
 import com.arcadedb.query.sql.executor.BasicCommandContext;
 import com.arcadedb.query.sql.executor.InternalResultSet;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
@@ -304,26 +305,44 @@ public class OpenCypherQueryEngine implements QueryEngine {
    */
   private ResultSet executeDDL(final CypherDDLStatement ddl) {
     final Schema schema = database.getSchema();
+    final QueryStatistics stats = new QueryStatistics();
 
     switch (ddl.getKind()) {
     case CREATE_CONSTRAINT:
-      executeCreateConstraint(ddl, schema);
+      executeCreateConstraint(ddl, schema, stats);
       break;
     case DROP_CONSTRAINT:
-      executeDropConstraint(ddl, schema);
+      executeDropConstraint(ddl, schema, stats);
       break;
     case CREATE_INDEX:
-      executeCreateIndex(ddl, schema);
+      executeCreateIndex(ddl, schema, stats);
       break;
     case DROP_INDEX:
-      executeDropIndex(ddl, schema);
+      executeDropIndex(ddl, schema, stats);
       break;
     }
 
-    return new InternalResultSet();
+    final InternalResultSet result = new InternalResultSet();
+    result.setStatistics(stats);
+    return result;
   }
 
-  private void executeCreateConstraint(final CypherDDLStatement ddl, final Schema schema) {
+  /**
+   * Checks whether a type index already covers exactly {@code propertyNames}, looking both at the
+   * type's own indexes and any inherited from a parent type. Used by Cypher constraint/index DDL to
+   * tell whether an {@code IF NOT EXISTS} create is a genuine no-op, so the DDL result statistics
+   * (indexes/constraints added) only count schema changes that actually happened.
+   */
+  private static boolean indexExistsOnProperties(final Schema schema, final String typeName, final String[] propertyNames) {
+    // Both callers auto-create the type before this runs, so it normally exists. Guard defensively:
+    // a missing type has no index, and getType would otherwise throw for a future caller.
+    if (!schema.existsType(typeName))
+      return false;
+    final DocumentType type = schema.getType(typeName);
+    return type.getIndexByProperties(propertyNames) != null || type.getPolymorphicIndexByProperties(propertyNames) != null;
+  }
+
+  private void executeCreateConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
 
@@ -343,15 +362,20 @@ public class OpenCypherQueryEngine implements QueryEngine {
     // without coercing future writes (see issue #4222).
     final Type[] defaultKeyTypes = new Type[propertyNames.length];
     boolean anyUndeclared = false;
+    // Tracks whether the TYPED branch below actually created/changed a property; if every property
+    // already had the requested type this loop is a no-op and must not count toward the statistics.
+    boolean typedChanged = false;
     for (int i = 0; i < propertyNames.length; i++) {
       final String propName = propertyNames[i];
       final Property existing = schema.getType(typeName).getPropertyIfExists(propName);
       if (isTyped) {
-        if (existing == null)
+        if (existing == null) {
           schema.getType(typeName).createProperty(propName, explicitPropertyType);
-        else if (existing.getType() != explicitPropertyType) {
+          typedChanged = true;
+        } else if (existing.getType() != explicitPropertyType) {
           schema.getType(typeName).dropProperty(propName);
           schema.getType(typeName).createProperty(propName, explicitPropertyType);
+          typedChanged = true;
         }
       } else if (existing == null) {
         final Type inferred = inferPropertyTypeFromExistingData(typeName, propName);
@@ -366,6 +390,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     switch (ddl.getConstraintKind()) {
     case UNIQUE: {
+      final boolean existedBefore = indexExistsOnProperties(schema, typeName, propertyNames);
       final TypeIndexBuilder b = schema.buildTypeIndex(typeName, propertyNames);
       b.withType(Schema.INDEX_TYPE.LSM_TREE);
       b.withUnique(true);
@@ -373,22 +398,34 @@ public class OpenCypherQueryEngine implements QueryEngine {
       if (anyUndeclared)
         b.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
       b.create();
+      if (!existedBefore)
+        stats.incConstraintsAdded();
       break;
     }
 
-    case NOT_NULL:
+    case NOT_NULL: {
+      boolean changed = false;
       for (final String propName : propertyNames) {
         Property prop = schema.getType(typeName).getPropertyIfExists(propName);
-        if (prop == null)
+        if (prop == null) {
           // NOT NULL implies the property must be tracked, declare it with a generic STRING
           // since we have no value yet to infer from.
           prop = schema.getType(typeName).createProperty(propName, Type.STRING);
-        prop.setMandatory(true);
+          changed = true;
+        }
+        if (!prop.isMandatory()) {
+          prop.setMandatory(true);
+          changed = true;
+        }
       }
+      if (changed)
+        stats.incConstraintsAdded();
       break;
+    }
 
     case KEY: {
       // NODE KEY = unique index + mandatory properties
+      final boolean existedBefore = indexExistsOnProperties(schema, typeName, propertyNames);
       final TypeIndexBuilder b = schema.buildTypeIndex(typeName, propertyNames);
       b.withType(Schema.INDEX_TYPE.LSM_TREE);
       b.withUnique(true);
@@ -402,11 +439,15 @@ public class OpenCypherQueryEngine implements QueryEngine {
           prop = schema.getType(typeName).createProperty(propName, Type.STRING);
         prop.setMandatory(true);
       }
+      if (!existedBefore)
+        stats.incConstraintsAdded();
       break;
     }
 
     case TYPED:
       // Property type already set above; for IF NOT EXISTS, silently succeed if property already has the correct type
+      if (typedChanged)
+        stats.incConstraintsAdded();
       break;
     }
   }
@@ -652,17 +693,20 @@ public class OpenCypherQueryEngine implements QueryEngine {
     return resultSet;
   }
 
-  private void executeDropConstraint(final CypherDDLStatement ddl, final Schema schema) {
+  private void executeDropConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String constraintName = ddl.getConstraintName();
     if (ddl.isIfExists()) {
-      if (schema.existsIndex(constraintName))
+      if (schema.existsIndex(constraintName)) {
         schema.dropIndex(constraintName);
+        stats.incConstraintsRemoved();
+      }
     } else {
       schema.dropIndex(constraintName);
+      stats.incConstraintsRemoved();
     }
   }
 
-  private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema) {
+  private void executeCreateIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
 
@@ -699,6 +743,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
       }
     }
 
+    final boolean existedBefore = indexExistsOnProperties(schema, typeName, propertyNames);
     final TypeIndexBuilder builder = schema.buildTypeIndex(typeName, propertyNames);
     builder.withType(Schema.INDEX_TYPE.LSM_TREE);
     builder.withUnique(false);
@@ -706,6 +751,8 @@ public class OpenCypherQueryEngine implements QueryEngine {
     if (anyUndeclared)
       builder.withDefaultKeyTypesForUndeclaredProperties(defaultKeyTypes);
     builder.create();
+    if (!existedBefore)
+      stats.incIndexesAdded();
   }
 
   /**
@@ -744,13 +791,16 @@ public class OpenCypherQueryEngine implements QueryEngine {
     return null;
   }
 
-  private void executeDropIndex(final CypherDDLStatement ddl, final Schema schema) {
+  private void executeDropIndex(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String indexName = ddl.getConstraintName();
     if (ddl.isIfExists()) {
-      if (schema.existsIndex(indexName))
+      if (schema.existsIndex(indexName)) {
         schema.dropIndex(indexName);
+        stats.incIndexesRemoved();
+      }
     } else {
       schema.dropIndex(indexName);
+      stats.incIndexesRemoved();
     }
   }
 

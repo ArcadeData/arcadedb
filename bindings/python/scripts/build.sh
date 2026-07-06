@@ -405,12 +405,25 @@ if [ -d "dist" ]; then
 fi
 
 echo ""
-echo -e "${BLUE}💡 Next steps:${NC}"
-echo -e "   📦 Install the package:"
-echo -e "      ${YELLOW}uv pip install dist/arcadedb_embedded-*.whl${NC}"
+
+# Refresh the repo-root uv dev environment so `uv run pytest` immediately uses
+# the wheel that was just built. Skipped in CI, which installs wheels itself.
+if [ -z "${CI:-}" ] && command -v uv > /dev/null 2>&1; then
+    REPO_ROOT=$(git rev-parse --show-toplevel 2> /dev/null || true)
+    if [ -n "$REPO_ROOT" ] && [ -f "$REPO_ROOT/pyproject.toml" ]; then
+        echo -e "${CYAN}🔄 Refreshing uv dev environment at repo root...${NC}"
+        (
+            cd "$REPO_ROOT" &&
+                uv lock --upgrade-package arcadedb-embedded &&
+                uv sync --reinstall-package arcadedb-embedded
+        )
+    fi
+fi
+
 echo ""
-echo -e "   🧪 Run tests:"
-echo -e "      ${YELLOW}pytest tests/${NC}"
+echo -e "${BLUE}💡 Next steps:${NC}"
+echo -e "   🧪 Run tests (from anywhere in the repo):"
+echo -e "      ${YELLOW}uv run pytest${NC}"
 echo ""
 echo -e "   📤 Publish to PyPI:"
 echo -e "      ${YELLOW}twine upload dist/*.whl${NC}"

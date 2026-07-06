@@ -29,7 +29,7 @@ try:
     from lxml import etree
 except ImportError:
     print("Missing dependency: lxml")
-    print("Install with: uv pip install lxml")
+    print("Install with: pip install lxml")
     sys.exit(1)
 
 
@@ -1192,6 +1192,9 @@ def arcadedb_insert_edges(
         use_wal=False,
         parallel_flush=parallel_flush,
     ) as batch:
+        sources = []
+        destinations = []
+        payloads = []
         for row in rows:
             from_rid = row.get("from_rid")
             to_rid = row.get("to_rid")
@@ -1199,14 +1202,16 @@ def arcadedb_insert_edges(
                 raise RuntimeError(
                     "RID-only edge insert requires from_rid/to_rid " f"for {edge_type}"
                 )
-            payload = {
-                key: row.get(key) for key in prop_keys if row.get(key) is not None
-            }
-            batch.new_edge(from_rid, edge_type, to_rid, **payload)
+            sources.append(from_rid)
+            destinations.append(to_rid)
+            payloads.append(
+                {key: row.get(key) for key in prop_keys if row.get(key) is not None}
+            )
+        batch.new_edges(sources, edge_type, destinations, properties=payloads)
 
 
 def build_arcadedb_rid_lookup(db, vertex_type: str) -> Dict[int, str]:
-    rows = db.query("sql", f"SELECT Id, @rid as rid FROM {vertex_type}").to_list()
+    rows = db.query("sql", f"SELECT Id, @rid as rid FROM {vertex_type}").to_json_list()
     rid_lookup: Dict[int, str] = {}
     for row in rows:
         row_id = row.get("Id")
@@ -4076,7 +4081,7 @@ def execute_arcadedb_fast_asker_answerer_pairs(db) -> List[Dict[str, Any]]:
     for row in db.query(
         "sql",
         "SELECT @out.Id AS asker_id, @in.Id AS question_id FROM ASKED",
-    ).to_list():
+    ).to_json_list():
         asker_id = row.get("asker_id")
         question_id = row.get("question_id")
         if asker_id is None or question_id is None:
@@ -4089,7 +4094,7 @@ def execute_arcadedb_fast_asker_answerer_pairs(db) -> List[Dict[str, Any]]:
     for row in db.query(
         "sql",
         "SELECT @out.Id AS answerer_id, @in.Id AS answer_id FROM ANSWERED",
-    ).to_list():
+    ).to_json_list():
         answerer_id = row.get("answerer_id")
         answer_id = row.get("answer_id")
         if answerer_id is None or answer_id is None:
@@ -4102,7 +4107,7 @@ def execute_arcadedb_fast_asker_answerer_pairs(db) -> List[Dict[str, Any]]:
     for row in db.query(
         "sql",
         "SELECT @out.Id AS question_id, @in.Id AS answer_id FROM HAS_ANSWER",
-    ).to_list():
+    ).to_json_list():
         question_id = row.get("question_id")
         answer_id = row.get("answer_id")
         if question_id is None or answer_id is None:
@@ -4138,7 +4143,7 @@ def execute_arcadedb_fast_asker_answerer_pairs(db) -> List[Dict[str, Any]]:
 
 def execute_arcadedb_fast_top_questions_by_total_comments(db) -> List[Dict[str, Any]]:
     question_ids: List[int] = []
-    for row in db.query("sql", "SELECT Id AS question_id FROM Question").to_list():
+    for row in db.query("sql", "SELECT Id AS question_id FROM Question").to_json_list():
         qid = row.get("question_id")
         if qid is None:
             continue
@@ -4170,7 +4175,7 @@ def execute_arcadedb_fast_top_questions_by_total_comments(db) -> List[Dict[str, 
     for row in db.query(
         "sql",
         "SELECT @out.Id AS question_id, @in.Id AS answer_id FROM HAS_ANSWER",
-    ).to_list():
+    ).to_json_list():
         qid = row.get("question_id")
         aid = row.get("answer_id")
         if qid is None or aid is None:
