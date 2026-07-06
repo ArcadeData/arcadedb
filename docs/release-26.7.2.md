@@ -181,6 +181,16 @@ that could starve the very snapshot resync meant to heal the node.
   database close now fails with the intended "Async executor has been shut down" error instead of a raw
   NullPointerException ([#4955](https://github.com/ArcadeData/arcadedb/issues/4955)).
 
+- **WAL/recovery correctness (2026-07 audit).** Recovery now RE-APPLIES a WAL delta whose version equals
+  the on-disk page version, repairing a torn page write (a 64KB flush spans many sectors; a power loss can
+  persist the new version header while the delta sectors still hold the previous content - the old `<=`
+  skip declared such a page "already applied" and left it silently corrupt despite an intact WAL,
+  [#4926](https://github.com/ArcadeData/arcadedb/issues/4926)). A clean close whose data fsync failed now
+  preserves the WAL and the lock file for recovery instead of deleting them (after a failed fsync the OS
+  may have dropped the dirty pages, so the WAL held the only durable copy;
+  [#4934](https://github.com/ArcadeData/arcadedb/issues/4934) - the runtime WAL rotation also skips its
+  drop pass when the pre-drop fsync fails).
+
 ### Improvements
 
 - **HA: throttled diverged-follower resync logging.** When a follower detects a WAL page-version gap it

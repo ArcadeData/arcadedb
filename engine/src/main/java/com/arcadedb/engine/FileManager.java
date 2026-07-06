@@ -177,18 +177,26 @@ public class FileManager {
     recordedChanges = null;
   }
 
-  public void syncFiles() {
+  /**
+   * @return {@code true} when every file was fsynced; {@code false} when any fsync failed (#4934). After a
+   *     failed fsync the OS may have DROPPED the dirty pages (fsyncgate semantics), so the callers that were
+   *     about to delete the WAL protecting that data must preserve it instead: the clean-close path keeps
+   *     the WAL and the lock file so the next open recovers, and the runtime WAL-rotation path skips the
+   *     drop and retries on the next pass.
+   */
+  public boolean syncFiles() {
+    boolean allSynced = true;
     for (final ComponentFile f : fileNameMap.values()) {
       if (f instanceof PaginatedComponentFile pcf) {
         try {
           pcf.force(true);
         } catch (final IOException e) {
-          // Log at SEVERE: the caller proceeds to delete WAL files, so a failed fsync here
-          // leaves committed data unrecoverable on a subsequent OS crash.
           LogManager.instance().log(this, Level.SEVERE, "Error on syncing file '%s' to disk", e, f.getFileName());
+          allSynced = false;
         }
       }
     }
+    return allSynced;
   }
 
   public synchronized void close() {
