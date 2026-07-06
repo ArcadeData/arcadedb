@@ -476,6 +476,17 @@ public class TransactionManager {
           // (new version, old bytes) despite an intact WAL. Re-applying at equal version is idempotent (the
           // WAL delta carries absolute bytes for exactly this version) and repairs the torn state; skipping
           // a STRICTLY older entry remains required, because its delta would overwrite newer content.
+          //
+          // KNOWN LIMITATION (multi-version accumulation): async flush coalesces several committed versions
+          // into a single physical page write, so a page can jump v1(on-disk) -> v2 -> v3 -> v4 with only the
+          // v4 flush hitting the platter. If THAT flush tears, only v4's delta region is repaired here; the
+          // regions changed by v2/v3 (skipped as strictly-older) can stay torn. The version header alone
+          // cannot tell a torn page from an intact one, so detecting which pages need the older deltas
+          // re-applied needs a per-page checksum (the longer-term fix noted in #4926, tracked in #5054); an
+          // unconditional
+          // in-order replay of every entry <= disk version would repair it but changes the recovery
+          // semantics that also govern the version-gap/forceApply paths, out of scope here. This fix still
+          // strictly improves on `<=` (which repaired nothing) and fully covers the single-flush case.
           LogManager.instance().log(this, Level.FINE,
               "Skipping superseded page %s (log v.%d < db v.%d)", null,
               pageId, txPage.currentPageVersion, page.getVersion());
@@ -872,10 +883,11 @@ public class TransactionManager {
             // Make the data pages durable before the WAL that protects them is deleted. fsync once, lazily,
             // right before the first WAL file is actually dropped in this pass (issue #4509).
             if (syncDataOnDrop && !dataSynced) {
-              if (!database.getFileManager().syncFiles())
+              if (!database.getFileManager().syncFiles()) {
                 // #4934: the fsync failed - the data this WAL protects may never reach the disk. Dropping
                 // the WAL now would make it unrecoverable; abort this pass, the rotation retries later.
                 return false;
+              }
               dataSynced = true;
             }
             file.drop();
