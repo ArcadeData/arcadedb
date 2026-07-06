@@ -21,6 +21,7 @@ package com.arcadedb.engine;
 import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.RID;
 import com.arcadedb.database.DatabaseInternal;
+import com.arcadedb.database.LocalDatabase;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionException;
@@ -152,6 +153,53 @@ class WalCommitOrderingTest {
     } finally {
       if (db.getTransaction().isActive())
         db.rollback();
+      db.close();
+      factory.close();
+    }
+  }
+
+
+  @Test
+  void fencedDatabaseRefusesTheWalAppendAndNewOperations() {
+    // #5053 review: a commit that fails AFTER its WAL append leaves a durable-but-unpublished record; the
+    // live state and the WAL diverge. The database is fenced: no further transaction may cross the WAL
+    // point of no return (it could claim the same page versions the orphaned record targets), and every new
+    // operation fails loudly until a close/reopen runs recovery.
+    final DatabaseFactory factory = new DatabaseFactory(DB_PATH);
+    if (factory.exists())
+      factory.open().drop();
+
+    final DatabaseInternal db = (DatabaseInternal) factory.create();
+    try {
+      db.getSchema().createDocumentType("Doc");
+      db.transaction(() -> db.newDocument("Doc").set("v", 1).save());
+
+      // An in-flight transaction that already passed phase 1 when the fence lands:
+      db.begin();
+      db.query("sql", "SELECT FROM Doc").next().getRecord().get().asDocument().modify().set("v", 2).save();
+      final TransactionContext tx = (TransactionContext) db.getTransaction();
+      final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
+      assertThat(phase1).isNotNull();
+
+      ((LocalDatabase) db).fenceForRecovery("test-injected post-WAL-append failure");
+
+      final long walBytesBefore = totalWalBytes();
+      // Either fence surface is correct: the operation choke point (checkDatabaseIsOpen, hit by the page
+      // reads inside validateAndBumpVersions and wrapped by the commit) or the explicit pre-WAL-append
+      // check (which guards callers whose reads never touch the choke point). What matters is the
+      // invariant asserted below: nothing reached the WAL.
+      assertThatThrownBy(() -> tx.commit2ndPhase(phase1))
+          .as("a fenced database must refuse to cross the WAL point of no return")
+          .isInstanceOf(TransactionException.class)
+          .hasStackTraceContaining("fenced");
+      assertThat(totalWalBytes())
+          .as("the refused commit must leave NO record in the WAL").isEqualTo(walBytesBefore);
+
+      // New operations are fenced too.
+      assertThatThrownBy(() -> db.transaction(() -> db.newDocument("Doc").set("v", 3).save()))
+          .hasMessageContaining("fenced");
+    } finally {
+      // close() must still complete on a fenced database (it is the recovery entry point).
       db.close();
       factory.close();
     }

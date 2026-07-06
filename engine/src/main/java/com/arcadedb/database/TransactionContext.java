@@ -840,6 +840,7 @@ public class TransactionContext implements Transaction {
 
   public void commit2ndPhase(final TransactionPhase1 changes) {
     boolean committed = false;
+    boolean walAppended = false;
     try {
       if (changes == null)
         return;
@@ -863,9 +864,18 @@ public class TransactionContext implements Transaction {
       // because every modified file's lock is held (#4937 guarantees coverage) until reset().
       final List<MutablePage> pagesToPublish = database.getPageManager().validateAndBumpVersions(newPages, modifiedPages);
 
+      // #5053 review: refuse to cross the point of no return on a fenced database. This check runs AFTER
+      // this transaction acquired its file locks, so for any transaction sharing a page with the failed one
+      // the fence write below happens-before this read - it cannot append a WAL record targeting the same
+      // page version the orphaned record already claims.
+      if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
+        throw new TransactionException(
+            "Cannot commit: the database is fenced after a failure past the WAL commit point, close and reopen it to run recovery");
+
       if (changes.result != null)
         // WRITE TO THE WAL: THE POINT OF NO RETURN
         database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
+      walAppended = true;
 
       LogManager.instance()
           .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
@@ -901,6 +911,10 @@ public class TransactionContext implements Transaction {
 
     } catch (final ConcurrentModificationException e) {
       throw e;
+    } catch (final TransactionException e) {
+      // Already a first-class transaction error (e.g. the recovery fence): rethrow as-is instead of
+      // double-wrapping it in a generic "Transaction error on commit" (#5053 review, same as phase 1).
+      throw e;
     } catch (final Exception e) {
       LogManager.instance()
           .log(this, Level.FINE, "Unknown exception during commit (threadId=%d)", e, Thread.currentThread().threadId());
@@ -908,8 +922,17 @@ public class TransactionContext implements Transaction {
     } finally {
       if (committed)
         resetAndFireCallbacks();
-      else
+      else {
+        if (walAppended && database.getEmbedded() instanceof LocalDatabase localDatabase)
+          // #5053 review: the transaction IS durable (its WAL record survives and recovery will replay it)
+          // but its pages were never published - the live state and the WAL now diverge. Fence BEFORE
+          // reset() releases the file locks: the volatile write is then visible to any transaction that was
+          // blocked on these locks, so no conflicting WAL record for the same page versions can follow. The
+          // orphaned record's pages were never flush-acked, so the ack-gated close (#4928) preserves the
+          // WAL and the lock file, and reopening the database replays it.
+          localDatabase.fenceForRecovery("commit of tx " + txId + " failed after its WAL append");
         reset();
+      }
     }
   }
 
@@ -1123,7 +1146,7 @@ public class TransactionContext implements Transaction {
     if (!left.isEmpty()) {
       // TreeSet: deterministic name ordering, so a multi-file violation always reads the same.
       final Set<String> resourceNames = left.stream().map(fileId -> database.getSchema().getFileById(fileId).getName())
-          .collect(Collectors.toCollection(java.util.TreeSet::new));
+          .collect(Collectors.toCollection(TreeSet::new));
       throw new TransactionException(
           "Cannot commit transaction because not all the modified resources were locked: " + resourceNames);
     }

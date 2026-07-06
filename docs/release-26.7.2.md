@@ -191,7 +191,10 @@ that could starve the very snapshot resync meant to heal the node.
   counts in the lock set; [#4937](https://github.com/ArcadeData/arcadedb/issues/4937)). Note the commit
   boundary this makes explicit: a failure AFTER the WAL append (e.g. while publishing pages) is resolved by
   recovery replay, never by abort - the caller may see an error for a transaction that becomes durable on
-  restart.
+  restart. If that post-append failure ever happens, the database is FENCED: every further operation fails
+  with a "close and reopen to run recovery" error, preventing new transactions from appending conflicting
+  WAL records for the same page versions, and the ack-gated close preserves the WAL so the reopen replays
+  the orphaned transaction.
 - **WAL/recovery correctness (2026-07 audit).** Recovery now RE-APPLIES a WAL delta whose version equals
   the on-disk page version, repairing a torn page write (a 64KB flush spans many sectors; a power loss can
   persist the new version header while the delta sectors still hold the previous content - the old `<=`
