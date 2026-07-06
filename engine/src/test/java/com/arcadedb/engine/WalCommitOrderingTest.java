@@ -19,10 +19,13 @@
 package com.arcadedb.engine;
 
 import com.arcadedb.database.DatabaseFactory;
+import com.arcadedb.database.RID;
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.TransactionContext;
 import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.schema.DocumentType;
+import com.arcadedb.schema.Type;
 import com.arcadedb.utility.FileUtils;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
@@ -102,6 +105,10 @@ class WalCommitOrderingTest {
       assertThat(totalWalBytes())
           .as("a transaction that failed validation must leave NO record in the WAL (#4936)")
           .isEqualTo(walBytesBefore);
+
+      // Evict the injected conflicting page: PageManager.INSTANCE is JVM-global, and a foreign cache entry
+      // must not bleed into other tests sharing this JVM.
+      PageManager.INSTANCE.removePageFromCache(victim.getPageId());
     } finally {
       db.close();
       factory.close();
@@ -121,11 +128,11 @@ class WalCommitOrderingTest {
 
     final DatabaseInternal db = (DatabaseInternal) factory.create();
     try {
-      final com.arcadedb.schema.DocumentType type = db.getSchema().createDocumentType("Doc");
-      type.createProperty("name", com.arcadedb.schema.Type.STRING);
-      type.createProperty("blob", com.arcadedb.schema.Type.STRING).setExternal(true);
+      final DocumentType type = db.getSchema().createDocumentType("Doc");
+      type.createProperty("name", Type.STRING);
+      type.createProperty("blob", Type.STRING).setExternal(true);
 
-      final com.arcadedb.database.RID[] rid = new com.arcadedb.database.RID[1];
+      final RID[] rid = new RID[1];
       db.transaction(() -> rid[0] = db.newDocument("Doc").set("name", "a")
           .set("blob", "the quick brown fox jumps over the lazy dog").save().getIdentity());
 
