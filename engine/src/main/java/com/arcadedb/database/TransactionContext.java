@@ -872,10 +872,14 @@ public class TransactionContext implements Transaction {
         throw new TransactionException(
             "Cannot commit: the database is fenced after a failure past the WAL commit point, close and reopen it to run recovery");
 
-      if (changes.result != null)
+      if (changes.result != null) {
         // WRITE TO THE WAL: THE POINT OF NO RETURN
         database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
-      walAppended = true;
+        // Only a REAL append crosses the point of no return (#5053 review): with useWAL=false (bulk loads)
+        // changes.result is null, nothing is durable, and a publish failure must abort the transaction as
+        // before - fencing would promise a replay that cannot happen and brick the database for nothing.
+        walAppended = true;
+      }
 
       LogManager.instance()
           .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
@@ -1036,7 +1040,8 @@ public class TransactionContext implements Transaction {
 
   /**
    * Allocation-free containment scan for the late-joiner fast path (lockedFiles is small, typically < 10):
-   * get(i) == fileId unboxes the stored Integer but allocates nothing new.
+   * get(i) == fileId unboxes the stored Integer but allocates nothing new. Assumes a RandomAccess list -
+   * lockFilesInOrder and checkExplicitLocks both produce ArrayLists; revisit the loop if that ever changes.
    */
   private static boolean containsFileId(final List<Integer> lockedFiles, final int fileId) {
     for (int i = 0; i < lockedFiles.size(); i++)
