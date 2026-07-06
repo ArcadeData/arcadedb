@@ -19,10 +19,16 @@
 package com.arcadedb.database;
 
 import com.arcadedb.TestHelper;
+import com.arcadedb.engine.LocalBucket;
+import com.arcadedb.engine.MutablePage;
+import com.arcadedb.engine.PageId;
+import com.arcadedb.engine.PageManager;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.TransactionException;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
@@ -108,5 +114,54 @@ class Issue4940Phase2FailureRollbackTest extends TestHelper {
     database.begin();
     assertThat(database.lookupByRID(rid, true).asDocument().getString("name")).isEqualTo("committed");
     database.commit();
+  }
+
+  @Test
+  void phase2PublishFailureWithoutWalStillRollsBack() throws Exception {
+    // With useWAL=false there is NO WAL append at all: nothing is ever durable in phase 2, so even a failure in the
+    // page-publish stage (past the point where a WAL-enabled transaction would have crossed durability) must roll
+    // back like any other pre-durability failure. Guards the placement of the walAppended flag: only a REAL append
+    // may suppress the rollback.
+    final MutableDocument[] holder = new MutableDocument[1];
+    database.transaction(() -> {
+      final MutableDocument doc = database.newDocument(TYPE);
+      doc.set("name", "committed");
+      doc.save();
+      holder[0] = doc;
+    });
+    final RID rid = holder[0].getIdentity();
+
+    database.begin();
+    database.setUseWAL(false);
+
+    final MutableDocument modified = database.lookupByRID(rid, true).asDocument().modify();
+    modified.set("name", "uncommitted");
+    modified.save();
+
+    final MutableDocument created = database.newDocument(TYPE);
+    created.set("name", "new");
+    created.save();
+    assertThat(created.getIdentity()).isNotNull();
+
+    final TransactionContext tx = ((DatabaseInternal) database).getTransaction();
+    final TransactionContext.TransactionPhase1 phase1 = tx.commit1stPhase(true);
+    assertThat(phase1).isNotNull();
+    assertThat(phase1.result).as("useWAL=false produces no WAL buffer").isNull();
+
+    // Sabotage the publish stage: bump the committed version of the record's page behind the transaction's back, so
+    // commit2ndPhase fails with a ConcurrentModificationException INSIDE updatePages - after the (skipped) WAL stage.
+    final LocalBucket bucket = (LocalBucket) database.getSchema().getBucketById(rid.getBucketId());
+    final PageId pageId = new PageId(database, rid.getBucketId(), (int) (rid.getPosition() / bucket.getMaxRecordsInPage()));
+    final PageManager pageManager = ((DatabaseInternal) database).getPageManager();
+    final MutablePage conflicting = pageManager.getMutablePage(pageId, bucket.getPageSize(), false, false);
+    pageManager.updatePages(null, Map.of(pageId, conflicting), false);
+
+    final Throwable error = catchThrowable(() -> tx.commit2ndPhase(phase1));
+    assertThat(error).isInstanceOf(ConcurrentModificationException.class);
+    assertThat(database.isTransactionActive()).isFalse();
+
+    // nothing was durable: the failed transaction must be rolled back, not just reset
+    assertThat(created.getIdentity()).as("identity must be reset: no WAL record exists to ever replay this tx").isNull();
+    assertThat(modified.getString("name")).as("modified record must be reloaded to the committed version").isEqualTo("committed");
   }
 }

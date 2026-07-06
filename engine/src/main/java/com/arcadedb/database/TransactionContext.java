@@ -856,12 +856,16 @@ public class TransactionContext implements Transaction {
   }
 
   public void commit2ndPhase(final TransactionPhase1 changes) {
+    if (changes == null) {
+      // Nothing to apply: release resources without touching user-held record state (the pre-#4940 behavior for
+      // this no-op call; entering the try would route it to the rollback() branch below).
+      reset();
+      return;
+    }
+
     boolean committed = false;
     boolean walAppended = false;
     try {
-      if (changes == null)
-        return;
-
       if (database.getMode() == ComponentFile.MODE.READ_ONLY)
         throw new TransactionException("Cannot commit changes because the database is open in read-only mode");
 
