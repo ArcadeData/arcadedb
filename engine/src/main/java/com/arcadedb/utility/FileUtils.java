@@ -365,10 +365,12 @@ public class FileUtils {
    * {@code REPLACE_EXISTING} move (still a single rename, just without the cross-crash guarantee).
    */
   public static void atomicWriteFile(final File file, final String content) throws IOException {
-    final Path target = file.toPath();
+    // Resolve to an absolute path so getParent() is never null for relative inputs (e.g. new
+    // File("ai.json")); this keeps the temp file on the same file store as the target, which is
+    // required for the ATOMIC_MOVE below to actually be atomic instead of falling back to a copy.
+    final Path target = file.toPath().toAbsolutePath();
     final Path dir = target.getParent();
-    if (dir != null)
-      Files.createDirectories(dir);
+    Files.createDirectories(dir);
 
     final Path tmp = Files.createTempFile(dir, file.getName() + ".", ".tmp");
     try {
@@ -378,7 +380,9 @@ public class FileUtils {
         fos.getFD().sync();
       }
       try {
-        Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE);
+        // REPLACE_EXISTING is required for ATOMIC_MOVE to overwrite an existing target on some
+        // platforms (notably Windows), where the move otherwise throws FileAlreadyExistsException.
+        Files.move(tmp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
       } catch (final AtomicMoveNotSupportedException e) {
         Files.move(tmp, target, StandardCopyOption.REPLACE_EXISTING);
       }
