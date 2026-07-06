@@ -2055,8 +2055,14 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
    * 3. if the tree map is full (size > MAX_PAGES_GATHER_STATS), stop
    */
   public void gatherPageStatistics() {
-    if (timeOfLastStats == 0L || (System.currentTimeMillis() - timeOfLastStats > MAX_TIMEOUT_GATHER_STATS
-            && changesFromLastStats.get() > 0))
+    final boolean firstRun = timeOfLastStats == 0L;
+    if (!firstRun && System.currentTimeMillis() - timeOfLastStats <= MAX_TIMEOUT_GATHER_STATS)
+      return;
+
+    // #5063 review round 2: consume the change counter atomically at the decision point. The previous
+    // get() > 0 check paired with a set(0L) at the end of the scan wiped any increment landing while the
+    // scan ran; getAndSet(0L) carries those increments into the next cycle instead of losing them.
+    if (changesFromLastStats.getAndSet(0L) > 0 || firstRun)
       try {
         int txPageCount = getTotalPages();
 
@@ -2084,9 +2090,10 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           }
 
           timeOfLastStats = System.currentTimeMillis();
-          changesFromLastStats.set(0L);
         }
       } catch (Exception e) {
+        // THE COUNTER WAS ALREADY CONSUMED: BUMP IT BACK SO THE FAILED SCAN IS RETRIED AT THE NEXT CYCLE
+        changesFromLastStats.incrementAndGet();
         LogManager.instance().log(this, Level.WARNING, "Error on gathering statistics on bucket '%s'", e, getName());
       }
   }
