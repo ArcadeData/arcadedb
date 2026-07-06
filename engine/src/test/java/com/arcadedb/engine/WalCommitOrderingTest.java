@@ -146,7 +146,7 @@ class WalCommitOrderingTest {
       assertThatThrownBy(db::commit)
           .as("an explicit-lock tx touching an unlocked late-joining external bucket must be rejected (#4937 review)")
           .isInstanceOf(TransactionException.class)
-          .hasRootCauseMessage("Cannot commit transaction because not all the modified resources were locked: [Doc_0_ext]");
+          .hasMessage("Cannot commit transaction because not all the modified resources were locked: [Doc_0_ext]");
     } finally {
       if (db.getTransaction().isActive())
         db.rollback();

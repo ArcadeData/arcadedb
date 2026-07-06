@@ -260,6 +260,13 @@ public class PageManager extends LockContext {
     }
   }
 
+  /**
+   * Atomic convenience form of {@link #validateAndBumpVersions} + {@link #publishPages}. NOTE: since #4936
+   * the engine commit path no longer calls this - commit2ndPhase invokes the two halves separately with the
+   * WAL append in between, so validate+publish are NOT atomic under one lock there. Kept as public API for
+   * embedded users and backward compatibility; new engine code should call the halves explicitly and state
+   * what serializes the gap.
+   */
   public void updatePages(final Map<PageId, MutablePage> newPages, final Map<PageId, MutablePage> modifiedPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
     publishPages(validateAndBumpVersions(newPages, modifiedPages), newPages, asyncFlush);
@@ -297,9 +304,11 @@ public class PageManager extends LockContext {
    * Second half of {@link #updatePages}: publishes the validated pages (read cache + flush scheduling).
    * Runs AFTER the WAL append (#4936): from the caller's perspective the transaction is committed once the
    * WAL is durable, and a failure here leaves the WAL to replay the pages on recovery. Releasing the global
-   * PageManager lock between the two halves is safe ONLY because the caller holds the per-file commit locks
-   * (until reset()), which serialize committers per file - no other transaction can validate, bump or
-   * publish these pages in the gap.
+   * PageManager lock between the two halves is safe only because the caller serializes committers per page
+   * by other means. Two regimes exist: on a leader (commit1stPhase(true)) the per-file commit locks are held
+   * until reset(), so no other transaction can validate, bump or publish these pages in the gap; on an HA
+   * follower (commit1stPhase(false)) lockedFiles is EMPTY and it is the single-threaded Raft apply in
+   * RaftReplicatedDatabase that provides the serialization - do not rely on file locks being held there.
    */
   public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
