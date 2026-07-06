@@ -105,6 +105,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -270,12 +271,22 @@ public class CypherExecutionPlan {
       while (resultSet.hasNext()) {
         materializedResults.add((ResultInternal) resultSet.next());
       }
+      // Surface the CRUD-count accumulator built up by the mutation steps (CreateStep, SetStep,
+      // DeleteStep, RemoveStep, MergeStep) on the returned result set. Always present after a
+      // write statement, even if it performed no actual mutation (containsUpdates() is false then).
+      final QueryStatistics stats = context.getStatistics();
+
       // If no RETURN clause (or GQL FINISH was used), return empty results
       // (write side effects still happened). Issue #3365 section 1.3.
-      if (statement.getReturnClause() == null || statement.hasFinishClause())
-        return new IteratorResultSet(Collections.<Result>emptyList().iterator());
+      if (statement.getReturnClause() == null || statement.hasFinishClause()) {
+        final IteratorResultSet empty = new IteratorResultSet(Collections.<Result>emptyList().iterator());
+        empty.setStatistics(stats);
+        return empty;
+      }
       // Return the materialized results
-      return new IteratorResultSet(materializedResults.iterator());
+      final IteratorResultSet out = new IteratorResultSet(materializedResults.iterator());
+      out.setStatistics(stats);
+      return out;
     }
 
     // Read-only path: GQL FINISH still suppresses any rows the MATCH would have produced.
@@ -298,6 +309,10 @@ public class CypherExecutionPlan {
    * @return result set from the inner query execution
    */
   public ResultSet executeWithSeedRow(final Result seedRow) {
+    // Limitation: each branch/inner plan runs with its own BasicCommandContext, so QueryStatistics
+    // from writes performed inside this CALL subquery are not aggregated into the outer plan's
+    // statistics. The ResultSet returned to the caller only reflects top-level mutation steps.
+
     // Handle UNION inside CALL subqueries: execute each branch with the seed row
     if (statement instanceof UnionStatement unionStmt) {
       final List<CypherExecutionPlan> branchPlans = new ArrayList<>();
@@ -389,6 +404,10 @@ public class CypherExecutionPlan {
    * @return combined result set
    */
   private ResultSet executeUnion() {
+    // Limitation: each UNION branch executes as its own sub-plan with its own QueryStatistics, so
+    // write statistics from inside a branch are not aggregated into the combined ResultSet's
+    // statistics; only top-level mutation steps outside the UNION are reflected there.
+
     // Use UnionStep to combine results from all subqueries
     final BasicCommandContext context = new BasicCommandContext();
     context.setDatabase(database);

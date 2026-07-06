@@ -709,7 +709,7 @@ class TestMapIndexByKeyValue:
         with test_db.transaction():
             test_db.command(
                 "sql",
-                'INSERT INTO Movie CONTENT '
+                "INSERT INTO Movie CONTENT "
                 '{"title": "M1", "thumbs": {"banner": "b1", "poster": "p1"}}',
             )
             test_db.command(

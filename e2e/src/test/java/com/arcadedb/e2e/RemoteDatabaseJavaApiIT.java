@@ -162,6 +162,12 @@ class RemoteDatabaseJavaApiIT extends ArcadeContainerTemplate {
     result = database.query("sql", "select * from Birra limit 10");
     assertThat(result.stream().count()).isEqualTo(10);
 
+    // Restore the original type name: the ArcadeDB container is a static instance shared across all
+    // e2e IT classes, so leaving 'Beer' renamed to 'Birra' corrupts the beer fixture for later
+    // suites (e.g. a Bolt CREATE (:Beer)-[...]->() then fails resolving the renamed edge buckets).
+    // Clear the 'Beer' alias first, otherwise renaming back reports 'Beer already exists'.
+    database.command("sql", "ALTER TYPE Birra ALIASES NULL");
+    database.command("sql", "ALTER TYPE Birra NAME Beer");
   }
 
   @Test

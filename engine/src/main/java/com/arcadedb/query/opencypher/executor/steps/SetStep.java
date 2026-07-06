@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -213,14 +214,24 @@ public class SetStep extends AbstractExecutionStep {
       ((ResultInternal) result).setProperty(variableToUpdate, mutableDoc);
 
     Object value = evaluator.evaluate(item.getValueExpression(), result, context);
-    if (value == null)
+    final boolean propertyExisted;
+    if (value == null) {
+      // Removing an absent property is a no-op for Neo4j-compatible statistics: only count it
+      // when the property actually existed before the removal.
+      propertyExisted = mutableDoc.has(item.getProperty());
       mutableDoc.remove(item.getProperty());
-    else {
+    } else {
       value = TemporalUtil.toCoreJavaType(value);
       validatePropertyValue(value);
       mutableDoc.set(item.getProperty(), value);
+      propertyExisted = true;
     }
     mutableDoc.save();
+    // Neo4j counts both a property assignment and a genuine (existing-property) null-valued
+    // removal under "properties set".
+    final QueryStatistics stats = context.getStatistics();
+    if (propertyExisted)
+      stats.addPropertiesSet(1);
 
     // Record the latest written state so subsequent rows can read through it.
     final RID savedRid = mutableDoc.getIdentity();
@@ -257,12 +268,23 @@ public class SetStep extends AbstractExecutionStep {
     }
 
     // Set new properties from map (skip null values - they mean "remove")
+    int propertiesSet = 0;
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
-      if (entry.getValue() != null)
+      if (entry.getValue() != null) {
         mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
+        propertiesSet++;
+      }
     }
 
+    // Neo4j counts both the properties written and the pre-existing properties removed by the
+    // replace (i.e. not re-set with a non-null value), matching applyPropertySet/applyMergeMap.
+    for (final String prop : existingProps)
+      if (!prop.startsWith("@") && map.get(prop) == null)
+        propertiesSet++;
+
     mutableDoc.save();
+    final QueryStatistics stats = context.getStatistics();
+    stats.addPropertiesSet(propertiesSet);
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
@@ -287,15 +309,24 @@ public class SetStep extends AbstractExecutionStep {
     if (mutableDoc != doc)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
 
-    // Merge: add/update properties from map, null removes
+    // Merge: non-null values set the property, a null value removes it. Removing a property that
+    // does not exist is a no-op and is not counted (Neo4j reports properties-set only for changes).
+    int propertiesSet = 0;
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
-      if (entry.getValue() == null)
-        mutableDoc.remove(entry.getKey());
-      else
+      if (entry.getValue() == null) {
+        if (mutableDoc.has(entry.getKey())) {
+          mutableDoc.remove(entry.getKey());
+          propertiesSet++;
+        }
+      } else {
         mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
+        propertiesSet++;
+      }
     }
 
     mutableDoc.save();
+    final QueryStatistics stats = context.getStatistics();
+    stats.addPropertiesSet(propertiesSet);
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
@@ -356,9 +387,12 @@ public class SetStep extends AbstractExecutionStep {
     // Get existing labels and add new ones
     final List<String> existingLabels = Labels.getLabels(vertex);
     final List<String> allLabels = new ArrayList<>(existingLabels);
+    int newLabelsCount = 0;
     for (final String label : item.getLabels())
-      if (!allLabels.contains(label))
+      if (!allLabels.contains(label)) {
         allLabels.add(label);
+        newLabelsCount++;
+      }
 
     // Create the composite type for the combined labels
     final String newTypeName = Labels.ensureCompositeType(
@@ -373,6 +407,8 @@ public class SetStep extends AbstractExecutionStep {
     for (final String prop : vertex.getPropertyNames())
       newVertex.set(prop, vertex.get(prop));
     newVertex.save();
+    if (newLabelsCount > 0)
+      context.getStatistics().addLabelsAdded(newLabelsCount);
 
     // Copy edges from old vertex to new vertex
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))

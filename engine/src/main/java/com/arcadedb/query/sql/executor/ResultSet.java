@@ -65,6 +65,10 @@ public interface ResultSet extends Spliterator<Result>, Iterator<Result>, AutoCl
     return Optional.empty();
   }
 
+  default Optional<QueryStatistics> getStatistics() {
+    return Optional.empty();
+  }
+
   default void reset() {
     throw new UnsupportedOperationException("Implement RESET on " + getClass().getSimpleName());
   }
