@@ -22,6 +22,8 @@ package com.arcadedb.query.sql.executor;
  * Mutable, allocation-light accumulator of CRUD and schema mutation counts produced while executing
  * a single command. Held on the {@link CommandContext} and read once when the result set is
  * assembled. All counters are primitive ints; instances are created only for write commands.
+ * Not thread-safe: a single command context is written by one query thread at a time; counters are
+ * plain ints with no synchronization.
  */
 public class QueryStatistics {
   private int nodesCreated;

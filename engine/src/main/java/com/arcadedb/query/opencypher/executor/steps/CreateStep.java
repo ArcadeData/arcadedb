@@ -391,6 +391,7 @@ public class CreateStep extends AbstractExecutionStep {
       // ArcadeDB dedups labels (Labels.ensureCompositeType), so count distinct labels only,
       // matching the actual number of labels added to the vertex.
       stats.addLabelsAdded((int) nodePattern.getLabels().stream().distinct().count());
+    // getPropertyNames() on a freshly created record is exactly the user-set properties (labels/type are not properties).
     stats.addPropertiesSet(vertex.getPropertyNames().size());
 
     if (context.isProfiling()) {
@@ -437,6 +438,7 @@ public class CreateStep extends AbstractExecutionStep {
 
     final QueryStatistics stats = context.getStatistics();
     stats.incRelationshipsCreated();
+    // getPropertyNames() on a freshly created record is exactly the user-set properties (labels/type are not properties).
     stats.addPropertiesSet(edge.getPropertyNames().size());
 
     if (context.isProfiling()) {

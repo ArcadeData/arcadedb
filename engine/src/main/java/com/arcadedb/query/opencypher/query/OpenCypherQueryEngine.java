@@ -334,6 +334,10 @@ public class OpenCypherQueryEngine implements QueryEngine {
    * (indexes/constraints added) only count schema changes that actually happened.
    */
   private static boolean indexExistsOnProperties(final Schema schema, final String typeName, final String[] propertyNames) {
+    // Both callers auto-create the type before this runs, so it normally exists. Guard defensively:
+    // a missing type has no index, and getType would otherwise throw for a future caller.
+    if (!schema.existsType(typeName))
+      return false;
     final DocumentType type = schema.getType(typeName);
     return type.getIndexByProperties(propertyNames) != null || type.getPolymorphicIndexByProperties(propertyNames) != null;
   }

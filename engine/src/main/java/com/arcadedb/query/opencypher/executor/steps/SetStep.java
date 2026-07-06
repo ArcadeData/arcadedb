@@ -309,18 +309,24 @@ public class SetStep extends AbstractExecutionStep {
     if (mutableDoc != doc)
       ((ResultInternal) result).setProperty(item.getVariable(), mutableDoc);
 
-    // Merge: add/update properties from map, null removes
+    // Merge: non-null values set the property, a null value removes it. Removing a property that
+    // does not exist is a no-op and is not counted (Neo4j reports properties-set only for changes).
+    int propertiesSet = 0;
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
-      if (entry.getValue() == null)
-        mutableDoc.remove(entry.getKey());
-      else
+      if (entry.getValue() == null) {
+        if (mutableDoc.has(entry.getKey())) {
+          mutableDoc.remove(entry.getKey());
+          propertiesSet++;
+        }
+      } else {
         mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
+        propertiesSet++;
+      }
     }
 
     mutableDoc.save();
-    // Every map entry mutates a property, whether set (non-null) or removed (null value).
     final QueryStatistics stats = context.getStatistics();
-    stats.addPropertiesSet(map.size());
+    stats.addPropertiesSet(propertiesSet);
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);

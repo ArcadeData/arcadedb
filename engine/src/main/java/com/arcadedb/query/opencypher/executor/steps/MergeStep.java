@@ -1378,14 +1378,20 @@ public class MergeStep extends AbstractExecutionStep {
           else
             break;
           final MutableDocument mutableDoc = doc.modify();
+          int mergedPropertiesSet = 0;
           for (final Map.Entry<String, Object> entry : map.entrySet())
-            if (entry.getValue() == null)
-              mutableDoc.remove(entry.getKey());
-            else
+            if (entry.getValue() == null) {
+              if (mutableDoc.has(entry.getKey())) {
+                mutableDoc.remove(entry.getKey());
+                mergedPropertiesSet++;
+              }
+            } else {
               mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
+              mergedPropertiesSet++;
+            }
           mutableDoc.save();
-          // Every map entry mutates a property, whether set (non-null) or removed (null value).
-          context.getStatistics().addPropertiesSet(map.size());
+          // A null value removes a property; removing an absent property is a no-op and is not counted.
+          context.getStatistics().addPropertiesSet(mergedPropertiesSet);
           ((ResultInternal) result).setProperty(variable, mutableDoc);
           break;
         }

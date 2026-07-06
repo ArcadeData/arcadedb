@@ -188,6 +188,26 @@ class CypherQueryStatisticsTest extends TestHelper {
   }
 
   @Test
+  void mergeMapPlusWithNullValuesCountsOnlyRealChanges() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Widget {a:1, b:2})");
+      // += : c set (new, +1), b removed (existing null, +1), z removed (absent null, +0) = 2
+      final QueryStatistics s = statsOf(database, "MATCH (n:Widget) SET n += {c: 3, b: null, z: null}");
+      assertThat(s.getPropertiesSet()).isEqualTo(2);
+    });
+  }
+
+  @Test
+  void mergeOnMatchSetPlusMapWithNullCountsOnlyRealChanges() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:Gadget {k:'x', a:1})");
+      // ON MATCH SET += : a removed (existing null, +1), absent removed (+0), b set (+1) = 2
+      final QueryStatistics s = statsOf(database, "MERGE (n:Gadget {k:'x'}) ON MATCH SET n += {a: null, absent: null, b: 2}");
+      assertThat(s.getPropertiesSet()).isEqualTo(2);
+    });
+  }
+
+  @Test
   void createIndexCounts() {
     database.command("opencypher", "CREATE (:Product {sku:'a'})"); // ensure type exists
     final ResultSet rs = database.command("opencypher", "CREATE INDEX FOR (p:Product) ON (p.sku)");
