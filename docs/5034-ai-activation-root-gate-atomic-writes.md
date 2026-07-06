@@ -30,3 +30,26 @@
 ## Impact
 - Closes a MEDIUM privilege-escalation hole and a MEDIUM durability/concurrency defect in the AI module,
   plus hardens the remaining non-atomic config writes.
+
+## PR
+- https://github.com/ArcadeData/arcadedb/pull/5057
+
+## Review cycles
+- Cycle 1 - head `00d9e5303`: gemini-code-assist COMMENTED with two actionable items on
+  `FileUtils.atomicWriteFile` (both verified correct and applied):
+  - HIGH: `ATOMIC_MOVE` must be paired with `REPLACE_EXISTING` to overwrite an existing target on
+    platforms such as Windows (otherwise `FileAlreadyExistsException`).
+  - MEDIUM: resolve the target to an absolute path so the temp file lands on the same file store
+    (a relative path gave a null parent -> system temp dir -> non-atomic fallback).
+  The `claude` bot did not post a review within the 15-minute window.
+- Cycle 2 - head `2ed4fb11f` (after applying the fixes): gemini-code-assist re-posted the same HIGH
+  comment, which is now stale/already-resolved (HEAD already passes `ATOMIC_MOVE, REPLACE_EXISTING`);
+  no action required. The `claude` bot again did not post within the 15-minute window.
+
+## Deferred items
+- None.
+
+## Final state
+- `timeout`: all actionable review feedback (gemini's two items) was applied in cycle 1 and verified;
+  the gating `claude` bot never responded within the per-cycle 15-minute window on either commit.
+  PR left open for the developer. Merge remains the developer's responsibility.
