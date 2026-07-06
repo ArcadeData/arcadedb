@@ -41,6 +41,8 @@ import org.apache.ratis.retry.RetryPolicies;
 import org.apache.ratis.server.DivisionInfo;
 import org.apache.ratis.server.RaftServer;
 import org.apache.ratis.server.RaftServerConfigKeys;
+import org.apache.ratis.server.RaftServerRpc;
+import org.apache.ratis.server.RaftServerRpcWithProxy;
 import org.apache.ratis.server.protocol.TermIndex;
 import org.apache.ratis.server.storage.RaftStorage;
 import org.apache.ratis.util.LifeCycle;
@@ -262,8 +264,10 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         GlobalConfiguration.HA_STALLED_REPLICA_RESYNC_DURATION_MS);
     final boolean resyncNarrative = configuration.getValueAsBoolean(GlobalConfiguration.HA_RESYNC_PROGRESS_LOGGING);
     final long peerUnreachableThresholdMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_UNREACHABLE_THRESHOLD);
+    final long peerChannelResetDurationMs = configuration.getValueAsLong(GlobalConfiguration.HA_PEER_CHANNEL_RESET_DURATION);
     this.clusterMonitor = new ClusterMonitor(lagWarningThreshold, stalledResyncDurationMs,
-        this::forceResyncStalledReplica, resyncNarrative, peerUnreachableThresholdMs);
+        this::forceResyncStalledReplica, resyncNarrative, peerUnreachableThresholdMs, peerChannelResetDurationMs,
+        this::resetPeerReplicationChannel);
     this.quorum = Quorum.parse(configuration.getValueAsString(GlobalConfiguration.HA_QUORUM));
     this.quorumTimeout = configuration.getValueAsLong(GlobalConfiguration.HA_QUORUM_TIMEOUT);
 
@@ -380,6 +384,57 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
         }
       }
     });
+  }
+
+  /**
+   * Leader-side recovery for a follower whose outbound replication gRPC channel has wedged on a stale
+   * DNS result after the follower restarted with a new address (issue #4696, "Gap 1"). Invoked by
+   * {@link ClusterMonitor} on the leader's lag-monitor thread once the follower has stayed continuously
+   * unreachable (no successful RPC) for {@link GlobalConfiguration#HA_PEER_CHANNEL_RESET_DURATION}.
+   * <p>
+   * Ratis keeps one outbound {@code GrpcServerProtocolClient} (wrapping a gRPC {@code ManagedChannel})
+   * per follower in the leader's server-RPC {@code PeerProxyMap}. When the follower's pod IP changes,
+   * grpc-java can keep returning the stale/negative DNS result on that cached channel indefinitely -
+   * Ratis's own error path only calls {@code resetConnectBackoff()}, which never recreates the channel
+   * or re-resolves DNS - so the appender never reconnects. {@code resetProxy} closes that one channel
+   * and drops it from the map; the appender's next send rebuilds a fresh channel against the same peer
+   * DNS name, which re-resolves to the follower's current IP. Only this one follower's channel is
+   * touched and leadership is unchanged, so there is no flapping risk (unlike a leadership transfer).
+   * <p>
+   * This is the automatic, less-disruptive alternative to the manual {@code transferLeadership} lever
+   * that Gap 1 was previously left to.
+   */
+  void resetPeerReplicationChannel(final String peerId) {
+    final RaftServer server = raftServer;
+    if (peerId == null || server == null || shutdownRequested || !isLeader())
+      return;
+
+    final RaftPeerId targetId = RaftPeerId.valueOf(peerId);
+    if (targetId.equals(localPeerId))
+      return; // the leader keeps no appender channel to itself
+
+    if (resetPeerAppenderChannel(server.getServerRpc(), targetId))
+      LogManager.instance().log(this, Level.WARNING,
+          "Reset the replication gRPC channel to unreachable follower '%s' to force a fresh DNS re-resolution and reconnect (issue #4696).",
+          peerId);
+    else
+      LogManager.instance().log(this, Level.FINE,
+          "Cannot reset replication channel for follower '%s': server RPC is not proxy-based", peerId);
+  }
+
+  /**
+   * Closes and re-creates the leader's outbound gRPC proxy (channel) for {@code peerId}, forcing a
+   * fresh DNS re-resolution on the next send. Returns {@code true} when the reset was applied, or
+   * {@code false} when the RPC layer is not the expected proxy-based Ratis implementation.
+   * <p>
+   * Package-private and static so the Ratis-coupling seam can be unit-tested without a live cluster.
+   */
+  static boolean resetPeerAppenderChannel(final RaftServerRpc rpc, final RaftPeerId peerId) {
+    if (rpc instanceof RaftServerRpcWithProxy<?, ?> withProxy) {
+      withProxy.getProxies().resetProxy(peerId);
+      return true;
+    }
+    return false;
   }
 
   private static ThreadPoolExecutor createStalledResyncExecutor() {

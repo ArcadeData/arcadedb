@@ -73,6 +73,8 @@ public class ClusterMonitor {
   private final    Consumer<String>                stalledReplicaHandler;
   private final    boolean                         resyncNarrativeEnabled;
   private final    long                            peerUnreachableThresholdMs;
+  private final    long                            peerChannelResetDurationMs;
+  private final    Consumer<String>                unreachablePeerChannelHandler;
   private volatile long                            leaderCommitIndex;
   private final    ConcurrentHashMap<String, ReplicaState> replicaStates = new ConcurrentHashMap<>();
   // Injectable clock for deterministic tests; defaults to the wall clock. Volatile because the test
@@ -99,14 +101,37 @@ public class ClusterMonitor {
   public ClusterMonitor(final long lagWarningThreshold, final long stalledResyncDurationMs,
       final Consumer<String> stalledReplicaHandler, final boolean resyncNarrativeEnabled,
       final long peerUnreachableThresholdMs) {
+    this(lagWarningThreshold, stalledResyncDurationMs, stalledReplicaHandler, resyncNarrativeEnabled,
+        peerUnreachableThresholdMs, 0L, null);
+  }
+
+  /**
+   * @param peerChannelResetDurationMs    how long a follower must stay continuously unreachable (no
+   *                                      successful RPC for at least {@code peerUnreachableThresholdMs})
+   *                                      before {@code unreachablePeerChannelHandler} is invoked to reset
+   *                                      its replication channel (issue #4696). {@code <= 0} disables the
+   *                                      channel-reset recovery. Independent of the resync narrative.
+   * @param unreachablePeerChannelHandler callback invoked (once per unreachable streak) with the peer id
+   *                                      when the streak reaches {@code peerChannelResetDurationMs}. Must be
+   *                                      non-null when {@code peerChannelResetDurationMs > 0}.
+   */
+  public ClusterMonitor(final long lagWarningThreshold, final long stalledResyncDurationMs,
+      final Consumer<String> stalledReplicaHandler, final boolean resyncNarrativeEnabled,
+      final long peerUnreachableThresholdMs, final long peerChannelResetDurationMs,
+      final Consumer<String> unreachablePeerChannelHandler) {
     if (stalledResyncDurationMs > 0 && stalledReplicaHandler == null)
       throw new IllegalArgumentException(
           "stalledReplicaHandler must be non-null when stalledResyncDurationMs > 0 (leader-driven recovery enabled)");
+    if (peerChannelResetDurationMs > 0 && unreachablePeerChannelHandler == null)
+      throw new IllegalArgumentException(
+          "unreachablePeerChannelHandler must be non-null when peerChannelResetDurationMs > 0 (channel-reset recovery enabled)");
     this.lagWarningThreshold = lagWarningThreshold;
     this.stalledResyncDurationMs = stalledResyncDurationMs;
     this.stalledReplicaHandler = stalledReplicaHandler;
     this.resyncNarrativeEnabled = resyncNarrativeEnabled;
     this.peerUnreachableThresholdMs = peerUnreachableThresholdMs;
+    this.peerChannelResetDurationMs = peerChannelResetDurationMs;
+    this.unreachablePeerChannelHandler = unreachablePeerChannelHandler;
   }
 
   /** Package-private test hook to drive the stall-duration logic deterministically. */
@@ -160,6 +185,11 @@ public class ClusterMonitor {
     // Leader-driven recovery (#4728): if the replica stays stuck long enough, the leader actively
     // forces it to resync instead of merely logging forever. Tracked regardless of the log throttle.
     trackStallForRecovery(replicaId, state, matchIndex, replicaDelta, lag, now);
+
+    // Channel-level recovery (#4696): if the follower stays unreachable long enough, the leader resets
+    // that follower's replication gRPC channel so a wedged appender re-resolves DNS and reconnects.
+    // Independent of the resync narrative and of the lag-based stall recovery above.
+    trackUnreachableForChannelReset(replicaId, state, lastRpcElapsedMs, now);
 
     // HEALTHY: nothing to say.
     if (status == ReplicaStatus.HEALTHY)
@@ -288,6 +318,54 @@ public class ClusterMonitor {
   }
 
   /**
+   * Drives the leader-side channel-level recovery for a follower whose outbound replication gRPC
+   * channel has wedged (issue #4696). When a follower restarts with a new address (e.g. a Kubernetes
+   * pod-IP change), grpc-java can keep returning the stale/negative DNS result on the leader's cached
+   * appender channel, so the follower stays unreachable indefinitely even though DNS has healed. Once
+   * the follower has been continuously unreachable for {@link #peerChannelResetDurationMs}, the leader
+   * fires {@link #unreachablePeerChannelHandler} to close that one channel and force a fresh
+   * re-resolution; unlike a leadership transfer this touches only the unreachable peer, so it cannot
+   * flap the cluster.
+   * <p>
+   * The streak mirrors {@link #trackStallForRecovery}: it starts on the first unreachable tick, fires
+   * at most once per streak, and re-arms the moment the follower is reachable again. It is decoupled
+   * from the resync narrative ({@link #resyncNarrativeEnabled}) so the recovery works even when the
+   * narrative logging is turned off. State is mutated only from the single lag-monitor thread.
+   */
+  private void trackUnreachableForChannelReset(final String replicaId, final ReplicaState state,
+      final long lastRpcElapsedMs, final long now) {
+    if (peerChannelResetDurationMs <= 0 || unreachablePeerChannelHandler == null || peerUnreachableThresholdMs <= 0)
+      return; // channel-reset recovery disabled
+
+    final boolean unreachable = lastRpcElapsedMs >= peerUnreachableThresholdMs;
+
+    if (!unreachable) {
+      // Reachable again: end the streak and re-arm so a later stall can trigger another reset.
+      state.channelUnreachableSinceMs = -1;
+      state.channelResetTriggered = false;
+      return;
+    }
+
+    if (state.channelUnreachableSinceMs == -1) {
+      state.channelUnreachableSinceMs = now; // first unreachable tick; require persistence before acting
+      return;
+    }
+
+    if (!state.channelResetTriggered && now - state.channelUnreachableSinceMs >= peerChannelResetDurationMs) {
+      state.channelResetTriggered = true;
+      LogManager.instance().log(this, Level.WARNING,
+          "Follower '%s' unreachable for %dms: resetting its replication channel to force a fresh DNS re-resolution and reconnect.",
+          replicaId, now - state.channelUnreachableSinceMs);
+      try {
+        unreachablePeerChannelHandler.accept(replicaId);
+      } catch (final Exception e) {
+        LogManager.instance().log(this, Level.WARNING,
+            "Channel-reset recovery for follower '%s' failed: %s", replicaId, e.getMessage());
+      }
+    }
+  }
+
+  /**
    * Returns the latest classified status for {@code replicaId}, or {@link ReplicaStatus#UNKNOWN}
    * if no tick has been recorded yet (e.g. just-started leader, or peer that has never replied).
    */
@@ -384,6 +462,10 @@ public class ClusterMonitor {
     // Reachability-narrative state, mutated only from the single lag-monitor thread.
     long          unreachableSinceMs      = -1;
     long          lastUnreachableWarnAtMs = 0;
+    // Channel-reset streak state (#4696), mutated only from the single lag-monitor thread. Tracks how
+    // long the follower has been continuously unreachable; the reset fires once per streak.
+    long          channelUnreachableSinceMs = -1;
+    boolean       channelResetTriggered     = false;
 
     ReplicaState(final long initialMatchIndex, final long initialLeaderCommitIndex) {
       this.lastMatchIndex = initialMatchIndex;
