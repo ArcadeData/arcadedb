@@ -72,6 +72,17 @@ public class PageManagerFlushThread extends Thread {
   private final        long                                   maxDeferredRAM;
 
   /**
+   * Per-database count of pages that LEFT the flush pipeline: the progress signal for
+   * {@link #waitAllPagesOfDatabaseAreFlushed} (#4928). Deliberately per-database and package-private (for
+   * the regression test): a JVM-global signal (e.g. PageManager.totalPagesWritten) would let a busy sibling
+   * database sharing this flush thread mask a wedged one forever, defeating the very timeout it feeds.
+   * An entry is created on a database's FIRST bounded wait (close, rename, backup-suspend, compaction
+   * shipping) and lives until {@link #removeAllPagesOfDatabase} (close/drop) - one bounded entry per open
+   * database, not a leak.
+   */
+  final ConcurrentHashMap<BasicDatabase, AtomicLong> flushedPagesPerDatabase = new ConcurrentHashMap<>();
+
+  /**
    * Running total of bytes currently deferred across all suspended databases. Package-private so the white-box
    * regression test for issue #4728 can assert the backlog stays bounded.
    */
@@ -147,24 +158,60 @@ public class PageManagerFlushThread extends Thread {
    * Entries are added to pageIndex BEFORE enqueueing and removed AFTER flushing each page,
    * so checking pageIndex is race-free unlike checking queue + nextPagesToFlush separately.
    */
-  protected void waitAllPagesOfDatabaseAreFlushed(final Database database) {
+  /**
+   * @return {@code true} when every page of the database reached the disk, {@code false} when the wait gave
+   *     up: either interrupted, or no flush PROGRESS was observed for {@code arcadedb.flushAllPagesTimeout}
+   *     milliseconds (#4928 - a wedged flush thread or unwritable disk used to hang close()/rename()/backup
+   *     forever here). The window resets whenever the pending-page count decreases, so a healthy but slow
+   *     backlog never trips it. Callers on the close path treat {@code false} as a crash-equivalent close:
+   *     the WAL files and the lock file are preserved so the next open replays the unflushed pages.
+   */
+  /** Records that a page of the database LEFT the flush pipeline: the per-database progress signal (#4928). */
+  private void bumpFlushProgress(final MutablePage page) {
+    final AtomicLong counter = flushedPagesPerDatabase.get(page.getPageId().getDatabase());
+    if (counter != null)
+      counter.incrementAndGet();
+  }
+
+  protected boolean waitAllPagesOfDatabaseAreFlushed(final Database database) {
+    final long timeoutMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT);
+    int lastPending = Integer.MAX_VALUE;
+    final AtomicLong flushedCounter = flushedPagesPerDatabase.computeIfAbsent(database, k -> new AtomicLong());
+    long lastFlushed = flushedCounter.get();
+    long lastProgressAt = System.currentTimeMillis();
     while (true) {
-      boolean hasPendingPages = false;
+      int pending = 0;
       for (final PageId key : pageIndex.keySet()) {
-        if (database.equals(key.getDatabase())) {
-          hasPendingPages = true;
-          break;
-        }
+        if (database.equals(key.getDatabase()))
+          ++pending;
       }
 
-      if (!hasPendingPages)
-        return;
+      if (pending == 0)
+        return true;
+
+      final long now = System.currentTimeMillis();
+      final long flushed = flushedCounter.get();
+      if (pending < lastPending || flushed > lastFlushed) {
+        // The flush is making progress ON THIS DATABASE. Two signals on purpose: on LIVE callers (rename,
+        // backup-suspend, compaction shipping) sustained commits can keep the pending count from ever
+        // dipping below its minimum while the flusher works flat out, so this database's pages leaving the
+        // pipeline also reset the window. The signal is per-database by design: a busy sibling database
+        // sharing the flush thread must not mask a wedged one.
+        lastPending = Math.min(lastPending, pending);
+        lastFlushed = flushed;
+        lastProgressAt = now;
+      } else if (timeoutMs > 0 && now - lastProgressAt > timeoutMs) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "No flush progress for %d ms with %d pages of database '%s' still pending: giving up the wait. The caller preserves the WAL so the next open recovers the unflushed pages",
+            null, timeoutMs, pending, database.getName());
+        return false;
+      }
 
       try {
         Thread.sleep(10);
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
-        return;
+        return false;
       }
     }
   }
@@ -261,12 +308,23 @@ public class PageManagerFlushThread extends Thread {
                 } catch (final DatabaseMetadataException e) {
                   // FILE DELETED, CONTINUE WITH THE NEXT PAGES
                   LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
+                } catch (final IOException e) {
+                  // #4928: contain a plain I/O failure per page, same policy as the interrupt double-fault
+                  // above. Letting it escape aborted the whole batch: the remaining pages were never flushed
+                  // or retried, yet their pageIndex entries survived, so waitAllPagesOfDatabaseAreFlushed
+                  // spun forever and close()/rename()/backup-suspend hung. The failed page's WAL entry was
+                  // never acked (notifyPageFlushed not reached), which keeps its WAL file from being dropped:
+                  // the page is durable via WAL replay on the next open, NOT repaired in place - until then,
+                  // once the read cache evicts it, readers see the stale on-disk version.
+                  LogManager.instance().log(this, Level.SEVERE,
+                      "Error on flushing page '%s' to disk, the page will be recovered from the WAL on restart", e, page);
                 } finally {
                   // Remove from index AFTER flushing: the page is now on disk and will be
                   // found in the read cache (putPageInReadCache was called at commit time).
                   // Reference identity ensures a NEWER MutablePage for the same PageId (queued
                   // by a later TX while this batch was waiting) is NOT removed from the index.
                   removeFromFlushIndex(page);
+                  bumpFlushProgress(page);
                 }
               }
             }
@@ -329,6 +387,7 @@ public class PageManagerFlushThread extends Thread {
               // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
               deferredRAMBytes.addAndGet(-page.getPhysicalSize());
               removeFromFlushIndex(page);
+              bumpFlushProgress(page);
             }
           }
         }
@@ -449,6 +508,7 @@ public class PageManagerFlushThread extends Thread {
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
     suspendLocks.remove(database);
     suspended.remove(database);
+    flushedPagesPerDatabase.remove(database);
     final ConcurrentLinkedQueue<PagesToFlush> droppedDeferred = deferredByDatabase.remove(database);
     if (droppedDeferred != null) {
       for (final PagesToFlush batch : droppedDeferred)
@@ -490,6 +550,13 @@ public class PageManagerFlushThread extends Thread {
           pageIndex.remove(page.getPageId());
           it.remove();
           removedBytes += page.getPhysicalSize();
+          // The purged page will never be flushed and its content is irrelevant (its file was dropped):
+          // release its WAL ack so the close-time ack gate (#4928) is not tripped by stale pending counts.
+          // takeWALFile makes the release exactly-once against the racing flush loop (which does NOT remove
+          // pages from this batch list, so both paths can visit the same page).
+          final WALFile walFile = page.takeWALFile();
+          if (walFile != null)
+            walFile.notifyPageFlushed();
         }
       }
     }

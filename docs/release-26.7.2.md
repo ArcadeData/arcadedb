@@ -149,6 +149,23 @@ that could starve the very snapshot resync meant to heal the node.
   ([#4933](https://github.com/ArcadeData/arcadedb/issues/4933)). All accounting is now driven by the entry
   actually removed, so every page is subtracted exactly once.
 
+- **Storage/engine robustness bundle.** Five defects from the 2026-07 engine audit: a plain I/O error while
+  flushing one page no longer aborts the rest of the batch nor leaks its pages in the flush index (which
+  hung `close()`/backup forever). The wait-for-flush is now bounded by a NO-PROGRESS window
+  (`arcadedb.flushAllPagesTimeout`, default 60s, 0 = wait forever; a healthy slow backlog never trips it),
+  and a close that gives up becomes CRASH-EQUIVALENT: the WAL files and the lock file are preserved so the
+  next open runs recovery and replays the unflushed pages, instead of the close silently deleting the only
+  durable copy of them ([#4928](https://github.com/ArcadeData/arcadedb/issues/4928)); the channel-reopen path no longer re-creates
+  a file that DDL deleted while one of its pages was mid-flight in the flush thread (a one-page ghost file
+  that got re-registered on the next open, [#4930](https://github.com/ArcadeData/arcadedb/issues/4930));
+  `check()` on buckets beyond 2^31 positions no longer overflows its RID arithmetic (under `fix=true` it
+  could delete an innocent record at the wrong RID, [#4931](https://github.com/ArcadeData/arcadedb/issues/4931));
+  deleting a multi-page record no longer swallows the concurrent-modification retry signal (the delete
+  reported success while orphaning the remaining chunks - a permanent space leak,
+  [#4932](https://github.com/ArcadeData/arcadedb/issues/4932)); and scheduling async work concurrently with
+  database close now fails with the intended "Async executor has been shut down" error instead of a raw
+  NullPointerException ([#4955](https://github.com/ArcadeData/arcadedb/issues/4955)).
+
 ### Improvements
 
 - **HA: throttled diverged-follower resync logging.** When a follower detects a WAL page-version gap it

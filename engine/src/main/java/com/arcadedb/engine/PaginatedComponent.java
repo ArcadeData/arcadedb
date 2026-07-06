@@ -85,7 +85,12 @@ public abstract class PaginatedComponent extends Component {
   }
 
   public void rename(final String newName) throws IOException {
-    PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database);
+    // #4928: the bounded wait can give up on a wedged flush. Renaming with pages still in flight would let
+    // the flush thread write to the file under its old identity: abort loudly instead, the rename can be
+    // retried once the flush recovers.
+    if (!PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(database))
+      throw new IOException("Cannot rename component '" + componentName
+          + "': pages are still pending flush after the no-progress timeout (see arcadedb.flushAllPagesTimeout)");
     file.rename(newName);
 
     // Derive the new component name from the renamed OS file name.

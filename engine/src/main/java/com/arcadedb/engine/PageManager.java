@@ -133,9 +133,11 @@ public class PageManager extends LockContext {
     }
   }
 
-  public void waitAllPagesOfDatabaseAreFlushed(final Database database) {
+  /** @return true when everything reached the disk; false when the bounded wait gave up (see #4928). */
+  public boolean waitAllPagesOfDatabaseAreFlushed(final Database database) {
     if (flushThread != null)
-      flushThread.waitAllPagesOfDatabaseAreFlushed(database);
+      return flushThread.waitAllPagesOfDatabaseAreFlushed(database);
+    return true;
   }
 
   public void removeModifiedPagesOfDatabase(final Database database) {
@@ -427,10 +429,18 @@ public class PageManager extends LockContext {
         // the metadata updates.
       }
 
-    } else
+    } else {
       LogManager.instance()
           .log(this, Level.FINE, "Cannot flush page %s because the file has been dropped (threadId=%d)...", null, page,
               Thread.currentThread().threadId());
+      // The page will never be flushed and its content is irrelevant (the file is gone): release its WAL
+      // ack, or the stale pending count would make every later clean close preserve the WAL for nothing
+      // (the close-time ack gate, #4928). takeWALFile makes the release exactly-once against the racing
+      // dropped-file batch purge.
+      final WALFile walFile = page.takeWALFile();
+      if (walFile != null)
+        walFile.notifyPageFlushed();
+    }
   }
 
   private CachedPage loadPage(final PageId pageId, final int size, final boolean createIfNotExists, final boolean cache)
