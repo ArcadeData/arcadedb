@@ -3939,7 +3939,10 @@ public class LSMVectorIndex implements Index, IndexInternal {
       // is needed because LSMVectorIndexCompactor calls writePages(..., asyncFlush=true).
       final boolean success = database.getWrappedDatabaseInstance().runWithCompactionReplication(() -> {
         final boolean compactSuccess = LSMVectorIndexCompactor.compact(this);
-        database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+        // If the bounded wait gives up (#4928), the shipped component could contain unflushed (zero) pages:
+        // fail the compaction, it is rescheduled later.
+        if (!database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
+          throw new IOException("Vector index compaction aborted: pages are still pending flush after the no-progress timeout");
         return compactSuccess;
       });
       if (success) {

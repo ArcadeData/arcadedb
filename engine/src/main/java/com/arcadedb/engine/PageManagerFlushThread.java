@@ -158,6 +158,7 @@ public class PageManagerFlushThread extends Thread {
   protected boolean waitAllPagesOfDatabaseAreFlushed(final Database database) {
     final long timeoutMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT);
     int lastPending = Integer.MAX_VALUE;
+    long lastWritten = pageManager.getTotalPagesWritten();
     long lastProgressAt = System.currentTimeMillis();
     while (true) {
       int pending = 0;
@@ -170,9 +171,14 @@ public class PageManagerFlushThread extends Thread {
         return true;
 
       final long now = System.currentTimeMillis();
-      if (pending < lastPending) {
-        // The flush is making progress: reset the no-progress window.
-        lastPending = pending;
+      final long written = pageManager.getTotalPagesWritten();
+      if (pending < lastPending || written > lastWritten) {
+        // The flush is making progress. Two signals on purpose: on LIVE callers (rename, backup-suspend,
+        // compaction shipping) sustained commits can keep the pending count from ever dipping below its
+        // minimum even while the flusher works flat out, so pages PHYSICALLY WRITTEN also resets the
+        // window - only a flusher that writes nothing at all can trip the timeout.
+        lastPending = Math.min(lastPending, pending);
+        lastWritten = written;
         lastProgressAt = now;
       } else if (timeoutMs > 0 && now - lastProgressAt > timeoutMs) {
         LogManager.instance().log(this, Level.SEVERE,

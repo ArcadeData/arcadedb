@@ -158,8 +158,10 @@ class FlushRobustnessTest extends TestHelper {
       assertThat(new File(dbDir, "database.lck"))
           .as("the lock file must be preserved as the unclean-shutdown marker (#4928)").exists();
 
-      // Clean up the synthetic entry so the reopen's own close is not wedged too.
-      PageManager.INSTANCE.getFlushThread().pageIndex.remove(stuckPageId);
+      // The give-up close must also have purged the stuck entries from the shared flush thread's index:
+      // they reference a now-closed database and could never be flushed (their content is in the preserved WAL).
+      assertThat(PageManager.INSTANCE.getFlushThread().pageIndex.containsKey(stuckPageId))
+          .as("a give-up close must purge its stuck pageIndex entries (no JVM-wide leak)").isFalse();
       stuckPageId = null;
 
       // The next open must run recovery and the data must be there; its clean close then drops the WAL.

@@ -684,8 +684,10 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
           final boolean[] componentHandled = { false };
           try {
             // Drain the page cache's async writer so the synthetic WAL HA ships in this same
-            // recording session sees the final on-disk pages instead of zeros.
-            database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+            // recording session sees the final on-disk pages instead of zeros. If the bounded wait gives up
+            // (#4928), shipping would send zeros to followers: abort, the flush retries later.
+            if (!database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
+              throw new IOException("Sparse-vector flush aborted: pages are still pending flush after the no-progress timeout");
             // Open the reader and swap segments under {@link #mutatorLock} (held by the caller) AND
             // inside the recording session, in a single CAS. Doing the retire-old + add-new step in
             // one {@link #replaceSegments} call closes the ghost-window where a concurrent
@@ -1008,8 +1010,10 @@ public final class PaginatedSparseVectorEngine implements AutoCloseable {
       throw buildFailure;
     }
     // Drain the page cache so the synthetic WAL HA's runWithCompactionReplication ships in this
-    // recording session sees on-disk pages instead of zeros from the async writer.
-    database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database);
+    // recording session sees on-disk pages instead of zeros from the async writer. If the bounded wait
+    // gives up (#4928), shipping would send zeros to followers: abort, compaction retries later.
+    if (!database.getPageManager().waitAllPagesOfDatabaseAreFlushed(database))
+      throw new IndexException("Sparse-vector compaction aborted: pages are still pending flush after the no-progress timeout");
     return component;
   }
 

@@ -183,6 +183,11 @@ public class PageManager extends LockContext {
     }
   }
 
+  /** Monotonic count of pages physically written, used as the flush-progress signal by the bounded wait. */
+  long getTotalPagesWritten() {
+    return totalPagesWritten.get();
+  }
+
   PageManagerFlushThread getFlushThread() {
     return flushThread;
   }

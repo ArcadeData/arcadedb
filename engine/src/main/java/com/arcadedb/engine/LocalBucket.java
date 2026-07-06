@@ -151,6 +151,16 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   /**
    * Called at creation time.
    */
+  /**
+   * Record position (the RID's long position) for a slot in a page. Package-private static so the overflow
+   * regression test for #4931 can verify it directly: the pre-fix inline {@code int * int} arithmetic
+   * overflowed for buckets beyond 2^31 positions, and {@code check(fix=true)} then deleted an innocent
+   * record at the wrong RID.
+   */
+  static long recordPosition(final int pageId, final int maxRecordsInPage, final int positionInPage) {
+    return (long) pageId * maxRecordsInPage + positionInPage;
+  }
+
   public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
                      final int pageSize, final int version) throws IOException {
     super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);
@@ -295,7 +305,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
         if (recordCountInPage > 0) {
           for (int recordIdInPage = 0; recordIdInPage < recordCountInPage; ++recordIdInPage) {
-            final RID rid = new RID(fileId, ((long) pageId) * maxRecordsInPage + recordIdInPage);
+            final RID rid = new RID(fileId, recordPosition(pageId, maxRecordsInPage, recordIdInPage));
 
             try {
               final int recordPositionInPage = getRecordPositionInPage(page, recordIdInPage);
@@ -484,9 +494,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         int pageChunks = 0;
 
         for (int positionInPage = 0; positionInPage < recordCountInPage; ++positionInPage) {
-          // #4931: widen to long BEFORE multiplying (as scan() does): int*int overflows for buckets beyond
-          // 2^31 positions, and check(fix=true) would then delete an innocent record at the wrong RID.
-          final RID rid = new RID(file.getFileId(), (long) pageId * maxRecordsInPage + positionInPage);
+          // #4931: int*int overflowed here for buckets beyond 2^31 positions, and check(fix=true) then
+          // deleted an innocent record at the wrong RID. recordPosition() widens to long.
+          final RID rid = new RID(file.getFileId(), recordPosition(pageId, maxRecordsInPage, positionInPage));
 
           final int recordPositionInPage = (int) page.readUnsignedInt(
                   PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
@@ -1352,7 +1362,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
           // INVALID SIZE
           LogManager.instance().log(this, Level.SEVERE,
                   "Invalid record size " + size + " for record #" + fileId + ":"
-                          + ((long) page.pageId.getPageNumber() * maxRecordsInPage + positionInPage) + ": deleting record");
+                          + recordPosition(page.pageId.getPageNumber(), maxRecordsInPage, positionInPage) + ": deleting record");
 
           if (readOnly) {
             if (!(page instanceof MutablePage))
@@ -1363,7 +1373,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       } catch (Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
-                "Error on loading record #" + fileId + ":" + ((long) page.pageId.getPageNumber() * maxRecordsInPage + positionInPage));
+                "Error on loading record #" + fileId + ":" + recordPosition(page.pageId.getPageNumber(), maxRecordsInPage, positionInPage));
         continue;
       }
 

@@ -2071,6 +2071,12 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
 
       open = false;
 
+      if (preserveWalForRecovery)
+        // #4928: the give-up close leaves the stuck pages in the shared flush thread's index, referencing a
+        // now-closed database - they can never be flushed once open=false (flushPage early-returns). Purge
+        // them so the JVM-wide flush thread does not leak entries; their content is safe in the preserved WAL.
+        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
+
       PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
 
       try {
