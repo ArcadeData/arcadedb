@@ -107,19 +107,6 @@ func neo4jCode(err error) string {
 	return ""
 }
 
-// runSingleErr is the error-returning sibling of runSingle, for use inside
-// assertStillFails bodies (which must surface failures as errors rather than
-// calling t.Fatal). It returns the single record and any driver error.
-func runSingleErr(d neo4j.DriverWithContext, database, cypher string, params map[string]any) (*neo4j.Record, error) {
-	sess := d.NewSession(ctx, neo4j.SessionConfig{DatabaseName: database})
-	defer sess.Close(ctx)
-	res, err := sess.Run(ctx, cypher, params)
-	if err != nil {
-		return nil, err
-	}
-	return res.Single(ctx)
-}
-
 // --- auth ----------------------------------------------------------------
 
 func Test_AUTH_001_BasicAuthValid(t *testing.T) {
@@ -490,24 +477,11 @@ func Test_TYPE_002_RelationshipRoundtrip(t *testing.T) {
 
 func Test_TYPE_003_PathRoundtrip(t *testing.T) {
 	d := newDriver(t, boltURI(plainContainer, "bolt"))
-	assertStillFails(t,
-		"structure/BoltPath.java has zero call sites in BoltStructureMapper; "+
-			"query results never produce native Path structures; see #4890",
-		func() error {
-			rec, err := runSingleErr(d, "beer", "MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1", nil)
-			if err != nil {
-				return err
-			}
-			v, _ := rec.Get("p")
-			path, ok := v.(dbtype.Path)
-			if !ok {
-				return fmt.Errorf("expected dbtype.Path, got %T", v)
-			}
-			if len(path.Nodes) < 2 {
-				return fmt.Errorf("path has %d nodes, want >=2", len(path.Nodes))
-			}
-			return nil
-		})
+	rec := runSingle(t, d, "beer", "MATCH p=(b:Beer)-[*1..2]-() RETURN p LIMIT 1", nil)
+	v, _ := rec.Get("p")
+	path, ok := v.(dbtype.Path)
+	require.True(t, ok, "expected dbtype.Path, got %T", v)
+	require.GreaterOrEqual(t, len(path.Nodes), 2)
 }
 
 func Test_TYPE_004_ByteArrayParamRoundtrip(t *testing.T) {
@@ -587,38 +561,18 @@ func Test_TYPE_010_OffsetDateTimeRoundtrip(t *testing.T) {
 
 func Test_TYPE_011_DurationRoundtrip(t *testing.T) {
 	d := newDriver(t, boltURI(plainContainer, "bolt"))
-	assertStillFails(t,
-		"BoltStructureMapper/PackStreamWriter have no Duration handling; falls "+
-			"through to value.toString(); see #4890",
-		func() error {
-			rec, err := runSingleErr(d, "beer", "MATCH (t:TypeMatrix) RETURN t.durationProp AS d", nil)
-			if err != nil {
-				return err
-			}
-			v, _ := rec.Get("d")
-			if _, ok := v.(dbtype.Duration); !ok {
-				return fmt.Errorf("expected dbtype.Duration, got %T", v)
-			}
-			return nil
-		})
+	rec := runSingle(t, d, "beer", "MATCH (t:TypeMatrix) RETURN t.durationProp AS d", nil)
+	v, _ := rec.Get("d")
+	_, ok := v.(dbtype.Duration)
+	require.True(t, ok, "expected dbtype.Duration, got %T", v)
 }
 
 func Test_TYPE_012_PointRoundtrip(t *testing.T) {
 	d := newDriver(t, boltURI(plainContainer, "bolt"))
-	assertStillFails(t,
-		"No Point/spatial handling in BoltStructureMapper or PackStreamWriter "+
-			"(engine point() works; the gap is Bolt wire serialization); see #4890",
-		func() error {
-			rec, err := runSingleErr(d, "beer", "MATCH (t:TypeMatrix) RETURN t.pointProp AS p", nil)
-			if err != nil {
-				return err
-			}
-			v, _ := rec.Get("p")
-			if _, ok := v.(dbtype.Point2D); !ok {
-				return fmt.Errorf("expected dbtype.Point2D, got %T", v)
-			}
-			return nil
-		})
+	rec := runSingle(t, d, "beer", "MATCH (t:TypeMatrix) RETURN t.pointProp AS p", nil)
+	v, _ := rec.Get("p")
+	_, ok := v.(dbtype.Point2D)
+	require.True(t, ok, "expected dbtype.Point2D, got %T", v)
 }
 
 // --- errors ---------------------------------------------------------------
@@ -637,26 +591,14 @@ func Test_ERR_001_SyntaxError(t *testing.T) {
 
 func Test_ERR_002_SemanticError(t *testing.T) {
 	d := newDriver(t, boltURI(plainContainer, "bolt"))
-	assertStillFails(t,
-		"CypherSemanticValidator throws undefined-variable via "+
-			"CommandParsingException, the same class as ANTLR syntax errors, so "+
-			"the Bolt RUN handler cannot distinguish them; "+
-			"Neo.ClientError.Statement.SemanticError is dead code in Bolt; see #4890",
-		func() error {
-			sess := d.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "beer"})
-			defer sess.Close(ctx)
-			res, err := sess.Run(ctx, "MATCH (n:Beer) RETURN undeclaredVariable", nil)
-			if err == nil {
-				_, err = res.Consume(ctx)
-			}
-			if err == nil {
-				return fmt.Errorf("expected an error, got none")
-			}
-			if code := neo4jCode(err); code != "Neo.ClientError.Statement.SemanticError" {
-				return fmt.Errorf("got code %q, want Neo.ClientError.Statement.SemanticError", code)
-			}
-			return nil
-		})
+	sess := d.NewSession(ctx, neo4j.SessionConfig{DatabaseName: "beer"})
+	t.Cleanup(func() { _ = sess.Close(ctx) })
+	res, err := sess.Run(ctx, "MATCH (n:Beer) RETURN undeclaredVariable", nil)
+	if err == nil {
+		_, err = res.Consume(ctx)
+	}
+	require.Error(t, err)
+	require.Equal(t, "Neo.ClientError.Statement.SemanticError", neo4jCode(err))
 }
 
 func Test_ERR_003_UnauthenticatedRequestRejected(t *testing.T) {
