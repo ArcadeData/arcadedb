@@ -39,18 +39,20 @@ public class DatabaseAsyncBrowseIterator implements DatabaseAsyncTask {
 
   @Override
   public void execute(final DatabaseAsyncExecutorImpl.AsyncThread async, final DatabaseInternal database) {
-    try {
-      while (iterator.hasNext()) {
-        if (!callback.onRecord(iterator.next().asDocument()))
-          break;
+    while (iterator.hasNext()) {
+      if (!callback.onRecord(iterator.next().asDocument()))
+        break;
 
-        if (async.isShutdown())
-          break;
-      }
-    } finally {
-      // UNLOCK THE CALLER THREAD
-      semaphore.countDown();
+      if (async.isShutdown())
+        break;
     }
+  }
+
+  @Override
+  public void completed() {
+    // UNLOCK THE CALLER THREAD. The worker invokes completed() after execute() but also when the
+    // task is dropped during shutdown (#4954), so the browsing caller never hangs on the latch.
+    semaphore.countDown();
   }
 
   @Override
