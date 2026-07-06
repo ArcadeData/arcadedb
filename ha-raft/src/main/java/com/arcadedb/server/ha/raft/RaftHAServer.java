@@ -431,8 +431,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
    */
   static boolean resetPeerAppenderChannel(final RaftServerRpc rpc, final RaftPeerId peerId) {
     if (rpc instanceof RaftServerRpcWithProxy<?, ?> withProxy) {
-      withProxy.getProxies().resetProxy(peerId);
-      return true;
+      final var proxies = withProxy.getProxies();
+      if (proxies != null) {
+        proxies.resetProxy(peerId);
+        return true;
+      }
     }
     return false;
   }

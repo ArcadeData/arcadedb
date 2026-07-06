@@ -55,6 +55,17 @@ class RaftPeerChannelResetTest {
   }
 
   @Test
+  void returnsFalseWhenProxiesAreNull() {
+    // Defensive: a proxy-based RPC whose proxy map is not yet available is a no-op, not an NPE.
+    final RaftServerRpcWithProxy<?, ?> rpc = mock(RaftServerRpcWithProxy.class);
+    when(rpc.getProxies()).thenReturn(null);
+
+    final boolean applied = RaftHAServer.resetPeerAppenderChannel(rpc, RaftPeerId.valueOf("peer-1"));
+
+    assertThat(applied).isFalse();
+  }
+
+  @Test
   void returnsFalseWhenRpcIsNotProxyBased() {
     // A plain RaftServerRpc (not RaftServerRpcWithProxy) has no proxy map to reset: the reset is a
     // no-op and the caller logs at FINE instead of throwing.
