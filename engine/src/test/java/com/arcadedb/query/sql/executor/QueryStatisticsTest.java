@@ -72,4 +72,16 @@ class QueryStatisticsTest {
     s.incNodesCreated();
     assertThat(snapshot.getNodesCreated()).isEqualTo(1);
   }
+
+  @Test
+  void copiedContextSharesStatisticsAccumulator() {
+    final BasicCommandContext ctx = new BasicCommandContext();
+    ctx.getStatistics().incNodesCreated();
+    final CommandContext copy = ctx.copy();
+    // The copy shares the same accumulator, so increments through it aggregate into one total
+    // instead of vanishing.
+    copy.getStatistics().incNodesCreated();
+    assertThat(copy.getStatistics()).isSameAs(ctx.getStatistics());
+    assertThat(ctx.getStatistics().getNodesCreated()).isEqualTo(2);
+  }
 }

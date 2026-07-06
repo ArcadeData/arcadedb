@@ -409,6 +409,9 @@ public class BasicCommandContext implements CommandContext {
     copy.parent = parent;
     copy.child = child;
     copy.profiling = profiling;
+    // Share the same statistics accumulator so mutations performed through the copied context
+    // aggregate into one place instead of silently vanishing.
+    copy.statistics = statistics;
     return copy;
   }
 
