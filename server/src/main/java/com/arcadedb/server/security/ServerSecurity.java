@@ -387,12 +387,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
    * ({@code arcadedb.server.securitySaltCacheSize=0}) when even this residual exposure is
    * unacceptable.
    * <p>
-   * The {@link MessageDigest} is held in a {@link ThreadLocal} and reset per use to avoid a
-   * per-call {@code getInstance} provider lookup on the Basic-auth hot path.
+   * The {@link MessageDigest} is held in a {@link ThreadLocal} to avoid a per-call
+   * {@code getInstance} provider lookup on the Basic-auth hot path.
    */
   private static String saltCacheKey(final String password, final String salt, final int iterations) {
+    // digest(byte[]) is a one-shot that resets the instance afterwards, so the reused ThreadLocal
+    // digest is always clean at entry on this update-free path.
     final MessageDigest digest = SHA256_DIGEST.get();
-    digest.reset();
     final byte[] hash = digest.digest((password + "$" + salt + "$" + iterations).getBytes(StandardCharsets.UTF_8));
     return HexFormat.of().formatHex(hash);
   }
