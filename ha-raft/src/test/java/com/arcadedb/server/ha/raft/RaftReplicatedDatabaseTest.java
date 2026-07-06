@@ -20,8 +20,14 @@ package com.arcadedb.server.ha.raft;
 
 import com.arcadedb.database.DatabaseInternal;
 import com.arcadedb.database.RID;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.ConcurrentModificationException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -124,8 +130,66 @@ class RaftReplicatedDatabaseTest {
 
     final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(503, body);
 
+    // Reconstructed as the exact type, not collapsed to its NeedRetryException supertype, so a
+    // caller catching ConcurrentModificationException specifically still matches.
+    assertThat(result).isInstanceOf(ConcurrentModificationException.class);
     assertThat(result).isInstanceOf(NeedRetryException.class);
     assertThat(result.getMessage()).isEqualTo("Concurrent modification detected");
+  }
+
+  @Test
+  void reconstructLeaderExceptionLockTimeoutIsRetryable() {
+    final String body = "{\"error\":\"Cannot execute command\","
+        + "\"detail\":\"Timeout on acquiring lock\","
+        + "\"exception\":\"com.arcadedb.exception.LockTimeoutException\"}";
+
+    final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(503, body);
+
+    // LockTimeoutException extends NeedRetryException: it must stay retryable on the Follower.
+    assertThat(result).isInstanceOf(LockTimeoutException.class);
+    assertThat(result).isInstanceOf(NeedRetryException.class);
+    assertThat(result.getMessage()).isEqualTo("Timeout on acquiring lock");
+  }
+
+  @Test
+  void reconstructLeaderExceptionTimeoutIsNotRetryable() {
+    final String body = "{\"error\":\"Cannot execute command\","
+        + "\"detail\":\"Query timeout\","
+        + "\"exception\":\"com.arcadedb.exception.TimeoutException\"}";
+
+    final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(500, body);
+
+    // A plain (query-deadline) TimeoutException is NOT retryable and must not become a
+    // NeedRetryException, otherwise callers would wrongly retry it.
+    assertThat(result).isInstanceOf(TimeoutException.class);
+    assertThat(result).isNotInstanceOf(NeedRetryException.class);
+    assertThat(result.getMessage()).isEqualTo("Query timeout");
+  }
+
+  @Test
+  void reconstructLeaderExceptionSqlParsingKeepsSubtype() {
+    final String body = "{\"error\":\"Error on parsing query\","
+        + "\"detail\":\"Syntax error near 'SELCT'\","
+        + "\"exception\":\"com.arcadedb.exception.CommandSQLParsingException\"}";
+
+    final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(500, body);
+
+    // Reconstructed as the exact subtype, so a caller catching CommandParsingException matches too.
+    assertThat(result).isInstanceOf(CommandSQLParsingException.class);
+    assertThat(result).isInstanceOf(CommandParsingException.class);
+    assertThat(result.getMessage()).isEqualTo("Syntax error near 'SELCT'");
+  }
+
+  @Test
+  void reconstructLeaderExceptionQueryNotIdempotent() {
+    final String body = "{\"error\":\"Cannot execute command\","
+        + "\"detail\":\"Query is not idempotent\","
+        + "\"exception\":\"com.arcadedb.exception.QueryNotIdempotentException\"}";
+
+    final RuntimeException result = RaftReplicatedDatabase.reconstructLeaderException(500, body);
+
+    assertThat(result).isInstanceOf(QueryNotIdempotentException.class);
+    assertThat(result.getMessage()).isEqualTo("Query is not idempotent");
   }
 
   @Test

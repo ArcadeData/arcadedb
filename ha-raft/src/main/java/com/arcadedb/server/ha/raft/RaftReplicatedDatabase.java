@@ -50,9 +50,18 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
+import com.arcadedb.exception.CommandSQLParsingException;
+import com.arcadedb.exception.CommandSemanticException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.QueryNotIdempotentException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
@@ -100,6 +109,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 
@@ -139,6 +149,41 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       ThreadLocal.withInitial(ArrayList::new);
 
   private static final HttpClient HTTP_CLIENT = HttpClient.newHttpClient();
+
+  /**
+   * Registry of leader-side exception class names to a factory that rebuilds the same type from its
+   * message, used by {@link #reconstructLeaderException} on forwarded-command errors. Reconstructing
+   * the exact type (rather than collapsing to a common supertype) preserves retry semantics for
+   * callers: a {@link com.arcadedb.exception.ConcurrentModificationException} or
+   * {@link LockTimeoutException} stays a {@link NeedRetryException} subtype and therefore retryable,
+   * while a non-retryable {@link TimeoutException} stays distinct instead of being mistaken for a
+   * retryable one. It also lets callers catch the specific type directly.
+   * <p>
+   * Only {@link ArcadeDBException} subtypes with a single {@code (String)} constructor belong here:
+   * non-{@code ArcadeDBException} types (e.g. {@code SecurityException}) would not be caught by the
+   * {@code catch (ArcadeDBException)} on the forwarding path and would be re-wrapped anyway, and
+   * types that need structured arguments (e.g. {@link DuplicatedKeyException}) are reconstructed
+   * explicitly in {@link #reconstructLeaderException}. New entries are safe to add as one line each;
+   * extending this map is preferred over reflectively instantiating an arbitrary class name from the
+   * response. {@link Map#ofEntries} is used (rather than {@link Map#of}) because the latter caps at
+   * ten pairs.
+   * <p>
+   * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name
+   * because this file imports {@link java.util.ConcurrentModificationException}.
+   */
+  private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.ofEntries(
+      Map.entry(NeedRetryException.class.getName(), NeedRetryException::new),
+      Map.entry(com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new),
+      Map.entry(LockTimeoutException.class.getName(), LockTimeoutException::new),
+      Map.entry(TimeoutException.class.getName(), TimeoutException::new),
+      Map.entry(TransactionException.class.getName(), TransactionException::new),
+      Map.entry(CommandExecutionException.class.getName(), CommandExecutionException::new),
+      Map.entry(CommandParsingException.class.getName(), CommandParsingException::new),
+      Map.entry(CommandSQLParsingException.class.getName(), CommandSQLParsingException::new),
+      Map.entry(CommandSemanticException.class.getName(), CommandSemanticException::new),
+      Map.entry(QueryNotIdempotentException.class.getName(), QueryNotIdempotentException::new),
+      Map.entry(ValidationException.class.getName(), ValidationException::new),
+      Map.entry(SchemaException.class.getName(), SchemaException::new));
 
   /** Poll cadence while waiting for a leader to be (re)elected before forwarding a write (issue #4728 follow-up). */
   private static final long LEADER_WAIT_POLL_INTERVAL_MS = 100;
@@ -1764,7 +1809,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
    * the Follower throws the same type the Leader would have thrown locally. For example, a
    * {@link DuplicatedKeyException} is reconstructed with its index name, keys, and existing RID so
    * callers can catch it directly instead of having to inspect a generic
-   * {@link TransactionException} message string.
+   * {@link TransactionException} message string. Other known types are reconstructed via
+   * {@link #LEADER_EXCEPTION_FACTORIES} to keep their exact type (and retry semantics).
    * <p>
    * If the body is non-JSON, empty, or the exception class is not recognised, a generic
    * {@link TransactionException} wrapping the full response body is returned as a safe fallback.
@@ -1789,6 +1835,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (exceptionClass == null)
       return new TransactionException(message);
 
+    // DuplicatedKeyException carries structured args (index name, keys, existing RID), so it is
+    // reconstructed explicitly rather than from a plain message.
     if (DuplicatedKeyException.class.getName().equals(exceptionClass) && exceptionArgs != null) {
       final String[] parts = exceptionArgs.split("\\|", 3);
       if (parts.length == 3)
@@ -1799,12 +1847,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         }
     }
 
-    if (NeedRetryException.class.getName().equals(exceptionClass)
-        || "com.arcadedb.exception.ConcurrentModificationException".equals(exceptionClass))
-      return new NeedRetryException(detail != null ? detail : message);
-
-    if (TransactionException.class.getName().equals(exceptionClass))
-      return new TransactionException(detail != null ? detail : message);
+    final Function<String, RuntimeException> factory = LEADER_EXCEPTION_FACTORIES.get(exceptionClass);
+    if (factory != null)
+      return factory.apply(detail != null ? detail : message);
 
     return new TransactionException(message);
   }
