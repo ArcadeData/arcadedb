@@ -50,6 +50,7 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.DuplicatedKeyException;
 import com.arcadedb.exception.NeedRetryException;
 import com.arcadedb.exception.TransactionException;
 import com.arcadedb.graph.Edge;
@@ -1691,11 +1692,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     try {
       final HttpResponse<String> response = HTTP_CLIENT.send(builder.build(), HttpResponse.BodyHandlers.ofString());
       if (response.statusCode() != 200)
-        throw new TransactionException(
-            "Leader returned HTTP " + response.statusCode() + " for forwarded command: " + response.body());
+        throw reconstructLeaderException(response.statusCode(), response.body());
 
       return parseResultSetFromJson(response.body());
-    } catch (final TransactionException e) {
+    } catch (final ArcadeDBException e) {
       throw e;
     } catch (final InterruptedException e) {
       Thread.currentThread().interrupt();
@@ -1757,5 +1757,55 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     }
 
     return resultSet;
+  }
+
+  /**
+   * Parses the JSON error body returned by the leader and reconstructs the original exception so
+   * the Follower throws the same type the Leader would have thrown locally. For example, a
+   * {@link DuplicatedKeyException} is reconstructed with its index name, keys, and existing RID so
+   * callers can catch it directly instead of having to inspect a generic
+   * {@link TransactionException} message string.
+   * <p>
+   * If the body is non-JSON, empty, or the exception class is not recognised, a generic
+   * {@link TransactionException} wrapping the full response body is returned as a safe fallback.
+   */
+  static RuntimeException reconstructLeaderException(final int httpStatus, final String body) {
+    final String message = "Leader returned HTTP " + httpStatus + " for forwarded command: " + body;
+    String detail = null;
+    String exceptionClass = null;
+    String exceptionArgs = null;
+
+    try {
+      if (body != null && !body.isEmpty()) {
+        final JSONObject json = new JSONObject(body);
+        detail = json.getString("detail", json.getString("error", null));
+        exceptionClass = json.getString("exception", null);
+        exceptionArgs = json.getString("exceptionArgs", null);
+      }
+    } catch (final Exception ignored) {
+      return new TransactionException(message);
+    }
+
+    if (exceptionClass == null)
+      return new TransactionException(message);
+
+    if (DuplicatedKeyException.class.getName().equals(exceptionClass) && exceptionArgs != null) {
+      final String[] parts = exceptionArgs.split("\\|", 3);
+      if (parts.length == 3)
+        try {
+          return new DuplicatedKeyException(parts[0], parts[1], new RID(parts[2]));
+        } catch (final Exception ignored) {
+          // fall through if the RID token is malformed
+        }
+    }
+
+    if (NeedRetryException.class.getName().equals(exceptionClass)
+        || "com.arcadedb.exception.ConcurrentModificationException".equals(exceptionClass))
+      return new NeedRetryException(detail != null ? detail : message);
+
+    if (TransactionException.class.getName().equals(exceptionClass))
+      return new TransactionException(detail != null ? detail : message);
+
+    return new TransactionException(message);
   }
 }
