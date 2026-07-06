@@ -89,6 +89,42 @@ that could starve the very snapshot resync meant to heal the node.
   against a per-record snapshot of the previous in-transaction indexed state. The snapshot stores ONLY the
   indexed property values (not a full copy of the document), so the cost per update is independent of the
   document width and negligible for bulk updates.
+- **Query: parallel bucket scans can no longer self-deadlock under load.** The blocking scan producers ran
+  on the shared query-parallelism pool, whose caller-runs saturation policy executed a whole bucket scan
+  synchronously on the CONSUMER thread, before the result set was even returned. For any bucket larger than
+  the bounded result queue the scan then blocked forever on its own full queue - the only thread that could
+  drain it was the one doing the blocking - permanently wedging the HTTP worker; under sustained load the
+  wedged workers accumulated until the server stopped answering. Parallel scanning is enabled by default
+  (`arcadedb.queryParallelScan=true`), so any multi-bucket full scan could hit this
+  ([#4948](https://github.com/ArcadeData/arcadedb/issues/4948)). Scan producers now run on a dedicated
+  producer pool that never runs tasks on the caller (visible as `pool=parallel_scan` in the Executor Pools
+  metrics), which also stops blocked producers from pinning the shared compute pool's workers and coupling
+  the latency of unrelated graph queries to the slowest scan consumer in the JVM
+  ([#4950](https://github.com/ArcadeData/arcadedb/issues/4950)). Two behavior changes ride along: a scan
+  producer that fails now FAILS the query instead of silently returning fewer rows, and a parallel-scan
+  result set left neither consumed nor closed is abandoned after 10 minutes of consumer inactivity on a full
+  buffer (its query then fails on the next access).
+
+  **Upgrade guidance for the abandonment timeout** (parallel scan is enabled by default, so this applies to
+  every multi-bucket full scan): a consumer that is alive but pauses BETWEEN reads for longer than the
+  timeout - a stalled streaming client, a wire-protocol portal (Postgres `FETCH`, Bolt `PULL`) held open
+  across a long idle gap, or very heavy per-row downstream processing - now receives a
+  `CommandExecutionException` mentioning "Parallel scan abandoned", where it previously just blocked the
+  scan's producers. If your deployment holds cursors open across idle pauses approaching 10 minutes, raise
+  `arcadedb.parallelScanAbandonedTimeout` (milliseconds) or set it to `0` to disable the timeout and restore
+  the previous park-until-closed behavior. Plain HTTP API and console clients are unaffected (they drain
+  results synchronously).
+- **Query: parallel scan workers no longer race on the caller's command context.** Every scan worker shared
+  the caller's `CommandContext` and concurrently wrote `$current` into its non-thread-safe variables map on
+  every row - corrupting `$current` semantics for downstream expressions and risking `HashMap` corruption
+  under load ([#4949](https://github.com/ArcadeData/arcadedb/issues/4949)). Each worker now gets its own
+  context copy, and `$current` on the caller's context is written only by the consumer.
+- **Graph: interrupted parallel graph algorithms now fail instead of returning partial results as success.**
+  PageRank/BFS chunk fan-outs, the Cypher fused-chain traversal and the partitioned triangle count all
+  swallowed an interrupt during their fork/join wait and merged whatever chunks had completed, so a query
+  killed by a timeout or cancel returned an incomplete answer as a successful one
+  ([#4951](https://github.com/ArcadeData/arcadedb/issues/4951)). The shared await now cancels the
+  outstanding chunks and throws, preserving the interrupt flag for the caller.
 - **Storage: a slow reader can no longer poison the page cache with a stale version (lost update).** A
   reader that started a disk read of page version N before a committer cached version N+1 overwrote the
   newer committed page when its read completed, because the cache put was unconditional. Every subsequent

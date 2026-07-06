@@ -18,6 +18,7 @@
  */
 package com.arcadedb.graph.olap;
 
+import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.graph.Vertex;
 import com.arcadedb.graph.Vertex.DIRECTION;
 
@@ -100,17 +101,37 @@ public final class GraphAlgorithms {
 
   /**
    * Waits for all submitted futures to complete and rethrows the first exception if any.
+   * <p>
+   * #4951: on interrupt this must ABORT, never return normally. The previous code set the interrupt
+   * flag and kept looping (every remaining {@code get()} threw immediately), then returned as if all
+   * chunks had completed - so a query killed by a timeout or cancel merged partial per-chunk results
+   * and reported them as a successful, complete answer. Now the outstanding futures are cancelled and
+   * a {@link CommandExecutionException} is thrown, with the interrupt flag preserved for the caller.
+   * Public because the parallel Cypher operators (GAV fused chain, partitioned triangle count) reuse
+   * it for the same guarantee.
    */
-  static void awaitFutures(final Future<?>[] futures, final int count) {
+  public static void awaitFutures(final Future<?>[] futures, final int count) {
     Throwable firstError = null;
     for (int i = 0; i < count; i++) {
+      if (futures[i] == null)
+        // Defensive: a caller that partially populated the array must not NPE the whole await.
+        continue;
       try {
         futures[i].get();
       } catch (final ExecutionException e) {
         if (firstError == null)
           firstError = e.getCause();
       } catch (final InterruptedException e) {
+        for (int j = i; j < count; j++)
+          if (futures[j] != null)
+            futures[j].cancel(true);
         Thread.currentThread().interrupt();
+        final CommandExecutionException interrupted = new CommandExecutionException(
+            "Parallel graph computation interrupted, partial results discarded");
+        if (firstError != null)
+          // A chunk had already failed before the interrupt: keep its cause for diagnostics.
+          interrupted.addSuppressed(firstError);
+        throw interrupted;
       }
     }
     if (firstError != null) {

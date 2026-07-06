@@ -26,7 +26,7 @@ import com.arcadedb.engine.PaginatedComponentFile;
 import com.arcadedb.exception.CommandExecutionException;
 import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.log.LogManager;
-import com.arcadedb.query.QueryEngineManager;
+import com.arcadedb.query.ParallelScanProducerPool;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.utility.FileUtils;
 
@@ -55,6 +55,17 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
   private BlockingQueue<Result> parallelQueue;
   private volatile boolean     parallelScanComplete = false;
   private List<Future<?>>      scanFutures;
+  // First producer failure: surfaced to the consumer as an exception instead of silently returning fewer
+  // rows (partial results reported as success - the same anti-pattern #4951 fixes for graph algorithms).
+  private volatile Throwable   parallelScanFailure;
+  // Timestamp of the consumer's last sign of life (poll on the result queue). Producers use it to detect an
+  // abandoned (opened but never drained nor closed) ResultSet and free their pool thread instead of parking
+  // on the full queue forever.
+  private volatile long        parallelLastConsumed;
+  // How many rows a producer fetches under one database read-lock acquisition before releasing it to emit
+  // into the (blocking) result queue. Small enough to keep DDL/close wait bounded, large enough to amortize
+  // the uncontended read-lock cost to noise.
+  private static final int SCAN_BATCH_SIZE = 256;
 
   static {
     WARNINGS_EVERY = GlobalConfiguration.COMMAND_WARNINGS_EVERY.getValueAsInteger();
@@ -152,6 +163,11 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         && getSubSteps().size() >= minBuckets
         && db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN)
         && !(Thread.currentThread() instanceof DatabaseAsyncExecutorImpl.AsyncThread)
+        // A scan-producer thread must never become the CONSUMER of a nested parallel scan: the dedicated
+        // pool's progress guarantee assumes consumers drain independently of it. If a future step ever
+        // drains a sub-query on a producer thread, this guard degrades it to a sequential scan instead of
+        // reintroducing the #4948 deadlock shape.
+        && !(Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread)
         && !db.isTransactionActive();
   }
 
@@ -241,12 +257,41 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
       // Bounded queue: prevents memory explosion while allowing parallelism
       parallelQueue = new LinkedBlockingQueue<>(4096);
       parallelScanComplete = false;
+      parallelScanFailure = null;
+      // NOTE: the consumer-liveness clock starts HERE, at scan submission, not at the first hasNext():
+      // under a saturated producer pool a consumer that is slow to reach its first poll is already on the
+      // clock. Harmless at the default 10 minutes; keep it in mind before configuring the timeout very low.
+      parallelLastConsumed = System.currentTimeMillis();
       scanFutures = new ArrayList<>(getSubSteps().size());
 
       final DatabaseInternal db = context.getDatabase();
-      final ExecutorService scanExecutor = QueryEngineManager.getInstance().getExecutorService();
+      final long abandonedTimeoutMs = db.getConfiguration()
+          .getValueAsLong(GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT);
+      // #4948/#4950: producers BLOCK on the bounded result queue, so they must never run on the shared
+      // QueryEngineManager pool: its caller-runs rejection executed the whole bucket scan synchronously on
+      // the CONSUMER thread (which then blocked forever on its own full queue - self-deadlock), and blocked
+      // producers pinned the shared workers, starving every non-blocking compute user in the JVM.
+      final ExecutorService scanExecutor = ParallelScanProducerPool.getInstance().getExecutorService();
 
       for (final ExecutionStep step : getSubSteps()) {
+        // #4949: each worker gets its own child context. Workers previously shared the caller's
+        // BasicCommandContext and raced on its non-thread-safe variables HashMap (every rs.next() writes
+        // $current), corrupting $current semantics for downstream expressions and risking HashMap
+        // corruption. The copy shares the database and input parameters but owns its variables map; the
+        // consumer-facing $current is set only by the consumer (see the ResultSet below).
+        final CommandContext workerContext = context.copy();
+        if (workerContext instanceof BasicCommandContext basicWorkerContext)
+          basicWorkerContext.setDatabase(db);
+        // NOTE: the input-parameters MAP is deliberately shared (aliased) across the N worker contexts. It
+        // is effectively read-only during execution: the only mutation is setInputParameters' own
+        // $profileExecution strip, a no-op here because the caller consumed the key at parse time, and this
+        // setup loop runs sequentially on the caller thread. Stays correct only as long as sub-steps never
+        // write to it.
+        workerContext.setInputParameters(context.getInputParameters());
+        // setInputParameters recomputes the profiling flag from the (already-stripped) map, clobbering the
+        // value copy() carried over: restore it so profiled parallel scans keep per-worker metrics.
+        workerContext.setProfiling(context.isProfiling());
+
         final Future<?> future = scanExecutor.submit(() -> {
           // Initialize DatabaseContext for this worker thread so that
           // BucketIterator and other components find the correct database
@@ -254,24 +299,73 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
           // a stale or missing context).
           DatabaseContext.INSTANCE.init(db);
           try {
-            db.executeInReadLock(() -> {
-              final AbstractExecutionStep execStep = (AbstractExecutionStep) step;
-              ResultSet rs = execStep.syncPull(context, nRecords);
-              while (rs.hasNext()) {
-                final Result r = rs.next();
-                try {
-                  parallelQueue.put(r);
-                } catch (final InterruptedException e) {
-                  Thread.currentThread().interrupt();
-                  return null;
+            // The database read lock is held per BATCH, never across the blocking put(): a slow (or
+            // abandoned) consumer would otherwise park this producer inside the read lock indefinitely,
+            // starving every writer of the database lock (schema changes, close, drop). Fetching under the
+            // lock and emitting outside also matches the sequential scan path, which holds no database-level
+            // lock across iteration at all.
+            final AbstractExecutionStep execStep = (AbstractExecutionStep) step;
+            final List<Result> batch = new ArrayList<>(SCAN_BATCH_SIZE);
+            final ResultSet[] rsHolder = new ResultSet[1];
+            boolean more = true;
+            while (more) {
+              batch.clear();
+              more = db.executeInReadLock(() -> {
+                ResultSet rs = rsHolder[0];
+                if (rs == null)
+                  rs = rsHolder[0] = execStep.syncPull(workerContext, nRecords);
+                while (batch.size() < SCAN_BATCH_SIZE) {
+                  if (!rs.hasNext()) {
+                    rs = rsHolder[0] = execStep.syncPull(workerContext, nRecords);
+                    if (!rs.hasNext())
+                      return false;
+                  }
+                  batch.add(rs.next());
                 }
-                if (!rs.hasNext())
-                  rs = execStep.syncPull(context, nRecords);
+                return true;
+              });
+
+              for (final Result r : batch) {
+                // Bounded offer instead of a forever-blocking put(): a ResultSet that is opened but never
+                // drained NOR closed would otherwise park this producer (and its pool thread) permanently.
+                // As long as the consumer shows signs of life (polls the queue) the producer keeps waiting;
+                // once the consumer has been silent past the abandonment timeout, the producer gives up,
+                // records the failure (surfaced if the consumer ever comes back) and frees its thread.
+                while (true) {
+                  try {
+                    if (parallelQueue.offer(r, 1, TimeUnit.SECONDS))
+                      break;
+                  } catch (final InterruptedException e) {
+                    // Cancellation via ResultSet.close()/step close(): expected, exit silently.
+                    Thread.currentThread().interrupt();
+                    return;
+                  }
+                  if (abandonedTimeoutMs > 0 && System.currentTimeMillis() - parallelLastConsumed > abandonedTimeoutMs) {
+                    final Throwable abandoned = new CommandExecutionException(
+                        "Parallel scan abandoned: the result set was not consumed nor closed for more than "
+                            + abandonedTimeoutMs + " ms (see " + GlobalConfiguration.PARALLEL_SCAN_ABANDONED_TIMEOUT.getKey()
+                            + ", 0 disables the timeout)");
+                    if (parallelScanFailure == null)
+                      parallelScanFailure = abandoned;
+                    LogManager.instance().log(this, Level.WARNING,
+                        "Parallel scan of type '%s' abandoned by its consumer: releasing the producer thread", null, typeName);
+                    return;
+                  }
+                }
               }
-              return null;
-            });
-          } catch (final Exception e) {
-            LogManager.instance().log(this, Level.WARNING, "Error during parallel bucket scan", e);
+            }
+          } catch (final Throwable e) {
+            // Record the first failure so the consumer FAILS instead of silently receiving fewer rows
+            // (partial results reported as success - the same anti-pattern #4951 fixes for graph algorithms).
+            // Throwable, not Exception, on purpose: an Error (OOM, StackOverflowError, AssertionError) that
+            // killed this producer would otherwise leave parallelScanFailure null, the completion thread
+            // would mark the scan complete, and the consumer would report the truncated scan as success -
+            // the exact failure mode this catch exists to prevent. Recording a field cannot fail, so
+            // swallowing the Error here is safe for the pool thread.
+            if (parallelScanFailure == null)
+              parallelScanFailure = e;
+            LogManager.instance().log(this, e instanceof Error ? Level.SEVERE : Level.WARNING,
+                "Error during parallel bucket scan", e);
           } finally {
             DatabaseContext.INSTANCE.removeContext(db.getDatabasePath());
           }
@@ -286,6 +380,9 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         for (final Future<?> f : scanFutures) {
           try {
             f.get();
+          } catch (final CancellationException e) {
+            // Expected on ResultSet.close()/step close(): not an error, don't alarm the operator.
+            LogManager.instance().log(this, Level.FINE, "Parallel scan cancelled by close()");
           } catch (final Exception e) {
             LogManager.instance().log(this, Level.WARNING, "Error waiting for parallel scan", e);
           }
@@ -302,19 +399,31 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
 
       @Override
       public boolean hasNext() {
-        if (totDispatched >= nRecords)
+        // A failed producer must FAIL the query, not shrink its result set: fewer-rows-as-success is the
+        // same partial-results anti-pattern #4951 fixes for the graph algorithms.
+        if (parallelScanFailure != null)
+          throw new CommandExecutionException("Parallel scan failed", parallelScanFailure);
+
+        if (totDispatched >= nRecords) {
+          // Page boundary: the consumer is alive (it just asked), refresh the liveness clock so producers
+          // don't count a normal between-pages pause of the upstream steps as abandonment.
+          parallelLastConsumed = System.currentTimeMillis();
           return false;
+        }
         if (nextItem != null)
           return true;
 
         // Poll from the queue, waiting briefly for results
         while (nextItem == null) {
+          parallelLastConsumed = System.currentTimeMillis();
           try {
             nextItem = parallelQueue.poll(10, TimeUnit.MILLISECONDS);
           } catch (final InterruptedException e) {
             Thread.currentThread().interrupt();
             return false;
           }
+          if (parallelScanFailure != null)
+            throw new CommandExecutionException("Parallel scan failed", parallelScanFailure);
           if (nextItem == null && parallelScanComplete && parallelQueue.isEmpty())
             return false;
         }
