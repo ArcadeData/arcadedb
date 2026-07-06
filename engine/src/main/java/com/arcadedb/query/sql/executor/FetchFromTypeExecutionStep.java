@@ -163,6 +163,11 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         && getSubSteps().size() >= minBuckets
         && db.getConfiguration().getValueAsBoolean(GlobalConfiguration.QUERY_PARALLEL_SCAN)
         && !(Thread.currentThread() instanceof DatabaseAsyncExecutorImpl.AsyncThread)
+        // A scan-producer thread must never become the CONSUMER of a nested parallel scan: the dedicated
+        // pool's progress guarantee assumes consumers drain independently of it. If a future step ever
+        // drains a sub-query on a producer thread, this guard degrades it to a sequential scan instead of
+        // reintroducing the #4948 deadlock shape.
+        && !(Thread.currentThread() instanceof ParallelScanProducerPool.ProducerThread)
         && !db.isTransactionActive();
   }
 
@@ -277,10 +282,15 @@ public class FetchFromTypeExecutionStep extends AbstractExecutionStep {
         final CommandContext workerContext = context.copy();
         if (workerContext instanceof BasicCommandContext basicWorkerContext)
           basicWorkerContext.setDatabase(db);
-        // NOTE: the input-parameters MAP is deliberately shared (aliased) across the N worker contexts: it
-        // is read-only during execution and this setup loop runs sequentially on the caller thread. Stays
-        // correct only as long as sub-steps never write to it.
+        // NOTE: the input-parameters MAP is deliberately shared (aliased) across the N worker contexts. It
+        // is effectively read-only during execution: the only mutation is setInputParameters' own
+        // $profileExecution strip, a no-op here because the caller consumed the key at parse time, and this
+        // setup loop runs sequentially on the caller thread. Stays correct only as long as sub-steps never
+        // write to it.
         workerContext.setInputParameters(context.getInputParameters());
+        // setInputParameters recomputes the profiling flag from the (already-stripped) map, clobbering the
+        // value copy() carried over: restore it so profiled parallel scans keep per-worker metrics.
+        workerContext.setProfiling(context.isProfiling());
 
         final Future<?> future = scanExecutor.submit(() -> {
           // Initialize DatabaseContext for this worker thread so that

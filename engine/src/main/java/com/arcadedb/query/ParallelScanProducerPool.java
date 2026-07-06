@@ -57,7 +57,10 @@ import java.util.concurrent.atomic.AtomicInteger;
  * map) - so the queue cannot grow past (concurrent queries x buckets); the actual memory
  * backpressure is enforced by each query's bounded RESULT queue, which stalls producers until
  * the consumer drains. A queued task simply starts later; progress is guaranteed because every
- * consumer drains its own queue independently of this pool.
+ * consumer drains its own queue independently of this pool. That guarantee assumes a producer
+ * thread never becomes the CONSUMER of another parallel scan; today sub-steps are plain bucket
+ * iterators so it cannot happen, and {@code FetchFromTypeExecutionStep} additionally degrades to a
+ * sequential scan when planned on a {@link ProducerThread}, keeping the assumption structural.
  * <p>
  * <b>Operator note: concurrency ceiling.</b> Each producer occupies its thread for the whole
  * bucket scan whenever its consumer is slower (the common case), so the number of concurrently
@@ -81,6 +84,17 @@ public final class ParallelScanProducerPool {
     static final ParallelScanProducerPool INSTANCE = new ParallelScanProducerPool();
   }
 
+  /**
+   * Marker thread type for this pool's workers, so the planner can recognize (and refuse) a parallel scan
+   * whose consumer would run ON a producer thread - the one shape that would break the pool's progress
+   * guarantee (see class javadoc). Mirrors the {@code DatabaseAsyncExecutorImpl.AsyncThread} pattern.
+   */
+  public static final class ProducerThread extends Thread {
+    private ProducerThread(final Runnable target, final String name) {
+      super(target, name);
+    }
+  }
+
   /** Floor for the auto-sized thread count. */
   private static final int DEFAULT_THREADS_FLOOR = 2;
 
@@ -101,7 +115,7 @@ public final class ParallelScanProducerPool {
         60L, TimeUnit.SECONDS,
         new LinkedBlockingQueue<>(), // unbounded ON PURPOSE: see class javadoc
         r -> {
-          final Thread t = new Thread(r, "ArcadeDB-ParallelScanProducer-" + workerSeq.incrementAndGet());
+          final Thread t = new ProducerThread(r, "ArcadeDB-ParallelScanProducer-" + workerSeq.incrementAndGet());
           t.setDaemon(true);
           return t;
         });
