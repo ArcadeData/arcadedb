@@ -376,7 +376,11 @@ public class TransactionManager {
             }
           }
         } else {
-          // Close WAL files without deleting: preserve for manual inspection after gap detection
+          // Close WAL files without deleting: preserve for manual inspection after gap detection.
+          // #4958: renamed to '<name>.corrupt' so the next open can neither adopt a preserved file as an
+          // active WAL (appending new transactions after the corrupt content) nor re-scan and re-abort on
+          // it at every recovery. Recovery is aborted for ALL the files (no further transaction will ever
+          // be replayed from them), so all of them are moved aside.
           for (final WALFile file : activeWALFilePool) {
             if (file == null)
               continue;
@@ -385,9 +389,13 @@ public class TransactionManager {
             } catch (final IOException e) {
               LogManager.instance().log(this, Level.WARNING, "Error on closing WAL file '%s'", e, file);
             }
+            final File walFile = new File(file.getFilePath());
+            if (walFile.exists() && !walFile.renameTo(new File(walFile.getParentFile(), walFile.getName() + ".corrupt")))
+              LogManager.instance().log(this, Level.WARNING,
+                  "Error on renaming preserved WAL file '%s' to '%s.corrupt'", null, walFile, walFile.getName());
           }
           LogManager.instance().log(this, Level.SEVERE,
-              "WAL files for database '%s' have been preserved in '%s' for manual inspection.",
+              "WAL files for database '%s' have been preserved in '%s' with the '.corrupt' extension for manual inspection.",
               null, database, database.getDatabasePath());
         }
         createWALFilePool();
@@ -402,16 +410,25 @@ public class TransactionManager {
     final Map<String, Object> map = new HashMap<>();
     map.put("logFiles", logFileCounter.get());
 
-    for (final WALFile file : activeWALFilePool) {
-      if (file != null) {
-        final Map<String, Object> stats = file.getStats();
-        statsPagesWritten.addAndGet((Long) stats.get("pagesWritten"));
-        statsBytesWritten.addAndGet((Long) stats.get("bytesWritten"));
-      }
-    }
+    // #4958: compute a SNAPSHOT of the totals. The previous code folded each active file's cumulative
+    // counters into the long-lived accumulators on every call, so the numbers inflated with polling
+    // frequency and were double-counted again when the file was retired in cleanWALFiles(). The
+    // accumulators are only mutated at file retirement; here the active files' current counters are
+    // added on the fly without persisting them. Also guards the read-only case (no active pool).
+    long pagesWritten = statsPagesWritten.get();
+    long bytesWritten = statsBytesWritten.get();
 
-    map.put("pagesWritten", statsPagesWritten.get());
-    map.put("bytesWritten", statsBytesWritten.get());
+    final WALFile[] pool = activeWALFilePool;
+    if (pool != null)
+      for (final WALFile file : pool)
+        if (file != null) {
+          final Map<String, Object> stats = file.getStats();
+          pagesWritten += (Long) stats.get("pagesWritten");
+          bytesWritten += (Long) stats.get("bytesWritten");
+        }
+
+    map.put("pagesWritten", pagesWritten);
+    map.put("bytesWritten", bytesWritten);
     return map;
   }
 
@@ -809,6 +826,24 @@ public class TransactionManager {
   }
 
   private void createWALFilePool() {
+    // #4958: seed the counter PAST any existing txlog_<n>.wal. WALFile opens its path in "rw" mode
+    // without truncation, so restarting the counter from 0 while preserved WAL files are still on disk
+    // (corrupt-gap detection or a #4928 crash-equivalent close) silently reused them as active WALs:
+    // new transactions were appended after the old content and the old records replayed again.
+    final File[] existingWALFiles = new File(database.getDatabasePath()).listFiles((dir, name) -> name.endsWith(".wal"));
+    if (existingWALFiles != null)
+      for (final File existing : existingWALFiles) {
+        final String name = existing.getName();
+        if (name.startsWith("txlog_"))
+          try {
+            final long counter = Long.parseLong(name.substring("txlog_".length(), name.length() - ".wal".length()));
+            if (counter >= logFileCounter.get())
+              logFileCounter.set(counter + 1);
+          } catch (final NumberFormatException e) {
+            // NOT A POOL FILE, IGNORE IT
+          }
+      }
+
     activeWALFilePool = new WALFile[database.getConfiguration().getValueAsInteger(GlobalConfiguration.TX_WAL_FILES)];
     for (int i = 0; i < activeWALFilePool.length; ++i) {
       final long counter = logFileCounter.getAndIncrement();

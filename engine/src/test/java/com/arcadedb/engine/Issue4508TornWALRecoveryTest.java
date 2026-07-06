@@ -156,9 +156,14 @@ class Issue4508TornWALRecoveryTest extends TestHelper {
 
     reopenExpectingRecovery();
 
-    assertThat(new File(dbPath, tornWalName))
-        .as("WAL file with mid-file corruption must be preserved, not dropped")
+    // #4958: preserved WAL files are renamed to .corrupt so a later open can neither adopt them as
+    // active WALs (appending after the corrupt content) nor re-scan and re-abort on them forever.
+    assertThat(new File(dbPath, tornWalName + ".corrupt"))
+        .as("WAL file with mid-file corruption must be preserved (as .corrupt), not dropped")
         .exists();
+    assertThat(new File(dbPath, tornWalName))
+        .as("the corrupt WAL must not survive under its active .wal name")
+        .doesNotExist();
   }
 
   @Test

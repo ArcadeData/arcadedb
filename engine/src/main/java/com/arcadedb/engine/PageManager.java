@@ -147,13 +147,17 @@ public class PageManager extends LockContext {
 
   public void suspendFlushAndExecute(final Database database, final CallableNoReturn callback)
       throws IOException, InterruptedException {
-    if (flushThread.setSuspended(database, true)) {
+    // #4958: when the database is ALREADY suspended by an outer scope (nested backup/snapshot), the
+    // callback still runs - under the outer suspension - instead of being silently skipped as before.
+    // Only the outermost caller owns the flag and restores it on exit.
+    final boolean acquired = flushThread.setSuspended(database, true);
+    if (acquired)
       flushThread.waitForCurrentFlushToComplete(database);
-      try {
-        CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
-      } finally {
+    try {
+      CodeUtils.executeIgnoringExceptions(callback, "Error during suspend flush", true);
+    } finally {
+      if (acquired)
         flushThread.setSuspended(database, false);
-      }
     }
   }
 
@@ -654,14 +658,17 @@ public class PageManager extends LockContext {
 
     CachedPage page = readCache.get(pageId);
     if (page == null) {
+      // #4958: count the miss BEFORE returning the freshly loaded page. The counter used to be bumped
+      // only on the page-not-found fall-through below, so cacheMiss stayed at ~0 forever and the
+      // hit/miss ratio in the stats was meaningless.
+      cacheMiss.incrementAndGet();
+
       page = loadPage(pageId, pageSize, createIfNotExists, true);
       if (page == null) {
         if (isNew)
           return null;
       } else
         return page;
-
-      cacheMiss.incrementAndGet();
 
     } else {
       cacheHits.incrementAndGet();
