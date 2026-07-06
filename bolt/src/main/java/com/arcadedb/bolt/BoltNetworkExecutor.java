@@ -378,6 +378,9 @@ public class BoltNetworkExecutor extends Thread {
     case BoltMessage.ROUTE:
       handleRoute((RouteMessage) message);
       break;
+    case BoltMessage.TELEMETRY:
+      sendSuccess(Map.of());
+      break;
     default:
       sendFailure(BoltException.PROTOCOL_ERROR, "Unknown message: " + BoltMessage.signatureName(message.getSignature()));
     }
@@ -406,6 +409,13 @@ public class BoltNetworkExecutor extends Thread {
       }
     }
 
+    if (deferAuthToLogon(protocolVersion, scheme, principal, credentials)) {
+      // Bolt 5.1+ handshake: accept HELLO now, authenticate on the subsequent LOGON.
+      sendSuccess(buildHelloSuccessMetadata());
+      state = State.AUTHENTICATION;
+      return;
+    }
+
     // Try to authenticate
     if ("none".equals(scheme)) {
       // Explicit no-auth is always rejected.
@@ -416,24 +426,26 @@ public class BoltNetworkExecutor extends Thread {
     // Covers "basic" with credentials, any other/missing scheme with credentials, and
     // the missing-scheme/missing-credentials case (authenticateUser null-checks and
     // rejects with "Missing credentials" rather than treating it as implicitly
-    // authenticated).
-    // NOTE (Bolt 5.1+): a legitimate 5.1+ HELLO carries no auth at all - it moves to the
-    // separate LOGON message (see handleLogon) - so this call would incorrectly reject
-    // that valid handshake. Safe today because SUPPORTED_VERSIONS never advertises 5.x,
-    // so no compliant driver reaches here without a scheme/principal/credentials; guard
-    // on negotiated protocol version before 5.x negotiation is enabled.
+    // authenticated). A legitimate Bolt 5.1+ HELLO with no auth fields never reaches this
+    // point - the deferAuthToLogon() check above already routed it to await LOGON.
     if (!authenticateUser(principal, credentials)) {
       return;
     }
 
-    // Build success response with server info
-    // Use "Neo4j" prefix for compatibility with official Neo4j drivers
+    sendSuccess(buildHelloSuccessMetadata());
+    state = State.READY;
+  }
+
+  /**
+   * Builds the HELLO success metadata shared by the authenticated-success path and the Bolt 5.1+
+   * auth-deferral path. The "Neo4j" server prefix is used for compatibility with official Neo4j drivers.
+   * Insertion order (server first, then connection_id) is significant for wire equality.
+   */
+  private Map<String, Object> buildHelloSuccessMetadata() {
     final Map<String, Object> metadata = new LinkedHashMap<>();
     metadata.put("server", "Neo4j/5.26.0 compatible (ArcadeDB " + Constants.getRawVersion() + ")");
     metadata.put("connection_id", "bolt-" + Thread.currentThread().getId());
-
-    sendSuccess(metadata);
-    state = State.READY;
+    return metadata;
   }
 
   /**
@@ -1888,5 +1900,18 @@ public class BoltNetworkExecutor extends Thread {
 
   static int getVersionRange(final int version) {
     return (version >> 16) & 0xFF;
+  }
+
+  /**
+   * A Bolt 5.1+ HELLO carries no authentication - the driver authenticates with a separate LOGON.
+   * Returns true only when the negotiated version is >= 5.1 and the HELLO omits all auth fields, so
+   * such a HELLO is accepted (awaiting LOGON) instead of being rejected as "missing credentials".
+   * Pre-5.1 keeps HELLO-embedded auth; an explicit scheme (incl. "none") is never a deferral.
+   */
+  static boolean deferAuthToLogon(final int protocolVersion, final String scheme, final String principal,
+      final String credentials) {
+    final int major = getMajorVersion(protocolVersion);
+    final int minor = getMinorVersion(protocolVersion);
+    return major >= 5 && minor >= 1 && scheme == null && principal == null && credentials == null;
   }
 }

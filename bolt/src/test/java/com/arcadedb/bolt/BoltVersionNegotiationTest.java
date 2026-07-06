@@ -194,4 +194,20 @@ class BoltVersionNegotiationTest {
     final int result = negotiate(new int[] { 0x00040404, 0, 0, 0 });
     assertThat(result).isEqualTo(0x00000404);
   }
+
+  // ============ Bolt 5.1+ auth-deferral gate tests ============
+
+  @Test
+  void deferAuthToLogonOnlyForBolt51PlusWithoutCredentials() {
+    // 5.1+ HELLO with no auth fields defers to LOGON.
+    assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000105, null, null, null)).isTrue(); // 5.1
+    assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000405, null, null, null)).isTrue(); // 5.4
+    // 5.0 keeps HELLO-embedded auth: no deferral.
+    assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000005, null, null, null)).isFalse();
+    // 4.4 never defers.
+    assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000404, null, null, null)).isFalse();
+    // Any auth field present means it is a real HELLO auth (or explicit none) - do not defer.
+    assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000405, "basic", "root", "pw")).isFalse();
+    assertThat(BoltNetworkExecutor.deferAuthToLogon(0x00000405, "none", null, null)).isFalse();
+  }
 }
