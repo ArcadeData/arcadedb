@@ -212,7 +212,7 @@ BRIDGE_CLASSES=$(mktemp -d)
 # conversion for args containing `*`, so javac.exe gets an unreadable POSIX
 # path). Build an explicit platform-correct jar list instead.
 case "$(uname -s)" in
-    MINGW*|MSYS*|CYGWIN*)
+    MINGW* | MSYS* | CYGWIN*)
         BRIDGE_CP=$(find "$JARS_DIR" -name '*.jar' -exec cygpath -m {} \; | paste -sd ';' -)
         ;;
     *)

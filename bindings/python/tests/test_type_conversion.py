@@ -120,7 +120,6 @@ def test_offset_datetime_conversion(temp_db_path):
     OffsetDateTime (e.g. from an expression, not storage) converts directly.
     """
     import jpype
-
     from arcadedb_embedded import convert_java_to_python
 
     with arcadedb.create_database(temp_db_path) as db:  # starts the JVM
@@ -132,9 +131,7 @@ def test_offset_datetime_conversion(temp_db_path):
         # direct converter path: offset applied, tz-aware UTC result
         converted = convert_java_to_python(odt)
         assert isinstance(converted, datetime)
-        assert converted == datetime(
-            2026, 7, 5, 8, 30, 0, 250000, tzinfo=timezone.utc
-        )
+        assert converted == datetime(2026, 7, 5, 8, 30, 0, 250000, tzinfo=timezone.utc)
 
         with db.transaction():
             doc = db.new_document("OffsetTest")
