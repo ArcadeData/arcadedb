@@ -50,9 +50,15 @@ import com.arcadedb.engine.TransactionManager;
 import com.arcadedb.engine.WALFile;
 import com.arcadedb.engine.WALFileFactory;
 import com.arcadedb.exception.ArcadeDBException;
+import com.arcadedb.exception.CommandExecutionException;
+import com.arcadedb.exception.CommandParsingException;
 import com.arcadedb.exception.DuplicatedKeyException;
+import com.arcadedb.exception.LockTimeoutException;
 import com.arcadedb.exception.NeedRetryException;
+import com.arcadedb.exception.SchemaException;
+import com.arcadedb.exception.TimeoutException;
 import com.arcadedb.exception.TransactionException;
+import com.arcadedb.exception.ValidationException;
 import com.arcadedb.graph.Edge;
 import com.arcadedb.graph.GraphBatch;
 import com.arcadedb.graph.GraphEngine;
@@ -100,6 +106,7 @@ import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Consumer;
+import java.util.function.Function;
 import java.util.function.Supplier;
 import java.util.logging.Level;
 
@@ -1760,11 +1767,39 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
   }
 
   /**
+   * Registry of leader-side exception class names to a factory that rebuilds the same type from its
+   * message. Reconstructing the exact type (rather than collapsing to a common supertype) preserves
+   * retry semantics for callers: a {@link com.arcadedb.exception.ConcurrentModificationException} or
+   * {@link LockTimeoutException} stays a {@link NeedRetryException} subtype and therefore retryable,
+   * while a non-retryable {@link TimeoutException} stays distinct instead of being mistaken for a
+   * retryable one. It also lets callers catch the specific type directly.
+   * <p>
+   * Only exceptions with a single {@code (String)} constructor belong here; types that need
+   * structured arguments (e.g. {@link DuplicatedKeyException}) are reconstructed explicitly in
+   * {@link #reconstructLeaderException}. New entries are safe to add as one line each; extending
+   * this map is preferred over reflectively instantiating an arbitrary class name from the response.
+   * <p>
+   * ArcadeDB's {@code ConcurrentModificationException} is referenced by its fully qualified name
+   * because this file imports {@link java.util.ConcurrentModificationException}.
+   */
+  private static final Map<String, Function<String, RuntimeException>> LEADER_EXCEPTION_FACTORIES = Map.of(
+      NeedRetryException.class.getName(), NeedRetryException::new,
+      com.arcadedb.exception.ConcurrentModificationException.class.getName(), com.arcadedb.exception.ConcurrentModificationException::new,
+      LockTimeoutException.class.getName(), LockTimeoutException::new,
+      TimeoutException.class.getName(), TimeoutException::new,
+      TransactionException.class.getName(), TransactionException::new,
+      CommandExecutionException.class.getName(), CommandExecutionException::new,
+      CommandParsingException.class.getName(), CommandParsingException::new,
+      ValidationException.class.getName(), ValidationException::new,
+      SchemaException.class.getName(), SchemaException::new);
+
+  /**
    * Parses the JSON error body returned by the leader and reconstructs the original exception so
    * the Follower throws the same type the Leader would have thrown locally. For example, a
    * {@link DuplicatedKeyException} is reconstructed with its index name, keys, and existing RID so
    * callers can catch it directly instead of having to inspect a generic
-   * {@link TransactionException} message string.
+   * {@link TransactionException} message string. Other known types are reconstructed via
+   * {@link #LEADER_EXCEPTION_FACTORIES} to keep their exact type (and retry semantics).
    * <p>
    * If the body is non-JSON, empty, or the exception class is not recognised, a generic
    * {@link TransactionException} wrapping the full response body is returned as a safe fallback.
@@ -1789,6 +1824,8 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
     if (exceptionClass == null)
       return new TransactionException(message);
 
+    // DuplicatedKeyException carries structured args (index name, keys, existing RID), so it is
+    // reconstructed explicitly rather than from a plain message.
     if (DuplicatedKeyException.class.getName().equals(exceptionClass) && exceptionArgs != null) {
       final String[] parts = exceptionArgs.split("\\|", 3);
       if (parts.length == 3)
@@ -1799,12 +1836,9 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         }
     }
 
-    if (NeedRetryException.class.getName().equals(exceptionClass)
-        || "com.arcadedb.exception.ConcurrentModificationException".equals(exceptionClass))
-      return new NeedRetryException(detail != null ? detail : message);
-
-    if (TransactionException.class.getName().equals(exceptionClass))
-      return new TransactionException(detail != null ? detail : message);
+    final Function<String, RuntimeException> factory = LEADER_EXCEPTION_FACTORIES.get(exceptionClass);
+    if (factory != null)
+      return factory.apply(detail != null ? detail : message);
 
     return new TransactionException(message);
   }
