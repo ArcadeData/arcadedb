@@ -71,6 +71,15 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
   private              CredentialsValidator            credentialsValidator = new DefaultCredentialsValidator();
   private static final SecureRandom                    RANDOM               = new SecureRandom();
   public static final  int                             SALT_SIZE            = 32;
+
+  // Reused per thread so the Basic-auth hot path avoids a getInstance provider lookup on every call.
+  private static final ThreadLocal<MessageDigest>      SHA256_DIGEST        = ThreadLocal.withInitial(() -> {
+    try {
+      return MessageDigest.getInstance("SHA-256");
+    } catch (final NoSuchAlgorithmException e) {
+      throw new ServerSecurityException("SHA-256 not available for salt cache key", e);
+    }
+  });
   private              Timer                           reloadConfigurationTimer;
   private final        ApiTokenConfiguration           apiTokenConfig;
   private static final int                                MAX_TOKEN_FAILURES   = 5;
@@ -366,17 +375,26 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
 
   /**
    * Builds the salt-cache key as a SHA-256 hex digest of {@code password$salt$iterations}. The raw
-   * password is never used as a key, so a heap/core dump or swap cannot recover plaintext
-   * credentials from the cache.
+   * password is never used as a key, so casual string-scanning of a heap/core dump or swap file
+   * cannot recover plaintext credentials from the cache.
+   * <p>
+   * Residual risk (by design, not a defect): the salt and iteration count are also embedded in the
+   * cached <em>value</em> (and the salt is not secret), so a full heap dump still lets an attacker
+   * brute-force low-entropy passwords by computing one fast SHA-256 per guess. That is inherent to
+   * caching a slow KDF under any recomputable-without-plaintext key; it is strictly better than the
+   * previous plaintext-key exposure but weaker than the PBKDF2 hash it sits next to. Prefer
+   * session-token auth for hot clients, and disable the cache
+   * ({@code arcadedb.server.securitySaltCacheSize=0}) when even this residual exposure is
+   * unacceptable.
+   * <p>
+   * The {@link MessageDigest} is held in a {@link ThreadLocal} and reset per use to avoid a
+   * per-call {@code getInstance} provider lookup on the Basic-auth hot path.
    */
   private static String saltCacheKey(final String password, final String salt, final int iterations) {
-    try {
-      final MessageDigest digest = MessageDigest.getInstance("SHA-256");
-      final byte[] hash = digest.digest((password + "$" + salt + "$" + iterations).getBytes(StandardCharsets.UTF_8));
-      return HexFormat.of().formatHex(hash);
-    } catch (final NoSuchAlgorithmException e) {
-      throw new ServerSecurityException("SHA-256 not available for salt cache key", e);
-    }
+    final MessageDigest digest = SHA256_DIGEST.get();
+    digest.reset();
+    final byte[] hash = digest.digest((password + "$" + salt + "$" + iterations).getBytes(StandardCharsets.UTF_8));
+    return HexFormat.of().formatHex(hash);
   }
 
   /**

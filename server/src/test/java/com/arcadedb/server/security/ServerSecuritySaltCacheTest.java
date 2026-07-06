@@ -86,6 +86,22 @@ class ServerSecuritySaltCacheTest {
   }
 
   @Test
+  void shouldEncodeAndMatchWithCacheDisabled() {
+    // cacheSize == 0 disables the cache (saltCache == null). The old code threw
+    // UnsupportedOperationException on the unconditional put into Collections.emptyMap().
+    GlobalConfiguration.SERVER_SECURITY_SALT_CACHE_SIZE.setValue(0);
+
+    final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
+
+    final String salt = ServerSecurity.generateRandomSalt();
+    final String encoded = security.encodePassword(PLAINTEXT, salt);
+
+    assertThat(security.passwordMatch(PLAINTEXT, encoded)).isTrue();
+    // nothing is retained when the cache is disabled
+    assertThat(security.getSaltCacheKeysSnapshot()).isEmpty();
+  }
+
+  @Test
   void shouldEncodeConsistentlyUnderConcurrency() throws Exception {
     final ServerSecurity security = new ServerSecurity(null, new ContextConfiguration(), "./target");
 
