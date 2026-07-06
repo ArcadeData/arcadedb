@@ -2059,12 +2059,23 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       if (drop)
         PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
 
-      PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(this);
+      // #4928: bounded wait. When it gives up (wedged flush / unwritable disk), this close becomes
+      // CRASH-EQUIVALENT: the WAL files and the lock file are preserved below, so the next open runs
+      // recovery and replays the pages that never reached the disk, instead of this close silently
+      // deleting the only durable copy of them.
+      final boolean allPagesFlushed = PageManager.INSTANCE.waitAllPagesOfDatabaseAreFlushed(this);
+      final boolean preserveWalForRecovery = !allPagesFlushed && !drop;
 
       if (!drop)
         fileManager.syncFiles();
 
       open = false;
+
+      if (preserveWalForRecovery)
+        // #4928: the give-up close leaves the stuck pages in the shared flush thread's index, referencing a
+        // now-closed database - they can never be flushed once open=false (flushPage early-returns). Purge
+        // them so the JVM-wide flush thread does not leak entries; their content is safe in the preserved WAL.
+        PageManager.INSTANCE.removeModifiedPagesOfDatabase(this);
 
       PageManager.INSTANCE.removeAllReadPagesOfDatabase(this);
 
@@ -2093,10 +2104,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       for (QueryEngine e : reusableQueryEngines.values())
         e.close();
 
+      // Whether the WAL was ACTUALLY preserved: either this close's flush wait gave up, or the
+      // TransactionManager found unacked WAL pages (a contained flush failure, #4928). Drives the lock-file
+      // decision below so the next open runs recovery exactly when there is something to recover.
+      boolean walPreservedForRecovery = preserveWalForRecovery;
       try {
         schema.close();
         fileManager.close();
-        transactionManager.close(drop);
+        walPreservedForRecovery = transactionManager.close(drop, preserveWalForRecovery);
         statementCache.clear();
         reusableQueryEngines.clear();
 
@@ -2120,12 +2135,20 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
             lockFileIOChannel.close();
           if (lockFileIO != null)
             lockFileIO.close();
-          if (lockFile.exists())
-            Files.delete(Path.of(lockFile.getAbsolutePath()));
 
-          if (lockFile.exists() && !lockFile.delete())
-            LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", lockFile);
+          if (walPreservedForRecovery)
+            // #4928: leave the lock file as the unclean-shutdown marker - together with the preserved WAL it
+            // makes the next open run recovery and replay the pages this close could not flush.
+            LogManager.instance().log(this, Level.SEVERE,
+                "Database '%s' closed with unflushed pages: the lock file and the WAL were preserved so the next open will recover them",
+                null, name);
+          else {
+            if (lockFile.exists())
+              Files.delete(Path.of(lockFile.getAbsolutePath()));
 
+            if (lockFile.exists() && !lockFile.delete())
+              LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", lockFile);
+          }
         } catch (final IOException e) {
           // IGNORE IT
           LogManager.instance().log(this, Level.WARNING, "Error on deleting lock file '%s'", e, lockFile);
