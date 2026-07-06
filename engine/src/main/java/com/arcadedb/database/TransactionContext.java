@@ -555,7 +555,15 @@ public class TransactionContext implements Transaction {
   }
 
   private Object getRequester() {
-    return requester != null ? requester : Thread.currentThread();
+    // CAPTURE THE REQUESTER LAZILY AT FIRST USE, WHICH IS ALWAYS LOCK-ACQUISITION TIME ON THE OWNING THREAD.
+    // RESOLVING Thread.currentThread() ON EVERY CALL RETURNED THE WRONG REQUESTER WHEN THE LOCKS WERE RELEASED
+    // BY ANOTHER THREAD (DATABASE CLOSE ROLLING BACK FOREIGN CONTEXTS, OR THE DEAD-THREAD SWEEP ROLLING BACK AN
+    // ABANDONED TRANSACTION): THE UNLOCK FAILED WITH LockException AND THE FILE LOCKS LEAKED FOREVER (#4941).
+    // THE LockManager EXPLICITLY SUPPORTS ACQUIRE-ON-ONE-THREAD/RELEASE-ON-ANOTHER AS LONG AS THE REQUESTER
+    // OBJECT IS THE SAME
+    if (requester == null)
+      requester = Thread.currentThread();
+    return requester;
   }
 
   public Map<Integer, Integer> getBucketRecordDelta() {
