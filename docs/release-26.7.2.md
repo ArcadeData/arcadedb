@@ -230,7 +230,8 @@ that could starve the very snapshot resync meant to heal the node.
   the inner callback under the outer suspension instead of silently skipping it; WAL files preserved by an
   aborted recovery are renamed to `.wal.corrupt` and the WAL pool counter is seeded past existing files,
   so preserved content is never adopted as an active WAL (appending new transactions after corrupt bytes)
-  nor replayed again; per-bucket free-space statistics now measure the usable content region (not the
+  nor replayed again (the HA Raft snapshot checksum skips the preserved `.corrupt` files like it already
+  skipped `.wal`); per-bucket free-space statistics now measure the usable content region (not the
   physical page size) and their counters are thread-safe. Low-severity LSM cleanups
   ([#4960](https://github.com/ArcadeData/arcadedb/issues/4960)): `BufferBloomFilter` (not yet wired into
   the read path) hardened before use - the bit index can no longer land one bit past the region, `add` is
@@ -239,10 +240,12 @@ that could starve the very snapshot resync meant to heal the node.
   (unlocked readers could observe a stale or partially published instance after a compaction swap);
   `close()` now cancels a scheduled-but-not-started compaction instead of silently doing nothing and logs
   loudly when an in-progress compaction blocks the close; `splitIndex` verifies the new-file lock outcome
-  instead of ignoring it. Items deliberately left open on #4958/#4960 with reasoning on the issues: the
-  `activeWALFilePool` element publication (needs an `AtomicReferenceArray` refactor of a conflict-heavy
-  file), the `currentMutablePages` reload undercount (pre-existing TODO affecting only compaction pacing)
-  and the descending duplicate-run cursor rescan (perf-only).
+  instead of ignoring it; a reloaded mutable index restores its uncompacted-pages counter from the file
+  instead of hardcoding 1, so auto-compaction is no longer deferred by up to a full threshold of new
+  pages after every restart. Items deliberately left open on #4958/#4960 with reasoning on the issues:
+  the `activeWALFilePool` element publication (needs an `AtomicReferenceArray` refactor of a
+  conflict-heavy file), the `createNewPage` rollback counter drift and the descending duplicate-run
+  cursor rescan (perf-only).
 
 ### Improvements
 
