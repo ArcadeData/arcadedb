@@ -603,11 +603,7 @@ describe("Bolt conformance (issue #4888)", () => {
       }
     });
 
-    // KNOWN GAP (#4890): the Bolt layer never populates a 'stats' key in
-    // SUCCESS metadata for write queries, so counters are always empty. This
-    // it.failing asserts the Neo4j-correct behavior and flips red when fixed -
-    // convert to it() and update current_status in spec.yaml in the same PR.
-    it.failing("[RESULT-004] ResultSummary counters reflect writes", async () => {
+    it("[RESULT-004] ResultSummary counters reflect writes", async () => {
       const s = session();
       try {
         const result = await s.run(

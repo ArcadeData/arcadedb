@@ -490,19 +490,17 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @DisplayName("[RESULT-004] ResultSummary counters reflect writes")
     void result004_counters() {
       // Run inside an explicit transaction and roll back: counters are populated
-      // from the RUN/PULL summary regardless of commit, so the gap is still
-      // certified without leaving probe nodes in the shared beer database.
-      assertExpectedFailure("#4890", () -> {
-        try (final Session s = boltSession();
-            final Transaction tx = s.beginTransaction()) {
-          final ResultSummary summary = tx.run(
-              "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
-              Map.of("n", "RESULT-004-Beer", "b", "RESULT-004-Brewery")).consume();
-          tx.rollback();
-          assertThat(summary.counters().nodesCreated()).isEqualTo(2);
-          assertThat(summary.counters().relationshipsCreated()).isEqualTo(1);
-        }
-      });
+      // from the RUN/PULL summary regardless of commit, so this stays certified
+      // working without leaving probe nodes in the shared beer database.
+      try (final Session s = boltSession();
+          final Transaction tx = s.beginTransaction()) {
+        final ResultSummary summary = tx.run(
+            "CREATE (:Beer {name: $n})-[:BREWED_BY]->(:Brewery {name: $b})",
+            Map.of("n", "RESULT-004-Beer", "b", "RESULT-004-Brewery")).consume();
+        tx.rollback();
+        assertThat(summary.counters().nodesCreated()).isEqualTo(2);
+        assertThat(summary.counters().relationshipsCreated()).isEqualTo(1);
+      }
     }
   }
 
