@@ -65,6 +65,12 @@ public class PageManagerFlushThread extends Thread {
   final                ConcurrentHashMap<PageId, MutablePage> pageIndex = new ConcurrentHashMap<>();
 
   /**
+   * Upper bound for {@link #waitAllPagesOfDatabaseAreFlushed}: generous enough for any healthy flush backlog
+   * (the bounded queue drains far faster), small enough that a wedged flush cannot hang close() forever (#4928).
+   */
+  static long WAIT_FLUSH_TIMEOUT_MS = 60_000L; // non-final and package-private for the #4928 regression test
+
+  /**
    * Maximum bytes of dirty pages that may sit deferred (in {@link #deferredByDatabase}) while flushing is
    * suspended, before the flush thread stops draining its bounded queue and lets {@code scheduleFlushOfPages}
    * throttle the committing threads. {@code 0} disables the cap (unbounded, pre-#4728 behavior).
@@ -148,6 +154,11 @@ public class PageManagerFlushThread extends Thread {
    * so checking pageIndex is race-free unlike checking queue + nextPagesToFlush separately.
    */
   protected void waitAllPagesOfDatabaseAreFlushed(final Database database) {
+    // #4928: bounded, not infinite. If pages can no longer be flushed (dead flush thread, unwritable disk),
+    // an unbounded spin here hung close()/rename()/backup-suspend forever. After the deadline the caller
+    // proceeds with a SEVERE log: the still-pending pages' WAL entries were never acked, so they are
+    // recovered from the WAL on the next open - a loud, recoverable outcome instead of a silent hang.
+    final long deadline = System.currentTimeMillis() + WAIT_FLUSH_TIMEOUT_MS;
     while (true) {
       boolean hasPendingPages = false;
       for (final PageId key : pageIndex.keySet()) {
@@ -159,6 +170,13 @@ public class PageManagerFlushThread extends Thread {
 
       if (!hasPendingPages)
         return;
+
+      if (System.currentTimeMillis() > deadline) {
+        LogManager.instance().log(this, Level.SEVERE,
+            "Timed out after %d ms waiting for all pages of database '%s' to be flushed; proceeding. Unflushed pages will be recovered from the WAL on the next open",
+            null, WAIT_FLUSH_TIMEOUT_MS, database.getName());
+        return;
+      }
 
       try {
         Thread.sleep(10);
@@ -261,6 +279,14 @@ public class PageManagerFlushThread extends Thread {
                 } catch (final DatabaseMetadataException e) {
                   // FILE DELETED, CONTINUE WITH THE NEXT PAGES
                   LogManager.instance().log(this, Level.WARNING, "Error on flushing page '%s' to disk", e, page);
+                } catch (final IOException e) {
+                  // #4928: contain a plain I/O failure per page, same policy as the interrupt double-fault
+                  // above. Letting it escape aborted the whole batch: the remaining pages were never flushed
+                  // or retried, yet their pageIndex entries survived, so waitAllPagesOfDatabaseAreFlushed
+                  // spun forever and close()/rename()/backup-suspend hung. The failed page's WAL entry was
+                  // never acked (notifyPageFlushed not reached), so it is recovered from the WAL on restart.
+                  LogManager.instance().log(this, Level.SEVERE,
+                      "Error on flushing page '%s' to disk, the page will be recovered from the WAL on restart", e, page);
                 } finally {
                   // Remove from index AFTER flushing: the page is now on disk and will be
                   // found in the read cache (putPageInReadCache was called at commit time).

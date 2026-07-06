@@ -484,7 +484,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         int pageChunks = 0;
 
         for (int positionInPage = 0; positionInPage < recordCountInPage; ++positionInPage) {
-          final RID rid = new RID(file.getFileId(), pageId * maxRecordsInPage + positionInPage);
+          // #4931: widen to long BEFORE multiplying (as scan() does): int*int overflows for buckets beyond
+          // 2^31 positions, and check(fix=true) would then delete an innocent record at the wrong RID.
+          final RID rid = new RID(file.getFileId(), (long) pageId * maxRecordsInPage + positionInPage);
 
           final int recordPositionInPage = (int) page.readUnsignedInt(
                   PAGE_RECORD_TABLE_OFFSET + positionInPage * INT_SERIALIZED_SIZE);
@@ -1170,6 +1172,12 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
 
     } catch (final RecordNotFoundException e) {
       throw e;
+    } catch (final ConcurrentModificationException e) {
+      // #4932: this is the retry signal deliberately thrown above when a multi-page chunk chain was modified
+      // concurrently. The generic catch below used to swallow it, zero the slot pointer and return success:
+      // the retry never happened, the remaining NEXT_CHUNK records were orphaned (permanent space leak) and
+      // the caller believed the delete succeeded. Rethrow so the retry machinery actually retries.
+      throw e;
     } catch (final IOException e) {
       throw new DatabaseOperationException("Error on deletion of record " + rid, e);
     } catch (final Exception e) {
@@ -1343,8 +1351,8 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         if (size < 0 || size > getPageSize() - contentHeaderSize) {
           // INVALID SIZE
           LogManager.instance().log(this, Level.SEVERE,
-                  "Invalid record size " + size + " for record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage)
-                          + positionInPage + ": deleting record");
+                  "Invalid record size " + size + " for record #" + fileId + ":"
+                          + ((long) page.pageId.getPageNumber() * maxRecordsInPage + positionInPage) + ": deleting record");
 
           if (readOnly) {
             if (!(page instanceof MutablePage))
@@ -1355,7 +1363,7 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
         }
       } catch (Exception e) {
         LogManager.instance().log(this, Level.SEVERE,
-                "Error on loading record #" + fileId + ":" + (page.pageId.getPageNumber() * maxRecordsInPage) + positionInPage);
+                "Error on loading record #" + fileId + ":" + ((long) page.pageId.getPageNumber() * maxRecordsInPage + positionInPage));
         continue;
       }
 
