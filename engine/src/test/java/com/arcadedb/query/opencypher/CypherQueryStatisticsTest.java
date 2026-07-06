@@ -283,4 +283,36 @@ class CypherQueryStatisticsTest extends TestHelper {
     assertThat(s.getConstraintsRemoved()).isEqualTo(1);
     assertThat(s.containsUpdates()).isTrue();
   }
+
+  @Test
+  void detachDeleteCountsNodeAndRelationship() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:DA {id:1})-[:REL]->(:DB {id:2})");
+      final QueryStatistics s = statsOf(database, "MATCH (a:DA {id:1}) DETACH DELETE a");
+      assertThat(s.getNodesDeleted()).isEqualTo(1);
+      assertThat(s.getRelationshipsDeleted()).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void foreachDetachDeleteCountsRelationship() {
+    // Deferred path: FOREACH queues deletes via DeleteStep.DEFERRED_DELETE_BATCH_VAR and flushes
+    // them through DeleteStep.flushDeferredDeletes, which must count cascaded relationships too.
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:FA {id:1})-[:REL]->(:FB {id:2})");
+      final QueryStatistics s = statsOf(database,
+          "MATCH (a:FA {id:1}) WITH collect(a) AS xs FOREACH (x IN xs | DETACH DELETE x)");
+      assertThat(s.getNodesDeleted()).isEqualTo(1);
+      assertThat(s.getRelationshipsDeleted()).isEqualTo(1);
+    });
+  }
+
+  @Test
+  void mergeOnMatchSetUnchangedValueStillCountsPropertySet() {
+    database.transaction(() -> {
+      database.command("opencypher", "CREATE (:MM {k:'x', p:1})");
+      final QueryStatistics s = statsOf(database, "MERGE (n:MM {k:'x'}) ON MATCH SET n.p = 1");
+      assertThat(s.getPropertiesSet()).isEqualTo(1);
+    });
+  }
 }

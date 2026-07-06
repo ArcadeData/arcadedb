@@ -250,6 +250,11 @@ public class DeleteStep extends AbstractExecutionStep {
       final Object target = entry.target();
       if (target instanceof Vertex v && !deleted.contains(v)) {
         if (entry.detach() || hasNoEdges(v)) {
+          if (entry.detach())
+            // DETACH removes connected relationships; count each one not already deleted so
+            // relationships-deleted matches Neo4j (deleteObjectStatic skips any already in `deleted`).
+            for (final Edge edge : collectConnectedEdges(v))
+              deleteObjectStatic(edge, deleted, stats);
           v.delete();
           stats.incNodesDeleted();
           deleted.add(v);
@@ -272,6 +277,19 @@ public class DeleteStep extends AbstractExecutionStep {
       // vertex was already removed by the batch flush - treat as isolated
       return true;
     }
+  }
+
+  private static List<Edge> collectConnectedEdges(final Vertex v) {
+    final List<Edge> edges = new ArrayList<>();
+    try {
+      for (final Edge e : v.getEdges(Vertex.DIRECTION.OUT))
+        edges.add(e);
+      for (final Edge e : v.getEdges(Vertex.DIRECTION.IN))
+        edges.add(e);
+    } catch (final RecordNotFoundException ignored) {
+      // vertex was already removed by the batch flush - return what was collected so far
+    }
+    return edges;
   }
 
   private static void deleteObjectStatic(final Object obj, final Set<Object> deleted, final QueryStatistics stats) {

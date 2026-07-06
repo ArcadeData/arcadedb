@@ -766,6 +766,8 @@ public class BoltNetworkExecutor extends Thread {
     // Discard all remaining records
     Optional<QueryStatistics> stats = Optional.empty();
     if (currentResultSet != null) {
+      // Statistics are computed eagerly when the write is materialized in the query plan, so they
+      // are valid to read before draining/closing the result set.
       stats = currentResultSet.getStatistics();
       while (currentResultSet.hasNext()) {
         currentResultSet.next();

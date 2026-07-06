@@ -1321,13 +1321,14 @@ public class MergeStep extends AbstractExecutionStep {
             }
           } else {
             final Object coerced = TemporalUtil.toCoreJavaType(value);
-            // Skip write when value is unchanged to avoid a needless MVCC version bump (which would
-            // make concurrent readers of this record fail with ConcurrentModificationException).
+            // Neo4j counts a non-null assignment whether or not the value actually changed.
+            context.getStatistics().addPropertiesSet(1);
+            // Skip the write when the value is unchanged to avoid a needless MVCC version bump
+            // (concurrent readers of this record would otherwise fail with ConcurrentModificationException).
             if (!valuesEqual(doc.get(property), coerced)) {
               final MutableDocument mutableDoc = doc.modify();
               mutableDoc.set(property, coerced);
               mutableDoc.save();
-              context.getStatistics().addPropertiesSet(1);
               ((ResultInternal) result).setProperty(variable, mutableDoc);
             }
           }
