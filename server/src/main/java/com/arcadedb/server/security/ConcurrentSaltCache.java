@@ -33,6 +33,12 @@ import java.util.concurrent.ConcurrentLinkedQueue;
  * Eviction is best-effort: under heavy contention the size may transiently exceed the configured
  * maximum by a small margin, or a handful of extra entries may be evicted. This is acceptable
  * because a miss only triggers a recomputation - stored values are always correct.
+ * <p>
+ * Retention is insertion-order (approximate FIFO), <em>not</em> access-order LRU: a frequently used
+ * entry inserted early can be evicted before a colder entry inserted later once the working set
+ * exceeds the capacity. For the salt cache this is a non-issue in practice because the capacity
+ * typically exceeds the number of distinct credentials; the only cost of an eviction is one extra
+ * PBKDF2 recomputation.
  */
 public class ConcurrentSaltCache {
   private final ConcurrentHashMap<String, String> map;
