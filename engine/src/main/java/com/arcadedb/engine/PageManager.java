@@ -183,11 +183,6 @@ public class PageManager extends LockContext {
     }
   }
 
-  /** Monotonic count of pages physically written, used as the flush-progress signal by the bounded wait. */
-  long getTotalPagesWritten() {
-    return totalPagesWritten.get();
-  }
-
   PageManagerFlushThread getFlushThread() {
     return flushThread;
   }
@@ -434,10 +429,17 @@ public class PageManager extends LockContext {
         // the metadata updates.
       }
 
-    } else
+    } else {
       LogManager.instance()
           .log(this, Level.FINE, "Cannot flush page %s because the file has been dropped (threadId=%d)...", null, page,
               Thread.currentThread().threadId());
+      // The page will never be flushed and its content is irrelevant (the file is gone): release its WAL
+      // ack, or the stale pending count would make every later clean close preserve the WAL for nothing
+      // (the close-time ack gate, #4928).
+      final WALFile walFile = page.getWALFile();
+      if (walFile != null)
+        walFile.notifyPageFlushed();
+    }
   }
 
   private CachedPage loadPage(final PageId pageId, final int size, final boolean createIfNotExists, final boolean cache)

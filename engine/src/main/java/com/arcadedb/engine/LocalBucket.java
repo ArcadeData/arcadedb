@@ -149,9 +149,6 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
   }
 
   /**
-   * Called at creation time.
-   */
-  /**
    * Record position (the RID's long position) for a slot in a page. Package-private static so the overflow
    * regression test for #4931 can verify it directly: the pre-fix inline {@code int * int} arithmetic
    * overflowed for buckets beyond 2^31 positions, and {@code check(fix=true)} then deleted an innocent
@@ -161,6 +158,9 @@ public class LocalBucket extends PaginatedComponent implements Bucket {
     return (long) pageId * maxRecordsInPage + positionInPage;
   }
 
+  /**
+   * Called at creation time.
+   */
   public LocalBucket(final DatabaseInternal database, final String name, final String filePath, final ComponentFile.MODE mode,
                      final int pageSize, final int version) throws IOException {
     super(database, name, filePath, BUCKET_EXT, mode, pageSize, version);

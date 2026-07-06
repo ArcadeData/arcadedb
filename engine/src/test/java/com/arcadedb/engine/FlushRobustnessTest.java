@@ -178,4 +178,55 @@ class FlushRobustnessTest extends TestHelper {
       factory.close();
     }
   }
+
+  @Test
+  void cleanCloseAfterContainedFlushFailurePreservesWalViaAckGate() throws Exception {
+    // The reviewer's scenario: a page's flush fails and is contained (#4928) - it leaves the flush pipeline
+    // WITHOUT its WAL ack, so pageIndex is empty and a later CLEAN close believes everything was flushed.
+    // Deleting the WAL then would silently lose the committed change. The close-time ack gate must catch it.
+    final String dbPath = database.getDatabasePath() + "_ackgate";
+    final com.arcadedb.database.DatabaseFactory factory = new com.arcadedb.database.DatabaseFactory(dbPath);
+    if (factory.exists())
+      factory.open().drop();
+
+    try {
+      final DatabaseInternal db = (DatabaseInternal) factory.create();
+      db.getSchema().createDocumentType("Doc");
+      db.transaction(() -> db.newDocument("Doc").set("v", 7).save());
+      db.getPageManager().waitAllPagesOfDatabaseAreFlushed(db);
+
+      // Simulate the contained failure's ack state: one WAL page acknowledged to the committer but never
+      // flushed (notifyPageFlushed never called). Reflection on the live WAL pool mirrors the counter state
+      // the real IOException containment leaves behind.
+      final java.lang.reflect.Field poolField = TransactionManager.class.getDeclaredField("activeWALFilePool");
+      poolField.setAccessible(true);
+      final WALFile[] pool = (WALFile[]) poolField.get(db.getTransactionManager());
+      final java.lang.reflect.Field pendingField = WALFile.class.getDeclaredField("pagesToFlush");
+      pendingField.setAccessible(true);
+      final java.util.concurrent.atomic.AtomicInteger pending =
+          (java.util.concurrent.atomic.AtomicInteger) pendingField.get(pool[0]);
+      pending.incrementAndGet();
+
+      // The pipeline is empty, so the flush wait succeeds - but the ack gate must still preserve the WAL.
+      db.close();
+
+      final File dbDir = new File(dbPath);
+      assertThat(dbDir.listFiles((d, n) -> n.endsWith(".wal")))
+          .as("a clean close must NOT delete a WAL that still holds unacked pages (#4928 ack gate)")
+          .isNotEmpty();
+      assertThat(new File(dbDir, "database.lck"))
+          .as("the lock file must be preserved so the next open recovers").exists();
+
+      // Recovery replays (idempotent here), and the following genuinely-clean close deletes the WAL.
+      final DatabaseInternal reopened = (DatabaseInternal) factory.open();
+      assertThat(reopened.query("sql", "SELECT v FROM Doc").next().<Integer>getProperty("v")).isEqualTo(7);
+      reopened.close();
+      assertThat(new File(dbPath).listFiles((d, n) -> n.endsWith(".wal")))
+          .as("a genuinely clean close still deletes the WAL").isNullOrEmpty();
+    } finally {
+      if (factory.exists())
+        factory.open().drop();
+      factory.close();
+    }
+  }
 }

@@ -2104,10 +2104,14 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
       for (QueryEngine e : reusableQueryEngines.values())
         e.close();
 
+      // Whether the WAL was ACTUALLY preserved: either this close's flush wait gave up, or the
+      // TransactionManager found unacked WAL pages (a contained flush failure, #4928). Drives the lock-file
+      // decision below so the next open runs recovery exactly when there is something to recover.
+      boolean walPreservedForRecovery = preserveWalForRecovery;
       try {
         schema.close();
         fileManager.close();
-        transactionManager.close(drop, preserveWalForRecovery);
+        walPreservedForRecovery = transactionManager.close(drop, preserveWalForRecovery);
         statementCache.clear();
         reusableQueryEngines.clear();
 
@@ -2132,7 +2136,7 @@ public class LocalDatabase extends RWLockContext implements DatabaseInternal {
           if (lockFileIO != null)
             lockFileIO.close();
 
-          if (preserveWalForRecovery)
+          if (walPreservedForRecovery)
             // #4928: leave the lock file as the unclean-shutdown marker - together with the preserved WAL it
             // makes the next open run recovery and replay the pages this close could not flush.
             LogManager.instance().log(this, Level.SEVERE,

@@ -125,8 +125,18 @@ public class TransactionManager {
    *                         the WAL files are closed but NOT deleted: they still protect pages that never
    *                         reached the disk, and together with the preserved lock file they make the next
    *                         open run recovery and replay them. A normal clean close deletes them as before.
+   *                         Independently of this flag, a non-drop close also preserves the WAL when any WAL
+   *                         file still has UNACKED pages: a page whose flush failed and was contained (#4928)
+   *                         leaves the flush pipeline without ever calling notifyPageFlushed, so the pending
+   *                         ack - not the pipeline emptiness the caller's wait observes - is the ground truth
+   *                         that the WAL still holds the only durable copy of something. Such a page is never
+   *                         re-flushed in-process; deleting its WAL on a later clean close would silently
+   *                         lose the committed change.
+   *
+   * @return whether the WAL files were preserved for recovery (the caller then also keeps the lock file, so
+   *     the next open replays them).
    */
-  public void close(final boolean drop, final boolean preserveWalFiles) {
+  public boolean close(final boolean drop, final boolean preserveWalFiles) {
     if (task != null)
       task.cancel();
 
@@ -161,6 +171,17 @@ public class TransactionManager {
       }
     }
 
+    // Ground-truth durability check BEFORE the files are closed below: any unacked page means some WAL
+    // entry is the only durable copy of a committed change (e.g. a contained flush failure, #4928).
+    boolean pendingAcks = false;
+    if (!drop)
+      for (final WALFile file : List.copyOf(inactiveWALFilePool))
+        if (file.getPendingPagesToFlush() > 0) {
+          pendingAcks = true;
+          break;
+        }
+    final boolean preserve = preserveWalFiles || (!drop && pendingAcks);
+
     for (int retry = 0; retry < 20 && !cleanWALFiles(drop, false); ++retry) {
       try {
         Thread.sleep(100);
@@ -170,17 +191,18 @@ public class TransactionManager {
       }
     }
 
-    if (!cleanWALFiles(drop, drop))
+    if (!cleanWALFiles(drop, drop)) {
       LogManager.instance()
           .log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, inactiveWALFilePool);
-    else if (preserveWalFiles) {
-      // #4928: pages never reached the disk and the bounded wait gave up. The WAL content on disk is the
-      // only durable copy of those pages: deleting it here (as a clean close does) would silently lose the
-      // most recent transactions. The files were closed above; leave them (and the caller leaves the lock
-      // file) so the next open runs recovery and replays them.
+      return preserve;
+    } else if (preserve) {
+      // #4928: pages never reached the disk (the bounded wait gave up, or a contained flush failure left
+      // unacked WAL entries). The WAL content on disk is the only durable copy of those pages: deleting it
+      // here (as a clean close does) would silently lose the most recent transactions. The files were closed
+      // above; leave them (and the caller leaves the lock file) so the next open runs recovery and replays.
       LogManager.instance().log(this, Level.SEVERE,
-          "Preserving the WAL files of database '%s': not all pages reached the disk, the next open will recover them",
-          null, database.getName());
+          "Preserving the WAL files of database '%s': not all pages reached the disk (%s), the next open will recover them",
+          null, database.getName(), preserveWalFiles ? "flush wait gave up" : "unacked WAL pages");
     } else {
       // DELETE ALL THE WAL FILES AT OS-LEVEL
       final File dir = new File(database.getDatabasePath());
@@ -194,6 +216,7 @@ public class TransactionManager {
         LogManager.instance()
             .log(this, Level.WARNING, "Error on removing all transaction files. Remained: %s", null, walFiles.length);
     }
+    return preserve;
   }
 
   public Binary createTransactionBuffer(final long txId, final List<MutablePage> pages) {

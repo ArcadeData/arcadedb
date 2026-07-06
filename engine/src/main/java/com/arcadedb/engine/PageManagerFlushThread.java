@@ -72,6 +72,15 @@ public class PageManagerFlushThread extends Thread {
   private final        long                                   maxDeferredRAM;
 
   /**
+   * Per-database count of pages that LEFT the flush pipeline: the progress signal for
+   * {@link #waitAllPagesOfDatabaseAreFlushed} (#4928). Deliberately per-database and package-private (for
+   * the regression test): a JVM-global signal (e.g. PageManager.totalPagesWritten) would let a busy sibling
+   * database sharing this flush thread mask a wedged one forever, defeating the very timeout it feeds.
+   * Entries are dropped in {@link #removeAllPagesOfDatabase}.
+   */
+  final ConcurrentHashMap<BasicDatabase, AtomicLong> flushedPagesPerDatabase = new ConcurrentHashMap<>();
+
+  /**
    * Running total of bytes currently deferred across all suspended databases. Package-private so the white-box
    * regression test for issue #4728 can assert the backlog stays bounded.
    */
@@ -155,10 +164,18 @@ public class PageManagerFlushThread extends Thread {
    *     backlog never trips it. Callers on the close path treat {@code false} as a crash-equivalent close:
    *     the WAL files and the lock file are preserved so the next open replays the unflushed pages.
    */
+  /** Records that a page of the database LEFT the flush pipeline: the per-database progress signal (#4928). */
+  private void bumpFlushProgress(final MutablePage page) {
+    final AtomicLong counter = flushedPagesPerDatabase.get(page.getPageId().getDatabase());
+    if (counter != null)
+      counter.incrementAndGet();
+  }
+
   protected boolean waitAllPagesOfDatabaseAreFlushed(final Database database) {
     final long timeoutMs = database.getConfiguration().getValueAsLong(GlobalConfiguration.FLUSH_ALL_PAGES_TIMEOUT);
     int lastPending = Integer.MAX_VALUE;
-    long lastWritten = pageManager.getTotalPagesWritten();
+    final AtomicLong flushedCounter = flushedPagesPerDatabase.computeIfAbsent(database, k -> new AtomicLong());
+    long lastFlushed = flushedCounter.get();
     long lastProgressAt = System.currentTimeMillis();
     while (true) {
       int pending = 0;
@@ -171,14 +188,15 @@ public class PageManagerFlushThread extends Thread {
         return true;
 
       final long now = System.currentTimeMillis();
-      final long written = pageManager.getTotalPagesWritten();
-      if (pending < lastPending || written > lastWritten) {
-        // The flush is making progress. Two signals on purpose: on LIVE callers (rename, backup-suspend,
-        // compaction shipping) sustained commits can keep the pending count from ever dipping below its
-        // minimum even while the flusher works flat out, so pages PHYSICALLY WRITTEN also resets the
-        // window - only a flusher that writes nothing at all can trip the timeout.
+      final long flushed = flushedCounter.get();
+      if (pending < lastPending || flushed > lastFlushed) {
+        // The flush is making progress ON THIS DATABASE. Two signals on purpose: on LIVE callers (rename,
+        // backup-suspend, compaction shipping) sustained commits can keep the pending count from ever
+        // dipping below its minimum while the flusher works flat out, so this database's pages leaving the
+        // pipeline also reset the window. The signal is per-database by design: a busy sibling database
+        // sharing the flush thread must not mask a wedged one.
         lastPending = Math.min(lastPending, pending);
-        lastWritten = written;
+        lastFlushed = flushed;
         lastProgressAt = now;
       } else if (timeoutMs > 0 && now - lastProgressAt > timeoutMs) {
         LogManager.instance().log(this, Level.SEVERE,
@@ -304,6 +322,7 @@ public class PageManagerFlushThread extends Thread {
                   // Reference identity ensures a NEWER MutablePage for the same PageId (queued
                   // by a later TX while this batch was waiting) is NOT removed from the index.
                   removeFromFlushIndex(page);
+                  bumpFlushProgress(page);
                 }
               }
             }
@@ -366,6 +385,7 @@ public class PageManagerFlushThread extends Thread {
               // The page leaves the deferred backlog (flushed to disk), so release its reserved RAM (issue #4728).
               deferredRAMBytes.addAndGet(-page.getPhysicalSize());
               removeFromFlushIndex(page);
+              bumpFlushProgress(page);
             }
           }
         }
@@ -486,6 +506,7 @@ public class PageManagerFlushThread extends Thread {
     // pins) can be garbage collected instead of being retained for the flush thread's lifetime as a map key.
     suspendLocks.remove(database);
     suspended.remove(database);
+    flushedPagesPerDatabase.remove(database);
     final ConcurrentLinkedQueue<PagesToFlush> droppedDeferred = deferredByDatabase.remove(database);
     if (droppedDeferred != null) {
       for (final PagesToFlush batch : droppedDeferred)
@@ -527,6 +548,11 @@ public class PageManagerFlushThread extends Thread {
           pageIndex.remove(page.getPageId());
           it.remove();
           removedBytes += page.getPhysicalSize();
+          // The purged page will never be flushed and its content is irrelevant (its file was dropped):
+          // release its WAL ack so the close-time ack gate (#4928) is not tripped by stale pending counts.
+          final WALFile walFile = page.getWALFile();
+          if (walFile != null)
+            walFile.notifyPageFlushed();
         }
       }
     }
