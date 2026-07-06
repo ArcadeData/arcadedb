@@ -19,9 +19,11 @@ that could starve the very snapshot resync meant to heal the node.
   `resetConnectBackoff()`, which never recreates the `ManagedChannel`. Now, once a follower has been
   continuously unreachable for `arcadedb.ha.peerChannelResetDuration` (default 60s), the leader closes that
   one follower's gRPC proxy (`PeerProxyMap.resetProxy`), so the appender's next send rebuilds a fresh channel
-  and re-resolves DNS to the follower's current IP. Only the unreachable peer's channel is touched and
-  leadership is unchanged, so there is no flapping risk. Set the duration to `0` to disable the automatic
-  reset.
+  and re-resolves DNS to the follower's current IP. The reset is retried once per interval while the follower
+  stays unreachable, up to a small bounded number of attempts, so a first attempt that does not stick does not
+  strand the follower; after the cap the leader gives up and logs for operator intervention, and the counter
+  re-arms when the follower reconnects. Only the unreachable peer's channel is touched and leadership is
+  unchanged, so there is no flapping risk. Set the duration to `0` to disable the automatic reset.
 
 - **Cypher: 2-hop pattern comprehension with an anonymous middle node now returns matches.** A pattern
   comprehension such as `RETURN [(p)-[:KNOWS]->(:Person)-[:KNOWS]->(t:Person) | t]` silently returned an

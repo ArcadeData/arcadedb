@@ -413,13 +413,17 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (targetId.equals(localPeerId))
       return; // the leader keeps no appender channel to itself
 
+    // ClusterMonitor already logs the operator-facing WARNING announcing the reset (with the attempt
+    // count and how long the follower has been unreachable), so a success is only confirmed at FINE to
+    // avoid a redundant second WARNING. A no-op is the surprising case worth surfacing at WARNING.
     if (resetPeerAppenderChannel(server.getServerRpc(), targetId))
-      LogManager.instance().log(this, Level.WARNING,
+      LogManager.instance().log(this, Level.FINE,
           "Reset the replication gRPC channel to unreachable follower '%s' to force a fresh DNS re-resolution and reconnect (issue #4696).",
           peerId);
     else
-      LogManager.instance().log(this, Level.FINE,
-          "Cannot reset replication channel for follower '%s': server RPC is not proxy-based", peerId);
+      LogManager.instance().log(this, Level.WARNING,
+          "Requested a replication-channel reset for follower '%s' but the Raft server RPC is not proxy-based; cannot reset the channel.",
+          peerId);
   }
 
   /**
