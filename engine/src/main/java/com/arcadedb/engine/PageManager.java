@@ -435,8 +435,9 @@ public class PageManager extends LockContext {
               Thread.currentThread().threadId());
       // The page will never be flushed and its content is irrelevant (the file is gone): release its WAL
       // ack, or the stale pending count would make every later clean close preserve the WAL for nothing
-      // (the close-time ack gate, #4928).
-      final WALFile walFile = page.getWALFile();
+      // (the close-time ack gate, #4928). takeWALFile makes the release exactly-once against the racing
+      // dropped-file batch purge.
+      final WALFile walFile = page.takeWALFile();
       if (walFile != null)
         walFile.notifyPageFlushed();
     }

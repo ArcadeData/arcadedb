@@ -229,4 +229,36 @@ class FlushRobustnessTest extends TestHelper {
       factory.close();
     }
   }
+
+  @Test
+  void walAckIsReleasedExactlyOncePerPage() throws Exception {
+    // #4928 review: the flush success path, the file-dropped flush branch and the dropped-file batch purge
+    // can race on the SAME page (the flush loop does not remove pages from the batch list). A double
+    // notifyPageFlushed would steal another page's pending ack, letting the close-time ack gate delete a
+    // WAL that still protects unflushed committed data. takeWALFile() must make the release exactly-once.
+    final DatabaseInternal db = (DatabaseInternal) database;
+    db.getSchema().createDocumentType("AckDoc");
+    db.transaction(() -> db.newDocument("AckDoc").set("v", 1).save());
+
+    final Field poolField = TransactionManager.class.getDeclaredField("activeWALFilePool");
+    poolField.setAccessible(true);
+    final WALFile wal = ((WALFile[]) poolField.get(db.getTransactionManager()))[0];
+
+    final PageId pageId = new PageId(db, 0, 4_000_000);
+    final MutablePage page = new MutablePage(pageId, 1024, new byte[1024], 0, 0);
+    page.setWALFile(wal);
+
+    final int before = wal.getPendingPagesToFlush();
+    db.getTransactionManager().notifyPageFlushed(page); // first ack: releases
+    db.getTransactionManager().notifyPageFlushed(page); // racing second ack: must be a no-op
+    assertThat(page.takeWALFile()).as("the WAL reference must have been taken by the first ack").isNull();
+    assertThat(wal.getPendingPagesToFlush())
+        .as("the pending count must decrease exactly once no matter how many paths ack the page")
+        .isEqualTo(before - 1);
+
+    // Restore the counter so this synthetic ack does not skew the shared database's close-time gate.
+    final Field pendingField = WALFile.class.getDeclaredField("pagesToFlush");
+    pendingField.setAccessible(true);
+    ((java.util.concurrent.atomic.AtomicInteger) pendingField.get(wal)).incrementAndGet();
+  }
 }

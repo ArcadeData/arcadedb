@@ -253,7 +253,9 @@ public class TransactionManager {
   }
 
   public void notifyPageFlushed(final MutablePage page) {
-    final WALFile walFile = page.getWALFile();
+    // takeWALFile (not get) so the ack is released exactly once even when this races the file-dropped
+    // flush branch or the dropped-file batch purge on the same page (#4928 review).
+    final WALFile walFile = page.takeWALFile();
     if (walFile != null)
       walFile.notifyPageFlushed();
   }

@@ -265,8 +265,11 @@ public enum GlobalConfiguration {
       Milliseconds of NO FLUSH PROGRESS after which waiting for all of a database's pages to reach the \
       disk (on close, rename, backup-suspend) gives up with a SEVERE log instead of hanging forever on a \
       wedged flush. The window resets whenever the pending-page count decreases, so a healthy but slow \
-      backlog never trips it. A close that gives up preserves the WAL files and the lock file, so the \
-      next open runs recovery and replays the unflushed pages. 0 waits forever (pre-26.7.2 behavior)""",
+      backlog never trips it. NOTE: the window is per-database no-progress time, not total flush time - \
+      on a heavily loaded multi-database server a database starved by its siblings can give up, turning \
+      that close into recovery-on-next-open. A close that gives up preserves the WAL files and the lock \
+      file, so the next open runs recovery and replays the unflushed pages. 0 waits forever \
+      (pre-26.7.2 behavior)""",
       Long.class, 60_000L),
 
   PARALLEL_SCAN_ABANDONED_TIMEOUT("arcadedb.parallelScanAbandonedTimeout", SCOPE.DATABASE,

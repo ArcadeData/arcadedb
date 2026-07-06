@@ -76,7 +76,9 @@ public class PageManagerFlushThread extends Thread {
    * {@link #waitAllPagesOfDatabaseAreFlushed} (#4928). Deliberately per-database and package-private (for
    * the regression test): a JVM-global signal (e.g. PageManager.totalPagesWritten) would let a busy sibling
    * database sharing this flush thread mask a wedged one forever, defeating the very timeout it feeds.
-   * Entries are dropped in {@link #removeAllPagesOfDatabase}.
+   * An entry is created on a database's FIRST bounded wait (close, rename, backup-suspend, compaction
+   * shipping) and lives until {@link #removeAllPagesOfDatabase} (close/drop) - one bounded entry per open
+   * database, not a leak.
    */
   final ConcurrentHashMap<BasicDatabase, AtomicLong> flushedPagesPerDatabase = new ConcurrentHashMap<>();
 
@@ -550,7 +552,9 @@ public class PageManagerFlushThread extends Thread {
           removedBytes += page.getPhysicalSize();
           // The purged page will never be flushed and its content is irrelevant (its file was dropped):
           // release its WAL ack so the close-time ack gate (#4928) is not tripped by stale pending counts.
-          final WALFile walFile = page.getWALFile();
+          // takeWALFile makes the release exactly-once against the racing flush loop (which does NOT remove
+          // pages from this batch list, so both paths can visit the same page).
+          final WALFile walFile = page.takeWALFile();
           if (walFile != null)
             walFile.notifyPageFlushed();
         }
