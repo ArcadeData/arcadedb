@@ -21,10 +21,10 @@ package com.arcadedb.server.ai;
 import com.arcadedb.log.LogManager;
 import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
+import com.arcadedb.utility.FileUtils;
 
 import java.io.File;
-import java.io.FileOutputStream;
-import java.io.OutputStreamWriter;
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Paths;
@@ -33,6 +33,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
 /**
@@ -40,10 +41,18 @@ import java.util.logging.Level;
  * Chats are stored as JSON files under {serverRoot}/chats/{username}/.
  */
 public class ChatStorage {
+  // Fixed stripe of locks: a single write to a given (user, chatId) is serialized against other
+  // writes to the same chat so two concurrent saves never splice their JSON. Sized as a power of
+  // two so the index masks cleanly; collisions across unrelated chats are harmless (they just wait).
+  private static final int            LOCK_STRIPES = 64;
+  private final        ReentrantLock[] writeLocks   = new ReentrantLock[LOCK_STRIPES];
+
   private final String rootPath;
 
   public ChatStorage(final String rootPath) {
     this.rootPath = rootPath;
+    for (int i = 0; i < LOCK_STRIPES; i++)
+      writeLocks[i] = new ReentrantLock();
   }
 
   /**
@@ -100,6 +109,13 @@ public class ChatStorage {
 
   /**
    * Saves a chat. Creates the user directory if needed.
+   *
+   * <p>The write is atomic (temp file + atomic rename) and serialized per {@code (username, chatId)}
+   * so concurrent writers never produce a spliced file and a reader never observes a partial one.
+   * A write failure is propagated as an unchecked exception rather than swallowed, so the caller does
+   * not report success while nothing persisted.
+   *
+   * @throws IllegalStateException if the chat could not be persisted.
    */
   public void saveChat(final String username, final JSONObject chat) {
     final File userDir = getUserDir(username);
@@ -108,12 +124,23 @@ public class ChatStorage {
 
     final String chatId = chat.getString("id");
     final File file = getChatFile(username, chatId);
+    final String content = chat.toString(2);
 
-    try (final OutputStreamWriter writer = new OutputStreamWriter(new FileOutputStream(file), StandardCharsets.UTF_8)) {
-      writer.write(chat.toString(2));
-    } catch (final Exception e) {
+    final ReentrantLock lock = lockFor(username, chatId);
+    lock.lock();
+    try {
+      FileUtils.atomicWriteFile(file, content);
+    } catch (final IOException e) {
       LogManager.instance().log(this, Level.WARNING, "Error saving chat %s: %s", chatId, e.getMessage());
+      throw new IllegalStateException("Error saving chat " + chatId, e);
+    } finally {
+      lock.unlock();
     }
+  }
+
+  private ReentrantLock lockFor(final String username, final String chatId) {
+    final int idx = (username + '/' + chatId).hashCode() & (LOCK_STRIPES - 1);
+    return writeLocks[idx];
   }
 
   /**

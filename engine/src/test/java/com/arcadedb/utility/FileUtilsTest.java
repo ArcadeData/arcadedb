@@ -356,4 +356,26 @@ class FileUtilsTest {
     assertThat(result).contains("3:");
     assertThat(result).doesNotContain("4:");
   }
+
+  @Test
+  void atomicWriteFileCreatesDirsAndWritesContent() throws IOException {
+    final Path target = tempDir.resolve("nested/dir/config.json");
+    FileUtils.atomicWriteFile(target.toFile(), "{\"a\":1}");
+
+    assertThat(Files.exists(target)).isTrue();
+    assertThat(new String(Files.readAllBytes(target), StandardCharsets.UTF_8)).isEqualTo("{\"a\":1}");
+    // No temporary artifacts must survive a successful write.
+    try (var stream = Files.list(target.getParent())) {
+      assertThat(stream.map(p -> p.getFileName().toString()).anyMatch(n -> n.endsWith(".tmp"))).isFalse();
+    }
+  }
+
+  @Test
+  void atomicWriteFileReplacesExistingContentAtomically() throws IOException {
+    final Path target = tempDir.resolve("value.txt");
+    FileUtils.atomicWriteFile(target.toFile(), "first");
+    FileUtils.atomicWriteFile(target.toFile(), "second-longer-content");
+
+    assertThat(new String(Files.readAllBytes(target), StandardCharsets.UTF_8)).isEqualTo("second-longer-content");
+  }
 }

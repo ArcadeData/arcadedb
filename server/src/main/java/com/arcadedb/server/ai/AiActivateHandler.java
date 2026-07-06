@@ -62,6 +62,11 @@ public class AiActivateHandler extends AbstractServerHttpHandler {
 
   @Override
   protected ExecutionResponse execute(final HttpServerExchange exchange, final ServerSecurityUser user, final JSONObject payload) {
+    // Activation writes server-wide config (config/ai.json) and pushes a subscription key to the
+    // gateway, so it is a server-administration action restricted to the root user, consistent with
+    // MCPConfigHandler, PostUserHandler, etc.
+    checkRootUser(user);
+
     if (payload == null)
       return new ExecutionResponse(400, errorJson("Request body is required"));
 
