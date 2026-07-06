@@ -64,6 +64,7 @@ public class BoltDateTimeStructure implements PackStreamStructure {
 
   @Override
   public byte getSignature() {
+    // Legacy (Bolt 4.x) signature; writeTo is authoritative and emits the UTC signature ('I'/'i') when the writer negotiated Bolt >= 5.
     return zoneId ? SIG_ZONEID_LEGACY : SIG_OFFSET_LEGACY;
   }
 

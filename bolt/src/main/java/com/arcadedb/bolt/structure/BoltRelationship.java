@@ -62,7 +62,8 @@ public class BoltRelationship implements PackStreamStructure {
 
   @Override
   public int getFieldCount() {
-    return 5; // BOLT v4.x format
+    // v4.x base count; writeTo is authoritative and emits 8 fields (adds element_id + start/end element ids) when the writer negotiated Bolt >= 5.
+    return 5;
   }
 
   @Override
