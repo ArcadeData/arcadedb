@@ -717,6 +717,47 @@ public class TransactionContext implements Transaction {
         // COMMIT INDEX CHANGES (IN CASE OF REPLICA THIS IS DEMANDED TO THE LEADER EXECUTION)
         indexChanges.commit();
 
+      // #4937: the steps above (updateRecordNoLock, indexChanges.commit) can add pages of files that were
+      // NOT in the lock set computed at lock time - EXTERNAL-property buckets, indexes created inside this
+      // transaction, multi-file index components. Their pages would pass the version checks below WITHOUT
+      // their file lock held, which is what made a phase-2 failure after the WAL append reachable (#4936:
+      // an aborted transaction partially replayed by recovery). Verify coverage; on a late joiner, release
+      // and re-acquire the UNION in order (lock-ordering discipline forbids acquiring extra locks in
+      // place). The version checks below run after this block, so anything that changed while unlocked
+      // fails validation with the standard retriable ConcurrentModificationException.
+      if (isLeader && lockedFiles != null) {
+        final IntHashSet lockedSet = new IntHashSet();
+        for (final int fileId : lockedFiles)
+          lockedSet.add(fileId);
+
+        final IntHashSet union = new IntHashSet();
+        boolean lateJoiners = false;
+        for (final int fileId : lockedFiles)
+          union.add(fileId);
+        for (final PageId pid : modifiedPages.keySet()) {
+          union.add(pid.getFileId());
+          if (!lockedSet.contains(pid.getFileId()))
+            lateJoiners = true;
+        }
+        if (newPages != null)
+          for (final PageId pid : newPages.keySet()) {
+            union.add(pid.getFileId());
+            if (!lockedSet.contains(pid.getFileId()))
+              lateJoiners = true;
+          }
+
+        if (lateJoiners) {
+          if (explicitLockedFiles != null)
+            // The user's explicit lock list does not cover files this transaction actually modified:
+            // re-locking on their behalf would defeat the explicit-locking contract - surface it instead.
+            checkExplicitLocks(union);
+          else {
+            database.getTransactionManager().unlockFilesInOrder(lockedFiles, getRequester());
+            lockedFiles = lockFilesInOrder(union);
+          }
+        }
+      }
+
       // CHECK THE VERSIONS FIRST
       final List<MutablePage> pages = new ArrayList<>();
       final PageManager pageManager = database.getPageManager();
@@ -791,17 +832,28 @@ public class TransactionContext implements Transaction {
 
       status = STATUS.COMMIT_2ND_PHASE;
 
+      // #4936: validate the page versions and bump them BEFORE the WAL append, making the append the point
+      // of no return: a WAL record must only ever exist for a transaction that can no longer fail
+      // validation. Previously the order was WAL-then-validate, so a phase-2 ConcurrentModificationException
+      // (reachable through the late-joining-files hole, #4937) aborted the transaction while its record
+      // stayed in the WAL with no abort marker - crash recovery then replayed the aborted transaction's
+      // other pages (version == disk+1), a partial application: torn records, index entries pointing at
+      // data never committed. The bump below mutates only this transaction's private MutablePage instances,
+      // so a WAL-append failure still aborts cleanly with nothing observable. The in-between window is safe
+      // because every modified file's lock is held (#4937 guarantees coverage) until reset().
+      final List<MutablePage> pagesToPublish = database.getPageManager().validateAndBumpVersions(newPages, modifiedPages);
+
       if (changes.result != null)
-        // WRITE TO THE WAL FIRST
+        // WRITE TO THE WAL: THE POINT OF NO RETURN
         database.getTransactionManager().writeTransactionToWAL(changes.modifiedPages, walFlush, txId, changes.result);
 
-      // AT THIS POINT, LOCK + VERSION CHECK, THERE IS NO NEED TO MANAGE ROLLBACK BECAUSE THERE CANNOT BE CONCURRENT TX THAT UPDATE THE SAME PAGE CONCURRENTLY
-      // UPDATE PAGE COUNTER FIRST
       LogManager.instance()
           .log(this, Level.FINE, "TX committing pages newPages=%s modifiedPages=%s (threadId=%d)", newPages, modifiedPages,
               Thread.currentThread().threadId());
 
-      database.getPageManager().updatePages(newPages, modifiedPages, asyncFlush);
+      // From here the transaction is durable in the WAL: a failure below is repaired by recovery replay,
+      // never by aborting.
+      database.getPageManager().publishPages(pagesToPublish, newPages, asyncFlush);
 
       for (final Map.Entry<Integer, Integer> entry : newPageCounters.entrySet())
         ((PaginatedComponent) database.getSchema().getFileById(entry.getKey())).updatePageCount(entry.getValue());

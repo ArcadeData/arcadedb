@@ -181,6 +181,15 @@ that could starve the very snapshot resync meant to heal the node.
   database close now fails with the intended "Async executor has been shut down" error instead of a raw
   NullPointerException ([#4955](https://github.com/ArcadeData/arcadedb/issues/4955)).
 
+- **Commit: the WAL append is now the point of no return.** Page versions are validated and bumped BEFORE
+  the transaction is appended to the WAL, so a WAL record can only exist for a transaction that can no
+  longer fail validation - previously a phase-2 validation failure left the aborted transaction in the WAL
+  with no abort marker, and crash recovery partially replayed it
+  ([#4936](https://github.com/ArcadeData/arcadedb/issues/4936)). Enabling that guarantee, the commit lock
+  set is verified AFTER all page-set mutation and extended when files joined late (EXTERNAL-property
+  buckets, indexes created inside the transaction, and the vector index's companion graph file, which now
+  counts in the lock set; [#4937](https://github.com/ArcadeData/arcadedb/issues/4937)).
+
 ### Improvements
 
 - **HA: throttled diverged-follower resync logging.** When a follower detects a WAL page-version gap it

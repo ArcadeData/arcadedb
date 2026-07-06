@@ -262,6 +262,20 @@ public class PageManager extends LockContext {
 
   public void updatePages(final Map<PageId, MutablePage> newPages, final Map<PageId, MutablePage> modifiedPages,
       final boolean asyncFlush) throws IOException, InterruptedException {
+    publishPages(validateAndBumpVersions(newPages, modifiedPages), newPages, asyncFlush);
+  }
+
+  /**
+   * First half of {@link #updatePages}: validates every page against the most recent committed version and
+   * bumps the (transaction-private) page versions, WITHOUT publishing anything. #4936: the commit calls this
+   * BEFORE appending the transaction to the WAL, so the append is the point of no return - a WAL record can
+   * only ever exist for a transaction that already passed validation. Any {@link ConcurrentModificationException}
+   * fires before anything durable exists, so crash recovery can never partially replay an aborted transaction.
+   * The bump only mutates the transaction's own MutablePage instances: if the WAL append still fails
+   * (e.g. interrupt), the reset() discards them and nothing observable happened.
+   */
+  public List<MutablePage> validateAndBumpVersions(final Map<PageId, MutablePage> newPages,
+      final Map<PageId, MutablePage> modifiedPages) throws IOException, InterruptedException {
     lock();
     try {
       final List<MutablePage> pagesToWrite = new ArrayList<>((newPages != null ? newPages.size() : 0) + modifiedPages.size());
@@ -273,6 +287,21 @@ public class PageManager extends LockContext {
       for (final MutablePage p : modifiedPages.values())
         pagesToWrite.add(updatePageVersion(p, false));
 
+      return pagesToWrite;
+    } finally {
+      unlock();
+    }
+  }
+
+  /**
+   * Second half of {@link #updatePages}: publishes the validated pages (read cache + flush scheduling).
+   * Runs AFTER the WAL append (#4936): from the caller's perspective the transaction is committed once the
+   * WAL is durable, and a failure here leaves the WAL to replay the pages on recovery.
+   */
+  public void publishPages(final List<MutablePage> pagesToWrite, final Map<PageId, MutablePage> newPages,
+      final boolean asyncFlush) throws IOException, InterruptedException {
+    lock();
+    try {
       // Write pages (and put in readCache) BEFORE updating pageCount, otherwise concurrent
       // transactions can observe pageCount > readCache state and treat the new page as a
       // pre-existing empty page (sparse-file semantics), allowing two records' chunk chains
