@@ -29,9 +29,10 @@ import java.util.Optional;
  * Created by luigidellaquila on 07/07/16.
  */
 public class InternalResultSet implements ResultSet, ResettableIterator<Result> {
-  private   List<Result>  content = new ArrayList<>();
-  private   int           next    = 0;
-  protected ExecutionPlan plan;
+  private   List<Result>      content = new ArrayList<>();
+  private   int               next    = 0;
+  protected ExecutionPlan     plan;
+  protected QueryStatistics   statistics;
 
   public InternalResultSet() {
   }
@@ -72,6 +73,15 @@ public class InternalResultSet implements ResultSet, ResettableIterator<Result> 
 
   public void setPlan(final ExecutionPlan plan) {
     this.plan = plan;
+  }
+
+  @Override
+  public Optional<QueryStatistics> getStatistics() {
+    return Optional.ofNullable(statistics);
+  }
+
+  public void setStatistics(final QueryStatistics statistics) {
+    this.statistics = statistics;
   }
 
   public InternalResultSet add(final Result nextResult) {
