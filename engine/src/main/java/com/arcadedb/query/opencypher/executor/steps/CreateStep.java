@@ -220,10 +220,15 @@ public class CreateStep extends AbstractExecutionStep {
   private Result createPatterns(final Result inputResult) {
     final Database database = context.getDatabase();
     final AtomicReference<ResultInternal> resultRef = new AtomicReference<>();
+    final QueryStatistics stats = context.getStatistics();
+    final QueryStatistics statsSnapshot = stats.copy();
 
     // Use database.transaction() for automatic retry on NeedRetryException/ConcurrentModificationException
     // joinCurrentTx=true means it will join an existing transaction if one is active
     database.transaction(() -> {
+      // database.transaction retries this block on MVCC/duplicate-key conflict; reset the counters
+      // to the pre-attempt snapshot so a retried attempt does not double-count creations.
+      stats.restore(statsSnapshot);
       final ResultInternal result = new ResultInternal();
 
       // Copy input properties if present
@@ -254,9 +259,16 @@ public class CreateStep extends AbstractExecutionStep {
   private List<Result> createPatternsBatch(final List<Result> inputResults) {
     final Database database = context.getDatabase();
     final List<Result> createdResults = new ArrayList<>(inputResults.size());
+    final QueryStatistics stats = context.getStatistics();
+    final QueryStatistics statsSnapshot = stats.copy();
 
     // Execute all creates in a SINGLE transaction
     database.transaction(() -> {
+      // database.transaction retries this block on MVCC/duplicate-key conflict; reset the counters
+      // to the pre-attempt snapshot so a retried attempt does not double-count creations, and clear
+      // any partial results accumulated by a previous attempt.
+      stats.restore(statsSnapshot);
+      createdResults.clear();
       for (final Result inputResult : inputResults) {
         final ResultInternal result = new ResultInternal();
 

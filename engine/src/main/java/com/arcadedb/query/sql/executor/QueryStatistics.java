@@ -67,4 +67,41 @@ public class QueryStatistics {
         || propertiesSet != 0 || labelsAdded != 0 || labelsRemoved != 0
         || indexesAdded != 0 || indexesRemoved != 0 || constraintsAdded != 0 || constraintsRemoved != 0;
   }
+
+  /**
+   * Returns an independent snapshot of the current counter values.
+   */
+  public QueryStatistics copy() {
+    final QueryStatistics c = new QueryStatistics();
+    c.nodesCreated = nodesCreated;
+    c.nodesDeleted = nodesDeleted;
+    c.relationshipsCreated = relationshipsCreated;
+    c.relationshipsDeleted = relationshipsDeleted;
+    c.propertiesSet = propertiesSet;
+    c.labelsAdded = labelsAdded;
+    c.labelsRemoved = labelsRemoved;
+    c.indexesAdded = indexesAdded;
+    c.indexesRemoved = indexesRemoved;
+    c.constraintsAdded = constraintsAdded;
+    c.constraintsRemoved = constraintsRemoved;
+    return c;
+  }
+
+  /**
+   * Restores all counters to the values captured in the given snapshot. Used to roll back the
+   * increments of a transaction attempt that is about to be retried, so a retry does not double-count.
+   */
+  public void restore(final QueryStatistics snapshot) {
+    nodesCreated = snapshot.nodesCreated;
+    nodesDeleted = snapshot.nodesDeleted;
+    relationshipsCreated = snapshot.relationshipsCreated;
+    relationshipsDeleted = snapshot.relationshipsDeleted;
+    propertiesSet = snapshot.propertiesSet;
+    labelsAdded = snapshot.labelsAdded;
+    labelsRemoved = snapshot.labelsRemoved;
+    indexesAdded = snapshot.indexesAdded;
+    indexesRemoved = snapshot.indexesRemoved;
+    constraintsAdded = snapshot.constraintsAdded;
+    constraintsRemoved = snapshot.constraintsRemoved;
+  }
 }

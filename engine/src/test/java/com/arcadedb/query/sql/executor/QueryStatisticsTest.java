@@ -52,4 +52,24 @@ class QueryStatisticsTest {
     s.addLabelsAdded(0);
     assertThat(s.containsUpdates()).isFalse();
   }
+
+  @Test
+  void copyAndRestoreRollBackIncrements() {
+    final QueryStatistics s = new QueryStatistics();
+    s.incNodesCreated();
+    s.addPropertiesSet(2);
+    final QueryStatistics snapshot = s.copy();
+    // simulate a failed attempt that incremented further
+    s.incNodesCreated();
+    s.incRelationshipsCreated();
+    s.addPropertiesSet(5);
+    // roll back to the snapshot (as a retry would)
+    s.restore(snapshot);
+    assertThat(s.getNodesCreated()).isEqualTo(1);
+    assertThat(s.getRelationshipsCreated()).isZero();
+    assertThat(s.getPropertiesSet()).isEqualTo(2);
+    // copy is independent: mutating the original must not change the snapshot
+    s.incNodesCreated();
+    assertThat(snapshot.getNodesCreated()).isEqualTo(1);
+  }
 }
