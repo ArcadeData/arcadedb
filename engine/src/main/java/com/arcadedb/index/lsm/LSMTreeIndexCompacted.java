@@ -530,6 +530,16 @@ public class LSMTreeIndexCompacted extends LSMTreeIndexAbstract {
     return currentPage.readInt(INT_SERIALIZED_SIZE + INT_SERIALIZED_SIZE + BYTE_SERIALIZED_SIZE);
   }
 
+  /**
+   * #4946: rolls the in-RAM page count back to the pre-compaction value after a failed compaction round.
+   * The orphaned leaf pages flushed by the failed round stay on disk but become unreachable: page 0's series
+   * counter never included them, and with the count rolled back {@link #setCompactedTotalPages} of a LATER
+   * successful round no longer publishes them (they are overwritten by that round's own pages instead).
+   */
+  void rollbackPageCountTo(final int pages) {
+    pageCount.set(pages);
+  }
+
   protected MutablePage setCompactedTotalPages() throws IOException {
     final MutablePage mainPage = database.getPageManager()
         .getMutablePage(new PageId(database, file.getFileId(), 0), pageSize, false, true);

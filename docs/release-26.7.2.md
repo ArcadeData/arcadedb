@@ -194,6 +194,20 @@ that could starve the very snapshot resync meant to heal the node.
   [#4934](https://github.com/ArcadeData/arcadedb/issues/4934) - the runtime WAL rotation also skips its
   drop pass when the pre-drop fsync fails).
 
+- **LSM index hardening (2026-07 audit).** A failed compaction is now atomic: the in-RAM page count is
+  rolled back (after draining in-flight flushes) so the orphaned leaf pages a mid-merge failure leaves on
+  disk are never published as live series content by the next successful round, and a failed FIRST
+  compaction drops the temp compacted file it registered instead of leaking one file per failed round
+  ([#4946](https://github.com/ArcadeData/arcadedb/issues/4946)). In-transaction index iteration is fixed on
+  two legs ([#4947](https://github.com/ArcadeData/arcadedb/issues/4947)): the transaction overlay now sorts
+  NULL key components LOW, matching the on-disk comparator (they used to sort HIGH, so cursor navigation
+  disagreed with the disk merge order), and overlay TreeMap navigation with PARTIAL keys now uses biased
+  boundary keys - a prefix search used to land in the MIDDLE of the run of entries sharing the prefix,
+  silently skipping the run's earlier uncommitted entries from in-transaction range scans (no nulls
+  required). A further pre-existing defect discovered while testing - in-tx iteration on a non-unique index
+  shadows committed RIDs whose key equals an uncommitted entry's key - is tracked in
+  [#5055](https://github.com/ArcadeData/arcadedb/issues/5055).
+
 ### Improvements
 
 - **HA: throttled diverged-follower resync logging.** When a follower detects a WAL page-version gap it

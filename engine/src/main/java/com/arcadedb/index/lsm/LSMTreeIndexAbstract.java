@@ -715,8 +715,24 @@ public abstract class LSMTreeIndexAbstract extends PaginatedComponent {
       result = 1;
       for (int keyIndex = 0; keyIndex < keys.length; ++keyIndex) {
         final boolean notNull = version < 1 || currentPageBuffer.getByte() == 1;
-        if (!notNull)
+        if (!notNull) {
+          // #4947 (pre-existing corruption): the stored component is NULL. Breaking here with the PREVIOUS
+          // component's result (0 when the prefix matched) declared (k,null) the "same key" as (k,v), and
+          // the purpose-1 caller then applied MID's key size to every pointer of the run - (k,null)'s key
+          // is shorter, so its value position landed mid-bytes and the read underflowed. Same key only if
+          // the search component is null too; otherwise nulls sort LOW, matching compareKey().
+          result = keys[keyIndex] == null ? 0 : 1;
+          if (result != 0)
+            break;
+          continue;
+        }
+
+        if (keys[keyIndex] == null) {
+          // Search component null vs stored non-null: not the same key (nulls sort LOW). The old code fed
+          // the null into compareBytes/compare below - an NPE for string keys.
+          result = -1;
           break;
+        }
 
         final byte keyType = binaryKeyTypes[keyIndex];
         if (keyType == BinaryTypes.TYPE_STRING) {
