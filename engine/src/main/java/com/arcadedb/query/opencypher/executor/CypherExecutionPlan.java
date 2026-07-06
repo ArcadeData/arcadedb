@@ -105,6 +105,7 @@ import com.arcadedb.query.sql.executor.CommandContext;
 import com.arcadedb.query.sql.executor.ExecutionStep;
 import com.arcadedb.query.sql.executor.InternalResultSet;
 import com.arcadedb.query.sql.executor.IteratorResultSet;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -270,12 +271,22 @@ public class CypherExecutionPlan {
       while (resultSet.hasNext()) {
         materializedResults.add((ResultInternal) resultSet.next());
       }
+      // Surface the CRUD-count accumulator built up by the mutation steps (CreateStep, SetStep,
+      // DeleteStep, RemoveStep, MergeStep) on the returned result set. Always present after a
+      // write statement, even if it performed no actual mutation (containsUpdates() is false then).
+      final QueryStatistics stats = context.getStatistics();
+
       // If no RETURN clause (or GQL FINISH was used), return empty results
       // (write side effects still happened). Issue #3365 section 1.3.
-      if (statement.getReturnClause() == null || statement.hasFinishClause())
-        return new IteratorResultSet(Collections.<Result>emptyList().iterator());
+      if (statement.getReturnClause() == null || statement.hasFinishClause()) {
+        final IteratorResultSet empty = new IteratorResultSet(Collections.<Result>emptyList().iterator());
+        empty.setStatistics(stats);
+        return empty;
+      }
       // Return the materialized results
-      return new IteratorResultSet(materializedResults.iterator());
+      final IteratorResultSet out = new IteratorResultSet(materializedResults.iterator());
+      out.setStatistics(stats);
+      return out;
     }
 
     // Read-only path: GQL FINISH still suppresses any rows the MATCH would have produced.

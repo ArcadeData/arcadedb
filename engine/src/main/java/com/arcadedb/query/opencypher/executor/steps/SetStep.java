@@ -32,6 +32,7 @@ import com.arcadedb.query.opencypher.executor.CypherFunctionFactory;
 import com.arcadedb.query.opencypher.executor.ExpressionEvaluator;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -221,6 +222,9 @@ public class SetStep extends AbstractExecutionStep {
       mutableDoc.set(item.getProperty(), value);
     }
     mutableDoc.save();
+    // Neo4j counts both a property assignment and a null-valued removal under "properties set".
+    final QueryStatistics stats = context.getStatistics();
+    stats.addPropertiesSet(1);
 
     // Record the latest written state so subsequent rows can read through it.
     final RID savedRid = mutableDoc.getIdentity();
@@ -257,12 +261,17 @@ public class SetStep extends AbstractExecutionStep {
     }
 
     // Set new properties from map (skip null values - they mean "remove")
+    int propertiesSet = 0;
     for (final Map.Entry<String, Object> entry : map.entrySet()) {
-      if (entry.getValue() != null)
+      if (entry.getValue() != null) {
         mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
+        propertiesSet++;
+      }
     }
 
     mutableDoc.save();
+    final QueryStatistics stats = context.getStatistics();
+    stats.addPropertiesSet(propertiesSet);
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
@@ -296,6 +305,9 @@ public class SetStep extends AbstractExecutionStep {
     }
 
     mutableDoc.save();
+    // Every map entry mutates a property, whether set (non-null) or removed (null value).
+    final QueryStatistics stats = context.getStatistics();
+    stats.addPropertiesSet(map.size());
     final RID savedRid = mutableDoc.getIdentity();
     if (savedRid != null)
       writtenDocs.put(savedRid, mutableDoc);
@@ -356,9 +368,12 @@ public class SetStep extends AbstractExecutionStep {
     // Get existing labels and add new ones
     final List<String> existingLabels = Labels.getLabels(vertex);
     final List<String> allLabels = new ArrayList<>(existingLabels);
+    int newLabelsCount = 0;
     for (final String label : item.getLabels())
-      if (!allLabels.contains(label))
+      if (!allLabels.contains(label)) {
         allLabels.add(label);
+        newLabelsCount++;
+      }
 
     // Create the composite type for the combined labels
     final String newTypeName = Labels.ensureCompositeType(
@@ -373,6 +388,8 @@ public class SetStep extends AbstractExecutionStep {
     for (final String prop : vertex.getPropertyNames())
       newVertex.set(prop, vertex.get(prop));
     newVertex.save();
+    if (newLabelsCount > 0)
+      context.getStatistics().addLabelsAdded(newLabelsCount);
 
     // Copy edges from old vertex to new vertex
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))

@@ -384,6 +384,13 @@ public class CreateStep extends AbstractExecutionStep {
 
     final long startSave = context.isProfiling() ? System.nanoTime() : 0;
     vertex.save();
+
+    final QueryStatistics stats = context.getStatistics();
+    stats.incNodesCreated();
+    if (nodePattern.hasLabels())
+      stats.addLabelsAdded(nodePattern.getLabels().size());
+    stats.addPropertiesSet(vertex.getPropertyNames().size());
+
     if (context.isProfiling()) {
       saveOperationTime += System.nanoTime() - startSave;
       vertexCount++;
@@ -425,6 +432,11 @@ public class CreateStep extends AbstractExecutionStep {
     final MutableEdge edge = edgeProperties != null
         ? fromVertex.newEdge(type, toVertex, edgeProperties)
         : fromVertex.newEdge(type, toVertex);
+
+    final QueryStatistics stats = context.getStatistics();
+    stats.incRelationshipsCreated();
+    stats.addPropertiesSet(edge.getPropertyNames().size());
+
     if (context.isProfiling()) {
       saveOperationTime += System.nanoTime() - startSave;
       edgeCount++;

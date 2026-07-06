@@ -28,6 +28,7 @@ import com.arcadedb.query.opencypher.Labels;
 import com.arcadedb.query.opencypher.ast.RemoveClause;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -199,6 +200,9 @@ public class RemoveStep extends AbstractExecutionStep {
     // Save the modified document
     mutableDoc.save();
 
+    // Neo4j-compatible statistics: property removals are counted under "properties set".
+    context.getStatistics().addPropertiesSet(1);
+
     // Update the result with the modified document
     ((ResultInternal) result).setProperty(variable, mutableDoc);
   }
@@ -216,15 +220,12 @@ public class RemoveStep extends AbstractExecutionStep {
     final List<String> currentLabels = Labels.getLabels(vertex);
     final List<String> labelsToRemove = item.getLabels();
 
-    // Check if any of the labels to remove actually exist
-    boolean needsChange = false;
-    for (final String label : labelsToRemove) {
-      if (currentLabels.contains(label)) {
-        needsChange = true;
-        break;
-      }
-    }
-    if (!needsChange)
+    // Check how many of the labels to remove actually exist on the vertex
+    int removedLabelsCount = 0;
+    for (final String label : labelsToRemove)
+      if (currentLabels.contains(label))
+        removedLabelsCount++;
+    if (removedLabelsCount == 0)
       return;
 
     // Compute remaining labels
@@ -248,6 +249,9 @@ public class RemoveStep extends AbstractExecutionStep {
     for (final String prop : vertex.getPropertyNames())
       newVertex.set(prop, vertex.get(prop));
     newVertex.save();
+
+    final QueryStatistics stats = context.getStatistics();
+    stats.addLabelsRemoved(removedLabelsCount);
 
     // Migrate edges
     for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))

@@ -42,6 +42,7 @@ import com.arcadedb.query.opencypher.parser.CypherASTBuilder;
 import com.arcadedb.query.opencypher.temporal.TemporalUtil;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -1159,6 +1160,13 @@ public class MergeStep extends AbstractExecutionStep {
     }
 
     vertex.save();
+
+    final QueryStatistics stats = context.getStatistics();
+    stats.incNodesCreated();
+    if (nodePattern.hasLabels())
+      stats.addLabelsAdded(nodePattern.getLabels().size());
+    stats.addPropertiesSet(vertex.getPropertyNames().size());
+
     return vertex;
   }
 
@@ -1193,9 +1201,15 @@ public class MergeStep extends AbstractExecutionStep {
     } else
       edgeProperties = null;
 
-    return edgeProperties != null
+    final Edge edge = edgeProperties != null
         ? fromVertex.newEdge(type, toVertex, edgeProperties)
         : fromVertex.newEdge(type, toVertex);
+
+    final QueryStatistics stats = context.getStatistics();
+    stats.incRelationshipsCreated();
+    stats.addPropertiesSet(edge.getPropertyNames().size());
+
+    return edge;
   }
 
   /**
@@ -1299,6 +1313,7 @@ public class MergeStep extends AbstractExecutionStep {
               final MutableDocument mutableDoc = doc.modify();
               mutableDoc.remove(property);
               mutableDoc.save();
+              context.getStatistics().addPropertiesSet(1);
               ((ResultInternal) result).setProperty(variable, mutableDoc);
             }
           } else {
@@ -1309,6 +1324,7 @@ public class MergeStep extends AbstractExecutionStep {
               final MutableDocument mutableDoc = doc.modify();
               mutableDoc.set(property, coerced);
               mutableDoc.save();
+              context.getStatistics().addPropertiesSet(1);
               ((ResultInternal) result).setProperty(variable, mutableDoc);
             }
           }
@@ -1329,10 +1345,14 @@ public class MergeStep extends AbstractExecutionStep {
           for (final String prop : new HashSet<>(mutableDoc.getPropertyNames()))
             if (!prop.startsWith("@"))
               mutableDoc.remove(prop);
+          int propertiesSet = 0;
           for (final Map.Entry<String, Object> entry : map.entrySet())
-            if (entry.getValue() != null)
+            if (entry.getValue() != null) {
               mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
+              propertiesSet++;
+            }
           mutableDoc.save();
+          context.getStatistics().addPropertiesSet(propertiesSet);
           ((ResultInternal) result).setProperty(variable, mutableDoc);
           break;
         }
@@ -1354,6 +1374,8 @@ public class MergeStep extends AbstractExecutionStep {
             else
               mutableDoc.set(entry.getKey(), TemporalUtil.toCoreJavaType(entry.getValue()));
           mutableDoc.save();
+          // Every map entry mutates a property, whether set (non-null) or removed (null value).
+          context.getStatistics().addPropertiesSet(map.size());
           ((ResultInternal) result).setProperty(variable, mutableDoc);
           break;
         }
@@ -1362,9 +1384,12 @@ public class MergeStep extends AbstractExecutionStep {
             break;
           final List<String> existingLabels = Labels.getLabels(vertex);
           final List<String> allLabels = new ArrayList<>(existingLabels);
+          int newLabelsCount = 0;
           for (final String label : item.getLabels())
-            if (!allLabels.contains(label))
+            if (!allLabels.contains(label)) {
               allLabels.add(label);
+              newLabelsCount++;
+            }
           final String newTypeName = Labels.ensureCompositeType(
               context.getDatabase().getSchema(), allLabels);
           if (!vertex.getTypeName().equals(newTypeName)) {
@@ -1372,6 +1397,8 @@ public class MergeStep extends AbstractExecutionStep {
             for (final String prop : vertex.getPropertyNames())
               newVertex.set(prop, vertex.get(prop));
             newVertex.save();
+            if (newLabelsCount > 0)
+              context.getStatistics().addLabelsAdded(newLabelsCount);
             for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.OUT))
               newVertex.newEdge(edge.getTypeName(), edge.getVertex(Vertex.DIRECTION.IN));
             for (final Edge edge : vertex.getEdges(Vertex.DIRECTION.IN))

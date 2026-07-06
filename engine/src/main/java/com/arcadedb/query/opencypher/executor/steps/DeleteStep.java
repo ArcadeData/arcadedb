@@ -30,6 +30,7 @@ import com.arcadedb.query.opencypher.executor.DeletedEntityMarker;
 import com.arcadedb.query.opencypher.traversal.TraversalPath;
 import com.arcadedb.query.sql.executor.AbstractExecutionStep;
 import com.arcadedb.query.sql.executor.CommandContext;
+import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.Result;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
@@ -241,14 +242,16 @@ public class DeleteStep extends AbstractExecutionStep {
       else
         others.add(entry);
     }
+    final QueryStatistics stats = context.getStatistics();
     final Set<Object> deleted = new HashSet<>();
     for (final Object edge : edges)
-      deleteObjectStatic(edge, deleted);
+      deleteObjectStatic(edge, deleted, stats);
     for (final DeferredDeleteTarget entry : others) {
       final Object target = entry.target();
       if (target instanceof Vertex v && !deleted.contains(v)) {
         if (entry.detach() || hasNoEdges(v)) {
           v.delete();
+          stats.incNodesDeleted();
           deleted.add(v);
         } else {
           throw new CommandExecutionException("DeleteConnectedNode: Cannot delete node "
@@ -256,7 +259,7 @@ public class DeleteStep extends AbstractExecutionStep {
               + " its relationships, or use DETACH DELETE");
         }
       } else {
-        deleteObjectStatic(target, deleted);
+        deleteObjectStatic(target, deleted, stats);
       }
     }
     batch.clear();
@@ -271,15 +274,17 @@ public class DeleteStep extends AbstractExecutionStep {
     }
   }
 
-  private static void deleteObjectStatic(final Object obj, final Set<Object> deleted) {
+  private static void deleteObjectStatic(final Object obj, final Set<Object> deleted, final QueryStatistics stats) {
     if (obj == null || deleted.contains(obj))
       return;
     try {
-      if (obj instanceof Edge)
-        ((Edge) obj).delete();
-      else if (obj instanceof Vertex)
-        ((Vertex) obj).delete();
-      else if (obj instanceof Document)
+      if (obj instanceof Edge e) {
+        e.delete();
+        stats.incRelationshipsDeleted();
+      } else if (obj instanceof Vertex v) {
+        v.delete();
+        stats.incNodesDeleted();
+      } else if (obj instanceof Document)
         ((Document) obj).delete();
       deleted.add(obj);
     } catch (final RecordNotFoundException ignored) {
@@ -466,6 +471,7 @@ public class DeleteStep extends AbstractExecutionStep {
     }
 
     vertex.delete();
+    context.getStatistics().incNodesDeleted();
   }
 
   /**
@@ -491,8 +497,10 @@ public class DeleteStep extends AbstractExecutionStep {
     }
 
     // Delete all collected edges
+    final QueryStatistics stats = context.getStatistics();
     for (final Edge edge : edgesToDelete) {
       edge.delete();
+      stats.incRelationshipsDeleted();
     }
   }
 
@@ -503,6 +511,7 @@ public class DeleteStep extends AbstractExecutionStep {
    */
   private void deleteEdge(final Edge edge) {
     edge.delete();
+    context.getStatistics().incRelationshipsDeleted();
   }
 
   @Override
