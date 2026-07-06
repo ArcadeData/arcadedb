@@ -23,6 +23,7 @@ import com.arcadedb.exception.TransactionException;
 import com.arcadedb.query.QuerySession;
 import com.arcadedb.security.SecurityDatabaseUser;
 
+import java.lang.ref.WeakReference;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -31,10 +32,30 @@ import java.util.concurrent.atomic.AtomicInteger;
  * Thread local to store transaction data.
  */
 public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.DatabaseContextTL>> {
-  public static final  DatabaseContext                                           INSTANCE          = new DatabaseContext();
-  private static final ConcurrentHashMap<Long, Map<String, DatabaseContextTL>> CONTEXTS          = new ConcurrentHashMap<>();
-  private static final AtomicInteger                                             INIT_CALL_COUNTER = new AtomicInteger();
-  private static final int                                                       CLEANUP_INTERVAL  = 1000;
+  public static final  DatabaseContext                          INSTANCE          = new DatabaseContext();
+  private static final ConcurrentHashMap<Long, ThreadContexts>  CONTEXTS          = new ConcurrentHashMap<>();
+  private static final AtomicInteger                            INIT_CALL_COUNTER = new AtomicInteger();
+  private static final int                                      CLEANUP_INTERVAL  = 1000;
+
+  /**
+   * One CONTEXTS entry: the per-thread contexts map plus a weak reference to the owning thread, used for the
+   * liveness check of the periodic dead-thread sweep. The previous implementation asked
+   * {@code Thread.getAllStackTraces()} for the live thread ids, which is wrong for virtual threads (they never
+   * appear in it, so a live virtual thread's entry was pruned as dead while it was still running its transaction)
+   * and captures the full stack of every platform thread at a global safepoint, injecting a latency spike into
+   * whichever request happened to be the 1000th {@code init()} (issue #4956). {@code Thread#isAlive()} on the
+   * weak reference is O(1) per entry, safepoint-free and correct for both thread kinds; the weak reference avoids
+   * pinning terminated threads (and their stacks) in memory.
+   */
+  private static final class ThreadContexts {
+    private final WeakReference<Thread>          owner;
+    private final Map<String, DatabaseContextTL> contexts;
+
+    private ThreadContexts(final Thread owner, final Map<String, DatabaseContextTL> contexts) {
+      this.owner = new WeakReference<>(owner);
+      this.contexts = contexts;
+    }
+  }
 
   public DatabaseContextTL init(final DatabaseInternal database) {
     return init(database, null);
@@ -52,7 +73,10 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
     DatabaseContextTL current;
 
     if (map == null) {
-      map = new HashMap<>();
+      // CONCURRENT MAP BECAUSE removeAllContexts() (DATABASE CLOSE/DROP ON ANOTHER THREAD) MUTATES THIS MAP
+      // CONCURRENTLY WITH THE OWNER THREAD'S init()/removeContext(); A PLAIN HashMap COULD LOSE ENTRIES OR
+      // CORRUPT THE TABLE (ISSUE #4939)
+      map = new ConcurrentHashMap<>();
       set(map);
       current = new DatabaseContextTL();
       map.put(key, current);
@@ -76,8 +100,13 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
       }
     }
 
-    // ALWAYS ENSURE THE MAP IS REGISTERED IN CONTEXTS (may have been removed by removeAllContexts)
-    CONTEXTS.put(Thread.currentThread().threadId(), map);
+    // ALWAYS ENSURE THE MAP IS REGISTERED IN CONTEXTS (the dead-thread sweep may have pruned a reused thread id).
+    // AVOID THE PUT (AND THE WeakReference ALLOCATION) WHEN THE SAME MAP IS ALREADY REGISTERED: THE MAP IS
+    // PER-THREAD, SO IDENTITY IMPLIES THE ENTRY BELONGS TO THIS THREAD
+    final Thread currentThread = Thread.currentThread();
+    final ThreadContexts registered = CONTEXTS.get(currentThread.threadId());
+    if (registered == null || registered.contexts != map)
+      CONTEXTS.put(currentThread.threadId(), new ThreadContexts(currentThread, map));
 
     if (current.transactions.isEmpty())
       current.transactions.add(
@@ -117,15 +146,13 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    */
   public List<DatabaseContextTL> removeAllContexts(final String databaseName) {
     final List<DatabaseContextTL> result = new ArrayList<>();
-    for (final Map.Entry<Long, Map<String, DatabaseContextTL>> entry : CONTEXTS.entrySet()) {
-      final Map<String, DatabaseContextTL> map = entry.getValue();
-      if (map != null) {
-        final DatabaseContextTL tl = map.remove(databaseName);
-        if (map.isEmpty())
-          CONTEXTS.remove(entry.getKey());
-        if (tl != null)
-          result.add(tl);
-      }
+    for (final ThreadContexts threadContexts : CONTEXTS.values()) {
+      final DatabaseContextTL tl = threadContexts.contexts.remove(databaseName);
+      if (tl != null)
+        result.add(tl);
+      // DO NOT PRUNE THE CONTEXTS ENTRY HERE EVEN WHEN THE MAP BECAME EMPTY: THIS RUNS ON THE CLOSING THREAD AND
+      // WOULD RACE THE OWNER THREAD'S init() RE-REGISTRATION, UNREGISTERING A LIVE CONTEXT (ISSUE #4939). EMPTY
+      // ENTRIES ARE PRUNED BY THE OWNER (removeContext/removeCurrentThreadContexts) OR BY THE DEAD-THREAD SWEEP
     }
     return result;
   }
@@ -185,13 +212,58 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
   }
 
   /**
-   * Scans CONTEXTS and removes entries for thread IDs that are no longer alive. Called periodically as a safety net.
+   * Scans CONTEXTS and removes the entries whose owning thread is no longer alive, rolling back any transaction
+   * they abandoned. Called periodically as a safety net. Liveness is checked per entry via the thread weak
+   * reference ({@link ThreadContexts}), which is virtual-thread-correct and safepoint-free (issue #4956).
+   * Rolling back the abandoned transactions releases their file locks: before this, the sweep dropped the map
+   * entries only, so the {@code LockManager} files locked by a thread that died with an open transaction (for
+   * example via {@code acquireLock().type(...).lock()}) stayed owned by the dead thread forever and every later
+   * commit touching them timed out until restart (issue #4941).
+   * <p>
+   * Package-private (instead of private) for tests only.
    */
-  private static void cleanupDeadThreads() {
-    final Set<Long> liveThreadIds = new HashSet<>();
-    for (final Thread t : Thread.getAllStackTraces().keySet())
-      liveThreadIds.add(t.threadId());
-    CONTEXTS.keySet().removeIf(id -> !liveThreadIds.contains(id));
+  static void cleanupDeadThreads() {
+    for (final Iterator<ThreadContexts> it = CONTEXTS.values().iterator(); it.hasNext(); ) {
+      final ThreadContexts threadContexts = it.next();
+      final Thread owner = threadContexts.owner.get();
+      if (owner == null || !owner.isAlive()) {
+        it.remove();
+        for (final DatabaseContextTL tl : threadContexts.contexts.values())
+          rollbackAbandonedTransactions(tl);
+      }
+    }
+  }
+
+  /**
+   * Rolls back, from last to first, the transactions abandoned by a dead thread. The rollback is executed on the
+   * sweeping thread but releases the file locks with the requester captured at lock-acquisition time (see
+   * {@code TransactionContext#getRequester()}), which the {@code LockManager} explicitly supports. Nobody else can
+   * touch these transactions (the owner is dead and the entry was already unlinked from CONTEXTS), so the
+   * cross-thread access is safe.
+   */
+  private static void rollbackAbandonedTransactions(final DatabaseContextTL tl) {
+    for (int i = tl.transactions.size() - 1; i > -1; --i) {
+      try {
+        tl.transactions.get(i).rollback();
+      } catch (final Throwable e) {
+        // IGNORE ERRORS: BEST-EFFORT CLEANUP OF TRANSACTIONS ABANDONED BY A DEAD THREAD
+      }
+    }
+    tl.transactions.clear();
+  }
+
+  /**
+   * Package-private test hook: returns true when the given thread id has a registered context entry.
+   */
+  static boolean isThreadRegistered(final long threadId) {
+    return CONTEXTS.containsKey(threadId);
+  }
+
+  /**
+   * Package-private test hook: returns a snapshot of the registered thread ids.
+   */
+  static Set<Long> registeredThreadIds() {
+    return new HashSet<>(CONTEXTS.keySet());
   }
 
   public static class DatabaseContextTL {

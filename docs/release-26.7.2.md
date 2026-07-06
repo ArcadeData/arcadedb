@@ -208,6 +208,25 @@ that could starve the very snapshot resync meant to heal the node.
   shadows committed RIDs whose key equals an uncommitted entry's key - is tracked in
   [#5055](https://github.com/ArcadeData/arcadedb/issues/5055).
 
+- **Thread-context lifecycle hardening (2026-07 audit).** The periodic dead-thread sweep of the per-thread
+  database contexts now rolls back any transaction the dead thread abandoned, releasing its file locks:
+  before, a thread dying with an open transaction holding explicit locks (`acquireLock().type(...).lock()`)
+  left the `LockManager` files owned by the dead thread forever, and every later commit touching them timed
+  out until restart ([#4941](https://github.com/ArcadeData/arcadedb/issues/4941)); the cross-thread unlock
+  works because the lock requester is now captured once at lock-acquisition time instead of being re-resolved
+  as the calling thread at release time. Dead-thread detection no longer uses `Thread.getAllStackTraces()`,
+  which misses virtual threads (a LIVE virtual thread's context was pruned as dead while its transaction was
+  running) and captures every platform-thread stack at a global safepoint (a periodic multi-ms latency spike);
+  each context entry now holds a `WeakReference<Thread>` checked with `isAlive()` - O(1), safepoint-free,
+  virtual-thread-correct - and the GraphAnalyticalView async build/rebuild/compaction workers unregister their
+  thread contexts on completion instead of leaking them until the next sweep
+  ([#4956](https://github.com/ArcadeData/arcadedb/issues/4956)). The per-thread contexts map is now a
+  `ConcurrentHashMap` and `removeAllContexts` (database close/drop from another thread) no longer prunes
+  foreign registry entries, closing a data race with the owner thread's `init()` that could corrupt the plain
+  `HashMap` or unregister a live context ([#4939](https://github.com/ArcadeData/arcadedb/issues/4939); the
+  reported mid-commit cross-thread rollback interleaving is already excluded by the database RW lock - commit
+  holds the read lock for its whole duration while close's rollbacks run under the write lock).
+
 ### Improvements
 
 - **HA: throttled diverged-follower resync logging.** When a follower detects a WAL page-version gap it

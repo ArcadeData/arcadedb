@@ -1,0 +1,214 @@
+/*
+ * Copyright © 2021-present Arcade Data Ltd (info@arcadedata.com)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ *
+ * SPDX-FileCopyrightText: 2021-present Arcade Data Ltd (info@arcadedata.com)
+ * SPDX-License-Identifier: Apache-2.0
+ */
+package com.arcadedb.database;
+
+import com.arcadedb.GlobalConfiguration;
+import com.arcadedb.TestHelper;
+import com.arcadedb.graph.MutableVertex;
+import com.arcadedb.graph.olap.GraphAnalyticalView;
+import org.junit.jupiter.api.Test;
+
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+/**
+ * Regression tests for the DatabaseContext lifecycle findings of the 2026-07 engine audit:
+ * <ul>
+ *   <li>#4941: a thread that dies with an open transaction holding explicit file locks must have its
+ *   transaction rolled back by the dead-thread sweep, releasing the locks; before, the sweep only dropped
+ *   the map entry and the LockManager files stayed owned by the dead thread forever (every later commit
+ *   timing out until restart).</li>
+ *   <li>#4956: the sweep must not prune LIVE virtual threads (Thread.getAllStackTraces() returned platform
+ *   threads only, so a live virtual thread's entry was removed while its transaction was running), must
+ *   detect DEAD virtual threads, and the GraphAnalyticalView async workers must unregister their contexts.</li>
+ *   <li>#4939: contexts maps are mutated concurrently by the owner thread and by close/drop on another
+ *   thread; the concurrent hammering must never corrupt them (contract test: the race itself has no
+ *   deterministic repro).</li>
+ * </ul>
+ */
+class DatabaseContextLifecycleTest extends TestHelper {
+
+  private static final long LOCK_TIMEOUT_MS = 2_000L;
+
+  @Override
+  protected void beginTest() {
+    database.getConfiguration().setValue(GlobalConfiguration.COMMIT_LOCK_TIMEOUT, LOCK_TIMEOUT_MS);
+    database.getSchema().getOrCreateDocumentType("Product");
+  }
+
+  @Test
+  void deadPlatformThreadWithExplicitLockIsSweptAndLocksReleased() throws Exception {
+    final Thread worker = new Thread(() -> {
+      database.begin();
+      database.acquireLock().type("Product").lock();
+      // DIES WITHOUT COMMIT NOR ROLLBACK: THE EXPLICIT LOCKS ARE ABANDONED
+    }, "ctx-lifecycle-dead-platform");
+    worker.start();
+    worker.join(10_000);
+    assertThat(worker.isAlive()).isFalse();
+
+    DatabaseContext.cleanupDeadThreads();
+
+    assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isFalse();
+
+    // THE SWEEP MUST HAVE ROLLED BACK THE ABANDONED TRANSACTION AND RELEASED ITS FILE LOCKS: A COMMIT
+    // TOUCHING THE SAME TYPE MUST SUCCEED INSTEAD OF FAILING WITH LockTimeoutException
+    database.begin();
+    database.newDocument("Product").set("name", "after-sweep").save();
+    database.commit();
+
+    assertThat(database.countType("Product", true)).isEqualTo(1);
+  }
+
+  @Test
+  void liveVirtualThreadContextSurvivesSweep() throws Exception {
+    final CountDownLatch started = new CountDownLatch(1);
+    final CountDownLatch release = new CountDownLatch(1);
+    final AtomicReference<Throwable> workerError = new AtomicReference<>();
+
+    final Thread worker = Thread.ofVirtual().name("ctx-lifecycle-live-virtual").start(() -> {
+      try {
+        database.begin();
+        try {
+          started.countDown();
+          release.await(10, TimeUnit.SECONDS);
+        } finally {
+          database.rollback();
+          DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+        }
+      } catch (final Throwable e) {
+        workerError.set(e);
+      }
+    });
+
+    assertThat(started.await(10, TimeUnit.SECONDS)).isTrue();
+    try {
+      // THE WORKER IS ALIVE (PARKED INSIDE ITS TRANSACTION): THE SWEEP MUST NOT PRUNE ITS CONTEXT.
+      // Thread.getAllStackTraces() BASED DETECTION PRUNED LIVE VIRTUAL THREADS BECAUSE THEY NEVER APPEAR IN IT
+      DatabaseContext.cleanupDeadThreads();
+      assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isTrue();
+    } finally {
+      release.countDown();
+    }
+
+    worker.join(10_000);
+    assertThat(worker.isAlive()).isFalse();
+    assertThat(workerError.get()).isNull();
+    // THE WORKER UNREGISTERED ITSELF ON EXIT
+    assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isFalse();
+  }
+
+  @Test
+  void deadVirtualThreadWithExplicitLockIsSweptAndLocksReleased() throws Exception {
+    final Thread worker = Thread.ofVirtual().name("ctx-lifecycle-dead-virtual").start(() -> {
+      database.begin();
+      database.acquireLock().type("Product").lock();
+      // DIES WITHOUT COMMIT NOR ROLLBACK
+    });
+    worker.join(10_000);
+    assertThat(worker.isAlive()).isFalse();
+
+    DatabaseContext.cleanupDeadThreads();
+
+    assertThat(DatabaseContext.isThreadRegistered(worker.threadId())).isFalse();
+
+    database.begin();
+    database.newDocument("Product").set("name", "after-virtual-sweep").save();
+    database.commit();
+
+    assertThat(database.countType("Product", true)).isEqualTo(1);
+  }
+
+  @Test
+  void gavAsyncBuildUnregistersWorkerContext() {
+    database.getSchema().getOrCreateVertexType("Person");
+    database.getSchema().getOrCreateEdgeType("Knows");
+
+    database.transaction(() -> {
+      final MutableVertex a = database.newVertex("Person").set("name", "Alice").save();
+      final MutableVertex b = database.newVertex("Person").set("name", "Bob").save();
+      a.newEdge("Knows", b);
+    });
+
+    final Set<Long> before = DatabaseContext.registeredThreadIds();
+
+    final GraphAnalyticalView gav = GraphAnalyticalView.builder(database)
+        .withVertexTypes("Person")
+        .withEdgeTypes("Knows")
+        .buildAsync();
+    try {
+      assertThat(gav.awaitReady(10, TimeUnit.SECONDS)).isTrue();
+
+      // THE ASYNC BUILD WORKER (A DIED-AFTER-TASK VIRTUAL THREAD) MUST HAVE REMOVED ITS OWN CONTEXT ENTRY
+      // BEFORE RELEASING THE READY LATCH; BEFORE THE FIX THE ENTRY LINGERED UNTIL THE NEXT PERIODIC SWEEP
+      final Set<Long> leaked = new HashSet<>(DatabaseContext.registeredThreadIds());
+      leaked.removeAll(before);
+      assertThat(leaked).isEmpty();
+    } finally {
+      gav.drop();
+    }
+  }
+
+  @Test
+  void concurrentInitAndRemoveAllContextsDoNotCorruptContexts() throws Exception {
+    // CONTRACT TEST FOR #4939: the per-thread contexts map is mutated by the owner (init/removeContext) and
+    // by removeAllContexts() from another thread. A deterministic corruption repro is impossible (pure data
+    // race on the old plain HashMap); this hammers the two paths concurrently and asserts that no exception
+    // surfaces and the owner thread's context always survives for the database that is never closed.
+    final DatabaseInternal internal = (DatabaseInternal) database;
+    final AtomicReference<Throwable> error = new AtomicReference<>();
+    final CountDownLatch done = new CountDownLatch(1);
+    final String otherName = "not-existing-database-path";
+
+    final Thread owner = new Thread(() -> {
+      try {
+        for (int i = 0; i < 20_000; i++) {
+          DatabaseContext.INSTANCE.init(internal);
+          final DatabaseContext.DatabaseContextTL ctx = DatabaseContext.INSTANCE.getContextIfExists(
+              internal.getDatabasePath());
+          if (ctx == null)
+            throw new IllegalStateException("Owner thread lost its own context at iteration " + i);
+        }
+      } catch (final Throwable e) {
+        error.set(e);
+      } finally {
+        DatabaseContext.INSTANCE.removeCurrentThreadContexts();
+        done.countDown();
+      }
+    }, "ctx-lifecycle-owner");
+    owner.start();
+
+    // HAMMER removeAllContexts FROM THIS THREAD (SIMULATES CLOSE/DROP OF ANOTHER DATABASE) WHILE THE OWNER
+    // KEEPS MUTATING ITS OWN PER-THREAD MAP
+    while (done.getCount() > 0) {
+      DatabaseContext.INSTANCE.removeAllContexts(otherName);
+      if (!done.await(0, TimeUnit.MILLISECONDS))
+        Thread.onSpinWait();
+    }
+
+    owner.join(30_000);
+    assertThat(owner.isAlive()).isFalse();
+    assertThat(error.get()).isNull();
+  }
+}
