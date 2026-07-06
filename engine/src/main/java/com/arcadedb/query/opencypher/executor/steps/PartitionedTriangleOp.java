@@ -86,19 +86,28 @@ public final class PartitionedTriangleOp implements CountOp {
       partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, nodeCount);
     } else {
       final ExecutorService executor = QueryEngineManager.getInstance().getExecutorService();
-      final Future<?>[] futures = new Future<?>[threadCount];
+      final Future<?>[] futures = new Future<?>[threadCount - 1];
       final int chunkSize = (nodeCount + threadCount - 1) / threadCount;
-      for (int t = 0; t < threadCount; t++) {
+      int launched = 0;
+      for (int t = 1; t < threadCount; t++) {
         final int start = t * chunkSize;
         final int end = Math.min(start + chunkSize, nodeCount);
+        if (start >= nodeCount)
+          break;
         final int threadIdx = t;
-        futures[t] = executor.submit(() ->
+        futures[launched++] = executor.submit(() ->
             partialCounts[threadIdx] = countRange(knowsView, nbrs, personPartition, start, end));
       }
+      // #4952: the calling thread runs chunk 0 itself (same discipline as GraphAlgorithms.parallelForRange)
+      // instead of submitting ALL chunks and blocking. Submitting everything meant that, when this operator
+      // was reached from a pool thread (or with the pool full of blocked producers), the caller waited on
+      // tasks queued behind threads that were themselves waiting: a pool-starvation deadlock only mitigated
+      // by the bounded queue's caller-runs rejection.
+      partialCounts[0] = countRange(knowsView, nbrs, personPartition, 0, Math.min(chunkSize, nodeCount));
       // #4951: awaitFutures throws on interrupt (cancelling the outstanding chunks) instead of returning,
       // so a killed/timed-out query can never sum partial (and still-being-written) partialCounts as a
       // complete answer.
-      GraphAlgorithms.awaitFutures(futures, futures.length);
+      GraphAlgorithms.awaitFutures(futures, launched);
     }
 
     long total = 0;

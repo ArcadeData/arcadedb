@@ -208,6 +208,42 @@ that could starve the very snapshot resync meant to heal the node.
   shadows committed RIDs whose key equals an uncommitted entry's key - is tracked in
   [#5055](https://github.com/ArcadeData/arcadedb/issues/5055).
 
+- **Pool discipline, TimeSeries threading and low-severity storage/WAL/LSM cleanups (2026-07 audit).**
+  The partitioned triangle-count operator now runs chunk 0 on the calling thread instead of submitting
+  every chunk to the shared query pool and blocking on all of them - the same caller-runs-chunk-0
+  discipline as `parallelForRange`, removing a pool-starvation deadlock risk when the operator is reached
+  from a pool thread ([#4952](https://github.com/ArcadeData/arcadedb/issues/4952)).
+  `TimeSeriesEngine.appendBatch` no longer dispatches shard writes to the shard executor when the calling
+  thread has an enclosing transaction open - each TS-Shard thread ran with its own fresh transaction,
+  publishing the shard pages out of band with the enclosing commit and, under HA, reordering the page
+  versions on the Raft log; the per-shard sub-batches are now written sequentially in-thread in that case,
+  honoring the `appendSamples` threading contract
+  ([#4957](https://github.com/ArcadeData/arcadedb/issues/4957)). Low-severity storage/WAL cleanups
+  ([#4958](https://github.com/ArcadeData/arcadedb/issues/4958)): the WAL read/write helpers now loop until
+  complete with per-call buffers (a partial read decoded stale garbage from a shared buffer; a partial
+  write left a torn record the gap detector then flagged as corruption); a corrupt per-page WAL header can
+  no longer trigger a ~2GB transient allocation during recovery (the declared delta is clamped to the
+  remaining file size - before, the resulting `OutOfMemoryError` escaped the recovery guard entirely);
+  `TransactionManager.getStats()` no longer inflates its totals with polling frequency and no longer NPEs
+  on read-only databases; the page cache-miss counter is actually incremented (it stayed at ~0 forever, so
+  the hit/miss ratio was meaningless); a nested `suspendFlushAndExecute` (snapshot during backup) now runs
+  the inner callback under the outer suspension instead of silently skipping it; WAL files preserved by an
+  aborted recovery are renamed to `.wal.corrupt` and the WAL pool counter is seeded past existing files,
+  so preserved content is never adopted as an active WAL (appending new transactions after corrupt bytes)
+  nor replayed again; per-bucket free-space statistics now measure the usable content region (not the
+  physical page size) and their counters are thread-safe. Low-severity LSM cleanups
+  ([#4960](https://github.com/ArcadeData/arcadedb/issues/4960)): `BufferBloomFilter` (not yet wired into
+  the read path) hardened before use - the bit index can no longer land one bit past the region, `add` is
+  atomic (a dropped bit is a false negative, the one failure a bloom filter must never have) and two
+  probes are derived from the 64-bit Murmur halves; the LSM mutable-index reference is now `volatile`
+  (unlocked readers could observe a stale or partially published instance after a compaction swap);
+  `close()` now cancels a scheduled-but-not-started compaction instead of silently doing nothing and logs
+  loudly when an in-progress compaction blocks the close; `splitIndex` verifies the new-file lock outcome
+  instead of ignoring it. Items deliberately left open on #4958/#4960 with reasoning on the issues: the
+  `activeWALFilePool` element publication (needs an `AtomicReferenceArray` refactor of a conflict-heavy
+  file), the `currentMutablePages` reload undercount (pre-existing TODO affecting only compaction pacing)
+  and the descending duplicate-run cursor rescan (perf-only).
+
 ### Improvements
 
 - **HA: throttled diverged-follower resync logging.** When a follower detects a WAL page-version gap it

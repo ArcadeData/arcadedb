@@ -20,6 +20,21 @@ package com.arcadedb.engine;
 
 import com.arcadedb.database.Binary;
 
+/**
+ * Bloom filter over a caller-provided {@link Binary} region of {@code slots} bits.
+ * <p>
+ * #4960 hardening (before wiring into the LSM read path):
+ * <ul>
+ *   <li>the bit index is always reduced modulo {@code capacity}: the previous conditional reduction let
+ *   a hash equal to {@code capacity} address one bit PAST the region, corrupting the adjacent byte of
+ *   the shared buffer;</li>
+ *   <li>{@link #add} is synchronized: the unsynchronized read-modify-write on shared bytes could drop a
+ *   concurrently-set bit, turning into a FALSE NEGATIVE - the one failure a bloom filter must never
+ *   have. {@link #mightContain} stays lock-free (a filter is built, then published for reading);</li>
+ *   <li>two probes (k=2) are derived from the two halves of the 64-bit Murmur hash instead of a single
+ *   32-bit probe, roughly halving the false-positive exponent at the same size.</li>
+ * </ul>
+ */
 public class BufferBloomFilter {
   private final Binary buffer;
   private final int    hashSeed;
@@ -33,27 +48,30 @@ public class BufferBloomFilter {
     this.capacity = slots;
   }
 
-  public void add(final int value) {
-    final int[] result = compute(value);
-    final byte v = buffer.getByte(result[0]);
-    buffer.putByte(result[0], (byte) (v | (1 << result[1])));
+  public synchronized void add(final int value) {
+    final long hash = hash64(value);
+    setBit(Math.floorMod((int) (hash >>> 32), capacity));
+    setBit(Math.floorMod((int) hash, capacity));
   }
 
   public boolean mightContain(final int value) {
-    final int[] result = compute(value);
-    final byte v = buffer.getByte(result[0]);
-    return ((v >> result[1]) & 1) == 1;
+    final long hash = hash64(value);
+    return testBit(Math.floorMod((int) (hash >>> 32), capacity)) && testBit(Math.floorMod((int) hash, capacity));
   }
 
-  private int[] compute(final int value) {
+  private long hash64(final int value) {
     final byte[] b = new byte[] { (byte) (value >>> 24), (byte) (value >>> 16), (byte) (value >>> 8), (byte) value };
-    final int hash = MurmurHash.hash32(b, 4, hashSeed);
-    final int h = hash != Integer.MIN_VALUE ? Math.abs(hash) : Integer.MAX_VALUE;
+    return MurmurHash.hash64(b, 4, hashSeed);
+  }
 
-    final int bit2change = h > capacity ? h % capacity : h;
-    final int byte2change = bit2change / 8;
-    final int bitInByte2change = bit2change % 8;
+  private void setBit(final int bit) {
+    final int byte2change = bit / 8;
+    final byte v = buffer.getByte(byte2change);
+    buffer.putByte(byte2change, (byte) (v | (1 << (bit % 8))));
+  }
 
-    return new int[] { byte2change, bitInByte2change };
+  private boolean testBit(final int bit) {
+    final byte v = buffer.getByte(bit / 8);
+    return ((v >> (bit % 8)) & 1) == 1;
   }
 }
