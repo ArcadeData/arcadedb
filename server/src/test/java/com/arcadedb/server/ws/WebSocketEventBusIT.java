@@ -20,8 +20,10 @@ package com.arcadedb.server.ws;
 
 import com.arcadedb.graph.MutableVertex;
 import com.arcadedb.log.LogManager;
+import com.arcadedb.serializer.json.JSONArray;
 import com.arcadedb.serializer.json.JSONObject;
 import com.arcadedb.server.BaseGraphServerTest;
+import com.arcadedb.server.security.ServerSecurity;
 import com.arcadedb.utility.CallableNoReturn;
 
 import org.awaitility.Awaitility;
@@ -368,6 +370,64 @@ class WebSocketEventBusIT extends BaseGraphServerTest {
         assertThat(client.popMessage(500)).isNull();
       }
     }, "unsubscribeDatabaseWorks");
+  }
+
+  @Test
+  void subscribeToUnauthorizedDatabaseIsRejected() throws Throwable {
+    // ISSUE #5021: the WebSocket change-stream authenticated the user only during the HTTP handshake and
+    // then dropped the identity, so any authenticated user could subscribe to (and stream the full record
+    // contents of) a database they had no rights to read. After the fix the SUBSCRIBE must be rejected with
+    // an error frame and zero change events must be delivered for the unauthorized database.
+    execute(() -> {
+      final ServerSecurity security = getServer(0).getSecurity();
+      final String user = "eve";
+      final String password = "evepassword";
+      // eve is a valid user (handshake succeeds) but is authorized only for an unrelated database.
+      security.createUser(new JSONObject().put("name", user).put("password", security.encodePassword(password))
+          .put("databases", new JSONObject().put("otherdb", new JSONArray(new String[] { "admin" }))));
+      try {
+        try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", user, password)) {
+          final var result = new JSONObject(client.send(buildActionMessage("subscribe", "graph")));
+          assertThat(result.get("result")).isEqualTo("error");
+          assertThat(result.getString("error", "")).contains("Security");
+
+          // A change in the unauthorized database must not reach eve.
+          getServerDatabase(0, "graph").newVertex("V1").set("name", "secret").save();
+          assertThat(client.popMessage(1000)).isNull();
+        }
+      } finally {
+        security.dropUser(user);
+      }
+    }, "subscribeToUnauthorizedDatabaseIsRejected");
+  }
+
+  @Test
+  void subscribeToAuthorizedDatabaseWorksForNonRootUser() throws Throwable {
+    // ISSUE #5021 (no-regression): a non-root user explicitly authorized for the database must still be able
+    // to subscribe and receive change events.
+    execute(() -> {
+      final ServerSecurity security = getServer(0).getSecurity();
+      final String user = "alice";
+      final String password = "alicepassword";
+      security.createUser(new JSONObject().put("name", user).put("password", security.encodePassword(password))
+          .put("databases", new JSONObject().put("graph", new JSONArray(new String[] { "admin" }))));
+      try {
+        try (final var client = new WebSocketClientHelper("ws://localhost:2480/ws", user, password)) {
+          final var result = new JSONObject(client.send(buildActionMessage("subscribe", "graph")));
+          assertThat(result.get("result")).isEqualTo("ok");
+
+          getServerDatabase(0, "graph").newVertex("V1").set("name", "test").save();
+
+          final var json = getJsonMessageOrFail(client);
+          assertThat(json.get("changeType")).isEqualTo("create");
+          final var record = json.getJSONObject("record");
+          assertThat(record.get("name")).isEqualTo("test");
+          assertThat(record.get("@type")).isEqualTo("V1");
+        }
+      } finally {
+        security.dropUser(user);
+      }
+    }, "subscribeToAuthorizedDatabaseWorksForNonRootUser");
   }
 
   private static String buildActionMessage(final String action, final String database) {
