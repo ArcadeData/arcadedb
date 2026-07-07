@@ -374,6 +374,20 @@ that could starve the very snapshot resync meant to heal the node.
   the `activeWALFilePool` element publication (needs an `AtomicReferenceArray` refactor of a
   conflict-heavy file), the `createNewPage` rollback counter drift and the descending duplicate-run
   cursor rescan (perf-only).
+- **Storage: flush suspension is refcounted - overlapping backup/verify/snapshot each own their window
+  (2026-07 audit follow-up).** `suspendFlushAndExecute` ownership was first-caller-wins: with two
+  concurrent suspenders on the same database (SQL `BACKUP DATABASE`, the HA verify endpoint, HA snapshot
+  serving - any combination), only the FIRST caller owned the suspend flag while the other still streamed
+  the database files. The non-owner skipped the wait for the in-flight flush batch (so it could read a
+  page mid-write) and, worse, kept streaming while the owner's exit synchronously flushed the deferred
+  batches to disk - torn reads either way. The suspension is now a per-database REFCOUNT: flushing stays
+  suspended while the count is above zero and resumes (deferred batches flushed) only when the LAST
+  suspender exits, so every caller legitimately owns its whole window; a new suspender arriving while the
+  last exit is mid-way through the deferred-batch writes waits until that resume completes. The #4728
+  deferred-RAM backpressure accounting is unchanged, and the HA snapshot endpoint keeps its per-database
+  serialization (no longer needed for correctness, retained to serialize same-database zip streams and
+  keep each suspension window - and therefore the deferred backlog - short)
+  ([#5068](https://github.com/ArcadeData/arcadedb/issues/5068)).
 - **Transaction commit cleanups (2026-07 audit).** A phase-2 commit failure that happens BEFORE the
   transaction reaches the WAL now restores user-held record state like a phase-1 failure does (rollback):
   records created in the failed transaction get their optimistically-assigned RID reset to provisional and
