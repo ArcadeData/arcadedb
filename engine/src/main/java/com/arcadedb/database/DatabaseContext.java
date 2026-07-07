@@ -234,6 +234,9 @@ public class DatabaseContext extends ThreadLocal<Map<String, DatabaseContext.Dat
    * re-enter this class on the sweeping thread (record reloads resolve the sweeper's own transaction context);
    * that is safe because the dead entry is atomically claimed and unlinked before the rollbacks start and the
    * CONTEXTS traversal is weakly consistent.
+   * A rollback can also re-enter init() and, on the 1000th call, trigger a NESTED full sweep - safe for the
+   * same reasons (weakly-consistent traversal + the atomic claim: a nested sweep cannot double-roll-back a
+   * claimed entry), noted so the recursion is a documented possibility rather than a surprise.
    * <p>
    * Package-private (instead of private) for tests only.
    */
