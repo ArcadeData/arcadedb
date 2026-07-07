@@ -323,7 +323,7 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
     validateCredentials(credentials, txCtx.db.getName());
 
     final String caller = resolvedUsername(credentials);
-    if (txCtx.owner != null && !txCtx.owner.equals(caller))
+    if (txCtx.principal != null && !txCtx.principal.equals(caller))
       throw Status.PERMISSION_DENIED.withDescription("Transaction is owned by another user").asRuntimeException();
   }
 
@@ -1460,6 +1460,12 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
       responseObserver.onNext(response);
       responseObserver.onCompleted();
     } catch (Throwable t) {
+      // Release the reserved per-principal slot exactly once (issue #5048, SEC-7). Ownership rules:
+      //  - never registered (failure before the put): we still own the reservation -> release it.
+      //  - registered but responseObserver threw afterwards: release only if WE win the atomic remove; if the reaper
+      //    already reclaimed the (now dead) tx it has already released the slot, so releasing again would drift the
+      //    per-principal counter negative and weaken the cap.
+      boolean releaseSlot = true;
       if (txCtx != null) {
         // If the tx was already registered (e.g. responseObserver.onNext/onCompleted threw after the put, such as on
         // a client cancel), remove it so the reaper does not later reclaim it and release the same per-principal slot
@@ -1468,8 +1474,8 @@ public class ArcadeDbGrpcService extends ArcadeDbServiceGrpc.ArcadeDbServiceImpl
         activeTransactions.remove(txCtx.txId, txCtx);
         txCtx.shutdown();
       }
-      // Release the per-principal slot reserved above exactly once: this transaction never became usable.
-      releasePrincipalSlot(principal);
+      if (releaseSlot)
+        releasePrincipalSlot(principal);
       Throwable cause = t instanceof ExecutionException && t.getCause() != null ? t.getCause() : t;
       LogManager.instance()
           .log(this, Level.FINE, "beginTransaction(): FAILED db=%s user=%s err=%s", reqDb, user != null ? user :

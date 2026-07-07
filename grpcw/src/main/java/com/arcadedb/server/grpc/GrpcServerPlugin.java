@@ -92,11 +92,13 @@ public class GrpcServerPlugin implements ServerPlugin {
   private static final String CONFIG_TX_REAPER_PERIOD_MS = CONFIG_PREFIX + "tx.reaperPeriodMs";
   private static final String CONFIG_MAX_CONCURRENT_TX   = CONFIG_PREFIX + "maxConcurrentTransactions";
   private static final String CONFIG_MAX_CONCURRENT_TX_PER_PRINCIPAL = CONFIG_PREFIX + "maxConcurrentTransactionsPerPrincipal";
+  private static final String CONFIG_MAX_METADATA_SIZE   = CONFIG_PREFIX + "maxMetadataSize";
 
-  // Upper bound on inbound HTTP/2 header (metadata) bytes. Kept small on purpose: gRPC metadata carries only a
-  // handful of short ASCII headers (credentials, database name), so a multi-megabyte cap only serves to invite a
-  // memory-pressure DoS from crafted headers. 16 KiB is generous for legitimate callers (issue #5048, SEC-8).
-  private static final int MAX_INBOUND_METADATA_SIZE = 16 * 1024;
+  // Default upper bound on inbound HTTP/2 header (metadata) bytes. Kept small on purpose: gRPC metadata carries only
+  // a handful of short ASCII headers (credentials, database name), so a multi-megabyte cap only serves to invite a
+  // memory-pressure DoS from crafted headers. 16 KiB is generous for legitimate callers; deployments that forward
+  // large bearer/JWT headers can raise it via grpc.maxMetadataSize (issue #5048, SEC-8).
+  private static final int DEFAULT_MAX_INBOUND_METADATA_SIZE = 16 * 1024;
 
   @Override
   public void configure(ArcadeDBServer server, ContextConfiguration configuration) {
@@ -130,8 +132,15 @@ public class GrpcServerPlugin implements ServerPlugin {
       registerShutdownHook();
 
     } catch (IOException e) {
+      // Tear down anything already started (e.g. in "both" mode the standard server may be up before the XDS server
+      // fails) so a failed startup does not leak a bound port or the gRPC service resources. stopService() is null-safe.
+      stopService();
       LogManager.instance().log(this, Level.SEVERE, "Failed to start gRPC server", e);
       throw new RuntimeException("Failed to start gRPC server", e);
+    } catch (RuntimeException e) {
+      // Same cleanup for fail-closed TLS (SecurityException) and any other runtime failure mid-startup, then rethrow.
+      stopService();
+      throw e;
     }
   }
 
@@ -163,7 +172,7 @@ public class GrpcServerPlugin implements ServerPlugin {
     // Inbound message size is configured by configureServer() from grpc.maxMessageSize; do not override it here with
     // a larger hardcoded value (SEC-8). Only cap the metadata size to a sane bound.
     grpcServer = serverBuilder
-        .maxInboundMetadataSize(MAX_INBOUND_METADATA_SIZE)
+        .maxInboundMetadataSize(getMaxInboundMetadataSize(config))
         .build().start();
 
     // Build status message
@@ -207,7 +216,7 @@ public class GrpcServerPlugin implements ServerPlugin {
 
     // Inbound message size is configured by configureServer() from grpc.maxMessageSize (SEC-8).
     xdsServer = xdsBuilder
-        .maxInboundMetadataSize(MAX_INBOUND_METADATA_SIZE)
+        .maxInboundMetadataSize(getMaxInboundMetadataSize(config))
         .build().start();
 
     LogManager.instance().log(this, Level.INFO, "gRPC XDS server started on port %s (xDS management enabled, TLS %s)",
@@ -470,6 +479,12 @@ public class GrpcServerPlugin implements ServerPlugin {
       }
     }
     return defaultValue;
+  }
+
+  private int getMaxInboundMetadataSize(ContextConfiguration config) {
+    final int value = getConfigInt(config, CONFIG_MAX_METADATA_SIZE, DEFAULT_MAX_INBOUND_METADATA_SIZE);
+    // A non-positive configured value is nonsensical for a byte cap; fall back to the safe default.
+    return value > 0 ? value : DEFAULT_MAX_INBOUND_METADATA_SIZE;
   }
 
   private boolean getConfigBoolean(ContextConfiguration config, String key, boolean defaultValue) {

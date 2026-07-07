@@ -33,6 +33,7 @@ import io.grpc.Metadata;
 import io.grpc.MethodDescriptor;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
@@ -45,6 +46,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * slot, so the cap is reached prematurely, or double-releasing, so the cap can be exceeded). After a full reap cycle
  * the principal's live count must be zero and new transactions must be openable again.
  */
+@Tag("slow")
 public class GrpcTransactionSlotReleaseIT extends BaseGraphServerTest {
 
   private static final int    GRPC_PORT        = 50051;

@@ -33,6 +33,7 @@ import io.grpc.MethodDescriptor;
 import io.grpc.StatusRuntimeException;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 
 import java.util.concurrent.TimeUnit;
@@ -46,6 +47,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  * config was silently ignored and a much larger payload was accepted. With the fix the configured (smaller) limit
  * wins and an oversized request is rejected.
  */
+@Tag("slow")
 public class GrpcInboundMessageSizeIT extends BaseGraphServerTest {
 
   private static final int    GRPC_PORT       = 50051;

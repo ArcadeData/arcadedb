@@ -18,6 +18,7 @@
  */
 package com.arcadedb.remote.grpc;
 
+import com.arcadedb.log.LogManager;
 import com.arcadedb.server.grpc.ArcadeDbAdminServiceGrpc;
 import com.arcadedb.server.grpc.ArcadeDbServiceGrpc;
 import com.arcadedb.server.grpc.CreateDatabaseRequest;
@@ -45,6 +46,8 @@ import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Executor;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.logging.Level;
 
 /**
  * Minimal server-scope gRPC wrapper (HTTP RemoteServer equivalent), implemented
@@ -72,6 +75,8 @@ public class RemoteGrpcServer implements AutoCloseable {
   // When the channel is plaintext, attaching credentials to a call sends the username/password in cleartext on every
   // RPC (issue #5048, SEC-5). Refuse to do that unless the caller explicitly opts in.
   private final boolean                 allowInsecureCredentials;
+  // Emit the insecure-credentials warning at most once per instance to avoid flooding the log on every RPC.
+  private final AtomicBoolean           insecureCredentialsWarned = new AtomicBoolean(false);
 
   private ManagedChannel channel;
   private EventLoopGroup eventLoopGroup;
@@ -112,10 +117,17 @@ public class RemoteGrpcServer implements AutoCloseable {
    * the caller explicitly opted in with {@code allowInsecureCredentials=true}.
    */
   private void ensureCredentialTransportSecurity() {
-    if (plaintext && !allowInsecureCredentials)
+    if (!plaintext)
+      return;
+    if (!allowInsecureCredentials)
       throw new SecurityException(
           "Refusing to send credentials over a plaintext gRPC channel: username/password would travel in cleartext. "
               + "Enable TLS, or explicitly opt in with allowInsecureCredentials=true.");
+    // Opted in: allow it, but warn once so operators are aware credentials are being sent in cleartext.
+    if (insecureCredentialsWarned.compareAndSet(false, true))
+      LogManager.instance().log(this, Level.WARNING,
+          "Attaching credentials to gRPC calls over a PLAINTEXT channel to %s: username/password travel in cleartext. "
+              + "Enable TLS to protect them.", endpoint());
   }
 
   public synchronized void start() {
