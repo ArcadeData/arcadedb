@@ -319,9 +319,13 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // Validate format first
     credentialsValidator.validateCredentials(user, pass);
 
-    // Then authenticate against server security
+    // Then authenticate against server security. Fail closed: treat a null result the same as an
+    // authentication failure so callers never proceed (or reach the role check) unauthenticated.
     try {
-      return server.getSecurity().authenticate(user, pass, null);
+      final ServerSecurityUser authenticatedUser = server.getSecurity().authenticate(user, pass, null);
+      if (authenticatedUser == null)
+        throw new SecurityException("Invalid credentials");
+      return authenticatedUser;
     } catch (ServerSecurityException e) {
       throw new SecurityException("Invalid credentials");
     }
