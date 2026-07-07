@@ -157,6 +157,23 @@ class PostServerCommandHandlerIT extends BaseGraphServerTest {
   }
 
   /**
+   * Issue #5029: the server-command create-user path must enforce the same minimum password length (8)
+   * as the REST create-user path, routed through the shared credentials validator. Passwords of 4-7
+   * characters, previously accepted here, must now be rejected with the correct message.
+   */
+  @Test
+  void createUserRejectsShortPassword() throws Exception {
+    executeServerCommand("DROP USER shortpwuser");
+
+    final HttpResponse<String> response = executeServerCommand("""
+        CREATE USER {"name":"shortpwuser","password":"short"}
+        """);
+
+    assertThat(response.statusCode()).isEqualTo(403);
+    assertThat(response.body()).contains("User password too short");
+  }
+
+  /**
    * Test server setting commands with different case variations
    */
   @ParameterizedTest

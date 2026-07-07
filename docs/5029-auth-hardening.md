@@ -59,3 +59,17 @@ Password brute-forcing is now throttled identically to API tokens; auto-generate
 carry >=128 bits; both create-user paths share one min-length-8 policy; password comparison is
 constant-time. No change to the wire/HTTP contract beyond a stronger generated password and the
 corrected create-user error message.
+
+## Review cycles
+- **Cycle 1** (`f327302e`): Gemini + Claude. Applied: safe-publish of the failure counter (return a
+  fresh `long[]` per update instead of in-place mutation), bounded the failure-map key to a 64-bit
+  SHA-256 prefix of the user name, and guarded `authenticate` against a null stored password.
+- **Cycle 2** (`92a2d369`): Claude (LGTM with suggestions). Applied: hardened `passwordMatch` to return
+  `false` (not throw) on a non-numeric iteration count in a stored hash, added a handler-path
+  regression test asserting the server-command create-user rejects a 7-char password with 403 + "too
+  short", extended the malformed-hash test, and removed the per-cycle `review-deferred-*.md` scratch
+  file (it does not match the repo's durable `docs/` convention; its rationale is captured here).
+- **Deferred / not done (with rationale):** making `MAX_PASSWORD_FAILURES` / `PASSWORD_LOCKOUT_MS`
+  operator-configurable and IP-scoped keying are follow-ups (see the DoS tradeoff above); the issue
+  asks to mirror the hard-coded API-token path. Extracting a shared `recordFailure` helper unifying the
+  token and password paths was left out to avoid modifying the already-tested token code path.

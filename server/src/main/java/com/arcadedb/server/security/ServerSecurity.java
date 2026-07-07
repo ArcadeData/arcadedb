@@ -389,7 +389,13 @@ public class ServerSecurity implements ServerPlugin, SecurityManager {
       // wrong hash format
       return false;
 
-    final int iterations = Integer.parseInt(parts[1]);
+    final int iterations;
+    try {
+      iterations = Integer.parseInt(parts[1]);
+    } catch (final NumberFormatException e) {
+      // malformed iteration count in the stored hash: treat as a non-match rather than throwing
+      return false;
+    }
     final String salt = parts[2];
     final String hash = encodePassword(password, salt, iterations);
 

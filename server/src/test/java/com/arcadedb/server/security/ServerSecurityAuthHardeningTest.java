@@ -112,7 +112,9 @@ class ServerSecurityAuthHardeningTest {
 
     assertThat(security.passwordMatch(PASSWORD, encoded)).isTrue();
     assertThat(security.passwordMatch("wrong-password", encoded)).isFalse();
-    // A malformed stored hash must not match and must not throw.
+    // Malformed stored hashes must not match and must not throw, for either failure mode:
+    // wrong number of '$'-separated parts, or a non-numeric iteration count.
     assertThat(security.passwordMatch(PASSWORD, "not-a-valid-hash")).isFalse();
+    assertThat(security.passwordMatch(PASSWORD, "PBKDF2$notanumber$salt$hash")).isFalse();
   }
 }
