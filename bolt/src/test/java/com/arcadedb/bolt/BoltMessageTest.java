@@ -334,6 +334,16 @@ class BoltMessageTest {
   }
 
   @Test
+  void telemetryMessageCreation() throws Exception {
+    final TelemetryMessage msg = new TelemetryMessage();
+    assertThat(msg.getSignature()).isEqualTo(BoltMessage.TELEMETRY);
+
+    final PackStreamWriter writer = new PackStreamWriter();
+    msg.writeTo(writer);
+    assertThat(writer.toByteArray()).isNotEmpty();
+  }
+
+  @Test
   void routeMessageCreation() throws Exception {
     final RouteMessage msg = new RouteMessage(
         Map.of("region", "us-east"),
@@ -378,6 +388,7 @@ class BoltMessageTest {
     assertThat(BoltMessage.signatureName(BoltMessage.LOGON)).isEqualTo("LOGON");
     assertThat(BoltMessage.signatureName(BoltMessage.LOGOFF)).isEqualTo("LOGOFF");
     assertThat(BoltMessage.signatureName(BoltMessage.ROUTE)).isEqualTo("ROUTE");
+    assertThat(BoltMessage.signatureName(BoltMessage.TELEMETRY)).isEqualTo("TELEMETRY");
   }
 
   @Test
@@ -717,6 +728,19 @@ class BoltMessageTest {
   }
 
   @Test
+  void parseTelemetryMessage() throws Exception {
+    final PackStreamWriter writer = new PackStreamWriter();
+    writer.writeStructureHeader(BoltMessage.TELEMETRY, 1);
+    writer.writeInteger(0); // API code, ignored by the server
+
+    final PackStreamReader reader = new PackStreamReader(writer.toByteArray());
+    final PackStreamReader.StructureValue struct = (PackStreamReader.StructureValue) reader.readValue();
+    final BoltMessage msg = BoltMessage.parse(struct);
+
+    assertThat(msg).isInstanceOf(TelemetryMessage.class);
+  }
+
+  @Test
   void parseUnknownSignatureThrowsException() throws Exception {
     final PackStreamWriter writer = new PackStreamWriter();
     writer.writeStructureHeader((byte) 0xFF, 0);
@@ -749,5 +773,6 @@ class BoltMessageTest {
     assertThat(new LogonMessage(Map.of()).toString()).contains("LOGON");
     assertThat(new LogoffMessage().toString()).contains("LOGOFF");
     assertThat(new RouteMessage(Map.of(), List.of(), "db").toString()).contains("ROUTE");
+    assertThat(new TelemetryMessage().toString()).contains("TELEMETRY");
   }
 }

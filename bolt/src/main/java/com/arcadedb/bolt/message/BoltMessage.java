@@ -47,6 +47,9 @@ public abstract class BoltMessage {
   public static final byte LOGOFF = 0x6B;
   public static final byte ROUTE  = 0x66;
 
+  // Additional request signature for BOLT 5.4
+  public static final byte TELEMETRY = 0x54;
+
   // Response message signatures
   public static final byte SUCCESS = 0x70;
   public static final byte RECORD  = 0x71;
@@ -89,6 +92,7 @@ public abstract class BoltMessage {
       case LOGON -> parseLogon(fields);
       case LOGOFF -> new LogoffMessage();
       case ROUTE -> parseRoute(fields);
+      case TELEMETRY -> new TelemetryMessage();
       default -> throw new IOException("Unknown message signature: 0x" + Integer.toHexString(sig & 0xFF));
     };
   }
@@ -169,6 +173,7 @@ public abstract class BoltMessage {
       case LOGON -> "LOGON";
       case LOGOFF -> "LOGOFF";
       case ROUTE -> "ROUTE";
+      case TELEMETRY -> "TELEMETRY";
       default -> "UNKNOWN(0x" + Integer.toHexString(sig & 0xFF) + ")";
     };
   }

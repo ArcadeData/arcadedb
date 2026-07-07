@@ -263,6 +263,54 @@ class BoltStructureTest {
     assertThat(str).contains("relationships=1");
   }
 
+  @Test
+  void nodeWritesElementIdOnBolt5() throws Exception {
+    final BoltNode node = new BoltNode(1L, List.of("Person"), Map.of("name", "Alice"), "#1:0");
+
+    final PackStreamWriter v4 = new PackStreamWriter();
+    node.writeTo(v4);
+    // Tiny-struct marker: 0xB0 | fieldCount. v4 => 3 fields, signature 0x4E.
+    assertThat(v4.toByteArray()[0]).isEqualTo((byte) (0xB0 | 3));
+    assertThat(v4.toByteArray()[1]).isEqualTo(BoltNode.SIGNATURE);
+
+    final PackStreamWriter v5 = new PackStreamWriter().boltMajorVersion(5);
+    node.writeTo(v5);
+    assertThat(v5.toByteArray()[0]).isEqualTo((byte) (0xB0 | 4));
+    assertThat(v5.toByteArray()[1]).isEqualTo(BoltNode.SIGNATURE);
+    // Last field is the element_id string "#1:0" -> tiny-string 0x84 then ASCII bytes.
+    final byte[] b = v5.toByteArray();
+    assertThat(b[b.length - 5]).isEqualTo((byte) (0x80 | 4));
+    assertThat(new String(b, b.length - 4, 4, java.nio.charset.StandardCharsets.UTF_8)).isEqualTo("#1:0");
+  }
+
+  @Test
+  void relationshipWritesElementIdsOnBolt5() throws Exception {
+    final BoltRelationship rel = new BoltRelationship(10L, 1L, 2L, "KNOWS", Map.of(), "#10:0", "#1:0", "#2:0");
+
+    final PackStreamWriter v4 = new PackStreamWriter();
+    rel.writeTo(v4);
+    assertThat(v4.toByteArray()[0]).isEqualTo((byte) (0xB0 | 5));
+
+    final PackStreamWriter v5 = new PackStreamWriter().boltMajorVersion(5);
+    rel.writeTo(v5);
+    assertThat(v5.toByteArray()[0]).isEqualTo((byte) (0xB0 | 8));
+    assertThat(v5.toByteArray()[1]).isEqualTo(BoltRelationship.SIGNATURE);
+  }
+
+  @Test
+  void unboundRelationshipWritesElementIdOnBolt5() throws Exception {
+    final BoltUnboundRelationship rel = new BoltUnboundRelationship(10L, "KNOWS", Map.of(), "#10:0");
+
+    final PackStreamWriter v4 = new PackStreamWriter();
+    rel.writeTo(v4);
+    assertThat(v4.toByteArray()[0]).isEqualTo((byte) (0xB0 | 3));
+
+    final PackStreamWriter v5 = new PackStreamWriter().boltMajorVersion(5);
+    rel.writeTo(v5);
+    assertThat(v5.toByteArray()[0]).isEqualTo((byte) (0xB0 | 4));
+    assertThat(v5.toByteArray()[1]).isEqualTo(BoltUnboundRelationship.SIGNATURE);
+  }
+
   // ============ BoltStructureMapper tests ============
 
   @Test

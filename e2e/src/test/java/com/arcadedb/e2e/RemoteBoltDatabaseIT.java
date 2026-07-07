@@ -695,20 +695,16 @@ class RemoteBoltDatabaseIT extends ArcadeContainerTemplate {
     @DisplayName("[PROTO-002] Bolt 5.x negotiation is supported")
     void proto002_bolt5() {
       // Assert on the version actually negotiated with the pinned (5.x-capable)
-      // driver. The server advertises only 3.0/4.0/4.4, so it negotiates 4.4
-      // today and the >= 5.0 assertion fails (documenting the gap). When Bolt
-      // 5.x support is added, the negotiated version rises to 5.x, the assertion
-      // passes, and assertExpectedFailure fails loudly - so this xfail actually
-      // self-closes rather than being a hardcoded marker.
+      // driver. The server now advertises Bolt 5.0-5.4 (in addition to legacy
+      // 3.0/4.0/4.4), so it negotiates a 5.x version with this driver.
       final String negotiated;
       try (final Session s = boltSession()) {
         negotiated = s.run("RETURN 1").consume().server().protocolVersion();
       }
       // Compare on the integer major so 5.10 is not mis-parsed (Double would
-      // read it as 5.1); parsing happens outside the xfail so a null/non-numeric
-      // value surfaces as a real error rather than a false "gap present".
+      // read it as 5.1).
       final int major = Integer.parseInt(negotiated.split("\\.")[0]);
-      assertExpectedFailure("#4890", () -> assertThat(major).isGreaterThanOrEqualTo(5));
+      assertThat(major).isGreaterThanOrEqualTo(5);
     }
 
     @Test
