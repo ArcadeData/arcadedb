@@ -250,7 +250,9 @@ that could starve the very snapshot resync meant to heal the node.
   rollback (double unlock, concurrent record reloads on shared caches); the sweep additionally claims each
   per-database context with a value-keyed remove, closing the same double-rollback race against
   `closeInternal`'s `removeAllContexts()` (which rolls back foreign contexts under the DB write lock the
-  sweep does not take).
+  sweep does not take); the lazy requester capture is now an explicit `captureRequester()` invoked only
+  from the lock-acquisition paths, with `getRequester()` a pure read for the release paths, so a future
+  non-owner call can no longer pin the wrong lock identity (structural guard for the #4941 invariant).
 - **Transaction commit cleanups (2026-07 audit).** A phase-2 commit failure that happens BEFORE the
   transaction reaches the WAL now restores user-held record state like a phase-1 failure does (rollback):
   records created in the failed transaction get their optimistically-assigned RID reset to provisional and
