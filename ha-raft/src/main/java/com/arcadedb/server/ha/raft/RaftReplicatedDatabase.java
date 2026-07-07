@@ -447,6 +447,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
           getSchema().getEmbedded().saveConfiguration();
       } catch (final Exception e) {
         LogManager.instance().log(this, Level.SEVERE, phase2CommitFailureMessage(e), getName(), payload.tx(), e.getMessage());
+        // NOTE (#5075 review): this catch also fires when commit2ndPhase SUCCEEDED and only the
+        // saveConfiguration() after it threw. Reconciling then replays the payload WAL against pages the
+        // commit already published - safe by the #4926 replay semantics: an equal-version entry re-applies
+        // the same absolute bytes (idempotent), a lower-version one is skipped.
         final boolean reconciled = reconcileLeaderPagesAfterPhase2Failure(payload);
         recoverLeadershipAfterPhase2Failure(payload.tx().toString());
         // #5064: the user must be able to distinguish 'retry me' from 'already committed cluster-wide'.
