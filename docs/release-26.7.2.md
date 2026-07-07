@@ -311,10 +311,16 @@ that could starve the very snapshot resync meant to heal the node.
   task left in its queue instead of `queue.clear()`-ing them (threads blocked in `scanType()` /
   `waitCompletion()` hung forever), and `close()` no longer blocks unbounded on `queue.put(FORCE_EXIT)`
   under the lifecycle lock when a busy worker's queue is full - the marker is offered with a timeout,
-  the worker is interrupted on failure, and a worker still alive after the 10s grace period (e.g. one
-  that consumed the marker while help-waiting on a wedged peer's full queue) is escalated to an
-  interrupt and re-joined instead of being left running behind a returned `close()`
-  ([#4954](https://github.com/ArcadeData/arcadedb/issues/4954)).
+  the worker is interrupted on failure, and a worker still alive after the 10s grace period is
+  escalated to an interrupt and re-joined instead of being left running behind a returned `close()`
+  ([#4954](https://github.com/ArcadeData/arcadedb/issues/4954)). Follow-up hardening on the helping
+  loop itself: a worker handing off a cross-slot task to a wedged-alive peer while its OWN queue is
+  empty (so the deferral budget cannot grow) no longer spins forever - the same 60s progress-gated
+  backstop aborts the hand-off loudly via `onError` and the worker keeps serving its queue (failure mode
+  when this trips on a bidirectional-edge follow-up: the outgoing direction is already persisted while the
+  dropped follow-up carried the incoming link - a PARTIAL edge until the operation is repeated); and a
+  worker that consumed the shutdown marker while help-waiting now abandons the hand-off immediately,
+  so `close()` returns within one offer window on that path instead of waiting out the grace period.
   Low-severity cleanups from the same audit: async executor settings (`parallelLevel`, `commitEvery`,
   back-pressure, callbacks) are now `volatile` so post-startup changes reach the workers,
   `setCommitEvery(0)` is rejected instead of making every task fail on `count % 0`, the JVM-wide query
