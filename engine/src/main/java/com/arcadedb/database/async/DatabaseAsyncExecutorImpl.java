@@ -440,6 +440,8 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
         while (true) {
           final long remaining = timeout - (System.currentTimeMillis() - beginTime);
           if (remaining <= 0)
+            // #5062 review r6 (point 3): NOT A LEAK - markers already enqueued on earlier workers
+            // simply execute and count down a latch nobody awaits anymore.
             return false;
           if (threads[i].queue.offer(semaphores[i], Math.min(500, remaining), TimeUnit.MILLISECONDS))
             break;
@@ -1144,12 +1146,16 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
    * <p>
    * The parked backlog is capped at the queue capacity: past it the method gives up (returns false)
    * and the caller falls back to the bounded wait with stall detection, restoring queue-full
-   * backpressure on producers. There is deliberately NO liveness detector here beyond target death
-   * (#5062 review, point 2): a target wedged forever in user code is indistinguishable from one
-   * busy on a legitimately slow task, and throwing out of a worker mid-task rolls back its commit
-   * batch and silently drops the follow-up, which is the exact #4953 defect. As long as the target
-   * is alive it either progresses (offer eventually lands) or is itself parked cross-slot, in which
-   * case draining resolves the cycle or the budget above fails over to the detecting wait.
+   * backpressure on producers. A cheap-trigger liveness detector is deliberately absent: over short
+   * horizons a target busy on a legitimately slow task is indistinguishable from a wedged one, and
+   * throwing out of a worker mid-task rolls back its commit batch and drops the follow-up, which is
+   * the exact #4953 defect. Two bounded escapes exist nevertheless (#5062 review r6): with an EMPTY
+   * own queue the deferral budget can never grow, so a wedged-alive peer is covered by the same
+   * progress-gated {@code STALLED_NO_PROGRESS_WINDOWS} backstop as the producer path, failing the
+   * hand-off loudly (onError + batch rollback; the worker itself survives and keeps serving its
+   * queue) instead of spinning forever; and once {@code forceShutdown} is observed the hand-off is
+   * abandoned immediately, so close() does not sit out the grace period waiting for the interrupt
+   * escalation.
    *
    * @return true if the task was handed to the target queue, false if the deferral budget is
    * exhausted and the caller must fall back to the bounded wait of {@code offerWaiting}.
@@ -1159,7 +1165,18 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
     final boolean prevWaiting = self.waitingCrossSlotOffer;
     self.waitingCrossSlotOffer = true;
     try {
+      long observedCompleted = target.completedTaskCount;
+      long windowStart = System.currentTimeMillis();
+      int windowsWithoutProgress = 0;
       while (true) {
+        // #5062 review r6 (point 2): consuming FORCE_EXIT below only sets the flag; keeping the
+        // hand-off alive on a possibly wedged peer would make close() pay the whole grace period
+        // before the interrupt escalation. Dropping the follow-up loudly at shutdown is fine - the
+        // workers are dying - and matches the target-dead branch below.
+        if (self.forceShutdown)
+          throw new DatabaseOperationException(
+              "Async executor has been shut down; cannot schedule asynchronous task " + task);
+
         // SHORT WINDOW WHEN THERE IS OWN WORK TO DRAIN, LONGER WHEN IDLE TO AVOID SPINNING. THE 1MS
         // WINDOW IS INTENTIONALLY AGGRESSIVE: EVERY ITERATION FREES A SLOT THE PARKED PEER MAY BE
         // WAITING ON, AND THE LOOP IS BOUNDED BY THE DEFERRAL BUDGET BELOW
@@ -1171,6 +1188,28 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
           throw new DatabaseOperationException(
               "Async executor has been shut down; cannot schedule asynchronous task " + task);
 
+        // #5062 review r6 (point 1): with an empty own queue the deferral budget below never grows,
+        // so a wedged-alive peer would spin this loop forever, silently losing both workers in
+        // normal operation. Same progress-gated bound as the producer-side wedged backstop; only the
+        // long, conservative count is used because aborting the hand-off costs the current task's
+        // batch (onError + rollback) - a peer parked on a slow chain is outlived as long as its
+        // individual tasks stay under STALLED_NO_PROGRESS_WINDOWS windows.
+        final long now = System.currentTimeMillis();
+        if (now - windowStart >= checkForStalledQueuesMaxDelay) {
+          final long nowCompleted = target.completedTaskCount;
+          if (nowCompleted == observedCompleted) {
+            if (++windowsWithoutProgress >= STALLED_NO_PROGRESS_WINDOWS)
+              throw new DatabaseOperationException(
+                  "Asynchronous queue of " + target.getName() + " is stalled: no task completed in the last " + (
+                      STALLED_NO_PROGRESS_WINDOWS * checkForStalledQueuesMaxDelay)
+                      + " ms while handing off a cross-slot task. The worker may be blocked inside a user task or callback");
+          } else {
+            windowsWithoutProgress = 0;
+            observedCompleted = nowCompleted;
+          }
+          windowStart = now;
+        }
+
         if (self.helpDeferredTasks.size() >= self.queueCapacity)
           // DEFERRAL BUDGET EXHAUSTED: STOP EXTENDING THE OWN QUEUE AND FALL BACK TO THE BOUNDED WAIT
           return false;
@@ -1181,8 +1220,9 @@ public class DatabaseAsyncExecutorImpl implements DatabaseAsyncExecutor {
 
         if (own == FORCE_EXIT)
           // GRACEFUL SHUTDOWN REQUESTED WHILE HELPING: THE MARKER IS CONSUMED HERE AND IT IS THE
-          // forceShutdown FLAG (NOT THE MARKER) THAT MAKES THE RUN LOOP EXIT ONCE THE CURRENT TASK
-          // UNWINDS, SO shutdownThreadsLocked'S BOUNDED join() STILL COMPLETES (#5062 review, point 5)
+          // forceShutdown FLAG (NOT THE MARKER) THAT DRIVES THE EXIT - THE NEXT LOOP ITERATION BAILS
+          // OUT AT THE TOP, THE CURRENT TASK UNWINDS LOUDLY AND THE RUN LOOP STOPS ON THE FLAG, SO
+          // shutdownThreadsLocked'S BOUNDED join() COMPLETES WITHOUT THE INTERRUPT ESCALATION
           self.forceShutdown = true;
         else
           self.helpDeferredTasks.addLast(own);
