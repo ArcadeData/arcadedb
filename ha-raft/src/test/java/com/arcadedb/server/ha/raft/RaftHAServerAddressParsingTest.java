@@ -346,4 +346,54 @@ class RaftHAServerAddressParsingTest {
     final var parsed = RaftPeerAddressResolver.parsePeerList("arcadedb-0:2434:2480", 2434);
     assertThat(parsed.peers().get(0).getAddress()).isEqualTo("arcadedb-0:2434");
   }
+
+  @Test
+  void objectFormParsesBoltPort() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:{raft:2434,http:2480,bolt:7687}", 2434);
+    final var peerId = parsed.peers().get(0).getId();
+    assertThat(parsed.boltAddresses()).containsEntry(peerId, "myhost:7687");
+    assertThat(parsed.httpAddresses()).containsEntry(peerId, "myhost:2480");
+  }
+
+  @Test
+  void objectFormWithoutBoltLeavesBoltAddressesEmpty() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:{raft:2434,http:2480}", 2434);
+    assertThat(parsed.boltAddresses()).isEmpty();
+  }
+
+  @Test
+  void positionalFormNeverPopulatesBoltAddresses() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("myhost:2434:2480:7:2490", 2434);
+    assertThat(parsed.boltAddresses()).isEmpty();
+  }
+
+  @Test
+  void namedObjectFormParsesBoltPort() {
+    final var parsed = RaftPeerAddressResolver.parsePeerList("alpha@myhost:{raft:2434,bolt:7690}", 2434);
+    final var peerId = parsed.peers().get(0).getId();
+    assertThat(parsed.boltAddresses()).containsEntry(peerId, "myhost:7690");
+    assertThat(parsed.peerNames()).containsEntry(peerId, "alpha");
+  }
+
+  @Test
+  void unknownObjectKeyStillThrows() {
+    assertThatThrownBy(() -> RaftPeerAddressResolver.parsePeerList("myhost:{raft:2434,ftp:21}", 2434))
+        .isInstanceOf(ServerException.class);
+  }
+
+  @Test
+  void deriveBoltAddressCombinesRaftHostWithBoltPort() {
+    assertThat(RaftHAServer.deriveBoltAddress("db1:2434", 7687)).isEqualTo("db1:7687");
+  }
+
+  @Test
+  void deriveBoltAddressReturnsNullForNonPositivePort() {
+    assertThat(RaftHAServer.deriveBoltAddress("db1:2434", 0)).isNull();
+    assertThat(RaftHAServer.deriveBoltAddress("db1:2434", -1)).isNull();
+  }
+
+  @Test
+  void deriveBoltAddressHandlesIpv6Literal() {
+    assertThat(RaftHAServer.deriveBoltAddress("[::1]:2434", 7687)).isEqualTo("[::1]:7687");
+  }
 }

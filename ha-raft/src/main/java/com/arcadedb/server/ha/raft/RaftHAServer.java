@@ -120,6 +120,11 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   private final    AtomicBoolean           httpFallbackWarned = new AtomicBoolean(false);
   // Logged at most once: notes that peer HTTPS endpoints are derived from this node's local HTTPS port.
   private final    AtomicBoolean           httpsFallbackWarned = new AtomicBoolean(false);
+  // Client-reachable Bolt endpoints (optional object-form 'bolt' field in HA_SERVER_LIST). Advertised
+  // in the Bolt ROUTE routing table so neo4j:// drivers can discover leader/followers.
+  private final    Map<RaftPeerId, String> boltAddresses      = new HashMap<>();
+  // Logged at most once: warns operators that Bolt routing addresses are derived (not explicitly configured).
+  private final    AtomicBoolean           boltFallbackWarned = new AtomicBoolean(false);
   private final    Map<RaftPeerId, String> peerDisplayNames   = new ConcurrentHashMap<>();
   private final    String                  clusterName;
 
@@ -181,6 +186,7 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
 
     this.httpAddresses.putAll(parsed.httpAddresses());
     this.httpsAddresses.putAll(parsed.httpsAddresses());
+    this.boltAddresses.putAll(parsed.boltAddresses());
 
     RaftPeerId resolvedLocalPeerId;
     try {
@@ -1243,6 +1249,36 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
   }
 
   /**
+   * Returns the client-reachable Bolt address (host:boltPort) of the current leader for the Bolt ROUTE
+   * routing table, or {@code null} when the leader is unknown or no Bolt address can be resolved.
+   */
+  public String getLeaderBoltAddress() {
+    return resolveBoltAddress(getLeaderId());
+  }
+
+  /**
+   * Returns a comma-separated list of client-reachable Bolt addresses for every peer except the leader
+   * (or except this node when the leader is unknown), for the reader entries of the Bolt ROUTE routing
+   * table. Peers whose Bolt address cannot be resolved are skipped. Returns an empty string when none.
+   */
+  public String getReplicaBoltAddresses() {
+    final RaftPeerId leaderId = getLeaderId();
+    final RaftPeerId excludeId = leaderId != null ? leaderId : localPeerId;
+    final StringBuilder sb = new StringBuilder();
+    for (final RaftPeer peer : raftGroup.getPeers()) {
+      if (!peer.getId().equals(excludeId)) {
+        final String boltAddr = resolveBoltAddress(peer.getId());
+        if (boltAddr != null) {
+          if (!sb.isEmpty())
+            sb.append(",");
+          sb.append(boltAddr);
+        }
+      }
+    }
+    return sb.toString();
+  }
+
+  /**
    * Resolves the HTTP address (host:port) of a peer. When the peer's HTTP port was declared
    * explicitly in {@link GlobalConfiguration#HA_SERVER_LIST} (the {@code host:raftPort:httpPort}
    * syntax) that value is returned. Otherwise a best-effort address is synthesized by combining the
@@ -1267,6 +1303,43 @@ public class RaftHAServer implements HealthMonitor.HealthTarget {
     if (configured != null)
       return configured;
     return deriveHttpAddressWithWarning(peer.getAddress());
+  }
+
+  /**
+   * Resolves the client-reachable Bolt address (host:boltPort) of a peer. Returns the address declared
+   * with the object-form {@code bolt:} field when present; otherwise derives it from the peer's Raft host
+   * plus this node's local Bolt port. The fallback is correct only for homogeneous deployments where every
+   * node listens on the same Bolt port (e.g. a Kubernetes StatefulSet); a one-time WARNING is logged so
+   * operators declare explicit Bolt ports for heterogeneous clusters. Returns {@code null} when the peer is
+   * unknown or the local Bolt port is unavailable.
+   */
+  private String resolveBoltAddress(final RaftPeerId peerId) {
+    if (peerId == null)
+      return null;
+    final String configured = boltAddresses.get(peerId);
+    if (configured != null)
+      return configured;
+    final int localBoltPort = configuration.getValueAsInteger(GlobalConfiguration.BOLT_PORT);
+    final String derived = deriveBoltAddress(peerRaftAddress(peerId), localBoltPort);
+    if (derived != null && boltFallbackWarned.compareAndSet(false, true))
+      LogManager.instance().log(this, Level.WARNING,
+          "HA Bolt routing addresses are not configured in '%s': deriving peer Bolt endpoints from each peer's Raft host plus this node's Bolt port (%d). "
+              + "This is correct only when every node listens on the same Bolt port (e.g. a Kubernetes StatefulSet). For clusters with heterogeneous "
+              + "Bolt ports, declare them explicitly using the 'host:{raft:..,bolt:..}' object syntax in %s.",
+          GlobalConfiguration.HA_SERVER_LIST.getKey(), localBoltPort, GlobalConfiguration.HA_SERVER_LIST.getKey());
+    return derived;
+  }
+
+  /**
+   * Derives a Bolt address (host:boltPort) by combining a peer's Raft host with the given Bolt port.
+   * Returns {@code null} when the port is not positive or the host cannot be extracted. Package-private
+   * for testing.
+   */
+  static String deriveBoltAddress(final String raftAddress, final int boltPort) {
+    if (boltPort <= 0)
+      return null;
+    final String host = extractHost(raftAddress);
+    return host != null ? host + ":" + boltPort : null;
   }
 
   private String deriveHttpAddressWithWarning(final String raftAddress) {
