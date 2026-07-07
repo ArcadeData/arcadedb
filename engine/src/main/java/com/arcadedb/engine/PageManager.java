@@ -184,9 +184,12 @@ public class PageManager extends LockContext {
     if (flushThread != null) {
       try {
         flushThread.closeAndJoin();
-        flushThread = null;
       } catch (final InterruptedException e) {
         Thread.currentThread().interrupt();
+      } finally {
+        // Null out regardless of interrupt (#5070 review): a stale dead reference with refcount 0 was
+        // harmless (the next startup() overwrites it) but inconsistent.
+        flushThread = null;
       }
     }
 
@@ -471,7 +474,7 @@ public class PageManager extends LockContext {
     final PPageManagerStats stats = new PPageManagerStats();
     stats.maxRAM = maxRAM;
     stats.readCacheRAM = totalReadCacheRAM.get();
-    // readCache and flushThread are populated by configure(), which is called on first DB
+    // readCache and flushThread are populated by startup() (the 0 -> 1 acquire transition), which is called on first DB
     // open. When no database has been opened yet (e.g. a profiler snapshot taken at server
     // startup) they're still null - report empty cache/queue rather than NPE.
     stats.readCachePages = readCache != null ? readCache.size() : 0;
