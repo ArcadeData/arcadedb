@@ -30,6 +30,7 @@ import com.arcadedb.server.ServerDatabase;
 import com.arcadedb.server.ServerPlugin;
 import com.arcadedb.server.http.HttpServer;
 import com.arcadedb.server.security.ServerSecurityException;
+import com.arcadedb.server.security.ServerSecurityUser;
 import com.arcadedb.server.security.credential.CredentialsValidator;
 import io.grpc.Status;
 import io.grpc.stub.StreamObserver;
@@ -147,7 +148,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   public void createDatabase(CreateDatabaseRequest req, StreamObserver<CreateDatabaseResponse> resp) {
 
     try {
-      authenticate(req.getCredentials());
+      requireServerAdmin(authenticate(req.getCredentials()));
 
       final String name = req.getName(); // DB name in proto
       final String type = req.getType(); // "graph" or "document" (logical)
@@ -176,6 +177,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
       }
       resp.onNext(CreateDatabaseResponse.newBuilder().build());
       resp.onCompleted();
+    } catch (AdminAuthorizationException ae) {
+      resp.onError(Status.PERMISSION_DENIED.withDescription(ae.getMessage()).asException());
     } catch (SecurityException se) {
       resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
     } catch (Exception e) {
@@ -188,7 +191,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
     try {
 
-      authenticate(req.getCredentials());
+      requireServerAdmin(authenticate(req.getCredentials()));
 
       final String name = req.getName();
 
@@ -202,6 +205,8 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
 
       resp.onNext(DropDatabaseResponse.newBuilder().build());
       resp.onCompleted();
+    } catch (AdminAuthorizationException ae) {
+      resp.onError(Status.PERMISSION_DENIED.withDescription(ae.getMessage()).asException());
     } catch (SecurityException se) {
       resp.onError(Status.UNAUTHENTICATED.withDescription(se.getMessage()).asException());
     } catch (Exception e) {
@@ -301,7 +306,7 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
   // before the call reaches this handler. This handler-side check is intentionally kept (do not
   // remove it assuming the interceptor covers it) so the service stays safe even if the central
   // gate is ever bypassed or reconfigured.
-  private void authenticate(DatabaseCredentials creds) {
+  private ServerSecurityUser authenticate(DatabaseCredentials creds) {
 
     if (creds == null)
       throw new SecurityException("Authentication required");
@@ -314,11 +319,37 @@ public class ArcadeDbGrpcAdminService extends ArcadeDbAdminServiceGrpc.ArcadeDbA
     // Validate format first
     credentialsValidator.validateCredentials(user, pass);
 
-    // Then authenticate against server security
+    // Then authenticate against server security. Fail closed: treat a null result the same as an
+    // authentication failure so callers never proceed (or reach the role check) unauthenticated.
     try {
-      server.getSecurity().authenticate(user, pass, null);
+      final ServerSecurityUser authenticatedUser = server.getSecurity().authenticate(user, pass, null);
+      if (authenticatedUser == null)
+        throw new SecurityException("Invalid credentials");
+      return authenticatedUser;
     } catch (ServerSecurityException e) {
       throw new SecurityException("Invalid credentials");
+    }
+  }
+
+  /**
+   * Ensures the authenticated caller holds the server-admin (root) role before running a mutating
+   * admin operation such as creating or dropping a database. Authentication (via {@link #authenticate})
+   * proves identity only; without this gate any valid account could create or drop any database.
+   * Mirrors the HTTP {@code PostServerCommandHandler} which restricts server administration to root.
+   */
+  private void requireServerAdmin(final ServerSecurityUser user) {
+    if (user == null || !"root".equals(user.getName()))
+      throw new AdminAuthorizationException("User is not authorized to execute server administration commands");
+  }
+
+  /**
+   * Raised when an authenticated caller lacks the server-admin role. Mapped to
+   * {@code Status.PERMISSION_DENIED} (the caller is authenticated but not authorized), distinct from
+   * the {@code UNAUTHENTICATED} used for authentication failures.
+   */
+  private static final class AdminAuthorizationException extends RuntimeException {
+    AdminAuthorizationException(final String message) {
+      super(message);
     }
   }
 
