@@ -18,6 +18,7 @@
  */
 package com.arcadedb.engine;
 
+import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.log.LogManager;
 
 import java.io.File;
@@ -37,12 +38,25 @@ import java.nio.file.StandardCopyOption;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.logging.Level;
 import java.util.zip.CRC32;
+import java.util.zip.CRC32C;
 
 public class PaginatedComponentFile extends ComponentFile {
+  /**
+   * Extension of the per-page checksum sidecar file (issue #5054): one fixed 8-byte slot per page at offset
+   * {@code pageNumber * 8}, holding the page version (int) followed by the CRC32C of the raw page bytes (int).
+   * The slot is written BEFORE the page bytes on every {@link #write(MutablePage)}, so a persisted slot always
+   * describes the newest attempted write. The extension is NOT in the FileManager whitelist, so both this and
+   * older versions ignore the sidecar when scanning the database directory; a missing or stale sidecar only
+   * disables verification, never breaks anything (see {@code TransactionManager} recovery).
+   */
+  public static final String CHECKSUM_FILE_EXT  = ".pcrc";
+  private static final int   CHECKSUM_SLOT_SIZE = 8;
 
   private                 RandomAccessFile file;
   private                 FileChannel      channel;
   private                 int              pageSize;
+  private volatile        RandomAccessFile checksumFile;
+  private volatile        FileChannel      checksumChannel;
   private static volatile boolean          warningPrinted = false;
 
   /**
@@ -125,6 +139,17 @@ public class PaginatedComponentFile extends ComponentFile {
             Thread.currentThread().interrupt();
         }
       }
+
+      // Make the checksum sidecar durable under the same fsync barrier as the data file (issue #5054): the
+      // WAL-drop path relies on syncFiles() making everything the WAL protects durable, and a stale slot
+      // would otherwise survive the barrier and later look like a torn write to recovery. A failure here is
+      // contained: checksums are advisory (a stale slot degrades to a guarded repair replay at recovery),
+      // and it must not veto the caller's fsync verdict on the DATA file.
+      try {
+        forceChecksumChannel(metaData);
+      } catch (final IOException e) {
+        LogManager.instance().log(this, Level.WARNING, "Error on syncing checksum sidecar of file '%s'", e, fileName);
+      }
     } finally {
       channelLock.readLock().unlock();
     }
@@ -146,12 +171,25 @@ public class PaginatedComponentFile extends ComponentFile {
         file = null;
       }
 
+      closeChecksumFile();
+
     } catch (final IOException e) {
       LogManager.instance().log(this, Level.SEVERE, "Error on closing file %s (id=%d)", e, filePath, fileId);
     } finally {
       this.open = false;
       channelLock.writeLock().unlock();
     }
+  }
+
+  @Override
+  public void drop() throws IOException {
+    super.drop();
+    // Best-effort removal of the checksum sidecar: an orphan sidecar is harmless (nothing scans for it),
+    // but deleting it keeps the database directory clean and avoids a stale sidecar being adopted if a
+    // future file re-uses the exact same name.
+    final File sidecar = new File(filePath + CHECKSUM_FILE_EXT);
+    if (sidecar.exists() && !sidecar.delete())
+      LogManager.instance().log(this, Level.WARNING, "Error on deleting checksum sidecar file '%s'", null, sidecar);
   }
 
   public void rename(final String newFileName) throws IOException {
@@ -177,6 +215,19 @@ public class PaginatedComponentFile extends ComponentFile {
       }
       try {
         Files.move(osFile.getAbsoluteFile().toPath(), newFile.getAbsoluteFile().toPath(), StandardCopyOption.ATOMIC_MOVE);
+
+        // Carry the checksum sidecar along (issue #5054). Best-effort: on failure the old sidecar is removed
+        // so a stale one can never be matched against the renamed file's future content.
+        final File oldSidecar = new File(filePath + CHECKSUM_FILE_EXT);
+        if (oldSidecar.exists())
+          try {
+            Files.move(oldSidecar.toPath(), new File(newFile.getAbsolutePath() + CHECKSUM_FILE_EXT).toPath(),
+                StandardCopyOption.REPLACE_EXISTING);
+          } catch (final IOException e) {
+            LogManager.instance().log(this, Level.WARNING, "Error on renaming checksum sidecar file '%s'", e, oldSidecar);
+            oldSidecar.delete();
+          }
+
         open(newFile.getAbsolutePath(), mode);
       } catch (Exception e) {
         open(filePath, mode);
@@ -256,6 +307,23 @@ public class PaginatedComponentFile extends ComponentFile {
 
       // NO NEED TO SYNCHRONIZE THE BUFFER BECAUSE MUTABLE PAGES ARE NOT SHARED
       buffer.clear();
+
+      // Write the checksum slot BEFORE the page bytes (issue #5054): a persisted slot always describes the
+      // newest attempted write, so recovery can tell a torn page (slot version <= disk version, CRC mismatch)
+      // from an intact one. A failure here must never fail the flush: checksums are advisory, and a stale slot
+      // degrades to a guarded repair replay at recovery, never to data loss.
+      if (mode == MODE.READ_WRITE && GlobalConfiguration.PAGE_CHECKSUM.getValueAsBoolean())
+        try {
+          final CRC32C crc = new CRC32C();
+          crc.update(buffer);
+          buffer.clear();
+          writeChecksumSlot(pageNumber, buffer.getInt(0), (int) crc.getValue());
+        } catch (final IOException e) {
+          LogManager.instance()
+              .log(this, Level.WARNING, "Error on writing checksum slot for page %d of file '%s'", e, pageNumber, fileName);
+          buffer.clear();
+        }
+
       try {
         long pos = page.getPhysicalSize() * (long) pageNumber;
         while (buffer.hasRemaining())
@@ -364,6 +432,113 @@ public class PaginatedComponentFile extends ComponentFile {
       }
     } finally {
       channelLock.readLock().unlock();
+    }
+  }
+
+  /**
+   * Reads the checksum slot of a page from the sidecar file (issue #5054).
+   *
+   * @return {@code -1} when no slot is available (sidecar missing, shorter than the slot offset, or the slot
+   *     was never written); otherwise the page version in the high 32 bits and the CRC32C in the low 32 bits.
+   */
+  public long readPageChecksum(final int pageNumber) throws IOException {
+    final FileChannel c = getChecksumChannel(false);
+    if (c == null)
+      return -1L;
+
+    final long pos = (long) pageNumber * CHECKSUM_SLOT_SIZE;
+    if (pos + CHECKSUM_SLOT_SIZE > c.size())
+      return -1L;
+
+    final ByteBuffer slot = ByteBuffer.allocate(CHECKSUM_SLOT_SIZE);
+    long readPos = pos;
+    while (slot.hasRemaining()) {
+      final int r = c.read(slot, readPos);
+      if (r < 0)
+        return -1L;
+      readPos += r;
+    }
+
+    final int version = slot.getInt(0);
+    if (version <= 0)
+      // NEVER-WRITTEN SLOT (SPARSE ZEROS) OR INVALID: FLUSHED PAGES ALWAYS HAVE VERSION >= 1
+      return -1L;
+
+    return ((long) version << 32) | (slot.getInt(4) & 0xffffffffL);
+  }
+
+  private void writeChecksumSlot(final int pageNumber, final int version, final int crc) throws IOException {
+    final FileChannel c = getChecksumChannel(true);
+    final ByteBuffer slot = ByteBuffer.allocate(CHECKSUM_SLOT_SIZE);
+    slot.putInt(version);
+    slot.putInt(crc);
+    slot.flip();
+    long pos = (long) pageNumber * CHECKSUM_SLOT_SIZE;
+    while (slot.hasRemaining())
+      pos += c.write(slot, pos);
+  }
+
+  /**
+   * Lazily opens the checksum sidecar channel. Lazy on purpose: it doubles the file-descriptor count only for
+   * files that are actually written (or verified during recovery), not for every component file at startup.
+   */
+  private FileChannel getChecksumChannel(final boolean createIfAbsent) throws IOException {
+    final FileChannel c = checksumChannel;
+    if (c != null && c.isOpen())
+      return c;
+
+    synchronized (this) {
+      if (checksumChannel != null && checksumChannel.isOpen())
+        return checksumChannel;
+
+      final File sidecar = new File(filePath + CHECKSUM_FILE_EXT);
+      if (!createIfAbsent && !sidecar.exists())
+        return null;
+
+      checksumFile = new RandomAccessFile(sidecar, mode == MODE.READ_WRITE ? "rw" : "r");
+      checksumChannel = checksumFile.getChannel();
+      // Same interrupt shielding as the main channel: a thread interrupt during a slot write/force must not
+      // close the shared sidecar channel under the other pages.
+      doNotCloseOnInterrupt(checksumChannel);
+      return checksumChannel;
+    }
+  }
+
+  /**
+   * Fsyncs the checksum sidecar, tolerating a thread interrupt: the flag is cleared for the duration (an
+   * interruptible channel would otherwise close itself and throw {@link ClosedChannelException} immediately,
+   * e.g. right after the main channel's own interrupt-retry restored the flag) and restored on exit. A channel
+   * closed by a concurrent interrupt is reopened once and the force retried.
+   */
+  private void forceChecksumChannel(final boolean metaData) throws IOException {
+    FileChannel cc = checksumChannel;
+    if (cc == null)
+      return;
+
+    final boolean wasInterrupted = Thread.interrupted();
+    try {
+      try {
+        cc.force(metaData);
+      } catch (final ClosedChannelException e) {
+        closeChecksumFile();
+        cc = getChecksumChannel(false);
+        if (cc != null)
+          cc.force(metaData);
+      }
+    } finally {
+      if (wasInterrupted)
+        Thread.currentThread().interrupt();
+    }
+  }
+
+  private synchronized void closeChecksumFile() throws IOException {
+    if (checksumChannel != null) {
+      checksumChannel.close();
+      checksumChannel = null;
+    }
+    if (checksumFile != null) {
+      checksumFile.close();
+      checksumFile = null;
     }
   }
 
