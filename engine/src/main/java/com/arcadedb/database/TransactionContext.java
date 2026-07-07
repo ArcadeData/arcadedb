@@ -145,7 +145,11 @@ public class TransactionContext implements Transaction {
 
   @Override
   public void begin(final Database.TRANSACTION_ISOLATION_LEVEL isolationLevel) {
-    this.isolationLevel = isolationLevel;
+        // #5064: the base context is REUSED across transactions on this thread - the regime flag must never
+    // leak from a previous (Raft-committed) transaction into a fresh one, or a plain local failure would
+    // silently skip the #4940 rollback. Cleared here AND in reset() (belt and braces).
+    remotelyCommitted = false;
+this.isolationLevel = isolationLevel;
 
     if (status != STATUS.INACTIVE)
       throw new TransactionException("Transaction already begun");
@@ -1015,8 +1019,11 @@ public class TransactionContext implements Transaction {
         // LOCAL apply failed, before anything local was durable. The records the user holds carry the
         // identities the cluster committed, so rollback()'s identity reset would invite an application
         // retry to INSERT DUPLICATES of already-committed records - release resources WITHOUT touching
-        // user-held record state. No fence either: there is no orphaned local WAL record to diverge from,
-        // and the Raft layer reconciles the local pages from the replicated payload right after this.
+        // user-held record state. No fence in THIS branch because it is only reachable pre-append (no
+        // orphaned local WAL record to diverge from; the Raft layer reconciles the pages from the
+        // replicated payload). A failure AFTER the local append takes the walAppended branch above and
+        // still fences, INTENTIONALLY: an orphaned local WAL record exists there regardless of the remote
+        // commit, and that branch also preserves identities via reset().
         reset();
       else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
         // A fence-REFUSED commit (this tx appended nothing; the fence came from an earlier failure) cannot
@@ -1068,7 +1075,8 @@ public class TransactionContext implements Transaction {
   }
 
   public void reset() {
-    status = STATUS.INACTIVE;
+        remotelyCommitted = false;
+status = STATUS.INACTIVE;
 
     if (explicitLockedFiles != null) {
       database.getTransactionManager().unlockFilesInOrder(explicitLockedFiles, getRequester());

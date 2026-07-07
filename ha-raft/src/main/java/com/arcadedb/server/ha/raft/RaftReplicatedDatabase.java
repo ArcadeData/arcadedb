@@ -447,11 +447,11 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
         // #5064: the user must be able to distinguish 'retry me' from 'already committed cluster-wide'.
         // The generic rethrow here told applications the commit FAILED while the data was durably committed
         // on the quorum - and an application-level retry of the same records would insert duplicates.
+        final String reconcileOutcome = reconciled ? " (local pages reconciled from the replicated payload)"
+            : " (local reconciliation ALSO failed - this node steps down and repairs on rejoin)";
         throw new TransactionCommittedRemotelyException(
             "Transaction " + payload.tx() + " is committed cluster-wide but the local apply failed"
-                + (reconciled ? " (local pages reconciled from the replicated payload)"
-                : " (local reconciliation ALSO failed - this node steps down and repairs on rejoin)")
-                + ". Do NOT retry: reload the records and continue", e);
+                + reconcileOutcome + ". Do NOT retry: reload the records and continue", e);
       } finally {
         current.popIfNotLastTransaction();
       }
@@ -469,6 +469,10 @@ public class RaftReplicatedDatabase implements DatabaseInternal, HAReplicatedDat
       final DatabaseContext.DatabaseContextTL current = DatabaseContext.INSTANCE.getContext(proxied.getDatabasePath());
       try {
         // #5064: MAJORITY already committed - same durability-boundary shift as the main phase-2 path.
+        // Unlike that path, a failure here is NOT surfaced as TransactionCommittedRemotelyException: this is
+        // background ALL-quorum recovery with no user caller waiting on this commit - the reconcile +
+        // step-down below are the whole remedy, and the flag only steers the finally away from the
+        // identity rollback.
         payload.tx().setRemotelyCommitted(true);
         payload.tx().commit2ndPhase(payload.phase1());
         if (getSchema().getEmbedded().isDirty())
