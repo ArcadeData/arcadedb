@@ -20,8 +20,10 @@ package com.arcadedb.database.async;
 
 import com.arcadedb.GlobalConfiguration;
 import com.arcadedb.TestHelper;
+import com.arcadedb.database.DatabaseFactory;
 import com.arcadedb.database.DatabaseInternal;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -96,6 +98,41 @@ class AsyncShutdownDrainTest extends TestHelper {
         .as("queued tasks must be executed or completed() during shutdown")
         .isTrue();
     closer.join(5_000);
+  }
+
+  @Test
+  @Timeout(30)
+  void closeDoesNotHangOnAWedgedAsyncWorker() throws Exception {
+    // #5080: database.close()/drop() drained the async executor via an UNBOUNDED waitCompletion(), so a
+    // worker wedged inside a user task (here a 60s sleep, standing in for an infinite loop or stuck I/O)
+    // made close() hang. With ASYNC_CLOSE_TIMEOUT the graceful drain gives up and force-shuts the workers.
+    final String dbPath = "target/databases/AsyncCloseTimeoutTest";
+    DatabaseFactory factory = new DatabaseFactory(dbPath);
+    if (factory.exists())
+      factory.open().drop();
+
+    final DatabaseInternal db = (DatabaseInternal) factory.create();
+    db.getConfiguration().setValue(GlobalConfiguration.ASYNC_CLOSE_TIMEOUT, 1_000L);
+    final DatabaseAsyncExecutorImpl async = (DatabaseAsyncExecutorImpl) db.async();
+    async.setParallelLevel(1);
+    // Force thread re-creation so the parallel level above is picked up.
+    async.setTransactionUseWAL(true);
+
+    final CountDownLatch blockerStarted = new CountDownLatch(1);
+    // Wedged far longer than both the 1s close timeout and the 30s test timeout: pre-fix, the unbounded
+    // waitCompletion() would block close() until it finished (~60s), tripping @Timeout.
+    async.scheduleTask(0, blockerTask(blockerStarted, 60_000), true, 0);
+    assertThat(blockerStarted.await(5, TimeUnit.SECONDS)).isTrue();
+
+    final long begin = System.currentTimeMillis();
+    db.close();
+    final long elapsed = System.currentTimeMillis() - begin;
+
+    assertThat(elapsed)
+        .as("close() must give up the async drain after ASYNC_CLOSE_TIMEOUT instead of hanging on a wedged worker")
+        .isLessThan(15_000L);
+
+    new DatabaseFactory(dbPath).open().drop();
   }
 
   private static DatabaseAsyncTask blockerTask(final CountDownLatch started, final long sleepMs) {

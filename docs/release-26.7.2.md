@@ -371,6 +371,12 @@ that could starve the very snapshot resync meant to heal the node.
   its waiter blocked forever, and `QueryEngineManager.register()` publishes a copy-on-write map so a
   post-construction registration cannot corrupt concurrent readers
   ([#4961](https://github.com/ArcadeData/arcadedb/issues/4961)).
+- **`close()`/`drop()` no longer hang on a wedged async worker.** The graceful drain of in-flight
+  asynchronous tasks on database close/drop used an UNBOUNDED wait, so a worker stuck inside a user task
+  or callback blocked shutdown forever. It now waits at most `arcadedb.asyncCloseTimeout` ms (default
+  60000, 0 = wait forever) before logging a WARNING and forcing the async workers down; the forced
+  shutdown is itself bounded (interrupt + 1s join per worker) and notifies completion of the leftover
+  tasks ([#5080](https://github.com/ArcadeData/arcadedb/issues/5080)).
 - **PageManager lifecycle is refcounted.** The JVM-wide page manager was started and stopped on a racy
   "is the active-database map empty" check-then-act spanning factory instances: closing the last instance
   of one database could null the shared flush thread under a database whose open was still in flight
