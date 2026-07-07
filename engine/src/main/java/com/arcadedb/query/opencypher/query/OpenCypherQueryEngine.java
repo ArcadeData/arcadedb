@@ -46,6 +46,7 @@ import com.arcadedb.query.sql.executor.QueryStatistics;
 import com.arcadedb.query.sql.executor.ResultInternal;
 import com.arcadedb.query.sql.executor.ResultSet;
 import com.arcadedb.utility.CollectionUtils;
+import com.arcadedb.index.Index;
 import com.arcadedb.schema.DocumentType;
 import com.arcadedb.schema.Property;
 import com.arcadedb.schema.Schema;
@@ -342,6 +343,22 @@ public class OpenCypherQueryEngine implements QueryEngine {
     return type.getIndexByProperties(propertyNames) != null || type.getPolymorphicIndexByProperties(propertyNames) != null;
   }
 
+  /**
+   * Like {@link #indexExistsOnProperties} but only reports a pre-existing UNIQUE index. A non-unique
+   * index over the same properties does not satisfy a UNIQUE/KEY constraint, so adding the constraint
+   * is a genuine schema change that must be counted.
+   */
+  private static boolean uniqueIndexExistsOnProperties(final Schema schema, final String typeName, final String[] propertyNames) {
+    if (!schema.existsType(typeName))
+      return false;
+    final DocumentType type = schema.getType(typeName);
+    final Index own = type.getIndexByProperties(propertyNames);
+    if (own != null && own.isUnique())
+      return true;
+    final Index poly = type.getPolymorphicIndexByProperties(propertyNames);
+    return poly != null && poly.isUnique();
+  }
+
   private void executeCreateConstraint(final CypherDDLStatement ddl, final Schema schema, final QueryStatistics stats) {
     final String typeName = ddl.getLabelName();
     final String[] propertyNames = ddl.getPropertyNames().toArray(new String[0]);
@@ -390,7 +407,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     switch (ddl.getConstraintKind()) {
     case UNIQUE: {
-      final boolean existedBefore = indexExistsOnProperties(schema, typeName, propertyNames);
+      final boolean existedBefore = uniqueIndexExistsOnProperties(schema, typeName, propertyNames);
       final TypeIndexBuilder b = schema.buildTypeIndex(typeName, propertyNames);
       b.withType(Schema.INDEX_TYPE.LSM_TREE);
       b.withUnique(true);
@@ -425,7 +442,7 @@ public class OpenCypherQueryEngine implements QueryEngine {
 
     case KEY: {
       // NODE KEY = unique index + mandatory properties
-      final boolean existedBefore = indexExistsOnProperties(schema, typeName, propertyNames);
+      final boolean existedBefore = uniqueIndexExistsOnProperties(schema, typeName, propertyNames);
       final TypeIndexBuilder b = schema.buildTypeIndex(typeName, propertyNames);
       b.withType(Schema.INDEX_TYPE.LSM_TREE);
       b.withUnique(true);
