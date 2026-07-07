@@ -299,7 +299,11 @@ public class TransactionIndexContext {
         // ALREADY IN THE SET
         continue;
 
-      modifiedFiles.add(index.getFileId());
+      // getFileIds (plural), not getFileId: a multi-file index (e.g. LSMVectorIndex with its companion
+      // graph file) writes pages into ALL its component files during the transaction; omitting one lets its
+      // pages pass the commit version checks without the file lock held (#4937).
+      for (final int indexFileId : index.getFileIds())
+        modifiedFiles.add(indexFileId);
 
       // Lock only the data bucket this index entry belongs to (not all buckets of the type).
       // Guard against -1, returned by composite (TypeIndex) or metadata-less indexes, which is not a valid file id.

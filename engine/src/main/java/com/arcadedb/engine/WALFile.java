@@ -26,6 +26,7 @@ import com.arcadedb.log.LogManager;
 import com.arcadedb.utility.FileUtils;
 import com.arcadedb.utility.LockContext;
 
+import java.io.EOFException;
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -64,9 +65,6 @@ public class WALFile extends LockContext {
   private final    AtomicInteger    pagesToFlush      = new AtomicInteger();
   private          long             statsPagesWritten = 0;
   private          long             statsBytesWritten = 0;
-  // STATIC BUFFERS USED FOR RECOVERY
-  private final    ByteBuffer       bufferLong        = ByteBuffer.allocate(Binary.LONG_SERIALIZED_SIZE);
-  private final    ByteBuffer       bufferInt         = ByteBuffer.allocate(Binary.INT_SERIALIZED_SIZE);
 
   public static class WALTransaction {
     public long      txId;
@@ -206,10 +204,12 @@ public class WALFile extends LockContext {
         pos += Binary.INT_SERIALIZED_SIZE;
 
         // Reject obviously corrupted page headers so ByteBuffer.allocate cannot blow up with a
-        // negative size and a garbage delta cannot be applied to disk. The outer segment-size
-        // check above already bounds total memory by file size, so a per-page upper cap is not
-        // needed here.
-        if (deltaSize <= 0 || tx.pages[i].changesFrom < 0)
+        // negative size and a garbage delta cannot be applied to disk. #4958: the delta must also
+        // fit in the remaining file - the outer segment-size check bounds the SEGMENT by file size,
+        // but a corrupt per-page header can still declare a huge deltaSize (up to Integer.MAX_VALUE)
+        // and trigger a transient ~2GB allocation, or an OutOfMemoryError that escapes the
+        // catch(Exception) recovery guard below, before the read would fail.
+        if (deltaSize <= 0 || tx.pages[i].changesFrom < 0 || pos + deltaSize > getSize())
           return null;
 
         final ByteBuffer buffer = ByteBuffer.allocate(deltaSize);
@@ -235,6 +235,9 @@ public class WALFile extends LockContext {
       tx.endPositionInLog = pos + Binary.INT_SERIALIZED_SIZE + Binary.LONG_SERIALIZED_SIZE;
 
       return tx;
+    } catch (final EOFException e) {
+      // TRUNCATED FILE: same benign outcome as the explicit size checks above.
+      return null;
     } catch (final IOException e) {
       throw new WALException("Error reading WAL file " + filePath, e);
     } catch (final Exception e) {
@@ -414,6 +417,10 @@ public class WALFile extends LockContext {
     return channel.size();
   }
 
+  public String getFilePath() {
+    return filePath;
+  }
+
   @Override
   public String toString() {
     return filePath;
@@ -440,19 +447,38 @@ public class WALFile extends LockContext {
   }
 
   private long readLong(final long pos) throws IOException {
-    bufferLong.rewind();
-    channel.read(bufferLong, pos);
-    return bufferLong.getLong(0);
+    // #4958: per-call buffer (the shared instance buffers were unsynchronized) filled with a full-read
+    // loop: a single channel.read may return early and the old code then decoded stale garbage.
+    final ByteBuffer buffer = ByteBuffer.allocate(Binary.LONG_SERIALIZED_SIZE);
+    readFully(buffer, pos);
+    return buffer.getLong(0);
   }
 
   private int readInt(final long pos) throws IOException {
-    bufferInt.rewind();
-    channel.read(bufferInt, pos);
-    return bufferInt.getInt(0);
+    final ByteBuffer buffer = ByteBuffer.allocate(Binary.INT_SERIALIZED_SIZE);
+    readFully(buffer, pos);
+    return buffer.getInt(0);
+  }
+
+  private void readFully(final ByteBuffer buffer, final long pos) throws IOException {
+    long readPos = pos;
+    while (buffer.hasRemaining()) {
+      final int n = channel.read(buffer, readPos);
+      if (n == -1)
+        throw new EOFException("EOF reading " + buffer.capacity() + " bytes at position " + pos + " of WAL file " + filePath);
+      readPos += n;
+    }
   }
 
   protected void append(final ByteBuffer buffer) throws IOException {
     buffer.rewind();
-    channel.write(buffer, channel.size());
+    // #4958: loop until the buffer is fully written. A single channel.write may write only part of the
+    // record, leaving a torn entry that the #4508 gap detector would then flag as corruption.
+    // Single-writer assumption (same as the pre-loop code that wrote at channel.size() once): appends to a
+    // WALFile are externally serialized by acquire(); two concurrent appenders would both seed writePos from
+    // the same channel.size() and interleave. The local writePos only tolerates PARTIAL writes, not writers.
+    long writePos = channel.size();
+    while (buffer.hasRemaining())
+      writePos += channel.write(buffer, writePos);
   }
 }

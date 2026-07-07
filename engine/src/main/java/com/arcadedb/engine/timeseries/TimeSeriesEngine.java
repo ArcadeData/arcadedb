@@ -132,6 +132,13 @@ public class TimeSeriesEngine implements AutoCloseable {
    * shard's write is dispatched to the shared {@code shardExecutor} so all active
    * shards write in parallel when multiple CPU cores are available.
    * <p>
+   * <b>Threading (#4957):</b> the parallel dispatch is only used when NO transaction is active on the
+   * calling thread. With an enclosing transaction open, each TS-Shard thread would run with its own fresh
+   * {@code DatabaseContext}/transaction, publishing the shard pages out of band with the enclosing commit
+   * and, under HA, reordering the page versions on the Raft log - exactly the hazard documented on
+   * {@link #appendSamples}. In that case the per-shard sub-batches are written sequentially on the calling
+   * thread, preserving the batched-transaction saving (at most S nested-TX cycles) without the parallelism.
+   * <p>
    * Data layout: {@code allColumnValues[colIndex][sampleIndex]}.
    *
    * @param allTimestamps   array of N sample timestamps
@@ -162,8 +169,13 @@ public class TimeSeriesEngine implements AutoCloseable {
       shardGroups[s].add(i);
     }
 
-    // Build per-shard arrays and dispatch parallel writes to shardExecutor.
-    final List<CompletableFuture<Void>> futures = new ArrayList<>(shardCount);
+    // #4957: with an enclosing transaction on the calling thread the shard writes MUST stay in-thread
+    // (see the threading note in the javadoc); routing them to shardExecutor would publish the pages
+    // out of band with the enclosing commit. The per-shard grouping is kept in both cases.
+    final boolean inThread = database.isTransactionActive();
+
+    // Build per-shard arrays and either write them in-thread or dispatch parallel writes to shardExecutor.
+    final List<CompletableFuture<Void>> futures = inThread ? null : new ArrayList<>(shardCount);
 
     for (int s = 0; s < shardCount; s++) {
       final List<Integer> group = shardGroups[s];
@@ -182,6 +194,11 @@ public class TimeSeriesEngine implements AutoCloseable {
       }
 
       final int shardIdx = s;
+      if (inThread) {
+        shards[shardIdx].appendSamples(shardTs, shardCols);
+        continue;
+      }
+
       futures.add(CompletableFuture.runAsync(() -> {
         try {
           shards[shardIdx].appendSamples(shardTs, shardCols);
@@ -190,6 +207,9 @@ public class TimeSeriesEngine implements AutoCloseable {
         }
       }, shardExecutor));
     }
+
+    if (inThread)
+      return;
 
     try {
       CompletableFuture.allOf(futures.toArray(new CompletableFuture[0])).join();
