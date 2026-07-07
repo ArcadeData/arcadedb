@@ -3215,6 +3215,15 @@ public class CypherExecutionPlan {
     if (!nodePattern.hasLabels())
       return null;
 
+    // Only a single label can be counted with the O(1) countType() shortcut. A multi-label
+    // conjunction pattern (n:A:B) has no single type representing "instanceOf A AND instanceOf B"
+    // (each label maps to its own supertype, and the composite type also carries any other
+    // labels the node was created with), so counting by the first label alone would over-count
+    // (issue #5084). Multi-label (and label-disjunction) patterns fall back to the regular
+    // materialization path, which filters on every label correctly.
+    if (nodePattern.getLabels().size() != 1 || nodePattern.isLabelDisjunction())
+      return null;
+
     // Node must not have property constraints
     if (nodePattern.hasProperties())
       return null;
@@ -3223,7 +3232,6 @@ public class CypherExecutionPlan {
     if (variable == null)
       return null;
 
-    // Get the first label (for simplicity, use the first one if multiple labels exist)
     final String typeName = nodePattern.getLabels().get(0);
 
     // Must have RETURN clause
