@@ -384,6 +384,15 @@ that could starve the very snapshot resync meant to heal the node.
   levels, unbounded per-transaction page cache under `REPEATABLE_READ`) is now documented on
   `Database.TRANSACTION_ISOLATION_LEVEL` and pinned by tests.
 
+- **HA: a distinct error for "committed cluster-wide, local apply failed".** When the replication quorum
+  durably commits a transaction but the leader's local phase-2 apply then fails, the application now
+  receives `TransactionCommittedRemotelyException` - stating the transaction IS committed on the cluster,
+  whether the local pages were reconciled, and that it must NOT be retried - instead of a generic commit
+  failure that invited retries. The identities of records created in such a transaction are no longer reset
+  to provisional (they are the identities the cluster committed), so an application-level retry no longer
+  inserts duplicates of already-committed records
+  ([#5064](https://github.com/ArcadeData/arcadedb/issues/5064)).
+
 ### Improvements
 
 - **HA: throttled diverged-follower resync logging.** When a follower detects a WAL page-version gap it

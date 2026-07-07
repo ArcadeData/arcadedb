@@ -82,6 +82,12 @@ public class TransactionContext implements Transaction {
   private       Map<PageId, MutablePage>             modifiedPages;
   private       Map<PageId, MutablePage>             newPages;
   private       boolean                              useWAL;
+  // #5064: set by the HA layer AFTER the replication quorum durably committed this transaction and BEFORE
+  // the local phase-2 apply. Shifts the durability boundary for the failure regimes in commit2ndPhase's
+  // finally: a local failure past this point must never roll back user-held record identities (the cluster
+  // committed them - a retry would duplicate) nor fence the database (no orphaned local WAL record exists;
+  // the Raft layer reconciles pages from the replicated payload).
+  private       boolean                              remotelyCommitted;
   private       boolean                              asyncFlush            = true;
   private       WALFile.FlushType                    walFlush;
   private       List<Integer>                        lockedFiles;
@@ -183,6 +189,11 @@ public class TransactionContext implements Transaction {
 
   public Database.TRANSACTION_ISOLATION_LEVEL getIsolationLevel() {
     return isolationLevel;
+  }
+
+  /** #5064: see the {@code remotelyCommitted} field - HA-layer only, call after quorum commit, before phase 2. */
+  public void setRemotelyCommitted(final boolean remotelyCommitted) {
+    this.remotelyCommitted = remotelyCommitted;
   }
 
   public void setRequester(final Object requester) {
@@ -999,7 +1010,15 @@ public class TransactionContext implements Transaction {
         // The RIDs optimistically assigned to records created in this transaction remain valid (the replay
         // makes them real): release resources WITHOUT touching user-held record state.
         reset();
-      } else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
+      } else if (remotelyCommitted)
+        // #5064: the replication QUORUM already durably committed this transaction cluster-wide; only the
+        // LOCAL apply failed, before anything local was durable. The records the user holds carry the
+        // identities the cluster committed, so rollback()'s identity reset would invite an application
+        // retry to INSERT DUPLICATES of already-committed records - release resources WITHOUT touching
+        // user-held record state. No fence either: there is no orphaned local WAL record to diverge from,
+        // and the Raft layer reconciles the local pages from the replicated payload right after this.
+        reset();
+      else if (database.getEmbedded() instanceof LocalDatabase localDatabase && localDatabase.isFencedForRecovery())
         // A fence-REFUSED commit (this tx appended nothing; the fence came from an earlier failure) cannot
         // roll back its record state: rollback()'s record reload would hit the fence choke point itself and
         // replace the fence error with a confusing secondary failure. Release resources only - the database
